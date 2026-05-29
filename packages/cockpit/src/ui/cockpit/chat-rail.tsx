@@ -1,18 +1,20 @@
-// Chat rail (DAT-347, C1) — the left region of the three-region cockpit.
+// Chat rail (DAT-347 C1, rebuilt on the TanStack AI SDK for DAT-353).
 //
-// A scrollable message list, collapsible tool-call cards, and a submit input.
-// Streaming is driven ONLY by user submit (never on mount → SSR-safe). As the
-// stream arrives:
-//   - `text`            → appended to the in-progress assistant message
-//   - `tool_call_start` → a collapsible card is opened (pending)
-//   - `tool_result`     → the card is filled AND the focus canvas is updated via
-//                         the tool→canvas mapper
-//   - `error`           → an error bubble + the canvas flips to the error widget
-// Reads theme tokens only.
+// useChat owns the conversation + the agentic tool-loop + SSE transport; this
+// component only renders messages and drives the canvas. As messages arrive:
+//   - text parts        → rendered as user / assistant bubbles
+//   - tool-call parts    → a collapsible card; when the SDK pauses for approval
+//                          (needsApproval tools: teach / replay) the card shows
+//                          Approve / Deny → addToolApprovalResponse
+//   - the latest tool result → projected to the focus canvas via the bridge
+//                          (list_sources / list_tables render as widgets;
+//                          write/compute results stay in the rail)
+// Streaming is driven ONLY by user submit (never on mount → SSR-safe).
 
 import {
 	ActionIcon,
 	Box,
+	Button,
 	Card,
 	Collapse,
 	Group,
@@ -22,32 +24,45 @@ import {
 	Textarea,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
+import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { SendHorizontal } from "lucide-react";
-import { type FormEvent, useCallback, useRef, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
-import { toolResultToCanvas } from "#/ui/cockpit/tool-result-to-canvas";
-import {
-	type ChatMessage,
-	type ChatStreamEvent,
-	useChatStream,
-} from "#/ui/cockpit/use-chat-stream";
+import { canvasFromMessages } from "#/ui/cockpit/tool-result-to-canvas";
 import { tokens } from "#/ui/theme";
 
-interface ToolCall {
+// The untyped tool-call part shape (we register tools server-side, so useChat
+// sees them untyped). Narrowed off `part.type === "tool-call"`.
+interface ToolCallPart {
+	type: "tool-call";
 	id: string;
 	name: string;
-	result?: unknown;
+	state: string;
+	approval?: { id: string; needsApproval: boolean; approved?: boolean };
+	output?: unknown;
 }
 
-function ToolCallCard({ call }: { call: ToolCall }) {
+function ToolCallCard({
+	part,
+	onApprove,
+}: {
+	part: ToolCallPart;
+	onApprove: (approvalId: string, approved: boolean) => void;
+}) {
 	const [opened, { toggle }] = useDisclosure(false);
-	const pending = call.result === undefined;
+	const done = part.state === "complete";
+	const approvalId = part.approval?.id;
+	const awaitingApproval =
+		part.state === "approval-requested" &&
+		approvalId !== undefined &&
+		part.approval?.approved === undefined;
+
 	return (
 		<Card
 			withBorder
 			padding="xs"
 			radius="sm"
-			data-testid={`tool-call-${call.id}`}
+			data-testid={`tool-call-${part.id}`}
 		>
 			<Group
 				justify="space-between"
@@ -56,143 +71,112 @@ function ToolCallCard({ call }: { call: ToolCall }) {
 				style={{ cursor: "pointer" }}
 			>
 				<Text size="sm" fw={600}>
-					{call.name}
+					{part.name}
 				</Text>
-				{pending ? (
-					<Loader size="xs" />
-				) : (
+				{done ? (
 					<Text size="xs" c="dimmed">
 						{opened ? "hide" : "show"}
 					</Text>
+				) : (
+					<Loader size="xs" />
 				)}
 			</Group>
-			<Collapse expanded={opened}>
+
+			{awaitingApproval && approvalId && (
+				<Group gap="xs" mt="xs" data-testid={`tool-approval-${part.id}`}>
+					<Button
+						size="xs"
+						onClick={() => onApprove(approvalId, true)}
+						data-testid={`tool-approve-${part.id}`}
+					>
+						Approve
+					</Button>
+					<Button
+						size="xs"
+						variant="default"
+						onClick={() => onApprove(approvalId, false)}
+						data-testid={`tool-deny-${part.id}`}
+					>
+						Deny
+					</Button>
+				</Group>
+			)}
+
+			<Collapse expanded={opened && part.output !== undefined}>
 				<Text
 					size="xs"
 					c="dimmed"
 					ff="monospace"
 					style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-					data-testid={`tool-call-result-${call.id}`}
+					data-testid={`tool-call-result-${part.id}`}
 				>
-					{pending ? "running…" : JSON.stringify(call.result, null, 2)}
+					{JSON.stringify(part.output, null, 2)}
 				</Text>
 			</Collapse>
 		</Card>
 	);
 }
 
-type RailMessage =
-	| { kind: "text"; role: "user" | "assistant"; content: string }
-	| { kind: "tool"; call: ToolCall };
-
 export function ChatRail() {
 	const { setCanvasState } = useCockpit();
-	const { streaming, send } = useChatStream();
-	const [messages, setMessages] = useState<RailMessage[]>([]);
+	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
+		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
-	// Index of the assistant message currently being streamed into.
-	const assistantIndex = useRef<number | null>(null);
 
-	const handleEvent = useCallback(
-		(event: ChatStreamEvent) => {
-			switch (event.type) {
-				case "text":
-					setMessages((prev) => {
-						const next = [...prev];
-						const i = assistantIndex.current;
-						if (i !== null && next[i]?.kind === "text") {
-							const msg = next[i] as Extract<RailMessage, { kind: "text" }>;
-							next[i] = { ...msg, content: msg.content + event.text };
-						}
-						return next;
-					});
-					break;
-				case "tool_call_start":
-					setMessages((prev) => [
-						...prev,
-						{ kind: "tool", call: { id: event.id, name: event.name } },
-					]);
-					break;
-				case "tool_result":
-					setMessages((prev) =>
-						prev.map((m) =>
-							m.kind === "tool" && m.call.id === event.id
-								? { ...m, call: { ...m.call, result: event.result } }
-								: m,
-						),
-					);
-					// The mapper decides what the focus canvas shows next.
-					setCanvasState(toolResultToCanvas(event.name, event.result));
-					break;
-				case "error":
-					setMessages((prev) => [
-						...prev,
-						{ kind: "text", role: "assistant", content: `⚠ ${event.message}` },
-					]);
-					setCanvasState({ kind: "error", message: event.message });
-					break;
-				case "done":
-					assistantIndex.current = null;
-					break;
-			}
-		},
-		[setCanvasState],
-	);
+	// Project the latest tool result onto the focus canvas as messages arrive.
+	useEffect(() => {
+		const next = canvasFromMessages(messages);
+		if (next) setCanvasState(next);
+	}, [messages, setCanvasState]);
 
-	const onSubmit = useCallback(
-		(e: FormEvent) => {
-			e.preventDefault();
-			const text = input.trim();
-			if (!text || streaming) return;
+	// Surface a stream error on the canvas.
+	useEffect(() => {
+		if (error) setCanvasState({ kind: "error", message: error.message });
+	}, [error, setCanvasState]);
 
-			// Append the user message + an empty assistant message to stream into.
-			setMessages((prev) => {
-				const next: RailMessage[] = [
-					...prev,
-					{ kind: "text", role: "user", content: text },
-					{ kind: "text", role: "assistant", content: "" },
-				];
-				assistantIndex.current = next.length - 1;
-				return next;
-			});
-			setInput("");
-
-			// The wire format is text-only user/assistant turns; tool cards are
-			// rail-local UI, not part of the request history.
-			const history: ChatMessage[] = messages
-				.filter(
-					(m): m is Extract<RailMessage, { kind: "text" }> => m.kind === "text",
-				)
-				.map((m) => ({ role: m.role, content: m.content }));
-			history.push({ role: "user", content: text });
-
-			// Canvas shows progress while the turn streams.
-			setCanvasState({ kind: "loading" });
-			void send(history, { onEvent: handleEvent });
-		},
-		[input, streaming, messages, send, handleEvent, setCanvasState],
-	);
+	const onSubmit = (e: FormEvent) => {
+		e.preventDefault();
+		const text = input.trim();
+		if (!text || isLoading) return;
+		setInput("");
+		setCanvasState({ kind: "loading" });
+		void sendMessage(text);
+	};
 
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
 			<Box style={{ flex: 1, overflowY: "auto" }} data-testid="chat-messages">
 				<Stack gap="xs" p="xs">
-					{messages.map((m, i) =>
-						m.kind === "tool" ? (
-							<ToolCallCard key={m.call.id} call={m.call} />
-						) : (
-							<Text
-								// Rail messages are append-only, so index keys are stable.
-								// biome-ignore lint/suspicious/noArrayIndexKey: append-only list
-								key={i}
-								size="sm"
-								c={m.role === "user" ? "text" : "dimmed"}
-								fw={m.role === "user" ? 600 : 400}
-								style={{ whiteSpace: "pre-wrap" }}
-							>
-								{m.content}
-							</Text>
-						),
+					{messages.map((m) =>
+						m.parts.map((part, i) => {
+							if (part.type === "text") {
+								return (
+									<Text
+										// Parts within a message are append-only; index keys are stable.
+										// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts
+										key={`${m.id}-${i}`}
+										size="sm"
+										c={m.role === "user" ? "text" : "dimmed"}
+										fw={m.role === "user" ? 600 : 400}
+										style={{ whiteSpace: "pre-wrap" }}
+									>
+										{part.content}
+									</Text>
+								);
+							}
+							if (part.type === "tool-call") {
+								return (
+									<ToolCallCard
+										key={part.id}
+										part={part as ToolCallPart}
+										onApprove={(approvalId, approved) =>
+											void addToolApprovalResponse({ id: approvalId, approved })
+										}
+									/>
+								);
+							}
+							return null;
+						}),
 					)}
 				</Stack>
 			</Box>
@@ -205,7 +189,7 @@ export function ChatRail() {
 						rows={2}
 						style={{ flex: 1 }}
 						data-testid="chat-input"
-						disabled={streaming}
+						disabled={isLoading}
 						onKeyDown={(e) => {
 							if (e.key === "Enter" && !e.shiftKey) {
 								e.preventDefault();
@@ -219,7 +203,7 @@ export function ChatRail() {
 						size="lg"
 						aria-label="Send message"
 						data-testid="chat-send"
-						disabled={streaming || input.trim().length === 0}
+						disabled={isLoading || input.trim().length === 0}
 						style={{ borderRadius: tokens.radii.sm }}
 					>
 						<SendHorizontal size={18} />

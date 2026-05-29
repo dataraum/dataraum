@@ -37,13 +37,20 @@ That's it. `FocusCanvas` resolves the widget by `canvasState.kind`; an
 unregistered kind degrades to the error widget, so a partially-landed column
 never crashes the view.
 
-## SSE wire
+## Chat transport (DAT-353)
 
-`use-chat-stream.ts` POSTs to `/api/chat` (DO NOT change the server route) and
-parses the stable SSE events: `text`, `tool_call_start`, `tool_result`, `done`,
-`error`. Frames are buffered across reads (they can split mid-frame). Streaming
-fires **only on user submit** — never on mount — so the view is SSR-safe.
+`ChatRail` uses the TanStack AI SDK's `useChat({ connection:
+fetchServerSentEvents("/api/chat") })`. The SDK owns the whole loop: the
+conversation state, the agentic tool-loop (it executes server tools, pauses on
+`needsApproval` tools for the user to Approve/Deny via `addToolApprovalResponse`,
+feeds results back, iterates), and the SSE transport. We no longer hand-roll the
+wire — the old `use-chat-stream.ts` probe is gone. Streaming fires **only on
+user submit** (`sendMessage`) — never on mount — so the view is SSR-safe.
 
-The C1 `/api/chat` is a single-pass text streamer (no real tool calls yet), so
-the tool → canvas path is exercised by unit tests with mock `tool_result`
-events. When the agentic loop lands server-side, the UI does not change.
+`canvasFromMessages(messages)` (in `tool-result-to-canvas.ts`) adapts the SDK
+message list to the canvas: it finds the latest completed tool result and maps
+it via `toolResultToCanvas`. `ChatRail` projects that onto the focus canvas in a
+`useEffect([messages, setCanvasState])`. **`setCanvasState` MUST have stable
+identity** (`cockpit-state.tsx` pins the dispatchers with `useCallback`) — a
+per-dispatch identity would re-fire the effect, which re-dispatches a fresh
+canvas object → an infinite render loop.

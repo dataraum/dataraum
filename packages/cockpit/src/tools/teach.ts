@@ -113,7 +113,18 @@ export const teachTool = toolDefinition({
 		z.object({ error: z.string() }),
 	]),
 	needsApproval: true,
-}).server(async (input) => {
+}).server(runTeachTool);
+
+/**
+ * The `teach` tool's server handler, extracted so its error surface is
+ * unit-testable without the SDK wrapper. A malformed payload makes
+ * `validateTeach` throw `TeachValidationError`; we return that as structured
+ * data so the agent can read the message and retry. Any other error (DB,
+ * connectivity, …) is not the agent's to fix and propagates.
+ */
+export async function runTeachTool(
+	input: TeachInput,
+): Promise<TeachResult | { error: string }> {
 	try {
 		return await teach(input);
 	} catch (err) {
@@ -122,4 +133,4 @@ export const teachTool = toolDefinition({
 		}
 		throw err;
 	}
-});
+}

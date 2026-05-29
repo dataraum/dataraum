@@ -17,6 +17,9 @@ data_sources/
 .claude/settings.local.json
 .worktrees/
 .claude/skills/temporal-developer
+.claude/skills/tanstack-*
+.agents/skills
+packages/cockpit/reference/
 
 # Python
 __pycache__/

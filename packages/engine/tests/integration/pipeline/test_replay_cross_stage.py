@@ -58,9 +58,7 @@ def _resolve_once(
     """Infer + resolve types for a raw table, returning the typed table id."""
     raw_table = session.get(Table, staged_table_id)
     assert raw_table is not None
-    infer = infer_type_candidates(
-        raw_table, duckdb_conn, session, session_id=baseline_session_id()
-    )
+    infer = infer_type_candidates(raw_table, duckdb_conn, session, session_id=baseline_session_id())
     assert infer.success, infer.error
     session.flush()
     resolve = resolve_types(
@@ -142,14 +140,10 @@ class TestCrossStageSurvival:
         assert result.status == PhaseStatus.COMPLETED, result.error
 
         with harness.session_factory() as session:
-            typed_table = session.execute(
-                select(Table).where(Table.layer == "typed")
-            ).scalar_one()
+            typed_table = session.execute(select(Table).where(Table.layer == "typed")).scalar_one()
             typed_table_id = typed_table.table_id
             id_col = session.execute(
-                select(Column).where(
-                    Column.table_id == typed_table_id, Column.column_name == "id"
-                )
+                select(Column).where(Column.table_id == typed_table_id, Column.column_name == "id")
             ).scalar_one()
             id_col_id = id_col.column_id
             # Simulate a begin_session / frame-ground finding attached to the

@@ -332,7 +332,9 @@ class TestTypingPhaseReplayCleanup:
         assert (
             session.execute(
                 select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
-            ).scalar_one().table_id
+            )
+            .scalar_one()
+            .table_id
             == typed_a.table_id
         )
         assert (

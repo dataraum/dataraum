@@ -430,9 +430,7 @@ def resolve_types(
     # session must be flushed before reconcile so the typed Table's existing
     # Columns are loadable (the reconcile reads ``typed_table.columns``).
     session.flush()
-    typed_table_record = reconcile_typed_table(
-        session, table, "typed", bare, typed_rows
-    )
+    typed_table_record = reconcile_typed_table(session, table, "typed", bare, typed_rows)
     quarantine_table_record = reconcile_typed_table(
         session, table, "quarantine", bare, quarantine_rows
     )
@@ -516,9 +514,7 @@ def resolve_types(
     # idempotency: correct even when called outside the workflow's replay_cleanup.
     typed_col_ids = list(typed_column_map.values())
     if typed_col_ids:
-        session.execute(
-            delete(TypeCandidate).where(TypeCandidate.column_id.in_(typed_col_ids))
-        )
+        session.execute(delete(TypeCandidate).where(TypeCandidate.column_id.in_(typed_col_ids)))
         session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(typed_col_ids)))
         session.flush()
 

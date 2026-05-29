@@ -55,14 +55,24 @@ const CockpitContext = createContext<CockpitContextValue | null>(null);
 export function CockpitProvider({ children }: { children: ReactNode }) {
 	const [state, dispatch] = useReducer(cockpitReducer, INITIAL_STATE);
 
+	// Dispatchers are stable for the provider's lifetime (dispatch identity is
+	// constant). This matters: ChatRail keys its canvas effect on setCanvasState,
+	// so an identity that changed every dispatch would re-fire the effect, which
+	// re-dispatches a fresh canvas object → infinite render loop. useCallback([])
+	// pins them; the canvas effect now only re-runs on a real message change.
+	const setActiveStage = useCallback(
+		(stage: Stage) => dispatch({ type: "setActiveStage", stage }),
+		[],
+	);
+	const setCanvasState = useCallback(
+		(canvasState: CanvasState) =>
+			dispatch({ type: "setCanvasState", canvasState }),
+		[],
+	);
+
 	const value = useMemo<CockpitContextValue>(
-		() => ({
-			...state,
-			setActiveStage: (stage) => dispatch({ type: "setActiveStage", stage }),
-			setCanvasState: (canvasState) =>
-				dispatch({ type: "setCanvasState", canvasState }),
-		}),
-		[state],
+		() => ({ ...state, setActiveStage, setCanvasState }),
+		[state, setActiveStage, setCanvasState],
 	);
 
 	return (

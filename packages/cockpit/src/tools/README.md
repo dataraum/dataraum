@@ -1,73 +1,67 @@
 # Cockpit tools
 
-Hand-written TypeScript tools that the chat agent calls. Each file in this
-directory is one tool: a plain TypeScript function that conforms to the
-Anthropic `Tool` schema (`name`, `description`, `input_schema`, plus a
-handler), and gets registered explicitly in the tool registry imported by
-`../routes/api/chat.ts`.
+The agent-tier tools the cockpit chat agent calls (DAT-353). Each file is one
+tool defined with the TanStack AI SDK's `toolDefinition(...)`, registered
+explicitly in `registry.ts` (the array passed to `chat({ tools })` on
+`../routes/api/chat.ts`).
 
-Empty for slice 1 — the first batch of read-surface tools
-(`list_sources`, `list_tables`, `look_table`, `search_snippets`) lands in
-Phase 1 of the DAT-339 pivot (DAT-353).
+Slice-1 toolset:
+
+- `list-sources.ts` — read the workspace's registered sources.
+- `list-tables.ts` — read the workspace's tables (optionally scoped to a source).
+- `teach.ts` — record a correction/declaration as a `config_overlay` row.
+- `replay.ts` — start an `addSourceWorkflow` to re-apply pending teaches.
+
+`look_table` / `why_column` are **deferred** to DAT-367 (cockpit DuckDB).
 
 ## Architecture
 
 ```
-chat.ts  ──registry──→  tools/<name>.ts  ──┬──→  src/db/metadata/  (Drizzle, engine substrate read)
-                                            ├──→  src/db/cockpit/   (Drizzle, chat history / ui_state)
-                                            └──→  fetch("/measure" | "/query" | "/probe")  (engine kernel)
+chat.ts ──registry──→ tools/<name>.ts ──┬──→ src/db/metadata/  (Drizzle, engine ws_<id> read; teach writes config_overlay)
+                                         └──→ @temporalio/client (replay → addSourceWorkflow)
 ```
 
-Tools are the **only** layer that touches engine state. The chat handler
-streams Anthropic responses and runs tools when the model emits `tool_use`;
-React components never reach across to the engine directly.
+The TanStack AI SDK owns the agentic loop: `chat()` runs the model, executes
+the `.server(...)` handler of each tool the model calls, pauses for user
+confirmation on `needsApproval` tools, feeds results back, and iterates.
+React components never reach across to the engine directly — tools are the only
+layer that touches engine state.
 
-## The N:M policy
-
-> One tool wraps N engine operations. N tools share M backends.
-
-- A single tool can compose multiple drizzle queries, a kernel `/query`
-  call, and a `/measure` SSE follow-up before returning to the agent. The
-  tool is the unit the LLM reasons about; the boundary is intent
-  (`look_table`, `add_source`), not protocol (`run_drizzle_query`,
-  `call_kernel`).
-- The same drizzle helper or kernel verb is fair game for many tools —
-  shared helpers live in `src/db/metadata/` (for Drizzle-backed reads)
-  and a future `src/kernel/` (for kernel-verb fetch wrappers when slice 2
-  needs them). Don't reach across to another tool's internal helpers.
-- **No openapi-fetch.** Pre-pivot the cockpit consumed a generated REST
-  client; that surface (and the `codegen` script) retired in DAT-339 Phase 0c.
-  Tools call the kernel verbs (`/measure`, `/query`, `/probe`) via a
-  hand-written `fetch` wrapper, and read metadata directly via the
-  Drizzle introspected schema.
-
-## File layout convention
-
-```
-tools/
-├── README.md         ← this file
-├── registry.ts       ← landing in Phase 1: re-exports every tool + handler map
-├── list_sources.ts   ← Phase 1
-├── list_tables.ts    ← Phase 1
-├── look_table.ts     ← Phase 1
-├── search_snippets.ts ← Phase 1
-└── add_source.ts     ← Phase 2 (uses the mounted dataraum_lake volume)
-```
-
-One tool per file. Each file exports:
+## Defining a tool
 
 ```ts
-import type { Tool } from '@anthropic-ai/sdk/resources/messages'
+import { toolDefinition } from "@tanstack/ai";
+import { z } from "zod";
 
-export const definition: Tool = { name, description, input_schema }
-export async function handler(input: ParsedInput): Promise<ToolResult> { ... }
+export const fooTool = toolDefinition({
+	name: "foo",
+	description: "What the model sees.",
+	inputSchema: z.object({ ... }),
+	outputSchema: z.array(FooRow),
+	// needsApproval: true,  // write/compute tools only — pauses for user OK
+}).server((input) => foo(input));
 ```
 
-`registry.ts` assembles the `Tool[]` array + a `Record<string, handler>` for
-the chat dispatch loop. Adding a tool = adding a file + one import line.
+- **Reads** (`list_*`) run unattended — no `needsApproval`.
+- **Writes / compute** (`teach`, `replay`) set `needsApproval: true`; the SDK
+  pauses and the cockpit answers via `addToolApprovalResponse` before `.server`
+  runs.
+- The DB-bound logic lives in a plain exported function (`listSources()`,
+  `teach()`, …) so it can be tested directly; `.server(...)` just adapts it to
+  the SDK.
 
-## Why not autodiscover?
+## Why an explicit registry, not autodiscovery?
 
-Cheap to think about. The chat handler reads a single explicit registry
-file, so refactors are mechanical and lint-checkable. We can revisit if
-the directory grows past ~20 tools.
+Cheap to think about. `registry.ts` is a single explicit array, so refactors
+are mechanical and lint-checkable. Adding a tool = one file + one import +
+one array entry. Revisit if the directory grows past ~20 tools.
+
+## Testing
+
+- **Unit** (`bun run test`): the registry/route wiring tests mock `#/config` +
+  `#/db/metadata/client` (the tools import a live `postgres()` client at module
+  load). They set NO `process.env`, so nothing leaks into the integration gate.
+- **Integration** (`bun run test:integration`, compose stack up): `teach`'s
+  write/undo round-trip runs against a real Postgres (`*.integration.test.ts`),
+  self-skipping when `METADATA_DATABASE_URL` is unset. The forward replay path
+  is covered by the compose smoke (`reference/.../drive-add-source.ts`).

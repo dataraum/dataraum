@@ -14,7 +14,8 @@
     "build": "bun --bun vite build",
     "start": "bun run .output/server/index.mjs",
     "preview": "bun --bun vite preview",
-    "test": "vitest run",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
     "format": "bun --bun biome format",
     "lint": "bun --bun biome lint",
     "check": "bun --bun biome check",
@@ -23,7 +24,6 @@
     "db:generate:cockpit": "bunx drizzle-kit generate --config drizzle.config.cockpit.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.97.1",
     "@mantine/core": "^9.2.2",
     "@mantine/hooks": "^9.2.2",
     "@tailwindcss/vite": "^4.3.0",

@@ -10,7 +10,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.eligibility.config import load_eligibility_config
 from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
@@ -53,6 +53,26 @@ class ColumnEligibilityPhase(BasePhase):
         from dataraum.analysis.eligibility import db_models
 
         return [db_models]
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Delete this phase's ColumnEligibilityRecord rows for the scoped tables (DAT-373).
+
+        Owner-scoped by ``table_id``: drops only the eligibility records of the
+        typed tables in ``table_ids`` so the re-run (after a re-type) re-evaluates
+        eligibility against the freshly-typed columns. The re-typed DuckDB table
+        is rebuilt with its full column set, so any columns this phase previously
+        dropped are present again for re-evaluation. Never touches another phase's
+        per-Column rows.
+        """
+        typed_tables = self._typed_tables(ctx)
+        if not typed_tables:
+            return
+        ctx.session.execute(
+            delete(ColumnEligibilityRecord).where(
+                ColumnEligibilityRecord.table_id.in_([t.table_id for t in typed_tables])
+            )
+        )
+        ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if the scoped tables' columns all have eligibility records."""

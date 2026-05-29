@@ -1,21 +1,17 @@
-import { Stack } from "@mantine/core";
 import { createFileRoute } from "@tanstack/react-router";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
-import { StageNavigator } from "#/ui/cockpit/stage-navigator";
+import { CockpitView } from "#/ui/cockpit/cockpit-view";
 
 export const Route = createFileRoute("/(app)/workspace/$wsId/cockpit")({
 	component: CockpitSection,
 });
 
-// Temporary C1 layout: stage navigator + an empty canvas placeholder. Replaced
-// by the full three-region CockpitView once the chat rail + focus canvas land
-// (DAT-347, step 5).
+// The three-region agentic cockpit (DAT-347): chat rail | stage navigator +
+// focus canvas. Rendered strictly inside the C0 shell's cockpit route.
 function CockpitSection() {
 	return (
 		<CockpitProvider>
-			<Stack gap="md" data-testid="cockpit-section">
-				<StageNavigator />
-			</Stack>
+			<CockpitView />
 		</CockpitProvider>
 	);
 }

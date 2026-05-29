@@ -9,8 +9,9 @@
 //      and every table was processed to a typed table.
 //   2. two teaches via `teach(...)` (batchable; no replay between them).
 //   3. one replay via `replay(...)` with from_phase="typing" — asserts the
-//      replay completed, the typed_table_ids were re-minted by the cleanup +
-//      re-typing path, and both teach overlay rows landed in config_overlay.
+//      replay completed, the typed_table_ids are STABLE across the in-place
+//      re-type (DAT-373: typing reconciles Columns by name, no re-mint), and
+//      both teach overlay rows landed in config_overlay.
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \
@@ -206,22 +207,24 @@ async function main(): Promise<void> {
 				`replay: table count changed ${initial.tables.length} -> ${replayed.tables.length}`,
 			);
 		}
-		// typing.replay_cleanup drops the typed Table row before re-typing
-		// re-mints it — the typed_table_id must change for every affected
-		// table on a from_phase="typing" replay. This is the on-the-wire
-		// proof that the cleanup ran and a fresh typed table replaced the
-		// old one (not just a skip).
+		// DAT-373: typing.replay_cleanup no longer drops the typed Table —
+		// re-typing reconciles Columns/Table by (table_id, column_name), so the
+		// typed_table_id is STABLE for every affected table on a
+		// from_phase="typing" replay. That stability is what lets a second
+		// stage's per-Column data survive an add_source teach (cross-stage
+		// survival itself is proven by the engine integration test
+		// test_replay_cross_stage). Here we assert the ids did NOT change.
 		for (const table of replayed.tables) {
-			if (initialTypedIds.has(table.typed_table_id)) {
+			if (!initialTypedIds.has(table.typed_table_id)) {
 				throw new Error(
-					`replay: typed_table_id for raw ${table.raw_table_id} did not change ` +
-						`(cleanup + re-type didn't fire)`,
+					`replay: typed_table_id for raw ${table.raw_table_id} changed to ` +
+						`${table.typed_table_id} — DAT-373 expects stable ids on re-type`,
 				);
 			}
 		}
 		console.log(
-			`✓ replay (from_phase=typing): ${replayed.tables.length} table(s) re-typed; ` +
-				`typed_table_ids changed for all of them`,
+			`✓ replay (from_phase=typing): ${replayed.tables.length} table(s) re-typed in place; ` +
+				`typed_table_ids stable for all of them (DAT-373)`,
 		);
 
 		// Sanity: the overlay rows are still active after replay (replay

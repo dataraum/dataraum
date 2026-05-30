@@ -12,6 +12,7 @@
 // Row types are type-only imports (erased — no server code in the client bundle).
 
 import type { UIMessage } from "@tanstack/ai-react";
+import type { ConnectSchema } from "#/duckdb/connect";
 import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -32,6 +33,12 @@ export function toolResultToCanvas(
 			};
 		case "list_tables":
 			return { kind: "table-list", tables: (result as TableSummary[]) ?? [] };
+		case "connect":
+			// null/undefined → leave the canvas unchanged (e.g. a failed connect
+			// surfaces its error in the chat rail, not as an empty preview).
+			return result
+				? { kind: "schema-preview", schema: result as ConnectSchema }
+				: null;
 		default:
 			// teach / replay / unknown: no canvas projection.
 			return null;

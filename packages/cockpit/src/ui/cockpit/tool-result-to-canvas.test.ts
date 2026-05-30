@@ -41,6 +41,36 @@ describe("toolResultToCanvas", () => {
 		expect(state?.kind).toBe("table-list");
 	});
 
+	it("maps connect to a schema-preview canvas", () => {
+		const schema = {
+			sourceKind: "file" as const,
+			source: "/data/people.csv",
+			tables: [
+				{
+					name: "people.csv",
+					rowCountEstimate: 3,
+					columns: [
+						{
+							name: "id",
+							position: 1,
+							sourceType: "BIGINT",
+							nullable: false,
+							sampleValues: [1, 2, 3],
+						},
+					],
+				},
+			],
+		};
+		expect(toolResultToCanvas("connect", schema)).toEqual({
+			kind: "schema-preview",
+			schema,
+		});
+	});
+
+	it("returns null for a missing connect result (canvas unchanged)", () => {
+		expect(toolResultToCanvas("connect", null)).toBeNull();
+	});
+
 	it("returns null for write/compute tools (canvas unchanged)", () => {
 		expect(toolResultToCanvas("teach", { overlay_id: "o1" })).toBeNull();
 		expect(toolResultToCanvas("replay", {})).toBeNull();

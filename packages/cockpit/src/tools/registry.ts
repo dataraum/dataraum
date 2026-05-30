@@ -5,6 +5,7 @@
 // Read tools (list_*) run unattended; write/compute tools (teach, replay)
 // declare `needsApproval` and are gated by the user in the UI before they run.
 
+import { connectTool } from "./connect";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
 import { probeTool } from "./probe";
@@ -17,6 +18,7 @@ export const tools = [
 	listTablesTool,
 	runSqlTool,
 	probeTool,
+	connectTool,
 	teachTool,
 	replayTool,
 ] as const;

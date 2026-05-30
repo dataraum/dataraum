@@ -36,7 +36,7 @@ ENV DATARAUM_CONFIG_PATH=/opt/dataraum/config
 # don't need to provision a writable home — the path is immutable, predictable,
 # and pre-populated at build time. Pattern adapted from web-app/roboduck.
 RUN groupadd -r dataraum && useradd -r -g dataraum -u 1001 dataraum && \
-    mkdir -p /var/lib/dataraum/lake /var/lib/dataraum/sources /opt/dataraum/duckdb-extensions && \
+    mkdir -p /var/lib/dataraum/sources /opt/dataraum/duckdb-extensions && \
     chown -R dataraum:dataraum /app /opt/dataraum /var/lib/dataraum
 
 USER dataraum

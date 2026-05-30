@@ -40,14 +40,13 @@ while :; do
     | weed shell -master="$SEAWEEDFS_MASTER" -filer="$SEAWEEDFS_FILER" 2>&1 || true)
   echo "$out"
 
-  if echo "$S3_BUCKET" | grep -q .; then
-    # Confirm the bucket now exists (idempotent + robust to create's exit code).
-    listed=$(echo 's3.bucket.list' \
-      | weed shell -master="$SEAWEEDFS_MASTER" -filer="$SEAWEEDFS_FILER" 2>&1 || true)
-    if echo "$listed" | grep -q "$S3_BUCKET"; then
-      echo "Bucket '$S3_BUCKET' ready"
-      break
-    fi
+  # Confirm the bucket now exists — robust to s3.bucket.create's suppressed
+  # exit code and idempotent if it already existed.
+  listed=$(echo 's3.bucket.list' \
+    | weed shell -master="$SEAWEEDFS_MASTER" -filer="$SEAWEEDFS_FILER" 2>&1 || true)
+  if echo "$listed" | grep -q "$S3_BUCKET"; then
+    echo "Bucket '$S3_BUCKET' ready"
+    break
   fi
 
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then

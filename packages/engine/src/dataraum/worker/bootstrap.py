@@ -41,7 +41,7 @@ def bootstrap_worker_substrate() -> ConnectionManager:
     initializes its ``ws_<id>`` schema.
     """
     settings = get_settings()
-    bootstrap_lake(settings.ducklake_catalog_url, str(settings.ducklake_data_path))
+    bootstrap_lake(settings.ducklake_catalog_url, settings.ducklake_data_path)
 
     # bootstrap_lake set the process-wide DuckLake anchor. If anything after it
     # fails, release the anchor (and any partially-opened manager) so a

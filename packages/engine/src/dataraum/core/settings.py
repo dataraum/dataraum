@@ -64,9 +64,9 @@ class Settings(BaseSettings):
     # there is no local-filesystem lake in production. These are plain env-var
     # fields validated through this same seam (the DB password already lives in
     # ``database_url``; the S3 key is no more sensitive). The test harness
-    # bootstraps DuckLake against a local tmp DATA_PATH instead of standing up an
-    # object store (the ``s3://`` guard in ``server/storage.bootstrap_lake``), so
-    # conftest supplies placeholder values to satisfy this contract. ---
+    # bootstraps DuckLake against a local tmp DATA_PATH and stubs
+    # ``apply_s3_secret`` (``_stub_s3_secret`` in conftest) rather than standing
+    # up an object store, so conftest supplies placeholders for these. ---
     s3_endpoint: str  # host:port, no scheme (DuckDB ENDPOINT form)
     s3_access_key_id: str
     s3_secret_access_key: SecretStr

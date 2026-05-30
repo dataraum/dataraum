@@ -32,11 +32,15 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 	DATARAUM_WORKSPACE_ID:
 		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
 	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "/var/lib/dataraum/lake",
+		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
 	DUCKLAKE_CATALOG_URL:
 		process.env.DUCKLAKE_CATALOG_URL ??
 		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
 	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
+	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
+	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
+	S3_SECRET_ACCESS_KEY:
+		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
 };
 for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
 	if (!process.env[k]) process.env[k] = v;

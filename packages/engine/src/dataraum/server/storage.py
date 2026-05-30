@@ -189,8 +189,8 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
 
     Idempotent: subsequent calls with the anchor already open are a no-op.
 
-    Fails loud if the Postgres catalog is unreachable, ``data_path`` is not
-    writable, or the ATTACH fails.
+    Fails loud if the Postgres catalog is unreachable, the S3 bucket is
+    inaccessible, or the ATTACH fails.
 
     Args:
         catalog_url: Postgres connection URL for the DuckLake catalog

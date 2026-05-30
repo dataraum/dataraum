@@ -50,4 +50,4 @@ docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
 open http://localhost:3000                                          # cockpit (run dev outside docker for hot reload)
 ```
 
-Design docs → Confluence (space DD). Active work → Jira (DAT-*).
+Settled architecture decisions → `docs/adr/` (short, git-tracked). Long-form design docs → Confluence (space DD). Active work → Jira (DAT-*).

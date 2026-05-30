@@ -14,7 +14,13 @@ export const meta = {
 //   { id, title, recommendation, assumptions[], contract_dependencies[], size,
 //     test_strategy, redirect?: "lead's course-correction" }
 // Pass as a real JSON array, NOT a stringified list.
-const LANES = Array.isArray(args) ? args : (args?.lanes ?? [])
+// Tolerate args arriving as an array, an object with .lanes, or a JSON string
+// (the saved-workflow `name` launch path can deliver args JSON-encoded).
+let _args = args
+if (typeof _args === 'string') {
+  try { _args = JSON.parse(_args) } catch { _args = [] }
+}
+const LANES = Array.isArray(_args) ? _args : (_args?.lanes ?? [])
 if (!LANES.length) {
   log('team-build: no approved lanes in args — pass args: [<approved approach>, ...]')
   return { error: 'no lanes', results: [] }

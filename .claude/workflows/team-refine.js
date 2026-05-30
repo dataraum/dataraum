@@ -11,7 +11,13 @@ export const meta = {
 // args = array of tasks to refine. Each item:
 //   { id: "DAT-391", title: "...", contract?: "path@sha", notes?: "lead's framing" }
 // Pass as a real JSON array in the Workflow call's `args`, NOT a stringified list.
-const TASKS = Array.isArray(args) ? args : (args?.tasks ?? [])
+// Tolerate args arriving as an array, an object with .tasks, or a JSON string
+// (the saved-workflow `name` launch path can deliver args JSON-encoded).
+let _args = args
+if (typeof _args === 'string') {
+  try { _args = JSON.parse(_args) } catch { _args = [] }
+}
+const TASKS = Array.isArray(_args) ? _args : (_args?.tasks ?? [])
 if (!TASKS.length) {
   log('team-refine: no tasks in args — pass args: [{id, title, ...}, ...]')
   return { error: 'no tasks', approaches: [] }

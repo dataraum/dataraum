@@ -26,6 +26,7 @@
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
+import { applyS3Secret } from "./s3-secret";
 import { buildDucklakeAttachSql } from "./sql-escape";
 
 // Alias the DuckLake catalog is ATTACHed under. Matches the engine's
@@ -63,6 +64,9 @@ async function openConnection(): Promise<DuckDBConnection> {
 		// surface a real "not found" below if it truly isn't installed.
 	}
 	await conn.run("LOAD ducklake");
+	// The lake DATA_PATH is an `s3://` URI; register httpfs + the S3 secret
+	// before the ATTACH (DuckLake resolves DATA_PATH eagerly). DAT-388.
+	await applyS3Secret(conn);
 	await conn.run(attachSql);
 	return conn;
 }

@@ -48,13 +48,30 @@ class Settings(BaseSettings):
     # ``postgresql://`` libpq form) and a parsed DSN type would re-serialize them.
     database_url: str
     ducklake_catalog_url: str
-    ducklake_data_path: Path
+    # ``str``, NOT ``Path``: this is a DuckLake DATA_PATH, an ``s3://bucket/prefix``
+    # URI in production (DAT-388). ``Path`` collapses ``s3://`` to ``s3:/`` and
+    # drops the trailing slash, corrupting the URI; ``str`` carries it verbatim.
+    ducklake_data_path: str
     # Stays ``str`` (not ``UUID``): the engine resolves the schema name from it
     # and dev/test use stable non-UUID ids (e.g. "test").
     dataraum_workspace_id: str
 
     # --- LLM (required) ---
     anthropic_api_key: SecretStr
+
+    # --- Object store (DAT-388; required, like the DB + LLM creds). The engine
+    # lake lives on an S3-compatible object store — DATA_PATH is an ``s3://`` URI;
+    # there is no local-filesystem lake in production. These are plain env-var
+    # fields validated through this same seam (the DB password already lives in
+    # ``database_url``; the S3 key is no more sensitive). The test harness
+    # bootstraps DuckLake against a local tmp DATA_PATH instead of standing up an
+    # object store (the ``s3://`` guard in ``server/storage.bootstrap_lake``), so
+    # conftest supplies placeholder values to satisfy this contract. ---
+    s3_endpoint: str  # host:port, no scheme (DuckDB ENDPOINT form)
+    s3_access_key_id: str
+    s3_secret_access_key: SecretStr
+    s3_region: str = "us-east-1"
+    s3_use_ssl: bool = True
 
     # --- DuckLake tuning (defaulted; see server/storage.py) ---
     ducklake_pg_pool_max: int = 64

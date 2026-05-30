@@ -384,10 +384,20 @@ class ConnectionManager:
 
         # Lazy import: avoids pulling the DuckLake bootstrap surface into
         # module-load for workspace-only configurations.
-        from dataraum.server.storage import LAKE_CATALOG_ALIAS, connect_session
+        from dataraum.server.storage import (
+            LAKE_CATALOG_ALIAS,
+            apply_s3_secret,
+            connect_session,
+        )
 
         raw_conn = connect_session()
         raw_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
+        # The lake DATA_PATH is an ``s3://`` URI; this connection reads/writes
+        # lake parquet, so it needs the object-store secret too. DuckDB's secret
+        # manager is per-instance and this shares the anchor's named in-memory
+        # instance, so the secret is likely already present — but we register it
+        # explicitly (idempotent) rather than depend on that inheritance.
+        apply_s3_secret(raw_conn)
 
         qualified = f"{LAKE_CATALOG_ALIAS}.typed"
         raw_conn.execute(f"USE {qualified}")

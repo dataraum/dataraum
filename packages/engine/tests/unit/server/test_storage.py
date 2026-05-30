@@ -7,6 +7,8 @@ import pytest
 from dataraum.server.storage import (
     LAKE_CATALOG_ALIAS,
     LAKE_DB_NAME,
+    S3_SECRET_NAME,
+    _build_s3_secret_sql,
     _pg_url_to_libpq,
     bootstrap_lake,
     connect_session,
@@ -42,6 +44,56 @@ class TestPgUrlToLibpq:
         result = _pg_url_to_libpq("postgresql://alice:o%27brien@db/mydb")
         # single quote present in password → quoted + backslash-escaped
         assert "password='o\\'brien'" in result
+
+
+class TestBuildS3SecretSql:
+    """The object-store ``CREATE OR REPLACE SECRET`` builder (DAT-388).
+
+    Pure string surgery — no DuckDB connection, no network — so the SQL shape,
+    escaping, and the ``USE_SSL`` toggle are verified offline (we don't test
+    DuckLake-over-S3 itself; that's DuckLake's concern).
+    """
+
+    def test_well_formed_secret_for_clean_values(self):
+        sql = _build_s3_secret_sql(
+            access_key_id="dataraum",
+            secret_access_key="dataraum-s3-secret",
+            endpoint="seaweedfs:8333",
+            region="us-east-1",
+            use_ssl=False,
+        )
+        assert sql == (
+            f"CREATE OR REPLACE SECRET {S3_SECRET_NAME} ("
+            "TYPE s3, "
+            "KEY_ID 'dataraum', "
+            "SECRET 'dataraum-s3-secret', "
+            "ENDPOINT 'seaweedfs:8333', "
+            "REGION 'us-east-1', "
+            "URL_STYLE 'path', "
+            "USE_SSL false"
+            ")"
+        )
+
+    def test_use_ssl_true_renders_true(self):
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="s",
+            endpoint="s3.example.com:443",
+            region="eu-central-1",
+            use_ssl=True,
+        )
+        assert "USE_SSL true" in sql
+
+    def test_escapes_single_quote_in_secret(self):
+        # A secret containing a single quote must not break out of the literal.
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="pa'ss",
+            endpoint="h:8333",
+            region="us-east-1",
+            use_ssl=False,
+        )
+        assert "SECRET 'pa\\'ss'" in sql
 
 
 class TestHealthProbe:

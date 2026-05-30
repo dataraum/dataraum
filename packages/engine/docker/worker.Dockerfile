@@ -41,16 +41,19 @@ RUN groupadd -r dataraum && useradd -r -g dataraum -u 1001 dataraum && \
 
 USER dataraum
 
-# Pre-install the DuckLake extension at image build time. Runtime sets
-# DUCKLAKE_SKIP_INSTALL=1 (read by server/storage.bootstrap_lake) so the cold
-# start does not hit the network — also makes air-gapped deploys work.
-# ``SET extension_directory`` makes the cache land at the known image path
-# rather than the (missing) home directory of the system user.
+# Pre-install the DuckLake + httpfs extensions at image build time. Runtime sets
+# DUCKLAKE_SKIP_INSTALL=1 (read by server/storage.bootstrap_lake AND
+# apply_s3_secret) so the cold start does not hit the network — also makes
+# air-gapped deploys work. httpfs is required to read/write the lake's parquet
+# over s3:// (DAT-388). ``SET extension_directory`` makes the cache land at the
+# known image path rather than the (missing) home directory of the system user.
 RUN /app/.venv/bin/python -c "import duckdb; \
     c = duckdb.connect(); \
     c.execute(\"SET extension_directory = '/opt/dataraum/duckdb-extensions'\"); \
     c.execute('INSTALL ducklake'); \
     c.execute('LOAD ducklake'); \
+    c.execute('INSTALL httpfs'); \
+    c.execute('LOAD httpfs'); \
     c.close()"
 
 ENV DUCKDB_EXTENSION_DIRECTORY=/opt/dataraum/duckdb-extensions

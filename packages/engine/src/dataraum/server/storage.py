@@ -1,9 +1,10 @@
 """DuckLake bootstrap and shared in-memory anchor for the FastAPI process.
 
-DuckLake stores data as parquet files on a DATA_PATH backend (local-FS in the
-spine; rustfs/S3 deferred to post-spine) with metadata in a Postgres catalog
-database. DuckDB clients access DuckLake by ATTACHing the catalog as an
-external database.
+DuckLake stores data as parquet files on an object store (DATA_PATH is an
+``s3://`` URI — DAT-388) with metadata in a Postgres catalog database. DuckDB
+clients access DuckLake by ATTACHing the catalog as an external database; the
+connection must first register the S3 secret + ``httpfs`` (see
+:func:`apply_s3_secret`) so DuckLake can resolve the ``s3://`` DATA_PATH.
 
 Connection model (post-DAT-323):
 
@@ -121,6 +122,68 @@ def _escape_sql_literal(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+S3_SECRET_NAME = "dataraum_s3"
+"""Name of the DuckDB S3 secret registered on lake connections (DAT-388).
+
+Mirrors the cockpit's ``applyS3Secret`` so both sides present the same
+credentials to the same object-store endpoint. ``CREATE OR REPLACE`` makes
+registration idempotent across the anchor + every per-session connection.
+"""
+
+
+def _build_s3_secret_sql(
+    *,
+    access_key_id: str,
+    secret_access_key: str,
+    endpoint: str,
+    region: str,
+    use_ssl: bool,
+) -> str:
+    """Build the idempotent ``CREATE OR REPLACE SECRET`` for the object store.
+
+    All interpolated values are single-quoted SQL literals, so each is escaped.
+    ``URL_STYLE 'path'`` is required for non-AWS S3 (SeaweedFS/MinIO) — DuckDB
+    defaults to virtual-host style and does not auto-flip on a custom endpoint;
+    path-style is also accepted by AWS, so it is safe as a constant here.
+    """
+    return (
+        f"CREATE OR REPLACE SECRET {S3_SECRET_NAME} ("
+        "TYPE s3, "
+        f"KEY_ID '{_escape_sql_literal(access_key_id)}', "
+        f"SECRET '{_escape_sql_literal(secret_access_key)}', "
+        f"ENDPOINT '{_escape_sql_literal(endpoint)}', "
+        f"REGION '{_escape_sql_literal(region)}', "
+        "URL_STYLE 'path', "
+        f"USE_SSL {'true' if use_ssl else 'false'}"
+        ")"
+    )
+
+
+def apply_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
+    """Register the object-store S3 secret + load ``httpfs`` on ``conn``.
+
+    Must run before ATTACHing a DuckLake catalog whose ``DATA_PATH`` is an
+    ``s3://`` URI (DuckLake resolves the path eagerly), on every connection that
+    reads or writes lake parquet. Idempotent (``CREATE OR REPLACE SECRET``).
+
+    Honors ``DUCKLAKE_SKIP_INSTALL`` for the ``httpfs`` install (the worker image
+    pre-bakes it), same as the ducklake extension.
+    """
+    settings = get_settings()
+    if not settings.ducklake_skip_install:
+        conn.execute("INSTALL httpfs")
+    conn.execute("LOAD httpfs")
+    conn.execute(
+        _build_s3_secret_sql(
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+            endpoint=settings.s3_endpoint,
+            region=settings.s3_region,
+            use_ssl=settings.s3_use_ssl,
+        )
+    )
+
+
 def bootstrap_lake(catalog_url: str, data_path: str) -> None:
     """Open the process-wide DuckLake anchor.
 
@@ -132,8 +195,9 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
     Args:
         catalog_url: Postgres connection URL for the DuckLake catalog
             (``postgresql://...``).
-        data_path: Filesystem path where DuckLake writes parquet files. The
-            directory must exist and be writable.
+        data_path: ``s3://`` URI where DuckLake writes parquet files. The bucket
+            must exist; the object-store secret is registered via
+            :func:`apply_s3_secret` here, before the ATTACH.
 
     Raises:
         RuntimeError: If bootstrap fails. The original DuckDB exception is
@@ -170,8 +234,8 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
         pool_max = settings.ducklake_pg_pool_max
         ext_dir = settings.duckdb_extension_directory
 
+        conn = duckdb.connect(LAKE_DB_NAME)
         try:
-            conn = duckdb.connect(LAKE_DB_NAME)
             if ext_dir:
                 # Must precede INSTALL/LOAD so DuckDB looks up the extension
                 # at the image-baked path rather than ``$HOME/.duckdb/``.
@@ -186,6 +250,10 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             # ``BEFORE`` the ATTACH for the lake's pool to inherit the values.
             conn.execute(f"SET GLOBAL pg_pool_max_connections = {pool_max}")
             conn.execute("SET GLOBAL pg_pool_enable_thread_local_cache = false")
+            # The lake DATA_PATH is an ``s3://`` URI: register the object-store
+            # secret + httpfs before the ATTACH (DuckLake resolves DATA_PATH
+            # eagerly).
+            apply_s3_secret(conn)
             conn.execute(attach_sql)
             # Smoke probe: ATTACH took effect (catalog reachable). DuckLake does
             # not expose ``information_schema``; ``duckdb_schemas()`` filtered by
@@ -201,6 +269,12 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             for layer_schema in LAKE_LAYER_SCHEMAS:
                 conn.execute(f'CREATE SCHEMA IF NOT EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"')
         except Exception as e:
+            # Don't leak the connection on a failed bootstrap: an open connection
+            # keeps the named in-memory DB (and any partial ATTACH state) alive,
+            # so a later re-bootstrap fails with "database 'lake' already exists".
+            # Relying on GC to close it is fragile (a retained reference — e.g. a
+            # test double recording call args — defers the close indefinitely).
+            conn.close()
             raise RuntimeError(
                 f"DuckLake bootstrap failed (catalog_url={catalog_url}, data_path={data_path}): {e}"
             ) from e
@@ -294,6 +368,8 @@ __all__ = [
     "LAKE_DB_NAME",
     "LAKE_CATALOG_ALIAS",
     "LAKE_LAYER_SCHEMAS",
+    "S3_SECRET_NAME",
+    "apply_s3_secret",
     "bootstrap_lake",
     "get_anchor",
     "connect_session",

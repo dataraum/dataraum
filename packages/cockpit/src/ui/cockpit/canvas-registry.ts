@@ -9,6 +9,7 @@ import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
+import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableListWidget } from "#/ui/cockpit/widgets/table-list";
 
@@ -17,4 +18,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "loading", component: LoadingWidget })
 	.register({ kind: "error", component: ErrorWidget })
 	.register({ kind: "source-list", component: SourceListWidget })
-	.register({ kind: "table-list", component: TableListWidget });
+	.register({ kind: "table-list", component: TableListWidget })
+	.register({ kind: "schema-preview", component: SchemaPreviewWidget });

@@ -34,6 +34,7 @@ describe("chat route wiring (DAT-353)", () => {
 				"list_tables",
 				"run_sql",
 				"probe",
+				"connect",
 				"teach",
 				"replay",
 			]),

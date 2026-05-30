@@ -25,4 +25,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 			expect(canvasRegistry.has(kind)).toBe(true);
 		}
 	});
+
+	it("the shared canvas registry has the schema-preview widget (DAT-381)", () => {
+		expect(canvasRegistry.has("schema-preview")).toBe(true);
+	});
 });

@@ -26,6 +26,7 @@ describe("tool registry (DAT-353)", () => {
 				"list_tables",
 				"run_sql",
 				"probe",
+				"connect",
 				"teach",
 				"replay",
 			]),
@@ -41,5 +42,6 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("list_tables")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);
 	});
 });

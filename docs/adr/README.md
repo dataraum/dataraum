@@ -33,3 +33,4 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
 - [0003 — Postgres schema ownership: engine `ws_<id>`, cockpit `cockpit_db`, never shared](./0003-postgres-schema-ownership.md)
 - [0004 — Agent-tier boundary: agentic LLM in the cockpit, durable pipeline in the engine](./0004-agent-tier-boundary.md)
 - [0005 — Knowledge lives where its consumer reads it (memory / ADRs / Confluence / Jira)](./0005-knowledge-management.md)
+- [0006 — Team-lead operating model: parallel lanes, gates at the intent layer](./0006-team-lead-operating-model.md)

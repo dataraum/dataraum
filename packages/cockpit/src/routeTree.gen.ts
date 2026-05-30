@@ -11,8 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
+import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
@@ -30,14 +30,14 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiChatRoute = ApiChatRouteImport.update({
-  id: '/api/chat',
-  path: '/api/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
   id: '/api/run-sql',
   path: '/api/run-sql',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChatRoute = ApiChatRouteImport.update({
+  id: '/api/chat',
+  path: '/api/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appSettingsRoute = appSettingsRouteImport.update({
@@ -180,18 +180,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/chat': {
-      id: '/api/chat'
-      path: '/api/chat'
-      fullPath: '/api/chat'
-      preLoaderRoute: typeof ApiChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/run-sql': {
       id: '/api/run-sql'
       path: '/api/run-sql'
       fullPath: '/api/run-sql'
       preLoaderRoute: typeof ApiRunSqlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/chat': {
+      id: '/api/chat'
+      path: '/api/chat'
+      fullPath: '/api/chat'
+      preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/settings': {

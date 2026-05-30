@@ -64,18 +64,22 @@ jobs:
                   echo "$dbs" | grep -qx "$DUCKLAKE_CATALOG_DB"
                   echo "$dbs" | grep -qx "$COCKPIT_DB"
 
-            - name: Verify dataraum_lake mounted writable on both containers
+            - name: Verify the lake bucket exists in the object store
               run: |
-                  # Both engine-worker and cockpit must mount the shared lake
-                  # volume: cockpit writes user-uploaded files there (add_source),
-                  # the engine reads them via DuckLake. Tests both individually +
-                  # the cross-container handoff.
-                  docker compose exec -T engine-worker sh -c \
-                      'touch /var/lib/dataraum/lake/.cp_smoke && rm /var/lib/dataraum/lake/.cp_smoke'
-                  docker compose exec -T cockpit sh -c \
-                      'echo cockpit_wrote > /var/lib/dataraum/lake/.handoff'
-                  test "$(docker compose exec -T engine-worker cat /var/lib/dataraum/lake/.handoff | tr -d '\r\n')" = "cockpit_wrote"
-                  docker compose exec -T cockpit rm /var/lib/dataraum/lake/.handoff
+                  set -euo pipefail
+                  # The lake is on S3 now (DAT-388) — no shared filesystem. The
+                  # engine ATTACHing the s3:// lake at bootstrap is already proven
+                  # by the Status=Running gate above: bootstrap_lake loads httpfs,
+                  # registers the S3 secret, and ATTACHes the s3:// DATA_PATH, all
+                  # fail-loud, so a broken endpoint/secret/bucket means the worker
+                  # never reports Running. Here we additionally assert seaweedfs-init
+                  # created the bucket both sides point their lake path at.
+                  # shellcheck disable=SC1091
+                  . ./.env
+                  buckets=$(docker compose exec -T seaweedfs sh -c \
+                      'echo "s3.bucket.list" | weed shell -master=localhost:9333 -filer=localhost:8888' 2>/dev/null)
+                  echo "Buckets:"; echo "$buckets"
+                  echo "$buckets" | grep -q "$S3_BUCKET"
 
             - name: Set up Bun (for drizzle-kit pull drift check)
               uses: oven-sh/setup-bun@v2

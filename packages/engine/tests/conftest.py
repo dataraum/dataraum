@@ -31,6 +31,13 @@ os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
 os.environ["TEMPORAL_HOST"] = "localhost:7233"
 os.environ["TEMPORAL_NAMESPACE"] = "default"
 os.environ["TEMPORAL_TASK_QUEUE"] = "dataraum-pipeline"
+# DAT-388: object-store creds are required Settings now (the lake lives on the
+# object store in production). Tests bootstrap DuckLake against a local tmp
+# DATA_PATH and stub apply_s3_secret (see _stub_s3_secret), so these never reach
+# a real store — just placeholders to satisfy the boot-time contract.
+os.environ["S3_ENDPOINT"] = "test-s3:8333"
+os.environ["S3_ACCESS_KEY_ID"] = "test-access-key"
+os.environ["S3_SECRET_ACCESS_KEY"] = "test-secret-key"
 
 import duckdb  # noqa: E402
 import pytest  # noqa: E402
@@ -249,6 +256,23 @@ def lake_data_path(tmp_path_factory: pytest.TempPathFactory) -> str:
     anchor down and re-ATTACH need this canonical path to restore.
     """
     return str(tmp_path_factory.mktemp("ducklake_data"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _stub_s3_secret() -> Generator[None, None, None]:
+    """Stub the object-store secret/``httpfs`` registration for the whole suite.
+
+    Production lake DATA_PATH is an ``s3://`` URI and :func:`bootstrap_lake`
+    unconditionally registers the S3 secret before ATTACH. Tests bootstrap
+    DuckLake against a local tmp DATA_PATH — we do not stand up an object store
+    (DuckLake-over-S3 is DuckLake's concern, not ours to test) — so the real
+    secret + ``INSTALL httpfs`` step is replaced with a no-op. This is the one
+    place the suite acknowledges it has no object store.
+    """
+    from unittest.mock import patch
+
+    with patch("dataraum.server.storage.apply_s3_secret"):
+        yield
 
 
 @pytest.fixture(scope="session")

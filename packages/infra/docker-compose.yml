@@ -38,6 +38,51 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Object store — SeaweedFS S3 (DAT-388) ───────────────────────────────
+  # The DuckLake lake lives on S3 now: the engine writes parquet to the bucket
+  # and the cockpit reads it (both via DuckDB httpfs + an S3 secret). Dev runs a
+  # single-node SeaweedFS with the S3 gateway open (anonymous) — the credentials
+  # the engine/cockpit present are accepted-but-unverified locally; prod uses a
+  # real object store with real IAM. EPHEMERAL by design: no named volume, so
+  # `-dir=/data` lives on the container layer and is wiped on recreate (like the
+  # DB is re-seeded), which is why the bucket is (re)created by seaweedfs-init.
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    # One process: master (:9333) + volume (:8080) + filer (:8888) + S3 (:8333).
+    # -ip advertises the compose service name so internal addressing resolves.
+    command: server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0 -filer -s3
+    ports:
+      # S3 API, bound 0.0.0.0 (no 127.0.0.1 prefix — see compose-ports gotcha)
+      # so `sbx ports --publish 8333` can reach it from the host.
+      - "8333:8333"
+    healthcheck:
+      # Probe the FILER (:8888), NOT the S3 root (:8333): the S3 endpoint returns
+      # 403 even when healthy, which would hang `up --wait`. The filer is the
+      # readiness signal the S3 gateway + bucket ops actually depend on.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8888/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 30
+
+  # One-shot: create the lake bucket once the gateway is healthy, then exit.
+  # The engine + cockpit gate on its successful completion (SeaweedFS does not
+  # reliably auto-create buckets), mirroring temporal-create-namespace.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:latest
+    restart: on-failure:5
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-dataraum-lake}
+      SEAWEEDFS_MASTER: seaweedfs:9333
+      SEAWEEDFS_FILER: seaweedfs:8888
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-bucket.sh
+
   # ── Temporal (DAT-344) ──────────────────────────────────────────────────
   # Adapted from temporalio/samples-server compose/docker-compose-postgres.yml
   # (the canonical non-deprecated path — temporalio/auto-setup is retired). The
@@ -148,10 +193,20 @@ services:
         condition: service_healthy
       temporal-create-namespace:
         condition: service_completed_successfully
+      seaweedfs-init:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
-      DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
+      # Lake parquet lives on the object store now (DAT-388). s3:// URI — must
+      # match the cockpit's DATARAUM_LAKE_PATH byte-for-byte. S3 creds are plain
+      # env (the single source is .env), same posture as DATABASE_URL above.
+      DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/lake
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -159,7 +214,8 @@ services:
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dataraum-pipeline}
     volumes:
-      - dataraum_lake:/var/lib/dataraum/lake
+      # No lake volume — the lake is on the object store now (DAT-388). The
+      # sources bind-mount stays until ingest moves to s3:// (DAT-389).
       - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
       - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
 
@@ -177,6 +233,8 @@ services:
       # the worker heartbeat before the drift check.
       engine-worker:
         condition: service_started
+      seaweedfs-init:
+        condition: service_completed_successfully
     environment:
       # cockpit_db — TanStack Start side of the substrate. Created at
       # postgres first-boot by init-databases.sh. Holds workspaces
@@ -191,11 +249,17 @@ services:
       # client's search_path resolution. Must match what the engine
       # was bootstrapped with or drizzle pulls from the wrong schema.
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
-      # Mounted shared lake volume — Phase 2's add_source wizard writes
-      # uploaded user files here from TS (Node fs); the engine reads
-      # them via DuckLake from the same path. Same volume mounted on
-      # both containers; same in-container path for symmetry.
-      DATARAUM_LAKE_PATH: /var/lib/dataraum/lake
+      # Lake DATA_PATH on the object store (DAT-388). s3:// URI — must match the
+      # engine-worker's DUCKLAKE_DATA_PATH byte-for-byte (the cockpit ATTACHes
+      # the same lake READ_ONLY). Uploads will write to the bucket via @aws-lite
+      # (DAT-386); there is no shared filesystem. S3 creds are plain env (single
+      # source is .env), same posture as the URLs below.
+      DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/lake
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       # DuckLake catalog (DAT-367) — the cockpit ATTACHes the same DuckLake
       # catalog the engine-worker owns, READ_ONLY, for the interactive read
       # verbs (run_sql). Same value as the engine-worker's DUCKLAKE_CATALOG_URL
@@ -215,10 +279,7 @@ services:
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
     volumes:
-      # Writable — the cockpit writes uploaded files into the lake
-      # directory; the engine container reads them through the same
-      # volume mounted at the same path. See DATARAUM_LAKE_PATH above.
-      - dataraum_lake:/var/lib/dataraum/lake
+      # No lake volume — the lake is on the object store now (DAT-388).
       # Read-only config (DAT-361) — see DATARAUM_CONFIG_PATH above.
       - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
     ports:
@@ -231,4 +292,3 @@ services:
 
 volumes:
   postgres_data:
-  dataraum_lake:

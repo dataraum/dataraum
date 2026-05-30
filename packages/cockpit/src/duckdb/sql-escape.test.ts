@@ -55,12 +55,12 @@ describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 			buildDucklakeAttachSql(
 				"lake",
 				"postgresql://dataraum:dataraum@postgres:5432/lake_catalog",
-				"/var/lib/dataraum/lake",
+				"s3://dataraum-lake/lake",
 			),
 		).toBe(
 			"ATTACH 'ducklake:postgres:dbname=lake_catalog host=postgres port=5432 " +
 				"user=dataraum password=dataraum' AS lake " +
-				"(DATA_PATH '/var/lib/dataraum/lake', READ_ONLY)",
+				"(DATA_PATH 's3://dataraum-lake/lake', READ_ONLY)",
 		);
 	});
 

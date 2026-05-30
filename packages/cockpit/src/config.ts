@@ -19,8 +19,10 @@ const ConfigSchema = z.object({
 	// Plain non-empty string (not .uuid()) to match the engine, which accepts
 	// stable non-UUID ids (e.g. "test"); both sides must agree on the value.
 	dataraumWorkspaceId: z.string().min(1),
-	// DuckLake data path — the filesystem dir where DuckLake writes parquet.
-	// The engine writes here; the cockpit ATTACHes it READ_ONLY (DAT-367).
+	// DuckLake DATA_PATH — the `s3://bucket/prefix` URI where DuckLake writes
+	// parquet (DAT-388). The engine writes here; the cockpit ATTACHes it
+	// READ_ONLY (DAT-367). Must be byte-identical to the engine's value or the
+	// reader ATTACHes a different prefix than the writer wrote.
 	dataraumLakePath: z.string().min(1),
 	// DuckLake catalog (Postgres) URL — the metadata DB the cockpit ATTACHes
 	// to read the lake (DAT-367). The engine bootstraps + owns it; the cockpit
@@ -30,6 +32,18 @@ const ConfigSchema = z.object({
 
 	// --- LLM (required) ---
 	anthropicApiKey: z.string().min(1),
+
+	// --- Object store (DAT-388; required, like the engine's S3 settings). The
+	// lake DATA_PATH is an `s3://` URI, so the cockpit's READ_ONLY reader needs
+	// httpfs + an S3 secret (see `duckdb/s3-secret.ts`) to resolve the parquet.
+	// Creds are plain env vars validated through this seam — same as every other
+	// secret here (the DB password is in the URLs above), NOT `credentials.ts`
+	// (that is the per-source-DB exception). endpoint is host:port, no scheme. ---
+	s3Endpoint: z.string().min(1),
+	s3Region: z.string().min(1),
+	s3UseSsl: z.boolean(),
+	s3AccessKeyId: z.string().min(1),
+	s3SecretAccessKey: z.string().min(1),
 
 	// --- Temporal (optional for slice-1: the cockpit Temporal client lands in
 	// E4 (DAT-344), which flips these to required; no Temporal service yet) ---
@@ -51,6 +65,13 @@ function loadConfig(): Config {
 		dataraumLakePath: process.env.DATARAUM_LAKE_PATH,
 		ducklakeCatalogUrl: process.env.DUCKLAKE_CATALOG_URL,
 		anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+		s3Endpoint: process.env.S3_ENDPOINT,
+		s3Region: process.env.S3_REGION ?? "us-east-1",
+		// Env is the string "true"/"false"; default secure (true) when unset.
+		// (z.coerce.boolean would turn the string "false" into `true`.)
+		s3UseSsl: (process.env.S3_USE_SSL ?? "true") === "true",
+		s3AccessKeyId: process.env.S3_ACCESS_KEY_ID,
+		s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,

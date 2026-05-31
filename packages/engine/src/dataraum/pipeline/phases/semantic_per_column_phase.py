@@ -17,7 +17,7 @@ from types import ModuleType
 from sqlalchemy import delete, func, select
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.semantic.induction import induce_adhoc_concepts
+from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
@@ -123,13 +123,18 @@ class SemanticPerColumnPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Resolve config, induce ``_adhoc`` concepts on cold start, then ground.
+        """Resolve config, assert the ``_adhoc`` frame exists, then ground.
 
-        A thin composer (DAT-376): the two LLM steps live as module-level
-        functions — :func:`induce_adhoc_concepts` (cold-start ontology) and
-        :func:`ground_columns` (per-column annotation). The ``_adhoc`` gate
-        stays here at the call site; the connect/frame relocation (DAT-377/378)
-        will move the induction CALL upstream and leave this phase grounding only.
+        Grounding-only (DAT-382): induction has left the engine for the cockpit
+        agent tier (the ``frame`` stage writes ``concept`` overlay rows before
+        ``add_source`` runs). This phase no longer bootstraps a cold-start
+        ontology; it grounds columns against the concepts the frame declared.
+
+        On a cold-start ``_adhoc`` workspace the ontology can only come from
+        those frame-written concept rows. If none exist, grounding would map
+        every column against an empty concept set — so we FAIL LOUD here rather
+        than silently produce concept-less annotations. Journey-layer gating
+        (stopping the user before they reach ``add_source``) is DAT-378/356.
         """
         table_ids = self._typed_table_ids(ctx)
         if not table_ids:
@@ -156,19 +161,18 @@ class SemanticPerColumnPhase(BasePhase):
                 "No vertical configured. Set 'vertical' in config/phases/semantic.yaml."
             )
 
-        # Cold-start ontology induction: _adhoc with no concepts needs an
-        # induced ontology before columns can map to concepts. (Moved here from
-        # the monolithic phase — concept mapping is now per-column.)
+        # Cold-start fail-loud (DAT-382): an _adhoc workspace's ontology comes
+        # only from the cockpit frame stage's concept overlay rows. Grounding
+        # against zero concepts is a silent no-op, so refuse it with a clear
+        # error pointing at the missing upstream step.
         if ontology == "_adhoc":
-            induction = induce_adhoc_concepts(
-                session=ctx.session,
-                config=config,
-                provider=provider,
-                renderer=renderer,
-                table_ids=table_ids,
-            )
-            if not induction.success:
-                return PhaseResult.failed(induction.error or "Ontology induction failed")
+            adhoc_ontology = OntologyLoader().load("_adhoc")
+            if adhoc_ontology is None or not adhoc_ontology.concepts:
+                return PhaseResult.failed(
+                    "No _adhoc concepts found — grounding an _adhoc workspace requires the "
+                    "frame stage to declare concepts first (cockpit `frame` writes them as "
+                    "`concept` overlay rows). Run frame before add_source."
+                )
 
         grounding = ground_columns(
             session=ctx.session,

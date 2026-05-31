@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
@@ -28,6 +29,11 @@ const appRouteRoute = appRouteRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUploadRoute = ApiUploadRouteImport.update({
+  id: '/api/upload',
+  path: '/api/upload',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
@@ -84,6 +90,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/upload': typeof ApiUploadRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -96,6 +103,7 @@ export interface FileRoutesByTo {
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/upload': typeof ApiUploadRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -110,6 +118,7 @@ export interface FileRoutesById {
   '/(app)/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/upload': typeof ApiUploadRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -124,6 +133,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/chat'
     | '/api/run-sql'
+    | '/api/upload'
     | '/workspace/$wsId'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/chat'
     | '/api/run-sql'
+    | '/api/upload'
     | '/workspace/$wsId'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -149,6 +160,7 @@ export interface FileRouteTypes {
     | '/(app)/settings'
     | '/api/chat'
     | '/api/run-sql'
+    | '/api/upload'
     | '/(app)/workspace/$wsId'
     | '/(app)/workspace/$wsId/cockpit'
     | '/(app)/workspace/$wsId/governance'
@@ -162,6 +174,7 @@ export interface RootRouteChildren {
   appRouteRoute: typeof appRouteRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
+  ApiUploadRoute: typeof ApiUploadRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -178,6 +191,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/upload': {
+      id: '/api/upload'
+      path: '/api/upload'
+      fullPath: '/api/upload'
+      preLoaderRoute: typeof ApiUploadRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/run-sql': {
@@ -286,6 +306,7 @@ const rootRouteChildren: RootRouteChildren = {
   appRouteRoute: appRouteRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
+  ApiUploadRoute: ApiUploadRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

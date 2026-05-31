@@ -13,6 +13,14 @@ vi.mock("#/duckdb/probe", () => ({
 	probe: probeMock,
 	SUPPORTED_BACKENDS: ["postgres", "mysql"],
 }));
+// connectFile imports s3-secret, which loads `#/config` at module top. Mock it
+// at the same boundary so this unit needs no real env; the actual s3:// secret
+// registration is exercised in connect.integration (DAT-386).
+vi.mock("#/duckdb/s3-secret", () => ({ applyS3Secret: vi.fn() }));
+// connect.ts itself reads `#/config` (config.s3Bucket) to validate the single
+// allowed `s3://<bucket>/<key>` shape. Mock it so the unit needs no real env and
+// the bucket the validator allows is deterministic (DAT-386). MUST use `#/`.
+vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 
 import {
 	ConnectSchema,
@@ -21,7 +29,10 @@ import {
 	groupInformationSchema,
 	mapDescribeToTable,
 	readerForPath,
+	validateBucketS3Path,
 } from "./connect";
+
+const BUCKET = "dataraum-lake";
 
 describe("collectSampleValues", () => {
 	it("dedupes, drops nulls/undefined, and caps", () => {
@@ -56,6 +67,63 @@ describe("readerForPath", () => {
 
 	it("throws on an unsupported extension", () => {
 		expect(() => readerForPath("/data/x.xlsx")).toThrow(/Unsupported/);
+	});
+});
+
+describe("validateBucketS3Path (DAT-386 arbitrary-file-read hardening)", () => {
+	// The ONLY accepted shape is `s3://<configured-bucket>/<key>`. Everything
+	// else is an arbitrary container-FS read or a wrong-bucket read and must be
+	// refused — the same rule the tool's zod superRefine and connectFile enforce.
+	it.each([
+		["/etc/passwd", "absolute local path"],
+		["/app/.env", "absolute local secrets path"],
+		["../foo.csv", "relative traversal"],
+		["file:///etc/passwd", "file:// scheme"],
+		["foo.csv", "bare filename"],
+		["s3://other-bucket/x.csv", "a different bucket"],
+		["s3://k:s@dataraum-lake/x.csv", "cred-in-URL form"],
+		["s3://dataraum-lake", "bucket with no key"],
+		["s3://dataraum-lake/", "bucket with empty key"],
+		["s3://dataraum-lake:8333/x.csv", "bucket with a port"],
+		["s3://dataraum-lake/../../etc/passwd", "key with `..` traversal"],
+		["S3://dataraum-lake/x.csv", "uppercase scheme"],
+		// Glob metacharacters would expand one connect into a ListObjectsV2 +
+		// multi-object read across the bucket (incl. the lake's `lake/` prefix).
+		["s3://dataraum-lake/*", "`*` wildcard enumerating the bucket"],
+		["s3://dataraum-lake/**/*.csv", "recursive `**/*` glob"],
+		["s3://dataraum-lake/[a-z].csv", "`[...]` character-class glob"],
+		["s3://dataraum-lake/{1,2}.csv", "`{...}` brace-expansion glob"],
+		["s3://dataraum-lake/data?.csv", "`?` single-char glob"],
+	])("REJECTS %s (%s)", (path) => {
+		expect(validateBucketS3Path(path).ok).toBe(false);
+	});
+
+	it.each([
+		[`s3://${BUCKET}/orders.csv`, "an object at the bucket root"],
+		[
+			`s3://${BUCKET}/uploads/123e4567-e89b-12d3-a456-426614174000/x.csv`,
+			"an uploads/<uuid>/<name> staged file",
+		],
+	])("ACCEPTS %s (%s)", (path) => {
+		expect(validateBucketS3Path(path).ok).toBe(true);
+	});
+});
+
+describe("connect (file path validation, DAT-386)", () => {
+	// End-to-end through the public `connect()`: a bad file path must be rejected
+	// BEFORE any DuckDB work — the zod superRefine fires first. (The s3-secret +
+	// DuckDB boundary is mocked, so an accepted path would proceed; rejection here
+	// proves the gate, not the read.)
+	it.each([
+		"/etc/passwd",
+		"/app/.env",
+		"../foo.csv",
+		"file:///etc/passwd",
+		"foo.csv",
+		"s3://other-bucket/x.csv",
+		"s3://k:s@dataraum-lake/x.csv",
+	])("rejects connect(file, path=%s)", async (path) => {
+		await expect(connect({ source_kind: "file", path })).rejects.toThrow();
 	});
 });
 

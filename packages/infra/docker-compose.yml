@@ -207,6 +207,10 @@ services:
       S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      # The lake bucket the engine's source-URI validator allows (DAT-389): a
+      # registered source URI must be s3://${S3_BUCKET}/<key> — never a local
+      # path or a foreign bucket. Same value the DATA_PATH above is built from.
+      S3_BUCKET: ${S3_BUCKET}
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

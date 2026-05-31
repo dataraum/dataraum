@@ -10,8 +10,9 @@ rely on the existing ``DATARAUM_CONFIG_PATH`` env-var override in
 :mod:`dataraum.core.config`.
 
 The former ``SOURCES_DIR`` folder-scan is gone (DAT-389): file sources are
-addressed by opaque ``s3://`` URIs read over httpfs, not by a bind-mounted
-sources directory.
+addressed by ``s3://<lake-bucket>/<key>`` URIs read over httpfs (validated by
+``dataraum.core.uri.validate_source_uri``), not by a bind-mounted sources
+directory.
 """
 
 from __future__ import annotations

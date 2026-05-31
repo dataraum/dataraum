@@ -33,62 +33,58 @@ def manager(session: Session, credential_chain: CredentialChain) -> SourceManage
     return SourceManager(session=session, credential_chain=credential_chain)
 
 
+_LAKE = "s3://dataraum-lake"
+
+
 class TestAddFileSource:
-    def test_register_csv(self, manager: SourceManager, tmp_path: Path) -> None:
-        csv = tmp_path / "bookings.csv"
-        csv.write_text("id,name,amount\n1,Alice,100\n")
+    """Registration of file sources.
 
-        result = manager.add_file_source("bookings", str(csv))
+    Post-DAT-389 a file source is an ``s3://<lake-bucket>/<key>`` URI: it is
+    validated and stored verbatim, never resolved against the local filesystem.
+    Registration does not read the source bytes (the advisory preview cannot
+    reach the object store in a unit-test process — ``apply_s3_secret`` is
+    stubbed — which is fine; columns are simply empty here).
+    """
 
-        assert result.success
+    def test_register_csv(self, manager: SourceManager, session: Session) -> None:
+        uri = f"{_LAKE}/bookings.csv"
+        result = manager.add_file_source("bookings", uri)
+
+        assert result.success, result.error
         info = result.unwrap()
         assert info.name == "bookings"
         assert info.source_type == "csv"
         assert info.status == "configured"
-        assert "id" in info.columns
+        assert info.path == uri
 
-    def test_register_parquet(self, manager: SourceManager, tmp_path: Path) -> None:
-        import duckdb
+    def test_register_parquet(self, manager: SourceManager) -> None:
+        result = manager.add_file_source("mydata", f"{_LAKE}/data.parquet")
 
-        parquet = tmp_path / "data.parquet"
-        conn = duckdb.connect()
-        conn.execute(f"COPY (SELECT 1 AS id) TO '{parquet}' (FORMAT PARQUET)")
-        conn.close()
-
-        result = manager.add_file_source("mydata", str(parquet))
-
-        assert result.success
+        assert result.success, result.error
         assert result.unwrap().source_type == "parquet"
 
-    def test_invalid_name(self, manager: SourceManager, tmp_path: Path) -> None:
-        csv = tmp_path / "x.csv"
-        csv.write_text("a\n1\n")
-
-        result = manager.add_file_source("Invalid-Name!", str(csv))
+    def test_invalid_name(self, manager: SourceManager) -> None:
+        result = manager.add_file_source("Invalid-Name!", f"{_LAKE}/x.csv")
         assert not result.success
         assert "Invalid source name" in (result.error or "")
 
-    def test_duplicate_name(self, manager: SourceManager, tmp_path: Path) -> None:
-        csv = tmp_path / "x.csv"
-        csv.write_text("a\n1\n")
-
-        manager.add_file_source("src_dup", str(csv))
-        result = manager.add_file_source("src_dup", str(csv))
+    def test_duplicate_name(self, manager: SourceManager) -> None:
+        manager.add_file_source("src_dup", f"{_LAKE}/x.csv")
+        result = manager.add_file_source("src_dup", f"{_LAKE}/x.csv")
 
         assert not result.success
         assert "already exists" in (result.error or "")
 
-    def test_opaque_s3_uri_dispatches_by_suffix(
+    def test_s3_uri_dispatches_by_suffix_and_stored_verbatim(
         self, manager: SourceManager, session: Session
     ) -> None:
-        """An ``s3://`` URI registers by suffix and is stored verbatim (DAT-389).
+        """An ``s3://<lake-bucket>/<key>`` URI registers by suffix, stored verbatim.
 
-        Registration never stats the filesystem: the URI is opaque and handed
-        to DuckDB only at import time. The advisory preview can't reach the
-        (non-existent in this unit test) object store, but that does not block
-        registration.
+        Registration never stats the filesystem: the URI is handed to DuckDB
+        only at import time. The advisory preview can't reach the (non-existent
+        in this unit test) object store, but that does not block registration.
         """
-        uri = "s3://dataraum-lake/uploads/abc123/orders.csv"
+        uri = f"{_LAKE}/uploads/abc123/orders.csv"
         result = manager.add_file_source("s3_orders", uri)
 
         assert result.success, result.error
@@ -99,49 +95,47 @@ class TestAddFileSource:
         source = session.execute(select(Source).where(Source.name == "s3_orders")).scalar_one()
         assert source.connection_config == {"path": uri}
 
-    def test_persists_to_db(self, manager: SourceManager, session: Session, tmp_path: Path) -> None:
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("persisted", str(csv))
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "/etc/passwd",
+            "/app/.env",
+            "../foo.csv",
+            "file:///etc/passwd",
+            "orders.csv",
+            "s3://other-bucket/orders.csv",
+            "s3://key:secret@dataraum-lake/orders.csv",
+        ],
+    )
+    def test_rejects_non_lake_bucket_uri(self, manager: SourceManager, bad_uri: str) -> None:
+        """A non-lake-bucket URI is a loud failure at registration, never stored."""
+        result = manager.add_file_source("dangerous", bad_uri)
+        assert not result.success
+        assert "Invalid source URI" in (result.error or "")
+
+    def test_persists_to_db(self, manager: SourceManager, session: Session) -> None:
+        manager.add_file_source("persisted", f"{_LAKE}/data.csv")
 
         source = session.execute(select(Source).where(Source.name == "persisted")).scalar_one()
         assert source.source_type == "csv"
         assert source.status == "configured"
 
-    def test_register_json(self, manager: SourceManager, tmp_path: Path) -> None:
-        import json
+    def test_register_json(self, manager: SourceManager) -> None:
+        result = manager.add_file_source("records", f"{_LAKE}/records.json")
 
-        data = [{"id": 1, "name": "Alice"}]
-        json_file = tmp_path / "records.json"
-        json_file.write_text(json.dumps(data))
-
-        result = manager.add_file_source("records", str(json_file))
-
-        assert result.success
+        assert result.success, result.error
         info = result.unwrap()
         assert info.source_type == "json"
         assert info.status == "configured"
-        assert "id" in info.columns
 
-    def test_register_jsonl(self, manager: SourceManager, tmp_path: Path) -> None:
-        import json
+    def test_register_jsonl(self, manager: SourceManager) -> None:
+        result = manager.add_file_source("jsonl_src", f"{_LAKE}/data.jsonl")
 
-        lines = [json.dumps({"x": 1}), json.dumps({"x": 2})]
-        jsonl_file = tmp_path / "data.jsonl"
-        jsonl_file.write_text("\n".join(lines))
+        assert result.success, result.error
+        assert result.unwrap().source_type == "json"
 
-        result = manager.add_file_source("jsonl_src", str(jsonl_file))
-
-        assert result.success
-        info = result.unwrap()
-        assert info.source_type == "json"
-        assert "x" in info.columns
-
-    def test_reject_unsupported_format(self, manager: SourceManager, tmp_path: Path) -> None:
-        xlsx = tmp_path / "data.xlsx"
-        xlsx.write_bytes(b"fake excel content")
-
-        result = manager.add_file_source("bad_fmt", str(xlsx))
+    def test_reject_unsupported_format(self, manager: SourceManager) -> None:
+        result = manager.add_file_source("bad_fmt", f"{_LAKE}/data.xlsx")
 
         assert not result.success
         assert "Unsupported file format" in (result.error or "")
@@ -238,11 +232,9 @@ class TestListSources:
         sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
         assert sources == []
 
-    def test_list_registered(self, manager: SourceManager, tmp_path: Path) -> None:
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("src_la", str(csv))
-        manager.add_file_source("src_lb", str(csv))
+    def test_list_registered(self, manager: SourceManager) -> None:
+        manager.add_file_source("src_la", f"{_LAKE}/data.csv")
+        manager.add_file_source("src_lb", f"{_LAKE}/data.csv")
 
         sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
         assert len(sources) == 2
@@ -250,14 +242,10 @@ class TestListSources:
         assert "src_la" in names
         assert "src_lb" in names
 
-    def test_filter_by_status(
-        self, session: Session, credential_chain: CredentialChain, tmp_path: Path
-    ) -> None:
+    def test_filter_by_status(self, session: Session, credential_chain: CredentialChain) -> None:
         manager = SourceManager(session=session, credential_chain=credential_chain)
 
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("configured_src", str(csv))
+        manager.add_file_source("configured_src", f"{_LAKE}/data.csv")
         # Manually mark one as a different status to confirm the filter.
         archived_source = Source(
             name="archived_src", source_type="csv", status="archived_pending", archived_at=None
@@ -269,13 +257,9 @@ class TestListSources:
         assert len(configured) == 1
         assert configured[0].name == "configured_src"
 
-    def test_excludes_archived(
-        self, manager: SourceManager, session: Session, tmp_path: Path
-    ) -> None:
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("active", str(csv))
-        manager.add_file_source("to_remove", str(csv))
+    def test_excludes_archived(self, manager: SourceManager, session: Session) -> None:
+        manager.add_file_source("active", f"{_LAKE}/data.csv")
+        manager.add_file_source("to_remove", f"{_LAKE}/data.csv")
         manager.remove_source("to_remove")
 
         sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
@@ -284,10 +268,8 @@ class TestListSources:
 
 
 class TestRemoveSource:
-    def test_soft_delete(self, manager: SourceManager, session: Session, tmp_path: Path) -> None:
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("removeme", str(csv))
+    def test_soft_delete(self, manager: SourceManager, session: Session) -> None:
+        manager.add_file_source("removeme", f"{_LAKE}/data.csv")
 
         result = manager.remove_source("removeme")
         assert result.success
@@ -297,10 +279,8 @@ class TestRemoveSource:
         source = session.execute(select(Source).where(Source.name == "removeme")).scalar_one()
         assert source.archived_at is not None
 
-    def test_hard_delete(self, manager: SourceManager, session: Session, tmp_path: Path) -> None:
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        manager.add_file_source("purgeme", str(csv))
+    def test_hard_delete(self, manager: SourceManager, session: Session) -> None:
+        manager.add_file_source("purgeme", f"{_LAKE}/data.csv")
 
         result = manager.remove_source("purgeme", purge=True)
         assert result.success

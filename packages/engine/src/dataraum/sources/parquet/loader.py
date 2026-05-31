@@ -29,8 +29,8 @@ def _describe_parquet(
 ) -> list[tuple[str, str, bool]]:
     """Read Parquet schema using DuckDB DESCRIBE.
 
-    ``source_uri`` is opaque (``s3://...`` or a bare local path), passed
-    verbatim to ``read_parquet`` over httpfs (DAT-389).
+    ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI passed verbatim to
+    ``read_parquet`` over httpfs (DAT-389).
 
     Returns list of (column_name, duckdb_type, nullable).
     """
@@ -61,7 +61,7 @@ class ParquetLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("Parquet source requires 'path' in configuration")
 
-        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
         source_uri = source_config.path
 
         try:
@@ -72,7 +72,10 @@ class ParquetLoader(LoaderBase):
 
             conn = duckdb.connect()
             try:
-                apply_s3_secret(conn)
+                # Defense in depth (DAT-389): disable the local filesystem on the
+                # sniff connection (after httpfs loads) so a URI that slipped past
+                # validation cannot read a local file.
+                apply_s3_secret(conn, disable_local_fs=True)
                 schema = _describe_parquet(source_uri, conn)
             finally:
                 conn.close()
@@ -111,7 +114,7 @@ class ParquetLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("Parquet source requires 'path' in configuration")
 
-        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
         source_uri = source_config.path
 
         start_time = time.time()
@@ -179,10 +182,9 @@ class ParquetLoader(LoaderBase):
         DuckDB reads Parquet natively, preserving column types.
         Column names are normalized for SQL safety.
 
-        ``source_uri`` is an opaque URI (``s3://...`` or a bare local path),
-        handed verbatim to DuckDB (DAT-389). The schema DESCRIBE runs on the
-        session ``duckdb_conn``, which already carries the object-store secret
-        (DAT-388).
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI handed verbatim to
+        DuckDB (DAT-389). The schema DESCRIBE runs on the session ``duckdb_conn``,
+        which already carries the object-store secret (DAT-388).
 
         Args:
             source_uri: URI of the Parquet file (passed straight to ``read_parquet``).

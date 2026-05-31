@@ -5,11 +5,13 @@ listing, and soft-deletion.
 
 Two source kinds:
 
-- **File sources** — a single CSV/TSV, Parquet, or JSON/JSONL file
-  addressed by an opaque URI (``s3://...`` in the container, a bare local
-  path for direct dev runs). The URI is stored verbatim in
-  ``connection_config['path']`` and handed straight to DuckDB at import
-  time (DAT-389) — never resolved against the filesystem. Registered via
+- **File sources** — a single CSV/TSV, Parquet, or JSON/JSONL file addressed
+  by an ``s3://<lake-bucket>/<key>`` URI on the object store. The URI is
+  validated (``validate_source_uri``) and stored verbatim in
+  ``connection_config['path']``, then handed straight to DuckDB at import time
+  (DAT-389) — never resolved against the filesystem. Because that URI is a
+  read primitive, registration rejects anything but the lake bucket (a local
+  path, ``file://``, a foreign bucket, a cred-in-URL form). Registered via
   `add_file_source`.
 - **Recipe sources** — yaml declaring a backend (mssql, postgres, mysql,
   sqlite) plus named SELECT queries. The recipe yaml is a local file parsed
@@ -32,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.credentials import CredentialChain
 from dataraum.core.models import Result
-from dataraum.core.uri import uri_basename, uri_suffix
+from dataraum.core.uri import uri_basename, uri_suffix, validate_source_uri
 from dataraum.sources.db_recipe import Recipe, parse_recipe
 from dataraum.storage.models import Source
 
@@ -85,16 +87,23 @@ class SourceManager:
     def add_file_source(self, name: str, path: str) -> Result[SourceInfo]:
         """Register a single-file source (CSV/TSV/Parquet/JSON/JSONL).
 
-        ``path`` is an opaque source URI (``s3://...`` in the container, a bare
-        local path for direct dev runs). It is stored verbatim and handed to
-        DuckDB at import time (DAT-389) — never resolved against the filesystem,
-        so the registering process needs no access to the source bytes.
+        ``path`` is an ``s3://<lake-bucket>/<key>`` source URI. It is validated
+        (``validate_source_uri``), stored verbatim, and handed to DuckDB at
+        import time (DAT-389) — never resolved against the filesystem, so the
+        registering process needs no access to the source bytes. Because the URI
+        is a read primitive, a non-lake-bucket value (a local path, ``file://``,
+        a foreign bucket, a cred-in-URL form) is rejected here, not stored.
         Dispatch is on the URI suffix alone. Recipe yaml paths must use
         `add_recipe_source` instead.
         """
         validation = self._validate_new_name(name)
         if validation is not None:
             return validation
+
+        try:
+            validate_source_uri(path)
+        except ValueError as e:
+            return Result.fail(str(e))
 
         suffix = uri_suffix(path)
         if suffix in RECIPE_EXTENSIONS:
@@ -134,16 +143,20 @@ class SourceManager:
 
         Opens a throwaway DuckDB connection with the object-store secret
         applied (DAT-389) so an ``s3://`` URI resolves over httpfs, then sniffs
-        the schema. Any failure (unreachable URI, no S3 access in a unit-test
-        process) is swallowed — the preview is advisory, not part of
-        registration's contract.
+        the schema. ``LocalFileSystem`` is disabled on the throwaway *after*
+        ``httpfs`` is loaded (defense in depth): even if a non-``s3://`` URI
+        slipped past ``validate_source_uri``, DuckDB refuses to read it locally.
+        Any failure (unreachable URI, no S3 access in a unit-test process) is
+        swallowed — the preview is advisory, not part of registration's contract.
         """
         try:
             conn = duckdb.connect()
             try:
                 from dataraum.server.storage import apply_s3_secret
 
-                apply_s3_secret(conn)
+                # ``disable_local_fs`` is belt-and-braces: after httpfs loads,
+                # the sniff conn refuses any local read on a slipped-past URI.
+                apply_s3_secret(conn, disable_local_fs=True)
                 return _read_file_preview(conn, source_uri)
             finally:
                 conn.close()
@@ -265,9 +278,9 @@ def _read_file_preview(
 ) -> tuple[list[str], int | None]:
     """Read column names and row count from a source URI.
 
-    ``source_uri`` is opaque (``s3://...`` or a bare local path) and is passed
-    verbatim to DuckDB over httpfs (DAT-389). ``conn`` must already carry the
-    object-store secret for an ``s3://`` URI to resolve.
+    ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI passed verbatim to
+    DuckDB over httpfs (DAT-389). ``conn`` must already carry the object-store
+    secret for the ``s3://`` URI to resolve.
     """
     safe = source_uri.replace("'", "''")
     suffix = uri_suffix(source_uri)

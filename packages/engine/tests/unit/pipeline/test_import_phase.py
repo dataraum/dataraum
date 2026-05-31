@@ -188,10 +188,12 @@ class TestImportDispatch:
 class TestSuffixDispatch:
     """File-source loader selection is driven by the URI suffix alone (DAT-389).
 
-    No filesystem stat: an opaque ``s3://`` URI (or any local path) is routed to
-    a loader purely by its extension, and the URI is handed to that loader
-    verbatim. These tests patch the loader classes so the dispatch can be
-    asserted without an object store.
+    No filesystem stat: an ``s3://<lake-bucket>/<key>`` URI is routed to a loader
+    purely by its extension, and the URI is handed to that loader verbatim. The
+    URI is first gated through ``validate_source_uri`` — anything but the lake
+    bucket fails before dispatch (see ``test_rejects_non_lake_bucket_uri``).
+    These tests patch the loader classes so the dispatch can be asserted without
+    an object store.
     """
 
     def _ctx(self, path: str) -> PhaseContext:
@@ -211,10 +213,10 @@ class TestSuffixDispatch:
     @pytest.mark.parametrize(
         ("uri", "expected_loader"),
         [
-            ("s3://bucket/uploads/abc/orders.csv", "CSVLoader"),
-            ("s3://bucket/data.parquet", "ParquetLoader"),
-            ("s3://bucket/events.jsonl", "JsonLoader"),
-            ("/local/dev/orders.tsv", "CSVLoader"),
+            ("s3://dataraum-lake/uploads/abc/orders.csv", "CSVLoader"),
+            ("s3://dataraum-lake/data.parquet", "ParquetLoader"),
+            ("s3://dataraum-lake/events.jsonl", "JsonLoader"),
+            ("s3://dataraum-lake/legacy/orders.tsv", "CSVLoader"),
         ],
     )
     def test_loader_chosen_by_suffix(self, uri: str, expected_loader: str) -> None:
@@ -257,3 +259,46 @@ class TestSuffixDispatch:
                 assert kwargs["source_uri"] == uri
             else:
                 inst.return_value._load_single_file.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "/etc/passwd",
+            "/app/.env",
+            "../foo.csv",
+            "file:///etc/passwd",
+            "orders.csv",
+            "s3://other-bucket/orders.csv",
+            "s3://key:secret@dataraum-lake/orders.csv",
+        ],
+    )
+    def test_rejects_non_lake_bucket_uri(self, bad_uri: str) -> None:
+        """A non-lake-bucket URI fails loudly before any loader runs (DAT-389).
+
+        The URI is handed verbatim to DuckDB's ``read_*_auto``, so the import
+        ingress must refuse it — never a silent arbitrary-file or foreign-bucket
+        read. No loader is constructed.
+        """
+        phase = ImportPhase()
+        ctx = self._ctx(bad_uri)
+
+        loaders = {
+            "CSVLoader": MagicMock(),
+            "ParquetLoader": MagicMock(),
+            "JsonLoader": MagicMock(),
+        }
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "Invalid source URI" in (result.error or "")
+        for inst in loaders.values():
+            inst.return_value._load_single_file.assert_not_called()

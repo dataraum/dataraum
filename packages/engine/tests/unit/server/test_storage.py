@@ -61,6 +61,7 @@ class TestBuildS3SecretSql:
             endpoint="seaweedfs:8333",
             region="us-east-1",
             use_ssl=False,
+            bucket="dataraum-lake",
         )
         assert sql == (
             f"CREATE OR REPLACE SECRET {S3_SECRET_NAME} ("
@@ -70,7 +71,8 @@ class TestBuildS3SecretSql:
             "ENDPOINT 'seaweedfs:8333', "
             "REGION 'us-east-1', "
             "URL_STYLE 'path', "
-            "USE_SSL false"
+            "USE_SSL false, "
+            "SCOPE 's3://dataraum-lake'"
             ")"
         )
 
@@ -81,6 +83,7 @@ class TestBuildS3SecretSql:
             endpoint="s3.example.com:443",
             region="eu-central-1",
             use_ssl=True,
+            bucket="dataraum-lake",
         )
         assert "USE_SSL true" in sql
 
@@ -92,8 +95,22 @@ class TestBuildS3SecretSql:
             endpoint="h:8333",
             region="us-east-1",
             use_ssl=False,
+            bucket="dataraum-lake",
         )
         assert "SECRET 'pa\\'ss'" in sql
+
+    def test_scope_confines_secret_to_lake_bucket(self):
+        # DAT-389 hardening: the secret is scoped to s3://<bucket> so DuckDB
+        # only attaches the creds under the lake bucket.
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="s",
+            endpoint="h:8333",
+            region="us-east-1",
+            use_ssl=False,
+            bucket="dataraum-lake",
+        )
+        assert "SCOPE 's3://dataraum-lake'" in sql
 
 
 class TestHealthProbe:

@@ -4,6 +4,14 @@ Per DAT-290, the import phase runs against a single source whose Source
 row is already in the session DB. These tests pre-create the Source row
 and populate ``ctx.config`` with the keys that ``setup_pipeline`` would
 otherwise supply.
+
+Per DAT-389 the import ingress (``_run``) gates the source URI through
+``validate_source_uri`` — only ``s3://<lake-bucket>/<key>`` reaches a loader
+(that gate is covered by the unit tests in ``tests/unit/pipeline``). These
+integration tests exercise the *real* CSV read + table/column creation against
+a live DuckDB connection, which requires a readable local file, so they drive
+the post-validation loader entry point (``_load_file_source``) directly rather
+than going through the ``s3://`` gate.
 """
 
 from __future__ import annotations
@@ -53,7 +61,13 @@ def _file_ctx(
     source_type: str = "csv",
     extra: dict[str, Any] | None = None,
 ) -> PhaseContext:
-    """Build a PhaseContext for a file-source pipeline run (Source row pre-seeded)."""
+    """Build a PhaseContext for a file-source pipeline run (Source row pre-seeded).
+
+    The ctx config carries the local readable ``path`` directly: these tests
+    drive ``_load_file_source`` (post-validation loader entry), which exercises
+    the real DuckDB read. The ``s3://`` ingress gate on ``_run`` is covered by
+    the unit tests; here we need a file DuckDB can actually read.
+    """
     _seed_source(session, source_id, name, path, source_type)
     config: dict[str, Any] = {
         "source_name": name,
@@ -91,12 +105,14 @@ class TestImportPhase:
     def test_import_single_csv(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):
-        """Test importing a single CSV file."""
+        """Test importing a single CSV file (post-validation loader entry)."""
         phase = ImportPhase()
         source_id = str(uuid4())
         ctx = _file_ctx(session, duckdb_conn, source_id, "test_data", csv_file)
+        source = session.get(Source, source_id)
+        assert source is not None
 
-        result = phase.run(ctx)
+        result = phase._load_file_source(ctx, source, "test_data", str(csv_file))
 
         assert result.status == PhaseStatus.COMPLETED
         assert "raw_tables" in result.outputs
@@ -142,32 +158,31 @@ class TestImportPhase:
         assert "source_name" in err
         assert "source_type" in err
 
-    def test_import_nonexistent_path(
+    def test_import_unreadable_source_surfaces_read_error(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """A missing source URI surfaces DuckDB's read error via Result.fail.
+        """A source DuckDB can't read surfaces the read error via Result.fail.
 
-        DAT-389: the import phase no longer stats the filesystem (the path is an
-        opaque URI handed verbatim to DuckDB). A path DuckDB can't read fails
-        the phase with the DuckDB error rather than a pre-flight pathlib check.
+        DAT-389: the import phase never stats the filesystem (the URI is handed
+        verbatim to DuckDB). A well-formed-but-unreadable source fails the loader
+        with the DuckDB error rather than a pre-flight pathlib check. (The ingress
+        ``s3://`` gate is covered by the unit tests; here the loader runs against
+        a missing local file to assert the no-pre-check read-error path.)
         """
         phase = ImportPhase()
         source_id = str(uuid4())
         ghost_path = Path("/nonexistent/path.csv")
         _seed_source(session, source_id, "ghost", ghost_path)
+        source = session.get(Source, source_id)
+        assert source is not None
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
-            config={
-                "source_name": "ghost",
-                "source_type": "csv",
-                "source_connection_config": {"path": str(ghost_path)},
-                "source_path": str(ghost_path),
-            },
+            config={"source_name": "ghost", "source_type": "csv"},
         )
 
-        result = phase.run(ctx)
+        result = phase._load_file_source(ctx, source, "ghost", str(ghost_path))
 
         assert result.status == PhaseStatus.FAILED
         # The failure originates from DuckDB's read of the missing path,
@@ -272,8 +287,10 @@ class TestImportPhase:
             csv_path,
             extra={"junk_columns": ["Unnamed: 0"]},
         )
+        source = session.get(Source, source_id)
+        assert source is not None
 
-        result = phase.run(ctx)
+        result = phase._load_file_source(ctx, source, "with_junk", str(csv_path))
 
         assert result.status == PhaseStatus.COMPLETED
 

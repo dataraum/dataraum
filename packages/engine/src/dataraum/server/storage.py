@@ -138,6 +138,7 @@ def _build_s3_secret_sql(
     endpoint: str,
     region: str,
     use_ssl: bool,
+    bucket: str,
 ) -> str:
     """Build the idempotent ``CREATE OR REPLACE SECRET`` for the object store.
 
@@ -145,6 +146,10 @@ def _build_s3_secret_sql(
     ``URL_STYLE 'path'`` is required for non-AWS S3 (SeaweedFS/MinIO) — DuckDB
     defaults to virtual-host style and does not auto-flip on a custom endpoint;
     path-style is also accepted by AWS, so it is safe as a constant here.
+
+    ``SCOPE 's3://<bucket>'`` confines the credentials to the lake bucket
+    (DAT-389 hardening): DuckDB only attaches this secret to ``s3://<bucket>/*``
+    paths, so even a request for another bucket finds no matching secret.
     """
     return (
         f"CREATE OR REPLACE SECRET {S3_SECRET_NAME} ("
@@ -154,12 +159,13 @@ def _build_s3_secret_sql(
         f"ENDPOINT '{_escape_sql_literal(endpoint)}', "
         f"REGION '{_escape_sql_literal(region)}', "
         "URL_STYLE 'path', "
-        f"USE_SSL {'true' if use_ssl else 'false'}"
+        f"USE_SSL {'true' if use_ssl else 'false'}, "
+        f"SCOPE 's3://{_escape_sql_literal(bucket)}'"
         ")"
     )
 
 
-def apply_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
+def apply_s3_secret(conn: duckdb.DuckDBPyConnection, *, disable_local_fs: bool = False) -> None:
     """Register the object-store S3 secret + load ``httpfs`` on ``conn``.
 
     Must run before ATTACHing a DuckLake catalog whose ``DATA_PATH`` is an
@@ -173,6 +179,17 @@ def apply_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
     ``extension_directory`` at the image-baked path first — a fresh in-memory
     connection (e.g. a schema-sniff throwaway) otherwise defaults to
     ``$HOME/.duckdb/`` and the ``LOAD`` fails. Mirrors :func:`bootstrap_lake`.
+
+    Args:
+        conn: the DuckDB connection to register the secret on.
+        disable_local_fs: defense in depth for the schema-sniff / preview
+            throwaway connections (DAT-389 hardening). When ``True``, disables
+            DuckDB's local filesystem AFTER ``httpfs`` is loaded (extensions
+            load from the local FS, so the order matters) — so a source URI that
+            somehow slipped past ``validate_source_uri`` still cannot read a
+            local file on the worker. NOT set on the anchor / session lake
+            connections, which only ever touch the ``s3://`` lake but must keep
+            local access for the extension/ATTACH machinery.
     """
     settings = get_settings()
     ext_dir = settings.duckdb_extension_directory
@@ -188,8 +205,14 @@ def apply_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
             endpoint=settings.s3_endpoint,
             region=settings.s3_region,
             use_ssl=settings.s3_use_ssl,
+            bucket=settings.s3_bucket,
         )
     )
+    if disable_local_fs:
+        # AFTER LOAD httpfs (extensions load from the local FS). The lake/sniff
+        # reads are all s3:// over httpfs, so refusing the local filesystem here
+        # blocks an arbitrary-file read without touching legitimate reads.
+        conn.execute("SET disabled_filesystems='LocalFileSystem'")
 
 
 def bootstrap_lake(catalog_url: str, data_path: str) -> None:

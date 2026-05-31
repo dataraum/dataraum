@@ -12,11 +12,14 @@ This is the first phase in the pipeline. It:
 Per DAT-290 there is exactly one source per pipeline run — no multi-source
 fan-out, no synthetic ``multi_source`` row.
 
-Per DAT-389 the source path is an opaque URI (``s3://...`` in the container,
-a bare local path for direct dev runs) handed verbatim to DuckDB's
-``read_*_auto`` over httpfs — never to ``pathlib``. The import phase dispatches
-on the URI suffix alone; it never stats the filesystem. Multi-file enumeration
-(the former directory branch) is deferred to DAT-378.
+Per DAT-389 the source path is an ``s3://<lake-bucket>/<key>`` URI handed
+verbatim to DuckDB's ``read_*_auto`` over httpfs — never to ``pathlib``. Because
+that URI is a read primitive, the import phase gates it through
+``validate_source_uri`` before loader dispatch: anything that is not the lake
+bucket (a local path, ``file://``, another bucket, a cred-in-URL form) is a
+loud failure, never a silent read. Dispatch is on the URI suffix alone; the
+filesystem is never stat'd. Multi-file enumeration (the former directory
+branch) is deferred to DAT-378.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from sqlalchemy import func, select
 
 from dataraum.core.config import load_pipeline_config
 from dataraum.core.logging import get_logger
-from dataraum.core.uri import uri_suffix
+from dataraum.core.uri import uri_suffix, validate_source_uri
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -179,10 +182,19 @@ class ImportPhase(BasePhase):
                     f"Source '{source_name}' (type={source_type}) has no path "
                     "in its connection_config."
                 )
-            # The path is an opaque URI (``s3://...`` or a bare local path).
-            # No filesystem stat: a missing/unreadable source surfaces as the
-            # DuckDB read error through ``Result.fail`` (DAT-389). The loader is
-            # selected by the URI suffix, so ``source_type`` is not consulted here.
+            # The path is handed verbatim to DuckDB's ``read_*_auto``, so it is a
+            # read primitive: gate it through ``validate_source_uri`` before it
+            # reaches a loader. Only ``s3://<lake-bucket>/<key>`` passes; a local
+            # path, ``file://``, a foreign bucket, or a cred-in-URL form is a
+            # loud failure here, not a silent arbitrary-file read (DAT-389). No
+            # filesystem stat: a missing/unreadable but well-formed source still
+            # surfaces as the DuckDB read error through ``Result.fail``. The
+            # loader is selected by the URI suffix, so ``source_type`` is not
+            # consulted here.
+            try:
+                validate_source_uri(path_str)
+            except ValueError as e:
+                return PhaseResult.failed(str(e))
             result = self._load_file_source(ctx, source, source_name, path_str)
 
         if result.status != PhaseStatus.COMPLETED:
@@ -226,10 +238,11 @@ class ImportPhase(BasePhase):
     ) -> PhaseResult:
         """Load a single-file source, dispatched by the URI suffix.
 
-        ``source_uri`` is opaque (``s3://...`` or a bare local path) and is
-        handed verbatim to the loader, which passes it to DuckDB's
-        ``read_*_auto``. Per DAT-389 the directory / multi-file branch is gone;
-        a single URI is the unit of ingest (multi-file enumeration → DAT-378).
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI (already validated
+        by ``_run``) and is handed verbatim to the loader, which passes it to
+        DuckDB's ``read_*_auto``. Per DAT-389 the directory / multi-file branch
+        is gone; a single URI is the unit of ingest (multi-file enumeration →
+        DAT-378).
         """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
@@ -269,7 +282,8 @@ class ImportPhase(BasePhase):
         if the loader's CREATE TABLE collides with a pre-existing row, the
         DuckDB error surfaces directly through ``Result.fail``.
 
-        ``source_uri`` is an opaque URI; dispatch is on its suffix alone.
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI; dispatch is on its
+        suffix alone.
         """
         suffix = uri_suffix(source_uri)
 

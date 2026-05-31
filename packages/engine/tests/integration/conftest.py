@@ -139,19 +139,27 @@ class PipelineTestHarness:
         source_name: str | None = None,
         junk_columns: list[str] | None = None,
     ) -> PhaseResult:
-        """Convenience method to run the import phase.
+        """Convenience method to run the import phase against a local fixture file.
 
         Pre-seeds a Source row (mimicking what ``begin_session`` /
-        ``setup_pipeline`` write) and populates ``ctx.config`` with the
-        single-source identity keys the import phase requires.
+        ``setup_pipeline`` write), then drives the import loader on a local
+        readable file.
+
+        Per DAT-389 the production import ingress (``ImportPhase._run``) gates
+        the source URI through ``validate_source_uri`` — only
+        ``s3://<lake-bucket>/<key>`` reaches a loader. That gate is covered by
+        the unit tests. These integration tests exercise the *real* DuckDB read +
+        downstream phases against local fixture files (there is no object store
+        in the test process), so the harness invokes the post-validation loader
+        entry (``_load_file_source``) directly rather than the ``s3://`` gate.
 
         Args:
-            source_path: Path to CSV file, directory, or recipe yaml.
+            source_path: Path to a CSV / Parquet / JSON fixture file.
             source_name: Optional name for the source (derived from path stem if omitted).
             junk_columns: Columns to drop after import.
 
         Returns:
-            PhaseResult from import phase.
+            PhaseResult from the import loader.
         """
         import re
 
@@ -171,31 +179,38 @@ class PipelineTestHarness:
         else:
             source_type = "csv"
 
-        # Seed the Source row idempotently — the test harness shares one session
-        # across phases, so multiple run_import calls with the same source must
-        # not collide.
-        with self.session_factory() as session:
-            existing = session.get(Source, self.source_id)
-            if existing is None:
-                session.add(
-                    Source(
-                        source_id=self.source_id,
-                        name=clean_name,
-                        source_type=source_type,
-                        connection_config={"path": str(path)},
-                        status="configured",
-                    )
-                )
-                session.commit()
+        import_phase = self.phases["import"]
+        assert isinstance(import_phase, ImportPhase)
 
-        config: dict[str, Any] = {
-            "source_name": clean_name,
-            "source_type": source_type,
-            "source_connection_config": {"path": str(path)},
-            "source_path": str(path),
-            "junk_columns": junk_columns or [],
-        }
-        return self.run_phase("import", config=config)
+        with self.session_factory() as session:
+            # Seed the Source row idempotently — the test harness shares one
+            # source_id across phases, so repeat run_import calls must not collide.
+            source = session.get(Source, self.source_id)
+            if source is None:
+                source = Source(
+                    source_id=self.source_id,
+                    name=clean_name,
+                    source_type=source_type,
+                    connection_config={"path": str(path)},
+                    status="configured",
+                )
+                session.add(source)
+                session.commit()
+                source = session.get(Source, self.source_id)
+            assert source is not None
+
+            ctx = PhaseContext(
+                session=session,
+                duckdb_conn=self.duckdb_conn,
+                source_id=self.source_id,
+                config={"junk_columns": junk_columns or []},
+                session_id=baseline_session_id(),
+            )
+            result = import_phase._load_file_source(ctx, source, clean_name, str(path))
+            session.commit()
+
+        self.results["import"] = result
+        return result
 
     def get_duckdb_tables(self, layer: str | None = None) -> list[str]:
         """Get list of tables across workspace layer schemas.

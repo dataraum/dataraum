@@ -53,8 +53,8 @@ class CSVLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("CSV source requires 'path' in configuration")
 
-        # ``path`` is an opaque URI (``s3://...`` or a bare local path); handed
-        # verbatim to ``read_csv_auto`` over httpfs (DAT-389), never to pathlib.
+        # ``path`` is an ``s3://<lake-bucket>/<key>`` URI; handed verbatim to
+        # ``read_csv_auto`` over httpfs (DAT-389), never to pathlib.
         safe_path = source_config.path.replace("'", "''")
 
         try:
@@ -69,7 +69,10 @@ class CSVLoader(LoaderBase):
 
             conn = duckdb.connect(":memory:")
             try:
-                apply_s3_secret(conn)
+                # Defense in depth (DAT-389): disable the local filesystem on the
+                # sniff connection (after httpfs loads) so a URI that slipped past
+                # validation cannot read a local file.
+                apply_s3_secret(conn, disable_local_fs=True)
                 # Read first few rows to get schema
                 sample_df = conn.execute(f"""
                     SELECT * FROM read_csv_auto('{safe_path}')
@@ -117,7 +120,7 @@ class CSVLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("CSV source requires 'path' in configuration")
 
-        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
         source_uri = source_config.path
 
         start_time = time.time()
@@ -186,10 +189,10 @@ class CSVLoader(LoaderBase):
     ) -> Result[StagedTable]:
         """Load a single CSV file into an existing source.
 
-        ``source_uri`` is an opaque URI (``s3://...`` or a bare local path),
-        handed verbatim to DuckDB (DAT-389). The session ``duckdb_conn`` already
-        carries the object-store secret (DAT-388); the schema sniff in
-        ``get_schema`` applies the secret to its own throwaway connection.
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI handed verbatim to
+        DuckDB (DAT-389). The session ``duckdb_conn`` already carries the
+        object-store secret (DAT-388); the schema sniff in ``get_schema`` applies
+        the secret to its own throwaway connection.
 
         Args:
             source_uri: URI of the CSV file (passed straight to ``read_csv``).

@@ -46,7 +46,7 @@ class JsonLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("JSON source requires 'path' in configuration")
 
-        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
         safe_path = source_config.path.replace("'", "''")
 
         try:
@@ -61,7 +61,10 @@ class JsonLoader(LoaderBase):
 
             conn = duckdb.connect(":memory:")
             try:
-                apply_s3_secret(conn)
+                # Defense in depth (DAT-389): disable the local filesystem on the
+                # sniff connection (after httpfs loads) so a URI that slipped past
+                # validation cannot read a local file.
+                apply_s3_secret(conn, disable_local_fs=True)
                 sample_df = conn.execute(f"""
                     SELECT * FROM read_json_auto('{safe_path}')
                     LIMIT 10
@@ -106,7 +109,7 @@ class JsonLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("JSON source requires 'path' in configuration")
 
-        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
         source_uri = source_config.path
 
         start_time = time.time()
@@ -169,10 +172,9 @@ class JsonLoader(LoaderBase):
     ) -> Result[StagedTable]:
         """Load a single JSON/JSONL file into DuckDB as all VARCHAR.
 
-        ``source_uri`` is an opaque URI (``s3://...`` or a bare local path),
-        handed verbatim to DuckDB (DAT-389). The schema DESCRIBE runs on the
-        session ``duckdb_conn``, which already carries the object-store secret
-        (DAT-388).
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI handed verbatim to
+        DuckDB (DAT-389). The schema DESCRIBE runs on the session ``duckdb_conn``,
+        which already carries the object-store secret (DAT-388).
 
         Args:
             source_uri: URI of the JSON file (passed straight to ``read_json_auto``).

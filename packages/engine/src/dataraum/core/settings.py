@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     s3_secret_access_key: SecretStr
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = True
+    # The single lake bucket. Source URIs are gated against it
+    # (``dataraum.core.uri.validate_source_uri``) so the worker can only read
+    # ``s3://<s3_bucket>/...`` — never a foreign bucket or a local path (DAT-389
+    # hardening). Discrete (not parsed from ``ducklake_data_path``) so the
+    # allow-list stays a plain string the validator reads directly; compose sets
+    # both from the same ``S3_BUCKET`` (``DUCKLAKE_DATA_PATH=s3://${S3_BUCKET}/lake``).
+    s3_bucket: str
 
     # --- DuckLake tuning (defaulted; see server/storage.py) ---
     ducklake_pg_pool_max: int = 64

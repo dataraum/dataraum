@@ -10,11 +10,27 @@ from dataraum.server.storage import (
     S3_SECRET_NAME,
     _build_s3_secret_sql,
     _pg_url_to_libpq,
+    apply_s3_secret,
     bootstrap_lake,
     connect_session,
     get_anchor,
     health_probe,
 )
+
+
+class _RecordingConn:
+    """Captures every ``execute`` statement in order (no DuckDB, no network).
+
+    ``apply_s3_secret`` runs its SQL straight on a connection, so we record
+    the call order to assert the defense-in-depth invariant offline.
+    """
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, sql: str):  # noqa: ANN201 - test double, return unused
+        self.statements.append(sql)
+        return self
 
 
 class TestPgUrlToLibpq:
@@ -61,6 +77,7 @@ class TestBuildS3SecretSql:
             endpoint="seaweedfs:8333",
             region="us-east-1",
             use_ssl=False,
+            bucket="dataraum-lake",
         )
         assert sql == (
             f"CREATE OR REPLACE SECRET {S3_SECRET_NAME} ("
@@ -70,7 +87,8 @@ class TestBuildS3SecretSql:
             "ENDPOINT 'seaweedfs:8333', "
             "REGION 'us-east-1', "
             "URL_STYLE 'path', "
-            "USE_SSL false"
+            "USE_SSL false, "
+            "SCOPE 's3://dataraum-lake'"
             ")"
         )
 
@@ -81,19 +99,91 @@ class TestBuildS3SecretSql:
             endpoint="s3.example.com:443",
             region="eu-central-1",
             use_ssl=True,
+            bucket="dataraum-lake",
         )
         assert "USE_SSL true" in sql
 
     def test_escapes_single_quote_in_secret(self):
         # A secret containing a single quote must not break out of the literal.
+        # DuckDB single-quoted literals escape ``'`` by DOUBLING it (``''``),
+        # NOT with a backslash — backslash is a literal char inside the literal.
         sql = _build_s3_secret_sql(
             access_key_id="k",
             secret_access_key="pa'ss",
             endpoint="h:8333",
             region="us-east-1",
             use_ssl=False,
+            bucket="dataraum-lake",
         )
-        assert "SECRET 'pa\\'ss'" in sql
+        # Doubled quote, NOT backslash-escaped.
+        assert "SECRET 'pa''ss'" in sql
+        assert "pa\\'ss" not in sql
+
+    def test_backslash_in_secret_is_left_literal(self):
+        # A backslash is just a literal character inside a DuckDB single-quoted
+        # literal, so it must NOT be doubled/escaped (over-escaping it would
+        # corrupt the credential the secret presents to the object store).
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="pa\\ss",
+            endpoint="h:8333",
+            region="us-east-1",
+            use_ssl=False,
+            bucket="dataraum-lake",
+        )
+        # Single backslash preserved; not doubled.
+        assert "SECRET 'pa\\ss'" in sql
+        assert "pa\\\\ss" not in sql
+
+    def test_scope_confines_secret_to_lake_bucket(self):
+        # DAT-389 hardening: the secret is scoped to s3://<bucket> so DuckDB
+        # only attaches the creds under the lake bucket.
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="s",
+            endpoint="h:8333",
+            region="us-east-1",
+            use_ssl=False,
+            bucket="dataraum-lake",
+        )
+        assert "SCOPE 's3://dataraum-lake'" in sql
+
+
+class TestApplySecretOrdering:
+    """Defense-in-depth ordering on the sniff/preview throwaway connection.
+
+    ``SET disabled_filesystems='LocalFileSystem'`` MUST run AFTER ``LOAD httpfs``
+    — extensions load from the local filesystem, so disabling it first would
+    break the ``LOAD`` (or, worse, a future reorder could silently no-op the
+    guard). This test pins the order so a reorder can't slip through unnoticed.
+
+    We bind ``apply_s3_secret`` from the module and call it on a recording fake
+    connection; the suite-wide ``_stub_s3_secret`` patches the *module attribute*
+    of the same name, which does not affect this directly-imported reference.
+    """
+
+    def test_disabled_filesystems_runs_after_load_httpfs(self):
+        conn = _RecordingConn()
+        apply_s3_secret(conn, disable_local_fs=True)  # type: ignore[arg-type]
+
+        joined = conn.statements
+        load_idx = next(
+            i for i, s in enumerate(joined) if s.strip().upper().startswith("LOAD HTTPFS")
+        )
+        disable_idx = next(i for i, s in enumerate(joined) if "disabled_filesystems" in s)
+        assert load_idx < disable_idx, (
+            "SET disabled_filesystems must run AFTER LOAD httpfs "
+            f"(got LOAD at {load_idx}, disable at {disable_idx}): {joined}"
+        )
+
+    def test_no_disabled_filesystems_when_flag_off(self):
+        # The lake / session connections keep local FS access (extension +
+        # ATTACH machinery), so the guard is only emitted when asked for.
+        conn = _RecordingConn()
+        apply_s3_secret(conn, disable_local_fs=False)  # type: ignore[arg-type]
+
+        assert any(s.strip().upper().startswith("LOAD HTTPFS") for s in conn.statements)
+        assert not any("disabled_filesystems" in s for s in conn.statements)
 
 
 class TestHealthProbe:

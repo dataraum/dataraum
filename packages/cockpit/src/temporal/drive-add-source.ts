@@ -21,7 +21,8 @@
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
 //   TEMPORAL_TASK_QUEUE=dataraum-pipeline \
-//   SOURCE_PATH=/var/lib/dataraum/sources/orders.csv \
+//   S3_BUCKET=dataraum-lake \
+//   SOURCE_PATH=s3://dataraum-lake/orders.csv \
 //   bun run src/temporal/drive-add-source.ts
 
 import { randomUUID } from "node:crypto";
@@ -39,10 +40,16 @@ const env = z
 		TEMPORAL_TASK_QUEUE: z.string().min(1),
 		METADATA_DATABASE_URL: z.string().min(1),
 		DATARAUM_WORKSPACE_ID: z.string().min(1),
-		// Container path the engine-worker sees (mounted sources dir).
-		SOURCE_PATH: z.string().default("/var/lib/dataraum/sources/orders.csv"),
+		// Object-store bucket holding both the lake and uploaded source files.
+		S3_BUCKET: z.string().min(1).default("dataraum-lake"),
+		// Source URI the engine-worker reads over httpfs (DAT-389). An opaque
+		// s3:// URI — no sources mount. Defaults to the fixture the lane smoke
+		// seeds into the bucket root; uploads land under s3://<bucket>/uploads/.
+		SOURCE_PATH: z.string().optional(),
 	})
 	.parse(process.env);
+
+const sourcePath = env.SOURCE_PATH ?? `s3://${env.S3_BUCKET}/orders.csv`;
 
 const schema = `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`;
 
@@ -55,7 +62,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			await tx.unsafe(`SET LOCAL search_path TO "${schema}", public`);
 			await tx`
 				INSERT INTO sources (source_id, name, source_type, connection_config, status, created_at, updated_at)
-				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ path: env.SOURCE_PATH })}, 'configured', now(), now())
+				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ path: sourcePath })}, 'configured', now(), now())
 				ON CONFLICT (source_id) DO NOTHING`;
 			await tx`
 				INSERT INTO investigation_sessions (session_id, source_id, intent, status, started_at, step_count)

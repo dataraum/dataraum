@@ -103,7 +103,7 @@ class TestLoadSingleFile:
         conn = connect_session()
         try:
             result = loader._load_single_file(
-                file_path=json_file,
+                source_uri=str(json_file),
                 source_id=_TEST_SOURCE_ID,
                 source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
@@ -137,7 +137,7 @@ class TestLoadSingleFile:
         conn = connect_session()
         try:
             result = loader._load_single_file(
-                file_path=jsonl_file,
+                source_uri=str(jsonl_file),
                 source_id=_TEST_SOURCE_ID,
                 source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
@@ -168,7 +168,7 @@ class TestLoadSingleFile:
         conn = connect_session()
         try:
             result = loader._load_single_file(
-                file_path=path,
+                source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
                 source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
@@ -210,7 +210,7 @@ class TestLoadSingleFile:
         conn = connect_session()
         try:
             result = loader._load_single_file(
-                file_path=path,
+                source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
                 source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
@@ -246,7 +246,7 @@ class TestLoadSingleFile:
         conn = connect_session()
         try:
             result = loader._load_single_file(
-                file_path=path,
+                source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
                 source_name=_SOURCE_NAME,
                 duckdb_conn=conn,

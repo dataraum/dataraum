@@ -8,7 +8,6 @@ since the source already provides reliable type information.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import duckdb
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
+from dataraum.core.uri import uri_basename, uri_stem
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.storage import Column, Source, Table
@@ -24,14 +24,17 @@ logger = get_logger(__name__)
 
 
 def _describe_parquet(
-    file_path: Path,
+    source_uri: str,
     conn: duckdb.DuckDBPyConnection,
 ) -> list[tuple[str, str, bool]]:
     """Read Parquet schema using DuckDB DESCRIBE.
 
+    ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI passed verbatim to
+    ``read_parquet`` over httpfs (DAT-389).
+
     Returns list of (column_name, duckdb_type, nullable).
     """
-    safe_path = str(file_path).replace("'", "''")
+    safe_path = source_uri.replace("'", "''")
     rows = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_path}')").fetchall()
     return [(row[0], row[1], row[2] == "YES") for row in rows]
 
@@ -58,14 +61,22 @@ class ParquetLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("Parquet source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"Parquet file not found: {path}")
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
+        source_uri = source_config.path
 
         try:
+            # Throwaway connection for the schema sniff; register the
+            # object-store secret on it so an ``s3://`` URI resolves over
+            # httpfs (DAT-389; reuses the DAT-388 helper).
+            from dataraum.server.storage import apply_s3_secret
+
             conn = duckdb.connect()
             try:
-                schema = _describe_parquet(path, conn)
+                # Defense in depth (DAT-389): disable the local filesystem on the
+                # sniff connection (after httpfs loads) so a URI that slipped past
+                # validation cannot read a local file.
+                apply_s3_secret(conn, disable_local_fs=True)
+                schema = _describe_parquet(source_uri, conn)
             finally:
                 conn.close()
 
@@ -103,9 +114,8 @@ class ParquetLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("Parquet source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"Parquet file not found: {path}")
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
+        source_uri = source_config.path
 
         start_time = time.time()
 
@@ -116,13 +126,13 @@ class ParquetLoader(LoaderBase):
                 source_id=source_id,
                 name=source_config.name,
                 source_type="parquet",
-                connection_config={"path": str(path)},
+                connection_config={"path": source_uri},
             )
             session.add(source)
 
             # Load the file
             file_result = self._load_single_file(
-                file_path=path,
+                source_uri=source_uri,
                 source_id=source_id,
                 source_name=source_config.name,
                 duckdb_conn=duckdb_conn,
@@ -130,7 +140,7 @@ class ParquetLoader(LoaderBase):
             )
 
             if not file_result.success:
-                logger.warning("parquet_load_failed", file=str(path), error=file_result.error)
+                logger.warning("parquet_load_failed", file=source_uri, error=file_result.error)
                 return Result.fail(file_result.error or "Failed to load Parquet")
 
             staged_table = file_result.unwrap()
@@ -139,7 +149,7 @@ class ParquetLoader(LoaderBase):
             duration = time.time() - start_time
             logger.debug(
                 "parquet_loaded",
-                file=str(path),
+                file=source_uri,
                 table=staged_table.table_name,
                 rows=staged_table.row_count,
                 columns=staged_table.column_count,
@@ -156,12 +166,12 @@ class ParquetLoader(LoaderBase):
             )
 
         except Exception as e:
-            logger.error("parquet_load_error", file=str(path), error=str(e))
+            logger.error("parquet_load_error", file=source_uri, error=str(e))
             return Result.fail(f"Failed to load Parquet: {e}")
 
     def _load_single_file(
         self,
-        file_path: Path,
+        source_uri: str,
         source_id: str,
         source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
@@ -172,8 +182,12 @@ class ParquetLoader(LoaderBase):
         DuckDB reads Parquet natively, preserving column types.
         Column names are normalized for SQL safety.
 
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI handed verbatim to
+        DuckDB (DAT-389). The schema DESCRIBE runs on the session ``duckdb_conn``,
+        which already carries the object-store secret (DAT-388).
+
         Args:
-            file_path: Path to the Parquet file
+            source_uri: URI of the Parquet file (passed straight to ``read_parquet``).
             source_id: ID of the parent source
             source_name: Logical name of the parent source (used to compose
                 the source-prefixed table identifier in ``lake.raw``).
@@ -188,7 +202,7 @@ class ParquetLoader(LoaderBase):
 
         try:
             # Read schema using DuckDB DESCRIBE
-            schema = _describe_parquet(file_path, duckdb_conn)
+            schema = _describe_parquet(source_uri, duckdb_conn)
 
             # Normalize column names and detect collisions
             col_mapping: list[tuple[str, str, str]] = []  # (original, normalized, duckdb_type)
@@ -207,7 +221,7 @@ class ParquetLoader(LoaderBase):
             # Compose the source-prefixed name. The catalog alias is resolved
             # here so the loader can write directly into ``lake.raw.*`` —
             # avoids a cross-schema move in import_phase.
-            file_table_name = self._sanitize_table_name(file_path.stem)
+            file_table_name = self._sanitize_table_name(uri_stem(source_uri))
             bare = table_name_for_source(source_name, file_table_name)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
@@ -217,7 +231,7 @@ class ParquetLoader(LoaderBase):
             ]
 
             # DuckDB reads Parquet natively — preserves types
-            safe_path = str(file_path).replace("'", "''")
+            safe_path = source_uri.replace("'", "''")
             sql = f"""
                 CREATE TABLE {raw_target} AS
                 SELECT {", ".join(select_exprs)}
@@ -266,4 +280,4 @@ class ParquetLoader(LoaderBase):
             )
 
         except Exception as e:
-            return Result.fail(f"Failed to load {file_path.name}: {e}")
+            return Result.fail(f"Failed to load {uri_basename(source_uri)}: {e}")

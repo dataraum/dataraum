@@ -13,6 +13,10 @@ vi.mock("#/duckdb/probe", () => ({
 	probe: probeMock,
 	SUPPORTED_BACKENDS: ["postgres", "mysql"],
 }));
+// connectFile imports s3-secret (for s3:// paths), which loads `#/config` at
+// module top. Mock it at the same boundary so this unit needs no real env; the
+// s3:// secret-registration path is exercised in connect.integration (DAT-386).
+vi.mock("#/duckdb/s3-secret", () => ({ applyS3Secret: vi.fn() }));
 
 import {
 	ConnectSchema,

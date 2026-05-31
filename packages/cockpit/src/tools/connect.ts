@@ -25,8 +25,9 @@ export const connectTool = toolDefinition({
 		"data is moved. Use it to show the user what a source looks like. Two " +
 		"kinds: a configured database source (set source_kind='database' with " +
 		"source_name + backend; introspected via a READ_ONLY attach) or a " +
-		"server-readable file path (set source_kind='file' with path; CSV/TSV, " +
-		"Parquet, or JSON sniffed in place). Returns tables with columns " +
+		"file path (set source_kind='file' with path; a local path or an " +
+		"`s3://` upload URI; CSV/TSV, Parquet, or JSON sniffed in place). " +
+		"Returns tables with columns " +
 		"(name, type, nullability) and a capped handful of sample values. " +
 		`Supported database backends: ${SUPPORTED_BACKENDS.join(", ")}.`,
 	inputSchema: z.object({
@@ -48,7 +49,8 @@ export const connectTool = toolDefinition({
 			.string()
 			.optional()
 			.describe(
-				"Server-readable file path (required when source_kind=file): a " +
+				"File path to sniff (required when source_kind=file): a local path " +
+					"or an `s3://` URI staged by the upload entry-mode — a " +
 					".csv/.tsv/.txt, .parquet, or .json/.ndjson/.jsonl file.",
 			),
 	}),

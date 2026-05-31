@@ -29,6 +29,7 @@ import { SendHorizontal } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { canvasFromMessages } from "#/ui/cockpit/tool-result-to-canvas";
+import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 import { tokens } from "#/ui/theme";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
@@ -143,6 +144,18 @@ export function ChatRail() {
 		void sendMessage(text);
 	};
 
+	// Upload entry-mode (DAT-386): a staged `s3://` path drives the EXISTING
+	// connect tool through the agent loop. The tool's ConnectSchema result then
+	// projects onto the schema-preview canvas via the same canvasFromMessages
+	// bridge — no new sniff path, no canvas wiring here.
+	const onUploaded = (s3Path: string) => {
+		if (isLoading) return;
+		setCanvasState({ kind: "loading" });
+		void sendMessage(
+			`Connect to the uploaded file at ${s3Path} (source_kind=file) and show me its schema.`,
+		);
+	};
+
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
 			<Box style={{ flex: 1, overflowY: "auto" }} data-testid="chat-messages">
@@ -180,6 +193,7 @@ export function ChatRail() {
 					)}
 				</Stack>
 			</Box>
+			<UploadDropzone onConnect={onUploaded} />
 			<form onSubmit={onSubmit} data-testid="chat-form">
 				<Group gap="xs" wrap="nowrap" p="xs">
 					<Textarea

@@ -25,6 +25,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.1",
+    "@aws-lite/client": "^0.23.6",
+    "@aws-lite/s3": "^0.2.6",
     "@duckdb/node-api": "^1.5.3-r.2",
     "@mantine/core": "^9.2.2",
     "@mantine/hooks": "^9.2.2",

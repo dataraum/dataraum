@@ -4,9 +4,11 @@
 // Two source kinds behind one `ConnectSchema` contract:
 //   - database: reuse `probe` (READ_ONLY ATTACH + information_schema + capped
 //     per-table sample SELECTs; credentials resolved by source name).
-//   - file:     a server-readable path sniffed via DuckDB's file readers
-//     (read_csv_auto / read_parquet / read_json_auto) + DESCRIBE — no upload
-//     route (that's DAT-386).
+//   - file:     a path sniffed via DuckDB's file readers (read_csv_auto /
+//     read_parquet / read_json_auto) + DESCRIBE. The path can be a local file
+//     OR an `s3://` URI staged by the upload entry-mode (DAT-386); for the
+//     latter the sniff connection registers httpfs + the object-store S3 secret
+//     (the same `dataraum_s3` secret the lake reader uses) before the read.
 //
 // Nothing here ingests or writes: it is a read-only peek the agent shows the
 // user via the schema-preview canvas widget. The DuckDB-touching orchestration
@@ -19,6 +21,7 @@ import { z } from "zod";
 import { clampRowLimit } from "./limit";
 import { probe, SUPPORTED_BACKENDS } from "./probe";
 import { type QueryResult, readerToResult } from "./query-result";
+import { applyS3Secret } from "./s3-secret";
 import { escapeSqlLiteral } from "./sql-escape";
 
 // --- contract ---------------------------------------------------------------
@@ -68,7 +71,10 @@ export const ConnectInput = z
 		path: z
 			.string()
 			.optional()
-			.describe("Server-readable file path (required when source_kind=file)."),
+			.describe(
+				"File path to sniff (required when source_kind=file): a local path " +
+					"or an `s3://` URI staged by the upload entry-mode.",
+			),
 	})
 	.superRefine((v, ctx) => {
 		if (v.source_kind === "database") {
@@ -288,6 +294,11 @@ async function connectDatabase(
 	};
 }
 
+/** True when `path` is an object-store URI the DuckDB reader resolves via httpfs. */
+function isS3Path(path: string): boolean {
+	return path.startsWith("s3://");
+}
+
 async function connectFile(path: string): Promise<ConnectSchema> {
 	const reader = readerForPath(path);
 	const from = `${reader}('${escapeSqlLiteral(path)}')`;
@@ -295,6 +306,14 @@ async function connectFile(path: string): Promise<ConnectSchema> {
 	const instance = await DuckDBInstance.create(":memory:");
 	const conn = await instance.connect();
 	try {
+		// An `s3://` path (an upload staged by DAT-386) needs httpfs + the
+		// object-store secret before the reader can open it. A local path needs
+		// neither, so only register for s3:// — and registering it there is the
+		// SAME `dataraum_s3` secret the lake reader uses (s3-secret.ts), so the
+		// upload sniff and the lake read resolve the bucket identically.
+		if (isS3Path(path)) {
+			await applyS3Secret(conn);
+		}
 		const describe: QueryResult = readerToResult(
 			await conn.runAndReadAll(`DESCRIBE SELECT * FROM ${from}`),
 		);

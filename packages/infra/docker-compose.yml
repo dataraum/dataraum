@@ -214,9 +214,10 @@ services:
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dataraum-pipeline}
     volumes:
-      # No lake volume — the lake is on the object store now (DAT-388). The
-      # sources bind-mount stays until ingest moves to s3:// (DAT-389).
-      - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
+      # No lake volume and no sources bind-mount — both the lake and the file
+      # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
+      # engine reads source files straight from their s3:// URI over httpfs; the
+      # only mount left is the read-only config tree.
       - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
 
   cockpit:

@@ -78,10 +78,26 @@ class TestAddFileSource:
         assert not result.success
         assert "already exists" in (result.error or "")
 
-    def test_nonexistent_path(self, manager: SourceManager) -> None:
-        result = manager.add_file_source("src_ne", "/nonexistent/data.csv")
-        assert not result.success
-        assert "not found" in (result.error or "").lower()
+    def test_opaque_s3_uri_dispatches_by_suffix(
+        self, manager: SourceManager, session: Session
+    ) -> None:
+        """An ``s3://`` URI registers by suffix and is stored verbatim (DAT-389).
+
+        Registration never stats the filesystem: the URI is opaque and handed
+        to DuckDB only at import time. The advisory preview can't reach the
+        (non-existent in this unit test) object store, but that does not block
+        registration.
+        """
+        uri = "s3://dataraum-lake/uploads/abc123/orders.csv"
+        result = manager.add_file_source("s3_orders", uri)
+
+        assert result.success, result.error
+        info = result.unwrap()
+        assert info.source_type == "csv"
+        assert info.path == uri
+
+        source = session.execute(select(Source).where(Source.name == "s3_orders")).scalar_one()
+        assert source.connection_config == {"path": uri}
 
     def test_persists_to_db(self, manager: SourceManager, session: Session, tmp_path: Path) -> None:
         csv = tmp_path / "data.csv"
@@ -131,54 +147,6 @@ class TestAddFileSource:
         assert "Unsupported file format" in (result.error or "")
         assert ".xlsx" in (result.error or "")
         assert ".csv" in (result.error or "")
-
-    def test_register_directory(self, manager: SourceManager, tmp_path: Path) -> None:
-        (tmp_path / "a.csv").write_text("id,name\n1,Alice\n")
-        (tmp_path / "b.csv").write_text("id,name\n2,Bob\n")
-
-        result = manager.add_file_source("dir_src", str(tmp_path))
-
-        assert result.success
-        info = result.unwrap()
-        assert info.source_type == "csv"
-        assert info.discovered_schema is not None
-        assert info.discovered_schema["file_count"] == 2
-        assert info.discovered_schema["formats"] == {"csv": 2}
-        assert "2 csv" in info.discovered_schema["breakdown"]
-
-    def test_reject_empty_directory(self, manager: SourceManager, tmp_path: Path) -> None:
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-
-        result = manager.add_file_source("empty_dir", str(empty_dir))
-
-        assert not result.success
-        assert "No supported data files" in (result.error or "")
-
-    def test_directory_ignores_unsupported_files(
-        self, manager: SourceManager, tmp_path: Path
-    ) -> None:
-        (tmp_path / "data.csv").write_text("id\n1\n")
-        (tmp_path / "readme.txt").write_text("ignore me")
-        (tmp_path / "image.png").write_bytes(b"\x89PNG")
-
-        result = manager.add_file_source("mixed_dir", str(tmp_path))
-
-        assert result.success
-        info = result.unwrap()
-        assert info.discovered_schema is not None
-        assert info.discovered_schema["file_count"] == 1
-
-    def test_reject_too_many_files(self, manager: SourceManager, tmp_path: Path) -> None:
-        from dataraum.sources.manager import MAX_FILES_PER_SOURCE
-
-        for i in range(MAX_FILES_PER_SOURCE + 1):
-            (tmp_path / f"file_{i:03d}.csv").write_text("id\n1\n")
-
-        result = manager.add_file_source("big_dir", str(tmp_path))
-
-        assert not result.success
-        assert str(MAX_FILES_PER_SOURCE) in str(result.error)
 
 
 class TestAddRecipeSource:

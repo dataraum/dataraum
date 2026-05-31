@@ -85,24 +85,6 @@ def csv_file(tmp_path: Path) -> Path:
     return csv_path
 
 
-@pytest.fixture
-def csv_directory(tmp_path: Path) -> Path:
-    """Create a directory with multiple CSV files."""
-    (tmp_path / "table1.csv").write_text(
-        """id,category
-1,A
-2,B
-"""
-    )
-    (tmp_path / "table2.csv").write_text(
-        """id,amount
-1,100
-2,200
-"""
-    )
-    return tmp_path
-
-
 class TestImportPhase:
     """Tests for ImportPhase."""
 
@@ -143,30 +125,6 @@ class TestImportPhase:
         column_names = {c.column_name for c in columns}
         assert column_names == {"id", "name", "value"}
 
-    def test_import_directory(
-        self,
-        session: Session,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        csv_directory: Path,
-    ):
-        """Test importing multiple CSV files from a directory."""
-        phase = ImportPhase()
-        source_id = str(uuid4())
-        ctx = _file_ctx(session, duckdb_conn, source_id, "test_dir", csv_directory)
-
-        result = phase.run(ctx)
-
-        assert result.status == PhaseStatus.COMPLETED
-        assert "raw_tables" in result.outputs
-        assert len(result.outputs["raw_tables"]) == 2
-        assert result.records_created == 2  # 2 tables
-
-        # Verify Tables were created
-        stmt = select(Table).where(Table.source_id == source_id)
-        result_tables = session.execute(stmt)
-        tables = result_tables.scalars().all()
-        assert len(tables) == 2
-
     def test_import_missing_config(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Empty config: import phase reports the missing identity fields."""
         phase = ImportPhase()
@@ -187,7 +145,12 @@ class TestImportPhase:
     def test_import_nonexistent_path(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test error when path doesn't exist (Source row exists, file does not)."""
+        """A missing source URI surfaces DuckDB's read error via Result.fail.
+
+        DAT-389: the import phase no longer stats the filesystem (the path is an
+        opaque URI handed verbatim to DuckDB). A path DuckDB can't read fails
+        the phase with the DuckDB error rather than a pre-flight pathlib check.
+        """
         phase = ImportPhase()
         source_id = str(uuid4())
         ghost_path = Path("/nonexistent/path.csv")
@@ -207,7 +170,9 @@ class TestImportPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
-        assert "not found" in (result.error or "")
+        # The failure originates from DuckDB's read of the missing path,
+        # surfaced through the loader's Result.fail (no pathlib pre-check).
+        assert result.error
 
     def test_skip_if_tables_exist(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path

@@ -5,23 +5,29 @@ This is the first phase in the pipeline. It:
 1. Resolves the Source row already written by ``begin_session`` (MCP) or
    ``setup_pipeline._resolve_source_spec`` (CLI).
 2. Dispatches by ``source_type``: db_recipe → extract_backend; otherwise →
-   file loader (CSV/Parquet/JSON, or a directory of those).
+   file loader (CSV/Parquet/JSON) selected by the source URI's suffix.
 3. Creates raw Table + Column records, table names prefixed with
    ``{source_name}__`` to keep them recognizable in DuckDB.
 
 Per DAT-290 there is exactly one source per pipeline run — no multi-source
 fan-out, no synthetic ``multi_source`` row.
+
+Per DAT-389 the source path is an opaque URI (``s3://...`` in the container,
+a bare local path for direct dev runs) handed verbatim to DuckDB's
+``read_*_auto`` over httpfs — never to ``pathlib``. The import phase dispatches
+on the URI suffix alone; it never stats the filesystem. Multi-file enumeration
+(the former directory branch) is deferred to DAT-378.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
 
 from dataraum.core.config import load_pipeline_config
 from dataraum.core.logging import get_logger
+from dataraum.core.uri import uri_suffix
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -173,10 +179,11 @@ class ImportPhase(BasePhase):
                     f"Source '{source_name}' (type={source_type}) has no path "
                     "in its connection_config."
                 )
-            path = Path(path_str)
-            if not path.exists():
-                return PhaseResult.failed(f"Source path not found: {path}")
-            result = self._load_file_source(ctx, source, source_name, path, source_type)
+            # The path is an opaque URI (``s3://...`` or a bare local path).
+            # No filesystem stat: a missing/unreadable source surfaces as the
+            # DuckDB read error through ``Result.fail`` (DAT-389). The loader is
+            # selected by the URI suffix, so ``source_type`` is not consulted here.
+            result = self._load_file_source(ctx, source, source_name, path_str)
 
         if result.status != PhaseStatus.COMPLETED:
             return result
@@ -215,66 +222,34 @@ class ImportPhase(BasePhase):
         ctx: PhaseContext,
         source: Source,
         source_name: str,
-        path: Path,
-        source_type: str,
+        source_uri: str,
     ) -> PhaseResult:
-        """Load a file source with table name prefixing."""
-        if not path.exists():
-            return PhaseResult.failed(f"Source path not found: {path}")
+        """Load a single-file source, dispatched by the URI suffix.
 
+        ``source_uri`` is opaque (``s3://...`` or a bare local path) and is
+        handed verbatim to the loader, which passes it to DuckDB's
+        ``read_*_auto``. Per DAT-389 the directory / multi-file branch is gone;
+        a single URI is the unit of ingest (multi-file enumeration → DAT-378).
+        """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
-        table_ids: list[str] = []
-        total_rows = 0
-        warnings: list[str] = []
 
-        if path.is_dir():
-            # Load all supported file types (not just dominant format)
-            all_patterns = ["*.csv", "*.tsv", "*.parquet", "*.pq", "*.json", "*.jsonl"]
+        result = self._load_single_file_with_prefix(
+            ctx, source, source_name, source_uri, null_config, junk_columns
+        )
+        if result.status != PhaseStatus.COMPLETED:
+            return result
 
-            files: list[Path] = []
-            for pat in all_patterns:
-                files.extend(sorted(path.glob(pat)))
-
-            if not files:
-                return PhaseResult.failed(f"No data files found in {path}")
-
-            from dataraum.sources.manager import MAX_FILES_PER_SOURCE
-
-            if len(files) > MAX_FILES_PER_SOURCE:
-                return PhaseResult.failed(
-                    f"Directory contains {len(files)} data files (max {MAX_FILES_PER_SOURCE}). "
-                    f"Split into multiple sources or reduce the number of files."
-                )
-
-            for file_path in files:
-                result = self._load_single_file_with_prefix(
-                    ctx, source, source_name, file_path, null_config, junk_columns
-                )
-                if result.status == PhaseStatus.COMPLETED and result.outputs:
-                    table_ids.extend(result.outputs.get("raw_tables", []))
-                    total_rows += result.records_processed
-                elif result.status != PhaseStatus.COMPLETED:
-                    warnings.append(f"Failed to load {file_path.name}: {result.error}")
-        else:
-            result = self._load_single_file_with_prefix(
-                ctx, source, source_name, path, null_config, junk_columns
-            )
-            if result.status == PhaseStatus.COMPLETED and result.outputs:
-                table_ids.extend(result.outputs.get("raw_tables", []))
-                total_rows += result.records_processed
-            elif result.status != PhaseStatus.COMPLETED:
-                return result
-
+        table_ids = list(result.outputs.get("raw_tables", [])) if result.outputs else []
         if not table_ids:
             return PhaseResult.failed(f"No files loaded from source '{source_name}'")
 
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},
-            records_processed=total_rows,
+            records_processed=result.records_processed,
             records_created=len(table_ids),
-            warnings=warnings,
-            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
+            warnings=result.warnings,
+            summary=f"{len(table_ids)} tables, {result.records_processed:,} rows",
         )
 
     def _load_single_file_with_prefix(
@@ -282,7 +257,7 @@ class ImportPhase(BasePhase):
         ctx: PhaseContext,
         source: Source,
         source_name: str,
-        file_path: Path,
+        source_uri: str,
         null_config: Any,
         junk_columns: list[str],
     ) -> PhaseResult:
@@ -293,13 +268,15 @@ class ImportPhase(BasePhase):
         ``CREATE TABLE``. There is no rename / cross-schema move step here —
         if the loader's CREATE TABLE collides with a pre-existing row, the
         DuckDB error surfaces directly through ``Result.fail``.
+
+        ``source_uri`` is an opaque URI; dispatch is on its suffix alone.
         """
-        suffix = file_path.suffix.lower()
+        suffix = uri_suffix(source_uri)
 
         if suffix in _PARQUET_EXTENSIONS:
             pq_loader = ParquetLoader()
             result = pq_loader._load_single_file(
-                file_path=file_path,
+                source_uri=source_uri,
                 source_id=source.source_id,
                 source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
@@ -308,7 +285,7 @@ class ImportPhase(BasePhase):
         elif suffix in _JSON_EXTENSIONS:
             json_loader = JsonLoader()
             result = json_loader._load_single_file(
-                file_path=file_path,
+                source_uri=source_uri,
                 source_id=source.source_id,
                 source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
@@ -317,7 +294,7 @@ class ImportPhase(BasePhase):
         else:
             csv_loader = CSVLoader()
             result = csv_loader._load_single_file(
-                file_path=file_path,
+                source_uri=source_uri,
                 source_id=source.source_id,
                 source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
@@ -327,7 +304,7 @@ class ImportPhase(BasePhase):
             )
 
         if not result.success:
-            return PhaseResult.failed(result.error or f"Failed to load {file_path}")
+            return PhaseResult.failed(result.error or f"Failed to load {source_uri}")
 
         staged_table = result.unwrap()
 

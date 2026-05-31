@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import duckdb
@@ -11,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
+from dataraum.core.uri import uri_basename, uri_stem
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_config
@@ -53,25 +53,30 @@ class CSVLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("CSV source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"CSV file not found: {path}")
+        # ``path`` is an opaque URI (``s3://...`` or a bare local path); handed
+        # verbatim to ``read_csv_auto`` over httpfs (DAT-389), never to pathlib.
+        safe_path = source_config.path.replace("'", "''")
 
         try:
-            # Use DuckDB to read CSV header and sample
-            safe_path = str(path).replace("'", "''")
             # Throwaway in-memory connection: schema sniffing must NOT touch
             # the workspace lake. The shared session manager's connection is
             # ``USE``d on ``lake.typed`` (post-DAT-341); a sniff CREATE TABLE
             # there would pollute the workspace-stable typed schema with stub
-            # tables. Keep this ephemeral and unrelated to the lake.
-            conn = duckdb.connect(":memory:")
+            # tables. Keep this ephemeral and unrelated to the lake — but
+            # register the object-store secret on it so an ``s3://`` source URI
+            # resolves (DAT-389; reuses the DAT-388 helper).
+            from dataraum.server.storage import apply_s3_secret
 
-            # Read first few rows to get schema
-            sample_df = conn.execute(f"""
-                SELECT * FROM read_csv_auto('{safe_path}')
-                LIMIT 10
-            """).df()
+            conn = duckdb.connect(":memory:")
+            try:
+                apply_s3_secret(conn)
+                # Read first few rows to get schema
+                sample_df = conn.execute(f"""
+                    SELECT * FROM read_csv_auto('{safe_path}')
+                    LIMIT 10
+                """).df()
+            finally:
+                conn.close()
 
             columns = []
             for idx, col_name in enumerate(sample_df.columns):
@@ -88,7 +93,6 @@ class CSVLoader(LoaderBase):
                     )
                 )
 
-            conn.close()
             return Result.ok(columns)
 
         except Exception as e:
@@ -113,9 +117,8 @@ class CSVLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("CSV source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"CSV file not found: {path}")
+        # Opaque source URI (``s3://...`` or bare local path) — DAT-389.
+        source_uri = source_config.path
 
         start_time = time.time()
 
@@ -126,14 +129,14 @@ class CSVLoader(LoaderBase):
                 source_id=source_id,
                 name=source_config.name,
                 source_type="csv",
-                connection_config={"path": str(path)},
+                connection_config={"path": source_uri},
             )
             session.add(source)
 
             # Load the file
             null_config = load_null_value_config()
             file_result = self._load_single_file(
-                file_path=path,
+                source_uri=source_uri,
                 source_id=source_id,
                 source_name=source_config.name,
                 duckdb_conn=duckdb_conn,
@@ -142,7 +145,7 @@ class CSVLoader(LoaderBase):
             )
 
             if not file_result.success:
-                logger.warning("csv_load_failed", file=str(path), error=file_result.error)
+                logger.warning("csv_load_failed", file=source_uri, error=file_result.error)
                 return Result.fail(file_result.error or "Failed to load CSV")
 
             staged_table = file_result.unwrap()
@@ -151,7 +154,7 @@ class CSVLoader(LoaderBase):
             duration = time.time() - start_time
             logger.debug(
                 "csv_loaded",
-                file=str(path),
+                file=source_uri,
                 table=staged_table.table_name,
                 rows=staged_table.row_count,
                 columns=staged_table.column_count,
@@ -168,12 +171,12 @@ class CSVLoader(LoaderBase):
             )
 
         except Exception as e:
-            logger.error("csv_load_error", file=str(path), error=str(e))
+            logger.error("csv_load_error", file=source_uri, error=str(e))
             return Result.fail(f"Failed to load CSV: {e}")
 
     def _load_single_file(
         self,
-        file_path: Path,
+        source_uri: str,
         source_id: str,
         source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
@@ -183,10 +186,13 @@ class CSVLoader(LoaderBase):
     ) -> Result[StagedTable]:
         """Load a single CSV file into an existing source.
 
-        Internal helper used by both load() and load_directory().
+        ``source_uri`` is an opaque URI (``s3://...`` or a bare local path),
+        handed verbatim to DuckDB (DAT-389). The session ``duckdb_conn`` already
+        carries the object-store secret (DAT-388); the schema sniff in
+        ``get_schema`` applies the secret to its own throwaway connection.
 
         Args:
-            file_path: Path to the CSV file
+            source_uri: URI of the CSV file (passed straight to ``read_csv``).
             source_id: ID of the parent source
             source_name: Logical name of the parent source (used to compose
                 the source-prefixed table identifier in ``lake.raw``).
@@ -201,12 +207,13 @@ class CSVLoader(LoaderBase):
         from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
+        file_stem = uri_stem(source_uri)
         try:
             # Get schema
             temp_config = SourceConfig(
-                name=file_path.stem,
+                name=file_stem,
                 source_type="csv",
-                path=str(file_path),
+                path=source_uri,
             )
             schema_result = self.get_schema(temp_config)
             if not schema_result.success:
@@ -218,7 +225,7 @@ class CSVLoader(LoaderBase):
 
             # Compose the source-prefixed name. The catalog alias is resolved
             # here so the loader can write directly into ``lake.raw.*``.
-            file_table_name = self._sanitize_table_name(file_path.stem)
+            file_table_name = self._sanitize_table_name(file_stem)
             bare = table_name_for_source(source_name, file_table_name)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
@@ -249,7 +256,7 @@ class CSVLoader(LoaderBase):
 
             # Build SELECT with aliasing: "OriginalName" AS "normalized_name"
             select_exprs = [f'"{col.original_name}" AS "{col.name}"' for col in kept_columns]
-            safe_path = str(file_path).replace("'", "''")
+            safe_path = source_uri.replace("'", "''")
 
             # Create the raw table with normalized column names
             sql = f"""
@@ -310,4 +317,6 @@ class CSVLoader(LoaderBase):
             )
 
         except Exception as e:
-            return Result.fail(f"Failed to load {file_path.name}: {_check_encoding_error(str(e))}")
+            return Result.fail(
+                f"Failed to load {uri_basename(source_uri)}: {_check_encoding_error(str(e))}"
+            )

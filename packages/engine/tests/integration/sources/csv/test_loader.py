@@ -36,7 +36,12 @@ class TestCSVLoader:
         assert len(columns[0].sample_values) > 0
 
     def test_get_schema_missing_file(self):
-        """Test error handling for missing file."""
+        """A missing URI surfaces DuckDB's read error via Result.fail (DAT-389).
+
+        ``get_schema`` no longer stats the filesystem (the path is an opaque
+        URI handed verbatim to ``read_csv_auto``); an unreadable path fails the
+        Result with DuckDB's error rather than a pathlib pre-check.
+        """
         loader = CSVLoader()
         config = SourceConfig(
             name="missing",
@@ -48,7 +53,7 @@ class TestCSVLoader:
 
         assert not result.success
         assert result.error
-        assert "not found" in result.error.lower()
+        assert "CSV schema" in result.error
 
     def test_get_schema_no_path(self):
         """Test error handling when path is not set."""
@@ -132,7 +137,7 @@ class TestCSVLoader:
         assert null_count > 0, "Expected some NULL values from -- conversion"
 
     def test_load_missing_file(self, duckdb_conn, session):
-        """Test loading a non-existent file."""
+        """A missing URI fails the load via Result.fail (DuckDB error, DAT-389)."""
         loader = CSVLoader()
         config = SourceConfig(
             name="missing",
@@ -142,4 +147,4 @@ class TestCSVLoader:
 
         result = loader.load(config, duckdb_conn, session)
         assert not result.success
-        assert "not found" in result.error.lower()
+        assert result.error

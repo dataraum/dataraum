@@ -5,7 +5,7 @@ Row is added when a lane opens its PR; removed when the PR merges.
 
 | Task | Worktree | Branch | PR | Contract | Status |
 |---|---|---|---|---|---|
-| (none active — slice-1 substrate merged; feature tickets pending Jira rewrites + spike) | | | | | |
+| DAT-389 | .worktrees/DAT-389 | feat/DAT-389-engine-ingest-s3 | (pending — lead opens) | none (path stays connection_config['path']; worker/contracts.py unchanged) | pushed, 3/3 in-lane reviews pass, lane-smoke green (s3:// httpfs ingest → raw+typed, no sources mount) |
 
 _(previously merged: DAT-320 #110, DAT-324 #111, DAT-321 #113, DAT-323 #114, DAT-325 #115, DAT-358 #128, DAT-340 #129, DAT-339 substrate #132, bun toolchain #133)_
 

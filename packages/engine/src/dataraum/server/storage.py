@@ -110,6 +110,11 @@ def _pg_url_to_libpq(url: str) -> str:
         # whitespace or quote characters; alphanumeric passes through bare.
         decoded = unquote(p.password)
         if any(c.isspace() or c in ("'", "\\") for c in decoded):
+            # libpq connection-string grammar (NOT a DuckDB SQL literal): inside
+            # a single-quoted libpq value, backslash IS the escape character, so
+            # both ``\`` and ``'`` are backslash-escaped here. Do NOT
+            # "consistency-fix" this to ``''`` doubling — that is correct for the
+            # DuckDB literals in :func:`_escape_sql_literal`, a different layer.
             escaped = decoded.replace("\\", "\\\\").replace("'", "\\'")
             parts.append(f"password='{escaped}'")
         else:
@@ -118,8 +123,16 @@ def _pg_url_to_libpq(url: str) -> str:
 
 
 def _escape_sql_literal(value: str) -> str:
-    r"""Backslash-escape ``\`` and ``'`` for safe single-quoted SQL interpolation."""
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+    r"""Escape a value for safe interpolation into a DuckDB single-quoted literal.
+
+    DuckDB single-quoted string literals do NOT honor backslash escapes — a
+    backslash is just a literal character inside the literal. The only escape
+    that matters is doubling an embedded single quote (``'`` → ``''``). This
+    matches the engine's own source loaders (``sources/*/loader.py``) and the
+    cockpit's ``applyS3Secret``. (Distinct from :func:`_pg_url_to_libpq`, which
+    escapes for libpq connection-string grammar where backslash IS the escape.)
+    """
+    return value.replace("'", "''")
 
 
 S3_SECRET_NAME = "dataraum_s3"

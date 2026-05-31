@@ -105,6 +105,8 @@ class TestBuildS3SecretSql:
 
     def test_escapes_single_quote_in_secret(self):
         # A secret containing a single quote must not break out of the literal.
+        # DuckDB single-quoted literals escape ``'`` by DOUBLING it (``''``),
+        # NOT with a backslash — backslash is a literal char inside the literal.
         sql = _build_s3_secret_sql(
             access_key_id="k",
             secret_access_key="pa'ss",
@@ -113,7 +115,25 @@ class TestBuildS3SecretSql:
             use_ssl=False,
             bucket="dataraum-lake",
         )
-        assert "SECRET 'pa\\'ss'" in sql
+        # Doubled quote, NOT backslash-escaped.
+        assert "SECRET 'pa''ss'" in sql
+        assert "pa\\'ss" not in sql
+
+    def test_backslash_in_secret_is_left_literal(self):
+        # A backslash is just a literal character inside a DuckDB single-quoted
+        # literal, so it must NOT be doubled/escaped (over-escaping it would
+        # corrupt the credential the secret presents to the object store).
+        sql = _build_s3_secret_sql(
+            access_key_id="k",
+            secret_access_key="pa\\ss",
+            endpoint="h:8333",
+            region="us-east-1",
+            use_ssl=False,
+            bucket="dataraum-lake",
+        )
+        # Single backslash preserved; not doubled.
+        assert "SECRET 'pa\\ss'" in sql
+        assert "pa\\\\ss" not in sql
 
     def test_scope_confines_secret_to_lake_bucket(self):
         # DAT-389 hardening: the secret is scoped to s3://<bucket> so DuckDB

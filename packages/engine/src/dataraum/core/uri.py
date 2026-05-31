@@ -25,6 +25,11 @@ from dataraum.core.settings import get_settings
 
 __all__ = ["uri_basename", "uri_stem", "uri_suffix", "validate_source_uri"]
 
+# DuckDB glob metacharacters. A key containing any of these triggers
+# multi-object glob expansion in ``read_csv_auto`` / ``read_parquet`` /
+# ``read_json_auto``, turning a single-object read into a bucket-wide scan.
+_GLOB_METACHARS = frozenset("*?[]{}")
+
 
 def validate_source_uri(uri: str) -> str:
     """Return ``uri`` if it is an ``s3://<lake-bucket>/<key>`` URI; else raise.
@@ -40,7 +45,11 @@ def validate_source_uri(uri: str) -> str:
     * credential-in-URL forms (``s3://key:secret@bucket/x.csv``) — the secret is
       registered out of band, never carried in the source URI;
     * a missing object key (``s3://bucket`` with no ``/key``);
-    * ``..`` path-traversal segments in the key.
+    * ``..`` path-traversal segments in the key;
+    * glob metacharacters (``* ? [ ] { }``) in the key — DuckDB's ``read_*``
+      readers expand globs into a multi-object scan, so a key like ``*`` or
+      ``**/*.csv`` would read every object in the bucket (including the
+      ``lake/`` parquet prefix). A source URI must name exactly one object.
 
     Args:
         uri: The source URI from ``connection_config['path']``.
@@ -83,6 +92,20 @@ def validate_source_uri(uri: str) -> str:
     if ".." in key.split("/"):
         raise ValueError(
             f"Invalid source URI {uri!r}: '..' path traversal is not allowed in the key."
+        )
+
+    # Glob check runs against the RAW remainder after ``s3://<bucket>``, not the
+    # urlsplit ``path``: the loaders hand DuckDB the verbatim URI string, and
+    # ``urlsplit`` drops a ``?query`` / ``#fragment`` that DuckDB would still see
+    # (e.g. ``s3://b/data?.csv`` — the ``?`` reaches DuckDB as a glob wildcard).
+    raw_key = uri[len(f"s3://{bucket}") :].lstrip("/")
+    glob_chars = _GLOB_METACHARS.intersection(raw_key)
+    if glob_chars:
+        raise ValueError(
+            f"Invalid source URI {uri!r}: glob metacharacters "
+            f"({''.join(sorted(glob_chars))}) are not allowed in the key. A source "
+            "URI must name exactly one object; DuckDB would otherwise expand the "
+            "glob into a bucket-wide multi-object read."
         )
 
     return uri

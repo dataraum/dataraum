@@ -10,11 +10,27 @@ from dataraum.server.storage import (
     S3_SECRET_NAME,
     _build_s3_secret_sql,
     _pg_url_to_libpq,
+    apply_s3_secret,
     bootstrap_lake,
     connect_session,
     get_anchor,
     health_probe,
 )
+
+
+class _RecordingConn:
+    """Captures every ``execute`` statement in order (no DuckDB, no network).
+
+    ``apply_s3_secret`` runs its SQL straight on a connection, so we record
+    the call order to assert the defense-in-depth invariant offline.
+    """
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, sql: str):  # noqa: ANN201 - test double, return unused
+        self.statements.append(sql)
+        return self
 
 
 class TestPgUrlToLibpq:
@@ -111,6 +127,43 @@ class TestBuildS3SecretSql:
             bucket="dataraum-lake",
         )
         assert "SCOPE 's3://dataraum-lake'" in sql
+
+
+class TestApplySecretOrdering:
+    """Defense-in-depth ordering on the sniff/preview throwaway connection.
+
+    ``SET disabled_filesystems='LocalFileSystem'`` MUST run AFTER ``LOAD httpfs``
+    — extensions load from the local filesystem, so disabling it first would
+    break the ``LOAD`` (or, worse, a future reorder could silently no-op the
+    guard). This test pins the order so a reorder can't slip through unnoticed.
+
+    We bind ``apply_s3_secret`` from the module and call it on a recording fake
+    connection; the suite-wide ``_stub_s3_secret`` patches the *module attribute*
+    of the same name, which does not affect this directly-imported reference.
+    """
+
+    def test_disabled_filesystems_runs_after_load_httpfs(self):
+        conn = _RecordingConn()
+        apply_s3_secret(conn, disable_local_fs=True)  # type: ignore[arg-type]
+
+        joined = conn.statements
+        load_idx = next(
+            i for i, s in enumerate(joined) if s.strip().upper().startswith("LOAD HTTPFS")
+        )
+        disable_idx = next(i for i, s in enumerate(joined) if "disabled_filesystems" in s)
+        assert load_idx < disable_idx, (
+            "SET disabled_filesystems must run AFTER LOAD httpfs "
+            f"(got LOAD at {load_idx}, disable at {disable_idx}): {joined}"
+        )
+
+    def test_no_disabled_filesystems_when_flag_off(self):
+        # The lake / session connections keep local FS access (extension +
+        # ATTACH machinery), so the guard is only emitted when asked for.
+        conn = _RecordingConn()
+        apply_s3_secret(conn, disable_local_fs=False)  # type: ignore[arg-type]
+
+        assert any(s.strip().upper().startswith("LOAD HTTPFS") for s in conn.statements)
+        assert not any("disabled_filesystems" in s for s in conn.statements)
 
 
 class TestHealthProbe:

@@ -66,6 +66,35 @@ class TestValidateSourceUri:
         with pytest.raises(ValueError, match="traversal"):
             validate_source_uri(f"s3://{_BUCKET}/../other-bucket/x.csv")
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            f"s3://{_BUCKET}/*",  # whole bucket
+            f"s3://{_BUCKET}/*.csv",  # every CSV at the root
+            f"s3://{_BUCKET}/**/*.csv",  # recursive glob — incl. the lake/ prefix
+            f"s3://{_BUCKET}/[a-z].csv",  # character class
+            f"s3://{_BUCKET}/{{1,2}}.csv",  # brace expansion
+            f"s3://{_BUCKET}/data?.csv",  # single-char wildcard
+            f"s3://{_BUCKET}/uploads/*/orders.csv",  # glob in a mid segment
+        ],
+    )
+    def test_rejects_glob_metachars_in_key(self, uri: str) -> None:
+        # A key with DuckDB glob metacharacters expands into a multi-object
+        # scan (bucket-wide enumeration / read incl. the lake/ parquet prefix),
+        # so the gate must reject it outright.
+        with pytest.raises(ValueError, match="glob metacharacters"):
+            validate_source_uri(uri)
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            f"s3://{_BUCKET}/orders.csv",  # ordinary key, no metachars
+            f"s3://{_BUCKET}/uploads/abc-123/sales_2024.parquet",  # dashes/underscores ok
+        ],
+    )
+    def test_accepts_ordinary_keys_without_globs(self, uri: str) -> None:
+        assert validate_source_uri(uri) == uri
+
     def test_rejects_userinfo_even_when_host_matches(self) -> None:
         # The cred-in-URL form parses to a hostname equal to the bucket, but the
         # userinfo must still make it fail (we match the full netloc, not the

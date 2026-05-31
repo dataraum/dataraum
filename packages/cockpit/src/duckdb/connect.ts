@@ -4,9 +4,15 @@
 // Two source kinds behind one `ConnectSchema` contract:
 //   - database: reuse `probe` (READ_ONLY ATTACH + information_schema + capped
 //     per-table sample SELECTs; credentials resolved by source name).
-//   - file:     a server-readable path sniffed via DuckDB's file readers
-//     (read_csv_auto / read_parquet / read_json_auto) + DESCRIBE — no upload
-//     route (that's DAT-386).
+//   - file:     an `s3://` URI in the configured object-store bucket — either an
+//     upload staged by the entry-mode (DAT-386) or an existing bucket object —
+//     sniffed via DuckDB's file readers (read_csv_auto / read_parquet /
+//     read_json_auto) + DESCRIBE. The sniff connection registers httpfs + the
+//     object-store S3 secret (the same `dataraum_s3` secret the lake reader
+//     uses) before the read. The path is validated to the single allowed shape
+//     `s3://<bucket>/<key>` (see `validateBucketS3Path`) — local paths, `file://`,
+//     other buckets, and cred-in-URL forms are rejected. A path that opened any
+//     other container FS file would be an arbitrary-file-read hole (DAT-386).
 //
 // Nothing here ingests or writes: it is a read-only peek the agent shows the
 // user via the schema-preview canvas widget. The DuckDB-touching orchestration
@@ -16,9 +22,11 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 import { z } from "zod";
 
+import { config } from "../config";
 import { clampRowLimit } from "./limit";
 import { probe, SUPPORTED_BACKENDS } from "./probe";
 import { type QueryResult, readerToResult } from "./query-result";
+import { applyS3Secret } from "./s3-secret";
 import { escapeSqlLiteral } from "./sql-escape";
 
 // --- contract ---------------------------------------------------------------
@@ -68,7 +76,11 @@ export const ConnectInput = z
 		path: z
 			.string()
 			.optional()
-			.describe("Server-readable file path (required when source_kind=file)."),
+			.describe(
+				"Object path to sniff (required when source_kind=file): an `s3://` URI " +
+					"in the configured object-store bucket — an upload staged by the entry-mode " +
+					"or an existing bucket object.",
+			),
 	})
 	.superRefine((v, ctx) => {
 		if (v.source_kind === "database") {
@@ -90,6 +102,18 @@ export const ConnectInput = z
 				message: "path is required when source_kind=file",
 				path: ["path"],
 			});
+		} else {
+			// Pre-SQL gate: only `s3://<configured-bucket>/<key>` is reachable.
+			// Local paths / file:// / other buckets / cred-in-URL forms would be an
+			// arbitrary-file-read hole (DAT-386). Defense-in-depth also re-checks in
+			// connectFile before any SQL is built.
+			const check = validateBucketS3Path(v.path);
+			if (!check.ok)
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: `invalid file path: ${check.reason}`,
+					path: ["path"],
+				});
 		}
 	});
 export type ConnectInput = z.infer<typeof ConnectInput>;
@@ -216,6 +240,74 @@ export function mapDescribeToTable(
 	};
 }
 
+// --- s3:// path validation (security) ---------------------------------------
+
+// The ONLY shape `connect(source_kind=file)` accepts: `s3://<bucket>/<key>`
+// where `<bucket>` is the configured object-store bucket (`config.s3Bucket`).
+// Anything else — a local path, `file://`, `../`, a bare name, another bucket,
+// or a cred-in-URL `s3://key:secret@bucket/...` form — is REFUSED. Reading any
+// other path would let `connect` read an arbitrary container FS file (e.g.
+// `/etc/passwd`, `/app/.env`) or any bucket on the endpoint (DAT-386).
+//
+// Hand-parsed rather than via `URL` so the rules are explicit and total: `URL`
+// lowercases the host, silently accepts userinfo, and percent-decodes — none of
+// which we want to reason about for an allowlist check. The host (authority)
+// must be EXACTLY the bucket: no `user:pass@`, no `:port`, no empty key.
+export function validateBucketS3Path(path: string): {
+	ok: boolean;
+	reason?: string;
+} {
+	if (!path.startsWith("s3://")) {
+		return {
+			ok: false,
+			reason:
+				"path must be an `s3://` URI in the configured object-store bucket " +
+				`(s3://${config.s3Bucket}/<key>); local paths and other schemes are not allowed`,
+		};
+	}
+	const rest = path.slice("s3://".length);
+	const slash = rest.indexOf("/");
+	// Need an authority AND a non-empty key after the first slash.
+	if (slash <= 0 || slash === rest.length - 1) {
+		return {
+			ok: false,
+			reason: `path must be of the form s3://${config.s3Bucket}/<key> with a non-empty key`,
+		};
+	}
+	const authority = rest.slice(0, slash);
+	const key = rest.slice(slash + 1);
+	// Authority must be EXACTLY the bucket — reject `key:secret@bucket`,
+	// `bucket:port`, and any other bucket.
+	if (authority !== config.s3Bucket) {
+		return {
+			ok: false,
+			reason:
+				`path bucket must be the configured object-store bucket ` +
+				`'${config.s3Bucket}' (got authority '${authority}')`,
+		};
+	}
+	// Defense against a `..`/absolute-escape slipped into the key.
+	if (key.startsWith("/") || key.split("/").some((seg) => seg === "..")) {
+		return {
+			ok: false,
+			reason: "path key must not contain `..` segments or a leading slash",
+		};
+	}
+	// Reject DuckDB glob metacharacters. DuckDB's file readers treat `* ? [ ] { }`
+	// as a glob, expanding one `connect` into a ListObjectsV2 + multi-object read
+	// across the bucket — including the lake's `lake/` prefix. A single concrete
+	// object must address exactly one key, so any glob char is refused.
+	if (/[*?[\]{}]/.test(key)) {
+		return {
+			ok: false,
+			reason:
+				"path key must not contain glob metacharacters (`* ? [ ] { }`); " +
+				"it must address a single object",
+		};
+	}
+	return { ok: true };
+}
+
 // --- orchestration (driver) -------------------------------------------------
 
 const FILE_READERS: { ext: RegExp; reader: string }[] = [
@@ -289,12 +381,32 @@ async function connectDatabase(
 }
 
 async function connectFile(path: string): Promise<ConnectSchema> {
+	// Defense in depth (the tool's zod superRefine already gated this pre-SQL):
+	// re-validate the single allowed shape `s3://<bucket>/<key>` BEFORE any SQL
+	// is built, so a caller into `connect()`/`connectFile()` that bypasses the
+	// tool schema still cannot turn `path` into an arbitrary-file read (DAT-386).
+	const check = validateBucketS3Path(path);
+	if (!check.ok) {
+		throw new Error(`connect(file='${path}') rejected: ${check.reason}`);
+	}
+
 	const reader = readerForPath(path);
 	const from = `${reader}('${escapeSqlLiteral(path)}')`;
 
 	const instance = await DuckDBInstance.create(":memory:");
 	const conn = await instance.connect();
 	try {
+		// Only `s3://` is reachable now, so ALWAYS register httpfs + the
+		// object-store secret before the reader opens the object. This is the SAME
+		// `dataraum_s3` secret the lake reader uses (s3-secret.ts), so the upload
+		// sniff and the lake read resolve the bucket identically.
+		await applyS3Secret(conn);
+		// Belt-and-braces: `applyS3Secret` LOADed httpfs (extensions load off the
+		// local FS, so this MUST come AFTER), now refuse the local filesystem on
+		// this throwaway sniff conn — a slipped-through local path is denied by
+		// DuckDB itself, not just our validator. `s3://` reads go via httpfs and
+		// are unaffected.
+		await conn.run("SET disabled_filesystems='LocalFileSystem'");
 		const describe: QueryResult = readerToResult(
 			await conn.runAndReadAll(`DESCRIBE SELECT * FROM ${from}`),
 		);
@@ -343,8 +455,8 @@ async function connectFile(path: string): Promise<ConnectSchema> {
  * Peek a source's schema + sample values without importing it.
  *
  * Dispatches on `source_kind`: a configured database source (by name, via the
- * READ_ONLY probe ATTACH) or a server-readable file path (via DuckDB's file
- * readers). Returns one unified `ConnectSchema`.
+ * READ_ONLY probe ATTACH) or an `s3://` object in the configured bucket (via
+ * DuckDB's file readers). Returns one unified `ConnectSchema`.
  */
 export async function connect(input: ConnectInput): Promise<ConnectSchema> {
 	const parsed = ConnectInput.parse(input);

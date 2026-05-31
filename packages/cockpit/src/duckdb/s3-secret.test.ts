@@ -11,6 +11,7 @@ vi.mock("#/config", () => ({
 		s3UseSsl: false,
 		s3AccessKeyId: "dataraum",
 		s3SecretAccessKey: "dataraum-s3-secret",
+		s3Bucket: "dataraum-lake",
 	},
 }));
 
@@ -25,16 +26,18 @@ describe("buildS3SecretSql (DAT-388)", () => {
 				endpoint: "seaweedfs:8333",
 				region: "us-east-1",
 				useSsl: false,
+				bucket: "dataraum-lake",
 			}),
 		).toBe(
 			"CREATE OR REPLACE SECRET dataraum_s3 (" +
 				"TYPE s3, " +
 				"KEY_ID 'dataraum', " +
-				"SECRET 'pa\\'ss', " +
+				"SECRET 'pa''ss', " +
 				"ENDPOINT 'seaweedfs:8333', " +
 				"REGION 'us-east-1', " +
 				"URL_STYLE 'path', " +
-				"USE_SSL false" +
+				"USE_SSL false, " +
+				"SCOPE 's3://dataraum-lake'" +
 				")",
 		);
 	});
@@ -47,8 +50,22 @@ describe("buildS3SecretSql (DAT-388)", () => {
 				endpoint: "s3.example.com:443",
 				region: "eu-central-1",
 				useSsl: true,
+				bucket: "dataraum-lake",
 			}),
 		).toContain("USE_SSL true");
+	});
+
+	it("scopes the secret to the configured bucket", () => {
+		expect(
+			buildS3SecretSql({
+				accessKeyId: "k",
+				secretAccessKey: "s",
+				endpoint: "s3.example.com:443",
+				region: "eu-central-1",
+				useSsl: true,
+				bucket: "dataraum-lake",
+			}),
+		).toContain("SCOPE 's3://dataraum-lake'");
 	});
 });
 
@@ -67,6 +84,8 @@ describe("applyS3Secret (DAT-388)", () => {
 		expect(sql[2]).toContain("CREATE OR REPLACE SECRET dataraum_s3");
 		expect(sql[2]).toContain("KEY_ID 'dataraum'");
 		expect(sql[2]).toContain("USE_SSL false");
+		// Scoped to the configured bucket (DAT-386 defense in depth).
+		expect(sql[2]).toContain("SCOPE 's3://dataraum-lake'");
 	});
 
 	it("tolerates INSTALL httpfs failing (still LOADs + creates the secret)", async () => {

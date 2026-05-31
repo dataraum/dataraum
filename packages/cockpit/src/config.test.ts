@@ -13,6 +13,7 @@ const REQUIRED: Record<string, string> = {
 	S3_ENDPOINT: "test-s3:8333",
 	S3_ACCESS_KEY_ID: "test-access-key",
 	S3_SECRET_ACCESS_KEY: "test-secret-key",
+	S3_BUCKET: "test-lake",
 };
 
 const OPTIONAL = [
@@ -52,6 +53,8 @@ describe("cockpit config (DAT-363)", () => {
 		expect(config.s3Endpoint).toBe(REQUIRED.S3_ENDPOINT);
 		expect(config.s3AccessKeyId).toBe(REQUIRED.S3_ACCESS_KEY_ID);
 		expect(config.s3SecretAccessKey).toBe(REQUIRED.S3_SECRET_ACCESS_KEY);
+		// Upload-staging bucket (DAT-386) — required, same bucket as the lake.
+		expect(config.s3Bucket).toBe(REQUIRED.S3_BUCKET);
 		expect(config.s3Region).toBe("us-east-1");
 		expect(config.s3UseSsl).toBe(true);
 		expect(config.temporalHost).toBeUndefined();

@@ -4,6 +4,36 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-31: DAT-382 — ontology induction LEAVES the engine for the cockpit agent tier
+
+Lands the ADR-0004 cut: `_adhoc` ontology induction is no longer the engine's
+job. The cockpit `frame` stage (TS, TanStack AI + `@tanstack/ai-anthropic`) now
+induces concepts from the connect schema and writes them as `concept`
+`config_overlay` rows; the engine grounds against those rows. Folds in DAT-377 as
+the grounding-only frozen-artifact contract (ADR-0007).
+
+What changed in the engine (calibration-relevant):
+- **Deleted** `analysis/semantic/induction.py` (the `OntologyInductionAgent` +
+  `induce_adhoc_concepts`), its `__init__` exports, and the
+  `dataraum-config/llm/prompts/ontology_induction.yaml` prompt. The DAT-376 split
+  stays — only induction's *home* moved (to the cockpit). The cycles / validation /
+  graphs induction agents are **untouched**.
+- **`semantic_per_column` is grounding-only.** The `if ontology == "_adhoc":
+  induce_adhoc_concepts(...)` branch is replaced by a **fail-loud** guard: a cold-start
+  `_adhoc` workspace with **zero** concept overlay rows now FAILS the phase with a clear
+  error instead of grounding against an empty concept set. `ground_columns` is otherwise
+  unchanged.
+- The cold-start concept set is now produced by the **TS frame agent**, not the engine.
+  Its prompt is the engine `ontology_induction.yaml` re-homed verbatim to
+  `packages/cockpit/src/prompts/frame.ts`. Concept payload contract is unchanged
+  (`OntologyConcept` field set; `core/overlay._apply_concept` consumes it as before).
+
+Calibration impact: cold-start induction quality is now a cockpit (TS) concern. The
+engine no longer makes the induction LLM call; evaluate induction against the TS frame
+agent. Grounding (column→concept mapping) recall/precision is unaffected by this PR —
+it still runs in the engine against the same concept rows. Recall coverage for the
+relocated induction is handed to DAT-379/383.
+
 ## 2026-05-29: DAT-373 — stable typed Column ids + owner-scoped per-phase replay_cleanup (Option A)
 
 Fixes the cross-stage data-loss hazard DAT-343 flagged: a type-teach replay used

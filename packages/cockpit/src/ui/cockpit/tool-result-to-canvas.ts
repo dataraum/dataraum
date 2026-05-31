@@ -13,6 +13,7 @@
 
 import type { UIMessage } from "@tanstack/ai-react";
 import type { ConnectSchema } from "#/duckdb/connect";
+import type { FrameResult } from "#/tools/frame";
 import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -38,6 +39,12 @@ export function toolResultToCanvas(
 			// surfaces its error in the chat rail, not as an empty preview).
 			return result
 				? { kind: "schema-preview", schema: result as ConnectSchema }
+				: null;
+		case "frame":
+			// The frame result (declared concepts) renders as the ConceptFrame
+			// widget; a missing result leaves the canvas unchanged.
+			return result
+				? { kind: "concept-frame", frame: result as FrameResult }
 				: null;
 		default:
 			// teach / replay / unknown: no canvas projection.

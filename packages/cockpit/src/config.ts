@@ -44,6 +44,11 @@ const ConfigSchema = z.object({
 	s3UseSsl: z.boolean(),
 	s3AccessKeyId: z.string().min(1),
 	s3SecretAccessKey: z.string().min(1),
+	// The bucket uploads are staged into (DAT-386), under the `uploads/` prefix —
+	// the SAME bucket the lake's `lake/` prefix lives in (the lake DATA_PATH is
+	// `s3://<S3_BUCKET>/lake`). The engine derives this from the lake path; the
+	// cockpit needs it explicitly to address PutObject. Must match S3_BUCKET.
+	s3Bucket: z.string().min(1),
 
 	// --- Temporal (optional for slice-1: the cockpit Temporal client lands in
 	// E4 (DAT-344), which flips these to required; no Temporal service yet) ---
@@ -72,6 +77,7 @@ function loadConfig(): Config {
 		s3UseSsl: (process.env.S3_USE_SSL ?? "true") === "true",
 		s3AccessKeyId: process.env.S3_ACCESS_KEY_ID,
 		s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+		s3Bucket: process.env.S3_BUCKET,
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,

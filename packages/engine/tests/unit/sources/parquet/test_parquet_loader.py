@@ -108,7 +108,12 @@ class TestParquetLoader:
         assert columns[4].source_type == "DATE"
 
     def test_get_schema_missing_file(self):
-        """Test error handling for missing file."""
+        """A missing URI surfaces DuckDB's read error via Result.fail (DAT-389).
+
+        ``get_schema`` no longer stats the filesystem (the path is an opaque
+        URI handed verbatim to ``read_parquet``); an unreadable path fails the
+        Result with DuckDB's IO error rather than a pathlib pre-check.
+        """
         loader = ParquetLoader()
         config = SourceConfig(
             name="missing",
@@ -120,7 +125,7 @@ class TestParquetLoader:
 
         assert not result.success
         assert result.error
-        assert "not found" in result.error.lower()
+        assert "Parquet schema" in result.error
 
     def test_get_schema_no_path(self):
         """Test error handling when path is not set."""
@@ -231,7 +236,7 @@ class TestParquetLoader:
             conn.close()
 
     def test_load_missing_file(self, test_session, lake_anchor, lake_clean):
-        """Test loading a non-existent file."""
+        """A missing URI fails the load via Result.fail (DuckDB error, DAT-389)."""
         from dataraum.server.storage import connect_session
 
         loader = ParquetLoader()
@@ -245,7 +250,7 @@ class TestParquetLoader:
         try:
             result = loader.load(config, conn, test_session)
             assert not result.success
-            assert "not found" in result.error.lower()
+            assert result.error
         finally:
             conn.close()
 

@@ -38,6 +38,11 @@ os.environ["TEMPORAL_TASK_QUEUE"] = "dataraum-pipeline"
 os.environ["S3_ENDPOINT"] = "test-s3:8333"
 os.environ["S3_ACCESS_KEY_ID"] = "test-access-key"
 os.environ["S3_SECRET_ACCESS_KEY"] = "test-secret-key"
+# The lake bucket the source-URI validator (DAT-389) allows. Production sets it
+# from S3_BUCKET (compose); tests use a stable name so ``s3://dataraum-lake/...``
+# source URIs pass validation while the lake itself bootstraps off a local tmp
+# DATA_PATH (apply_s3_secret is stubbed — see _stub_s3_secret).
+os.environ["S3_BUCKET"] = "dataraum-lake"
 
 import duckdb  # noqa: E402
 import pytest  # noqa: E402

@@ -8,7 +8,6 @@ to preserve raw values and let the typing phase handle inference.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from uuid import uuid4
 
 import duckdb
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
+from dataraum.core.uri import uri_basename, uri_stem
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.storage import Column, Source, Table
@@ -46,19 +46,25 @@ class JsonLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("JSON source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"JSON file not found: {path}")
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
+        safe_path = source_config.path.replace("'", "''")
 
         try:
-            safe_path = str(path).replace("'", "''")
             # Throwaway in-memory connection: schema sniffing must NOT touch
             # the workspace lake. The shared session manager's connection is
             # ``USE``d on ``lake.typed`` (post-DAT-341); a sniff CREATE TABLE
             # there would pollute the workspace-stable typed schema with stub
-            # tables. Keep this ephemeral and unrelated to the lake.
+            # tables. Keep this ephemeral and unrelated to the lake — but
+            # register the object-store secret on it so an ``s3://`` source URI
+            # resolves (DAT-389; reuses the DAT-388 helper).
+            from dataraum.server.storage import apply_s3_secret
+
             conn = duckdb.connect(":memory:")
             try:
+                # Defense in depth (DAT-389): disable the local filesystem on the
+                # sniff connection (after httpfs loads) so a URI that slipped past
+                # validation cannot read a local file.
+                apply_s3_secret(conn, disable_local_fs=True)
                 sample_df = conn.execute(f"""
                     SELECT * FROM read_json_auto('{safe_path}')
                     LIMIT 10
@@ -103,9 +109,8 @@ class JsonLoader(LoaderBase):
         if not source_config.path:
             return Result.fail("JSON source requires 'path' in configuration")
 
-        path = Path(source_config.path)
-        if not path.exists():
-            return Result.fail(f"JSON file not found: {path}")
+        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
+        source_uri = source_config.path
 
         start_time = time.time()
 
@@ -115,12 +120,12 @@ class JsonLoader(LoaderBase):
                 source_id=source_id,
                 name=source_config.name,
                 source_type="json",
-                connection_config={"path": str(path)},
+                connection_config={"path": source_uri},
             )
             session.add(source)
 
             file_result = self._load_single_file(
-                file_path=path,
+                source_uri=source_uri,
                 source_id=source_id,
                 source_name=source_config.name,
                 duckdb_conn=duckdb_conn,
@@ -128,7 +133,7 @@ class JsonLoader(LoaderBase):
             )
 
             if not file_result.success:
-                logger.warning("json_load_failed", file=str(path), error=file_result.error)
+                logger.warning("json_load_failed", file=source_uri, error=file_result.error)
                 return Result.fail(file_result.error or "Failed to load JSON")
 
             staged_table = file_result.unwrap()
@@ -137,7 +142,7 @@ class JsonLoader(LoaderBase):
             duration = time.time() - start_time
             logger.debug(
                 "json_loaded",
-                file=str(path),
+                file=source_uri,
                 table=staged_table.table_name,
                 rows=staged_table.row_count,
                 columns=staged_table.column_count,
@@ -154,12 +159,12 @@ class JsonLoader(LoaderBase):
             )
 
         except Exception as e:
-            logger.error("json_load_error", file=str(path), error=str(e))
+            logger.error("json_load_error", file=source_uri, error=str(e))
             return Result.fail(f"Failed to load JSON: {e}")
 
     def _load_single_file(
         self,
-        file_path: Path,
+        source_uri: str,
         source_id: str,
         source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
@@ -167,8 +172,12 @@ class JsonLoader(LoaderBase):
     ) -> Result[StagedTable]:
         """Load a single JSON/JSONL file into DuckDB as all VARCHAR.
 
+        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI handed verbatim to
+        DuckDB (DAT-389). The schema DESCRIBE runs on the session ``duckdb_conn``,
+        which already carries the object-store secret (DAT-388).
+
         Args:
-            file_path: Path to the JSON file.
+            source_uri: URI of the JSON file (passed straight to ``read_json_auto``).
             source_id: ID of the parent source.
             source_name: Logical name of the parent source (used to compose
                 the source-prefixed table identifier in ``lake.raw``).
@@ -182,8 +191,8 @@ class JsonLoader(LoaderBase):
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
         try:
-            # Escape single quotes in path for SQL safety
-            safe_path = str(file_path).replace("'", "''")
+            # Escape single quotes in the URI for SQL safety
+            safe_path = source_uri.replace("'", "''")
 
             # Discover columns via read_json_auto
             schema = duckdb_conn.execute(
@@ -209,7 +218,7 @@ class JsonLoader(LoaderBase):
 
             # Compose the source-prefixed name. The catalog alias is resolved
             # here so the loader can write directly into ``lake.raw.*``.
-            file_table_name = self._sanitize_table_name(file_path.stem)
+            file_table_name = self._sanitize_table_name(uri_stem(source_uri))
             bare = table_name_for_source(source_name, file_table_name)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
@@ -269,4 +278,4 @@ class JsonLoader(LoaderBase):
             )
 
         except Exception as e:
-            return Result.fail(f"Failed to load {file_path.name}: {e}")
+            return Result.fail(f"Failed to load {uri_basename(source_uri)}: {e}")

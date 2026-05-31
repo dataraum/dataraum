@@ -36,7 +36,12 @@ class TestCSVLoader:
         assert len(columns[0].sample_values) > 0
 
     def test_get_schema_missing_file(self):
-        """Test error handling for missing file."""
+        """A missing URI surfaces DuckDB's read error via Result.fail (DAT-389).
+
+        ``get_schema`` no longer stats the filesystem (the path is an opaque
+        URI handed verbatim to ``read_csv_auto``); an unreadable path fails the
+        Result with DuckDB's error rather than a pathlib pre-check.
+        """
         loader = CSVLoader()
         config = SourceConfig(
             name="missing",
@@ -48,7 +53,7 @@ class TestCSVLoader:
 
         assert not result.success
         assert result.error
-        assert "not found" in result.error.lower()
+        assert "CSV schema" in result.error
 
     def test_get_schema_no_path(self):
         """Test error handling when path is not set."""
@@ -132,7 +137,7 @@ class TestCSVLoader:
         assert null_count > 0, "Expected some NULL values from -- conversion"
 
     def test_load_missing_file(self, duckdb_conn, session):
-        """Test loading a non-existent file."""
+        """A missing URI fails the load via Result.fail (DuckDB error, DAT-389)."""
         loader = CSVLoader()
         config = SourceConfig(
             name="missing",
@@ -142,4 +147,58 @@ class TestCSVLoader:
 
         result = loader.load(config, duckdb_conn, session)
         assert not result.success
-        assert "not found" in result.error.lower()
+        assert result.error
+
+    def test_sql_injection_in_path_is_inert(self, duckdb_conn, session):
+        """A source URI crafted to break out of the SQL literal must stay inert.
+
+        The loader f-string-interpolates the URI into ``read_csv_auto('<uri>')``,
+        escaping ``'`` the DuckDB way (doubling, not backslash). A key carrying
+        ``'); DROP TABLE ...; --`` must therefore be treated as one literal path
+        — DuckDB looks for an object with that exact (nonexistent) name and the
+        load fails cleanly — rather than the injected statement parsing and
+        executing. We assert both: the load fails, and the canary table the
+        injection tried to drop is still present afterward.
+        """
+        # Canary the injection payload tries to DROP via a lateral statement.
+        duckdb_conn.execute("CREATE TABLE injection_canary (x INTEGER)")
+
+        malicious_path = "evil.csv'); DROP TABLE injection_canary; SELECT * FROM read_csv_auto('x"
+        loader = CSVLoader()
+        config = SourceConfig(name="evil", source_type="csv", path=malicious_path)
+
+        result = loader.load(config, duckdb_conn, session)
+
+        # The whole string is one (missing-object) literal path → load fails,
+        # no lateral DROP executes.
+        assert not result.success
+        assert result.error
+
+        # The canary survives: the DROP never ran.
+        survived = duckdb_conn.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE table_name = 'injection_canary'"
+        ).fetchall()
+        assert survived == [("injection_canary",)], "injection executed a lateral DROP"
+
+    def test_single_quote_in_path_is_literal(self, duckdb_conn, session):
+        """A legitimate key containing a single quote stays a literal path.
+
+        S3 keys may legitimately contain ``'``; DuckDB's ``''`` escaping keeps
+        such a key as one path (here a missing object) rather than a parse
+        error or lateral execution — so the load fails with a read error, not a
+        SQL syntax error.
+        """
+        loader = CSVLoader()
+        config = SourceConfig(
+            name="quoted",
+            source_type="csv",
+            path="s3://dataraum-lake/o'brien/orders.csv",
+        )
+
+        result = loader.load(config, duckdb_conn, session)
+
+        assert not result.success
+        assert result.error
+        # A literal-treated missing object, not a SQL parse error.
+        assert "syntax error" not in result.error.lower()
+        assert "parser error" not in result.error.lower()

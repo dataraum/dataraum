@@ -7,6 +7,8 @@ This module covers:
   source model).
 - TestImportDispatch: ``_run`` dispatches on the bound source's type
   without orchestrating across multiple sources.
+- TestSuffixDispatch: file-source loader selection is driven by the source
+  URI's suffix alone (DAT-389), not the filesystem.
 """
 
 from __future__ import annotations
@@ -14,8 +16,12 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from dataraum.core.models import Result
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.import_phase import ImportPhase
+from dataraum.sources.csv.models import StagedTable
 
 
 class TestColumnLimit:
@@ -177,3 +183,122 @@ class TestImportDispatch:
         result = phase._run(ctx)
         assert result.status == PhaseStatus.FAILED
         assert "backend" in (result.error or "").lower()
+
+
+class TestSuffixDispatch:
+    """File-source loader selection is driven by the URI suffix alone (DAT-389).
+
+    No filesystem stat: an ``s3://<lake-bucket>/<key>`` URI is routed to a loader
+    purely by its extension, and the URI is handed to that loader verbatim. The
+    URI is first gated through ``validate_source_uri`` — anything but the lake
+    bucket fails before dispatch (see ``test_rejects_non_lake_bucket_uri``).
+    These tests patch the loader classes so the dispatch can be asserted without
+    an object store.
+    """
+
+    def _ctx(self, path: str) -> PhaseContext:
+        session = MagicMock()
+        session.get.return_value = MagicMock()  # Source row present
+        return PhaseContext(
+            session=session,
+            duckdb_conn=MagicMock(),
+            source_id="test-source",
+            config={
+                "source_name": "src",
+                "source_type": "file",
+                "source_connection_config": {"path": path},
+            },
+        )
+
+    @pytest.mark.parametrize(
+        ("uri", "expected_loader"),
+        [
+            ("s3://dataraum-lake/uploads/abc/orders.csv", "CSVLoader"),
+            ("s3://dataraum-lake/data.parquet", "ParquetLoader"),
+            ("s3://dataraum-lake/events.jsonl", "JsonLoader"),
+            ("s3://dataraum-lake/legacy/orders.tsv", "CSVLoader"),
+        ],
+    )
+    def test_loader_chosen_by_suffix(self, uri: str, expected_loader: str) -> None:
+        phase = ImportPhase()
+        ctx = self._ctx(uri)
+
+        staged = StagedTable(
+            table_id="t1",
+            table_name="src__orders",
+            raw_table_name="src__orders",
+            row_count=1,
+            column_count=1,
+        )
+        loaders = {
+            "CSVLoader": MagicMock(),
+            "ParquetLoader": MagicMock(),
+            "JsonLoader": MagicMock(),
+        }
+        for inst in loaders.values():
+            inst.return_value._load_single_file.return_value = Result.ok(staged)
+
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+            patch.object(ImportPhase, "_check_column_limit", return_value=None),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        # The chosen loader was constructed + handed the URI verbatim; the others were not.
+        for name, inst in loaders.items():
+            if name == expected_loader:
+                inst.return_value._load_single_file.assert_called_once()
+                kwargs = inst.return_value._load_single_file.call_args.kwargs
+                assert kwargs["source_uri"] == uri
+            else:
+                inst.return_value._load_single_file.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "bad_uri",
+        [
+            "/etc/passwd",
+            "/app/.env",
+            "../foo.csv",
+            "file:///etc/passwd",
+            "orders.csv",
+            "s3://other-bucket/orders.csv",
+            "s3://key:secret@dataraum-lake/orders.csv",
+        ],
+    )
+    def test_rejects_non_lake_bucket_uri(self, bad_uri: str) -> None:
+        """A non-lake-bucket URI fails loudly before any loader runs (DAT-389).
+
+        The URI is handed verbatim to DuckDB's ``read_*_auto``, so the import
+        ingress must refuse it — never a silent arbitrary-file or foreign-bucket
+        read. No loader is constructed.
+        """
+        phase = ImportPhase()
+        ctx = self._ctx(bad_uri)
+
+        loaders = {
+            "CSVLoader": MagicMock(),
+            "ParquetLoader": MagicMock(),
+            "JsonLoader": MagicMock(),
+        }
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "Invalid source URI" in (result.error or "")
+        for inst in loaders.values():
+            inst.return_value._load_single_file.assert_not_called()

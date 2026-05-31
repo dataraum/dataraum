@@ -5,17 +5,19 @@ listing, and soft-deletion.
 
 Two source kinds:
 
-- **File sources** — CSV/TSV, Parquet, JSON/JSONL, or a directory of
-  them. Registered via `add_file_source`.
+- **File sources** — a single CSV/TSV, Parquet, or JSON/JSONL file addressed
+  by an ``s3://<lake-bucket>/<key>`` URI on the object store. The URI is
+  validated (``validate_source_uri``) and stored verbatim in
+  ``connection_config['path']``, then handed straight to DuckDB at import time
+  (DAT-389) — never resolved against the filesystem. Because that URI is a
+  read primitive, registration rejects anything but the lake bucket (a local
+  path, ``file://``, a foreign bucket, a cred-in-URL form). Registered via
+  `add_file_source`.
 - **Recipe sources** — yaml declaring a backend (mssql, postgres, mysql,
-  sqlite) plus named SELECT queries. Lives under
-  :data:`dataraum.core.paths.SOURCES_DIR`. Credentials are resolved at
-  pipeline-import time via `CredentialChain` keyed by source name
-  (`DATARAUM_{NAME}_URL` env var). Registered via `add_recipe_source`.
-
-The MCP tool layer calls `resolve_source_path()` to find the file —
-direct path first, then bare-name lookup in `SOURCES_DIR` — and then
-dispatches based on the resolved extension.
+  sqlite) plus named SELECT queries. The recipe yaml is a local file parsed
+  at registration time. Credentials are resolved at pipeline-import time via
+  `CredentialChain` keyed by source name (`DATARAUM_{NAME}_URL` env var).
+  Registered via `add_recipe_source`.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.credentials import CredentialChain
 from dataraum.core.models import Result
+from dataraum.core.uri import uri_basename, uri_suffix, validate_source_uri
 from dataraum.sources.db_recipe import Recipe, parse_recipe
 from dataraum.storage.models import Source
 
@@ -40,9 +42,6 @@ _log = logging.getLogger(__name__)
 
 # Source name pattern: lowercase, starts with letter, 2-49 chars total.
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
-
-# Max files per directory source. Prevents accidental data lake ingestion.
-MAX_FILES_PER_SOURCE = 20
 
 # File extensions for the file-source path.
 _EXTENSION_MAP: dict[str, str] = {
@@ -55,63 +54,6 @@ _EXTENSION_MAP: dict[str, str] = {
 
 # Recipe yaml extensions for the database-source path.
 RECIPE_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml"})
-
-
-@dataclass
-class ResolvedSourcePath:
-    """A user-provided source path resolved against the filesystem."""
-
-    path: Path
-    """The resolved absolute path."""
-
-    fell_back_to_recipes: bool
-    """True if the resolution used the bare-name lookup in `root`."""
-
-
-def resolve_source_path(user_path: str, root: Path) -> ResolvedSourcePath | None:
-    """Resolve a user-provided source path.
-
-    Order of attempts:
-
-    1. The path as-given (after `~` expansion). If it exists, use it
-       — handles absolute paths and existing relative paths.
-    2. If the path is recipe-shaped (no extension, or `.yaml`/`.yml`),
-       look directly under `root`:
-
-       - The exact filename if a `.yaml`/`.yml` extension was provided.
-       - With `.yaml` appended if no extension.
-       - With `.yml` appended if no extension.
-
-    File-source paths (CSV, Parquet, etc.) get no fallback — practitioners
-    pass explicit paths for those. Only recipes have a conventional home.
-
-    Args:
-        user_path: The path the practitioner passed to add_source.
-        root: The container source directory (e.g.
-            :data:`dataraum.core.paths.SOURCES_DIR`).
-
-    Returns:
-        ResolvedSourcePath if found, else None.
-    """
-    direct = Path(user_path).expanduser()
-    if direct.exists():
-        return ResolvedSourcePath(path=direct.resolve(), fell_back_to_recipes=False)
-
-    # Only recipe-shaped names get the bare-name fallback.
-    suffix = direct.suffix.lower()
-    if suffix and suffix not in (".yaml", ".yml"):
-        return None
-
-    name = direct.name
-    if suffix in (".yaml", ".yml"):
-        candidates = [root / name]
-    else:
-        candidates = [root / f"{name}.yaml", root / f"{name}.yml"]
-
-    for c in candidates:
-        if c.exists():
-            return ResolvedSourcePath(path=c.resolve(), fell_back_to_recipes=True)
-    return None
 
 
 @dataclass
@@ -143,22 +85,27 @@ class SourceManager:
         self._duckdb_conn = duckdb_conn
 
     def add_file_source(self, name: str, path: str) -> Result[SourceInfo]:
-        """Register a local file source (CSV/TSV/Parquet/JSON/JSONL) or directory.
+        """Register a single-file source (CSV/TSV/Parquet/JSON/JSONL).
 
-        Recipe yaml paths must use `add_recipe_source` instead.
+        ``path`` is an ``s3://<lake-bucket>/<key>`` source URI. It is validated
+        (``validate_source_uri``), stored verbatim, and handed to DuckDB at
+        import time (DAT-389) — never resolved against the filesystem, so the
+        registering process needs no access to the source bytes. Because the URI
+        is a read primitive, a non-lake-bucket value (a local path, ``file://``,
+        a foreign bucket, a cred-in-URL form) is rejected here, not stored.
+        Dispatch is on the URI suffix alone. Recipe yaml paths must use
+        `add_recipe_source` instead.
         """
         validation = self._validate_new_name(name)
         if validation is not None:
             return validation
 
-        file_path = Path(path)
-        if not file_path.exists():
-            return Result.fail(f"Path not found: {path}")
+        try:
+            validate_source_uri(path)
+        except ValueError as e:
+            return Result.fail(str(e))
 
-        if file_path.is_dir():
-            return self._add_directory_source(name, file_path)
-
-        suffix = file_path.suffix.lower()
+        suffix = uri_suffix(path)
         if suffix in RECIPE_EXTENSIONS:
             return Result.fail(f"Path '{path}' is a recipe yaml — call add_recipe_source instead.")
 
@@ -169,21 +116,12 @@ class SourceManager:
                 f"Unsupported file format: '{suffix}'. Supported extensions: {supported}"
             )
 
-        columns: list[str] = []
-        row_count: int | None = None
-        try:
-            conn = duckdb.connect()
-            try:
-                columns, row_count = _read_file_preview(conn, file_path)
-            finally:
-                conn.close()
-        except Exception:
-            _log.debug("Preview failed for %s", path, exc_info=True)
+        columns, row_count = self._preview(path)
 
         source = Source(
             name=name,
             source_type=source_type,
-            connection_config={"path": str(file_path.resolve())},
+            connection_config={"path": path},
             status="configured",
         )
         self._session.add(source)
@@ -194,11 +132,37 @@ class SourceManager:
                 name=name,
                 source_type=source_type,
                 status="configured",
-                path=str(file_path),
+                path=path,
                 columns=columns,
                 row_count_estimate=row_count,
             )
         )
+
+    def _preview(self, source_uri: str) -> tuple[list[str], int | None]:
+        """Best-effort column/row preview of a source URI.
+
+        Opens a throwaway DuckDB connection with the object-store secret
+        applied (DAT-389) so an ``s3://`` URI resolves over httpfs, then sniffs
+        the schema. ``LocalFileSystem`` is disabled on the throwaway *after*
+        ``httpfs`` is loaded (defense in depth): even if a non-``s3://`` URI
+        slipped past ``validate_source_uri``, DuckDB refuses to read it locally.
+        Any failure (unreachable URI, no S3 access in a unit-test process) is
+        swallowed — the preview is advisory, not part of registration's contract.
+        """
+        try:
+            conn = duckdb.connect()
+            try:
+                from dataraum.server.storage import apply_s3_secret
+
+                # ``disable_local_fs`` is belt-and-braces: after httpfs loads,
+                # the sniff conn refuses any local read on a slipped-past URI.
+                apply_s3_secret(conn, disable_local_fs=True)
+                return _read_file_preview(conn, source_uri)
+            finally:
+                conn.close()
+        except Exception:
+            _log.debug("Preview failed for %s", source_uri, exc_info=True)
+            return [], None
 
     def add_recipe_source(self, name: str, recipe_path: str) -> Result[SourceInfo]:
         """Register a database source from a recipe yaml.
@@ -240,72 +204,6 @@ class SourceManager:
                 path=str(recipe.source_path),
                 backend=recipe.backend,
                 recipe_tables=[t.name for t in recipe.tables],
-            )
-        )
-
-    def _add_directory_source(self, name: str, directory: Path) -> Result[SourceInfo]:
-        """Register a directory source by scanning for supported files."""
-        format_counts: dict[str, int] = {}
-        total_files = 0
-        for child in sorted(directory.iterdir()):
-            if not child.is_file():
-                continue
-            fmt = _EXTENSION_MAP.get(child.suffix.lower())
-            if fmt:
-                format_counts[fmt] = format_counts.get(fmt, 0) + 1
-                total_files += 1
-
-        if total_files == 0:
-            supported = ", ".join(sorted(_EXTENSION_MAP.keys()))
-            return Result.fail(
-                f"No supported data files found in '{directory}'. Supported extensions: {supported}"
-            )
-        if total_files > MAX_FILES_PER_SOURCE:
-            return Result.fail(
-                f"Directory contains {total_files} data files (max {MAX_FILES_PER_SOURCE}). "
-                f"Split into multiple sources or reduce the number of files."
-            )
-
-        source_type = max(format_counts, key=lambda k: format_counts[k])
-
-        columns: list[str] = []
-        row_count: int | None = None
-        for child in sorted(directory.iterdir()):
-            if child.is_file() and _EXTENSION_MAP.get(child.suffix.lower()) == source_type:
-                try:
-                    conn = duckdb.connect()
-                    try:
-                        columns, row_count = _read_file_preview(conn, child)
-                    finally:
-                        conn.close()
-                except Exception:
-                    _log.debug("Preview failed for %s", child, exc_info=True)
-                break
-
-        source = Source(
-            name=name,
-            source_type=source_type,
-            connection_config={"path": str(directory.resolve())},
-            status="configured",
-        )
-        self._session.add(source)
-        self._session.flush()
-
-        breakdown = ", ".join(f"{count} {fmt}" for fmt, count in sorted(format_counts.items()))
-
-        return Result.ok(
-            SourceInfo(
-                name=name,
-                source_type=source_type,
-                status="configured",
-                path=str(directory),
-                columns=columns,
-                row_count_estimate=row_count,
-                discovered_schema={
-                    "file_count": total_files,
-                    "formats": format_counts,
-                    "breakdown": breakdown,
-                },
             )
         )
 
@@ -375,10 +273,17 @@ def _recipe_table_names(source: Source) -> list[str]:
     return [t["name"] for t in cfg.get("tables", []) if isinstance(t, dict) and "name" in t]
 
 
-def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[list[str], int | None]:
-    """Read column names and row count from a file."""
-    safe = str(path).replace("'", "''")
-    suffix = path.suffix.lower()
+def _read_file_preview(
+    conn: duckdb.DuckDBPyConnection, source_uri: str
+) -> tuple[list[str], int | None]:
+    """Read column names and row count from a source URI.
+
+    ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI passed verbatim to
+    DuckDB over httpfs (DAT-389). ``conn`` must already carry the object-store
+    secret for the ``s3://`` URI to resolve.
+    """
+    safe = source_uri.replace("'", "''")
+    suffix = uri_suffix(source_uri)
 
     if suffix in (".csv", ".tsv"):
         try:
@@ -387,7 +292,7 @@ def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[lis
             err = str(e).lower()
             if "not utf-8 encoded" in err or "byte sequence mismatch" in err:
                 msg = (
-                    f"File is not UTF-8 encoded: {path.name}. "
+                    f"File is not UTF-8 encoded: {uri_basename(source_uri)}. "
                     "Re-save as UTF-8 (in Excel: Save As → CSV UTF-8)."
                 )
                 raise ValueError(msg) from e

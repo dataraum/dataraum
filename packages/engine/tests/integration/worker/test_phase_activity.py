@@ -57,6 +57,24 @@ _TABLE_LOCAL_DETECTORS = {"type_fidelity", "null_ratio"}
 _LIVE_LLM_ENV = "DATARAUM_LIVE_LLM_TEST"
 
 
+@pytest.fixture(autouse=True)
+def _allow_local_fixture_uris(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the import ingress accept the local fixture paths these tests use.
+
+    The subject here is the worker substrate (one ConnectionManager + the
+    DuckLake anchor surviving across phases, per-table concurrency), not the
+    DAT-389 source-URI gate — and there is no object store in the test process,
+    so the fixtures are local CSVs DuckDB reads directly. The gate's correctness
+    (rejecting non-``s3://<lake-bucket>`` URIs) is proven by the dedicated unit
+    tests; here we pass it through so the real ``run_phase`` worker path can load
+    the local fixtures.
+    """
+    monkeypatch.setattr(
+        "dataraum.pipeline.phases.import_phase.validate_source_uri",
+        lambda uri: uri,
+    )
+
+
 @pytest.fixture
 def worker_manager(pg_url_clean: str, lake_anchor, lake_clean):  # noqa: ANN001
     """A workspace-level ConnectionManager built exactly as the worker bootstraps it.
@@ -213,6 +231,20 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
     assert "some-other-workspace" in (result.error or "")
 
 
+@pytest.mark.skip(
+    reason=(
+        "Needs DAT-378: a single production `import` activity that enumerates a "
+        "multi-file source into >1 raw tables. This test drives the real worker "
+        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
+        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1`. "
+        "Per DAT-389 production import is strictly single-URI — one `import` "
+        "activity loads exactly one object — so this multi-table fan-out premise "
+        "cannot hold until DAT-378 adds multi-file enumeration to the connect/"
+        "select surface. The harness directory enumeration added in DAT-389 fixes "
+        "the `PipelineTestHarness` fixtures but deliberately does not touch this "
+        "production-path test."
+    )
+)
 def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:
     """The full table-local chain runs green per table on a multi-table source.
 
@@ -237,6 +269,21 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     assert _lake_tables(worker_manager, "typed"), "no typed tables after the chain"
 
 
+@pytest.mark.skip(
+    reason=(
+        "Needs DAT-378: a single production `import` activity that enumerates a "
+        "multi-file source into >1 raw tables. This test drives the real worker "
+        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
+        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1` "
+        "before fanning the per-table chains across threads. Per DAT-389 "
+        "production import is strictly single-URI — one `import` activity loads "
+        "exactly one object — so the multi-table source this concurrency assertion "
+        "needs cannot exist until DAT-378 adds multi-file enumeration to the "
+        "connect/select surface. The harness directory enumeration added in "
+        "DAT-389 fixes the `PipelineTestHarness` fixtures but deliberately does "
+        "not touch this production-path test."
+    )
+)
 def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
     worker_manager: ConnectionManager, small_finance_path: Path
 ) -> None:

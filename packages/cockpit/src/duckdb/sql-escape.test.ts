@@ -37,9 +37,22 @@ describe("pgUrlToLibpq (DAT-367)", () => {
 	});
 });
 
-describe("escapeSqlLiteral (DAT-367)", () => {
-	it("escapes single quotes and backslashes", () => {
-		expect(escapeSqlLiteral("/var/li'b\\lake")).toBe("/var/li\\'b\\\\lake");
+describe("escapeSqlLiteral (DAT-386 — DuckDB doubles quotes, backslash is literal)", () => {
+	it("doubles single quotes and leaves backslashes untouched", () => {
+		// DuckDB does not honour `\'`; the only escape is `''`. A backslash is an
+		// ordinary character, so it must NOT be doubled (over-escaping would change
+		// the value the reader/ATTACH sees).
+		expect(escapeSqlLiteral("/var/li'b\\lake")).toBe("/var/li''b\\lake");
+	});
+
+	it("neutralizes a quote-break injection by doubling the quote", () => {
+		// The Finding-1 attacker: a `'` that would close the literal and let the
+		// trailing SQL execute. Doubling turns it into data, not a delimiter.
+		expect(
+			escapeSqlLiteral(
+				"s3://dataraum-lake/a.csv') UNION ALL SELECT version() -- ",
+			),
+		).toBe("s3://dataraum-lake/a.csv'') UNION ALL SELECT version() -- ");
 	});
 
 	it("leaves a clean path untouched", () => {
@@ -66,26 +79,27 @@ describe("buildDucklakeAttachSql (DAT-367 escaping fix)", () => {
 
 	it("escapes the libpq single-quotes a spaced password introduces", () => {
 		// pgUrlToLibpq wraps a spaced password as password='pa ss'; those inner
-		// quotes must be backslash-escaped so they don't close the outer SQL
-		// literal. The previous code interpolated the libpq string raw → broken.
+		// quotes must be DOUBLED so they don't close the outer SQL literal. DuckDB
+		// collapses each `''` back to one `'` before the postgres connector sees
+		// it. (The previous code interpolated the libpq string raw → broken.)
 		const sql = buildDucklakeAttachSql(
 			"lake",
 			"postgresql://u:pa%20ss@h:5432/db",
 			"/data",
 		);
-		expect(sql).toContain("password=\\'pa ss\\'");
+		expect(sql).toContain("password=''pa ss''");
 		// The outer literal stays balanced: exactly one unescaped opening quote
 		// after ATTACH and the only unescaped quotes wrap the two literals.
 		expect(sql.startsWith("ATTACH 'ducklake:postgres:")).toBe(true);
 		expect(sql).toContain("' AS lake (DATA_PATH '/data', READ_ONLY)");
 	});
 
-	it("escapes a quote/backslash in the data path", () => {
+	it("escapes a quote in the data path by doubling it; backslash stays literal", () => {
 		const sql = buildDucklakeAttachSql(
 			"lake",
 			"postgresql://u:p@h:5432/db",
 			"/da'ta\\x",
 		);
-		expect(sql).toContain("(DATA_PATH '/da\\'ta\\\\x', READ_ONLY)");
+		expect(sql).toContain("(DATA_PATH '/da''ta\\x', READ_ONLY)");
 	});
 });

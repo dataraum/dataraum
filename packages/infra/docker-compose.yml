@@ -256,7 +256,7 @@ services:
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       # Lake DATA_PATH on the object store (DAT-388). s3:// URI — must match the
       # engine-worker's DUCKLAKE_DATA_PATH byte-for-byte (the cockpit ATTACHes
-      # the same lake READ_ONLY). Uploads will write to the bucket via @aws-lite
+      # the same lake READ_ONLY). Uploads write to the same bucket via @aws-lite
       # (DAT-386); there is no shared filesystem. S3 creds are plain env (single
       # source is .env), same posture as the URLs below.
       DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/lake
@@ -265,6 +265,11 @@ services:
       S3_USE_SSL: ${S3_USE_SSL:-false}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      # Bucket the upload entry-mode (DAT-386) stages files into, under the
+      # uploads/ prefix — the SAME bucket as DATARAUM_LAKE_PATH's lake/ prefix.
+      # The cockpit needs it explicitly to address PutObject (it can't infer the
+      # bucket from the lake path, which carries the lake/ suffix).
+      S3_BUCKET: ${S3_BUCKET}
       # DuckLake catalog (DAT-367) — the cockpit ATTACHes the same DuckLake
       # catalog the engine-worker owns, READ_ONLY, for the interactive read
       # verbs (run_sql). Same value as the engine-worker's DUCKLAKE_CATALOG_URL

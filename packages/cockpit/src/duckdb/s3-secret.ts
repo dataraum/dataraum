@@ -22,6 +22,11 @@ const S3_SECRET_NAME = "dataraum_s3";
  * Every interpolated value is a single-quoted SQL literal, so each is escaped.
  * `URL_STYLE 'path'` is required for non-AWS S3 (SeaweedFS/MinIO) — DuckDB
  * defaults to virtual-host style and does not auto-flip on a custom endpoint.
+ *
+ * `SCOPE 's3://<bucket>'` pins the secret to the configured bucket: DuckDB only
+ * attaches these creds for objects under that prefix, so even a slipped-through
+ * `s3://other-bucket/...` read finds no matching secret (defense in depth for
+ * the connect sniff — DAT-386).
  */
 export function buildS3SecretSql(params: {
 	accessKeyId: string;
@@ -29,6 +34,7 @@ export function buildS3SecretSql(params: {
 	endpoint: string;
 	region: string;
 	useSsl: boolean;
+	bucket: string;
 }): string {
 	return (
 		`CREATE OR REPLACE SECRET ${S3_SECRET_NAME} (` +
@@ -38,7 +44,8 @@ export function buildS3SecretSql(params: {
 		`ENDPOINT '${escapeSqlLiteral(params.endpoint)}', ` +
 		`REGION '${escapeSqlLiteral(params.region)}', ` +
 		"URL_STYLE 'path', " +
-		`USE_SSL ${params.useSsl ? "true" : "false"}` +
+		`USE_SSL ${params.useSsl ? "true" : "false"}, ` +
+		`SCOPE 's3://${escapeSqlLiteral(params.bucket)}'` +
 		")"
 	);
 }
@@ -65,6 +72,7 @@ export async function applyS3Secret(conn: DuckDBConnection): Promise<void> {
 			endpoint: config.s3Endpoint,
 			region: config.s3Region,
 			useSsl: config.s3UseSsl,
+			bucket: config.s3Bucket,
 		}),
 	);
 }

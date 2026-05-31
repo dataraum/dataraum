@@ -35,9 +35,20 @@ function quoteLibpq(value: string): string {
 	return value;
 }
 
-/** Backslash-escape `\` and `'` for safe single-quoted SQL interpolation. */
+/**
+ * Escape a string for safe interpolation into a single-quoted DuckDB SQL
+ * literal. Returns the INNER literal text — callers wrap it in `'…'`.
+ *
+ * DuckDB does NOT honour backslash escapes inside single-quoted strings: a `\`
+ * is an ordinary character, and the ONLY way to embed a single quote is to
+ * double it (`''`). Backslash-escaping a quote (`\'`) therefore does NOT escape
+ * it — the `'` still terminates the literal and the trailing text is parsed as
+ * SQL (an injection hole; verified against DuckDB 1.5). So we double quotes and
+ * leave backslashes untouched. Matches the engine's loader/`backends`
+ * `replace("'", "''")` convention.
+ */
 export function escapeSqlLiteral(value: string): string {
-	return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+	return value.replace(/'/g, "''");
 }
 
 /**
@@ -46,9 +57,9 @@ export function escapeSqlLiteral(value: string): string {
  * BOTH single-quoted literals — the `ducklake:postgres:<libpq>` connection
  * string and the data path — are escaped. This matters for the connection
  * string: `pgUrlToLibpq` emits inner single quotes for any value containing
- * whitespace/quotes (e.g. `password='pa ss'`), and those must be
- * backslash-escaped so they don't terminate the outer SQL literal. DuckDB
- * un-escapes them before handing the string to its postgres connector, so the
+ * whitespace/quotes (e.g. `password='pa ss'`), and those must be doubled (`''`)
+ * so they don't terminate the outer SQL literal. DuckDB collapses each `''`
+ * back to one `'` before handing the string to its postgres connector, so the
  * libpq quoting survives intact. (Escaping only the data path and interpolating
  * the libpq string raw was a real bug: a space or quote in the catalog
  * credentials produced malformed/injectable ATTACH SQL.)

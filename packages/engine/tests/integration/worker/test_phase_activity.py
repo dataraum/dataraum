@@ -233,11 +233,16 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
 
 @pytest.mark.skip(
     reason=(
-        "Multi-table directory ingest was removed in DAT-389 (the import phase is "
-        "single-URI now; the former directory branch is deferred to DAT-378). This "
-        "fixture is a directory of CSVs, so import produces no raw tables until "
-        "DAT-378 lands multi-file enumeration. Pre-existing red on the branch, "
-        "unrelated to the source-URI hardening."
+        "Needs DAT-378: a single production `import` activity that enumerates a "
+        "multi-file source into >1 raw tables. This test drives the real worker "
+        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
+        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1`. "
+        "Per DAT-389 production import is strictly single-URI — one `import` "
+        "activity loads exactly one object — so this multi-table fan-out premise "
+        "cannot hold until DAT-378 adds multi-file enumeration to the connect/"
+        "select surface. The harness directory enumeration added in DAT-389 fixes "
+        "the `PipelineTestHarness` fixtures but deliberately does not touch this "
+        "production-path test."
     )
 )
 def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:
@@ -266,11 +271,17 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
 
 @pytest.mark.skip(
     reason=(
-        "Multi-table directory ingest was removed in DAT-389 (the import phase is "
-        "single-URI now; the former directory branch is deferred to DAT-378). This "
-        "fixture is a directory of CSVs, so import produces no raw tables until "
-        "DAT-378 lands multi-file enumeration. Pre-existing red on the branch, "
-        "unrelated to the source-URI hardening."
+        "Needs DAT-378: a single production `import` activity that enumerates a "
+        "multi-file source into >1 raw tables. This test drives the real worker "
+        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
+        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1` "
+        "before fanning the per-table chains across threads. Per DAT-389 "
+        "production import is strictly single-URI — one `import` activity loads "
+        "exactly one object — so the multi-table source this concurrency assertion "
+        "needs cannot exist until DAT-378 adds multi-file enumeration to the "
+        "connect/select surface. The harness directory enumeration added in "
+        "DAT-389 fixes the `PipelineTestHarness` fixtures but deliberately does "
+        "not touch this production-path test."
     )
 )
 def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(

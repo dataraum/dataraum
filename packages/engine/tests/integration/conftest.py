@@ -133,28 +133,49 @@ class PipelineTestHarness:
         self.results[phase_name] = result
         return result
 
+    # Data-file extensions the harness enumerates out of a directory fixture,
+    # mirroring the loader-dispatch suffixes (CSV/TSV, Parquet, JSON).
+    _FIXTURE_DATA_SUFFIXES = (".csv", ".tsv", ".parquet", ".pq", ".json", ".jsonl")
+
     def run_import(
         self,
         source_path: str | Path,
         source_name: str | None = None,
         junk_columns: list[str] | None = None,
     ) -> PhaseResult:
-        """Convenience method to run the import phase against a local fixture file.
+        """Convenience method to run the import phase against a local fixture path.
 
         Pre-seeds a Source row (mimicking what ``begin_session`` /
         ``setup_pipeline`` write), then drives the import loader on a local
-        readable file.
+        readable file — or, for a directory fixture, on each contained data
+        file in turn.
 
         Per DAT-389 the production import ingress (``ImportPhase._run``) gates
         the source URI through ``validate_source_uri`` — only
-        ``s3://<lake-bucket>/<key>`` reaches a loader. That gate is covered by
-        the unit tests. These integration tests exercise the *real* DuckDB read +
-        downstream phases against local fixture files (there is no object store
-        in the test process), so the harness invokes the post-validation loader
-        entry (``_load_file_source``) directly rather than the ``s3://`` gate.
+        ``s3://<lake-bucket>/<key>`` reaches a loader — and is now strictly
+        single-URI: the former directory branch that enumerated a folder of
+        files is gone, deferred to DAT-378 (multi-file enumeration via the
+        connect/select surface). That gate is covered by the unit tests. These
+        integration tests exercise the *real* DuckDB read + downstream phases
+        against local fixture files (there is no object store in the test
+        process), so the harness invokes the post-validation loader entry
+        (``_load_file_source``) directly rather than the ``s3://`` gate.
+
+        For a directory fixture (e.g. ``small_finance/`` — 5 CSVs with
+        *different* schemas) the harness stands in for the connect/select
+        enumeration deferred to DAT-378: it enumerates the contained data files
+        (sorted for determinism) and calls ``_load_file_source`` once per file
+        under the same ``source_id`` / ``source_name``, then aggregates the
+        per-file ``raw_tables`` into one COMPLETED ``PhaseResult``. The loader
+        names each raw table ``<source_name>__<file_stem>``, so the per-file
+        loop reproduces the exact pre-DAT-389 multi-table dataset
+        (``small_finance__customers``, ``small_finance__payment_methods``, …).
+        Production stays single-URI; only the test harness fans the directory
+        out. If any per-file load fails, the aggregate fails with that error.
 
         Args:
-            source_path: Path to a CSV / Parquet / JSON fixture file.
+            source_path: Path to a CSV / Parquet / JSON fixture file, or a
+                directory containing such files.
             source_name: Optional name for the source (derived from path stem if omitted).
             junk_columns: Columns to drop after import.
 
@@ -168,8 +189,26 @@ class PipelineTestHarness:
         path = Path(source_path)
         raw_name = source_name or path.stem.lower()
         clean_name = re.sub(r"[^a-z0-9_]", "_", raw_name).strip("_") or "source"
-        # Infer source_type from the path's extension (CSV-default for unknowns / dirs).
-        suffix = path.suffix.lower()
+
+        # Resolve the file(s) to load. A directory fixture is enumerated into its
+        # contained data files (sorted), each loaded as its own table — the
+        # harness stand-in for the DAT-378 enumeration. A single file is loaded
+        # as-is.
+        if path.is_dir():
+            file_paths = sorted(
+                p
+                for p in path.iterdir()
+                if p.is_file() and p.suffix.lower() in self._FIXTURE_DATA_SUFFIXES
+            )
+            if not file_paths:
+                raise ValueError(f"No loadable data files found in directory {path}")
+        else:
+            file_paths = [path]
+
+        # Infer the Source row's ``source_type`` from the first file's extension
+        # (CSV-default for unknowns); it is informational here — the loader
+        # dispatches on each file's own URI suffix.
+        suffix = file_paths[0].suffix.lower()
         if suffix in {".parquet", ".pq"}:
             source_type = "parquet"
         elif suffix in {".json", ".jsonl"}:
@@ -181,6 +220,10 @@ class PipelineTestHarness:
 
         import_phase = self.phases["import"]
         assert isinstance(import_phase, ImportPhase)
+
+        all_table_ids: list[str] = []
+        records_processed = 0
+        warnings_acc: list[str] = []
 
         with self.session_factory() as session:
             # Seed the Source row idempotently — the test harness shares one
@@ -206,9 +249,31 @@ class PipelineTestHarness:
                 config={"junk_columns": junk_columns or []},
                 session_id=baseline_session_id(),
             )
-            result = import_phase._load_file_source(ctx, source, clean_name, str(path))
+
+            for file_path in file_paths:
+                file_result = import_phase._load_file_source(
+                    ctx, source, clean_name, str(file_path)
+                )
+                if file_result.status != PhaseStatus.COMPLETED:
+                    # Don't silently swallow a per-file failure — fail the
+                    # aggregate with the offending file's error.
+                    session.commit()
+                    self.results["import"] = file_result
+                    return file_result
+                if file_result.outputs:
+                    all_table_ids.extend(file_result.outputs.get("raw_tables", []))
+                records_processed += file_result.records_processed
+                warnings_acc.extend(file_result.warnings or [])
+
             session.commit()
 
+        result = PhaseResult.success(
+            outputs={"raw_tables": all_table_ids},
+            records_processed=records_processed,
+            records_created=len(all_table_ids),
+            warnings=warnings_acc,
+            summary=f"{len(all_table_ids)} tables, {records_processed:,} rows",
+        )
         self.results["import"] = result
         return result
 

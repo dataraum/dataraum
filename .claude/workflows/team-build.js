@@ -1,10 +1,12 @@
 export const meta = {
   name: 'team-build',
-  description: 'Fan out approved approaches into autonomous build lanes: each lane = worktree → implement → IN-LANE review (3 agents) → gate → push branch',
-  whenToUse: 'After the lead drains the team-refine queue and approves a subset of approaches. Each lane reviews itself (reviewers run inside the lane, like /take) and pushes only on a green review. The lead opens PRs from the MacBook and picks merge order.',
+  description: 'Fan out approved approaches into autonomous build lanes: per-lane pipeline implement → runtime-spawned 3-reviewer stage → DETERMINISTIC JS gate → push branch',
+  whenToUse: 'After the lead drains the team-refine queue and approves a subset of approaches. Reviewers run per-lane as a pipeline stage spawned by the workflow RUNTIME (lane agents have no Agent tool — proven 2026-05-31), and the push gate is a deterministic JS decision on their verdicts. The lead opens PRs from the MacBook and picks merge order.',
   phases: [
-    { title: 'Preflight', detail: "one fetch + per-lane 5 parallel-safety STOP conditions (from /take Step 1)" },
-    { title: 'Lane', detail: 'worktree → implement → in-lane review (spec-compliance + senior-code + strict) → gate → push' },
+    { title: 'Preflight', detail: 'one fetch + per-lane 5 parallel-safety STOP conditions (from /take Step 1)' },
+    { title: 'Implement', detail: 'worktree → implement → local CI gates + lane smoke → commit (no push)' },
+    { title: 'Review', detail: 'runtime spawns spec-compliance + senior-code + strict per lane, concurrently' },
+    { title: 'Gate', detail: 'deterministic JS gate on verdicts → push branch (or park blocked / stopped-early)' },
   ],
 }
 
@@ -26,22 +28,48 @@ if (!LANES.length) {
   return { error: 'no lanes', results: [] }
 }
 
-// Load-bearing constraints (from /take SKILL.md, verified there):
-//  - Worktrees MUST be created INSIDE the repo at .worktrees/{id}/ so the
-//    in-lane reviewer subagents (which inherit the orchestrator
-//    $CLAUDE_PROJECT_DIR, NOT the EnterWorktree-shifted one) can Read the
-//    lane's code. A sibling worktree makes the review gate pass SILENTLY
-//    without reading anything. Use manual `git worktree add`, not
-//    isolation:'worktree' (its in-project placement is not guaranteed).
-//  - Lane subagents do NOT fire the end-of-turn hook → they must run the full
-//    CI gate set (ruff/biome + types/tests) locally before pushing, or CI
+// ── Architecture (why reviewers are a STAGE, not nested in the lane) ────────
+// A workflow agent()'s entire toolset is Bash, Edit, Read, Skill, ToolSearch,
+// Write, StructuredOutput — there is NO Agent tool, and an agentType override
+// does NOT add one (probe wf_acbcecdc, 2026-05-31). So a lane agent CANNOT
+// spawn reviewer subagents — the old "in-lane nested review" design was
+// structurally impossible (silent no-op). Fix: the RUNTIME spawns the three
+// reviewers as their own pipeline stage, per lane. Because pipeline() has no
+// barrier between stages, lane X's review fires the instant X's implement
+// finishes — concurrent with lane Y still building. That keeps review per-lane
+// (no one-big-review bottleneck) without nesting. The push gate is then a
+// DETERMINISTIC JS decision on the structured verdicts (not a prompt the lane
+// can skip — the PR #161 failure mode).
+//
+// Other load-bearing constraints (from /take SKILL.md, verified there):
+//  - Worktrees live INSIDE the repo at .worktrees/{id}/ (gitignored), under
+//    $CLAUDE_PROJECT_DIR, so the reviewer-stage agents can Read the lane's code.
+//    Use manual `git worktree add`, not isolation:'worktree'.
+//  - Lane agents do NOT fire the end-of-turn hook → they must run the full CI
+//    gate set (ruff/biome + types/tests) locally before they commit, or CI
 //    format-check goes red. (feedback_workflow_lanes_run_full_ci_gates)
-//  - Reviewers run IN-LANE: the lane agent itself spawns
-//    senior-code-reviewer + spec-compliance-reviewer + strict-reviewer (it has
-//    the Agent tool), exactly as /implement does inside /take. Push is GATED
-//    on their verdict — a blocked review does NOT push.
-//  - gh has no token in the sandbox → the lane PUSHES the branch but does NOT
-//    open a PR. PRs open from the MacBook; merge is the lead's call.
+//  - The lane COMMITS on its branch (so reviewers can diff origin/main...HEAD)
+//    but does NOT push. Push happens only in the Gate stage, only if the JS
+//    gate passes. gh has no token in the sandbox → push the branch, never open
+//    a PR; the lead opens PRs from the MacBook and picks merge order.
+
+const REVIEWERS = [
+  {
+    key: 'spec-compliance',
+    agentType: 'spec-compliance-reviewer',
+    lens: 'Was everything in the approved approach + ACs built, nothing extra, and is every AC tested? Traceability + scope-creep.',
+  },
+  {
+    key: 'senior-code',
+    agentType: 'senior-code-reviewer',
+    lens: 'Correct + idiomatic (async, free-threading, state machines, MCP/Temporal contracts)? Flag mock-only tests, dead-code-for-tests, always-pass asserts.',
+  },
+  {
+    key: 'strict',
+    agentType: 'strict-reviewer',
+    lens: 'Does it honor the agreed design + clean-cut rule (no shims, no half-cuts, no dead code kept to pass tests)?',
+  },
+]
 
 const PREFLIGHT = {
   type: 'object',
@@ -54,39 +82,39 @@ const PREFLIGHT = {
   },
 }
 
-// The lane returns its own work AND its in-lane review verdict. push_gate is
-// the machine gate: a lane only pushes when all three reviewers pass.
-const LANE_RESULT = {
+const IMPLEMENT_RESULT = {
   type: 'object',
-  required: ['id', 'branch', 'ci_gates', 'reviews', 'push_gate', 'pushed', 'summary'],
+  required: ['id', 'branch', 'worktree_path', 'ci_gates', 'committed', 'stopped_early', 'summary'],
   properties: {
     id: { type: 'string' },
     branch: { type: 'string' },
-    stopped_early: { type: 'boolean', description: 'true if the lane parked a blocker instead of completing (stop-early honored, three-strikes)' },
-    blocker: { type: 'string', description: 'if stopped_early: what blocked it' },
-    ci_gates: { type: 'string', description: 'local ruff/biome + types/tests result before review (green/red + detail)' },
+    worktree_path: { type: 'string', description: 'ABSOLUTE path to the lane worktree, so the reviewer stage can Read it' },
+    ci_gates: { type: 'string', description: 'local ruff/biome + types/tests result (green/red + detail)' },
     lane_smoke: { type: 'string', description: "this task's lane-smoke surface result" },
-    reviews: {
-      type: 'array',
-      description: 'the three IN-LANE reviewer verdicts',
-      items: {
-        type: 'object',
-        required: ['reviewer', 'verdict', 'blocking_findings'],
-        properties: {
-          reviewer: { type: 'string', enum: ['spec-compliance', 'senior-code', 'strict'] },
-          verdict: { type: 'string', enum: ['pass', 'block'] },
-          blocking_findings: { type: 'array', items: { type: 'string' } },
-        },
-      },
-    },
-    push_gate: {
-      type: 'string',
-      enum: ['passed', 'blocked-by-review', 'stopped-early'],
-      description: "passed = all 3 reviewers passed and the branch was pushed; blocked-by-review = ≥1 reviewer blocked, NOT pushed; stopped-early = lane parked a blocker before review",
-    },
-    pushed: { type: 'boolean' },
+    committed: { type: 'boolean', description: 'true if work is committed on the branch (ready for review). false if stopped_early before any commit.' },
+    stopped_early: { type: 'boolean', description: 'true if the lane parked a blocker / found a wrong assumption instead of completing' },
+    blocker: { type: 'string', description: 'if stopped_early: what blocked it' },
     lanes_unblocked: { type: 'array', items: { type: 'string' }, description: 'task IDs that become ready once this merges' },
     summary: { type: 'string' },
+  },
+}
+
+const REVIEW_VERDICT = {
+  type: 'object',
+  required: ['reviewer', 'verdict', 'blocking_findings'],
+  properties: {
+    reviewer: { type: 'string', enum: ['spec-compliance', 'senior-code', 'strict'] },
+    verdict: { type: 'string', enum: ['pass', 'block'] },
+    blocking_findings: { type: 'array', items: { type: 'string' }, description: 'empty when verdict=pass' },
+  },
+}
+
+const FINALIZE = {
+  type: 'object',
+  required: ['pushed', 'detail'],
+  properties: {
+    pushed: { type: 'boolean' },
+    detail: { type: 'string', description: 'push output (if pushed) or what was recorded on the status board' },
   },
 }
 
@@ -99,9 +127,10 @@ await agent(
 )
 
 // Each lane runs the full chain independently (pipeline, no barrier between
-// lanes): preflight → build+review+push. A lane failing preflight drops out.
+// lanes). Stages: preflight → implement → review(3, runtime-spawned) → gate+push.
 const results = await pipeline(
   LANES,
+
   // Stage 1 — preflight (the 5 STOP conditions from /take Step 1, CALLED not reinvented)
   (lane) =>
     agent(
@@ -119,41 +148,110 @@ const results = await pipeline(
       return { ...lane, slug: pf.slug }
     }),
 
-  // Stage 2 — the LANE: worktree → implement → IN-LANE review → gate → push.
-  // This is one agent running /take Steps 2-7 (minus PR) autonomously. The
-  // reviewers run INSIDE this lane (the agent spawns them via its own Agent
-  // tool), and push is gated on their verdict.
+  // Stage 2 — IMPLEMENT: worktree → implement → local CI gates + lane smoke →
+  // COMMIT (no review here — the lane has no Agent tool — and no push).
   (lane) =>
     agent(
-      `You are an engineer taking ONE task to a pushed, self-reviewed green branch, autonomously, as part of a parallel team. ` +
+      `You are an engineer taking ONE task to a committed, CI-green branch, autonomously, as part of a parallel team. ` +
       `Task ${lane.id} — "${lane.title}".\n` +
       `Approved approach: ${lane.recommendation}\n` +
       `Assumptions you may rely on: ${(lane.assumptions || []).join(' | ')}\n` +
       (lane.redirect ? `Lead's course-correction (overrides the above where they conflict): ${lane.redirect}\n` : '') +
       `Test strategy: ${lane.test_strategy}\n\n` +
-      `Execute /take Steps 2-7 (read .claude/skills/take/SKILL.md), autonomously, MINUS the PR step:\n\n` +
-      `1. WORKTREE — create it INSIDE the repo: \`git worktree add .worktrees/${lane.id} -b feat/${lane.id}-${lane.slug} origin/main\`, then EnterWorktree on its absolute path. ` +
-      `Inside-repo placement is LOAD-BEARING: your reviewer subagents (next step) inherit the orchestrator $CLAUDE_PROJECT_DIR and can only Read paths under it — a sibling worktree makes the review gate pass silently without reading the code.\n` +
+      `Execute /take Steps 2-3 + 6 (read .claude/skills/take/SKILL.md), autonomously. You will NOT review or push — ` +
+      `the workflow runtime runs the reviewers and the push gate after you (you have no Agent tool, so you cannot spawn reviewers yourself).\n\n` +
+      `1. WORKTREE — create it INSIDE the repo with Bash: \`git worktree add .worktrees/${lane.id} -b feat/${lane.id}-${lane.slug} origin/main\`. ` +
+      `If it fails on an index/worktree lock (concurrent lanes), wait briefly and retry up to 3x. ` +
+      `Then \`pwd\` to record the ABSOLUTE worktree path (\`<repo>/.worktrees/${lane.id}\`) and report it as worktree_path — the reviewer stage Reads the code there. ` +
+      `Work with absolute paths under that dir and \`git -C <worktree_path> ...\`; do not rely on EnterWorktree.\n` +
       `2. IMPLEMENT — per /implement discipline. DO-NOT-CHANGE scope: every contract file, any directory owned by another phase, any cross-cutting infra not owned by this task. ` +
-      `Honor stop-early/three-strikes: if you hit a real blocker or discover a wrong assumption, set stopped_early:true + blocker, push_gate:'stopped-early', do NOT push, and return — do not power through.\n` +
-      `3. LOCAL CI GATES — before review, run the FULL gate set (you do NOT fire the end-of-turn hook): \`uv run ruff format\` + engine gates for Python, \`biome --write\` + \`tsc --noEmit\` for cockpit. Report ci_gates.\n` +
-      `4. IN-LANE REVIEW — spawn all THREE reviewers as subagents (Agent tool) over your worktree code, exactly as /implement does, and collect their verdicts into \`reviews\`:\n` +
-      `   • spec-compliance-reviewer — was everything in the approved approach + ACs built, nothing extra, every AC tested? (traceability + scope-creep)\n` +
-      `   • senior-code-reviewer — correct + idiomatic (async, free-threading, state machines, MCP/Temporal contracts)? flag mock-only tests, dead-code-for-tests, always-pass asserts.\n` +
-      `   • strict-reviewer — honors the agreed design + clean-cut (no shims, no half-cuts, no dead code)?\n` +
-      `5. GATE — if ANY reviewer returns 'block', set push_gate:'blocked-by-review', do NOT push, and return with the blocking_findings so the lead can decide. Only if all three pass: commit, then PUSH the branch (\`git push origin feat/${lane.id}-${lane.slug}\` — SSH works in the sandbox; do NOT open a PR, gh has no token here), set push_gate:'passed', pushed:true.\n` +
-      `6. LANE SMOKE — run this task's lane-smoke surface; report lane_smoke. Refresh this lane's row in .claude/platform-status.md.\n` +
-      `7. ExitWorktree(action="keep").\n\n` +
-      `The lane closes at branch-push (or at a blocked gate), never at merge. Return the structured lane result.`,
-      { label: `lane:${lane.id}`, phase: 'Lane', schema: LANE_RESULT }
+      `Honor stop-early/three-strikes: if you hit a real blocker or discover a wrong assumption, set stopped_early:true + blocker, committed:false, do NOT commit, and return — do not power through.\n` +
+      `3. LOCAL CI GATES — run the FULL gate set (you do NOT fire the end-of-turn hook): \`uv run ruff format\` + engine gates for Python, \`biome --write\` + \`tsc --noEmit\` for cockpit. Report ci_gates. If a gate is red and you cannot fix it cleanly, treat it as stop-early.\n` +
+      `4. LANE SMOKE — run this task's lane-smoke surface; report lane_smoke.\n` +
+      `5. COMMIT on the branch (\`git -C <worktree_path> add -A && git -C <worktree_path> commit\`) so the reviewers can diff origin/main...HEAD. Set committed:true. Do NOT push.\n` +
+      `Return the structured implement result.`,
+      { label: `impl:${lane.id}`, phase: 'Implement', schema: IMPLEMENT_RESULT }
+    ).then((impl) => ({ ...lane, ...impl })),
+
+  // Stage 3 — REVIEW: the RUNTIME spawns the three reviewers (each its own
+  // agentType) over this lane's worktree, concurrently. This is the fix for the
+  // nested-Agent limitation: reviewers are siblings spawned by the runtime, not
+  // children of the lane. A stopped-early lane skips review.
+  (built) => {
+    if (built.stopped_early || !built.committed) {
+      return { ...built, reviews: [] }
+    }
+    return parallel(
+      REVIEWERS.map((rv) => () =>
+        agent(
+          `Review build lane ${built.id} — "${built.title}". The committed work is on branch ${built.branch} ` +
+          `in the worktree at ${built.worktree_path}. Read it there; inspect the diff with ` +
+          `\`git -C ${built.worktree_path} diff origin/main...HEAD\` and the changed files.\n\n` +
+          `Approved approach (the spec to check against): ${built.recommendation}\n` +
+          `Assumptions it was allowed to rely on: ${(built.assumptions || []).join(' | ')}\n` +
+          (built.redirect ? `Lead's course-correction: ${built.redirect}\n` : '') +
+          `\nYour review lens: ${rv.lens}\n\n` +
+          `Return verdict 'pass' or 'block' (block only on a real, must-fix problem) with blocking_findings.`,
+          { label: `review:${rv.key}:${built.id}`, phase: 'Review', schema: REVIEW_VERDICT, agentType: rv.agentType }
+        )
+      )
+    ).then((reviews) => ({ ...built, reviews: reviews.filter(Boolean) }))
+  },
+
+  // Stage 4 — GATE + PUSH. The gate decision is DETERMINISTIC JS on the
+  // verdicts — not a prompt the lane can skip. Only a clean sweep pushes.
+  async (reviewed) => {
+    let push_gate
+    if (reviewed.stopped_early || !reviewed.committed) {
+      push_gate = 'stopped-early'
+    } else {
+      const allPass =
+        reviewed.reviews.length === REVIEWERS.length &&
+        reviewed.reviews.every((r) => r.verdict === 'pass')
+      push_gate = allPass ? 'passed' : 'blocked-by-review'
+    }
+
+    const blocking = (reviewed.reviews || [])
+      .filter((r) => r.verdict === 'block')
+      .map((r) => `${r.reviewer}: ${r.blocking_findings.join('; ')}`)
+
+    const instruction =
+      push_gate === 'passed'
+        ? `GATE PASSED (all three reviewers passed — decided by the orchestrator). PUSH the branch: ` +
+          `\`git -C ${reviewed.worktree_path} push origin ${reviewed.branch}\` (SSH works in the sandbox; do NOT open a PR — gh has no token here). ` +
+          `Then set this lane's row in .claude/platform-status.md to "pushed, awaiting PR". Return pushed:true with the push output.`
+        : push_gate === 'blocked-by-review'
+        ? `GATE BLOCKED by review — do NOT push. Record this lane's row in .claude/platform-status.md as "blocked by review" with: ${blocking.join(' || ')}. Return pushed:false.`
+        : `Lane stopped early before review (${reviewed.blocker || 'see implement summary'}) — do NOT push. ` +
+          `Record this lane's row in .claude/platform-status.md as "stopped early: ${reviewed.blocker || 'blocker'}". Return pushed:false.`
+
+    const fin = await agent(
+      `Finalize build lane ${reviewed.id} ("${reviewed.title}"). ${instruction}`,
+      { label: `gate:${reviewed.id}`, phase: 'Gate', schema: FINALIZE }
     )
+
+    return {
+      id: reviewed.id,
+      branch: reviewed.branch,
+      push_gate,
+      pushed: !!fin.pushed,
+      stopped_early: !!reviewed.stopped_early,
+      blocker: reviewed.blocker,
+      ci_gates: reviewed.ci_gates,
+      lane_smoke: reviewed.lane_smoke,
+      reviews: reviewed.reviews || [],
+      lanes_unblocked: reviewed.lanes_unblocked || [],
+      summary: reviewed.summary,
+      finalize_detail: fin.detail,
+    }
+  }
 )
 
 const lanes = results.filter(Boolean)
 const pushed = lanes.filter((l) => l.push_gate === 'passed')
 const blocked = lanes.filter((l) => l.push_gate === 'blocked-by-review')
 const stalled = lanes.filter((l) => l.push_gate === 'stopped-early')
-log(`team-build: ${pushed.length} pushed (review-green), ${blocked.length} blocked by in-lane review, ${stalled.length} stopped early`)
+log(`team-build: ${pushed.length} pushed (review-green), ${blocked.length} blocked by review, ${stalled.length} stopped early`)
 
 // Lead opens PRs (from the MacBook) for the pushed lanes and picks merge order;
 // drains `blocked` (review disputes) and `stalled` (lane blockers) from the queue.

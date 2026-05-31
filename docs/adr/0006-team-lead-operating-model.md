@@ -85,11 +85,46 @@ orchestration splits at the gate; the queue lives in the conversation between th
 2. *(human, in conversation)* — lead reviews the parked approaches, approves / redirects /
    defers each. Approved approaches (with any redirection notes) become the input to:
 3. **`team-build`** (`.claude/workflows/team-build.js`) — input: approved approaches. Each
-   lane: pre-flight STOP checks → `git worktree add .worktrees/{id}` → implement → local CI
-   gates → **in-lane review (3 agents)** → gate → **push branch** → update status board.
+   lane is a **pipeline**: pre-flight STOP checks → `git worktree add .worktrees/{id}` →
+   implement → local CI gates + lane smoke → **commit (no push)** → **runtime-spawned
+   review (3 reviewers)** → **deterministic JS gate** → **push branch** → update status board.
    Output: per-lane {branch, ci_gates, reviews, push_gate, lanes-unblocked}. A blocked review
    means the lane does NOT push. The lead then opens PRs from the MacBook and chooses
    merge order.
+
+### Reviewers run as a runtime-spawned pipeline stage, NOT nested in the lane (revised 2026-05-31)
+
+The original design had each lane agent spawn its three reviewers in-lane (mirroring how
+`/implement` spawns reviewers inside `/take`). **A probe (`wf_acbcecdc`, 2026-05-31) proved
+this is structurally impossible.** A workflow `agent()`'s entire toolset is `Bash, Edit,
+Read, Skill, ToolSearch, Write, StructuredOutput` — there is **no Agent tool**, and an
+`agentType` override does **not** add one. A lane agent therefore cannot spawn reviewer
+subagents; the in-lane review was a silent no-op. (This was the load-bearing correction's
+unverified assumption — open question (a) below — and it failed.)
+
+The fix keeps reviewers per-lane and concurrent **without nesting**: the workflow *runtime*
+spawns the three reviewers (`spec-compliance-reviewer`, `senior-code-reviewer`,
+`strict-reviewer`, each via `agentType`) as their own **pipeline stage**. Because
+`pipeline()` has no barrier between stages, lane X's review fires the instant X's implement
+finishes — concurrent with lane Y still building. So review stays per-lane (no
+one-big-review bottleneck) while respecting the recursion limit. Two consequences:
+
+- The lane **commits** on its branch (so reviewers can `git diff origin/main...HEAD`) but
+  does **not** push. Push happens only in the Gate stage.
+- **The push gate becomes a deterministic JS decision** on the structured verdicts
+  (`reviews.every(r => r.verdict === 'pass')`), not a prompt instruction the lane can skip.
+  This is *stronger* than the original prompt-gated push (the PR #161 format-check miss) and
+  stronger than agent-teams' `TaskCompleted` hook — the gate is in code, un-bypassable.
+
+**Why not Claude Code's built-in agent teams here?** Evaluated 2026-05-31. Agent teams would
+make reviewers *peer teammates* (sidestepping the no-Agent-tool limit natively) and adds live
+human steering + per-teammate plan approval. But it is **experimental** (no resume,
+early-shutdown, status lag), **foreground**, **non-deterministic**, **one-team-at-a-time**,
+and offers **no enforced worktree isolation** — it trades away exactly the robustness
+(deterministic gate, background, resume, isolation) that the build lane needs. The
+relocation above fixes the bug *inside* the robust workflow, so the build executor stays a
+workflow. Agent teams remains the better fit for the **interactive refine / steer** phase
+(its plan-approval loop is the native form of the approach queue) and may be piloted there.
 
 ## Consequences
 
@@ -101,17 +136,19 @@ orchestration splits at the gate; the queue lives in the conversation between th
 - `/take` is retired as a launch path but **not deleted** — its runbook is the source of the
   inherited rules; `team-build` is the runbook executed as a fan-out. Keep the skill file as
   the canonical statement of the lane rules until `team-build` fully absorbs them.
-- **Open technical questions to verify on first real run** (flagged in the scripts):
-  (a) **Confirm a workflow lane agent can itself spawn the three reviewer subagents.** The
-  design REQUIRES this (reviewers run in-lane, gating the push) and it mirrors how `/take`'s
-  `/implement` already spawns reviewers, so it should hold — but a workflow `agent()` spawning
-  further `Agent` calls is the one mechanic to smoke-test before trusting at scale. If it
-  turns out a workflow subagent cannot nest `Agent`, the fallback is to make each lane a
-  `/take` invocation via the Skill/Agent path rather than a bare workflow `agent()`.
-  (b) confirm `git worktree add` from concurrent lane agents under the workflow concurrency
-  cap doesn't race on the index — each worktree is an independent dir, but the initial
-  `git fetch origin main` is pre-run once before fan-out (the Preflight phase) to avoid the
-  race.
+- **Open technical questions:**
+  (a) ~~Confirm a workflow lane agent can itself spawn the three reviewer subagents.~~
+  **RESOLVED 2026-05-31 — NO (probe `wf_acbcecdc`).** Workflow agents have no Agent tool;
+  reviewers were relocated to a runtime-spawned pipeline stage (see "Reviewers run as a
+  runtime-spawned pipeline stage" above). The fallback considered here (each lane a `/take`
+  invocation via Skill/Agent) was *not* taken — `/take` would itself try to nest reviewers
+  and hit the same wall; the pipeline-stage relocation is the actual fix.
+  (b) **Still to verify on first real run:** `git worktree add` from concurrent lane agents
+  under the workflow concurrency cap may race on the index — each worktree is an independent
+  dir, but `git worktree add` briefly locks the main repo. Mitigations in place: the initial
+  `git fetch origin main` is pre-run once before fan-out (Preflight), and the implement stage
+  retries `git worktree add` up to 3× on a lock. If contention persists, serialize the
+  worktree-creation step.
 - Under **ultracode**, this is the default executor: the cut is drafted by AI + ratified by
   the lead, refine fan-out goes wide, build lanes run to clean conclusion. The two intent
   gates remain — they are correctness firewalls, not budget concessions.

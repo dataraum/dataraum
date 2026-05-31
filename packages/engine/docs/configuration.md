@@ -45,7 +45,6 @@ config/
 │       ├── graph_sql_generation.yaml
 │       ├── query_analysis.yaml
 │       ├── why_analysis.yaml
-│       ├── ontology_induction.yaml      # Cold-start: induce ontology
 │       ├── cycle_induction.yaml         # Cold-start: induce business cycles
 │       ├── validation_induction.yaml    # Cold-start: induce validations
 │       ├── metric_induction.yaml        # Cold-start: induce metrics

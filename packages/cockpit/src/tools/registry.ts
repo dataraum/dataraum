@@ -6,6 +6,7 @@
 // declare `needsApproval` and are gated by the user in the UI before they run.
 
 import { connectTool } from "./connect";
+import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
 import { probeTool } from "./probe";
@@ -19,6 +20,7 @@ export const tools = [
 	runSqlTool,
 	probeTool,
 	connectTool,
+	frameTool,
 	teachTool,
 	replayTool,
 ] as const;

@@ -52,6 +52,9 @@ Everything else is autonomous. In particular:
   an approach — the queue carries both.
 - **`implement`'s stop-early stays**, but "stop" means *park a blocker on the board / open a
   draft*, not *halt and wait*. The lane yields; the lead drains async.
+- **A lane that hits an ambiguous design fork ASKS rather than guesses or dies** (see the
+  mid-run ask section below). Distinct from stop-early: the lane keeps its context and resumes
+  with the lead's answer, instead of throwing the work away.
 
 ### `/take` is superseded by two workflows, but its rules are inherited, not discarded
 
@@ -88,9 +91,11 @@ orchestration splits at the gate; the queue lives in the conversation between th
    lane is a **pipeline**: pre-flight STOP checks → `git worktree add .worktrees/{id}` →
    implement → local CI gates + lane smoke → **commit (no push)** → **runtime-spawned
    review (3 reviewers)** → **deterministic JS gate** → **push branch** → update status board.
-   Output: per-lane {branch, ci_gates, reviews, push_gate, lanes-unblocked}. A blocked review
-   means the lane does NOT push. The lead then opens PRs from the MacBook and chooses
-   merge order.
+   Output: per-lane {branch, ci_gates, reviews, asks, push_gate, lanes-unblocked}. A blocked
+   review means the lane does NOT push. The lead then opens PRs from the MacBook and chooses
+   merge order. **Launch requirement:** because lanes may ASK mid-run (see below), the
+   session that launches team-build must drain the mailbox while it runs — start a `Monitor`
+   on `.claude/.mailbox` before/just after launching, answer each `*.q`, write the `*.a`.
 
 ### Reviewers run as a runtime-spawned pipeline stage, NOT nested in the lane (revised 2026-05-31)
 
@@ -125,6 +130,41 @@ and offers **no enforced worktree isolation** — it trades away exactly the rob
 relocation above fixes the bug *inside* the robust workflow, so the build executor stays a
 workflow. Agent teams remains the better fit for the **interactive refine / steer** phase
 (its plan-approval loop is the native form of the approach queue) and may be piloted there.
+
+### Lanes ask mid-run instead of guessing (added 2026-05-31)
+
+The remaining weakness of a background workflow is the one the intent gates *cannot* cover:
+a lane that hits an **unanticipated design fork** *inside* implementation. Escalate-and-die
+throws away the lane's accumulated context; guessing sends hours of work down the wrong branch
+that may take the user just as long to unwind. Both lose "the intended complexity."
+
+A probe (`wf_c18f4719`, 2026-05-31) proved a running workflow `agent()` **can pause
+mid-execution, ask, block, and resume with full context** — it even acted on an *extra*
+instruction the answer carried (something a yes/no escalate would have dropped). So lanes get a
+**mid-run ask primitive** (`ASK_PROTOCOL` in `team-build.js`):
+
+- On an ambiguous fork the approved approach doesn't settle, the lane writes its question to a
+  **file mailbox** (`<repo>/.claude/.mailbox/{laneId}.q`, gitignored), **blocks** polling for
+  `{laneId}.a` (up to ~30 min), then **resumes** with the answer (which overrides its default
+  and may carry extra instruction). Timeout → stop-early with `blocker: "unanswered ask: …"` —
+  it still **never guesses**.
+- **The orchestrator (the session that launched the workflow) is the human-proxy.** While
+  team-build runs in the background, the launcher watches the mailbox (a `Monitor` on
+  `.claude/.mailbox` emitting on new `*.q` files), and for each question either **answers from
+  project context** (CLAUDE.md / memory / ADRs) or **`PushNotification`s the user** for a
+  genuine fork, then writes `{laneId}.a`. This is the org-chart model in full: the lead fields
+  the engineers' questions and shields the user from the routine ones, escalating only the real
+  decisions.
+
+This is **why we don't need agent teams to get interactivity.** Agent teams makes *the user*
+field every teammate question in the foreground; the mailbox makes *the orchestrator* field
+them and bother the user selectively — while keeping the workflow's determinism, background
+execution, resume, and worktree isolation. Constraints: a blocked lane holds a concurrency slot
+while it waits (fine at our lane counts); ask quality depends on the lane choosing to ask
+rather than barrelling ahead (same discipline stop-early already needs); and team-build stays
+**one-run-at-a-time** (it mutates worktrees + the status board), so per-lane mailbox filenames
+don't collide. Reserve *ask* for "I hit a fork and won't guess"; keep *escalate/stop-early* for
+"I am fundamentally blocked".
 
 ## Consequences
 

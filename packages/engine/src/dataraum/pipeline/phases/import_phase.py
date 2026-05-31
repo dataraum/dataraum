@@ -18,8 +18,19 @@ that URI is a read primitive, the import phase gates it through
 ``validate_source_uri`` before loader dispatch: anything that is not the lake
 bucket (a local path, ``file://``, another bucket, a cred-in-URL form) is a
 loud failure, never a silent read. Dispatch is on the URI suffix alone; the
-filesystem is never stat'd. Multi-file enumeration (the former directory
-branch) is deferred to DAT-378.
+filesystem is never stat'd.
+
+Per DAT-378 a file source is a LIST of explicit ``s3://`` URIs under the
+``connection_config['file_uris']`` key — the cockpit's ``select`` stage
+enumerated the prefix (ListObjectsV2) into that immutable list BEFORE triggering
+the workflow (ADR-0007 frozen-artifact: the persisted list is authoritative for
+the run). The engine NEVER globs: each element is gated through
+``validate_source_uri`` (which forbids glob metacharacters and requires exactly
+one object), then loaded in turn, so ONE import activity yields N raw tables
+named ``<source_name>__<file_stem>``. The distinct ``file_uris`` key cannot
+collide with the db_recipe ``tables`` key (a list of ``{name, sql}`` query
+dicts). ``AddSourceWorkflow`` already fans out one ``ProcessTableWorkflow`` per
+raw table, so N>1 falls out with no Temporal-contract change.
 """
 
 from __future__ import annotations
@@ -176,26 +187,29 @@ class ImportPhase(BasePhase):
                 ctx, source, source_name, source_connection_config, source_backend
             )
         else:
-            path_str = explicit_path or source_connection_config.get("path")
-            if not path_str:
+            source_uris = self._resolve_file_uris(source_connection_config, explicit_path)
+            if not source_uris:
                 return PhaseResult.failed(
-                    f"Source '{source_name}' (type={source_type}) has no path "
-                    "in its connection_config."
+                    f"Source '{source_name}' (type={source_type}) has no file URIs "
+                    "in its connection_config (expected a non-empty 'file_uris' list)."
                 )
-            # The path is handed verbatim to DuckDB's ``read_*_auto``, so it is a
-            # read primitive: gate it through ``validate_source_uri`` before it
-            # reaches a loader. Only ``s3://<lake-bucket>/<key>`` passes; a local
-            # path, ``file://``, a foreign bucket, or a cred-in-URL form is a
-            # loud failure here, not a silent arbitrary-file read (DAT-389). No
-            # filesystem stat: a missing/unreadable but well-formed source still
-            # surfaces as the DuckDB read error through ``Result.fail``. The
-            # loader is selected by the URI suffix, so ``source_type`` is not
-            # consulted here.
-            try:
-                validate_source_uri(path_str)
-            except ValueError as e:
-                return PhaseResult.failed(str(e))
-            result = self._load_file_source(ctx, source, source_name, path_str)
+            # Each URI is handed verbatim to DuckDB's ``read_*_auto``, so it is a
+            # read primitive: gate EVERY element through ``validate_source_uri``
+            # before it reaches a loader. Only ``s3://<lake-bucket>/<key>`` (a
+            # single object, no glob) passes; a local path, ``file://``, a
+            # foreign bucket, or a cred-in-URL form is a loud failure here, not a
+            # silent arbitrary-file read (DAT-389). The engine never globs — the
+            # cockpit's ``select`` stage already enumerated the prefix into this
+            # explicit, immutable list (DAT-378 / ADR-0007). No filesystem stat:
+            # a missing/unreadable but well-formed source still surfaces as the
+            # DuckDB read error through ``Result.fail``. The loader is selected by
+            # the URI suffix, so ``source_type`` is not consulted here.
+            for uri in source_uris:
+                try:
+                    validate_source_uri(uri)
+                except ValueError as e:
+                    return PhaseResult.failed(str(e))
+            result = self._load_file_source(ctx, source, source_name, source_uris)
 
         if result.status != PhaseStatus.COMPLETED:
             return result
@@ -229,40 +243,76 @@ class ImportPhase(BasePhase):
             )
         return None
 
+    @staticmethod
+    def _resolve_file_uris(
+        connection_config: dict[str, Any],
+        explicit_path: str | None,
+    ) -> list[str]:
+        """Resolve the ordered list of ``s3://`` URIs a file source loads (DAT-378).
+
+        A file source carries its objects as an explicit ``file_uris`` list under
+        a key DISTINCT from the db_recipe ``tables`` key (the cockpit ``select``
+        stage enumerated the prefix into it; ADR-0007 frozen artifact). A CLI
+        ``source_path`` hint, when present, is treated as a single-element list —
+        it is the one-URI shape the CLI still uses. The two sources never mix:
+        the explicit list wins when both are set is not a case (CLI sets only the
+        path), so ``file_uris`` is read first and ``explicit_path`` is the
+        fallback single object.
+        """
+        uris = connection_config.get("file_uris")
+        if uris:
+            return [str(u) for u in uris]
+        if explicit_path:
+            return [explicit_path]
+        return []
+
     def _load_file_source(
         self,
         ctx: PhaseContext,
         source: Source,
         source_name: str,
-        source_uri: str,
+        source_uris: list[str],
     ) -> PhaseResult:
-        """Load a single-file source, dispatched by the URI suffix.
+        """Load a file source's URIs in turn, one raw table per object (DAT-378).
 
-        ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI (already validated
-        by ``_run``) and is handed verbatim to the loader, which passes it to
-        DuckDB's ``read_*_auto``. Per DAT-389 the directory / multi-file branch
-        is gone; a single URI is the unit of ingest (multi-file enumeration →
-        DAT-378).
+        Each element of ``source_uris`` is an ``s3://<lake-bucket>/<key>`` URI
+        (already validated by ``_run``) handed verbatim to the loader, which
+        passes it to DuckDB's ``read_*_auto`` — the loader is selected per
+        element by its own suffix. The loader names each raw table
+        ``<source_name>__<file_stem>``, so distinct files yield distinct,
+        collision-free tables. This is the per-URI loop the cockpit's ``select``
+        enumeration feeds: ONE import activity yields N raw tables, and
+        ``AddSourceWorkflow`` fans out one ``ProcessTableWorkflow`` per raw table
+        with no Temporal-contract change. A per-element failure fails the whole
+        import (no silent swallow).
         """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
 
-        result = self._load_single_file_with_prefix(
-            ctx, source, source_name, source_uri, null_config, junk_columns
-        )
-        if result.status != PhaseStatus.COMPLETED:
-            return result
+        table_ids: list[str] = []
+        records_processed = 0
+        warnings_acc: list[str] = []
 
-        table_ids = list(result.outputs.get("raw_tables", [])) if result.outputs else []
+        for source_uri in source_uris:
+            result = self._load_single_file_with_prefix(
+                ctx, source, source_name, source_uri, null_config, junk_columns
+            )
+            if result.status != PhaseStatus.COMPLETED:
+                return result
+            if result.outputs:
+                table_ids.extend(result.outputs.get("raw_tables", []))
+            records_processed += result.records_processed
+            warnings_acc.extend(result.warnings or [])
+
         if not table_ids:
             return PhaseResult.failed(f"No files loaded from source '{source_name}'")
 
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},
-            records_processed=result.records_processed,
+            records_processed=records_processed,
             records_created=len(table_ids),
-            warnings=result.warnings,
-            summary=f"{len(table_ids)} tables, {result.records_processed:,} rows",
+            warnings=warnings_acc,
+            summary=f"{len(table_ids)} tables, {records_processed:,} rows",
         )
 
     def _load_single_file_with_prefix(

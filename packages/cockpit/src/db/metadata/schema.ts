@@ -681,6 +681,7 @@ export const sources = metadataSchema.table(
 		createdAt: timestamp("created_at").notNull(),
 		updatedAt: timestamp("updated_at").notNull(),
 		status: varchar(),
+		stage: varchar(),
 		backend: varchar(),
 		discoveredSchema: json("discovered_schema"),
 		archivedAt: timestamp("archived_at"),

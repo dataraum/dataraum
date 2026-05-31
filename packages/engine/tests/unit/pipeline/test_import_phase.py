@@ -9,6 +9,10 @@ This module covers:
   without orchestrating across multiple sources.
 - TestSuffixDispatch: file-source loader selection is driven by the source
   URI's suffix alone (DAT-389), not the filesystem.
+- TestMultiUriDispatch: a file source carries a list of explicit ``s3://`` URIs
+  under ``connection_config['file_uris']`` (DAT-378); ``_run`` validates EVERY
+  element (the engine never globs) then loads each in turn, so one import yields
+  one raw table per URI and a single bad element fails the whole import.
 """
 
 from __future__ import annotations
@@ -138,15 +142,15 @@ class TestImportDispatch:
             config={
                 "source_name": "missing",
                 "source_type": "csv",
-                "source_connection_config": {"path": "/whatever.csv"},
+                "source_connection_config": {"file_uris": ["s3://dataraum-lake/whatever.csv"]},
             },
         )
         result = phase._run(ctx)
         assert result.status == PhaseStatus.FAILED
         assert "not found in the session DB" in (result.error or "")
 
-    def test_run_fails_when_file_path_missing_from_config(self) -> None:
-        """File-source dispatch needs a path in source_connection_config (or source_path)."""
+    def test_run_fails_when_file_uris_missing_from_config(self) -> None:
+        """File-source dispatch needs a non-empty file_uris list (or a CLI source_path)."""
         phase = ImportPhase()
         session = MagicMock()
         session.get.return_value = MagicMock()  # any non-None
@@ -162,7 +166,7 @@ class TestImportDispatch:
         )
         result = phase._run(ctx)
         assert result.status == PhaseStatus.FAILED
-        assert "no path" in (result.error or "").lower()
+        assert "no file uris" in (result.error or "").lower()
 
     def test_run_fails_for_db_recipe_without_backend(self) -> None:
         """db_recipe sources must declare a backend."""
@@ -206,7 +210,7 @@ class TestSuffixDispatch:
             config={
                 "source_name": "src",
                 "source_type": "file",
-                "source_connection_config": {"path": path},
+                "source_connection_config": {"file_uris": [path]},
             },
         )
 
@@ -300,5 +304,122 @@ class TestSuffixDispatch:
 
         assert result.status == PhaseStatus.FAILED
         assert "Invalid source URI" in (result.error or "")
+        for inst in loaders.values():
+            inst.return_value._load_single_file.assert_not_called()
+
+
+class TestMultiUriDispatch:
+    """A file source loads a LIST of explicit ``s3://`` URIs (DAT-378).
+
+    The cockpit ``select`` stage enumerates a prefix (ListObjectsV2) into an
+    explicit, immutable ``connection_config['file_uris']`` list before the
+    workflow triggers. ``_run`` validates EVERY element through
+    ``validate_source_uri`` (the engine never globs) then loads each in turn, so
+    one import activity yields one raw table per URI. A single bad element fails
+    the whole import before any loader runs.
+    """
+
+    def _ctx(self, file_uris: list[str]) -> PhaseContext:
+        session = MagicMock()
+        session.get.return_value = MagicMock()  # Source row present
+        return PhaseContext(
+            session=session,
+            duckdb_conn=MagicMock(),
+            source_id="test-source",
+            config={
+                "source_name": "src",
+                "source_type": "file",
+                "source_connection_config": {"file_uris": file_uris},
+            },
+        )
+
+    def _patched_loaders(self, staged: StagedTable) -> dict[str, MagicMock]:
+        loaders = {
+            "CSVLoader": MagicMock(),
+            "ParquetLoader": MagicMock(),
+            "JsonLoader": MagicMock(),
+        }
+        for inst in loaders.values():
+            inst.return_value._load_single_file.return_value = Result.ok(staged)
+        return loaders
+
+    def test_loads_one_table_per_uri(self) -> None:
+        """A 3-URI list drives three loader calls, one per object, in order."""
+        phase = ImportPhase()
+        uris = [
+            "s3://dataraum-lake/sel/customers.csv",
+            "s3://dataraum-lake/sel/orders.parquet",
+            "s3://dataraum-lake/sel/events.jsonl",
+        ]
+        ctx = self._ctx(uris)
+
+        staged = StagedTable(
+            table_id="t",
+            table_name="src__t",
+            raw_table_name="src__t",
+            row_count=1,
+            column_count=1,
+        )
+        loaders = self._patched_loaders(staged)
+
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+            patch.object(ImportPhase, "_check_column_limit", return_value=None),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        # One loader call per URI — the CSV / Parquet / JSON URIs each hit their
+        # own loader, dispatched per-element by suffix.
+        loaders["CSVLoader"].return_value._load_single_file.assert_called_once()
+        loaders["ParquetLoader"].return_value._load_single_file.assert_called_once()
+        loaders["JsonLoader"].return_value._load_single_file.assert_called_once()
+        # Three objects loaded → three raw tables aggregated into one result.
+        assert result.outputs is not None
+        assert len(result.outputs["raw_tables"]) == 3
+
+    def test_one_bad_element_fails_whole_import_before_any_loader(self) -> None:
+        """A single non-lake URI in the list fails the import; no loader runs.
+
+        Per-element validation means the engine never partially-loads a list that
+        contains an arbitrary-file / foreign-bucket read primitive.
+        """
+        phase = ImportPhase()
+        uris = [
+            "s3://dataraum-lake/sel/customers.csv",
+            "/etc/passwd",  # smuggled local path
+            "s3://dataraum-lake/sel/orders.parquet",
+        ]
+        ctx = self._ctx(uris)
+
+        staged = StagedTable(
+            table_id="t",
+            table_name="src__t",
+            raw_table_name="src__t",
+            row_count=1,
+            column_count=1,
+        )
+        loaders = self._patched_loaders(staged)
+
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "Invalid source URI" in (result.error or "")
+        # The list is fully validated before any load, so NOTHING loads.
         for inst in loaders.values():
             inst.return_value._load_single_file.assert_not_called()

@@ -151,27 +151,24 @@ class PipelineTestHarness:
         file in turn.
 
         Per DAT-389 the production import ingress (``ImportPhase._run``) gates
-        the source URI through ``validate_source_uri`` — only
-        ``s3://<lake-bucket>/<key>`` reaches a loader — and is now strictly
-        single-URI: the former directory branch that enumerated a folder of
-        files is gone, deferred to DAT-378 (multi-file enumeration via the
-        connect/select surface). That gate is covered by the unit tests. These
-        integration tests exercise the *real* DuckDB read + downstream phases
-        against local fixture files (there is no object store in the test
-        process), so the harness invokes the post-validation loader entry
-        (``_load_file_source``) directly rather than the ``s3://`` gate.
+        each source URI through ``validate_source_uri`` — only
+        ``s3://<lake-bucket>/<key>`` reaches a loader. That gate is covered by
+        the unit tests. These integration tests exercise the *real* DuckDB read +
+        downstream phases against local fixture files (there is no object store
+        in the test process), so the harness invokes the post-validation loader
+        entry (``_load_file_source``) directly rather than the ``s3://`` gate.
 
         For a directory fixture (e.g. ``small_finance/`` — 5 CSVs with
-        *different* schemas) the harness stands in for the connect/select
-        enumeration deferred to DAT-378: it enumerates the contained data files
-        (sorted for determinism) and calls ``_load_file_source`` once per file
-        under the same ``source_id`` / ``source_name``, then aggregates the
-        per-file ``raw_tables`` into one COMPLETED ``PhaseResult``. The loader
-        names each raw table ``<source_name>__<file_stem>``, so the per-file
-        loop reproduces the exact pre-DAT-389 multi-table dataset
-        (``small_finance__customers``, ``small_finance__payment_methods``, …).
-        Production stays single-URI; only the test harness fans the directory
-        out. If any per-file load fails, the aggregate fails with that error.
+        *different* schemas) the harness stands in for the cockpit ``select``
+        enumeration (DAT-378): it enumerates the contained data files (sorted for
+        determinism) and hands the whole list to ``_load_file_source`` under one
+        ``source_id`` / ``source_name``. The per-URI loop loads each in turn and
+        aggregates the per-file ``raw_tables`` into one COMPLETED ``PhaseResult``
+        — the same multi-URI shape production now runs (DAT-378). The loader
+        names each raw table ``<source_name>__<file_stem>``, so the loop
+        reproduces the exact multi-table dataset (``small_finance__customers``,
+        ``small_finance__payment_methods``, …). If any per-file load fails, the
+        aggregate fails with that error.
 
         Args:
             source_path: Path to a CSV / Parquet / JSON fixture file, or a
@@ -221,9 +218,7 @@ class PipelineTestHarness:
         import_phase = self.phases["import"]
         assert isinstance(import_phase, ImportPhase)
 
-        all_table_ids: list[str] = []
-        records_processed = 0
-        warnings_acc: list[str] = []
+        file_uris = [str(p) for p in file_paths]
 
         with self.session_factory() as session:
             # Seed the Source row idempotently — the test harness shares one
@@ -234,7 +229,7 @@ class PipelineTestHarness:
                     source_id=self.source_id,
                     name=clean_name,
                     source_type=source_type,
-                    connection_config={"path": str(path)},
+                    connection_config={"file_uris": file_uris},
                     status="configured",
                 )
                 session.add(source)
@@ -250,30 +245,12 @@ class PipelineTestHarness:
                 session_id=baseline_session_id(),
             )
 
-            for file_path in file_paths:
-                file_result = import_phase._load_file_source(
-                    ctx, source, clean_name, str(file_path)
-                )
-                if file_result.status != PhaseStatus.COMPLETED:
-                    # Don't silently swallow a per-file failure — fail the
-                    # aggregate with the offending file's error.
-                    session.commit()
-                    self.results["import"] = file_result
-                    return file_result
-                if file_result.outputs:
-                    all_table_ids.extend(file_result.outputs.get("raw_tables", []))
-                records_processed += file_result.records_processed
-                warnings_acc.extend(file_result.warnings or [])
-
+            # The per-URI loop is the production multi-file path (DAT-378): one
+            # call loads every URI in turn, one raw table per object. A per-file
+            # failure fails the aggregate with that file's error (no swallow).
+            result = import_phase._load_file_source(ctx, source, clean_name, file_uris)
             session.commit()
 
-        result = PhaseResult.success(
-            outputs={"raw_tables": all_table_ids},
-            records_processed=records_processed,
-            records_created=len(all_table_ids),
-            warnings=warnings_acc,
-            summary=f"{len(all_table_ids)} tables, {records_processed:,} rows",
-        )
         self.results["import"] = result
         return result
 

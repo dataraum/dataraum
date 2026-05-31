@@ -57,6 +57,15 @@ class Source(Base):
 
     # Source management fields (onboarding)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Journey stage the source has reached (DAT-378). The cockpit drives a source
+    # through ``connect → frame → select → add_source`` before triggering the
+    # workflow; this column is the persisted cursor the cockpit's journey
+    # readiness reads (``journey/stages.ts``). It is the only cross-package field
+    # this slice adds — the Temporal contract is untouched (the multi-URI list
+    # rides in ``connection_config``, not ``AddSourceInput``). Nullable so a
+    # legacy / engine-seeded source with no journey reads as the implicit first
+    # stage on the cockpit side.
+    stage: Mapped[str | None] = mapped_column(String, nullable=True)
     backend: Mapped[str | None] = mapped_column(String, nullable=True)
     discovered_schema: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

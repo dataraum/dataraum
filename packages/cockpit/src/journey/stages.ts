@@ -68,3 +68,68 @@ export type Readiness =
 export function reEntryCost(_stage: Stage): never {
 	throw new Error("reEntryCost is not implemented (DAT-347 C1 stub)");
 }
+
+// --- onboarding readiness from Source.stage (DAT-378) -----------------------
+//
+// A Source carries a `stage` cursor (engine `sources.stage` column, mirrored
+// into the Drizzle metadata schema): the furthest onboarding stage the cockpit
+// has driven it through. The cockpit walks a source `connect → frame → select →
+// add_source` BEFORE the AddSourceWorkflow triggers, persisting the cursor after
+// each step so a reload resumes where it left off. These four are the
+// *onboarding* prefix of JOURNEY_STAGES; the tail (`begin_session` onward) is
+// engine-execution state the workflow drives, not a Source cursor, so it is out
+// of this readiness map.
+
+/** The onboarding stages a Source.stage cursor can name, in order. */
+export const ONBOARDING_STAGES = [
+	"connect",
+	"frame",
+	"select",
+	"add_source",
+] as const satisfies readonly Stage[];
+
+export type OnboardingStage = (typeof ONBOARDING_STAGES)[number];
+
+/** True when `stage` is one of the onboarding cursor values. */
+export function isOnboardingStage(stage: string): stage is OnboardingStage {
+	return (ONBOARDING_STAGES as readonly string[]).includes(stage);
+}
+
+/**
+ * Readiness of one onboarding `target` stage given a Source's persisted `stage`
+ * cursor (the furthest stage reached, or `null` for a brand-new source that has
+ * not been connected yet).
+ *
+ * The cursor's position relative to `target` decides the kind:
+ * - cursor reached or passed `target` → that stage is done, so the NEXT stage is
+ *   the one to act on; the reached stage itself reads `ready` (re-enterable).
+ * - `target` is exactly one step past the cursor → `ready` (the next action).
+ * - `target` is further ahead → `not_entered` (upstream hasn't reached it).
+ *
+ * A `null` cursor means only `connect` is `ready`; everything downstream is
+ * `not_entered`. An unknown cursor string (a stage value the cockpit doesn't
+ * recognize) is treated as `null` so a forward-compat engine value can't make a
+ * downstream stage spuriously look ready.
+ */
+export function onboardingReadiness(
+	cursor: string | null | undefined,
+	target: OnboardingStage,
+): Readiness {
+	const targetIdx = ONBOARDING_STAGES.indexOf(target);
+	// A new/unknown source: only the first stage (connect) can be acted on.
+	const cursorIdx =
+		cursor && isOnboardingStage(cursor)
+			? ONBOARDING_STAGES.indexOf(cursor)
+			: -1;
+
+	if (targetIdx <= cursorIdx) {
+		// The source has reached (or passed) this stage — it can be re-entered.
+		return { kind: "ready" };
+	}
+	if (targetIdx === cursorIdx + 1) {
+		// The single next stage to act on.
+		return { kind: "ready" };
+	}
+	// Further downstream — upstream work hasn't reached it yet.
+	return { kind: "not_entered" };
+}

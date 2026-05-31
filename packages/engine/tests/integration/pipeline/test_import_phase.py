@@ -39,13 +39,18 @@ def _seed_source(
     path: Path,
     source_type: str = "csv",
 ) -> None:
-    """Insert a Source row mimicking what begin_session / setup_pipeline writes."""
+    """Insert a Source row mimicking what the cockpit / select stage writes.
+
+    Post-DAT-378 a file source carries its objects as an explicit ``file_uris``
+    list under ``connection_config`` (the cockpit ``select`` stage enumerated the
+    prefix into it).
+    """
     session.add(
         Source(
             source_id=source_id,
             name=name,
             source_type=source_type,
-            connection_config={"path": str(path)},
+            connection_config={"file_uris": [str(path)]},
             status="configured",
         )
     )
@@ -63,16 +68,16 @@ def _file_ctx(
 ) -> PhaseContext:
     """Build a PhaseContext for a file-source pipeline run (Source row pre-seeded).
 
-    The ctx config carries the local readable ``path`` directly: these tests
-    drive ``_load_file_source`` (post-validation loader entry), which exercises
-    the real DuckDB read. The ``s3://`` ingress gate on ``_run`` is covered by
-    the unit tests; here we need a file DuckDB can actually read.
+    The ctx config carries the local readable URI directly under ``file_uris``:
+    these tests drive ``_load_file_source`` (post-validation loader entry), which
+    exercises the real DuckDB read. The ``s3://`` ingress gate on ``_run`` is
+    covered by the unit tests; here we need a file DuckDB can actually read.
     """
     _seed_source(session, source_id, name, path, source_type)
     config: dict[str, Any] = {
         "source_name": name,
         "source_type": source_type,
-        "source_connection_config": {"path": str(path)},
+        "source_connection_config": {"file_uris": [str(path)]},
         "source_path": str(path),
     }
     if extra:
@@ -112,7 +117,7 @@ class TestImportPhase:
         source = session.get(Source, source_id)
         assert source is not None
 
-        result = phase._load_file_source(ctx, source, "test_data", str(csv_file))
+        result = phase._load_file_source(ctx, source, "test_data", [str(csv_file)])
 
         assert result.status == PhaseStatus.COMPLETED
         assert "raw_tables" in result.outputs
@@ -140,6 +145,50 @@ class TestImportPhase:
         assert len(columns) == 3
         column_names = {c.column_name for c in columns}
         assert column_names == {"id", "name", "value"}
+
+    def test_import_multiple_uris_one_table_each(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+    ):
+        """The per-URI loop loads N distinct files into N raw tables (DAT-378).
+
+        The cockpit ``select`` stage enumerates a prefix into an explicit URI
+        list; ``_load_file_source`` loops it and yields one raw table per object.
+        Each file gets a distinct ``<source_name>__<file_stem>`` table, so the
+        names don't collide.
+        """
+        customers = tmp_path / "customers.csv"
+        customers.write_text("id,name\n1,Alice\n2,Bob\n")
+        orders = tmp_path / "orders.csv"
+        orders.write_text("order_id,amount\n10,5.5\n11,6.5\n12,7.5\n")
+
+        phase = ImportPhase()
+        source_id = str(uuid4())
+        source = Source(
+            source_id=source_id,
+            name="multi",
+            source_type="csv",
+            connection_config={"file_uris": [str(customers), str(orders)]},
+            status="configured",
+        )
+        session.add(source)
+        session.flush()
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            source_id=source_id,
+            config={"source_name": "multi", "source_type": "csv"},
+        )
+
+        result = phase._load_file_source(ctx, source, "multi", [str(customers), str(orders)])
+
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        assert len(result.outputs["raw_tables"]) == 2
+        assert result.records_processed == 5  # 2 + 3 rows
+        assert result.records_created == 2  # 2 tables
+
+        stmt = select(Table).where(Table.source_id == source_id, Table.layer == "raw")
+        names = {t.table_name for t in session.execute(stmt).scalars().all()}
+        assert names == {"multi__customers", "multi__orders"}
 
     def test_import_missing_config(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Empty config: import phase reports the missing identity fields."""
@@ -182,7 +231,7 @@ class TestImportPhase:
             config={"source_name": "ghost", "source_type": "csv"},
         )
 
-        result = phase._load_file_source(ctx, source, "ghost", str(ghost_path))
+        result = phase._load_file_source(ctx, source, "ghost", [str(ghost_path)])
 
         assert result.status == PhaseStatus.FAILED
         # The failure originates from DuckDB's read of the missing path,
@@ -290,7 +339,7 @@ class TestImportPhase:
         source = session.get(Source, source_id)
         assert source is not None
 
-        result = phase._load_file_source(ctx, source, "with_junk", str(csv_path))
+        result = phase._load_file_source(ctx, source, "with_junk", [str(csv_path)])
 
         assert result.status == PhaseStatus.COMPLETED
 

@@ -164,12 +164,20 @@ def apply_s3_secret(conn: duckdb.DuckDBPyConnection) -> None:
 
     Must run before ATTACHing a DuckLake catalog whose ``DATA_PATH`` is an
     ``s3://`` URI (DuckLake resolves the path eagerly), on every connection that
-    reads or writes lake parquet. Idempotent (``CREATE OR REPLACE SECRET``).
+    reads or writes lake parquet — and on the throwaway connections that sniff an
+    ``s3://`` source schema (DAT-389). Idempotent (``CREATE OR REPLACE SECRET``).
 
     Honors ``DUCKLAKE_SKIP_INSTALL`` for the ``httpfs`` install (the worker image
-    pre-bakes it), same as the ducklake extension.
+    pre-bakes it), same as the ducklake extension. When the install is skipped,
+    ``LOAD httpfs`` must find the pre-baked extension, so point
+    ``extension_directory`` at the image-baked path first — a fresh in-memory
+    connection (e.g. a schema-sniff throwaway) otherwise defaults to
+    ``$HOME/.duckdb/`` and the ``LOAD`` fails. Mirrors :func:`bootstrap_lake`.
     """
     settings = get_settings()
+    ext_dir = settings.duckdb_extension_directory
+    if ext_dir:
+        conn.execute(f"SET extension_directory = '{_escape_sql_literal(str(ext_dir))}'")
     if not settings.ducklake_skip_install:
         conn.execute("INSTALL httpfs")
     conn.execute("LOAD httpfs")

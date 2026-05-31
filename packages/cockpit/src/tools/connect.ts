@@ -4,8 +4,8 @@
 // Thin LLM-facing wrapper over `duckdb/connect`, registered as a TanStack AI
 // `toolDefinition().server(...)` so it lands in the agent loop (registry.ts).
 // Covers a configured database source (by name, via the READ_ONLY probe ATTACH)
-// and a server-readable file path (via DuckDB's file readers). Read-only — no
-// ATTACH writes, no ingest — so no `needsApproval`.
+// and an `s3://` object in the configured object-store bucket (via DuckDB's file
+// readers). Read-only — no ATTACH writes, no ingest — so no `needsApproval`.
 //
 // The cross-field requirement (database needs source_name + backend; file needs
 // path) is enforced inside `connect()` rather than in this flat input schema, so
@@ -24,9 +24,10 @@ export const connectTool = toolDefinition({
 		"Peek a data source's schema and sample values BEFORE importing it — no " +
 		"data is moved. Use it to show the user what a source looks like. Two " +
 		"kinds: a configured database source (set source_kind='database' with " +
-		"source_name + backend; introspected via a READ_ONLY attach) or a " +
-		"file path (set source_kind='file' with path; a local path or an " +
-		"`s3://` upload URI; CSV/TSV, Parquet, or JSON sniffed in place). " +
+		"source_name + backend; introspected via a READ_ONLY attach) or an " +
+		"object-store file (set source_kind='file' with path; an `s3://` URI in " +
+		"the configured bucket — an upload staged by the entry-mode or an existing " +
+		"bucket object; CSV/TSV, Parquet, or JSON sniffed in place). " +
 		"Returns tables with columns " +
 		"(name, type, nullability) and a capped handful of sample values. " +
 		`Supported database backends: ${SUPPORTED_BACKENDS.join(", ")}.`,
@@ -49,8 +50,9 @@ export const connectTool = toolDefinition({
 			.string()
 			.optional()
 			.describe(
-				"File path to sniff (required when source_kind=file): a local path " +
-					"or an `s3://` URI staged by the upload entry-mode — a " +
+				"Object path to sniff (required when source_kind=file): an `s3://` URI " +
+					"in the configured object-store bucket — an upload staged by the entry-mode " +
+					"or an existing bucket object — a " +
 					".csv/.tsv/.txt, .parquet, or .json/.ndjson/.jsonl file.",
 			),
 	}),

@@ -71,6 +71,29 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("connect", null)).toBeNull();
 	});
 
+	it("maps frame to a concept-frame canvas (DAT-382)", () => {
+		const frame = {
+			vertical: "_adhoc",
+			concepts: [
+				{
+					name: "revenue",
+					description: "Total income",
+					indicators: ["revenue", "sales"],
+					typical_role: "measure",
+					overlay_id: "o1",
+				},
+			],
+		};
+		expect(toolResultToCanvas("frame", frame)).toEqual({
+			kind: "concept-frame",
+			frame,
+		});
+	});
+
+	it("returns null for a missing frame result (canvas unchanged)", () => {
+		expect(toolResultToCanvas("frame", null)).toBeNull();
+	});
+
 	it("returns null for write/compute tools (canvas unchanged)", () => {
 		expect(toolResultToCanvas("teach", { overlay_id: "o1" })).toBeNull();
 		expect(toolResultToCanvas("replay", {})).toBeNull();

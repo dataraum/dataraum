@@ -214,8 +214,9 @@ def ground_columns(
     DAT-376: extracted verbatim from the grounding tail of
     ``SemanticPerColumnPhase._run``. Grounding maps each column to its semantic
     role, entity type, business term, and ontology concept — it assumes the
-    ontology already exists (cold-start ``_adhoc`` induction is a separate
-    upstream step, :func:`induce_adhoc_concepts`).
+    ontology already exists. For a cold-start ``_adhoc`` workspace the concepts
+    are declared upstream by the cockpit ``frame`` stage (DAT-382), which writes
+    them as ``concept`` overlay rows before ``add_source`` runs.
 
     Args:
         session: Database session.

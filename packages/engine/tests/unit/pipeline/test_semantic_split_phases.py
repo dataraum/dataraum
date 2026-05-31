@@ -6,12 +6,14 @@ here we pin the skip gates that decide whether each phase re-runs.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
-from dataraum.pipeline.base import PhaseContext
+from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
 from dataraum.storage import Column, ConfigOverlay, Source, Table
@@ -114,6 +116,54 @@ class TestPerColumnReplayCleanup:
         assert len(overlays) == 1
         assert overlays[0].type == "concept"
         assert overlays[0].payload["name"] == "revenue"
+
+
+class TestPerColumnAdhocFailLoud:
+    """Grounding-only ``_run`` fails loud on a cold-start ``_adhoc`` workspace
+    with no frame-declared concepts (DAT-382). Induction has left the engine;
+    the cockpit ``frame`` stage must write ``concept`` overlay rows first.
+    """
+
+    def _adhoc_ctx(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: str
+    ) -> PhaseContext:
+        return PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            source_id=source_id,
+            config={"vertical": "_adhoc"},
+            session_id=baseline_session_id(),
+        )
+
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.OntologyLoader")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.PromptRenderer")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.create_provider")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.load_llm_config")
+    def test_fails_loud_when_adhoc_has_no_concepts(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_loader_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        config = MagicMock()
+        config.active_provider = "anthropic"
+        config.providers = {"anthropic": MagicMock()}
+        mock_load_config.return_value = config
+        # _adhoc ontology resolves to no concepts → fail loud, never ground.
+        mock_loader_cls.return_value.load.return_value = None
+
+        src = _source(session)
+        _typed_table(session, src.source_id, "t1", ["a"])
+
+        result = SemanticPerColumnPhase()._run(self._adhoc_ctx(session, duckdb_conn, src.source_id))
+
+        assert result.status == PhaseStatus.FAILED
+        assert "_adhoc concepts" in (result.error or "")
+        # Grounded nothing — no annotations written.
+        assert session.execute(select(SemanticAnnotation)).scalars().all() == []
 
 
 class TestPerTableShouldSkip:

@@ -293,6 +293,18 @@ export function validateBucketS3Path(path: string): {
 			reason: "path key must not contain `..` segments or a leading slash",
 		};
 	}
+	// Reject DuckDB glob metacharacters. DuckDB's file readers treat `* ? [ ] { }`
+	// as a glob, expanding one `connect` into a ListObjectsV2 + multi-object read
+	// across the bucket — including the lake's `lake/` prefix. A single concrete
+	// object must address exactly one key, so any glob char is refused.
+	if (/[*?[\]{}]/.test(key)) {
+		return {
+			ok: false,
+			reason:
+				"path key must not contain glob metacharacters (`* ? [ ] { }`); " +
+				"it must address a single object",
+		};
+	}
 	return { ok: true };
 }
 

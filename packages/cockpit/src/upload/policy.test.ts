@@ -67,6 +67,9 @@ describe("buildUploadKey / buildUploadUri (locked contract for DAT-389)", () => 
 	it("sanitizes the filename inside the key", () => {
 		expect(buildUploadKey("u", "../evil.csv")).toBe("uploads/u/evil.csv");
 	});
+	it("sanitizes a non-UUID uuid so it cannot inject `/` or `..`", () => {
+		expect(buildUploadKey("../../lake", "x.csv")).toBe("uploads/lake/x.csv");
+	});
 	it("builds the s3:// handle in the same bucket as the lake", () => {
 		const key = buildUploadKey("u", "x.parquet");
 		expect(buildUploadUri("dataraum-lake", key)).toBe(

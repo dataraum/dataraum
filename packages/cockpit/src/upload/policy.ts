@@ -69,9 +69,14 @@ export function sanitizeFilename(filename: string): string {
  * `uuid` is the caller-supplied collision-free directory (one per upload);
  * `filename` is sanitized to a single safe leaf. Pure — the route generates the
  * uuid (crypto.randomUUID) and passes it in so this stays deterministic/testable.
+ *
+ * The `uuid` is itself sanitized to a single safe segment: a non-UUID value
+ * (a caller that didn't use crypto.randomUUID) must not be able to inject `/`
+ * or `..` and re-point the key at another upload, the `lake/` prefix, or the
+ * bucket root. Same allowlist as the filename leaf.
  */
 export function buildUploadKey(uuid: string, filename: string): string {
-	return `${UPLOAD_PREFIX}/${uuid}/${sanitizeFilename(filename)}`;
+	return `${UPLOAD_PREFIX}/${sanitizeFilename(uuid)}/${sanitizeFilename(filename)}`;
 }
 
 /**

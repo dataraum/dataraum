@@ -32,7 +32,7 @@ describe("buildS3SecretSql (DAT-388)", () => {
 			"CREATE OR REPLACE SECRET dataraum_s3 (" +
 				"TYPE s3, " +
 				"KEY_ID 'dataraum', " +
-				"SECRET 'pa\\'ss', " +
+				"SECRET 'pa''ss', " +
 				"ENDPOINT 'seaweedfs:8333', " +
 				"REGION 'us-east-1', " +
 				"URL_STYLE 'path', " +

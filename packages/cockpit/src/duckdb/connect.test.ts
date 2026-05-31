@@ -87,6 +87,13 @@ describe("validateBucketS3Path (DAT-386 arbitrary-file-read hardening)", () => {
 		["s3://dataraum-lake:8333/x.csv", "bucket with a port"],
 		["s3://dataraum-lake/../../etc/passwd", "key with `..` traversal"],
 		["S3://dataraum-lake/x.csv", "uppercase scheme"],
+		// Glob metacharacters would expand one connect into a ListObjectsV2 +
+		// multi-object read across the bucket (incl. the lake's `lake/` prefix).
+		["s3://dataraum-lake/*", "`*` wildcard enumerating the bucket"],
+		["s3://dataraum-lake/**/*.csv", "recursive `**/*` glob"],
+		["s3://dataraum-lake/[a-z].csv", "`[...]` character-class glob"],
+		["s3://dataraum-lake/{1,2}.csv", "`{...}` brace-expansion glob"],
+		["s3://dataraum-lake/data?.csv", "`?` single-char glob"],
 	])("REJECTS %s (%s)", (path) => {
 		expect(validateBucketS3Path(path).ok).toBe(false);
 	});

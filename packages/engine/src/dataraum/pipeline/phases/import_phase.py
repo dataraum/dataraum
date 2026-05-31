@@ -2,8 +2,8 @@
 
 This is the first phase in the pipeline. It:
 
-1. Resolves the Source row already written by ``begin_session`` (MCP) or
-   ``setup_pipeline._resolve_source_spec`` (CLI).
+1. Resolves the Source row the workflow caller (the cockpit) wrote before
+   triggering ``addSourceWorkflow``.
 2. Dispatches by ``source_type``: db_recipe → extract_backend; otherwise →
    file loader (CSV/Parquet/JSON) selected by the source URI's suffix.
 3. Creates raw Table + Column records, table names prefixed with
@@ -41,7 +41,7 @@ from sqlalchemy import func, select
 
 from dataraum.core.config import load_pipeline_config
 from dataraum.core.logging import get_logger
-from dataraum.core.uri import uri_suffix, validate_source_uri
+from dataraum.core.uri import uri_stem, uri_suffix, validate_source_uri
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -53,8 +53,14 @@ from dataraum.storage import Column, Source, Table
 
 logger = get_logger(__name__)
 
+# Suffix → loader. Mirrors the cockpit's connect/upload contract (connect.ts
+# FILE_READERS + upload/policy.ts ALLOWED_EXTENSIONS) so what the cockpit lets a
+# practitioner select is exactly what the engine can load: csv/tsv/txt → CSV,
+# parquet/pq → Parquet, json/jsonl/ndjson → JSON. ``.ndjson`` is newline-delimited
+# JSON — it MUST route to the JSON loader, never fall through to the CSV default
+# (DAT-378).
 _PARQUET_EXTENSIONS = {".parquet", ".pq"}
-_JSON_EXTENSIONS = {".json", ".jsonl"}
+_JSON_EXTENSIONS = {".json", ".jsonl", ".ndjson"}
 
 
 @analysis_phase
@@ -64,9 +70,9 @@ class ImportPhase(BasePhase):
     Configuration (in ctx.config, populated by ``setup_pipeline``):
         source_name: Registered source name.
         source_type: csv, parquet, json, file, or db_recipe.
-        source_connection_config: dict — file path, or recipe queries+backend.
+        source_connection_config: dict — a ``file_uris`` list for file sources,
+            or recipe queries + backend for db_recipe sources.
         source_backend: For db_recipe sources only (mssql today).
-        source_path: Optional CLI hint (the path the user typed).
         junk_columns: List of column names to drop after loading.
 
     Outputs:
@@ -85,9 +91,7 @@ class ImportPhase(BasePhase):
 
         Drops, in order:
             1. All DuckDB tables (raw/typed/quarantine) for the source's
-               existing ``Table`` rows. The CSV loader's raw ``CREATE TABLE``
-               isn't ``OR REPLACE``, so leftover DuckDB rows would collide
-               on the next import.
+               existing ``Table`` rows, for a clean slate on re-import.
             2. All ``Table`` rows for this source (any layer). Cascades to
                ``Column`` + every per-column row via the model relationships.
 
@@ -111,9 +115,9 @@ class ImportPhase(BasePhase):
         # Postgres rows. Folding both into one loop would lose the
         # DuckDB-before-Postgres ordering — a partial failure mid-loop
         # would leave Postgres saying "no raw tables for this source"
-        # while DuckDB still holds them, and the next import would collide
-        # on the un-dropped DuckDB table (CSV loader's CREATE TABLE isn't
-        # OR REPLACE).
+        # while DuckDB still holds them. (Raw loads are CREATE OR REPLACE since
+        # DAT-378, so a leftover raw table no longer collides on re-import; the
+        # DROP-first ordering still gives a clean teardown of all layers.)
         for table in rows:
             if not table.duckdb_path:
                 continue
@@ -147,11 +151,11 @@ class ImportPhase(BasePhase):
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Load data for the single source bound to this pipeline run.
 
-        ``setup_pipeline`` populates ``ctx.config`` with the registered
-        source's identity and connection config. The Source row already
-        exists in the session DB (written by ``begin_session`` in MCP mode,
-        or by ``setup_pipeline._resolve_source_spec`` in CLI mode). This
-        phase just materializes raw tables and Column records.
+        The worker's ``_build_phase_config`` populates ``ctx.config`` with the
+        registered source's identity and connection config. The Source row
+        already exists in the workspace DB (the workflow caller — the cockpit —
+        wrote it before triggering ``addSourceWorkflow``). This phase just
+        materializes raw tables and Column records.
 
         Per DAT-290, there is exactly one source — no fan-out, no synthetic
         multi_source row, no swallowing of per-source failures.
@@ -161,7 +165,6 @@ class ImportPhase(BasePhase):
         source_type = config.get("source_type")
         source_connection_config = config.get("source_connection_config") or {}
         source_backend = config.get("source_backend")
-        explicit_path = config.get("source_path")  # set in CLI mode only
 
         if not source_name or not source_type:
             return PhaseResult.failed(
@@ -187,7 +190,7 @@ class ImportPhase(BasePhase):
                 ctx, source, source_name, source_connection_config, source_backend
             )
         else:
-            source_uris = self._resolve_file_uris(source_connection_config, explicit_path)
+            source_uris = self._resolve_file_uris(source_connection_config)
             if not source_uris:
                 return PhaseResult.failed(
                     f"Source '{source_name}' (type={source_type}) has no file URIs "
@@ -209,6 +212,21 @@ class ImportPhase(BasePhase):
                     validate_source_uri(uri)
                 except ValueError as e:
                     return PhaseResult.failed(str(e))
+            # Each file becomes a raw table ``<source>__<file_stem>``. Two selected
+            # files with the same basename (``a/data.csv`` + ``b/data.csv``, or
+            # ``data.csv`` + ``data.parquet``) map to ONE raw table — the second
+            # CREATE OR REPLACE would clobber the first's data and the second
+            # Table row would hit the (source_id, table_name, layer) unique
+            # constraint. The engine can't silently merge them, so fail loud
+            # BEFORE loading anything (atomic); disambiguation is the cockpit
+            # select stage's job (DAT-398).
+            duplicates = self._duplicate_table_names(source_name, source_uris)
+            if duplicates:
+                return PhaseResult.failed(
+                    f"Source '{source_name}' selects multiple files that map to the "
+                    f"same raw table(s): {', '.join(duplicates)}. Each file must have a "
+                    "distinct basename — rename or drop the duplicates."
+                )
             result = self._load_file_source(ctx, source, source_name, source_uris)
 
         if result.status != PhaseStatus.COMPLETED:
@@ -244,27 +262,40 @@ class ImportPhase(BasePhase):
         return None
 
     @staticmethod
-    def _resolve_file_uris(
-        connection_config: dict[str, Any],
-        explicit_path: str | None,
-    ) -> list[str]:
+    def _resolve_file_uris(connection_config: dict[str, Any]) -> list[str]:
         """Resolve the ordered list of ``s3://`` URIs a file source loads (DAT-378).
 
         A file source carries its objects as an explicit ``file_uris`` list under
-        a key DISTINCT from the db_recipe ``tables`` key (the cockpit ``select``
-        stage enumerated the prefix into it; ADR-0007 frozen artifact). A CLI
-        ``source_path`` hint, when present, is treated as a single-element list —
-        it is the one-URI shape the CLI still uses. The two sources never mix:
-        the explicit list wins when both are set is not a case (CLI sets only the
-        path), so ``file_uris`` is read first and ``explicit_path`` is the
-        fallback single object.
+        a key DISTINCT from the db_recipe ``tables`` key. A single-file source
+        (``add_file_source`` or one uploaded object) stores a one-element list; a
+        multi-file source (the cockpit ``select`` stage enumerating a prefix into
+        ``file_uris`` via ListObjectsV2) stores many. There is no scalar ``path``
+        form and no CLI ``source_path`` fallback — the worker path carries neither
+        (the CLI is gone), so ``file_uris`` is the single source of truth.
         """
         uris = connection_config.get("file_uris")
-        if uris:
-            return [str(u) for u in uris]
-        if explicit_path:
-            return [explicit_path]
-        return []
+        if not uris:
+            return []
+        return [str(u) for u in uris]
+
+    @staticmethod
+    def _duplicate_table_names(source_name: str, source_uris: list[str]) -> list[str]:
+        """Raw table names that more than one URI in the list maps to (DAT-378).
+
+        Each file loads into ``<source>__<file_stem>`` via
+        ``table_name_for_source(source_name, uri_stem(uri))``; two URIs sharing a
+        basename (across folders, or differing only by extension) collide on one
+        raw table. Returns the colliding names, sorted (empty when all distinct),
+        so ``_run`` can fail loud before any load rather than let the second
+        ``CREATE OR REPLACE`` clobber the first.
+        """
+        from dataraum.core.duckdb_naming import table_name_for_source
+
+        counts: dict[str, int] = {}
+        for uri in source_uris:
+            bare = table_name_for_source(source_name, uri_stem(uri))
+            counts[bare] = counts.get(bare, 0) + 1
+        return sorted(name for name, count in counts.items() if count > 1)
 
     def _load_file_source(
         self,
@@ -279,8 +310,9 @@ class ImportPhase(BasePhase):
         (already validated by ``_run``) handed verbatim to the loader, which
         passes it to DuckDB's ``read_*_auto`` — the loader is selected per
         element by its own suffix. The loader names each raw table
-        ``<source_name>__<file_stem>``, so distinct files yield distinct,
-        collision-free tables. This is the per-URI loop the cockpit's ``select``
+        ``<source_name>__<file_stem>``, so files with distinct basenames yield
+        distinct tables (``_run`` fails loud on duplicate basenames, which would
+        otherwise collide on one raw table). This is the per-URI loop the cockpit's ``select``
         enumeration feeds: ONE import activity yields N raw tables, and
         ``AddSourceWorkflow`` fans out one ``ProcessTableWorkflow`` per raw table
         with no Temporal-contract change. A per-element failure fails the whole
@@ -290,6 +322,9 @@ class ImportPhase(BasePhase):
         junk_columns = ctx.config.get("junk_columns", [])
 
         table_ids: list[str] = []
+        # Raw DuckDB tables this run created, so a per-URI failure can DROP them
+        # and roll the import back to nothing (see _rollback_partial_load).
+        created_duckdb_paths: list[str] = []
         records_processed = 0
         warnings_acc: list[str] = []
 
@@ -298,9 +333,19 @@ class ImportPhase(BasePhase):
                 ctx, source, source_name, source_uri, null_config, junk_columns
             )
             if result.status != PhaseStatus.COMPLETED:
+                # Multi-URI import is all-or-nothing. ``PhaseResult.failed`` is a
+                # RETURN, not a raise, so ``run_phase``'s ``session_scope`` would
+                # COMMIT the URIs loaded before this one on its clean exit — and
+                # the next run's ``should_skip`` (which fires when ANY raw table
+                # exists for the source) would then SKIP import and silently drop
+                # the URIs after the failure. Undo the partial work so the failed
+                # import commits nothing and a clean re-run re-imports the whole
+                # list (DAT-378).
+                self._rollback_partial_load(ctx, created_duckdb_paths)
                 return result
             if result.outputs:
                 table_ids.extend(result.outputs.get("raw_tables", []))
+                created_duckdb_paths.extend(result.outputs.get("duckdb_paths", []))
             records_processed += result.records_processed
             warnings_acc.extend(result.warnings or [])
 
@@ -315,6 +360,35 @@ class ImportPhase(BasePhase):
             summary=f"{len(table_ids)} tables, {records_processed:,} rows",
         )
 
+    def _rollback_partial_load(self, ctx: PhaseContext, duckdb_paths: list[str]) -> None:
+        """Undo a partially-applied multi-URI load so a failed import commits nothing.
+
+        Drops the raw DuckDB tables created so far this run, then rolls back the
+        in-session ``Table``/``Column`` rows. Combined with the loaders' raw
+        ``CREATE OR REPLACE TABLE`` (idempotent), this makes a mid-list failure
+        atomic: ``should_skip`` sees no raw tables afterward, so a clean re-run
+        re-imports the whole list instead of skipping the URIs past the failure
+        (DAT-378).
+        """
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        raw_schema = schema_for_layer("raw")
+        try:
+            for path in duckdb_paths:
+                fqn = f'{LAKE_CATALOG_ALIAS}.{raw_schema}."{path}"'
+                try:
+                    ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
+                except Exception:
+                    # A failed DROP must not skip the remaining drops OR the
+                    # rollback below: a leftover raw table is harmless (the
+                    # re-run's CREATE OR REPLACE overwrites it), but a skipped
+                    # session.rollback() would COMMIT the partial Table/Column
+                    # rows and re-introduce the should_skip wedge.
+                    logger.warning("import.rollback_drop_failed", path=path, exc_info=True)
+        finally:
+            ctx.session.rollback()
+
     def _load_single_file_with_prefix(
         self,
         ctx: PhaseContext,
@@ -328,9 +402,8 @@ class ImportPhase(BasePhase):
 
         Post-DAT-341 the loader composes the source-prefixed identifier and
         writes the DuckDB table into ``lake.raw.*`` via fully-qualified
-        ``CREATE TABLE``. There is no rename / cross-schema move step here —
-        if the loader's CREATE TABLE collides with a pre-existing row, the
-        DuckDB error surfaces directly through ``Result.fail``.
+        ``CREATE OR REPLACE TABLE`` (DAT-378 — idempotent across retries). There
+        is no rename / cross-schema move step here.
 
         ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI; dispatch is on its
         suffix alone.
@@ -373,7 +446,12 @@ class ImportPhase(BasePhase):
         staged_table = result.unwrap()
 
         return PhaseResult.success(
-            outputs={"raw_tables": [str(staged_table.table_id)]},
+            outputs={
+                "raw_tables": [str(staged_table.table_id)],
+                # The raw DuckDB table name (== duckdb_path) so a mid-list failure
+                # can DROP exactly what this run created (DAT-378 atomic import).
+                "duckdb_paths": [staged_table.table_name],
+            },
             records_processed=staged_table.row_count,
             records_created=1,
             warnings=result.warnings,

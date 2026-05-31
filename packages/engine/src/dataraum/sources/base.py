@@ -6,15 +6,8 @@ import re
 import unicodedata
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import TYPE_CHECKING
-
-import duckdb
-from sqlalchemy.orm import Session
 
 from dataraum.core.models import Result, SourceConfig
-
-if TYPE_CHECKING:
-    from dataraum.sources.csv.models import StagingResult
 
 
 def normalize_column_name(header: str, position: int = 0) -> str:
@@ -87,25 +80,6 @@ class LoaderBase(ABC):
 
     Each loader handles a specific source type and knows its type system strength.
     """
-
-    @abstractmethod
-    def load(
-        self,
-        source_config: SourceConfig,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        session: Session,
-    ) -> Result[StagingResult]:
-        """Load data from source into DuckDB.
-
-        Args:
-            source_config: Source configuration
-            duckdb_conn: DuckDB connection
-            session: SQLAlchemy session for metadata
-
-        Returns:
-            Result containing StagingResult or error
-        """
-        pass
 
     @abstractmethod
     def get_schema(

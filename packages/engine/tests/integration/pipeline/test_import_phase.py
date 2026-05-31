@@ -78,7 +78,6 @@ def _file_ctx(
         "source_name": name,
         "source_type": source_type,
         "source_connection_config": {"file_uris": [str(path)]},
-        "source_path": str(path),
     }
     if extra:
         config.update(extra)
@@ -269,7 +268,7 @@ class TestImportPhase:
             session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
-            config={"source_path": str(csv_file)},
+            config={},
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -307,7 +306,7 @@ class TestImportPhase:
             session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
-            config={"source_path": str(csv_file), "force_reimport": True},
+            config={"force_reimport": True},
         )
 
         skip_reason = phase.should_skip(ctx)

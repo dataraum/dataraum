@@ -31,12 +31,12 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
-from dataraum.core.models import SourceConfig
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.phases.statistics_phase import StatisticsPhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.sources.csv import CSVLoader
-from dataraum.storage import Column, Table
+from dataraum.sources.csv.null_values import load_null_value_config
+from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_session_id
 
 
@@ -48,6 +48,41 @@ def simple_csv(tmp_path):
         "id,amount,note\n1,10.5,a\n2,20.0,b\n3,30.25,c\n4,40.0,d\n",
     )
     return csv_file
+
+
+def _seed_source(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    session: Session,
+    csv_path,
+) -> tuple[str, str]:
+    """Seed a Source row and stage a CSV via the production loader path.
+
+    Mirrors ``import_phase`` (create the Source row, then call the file loader's
+    ``_load_single_file``); returns ``(source_id, staged_table_id)``.
+    """
+    source_uri = f"file://{csv_path}"
+    source_id = "src-replay-seed"
+    source = Source(
+        source_id=source_id,
+        name="seed_source",
+        source_type="csv",
+        connection_config={"path": source_uri},
+    )
+    session.add(source)
+    session.flush()
+
+    loader = CSVLoader()
+    load_result = loader._load_single_file(
+        source_uri=source_uri,
+        source_id=source_id,
+        source_name="seed_source",
+        duckdb_conn=duckdb_conn,
+        session=session,
+        null_config=load_null_value_config(),
+    )
+    assert load_result.success, load_result.error
+    staged = load_result.unwrap()
+    return source_id, staged.table_id
 
 
 def _resolve_once(
@@ -85,24 +120,19 @@ class TestStableTypedIdentity:
     def test_second_resolve_keeps_table_and_column_ids(
         self, simple_csv, duckdb_conn, session
     ) -> None:
-        loader = CSVLoader()
-        config = SourceConfig(name="orders", source_type="csv", path=str(simple_csv))
-        load_result = loader.load(config, duckdb_conn, session)
-        assert load_result.success
-        staging = load_result.unwrap()
-        staged = staging.tables[0]
+        source_id, staged_table_id = _seed_source(duckdb_conn, session, simple_csv)
 
-        first_typed_id = _resolve_once(staged.table_id, duckdb_conn, session)
+        first_typed_id = _resolve_once(staged_table_id, duckdb_conn, session)
         first_cols = _typed_column_ids(session, first_typed_id)
         assert first_cols  # sanity
 
         # Re-type the SAME raw table (a type_pattern teach re-runs typing).
         # Clear typing's own rows in place first, exactly as the replay does.
         TypingPhase().replay_cleanup(
-            _CleanupCtx(session, duckdb_conn, staging.source_id),
-            [staged.table_id],
+            _CleanupCtx(session, duckdb_conn, source_id),
+            [staged_table_id],
         )
-        second_typed_id = _resolve_once(staged.table_id, duckdb_conn, session)
+        second_typed_id = _resolve_once(staged_table_id, duckdb_conn, session)
         second_cols = _typed_column_ids(session, second_typed_id)
 
         # The typed Table id and every typed Column id are UNCHANGED.

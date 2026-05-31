@@ -264,7 +264,7 @@ def lake_data_path(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _stub_s3_secret() -> Generator[None, None, None]:
+def _stub_s3_secret() -> Generator[None]:
     """Stub the object-store secret/``httpfs`` registration for the whole suite.
 
     Production lake DATA_PATH is an ``s3://`` URI and :func:`bootstrap_lake`

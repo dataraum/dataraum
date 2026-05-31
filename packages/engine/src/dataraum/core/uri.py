@@ -1,6 +1,6 @@
 """Source-URI helpers (DAT-389).
 
-A file source's ``connection_config['path']`` is an ``s3://<bucket>/<key>`` URI
+A file source's ``connection_config['file_uris']`` entries are ``s3://<bucket>/<key>`` URIs
 on the object store (the lake + uploaded files live there; SeaweedFS runs in
 dev compose too). DuckDB's ``read_*_auto`` resolves it over ``httpfs``, so the
 engine must never hand a source path to ``pathlib`` — a ``Path("s3://b/k.csv")``
@@ -52,7 +52,7 @@ def validate_source_uri(uri: str) -> str:
       ``lake/`` parquet prefix). A source URI must name exactly one object.
 
     Args:
-        uri: The source URI from ``connection_config['path']``.
+        uri: A source URI from ``connection_config['file_uris']``.
 
     Returns:
         The validated URI unchanged (so callers can inline the check).

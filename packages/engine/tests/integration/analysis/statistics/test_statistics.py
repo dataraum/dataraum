@@ -1,7 +1,9 @@
 """Tests for statistical profiling processor."""
 
+import duckdb
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from dataraum.analysis.statistics import (
     ColumnProfile,
@@ -11,9 +13,10 @@ from dataraum.analysis.statistics import (
     profile_statistics,
 )
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
-from dataraum.core.models import SourceConfig
 from dataraum.sources.csv import CSVLoader
-from dataraum.storage import Table
+from dataraum.sources.csv.models import StagedTable
+from dataraum.sources.csv.null_values import load_null_value_config
+from dataraum.storage import Source, Table
 from tests.conftest import baseline_session_id
 
 
@@ -30,6 +33,40 @@ def _get_typed_table_id(typed_table_name: str, session) -> str | None:
     result = session.execute(stmt)
     table = result.scalar_one_or_none()
     return table.table_id if table else None
+
+
+def _stage_csv(
+    simple_csv,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    session: Session,
+) -> StagedTable:
+    """Seed a Source row and stage the CSV via the production loader path.
+
+    Mirrors what ``import_phase`` does (create the Source row, then call the
+    file loader's ``_load_single_file``); returns the resulting ``StagedTable``.
+    """
+    source_uri = f"file://{simple_csv}"
+    source_id = "src-stats"
+    source = Source(
+        source_id=source_id,
+        name="simple",
+        source_type="csv",
+        connection_config={"path": source_uri},
+    )
+    session.add(source)
+    session.flush()
+
+    loader = CSVLoader()
+    result = loader._load_single_file(
+        source_uri=source_uri,
+        source_id=source_id,
+        source_name="simple",
+        duckdb_conn=duckdb_conn,
+        session=session,
+        null_config=load_null_value_config(),
+    )
+    assert result.success, result.error
+    return result.unwrap()
 
 
 @pytest.fixture
@@ -50,12 +87,7 @@ def simple_csv(tmp_path):
 @pytest.fixture
 def profiled_result(simple_csv, duckdb_conn, session):
     """Load CSV, infer/resolve types, and profile statistics."""
-    loader = CSVLoader()
-    config = SourceConfig(name="simple", source_type="csv", path=str(simple_csv))
-    load_result = loader.load(config, duckdb_conn, session)
-    assert load_result.success
-
-    staged_table = load_result.unwrap().tables[0]
+    staged_table = _stage_csv(simple_csv, duckdb_conn, session)
     raw_table = session.get(Table, staged_table.table_id)
     assert raw_table is not None
 
@@ -129,12 +161,7 @@ class TestStatisticsProfiler:
 
     def test_profile_statistics_requires_typed_table(self, simple_csv, duckdb_conn, session):
         """Test that profile_statistics fails on raw tables."""
-        loader = CSVLoader()
-        config = SourceConfig(name="simple", source_type="csv", path=str(simple_csv))
-        load_result = loader.load(config, duckdb_conn, session)
-        assert load_result.success
-
-        raw_table = load_result.unwrap().tables[0]
+        raw_table = _stage_csv(simple_csv, duckdb_conn, session)
 
         stats_result = profile_statistics(
             raw_table.table_id, duckdb_conn, session, session_id=baseline_session_id()

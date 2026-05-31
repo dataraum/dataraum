@@ -150,7 +150,7 @@ class TestImportDispatch:
         assert "not found in the session DB" in (result.error or "")
 
     def test_run_fails_when_file_uris_missing_from_config(self) -> None:
-        """File-source dispatch needs a non-empty file_uris list (or a CLI source_path)."""
+        """File-source dispatch needs a non-empty file_uris list."""
         phase = ImportPhase()
         session = MagicMock()
         session.get.return_value = MagicMock()  # any non-None
@@ -221,6 +221,10 @@ class TestSuffixDispatch:
             ("s3://dataraum-lake/data.parquet", "ParquetLoader"),
             ("s3://dataraum-lake/events.jsonl", "JsonLoader"),
             ("s3://dataraum-lake/legacy/orders.tsv", "CSVLoader"),
+            # Cockpit-parity extensions (DAT-378): ndjson MUST be JSON, not CSV.
+            ("s3://dataraum-lake/events.ndjson", "JsonLoader"),
+            ("s3://dataraum-lake/notes.txt", "CSVLoader"),
+            ("s3://dataraum-lake/data.pq", "ParquetLoader"),
         ],
     )
     def test_loader_chosen_by_suffix(self, uri: str, expected_loader: str) -> None:
@@ -421,5 +425,97 @@ class TestMultiUriDispatch:
         assert result.status == PhaseStatus.FAILED
         assert "Invalid source URI" in (result.error or "")
         # The list is fully validated before any load, so NOTHING loads.
+        for inst in loaders.values():
+            inst.return_value._load_single_file.assert_not_called()
+
+    def test_load_failure_mid_list_rolls_back_and_drops(self) -> None:
+        """A loader failure mid-list undoes the partial load — nothing commits (DAT-378).
+
+        URIs before the failure already created raw DuckDB tables + Table rows.
+        Because ``PhaseResult.failed`` is a RETURN (``run_phase``'s ``session_scope``
+        commits on clean exit), the phase must DROP this run's DuckDB tables and
+        roll the session back — otherwise a re-run's ``should_skip`` would see the
+        partial raw tables and silently skip the URIs past the failure.
+        """
+        phase = ImportPhase()
+        uris = [
+            "s3://dataraum-lake/sel/customers.csv",
+            "s3://dataraum-lake/sel/orders.csv",  # valid URI; the loader fails on it
+        ]
+        ctx = self._ctx(uris)
+
+        staged = StagedTable(
+            table_id="t",
+            table_name="src__customers",
+            raw_table_name="src__customers",
+            row_count=1,
+            column_count=1,
+        )
+        csv_loader = MagicMock()
+        # First URI loads; the second URI's loader fails.
+        csv_loader.return_value._load_single_file.side_effect = [
+            Result.ok(staged),
+            Result.fail("boom"),
+        ]
+
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", csv_loader),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "boom" in (result.error or "")
+        # The partial load was undone: the session rolled back and the one DuckDB
+        # table created before the failure was dropped.
+        ctx.session.rollback.assert_called_once()
+        drops = [
+            str(c.args[0])
+            for c in ctx.duckdb_conn.execute.call_args_list
+            if c.args and "DROP TABLE IF EXISTS" in str(c.args[0])
+        ]
+        assert any("src__customers" in d for d in drops), drops
+
+    def test_duplicate_basenames_fail_loud_before_loading(self) -> None:
+        """Two URIs with the same basename fail the import up front (DAT-378).
+
+        Both ``2024/data.csv`` and ``2025/data.csv`` map to raw table
+        ``src__data``; the engine can't merge them onto one table, so ``_run``
+        rejects the list BEFORE any loader runs rather than letting the second
+        ``CREATE OR REPLACE`` clobber the first.
+        """
+        phase = ImportPhase()
+        uris = [
+            "s3://dataraum-lake/2024/data.csv",
+            "s3://dataraum-lake/2025/data.csv",  # same basename -> same raw table
+        ]
+        ctx = self._ctx(uris)
+
+        staged = StagedTable(
+            table_id="t",
+            table_name="src__data",
+            raw_table_name="src__data",
+            row_count=1,
+            column_count=1,
+        )
+        loaders = self._patched_loaders(staged)
+
+        with (
+            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
+            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
+            patch(
+                "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                return_value=MagicMock(),
+            ),
+        ):
+            result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "same raw table" in (result.error or "")
+        # Fail-loud happens before any load — no loader was constructed/called.
         for inst in loaders.values():
             inst.return_value._load_single_file.assert_not_called()

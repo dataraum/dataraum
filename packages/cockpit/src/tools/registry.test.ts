@@ -28,6 +28,7 @@ describe("tool registry (DAT-353)", () => {
 				"probe",
 				"connect",
 				"frame",
+				"select",
 				"teach",
 				"replay",
 			]),
@@ -37,6 +38,7 @@ describe("tool registry (DAT-353)", () => {
 	it("gates the write/compute tools behind approval, leaves reads open", () => {
 		const byName = new Map(tools.map((t) => [t.name, t]));
 		expect(byName.get("frame")?.needsApproval).toBe(true);
+		expect(byName.get("select")?.needsApproval).toBe(true);
 		expect(byName.get("teach")?.needsApproval).toBe(true);
 		expect(byName.get("replay")?.needsApproval).toBe(true);
 		// Reads must NOT require approval — they run unattended in the loop.

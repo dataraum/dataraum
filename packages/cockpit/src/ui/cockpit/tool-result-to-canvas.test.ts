@@ -94,6 +94,26 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("frame", null)).toBeNull();
 	});
 
+	it("maps select to a selected-source canvas (DAT-398)", () => {
+		const selection = {
+			source_id: "s1",
+			name: "orders",
+			source_type: "csv",
+			backend: null,
+			stage: "add_source",
+			file_uris: ["s3://dataraum-lake/orders.csv"],
+			recipe_tables: null,
+		};
+		expect(toolResultToCanvas("select", selection)).toEqual({
+			kind: "selected-source",
+			selection,
+		});
+	});
+
+	it("returns null for a missing select result (canvas unchanged)", () => {
+		expect(toolResultToCanvas("select", null)).toBeNull();
+	});
+
 	it("returns null for write/compute tools (canvas unchanged)", () => {
 		expect(toolResultToCanvas("teach", { overlay_id: "o1" })).toBeNull();
 		expect(toolResultToCanvas("replay", {})).toBeNull();

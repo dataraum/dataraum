@@ -1,19 +1,22 @@
-// Upload entry-mode dropzone (DAT-386).
+// Upload entry-mode dropzone (DAT-386; multi-file DAT-391).
 //
-// Drag-drop (or pick) a file → POST /api/upload → get the staged `s3://` handle
-// → drive the EXISTING `connect` tool over that path so its result projects onto
-// the existing schema-preview canvas via the existing tool→canvas bridge. The
-// dropzone owns NO sniff logic and NO canvas wiring: it hands the `s3://` path to
-// the agent loop (`onConnect`), which runs `connect(source_kind='file', path)`,
-// and the chat rail's canvas effect renders the ConnectSchema as it always has.
+// Drag-drop (or pick) one OR several files → validate the batch client-side →
+// POST each to /api/upload → collect the staged `s3://` handles → hand the LIST
+// to the caller (`onUploaded`), which drives the agent loop (connect per file
+// for a preview, then select the batch as ONE `file_uris` source). The dropzone
+// owns NO sniff/canvas wiring.
 //
-// Native drag/drop + a file <input> (no @mantine/dropzone dep) — the file input
-// is what Playwright's browser_file_upload targets in the lane smoke.
+// The hard cap (MAX_UPLOAD_FILES) + same-kind homogeneity are a CLIENT-SIDE UX
+// gate (validateUploadBatch): the upload route stays one-file-per-request and
+// uncapped. Native drag/drop + a `multiple` file <input> (no @mantine/dropzone
+// dep) — the input is what Playwright's browser_file_upload targets in the smoke.
 
 import { Box, Button, Group, Stack, Text } from "@mantine/core";
 import { Upload } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
 import { tokens } from "#/ui/theme";
+import { validateUploadBatch } from "#/upload/batch";
+import { MAX_UPLOAD_FILES } from "#/upload/policy";
 
 // Accept attribute mirrors the route's ALLOWED_EXTENSIONS (the route is the
 // authority; this is just a UX hint that pre-filters the OS picker).
@@ -42,44 +45,68 @@ async function uploadFile(file: File): Promise<string> {
 }
 
 /**
- * `onConnect` receives the staged `s3://` path; the caller drives the existing
- * connect tool with it (e.g. by sending a chat message to the agent loop).
+ * `onUploaded` receives the staged `s3://` paths (one per file, in selection
+ * order); the caller composes them — connect each for a preview, then select the
+ * batch as ONE `file_uris` source.
  */
 export function UploadDropzone({
-	onConnect,
+	onUploaded,
 }: {
-	onConnect: (s3Path: string) => void;
+	onUploaded: (s3Paths: string[]) => void;
 }) {
 	const inputRef = useRef<HTMLInputElement>(null);
+	const [total, setTotal] = useState(0);
 	const [busy, setBusy] = useState(false);
 	const [dragOver, setDragOver] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const handleFile = async (file: File) => {
+	const handleFiles = async (files: File[]) => {
 		setError(null);
+		// Client-side UX gate: count ≤ cap, supported + same-kind. The route stays
+		// uncapped — this just stops a bad batch before it stages anything.
+		const invalid = validateUploadBatch(files.map((f) => f.name));
+		if (invalid) {
+			setError(invalid);
+			return;
+		}
+		setTotal(files.length);
 		setBusy(true);
 		try {
-			const path = await uploadFile(file);
-			onConnect(path);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : String(err));
+			const results = await Promise.allSettled(files.map(uploadFile));
+			const failed = results.flatMap((r, i) =>
+				r.status === "rejected"
+					? [
+							`${files[i].name}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`,
+						]
+					: [],
+			);
+			if (failed.length > 0) {
+				// All-or-nothing: a partial file_uris source is confusing, so don't
+				// proceed — surface which files failed and let the user retry.
+				setError(`Some files failed to upload:\n${failed.join("\n")}`);
+				return;
+			}
+			const paths = results.map(
+				(r) => (r as PromiseFulfilledResult<string>).value,
+			);
+			onUploaded(paths);
 		} finally {
 			setBusy(false);
 		}
 	};
 
 	const onInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-		const file = e.currentTarget.files?.[0];
-		// Reset so re-selecting the SAME file fires change again.
+		const files = Array.from(e.currentTarget.files ?? []);
+		// Reset so re-selecting the SAME files fires change again.
 		e.currentTarget.value = "";
-		if (file) void handleFile(file);
+		if (files.length > 0) void handleFiles(files);
 	};
 
 	const onDrop = (e: DragEvent<HTMLDivElement>) => {
 		e.preventDefault();
 		setDragOver(false);
-		const file = e.dataTransfer.files?.[0];
-		if (file) void handleFile(file);
+		const files = Array.from(e.dataTransfer.files ?? []);
+		if (files.length > 0) void handleFiles(files);
 	};
 
 	return (
@@ -107,8 +134,8 @@ export function UploadDropzone({
 					<Upload size={16} />
 					<Text size="xs" c="dimmed">
 						{busy
-							? "Uploading…"
-							: "Drop a CSV/Parquet/JSON file, or click to pick"}
+							? `Uploading ${total} file${total === 1 ? "" : "s"}…`
+							: `Drop CSV/Parquet/JSON files (up to ${MAX_UPLOAD_FILES}), or click to pick`}
 					</Text>
 				</Group>
 			</Box>
@@ -116,13 +143,19 @@ export function UploadDropzone({
 				ref={inputRef}
 				type="file"
 				accept={ACCEPT}
+				multiple
 				onChange={onInputChange}
 				disabled={busy}
 				data-testid="upload-input"
 				style={{ display: "none" }}
 			/>
 			{error && (
-				<Text size="xs" c="red" data-testid="upload-error">
+				<Text
+					size="xs"
+					c="red"
+					data-testid="upload-error"
+					style={{ whiteSpace: "pre-wrap" }}
+				>
 					{error}
 				</Text>
 			)}
@@ -133,7 +166,7 @@ export function UploadDropzone({
 				disabled={busy}
 				data-testid="upload-pick"
 			>
-				Choose file
+				Choose files
 			</Button>
 		</Stack>
 	);

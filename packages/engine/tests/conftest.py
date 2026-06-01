@@ -309,15 +309,15 @@ def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
     bootstrap_lake(lake_catalog_url, lake_data_path)
 
 
-@pytest.fixture
-def lake_clean(lake_anchor):
-    """Drop per-test residue from the lake before each test.
+def clean_lake_layers() -> None:
+    """Drop per-test residue from the DuckLake layer schemas.
 
     Post-DAT-341 the workspace-stable layer schemas (``raw`` / ``typed`` /
-    ``quarantine``) survive across tests, so per-test isolation needs to
-    drop the tables INSIDE those schemas rather than dropping the schemas
-    themselves. Reserved ``session_*`` / ``archive_*`` schemas (slice 2)
-    are still dropped wholesale.
+    ``quarantine``) survive across tests, so isolation needs to drop the
+    tables INSIDE those schemas rather than dropping the schemas themselves.
+    Reserved ``session_*`` / ``archive_*`` schemas (slice 2) are dropped
+    wholesale. Plain function so both the function-scoped ``lake_clean``
+    fixture and module-scoped read-only fixtures can reuse it.
     """
     from dataraum.server.storage import LAKE_CATALOG_ALIAS, LAKE_LAYER_SCHEMAS, get_anchor
 
@@ -341,18 +341,24 @@ def lake_clean(lake_anchor):
     ).fetchall()
     for (name,) in schemas:
         anchor.execute(f'DROP SCHEMA IF EXISTS {LAKE_CATALOG_ALIAS}."{name}" CASCADE')
-    yield
 
 
 @pytest.fixture
-def pg_url_clean(pg_url: str) -> str:
-    """Postgres URL with all Base-registered tables truncated before the test.
+def lake_clean(lake_anchor):
+    """Drop per-test residue from the lake before each test."""
+    clean_lake_layers()
+    yield
+
+
+def truncate_workspace_tables(pg_url: str) -> None:
+    """TRUNCATE every Base-registered table in the workspace schema.
 
     Uses ``TRUNCATE ... RESTART IDENTITY CASCADE`` over ``Base.metadata.tables``
-    so per-test isolation does not depend on FK declaration order. Tables that
-    haven't been created yet (e.g. before ``metadata.create_all``) are simply
-    skipped — TRUNCATE on a missing table is an error, so we filter by what
-    actually exists.
+    so isolation does not depend on FK declaration order. Tables that haven't
+    been created yet (e.g. before ``metadata.create_all``) are simply skipped —
+    TRUNCATE on a missing table is an error, so we filter by what actually
+    exists. Plain function so both the function-scoped ``pg_url_clean`` fixture
+    and module-scoped read-only fixtures can reuse it.
     """
     from sqlalchemy import inspect
 
@@ -381,4 +387,10 @@ def pg_url_clean(pg_url: str) -> str:
                     conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
     finally:
         engine.dispose()
+
+
+@pytest.fixture
+def pg_url_clean(pg_url: str) -> str:
+    """Postgres URL with all Base-registered tables truncated before the test."""
+    truncate_workspace_tables(pg_url)
     return pg_url

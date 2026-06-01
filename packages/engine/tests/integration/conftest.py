@@ -312,19 +312,19 @@ def _build_phase_dict(*phase_instances: Phase) -> dict[str, Phase]:
     return {p.name: p for p in phase_instances}
 
 
-@pytest.fixture
-def integration_engine(pg_url_clean: str) -> Engine:
-    """Create a Postgres engine on the session-scoped testcontainer.
+def _make_workspace_engine(pg_url: str) -> Engine:
+    """Build a Postgres engine bound to the per-workspace schema + baseline rows.
 
-    Integration tests target the real Postgres dialect post-DAT-321 so that
-    SQLite-permissive quirks (case insensitivity, JSON-vs-JSONB, looser
-    transaction semantics) can't mask real bugs. Per-test isolation comes
-    from ``pg_url_clean`` (TRUNCATE CASCADE over every Base table).
+    Mirrors ``ConnectionManager._init_sqlalchemy`` schema-per-workspace
+    bootstrap (post-DAT-339 Commit B): attaches the search-path connect
+    listener, creates the workspace schema, runs ``init_database``, and seeds
+    a baseline ``Source`` + ``InvestigationSession`` so the global
+    ``before_flush`` autofill hook in ``tests/conftest.py`` has a valid FK
+    target for any per-session row a test constructs without explicit
+    ``session_id=`` (production code always sets it explicitly).
 
-    Seeds a baseline ``Source`` + ``InvestigationSession`` so the global
-    ``before_flush`` autofill hook in ``tests/conftest.py`` has a valid
-    FK target for any per-session row a test constructs without explicit
-    ``session_id=``. Production code always sets it explicitly.
+    Shared by the function-scoped ``integration_engine`` and the module-scoped
+    read-only ``analyzed_small_finance`` fixture.
     """
     from datetime import UTC, datetime
 
@@ -334,14 +334,10 @@ def integration_engine(pg_url_clean: str) -> Engine:
     from dataraum.server.workspace import schema_name_for
     from dataraum.storage import Source
 
-    engine = create_engine(pg_url_clean, echo=False, future=True)
+    engine = create_engine(pg_url, echo=False, future=True)
 
-    # Mirror ConnectionManager._init_sqlalchemy schema-per-workspace
-    # bootstrap (post-DAT-339 Commit B). This fixture creates the engine
-    # directly rather than going through ConnectionManager, so we have to
-    # repeat the listener-then-create-schema dance here. The conftest
-    # module-level os.environ["DATARAUM_WORKSPACE_ID"]="test" guarantees
-    # the workspace_id is stable across the pytest invocation.
+    # The conftest module-level os.environ["DATARAUM_WORKSPACE_ID"]="test"
+    # guarantees the workspace_id is stable across the pytest invocation.
     schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
 
     @event.listens_for(engine, "connect")
@@ -378,6 +374,19 @@ def integration_engine(pg_url_clean: str) -> Engine:
         )
         sess.commit()
 
+    return engine
+
+
+@pytest.fixture
+def integration_engine(pg_url_clean: str) -> Engine:
+    """Create a Postgres engine on the session-scoped testcontainer.
+
+    Integration tests target the real Postgres dialect post-DAT-321 so that
+    SQLite-permissive quirks (case insensitivity, JSON-vs-JSONB, looser
+    transaction semantics) can't mask real bugs. Per-test isolation comes
+    from ``pg_url_clean`` (TRUNCATE CASCADE over every Base table).
+    """
+    engine = _make_workspace_engine(pg_url_clean)
     yield engine
     engine.dispose()
 
@@ -478,56 +487,64 @@ def finance_junk_columns() -> list[str]:
 
 
 # =============================================================================
-# Agent Validation Fixtures (Phase 0)
+# Agent Validation Fixtures — analyzed dataset (module-scoped, read-only)
 # =============================================================================
+#
+# The contract + query-agent suites are READ-ONLY over the analyzed dataset:
+# no test commits a mutation or asserts an absolute row count (the query agent
+# adds a QueryExecutionRecord but the tests never commit the session and pass
+# ``ephemeral=True``). So the full import -> ... -> temporal pipeline is run
+# ONCE PER MODULE and shared across that module's tests, rather than rebuilt
+# per test (which dominated integration wall-time — ~5-7s setup per test).
+#
+# These fixtures build their own module-scoped Postgres engine + DuckLake
+# connection and clean the shared workspace schema / lake layers ONCE at setup.
+# They deliberately do NOT depend on the function-scoped ``pg_url_clean`` /
+# ``lake_clean`` — those would wipe the shared dataset between tests. Module
+# scope (not session scope) keeps this robust: a module's tests run
+# contiguously, and the function-scoped cleaners other modules use never
+# interleave within this module's lifetime.
 
 
-@pytest.fixture
-def agent_phases() -> dict[str, Phase]:
-    """Phase dict with phases needed for agent testing (through entropy)."""
-    return _build_phase_dict(
-        ImportPhase(),
-        TypingPhase(),
-        StatisticsPhase(),
-        StatisticalQualityPhase(),
-        RelationshipsPhase(),
-        CorrelationsPhase(),
-        TemporalPhase(),
-    )
-
-
-@pytest.fixture
-def agent_harness(
-    integration_engine: Engine,
-    integration_duckdb: duckdb.DuckDBPyConnection,
-    agent_phases: dict[str, Phase],
-) -> PipelineTestHarness:
-    """Harness with entropy phase for agent validation tests."""
-    session_factory = sessionmaker(
-        bind=integration_engine,
-        expire_on_commit=False,
-    )
-
-    return PipelineTestHarness(
-        engine=integration_engine,
-        session_factory=session_factory,
-        duckdb_conn=integration_duckdb,
-        phases=agent_phases,
-    )
-
-
-@pytest.fixture
-def analyzed_small_finance(
-    agent_harness: PipelineTestHarness,
-    small_finance_path: Path,
-) -> PipelineTestHarness:
-    """Harness with small finance data fully analyzed through entropy.
+@pytest.fixture(scope="module")
+def analyzed_small_finance(pg_url: str, lake_anchor) -> PipelineTestHarness:
+    """Small-finance dataset analyzed once per module, shared read-only.
 
     Runs: import -> typing -> statistics -> statistical_quality ->
-          relationships -> correlations -> temporal -> entropy
+          relationships -> correlations -> temporal
     """
-    result = agent_harness.run_import(
-        source_path=small_finance_path,
+    from dataraum.core.connections import _LakeScopedConnection
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS, connect_session
+    from tests.conftest import clean_lake_layers, truncate_workspace_tables
+
+    # Fresh slate once for this module (no per-test cleaning afterwards).
+    truncate_workspace_tables(pg_url)
+    clean_lake_layers()
+
+    engine = _make_workspace_engine(pg_url)
+
+    qualified = f"{LAKE_CATALOG_ALIAS}.typed"
+    raw_conn = connect_session()
+    raw_conn.execute(f"USE {qualified}")
+    duckdb_conn = _LakeScopedConnection(raw_conn, qualified)
+
+    harness = PipelineTestHarness(
+        engine=engine,
+        session_factory=sessionmaker(bind=engine, expire_on_commit=False),
+        duckdb_conn=duckdb_conn,
+        phases=_build_phase_dict(
+            ImportPhase(),
+            TypingPhase(),
+            StatisticsPhase(),
+            StatisticalQualityPhase(),
+            RelationshipsPhase(),
+            CorrelationsPhase(),
+            TemporalPhase(),
+        ),
+    )
+
+    result = harness.run_import(
+        source_path=SMALL_FINANCE_DIR,
         source_name="small_finance",
         junk_columns=FINANCE_JUNK_COLUMNS,
     )
@@ -541,20 +558,19 @@ def analyzed_small_finance(
         "correlations",
         "temporal",
     ]:
-        result = agent_harness.run_phase(phase_name)
+        result = harness.run_phase(phase_name)
         assert result.status == PhaseStatus.COMPLETED, f"{phase_name} failed: {result.error}"
 
-    return agent_harness
+    yield harness
+
+    try:
+        raw_conn.close()
+    except Exception as exc:
+        warnings.warn(f"Failed to close analyzed DuckDB connection cleanly: {exc}", stacklevel=2)
+    engine.dispose()
 
 
-@pytest.fixture
-def analyzed_session(analyzed_small_finance: PipelineTestHarness) -> Session:
-    """A fresh session from the analyzed harness."""
-    with analyzed_small_finance.session_factory() as session:
-        yield session
-
-
-@pytest.fixture
+@pytest.fixture(scope="module")
 def analyzed_table_ids(analyzed_small_finance: PipelineTestHarness) -> list[str]:
     """Table IDs for typed tables in the analyzed dataset."""
     from sqlalchemy import select

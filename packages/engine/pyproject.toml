@@ -74,6 +74,7 @@ dev = [
     # httpx: spec target for mocking anthropic SDK Request/Response in
     # tests/unit/llm/test_anthropic_provider.py.
     "httpx>=0.27.0",
+    "pytest-xdist>=3.6",
 ]
 [build-system]
 requires = ["hatchling"]
@@ -85,7 +86,13 @@ packages = ["src/dataraum"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+# --dist loadscope: inert without -n, but when a parallel run is requested
+# (e.g. `uv run pytest -n auto`) it keeps every module's tests on one worker.
+# Module-scoped read-only fixtures (e.g. analyzed_small_finance) depend on
+# this — splitting a module across workers would rebuild the shared dataset
+# per worker and defeat the optimization. Parallelism stays opt-in (-n) so CI
+# / unit runs don't each spin up a per-worker Postgres testcontainer.
+addopts = "-v --tb=short --dist loadscope"
 markers = [
     "integration: marks tests as integration tests (may be slower)",
     "slow: marks tests as slow (use real data, skip in CI)",

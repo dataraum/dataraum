@@ -32,6 +32,7 @@ import { z } from "zod";
 import { replay } from "../tools/replay";
 import { teach } from "../tools/teach";
 import type { AddSourceInput, AddSourceResult } from "./types";
+import { addSourceWorkflowId } from "./workflow-id";
 
 const env = z
 	.object({
@@ -114,7 +115,7 @@ async function runInitial(
 		(input: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
-		workflowId: `addsource-${sourceId}`,
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
 		args: [input],
 	});
 
@@ -142,7 +143,10 @@ async function awaitReplay(
 	sourceId: string,
 	runId: string,
 ): Promise<AddSourceResult> {
-	const handle = client.workflow.getHandle(`addsource-${sourceId}`, runId);
+	const handle = client.workflow.getHandle(
+		addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
+		runId,
+	);
 	return (await handle.result()) as AddSourceResult;
 }
 

@@ -199,7 +199,7 @@ class DimensionalEntropyDetector(EntropyDetector):
     description = "Detects cross-column business rules from slice and temporal variance patterns"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load slice variance data and network readiness for this table."""
+        """Load slice variance data for this table."""
         if context.session is None or context.table_id is None:
             return
 
@@ -207,21 +207,6 @@ class DimensionalEntropyDetector(EntropyDetector):
         if result is not None:
             context.analysis_results["slice_variance"] = result["slice_variance"]
             context.analysis_results["drift_summaries"] = result["drift_summaries"]
-
-        # Load base network readiness for column filtering (DAT-162).
-        # Replaces variance_classification with Bayesian network assessment.
-        from dataraum.entropy.views.network_context import build_for_network
-
-        network_ctx = build_for_network(context.session, [context.table_id])
-        if network_ctx.columns:
-            readiness: dict[str, bool] = {}
-            table_prefix = f"column:{context.table_name}."
-            for target, col_result in network_ctx.columns.items():
-                if target.startswith(table_prefix):
-                    col_name = target[len(table_prefix) :]
-                    readiness[col_name] = col_result.needs_attention()
-            if readiness:
-                context.analysis_results["network_readiness"] = readiness
 
     @staticmethod
     def _load_slice_variance(
@@ -473,9 +458,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         if not columns_data:
             return []
 
-        # Extract columns needing attention per Bayesian network (DAT-162)
-        network_readiness = context.get_analysis("network_readiness", {})
-        interesting_columns = self._get_interesting_columns(columns_data, network_readiness)
+        interesting_columns = self._get_interesting_columns(columns_data)
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
@@ -630,18 +613,15 @@ class DimensionalEntropyDetector(EntropyDetector):
     def _get_interesting_columns(
         self,
         columns_data: dict[str, Any],
-        network_readiness: dict[str, bool],
     ) -> list[ColumnVariancePattern]:
         """Extract columns for cross-column pattern analysis.
 
-        Includes all columns with slice variance data. Network readiness
-        is advisory — structural patterns (mutual exclusivity, conditional
-        dependencies) exist regardless of BBN posteriors.
+        Includes all columns with slice variance data — structural patterns
+        (mutual exclusivity, conditional dependencies) exist regardless of any
+        readiness assessment.
 
         Args:
             columns_data: Per-column slice variance metrics.
-            network_readiness: {col_name: needs_attention} from base network
-                (currently unused — kept for signature compatibility).
         """
         interesting = []
         for col_name, metrics in columns_data.items():

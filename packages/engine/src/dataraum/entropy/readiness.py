@@ -1,6 +1,6 @@
 """Persist per-column readiness — the terminal detect step's snapshot (DAT-394).
 
-The readiness-v2 rollup (``entropy/views/network_context.py``) rolls the persisted
+The readiness-v2 rollup (``entropy/views/readiness_context.py``) rolls the persisted
 entropy objects up the network into per-column, per-intent readiness.
 :func:`persist_readiness` writes that rollup to ``entropy_readiness`` (one row per
 analyzed column) so the cockpit ``why`` / ``look`` tools read it via Drizzle with no
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import EntropyReadinessRecord
-from dataraum.entropy.views.network_context import ColumnNetworkResult, build_for_network
+from dataraum.entropy.views.readiness_context import ColumnReadinessResult, build_for_readiness
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
@@ -45,7 +45,7 @@ def persist_readiness(session: Session, source_id: str, session_id: str) -> int:
     if not typed_table_ids:
         return 0
 
-    ctx = build_for_network(session, typed_table_ids)
+    ctx = build_for_readiness(session, typed_table_ids)
     if not ctx.columns:
         return 0
 
@@ -67,7 +67,7 @@ def persist_readiness(session: Session, source_id: str, session_id: str) -> int:
                 table_id=table_id,
                 column_id=column_id,
                 band=col.readiness,
-                worst_intent_risk=round(col.worst_intent_p_high, 4),
+                worst_intent_risk=round(col.worst_intent_risk, 4),
                 intents=_intents_payload(col),
                 top_drivers=_top_drivers_payload(col),
             )
@@ -101,15 +101,21 @@ def _column_id_map(session: Session, table_ids: list[str]) -> dict[str, tuple[st
     return out
 
 
-def _intents_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
-    """Per-intent breakdown: band + risk + ranked drivers, one entry per intent."""
+def _intents_payload(col: ColumnReadinessResult) -> list[dict[str, object]]:
+    """Per-intent breakdown: band + risk + self-describing ranked drivers."""
     return [
         {
             "intent": i.intent_name,
             "band": i.readiness,
-            "risk": round(i.p_high, 4),
+            "risk": round(i.risk, 4),
             "drivers": [
-                {"node": d.node, "state": d.state, "impact_delta": round(d.impact_delta, 4)}
+                {
+                    "node": d.node,
+                    "dimension_path": d.dimension_path,
+                    "label": d.label,
+                    "state": d.state,
+                    "impact_delta": round(d.impact_delta, 4),
+                }
                 for d in i.drivers
             ],
         }
@@ -117,14 +123,20 @@ def _intents_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
     ]
 
 
-def _top_drivers_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
-    """Column-level non-clean nodes ranked by collapsed impact_delta."""
+def _top_drivers_payload(col: ColumnReadinessResult) -> list[dict[str, object]]:
+    """Column-level non-clean nodes ranked by collapsed impact_delta (self-describing)."""
     ranked = sorted(
         (ne for ne in col.node_evidence if ne.state != "low"),
         key=lambda ne: ne.impact_delta,
         reverse=True,
     )
     return [
-        {"node": ne.node_name, "state": ne.state, "impact_delta": round(ne.impact_delta, 4)}
+        {
+            "node": ne.node_name,
+            "dimension_path": ne.dimension_path,
+            "label": ne.label,
+            "state": ne.state,
+            "impact_delta": round(ne.impact_delta, 4),
+        }
         for ne in ranked
     ]

@@ -4,6 +4,22 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-01: DAT-399 (A+B+C) — retire BBN-era scaffolding, self-describing drivers, readiness-vocabulary rename
+
+Cleanup + extend + rename on top of DAT-394. **Behavior-preserving for detector scores** — no calibration impact expected.
+
+What changed in the engine:
+- **Retired dead BBN-era code** (no live consumer; only the dead `reference/mcp/` path or unwired phases reached it): `entropy/engine.py::compute_network`, `views/network_context.py::format_network_context`, the cross-column aggregation (`AggregateIntentReadiness`/`_aggregate_intents`/`CrossColumnFix`/`_compute_cross_column_fix` + `EntropyForNetwork.intents`/`top_fix`), `IntentReadiness.posterior`/`dominant_state`, `ColumnNetworkResult.needs_attention`, `dimensional_entropy`'s dead `build_for_network` read, `network/model.py::get_parents`/`get_children`, and the whole `entropy/measurement.py` module. The rollup (`rollup.py`, `network.yaml`) and all detector logic are UNTOUCHED.
+- **Self-describing readiness drivers (extend):** `entropy_readiness.intents[].drivers[]` and `.top_drivers[]` now carry `dimension_path` + `label` per driver (humanized node name) so the cockpit needs no node→label dictionary. **Additive inside the opaque JSONB payload → NO Drizzle mirror change, NO schema change.**
+
+- **Readiness view-layer rename (C):** the BBN-inference vocabulary is gone — `entropy/views/network_context.py` → `readiness_context.py`, `EntropyForNetwork` → `EntropyForReadiness`, `build_for_network` → `build_for_readiness`, `ColumnNetworkResult` → `ColumnReadinessResult`, and the probability term `p_high`/`worst_intent_p_high` → `risk`/`worst_intent_risk` (now consistent with the `entropy_readiness.worst_intent_risk` column). The `entropy/network/` package (the weighted DAG / rollup) keeps its name — only the inference is gone, the DAG is real. Pure rename; no behavior change.
+
+### dataraum-eval
+- **Eval action: re-verify detector-score parity (should be unchanged).** This is pure dead-code retirement + a JSONB payload enrichment + an internal view-layer rename; no detector, threshold, or rollup change. `entropy_objects` and all scores are identical. If any eval harness imported `build_for_network`/`EntropyForNetwork` directly (unlikely — eval reads via DB/workflow), update to the `*_readiness` names.
+
+### dataraum-testdata (hints)
+- None.
+
 ## 2026-06-01: DAT-394 — one terminal `detect` step + persisted per-intent readiness
 
 Collapses detector execution into a single source-wide `detect` activity and persists

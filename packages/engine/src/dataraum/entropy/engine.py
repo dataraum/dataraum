@@ -1,8 +1,7 @@
-"""Entropy engine — detector execution, persistence, and network inference.
+"""Entropy engine — detector execution + persistence.
 
 Core API:
 - run_detector_post_step: Run a single detector by ID as a phase post-step
-- compute_network: Load records from DB, roll up the entropy network
 - persist_records: Add EntropyObjectRecords to session
 """
 
@@ -19,8 +18,6 @@ from dataraum.entropy.snapshot import take_snapshot
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
-
-    from dataraum.entropy.views.network_context import EntropyForNetwork
 
 logger = get_logger(__name__)
 
@@ -178,50 +175,6 @@ def run_detector_post_step(
         )
 
     return len(all_records)
-
-
-def compute_network(
-    session: Session,
-    source_id: str,
-) -> EntropyForNetwork | None:
-    """Compute entropy network from persisted records.
-
-    Pure function: loads EntropyObjectRecords for the source, converts
-    to domain objects, rolls scores up the entropy network. Returns None
-    if no records exist.
-
-    Args:
-        session: SQLAlchemy session.
-        source_id: Source to compute network for.
-
-    Returns:
-        EntropyForNetwork with per-column results and aggregated summaries,
-        or None if no entropy data exists.
-    """
-    from dataraum.entropy.core.storage import EntropyRepository
-    from dataraum.entropy.network.model import EntropyNetwork
-    from dataraum.entropy.views.network_context import assemble_network_context
-    from dataraum.storage import Table
-
-    table_ids = list(
-        session.execute(
-            select(Table.table_id).where(Table.source_id == source_id, Table.layer == "typed")
-        )
-        .scalars()
-        .all()
-    )
-
-    if not table_ids:
-        return None
-
-    repo = EntropyRepository(session)
-    entropy_objects = repo.load_for_tables(table_ids, enforce_typed=True)
-
-    if not entropy_objects:
-        return None
-
-    network = EntropyNetwork()
-    return assemble_network_context(entropy_objects, network)
 
 
 def persist_records(

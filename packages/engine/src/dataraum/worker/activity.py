@@ -26,6 +26,7 @@ from sqlalchemy import select
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
+from dataraum.entropy.readiness import persist_readiness
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
@@ -300,6 +301,11 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
                 session_id=identity.session_id,
                 table_ids=None,
             )
+        # Persist readiness from the freshly-written entropy objects, in the same
+        # transaction (DAT-394). flush() makes the just-added rows visible to the
+        # rollup's repository select before we read them back.
+        session.flush()
+        persist_readiness(session, identity.source_id, identity.session_id)
     return total
 
 

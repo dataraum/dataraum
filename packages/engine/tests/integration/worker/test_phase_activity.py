@@ -28,7 +28,7 @@ import pytest
 from sqlalchemy import select, text
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
-from dataraum.entropy.db_models import EntropyObjectRecord
+from dataraum.entropy.db_models import EntropyObjectRecord, EntropyReadinessRecord
 from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Source, Table
 from dataraum.worker import (
@@ -371,6 +371,70 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     # fan-out. Offline (no LLM), so only the structural detectors persist rows;
     # that is enough to prove the terminal step runs and writes per-table records.
     assert run_detectors(worker_manager, identity) > 0, "terminal detect produced no records"
+
+
+def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """The terminal detect step writes entropy_readiness per column; re-run overwrites (DAT-394).
+
+    Drives the production path (per-table chains → terminal ``run_detectors``) on a
+    multi-file source, then asserts the readiness snapshot: one row per analyzed
+    column, FK-resolved, valid band, per-intent JSONB payload shape. Re-running the
+    terminal step (what every replay does) must delete-before-insert — overwrite,
+    not accumulate stale duplicates.
+    """
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    identity = _identity(source_id, session_id)
+
+    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    raw_ids = raw_table_ids(worker_manager, source_id)
+    typed_ids = {_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids}
+
+    # Terminal detect: writes entropy_objects AND persists readiness in one pass.
+    assert run_detectors(worker_manager, identity) > 0
+
+    with worker_manager.session_scope() as session:
+        rows = list(
+            session.execute(
+                select(EntropyReadinessRecord).where(
+                    EntropyReadinessRecord.source_id == source_id
+                )
+            ).scalars()
+        )
+
+    assert rows, "terminal detect persisted no entropy_readiness rows"
+    column_ids = [r.column_id for r in rows]
+    assert all(cid is not None for cid in column_ids), "readiness row missing column_id FK"
+    assert len(column_ids) == len(set(column_ids)), "duplicate readiness rows for a column"
+    for r in rows:
+        assert r.table_id in typed_ids, "readiness row points to a non-source table"
+        assert r.band in ("ready", "investigate", "blocked")
+        # JSONB payloads — intents may be empty on clean data (all signals below
+        # the detection floor), but the shape must hold when present.
+        assert isinstance(r.intents, list)
+        for intent in r.intents:
+            assert {"intent", "band", "risk", "drivers"} <= intent.keys()
+            assert isinstance(intent["drivers"], list)
+    first_count = len(rows)
+
+    # Re-run the terminal detect (the replay path always re-runs it): the
+    # delete-before-insert scoped to source_id must overwrite, not duplicate.
+    assert run_detectors(worker_manager, identity) > 0
+    with worker_manager.session_scope() as session:
+        second_count = len(
+            list(
+                session.execute(
+                    select(EntropyReadinessRecord).where(
+                        EntropyReadinessRecord.source_id == source_id
+                    )
+                ).scalars()
+            )
+        )
+    assert second_count == first_count, "readiness rows not overwritten on re-run (stale duplicates)"
 
 
 def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(

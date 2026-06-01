@@ -45,14 +45,30 @@ class DirectSignal:
 
 
 @dataclass
+class IntentDriver:
+    """One observed node's causal contribution to a specific intent's risk.
+
+    ``impact_delta`` is how much THIS intent's risk would drop if the node were
+    fixed to clean (from ``compute_priorities``' per-intent ``affected_intents``)
+    — the per-intent split the collapsed ``ColumnNodeEvidence.impact_delta`` (a
+    max across intents) loses.
+    """
+
+    node: str = ""
+    state: str = "low"
+    impact_delta: float = 0.0
+
+
+@dataclass
 class IntentReadiness:
-    """Posterior and readiness for an intent node."""
+    """Posterior and readiness for an intent node, with its ranked drivers."""
 
     intent_name: str = ""
     posterior: dict[str, float] = field(default_factory=dict)
     dominant_state: str = "low"
     p_high: float = 0.0
     readiness: str = "ready"
+    drivers: list[IntentDriver] = field(default_factory=list)
 
 
 @dataclass
@@ -259,6 +275,19 @@ def _build_column_result(
         # Risk is a single value, not a distribution; surface it as P(high).
         posterior = {"high": round(p_high, 4)}
         dominant = "high" if p_high > disc.medium_upper else "low"
+        # Per-intent drivers: nodes that lower THIS intent's risk, ranked by how
+        # much. ``affected_intents`` carries the per-intent split that the
+        # collapsed ColumnNodeEvidence.impact_delta (a max across intents) drops.
+        drivers = [
+            IntentDriver(
+                node=pr.node,
+                state=pr.current_state,
+                impact_delta=pr.affected_intents[intent_name],
+            )
+            for pr in priorities
+            if intent_name in pr.affected_intents
+        ]
+        drivers.sort(key=lambda d: d.impact_delta, reverse=True)
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,
@@ -266,6 +295,7 @@ def _build_column_result(
                 dominant_state=dominant,
                 p_high=p_high,
                 readiness=readiness,
+                drivers=drivers,
             )
         )
 

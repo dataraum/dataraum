@@ -285,6 +285,37 @@ class TestPerColumnAssembly:
         # Risk is a single value surfaced as P(high), not a full distribution.
         assert intent.posterior["high"] == pytest.approx(intent.p_high, abs=1e-4)
 
+    def test_intent_carries_per_intent_drivers(self, small_network):
+        """Each intent lists the observed nodes that lower ITS risk, ranked (DAT-394)."""
+        objects = [
+            make_entropy_object(
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target="column:t.c1",
+            ),
+            make_entropy_object(
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.7,
+                target="column:t.c1",
+            ),
+        ]
+        result = assemble_network_context(objects, small_network)
+        intent = result.columns["column:t.c1"].intents[0]
+
+        # Both observed roots feed leaf_z through child_x, so both are drivers.
+        driver_nodes = {d.node for d in intent.drivers}
+        assert driver_nodes == {"root_a", "root_b"}
+        # Each driver carries its discretized state and a positive per-intent impact.
+        assert all(d.impact_delta > 0 for d in intent.drivers)
+        assert all(d.state == "high" for d in intent.drivers)
+        # Ranked by impact, descending.
+        deltas = [d.impact_delta for d in intent.drivers]
+        assert deltas == sorted(deltas, reverse=True)
+
     def test_table_target_becomes_direct_signal(self, small_network):
         """Table-level objects always become direct signals."""
         objects = [

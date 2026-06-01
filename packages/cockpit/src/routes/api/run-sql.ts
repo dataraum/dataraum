@@ -14,8 +14,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getLakeConnection } from "../../duckdb/lake";
 import {
+	buildGridQuery,
 	clampGridCap,
 	encodeFrame,
+	type GridSort,
 	type StreamableResult,
 	streamNdjson,
 } from "../../duckdb/stream-sql";
@@ -36,6 +38,42 @@ interface RunSqlStreamBody {
 	 * materialization.
 	 */
 	cap?: number;
+	/**
+	 * Optional server-side single-column sort (DAT-385 P3). Applied to the wrapped
+	 * query so it orders the FULL result before the cap, not just the streamed
+	 * window. `column` must be an output column name of `sql`; the server quotes
+	 * it as an identifier, so a bad name yields a binder error, never injection.
+	 */
+	sort?: GridSort;
+}
+
+/** Validate an optional sort field; returns the sort, null (absent), or an error. */
+function parseSort(
+	raw: unknown,
+): { sort: GridSort | null } | { error: string } {
+	if (raw === undefined || raw === null) return { sort: null };
+	// `typeof [] === "object"`, so reject arrays explicitly — otherwise a JSON
+	// array falls through to the column check and yields a misleading error.
+	if (typeof raw !== "object" || Array.isArray(raw))
+		return { error: "Field 'sort' must be an object." };
+	const { column, dir } = raw as { column?: unknown; dir?: unknown };
+	// Bound the length: a validated field must not accept an arbitrarily large
+	// string that would balloon the SQL handed to DuckDB (a column name this long
+	// is never a real output column anyway).
+	if (
+		typeof column !== "string" ||
+		column.length === 0 ||
+		column.length > 256
+	) {
+		return {
+			error:
+				"Field 'sort.column' is required and must be a non-empty string (max 256 chars).",
+		};
+	}
+	if (dir !== "asc" && dir !== "desc") {
+		return { error: "Field 'sort.dir' must be 'asc' or 'desc'." };
+	}
+	return { sort: { column, dir } };
 }
 
 let queryCounter = 0;
@@ -67,6 +105,9 @@ export const Route = createFileRoute("/api/run-sql")({
 					return badRequest("Field 'sql' is required and must be a string.");
 				}
 
+				const sortResult = parseSort(body.sort);
+				if ("error" in sortResult) return badRequest(sortResult.error);
+
 				const cap = clampGridCap(body.cap);
 				const queryId = nextQueryId();
 				const params = body.params;
@@ -80,7 +121,7 @@ export const Route = createFileRoute("/api/run-sql")({
 				// SQL parse/bind error that surfaces here can still become a 400
 				// (e.g. malformed `sql`). Once the ReadableStream starts flushing the
 				// status is locked at 200 and mid-stream errors go in the footer.
-				const wrapped = `SELECT * FROM (${body.sql}) AS _run_sql`;
+				const wrapped = buildGridQuery(body.sql, sortResult.sort);
 				let result: StreamableResult;
 				try {
 					const conn = await getLakeConnection();

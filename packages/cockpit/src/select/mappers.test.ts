@@ -15,6 +15,7 @@ import {
 	connectTablesToRecipeTables,
 	duplicateBasenames,
 	recipeSqlForDisplayName,
+	sanitizedStem,
 	sanitizeRecipeName,
 	sourceTypeForUri,
 	sourceTypeForUris,
@@ -99,6 +100,36 @@ describe("duplicateBasenames", () => {
 				"s3://b/y/alpha.csv",
 			]),
 		).toEqual(["alpha", "zeta"]);
+	});
+
+	it("flags stems that differ only by CASE (engine lowercases the raw table)", () => {
+		// Orders.csv + orders.csv both sanitize to `orders` → one raw table.
+		expect(
+			duplicateBasenames(["s3://b/Orders.csv", "s3://b/orders.csv"]),
+		).toEqual(["Orders", "orders"]);
+	});
+
+	it("flags stems that differ only by PUNCTUATION (engine collapses to `_`)", () => {
+		// q1-data + q1_data both sanitize to `q1_data` → one raw table.
+		expect(
+			duplicateBasenames(["s3://b/q1-data.csv", "s3://b/q1_data.csv"]),
+		).toEqual(["q1-data", "q1_data"]);
+	});
+
+	it("does NOT flag stems that only look similar but sanitize distinctly", () => {
+		expect(
+			duplicateBasenames(["s3://b/orders.csv", "s3://b/orders_2024.csv"]),
+		).toEqual([]);
+	});
+});
+
+describe("sanitizedStem", () => {
+	it("mirrors the engine sanitize_identifier collision domain", () => {
+		expect(sanitizedStem("Orders")).toBe("orders");
+		expect(sanitizedStem("q1-data")).toBe("q1_data");
+		expect(sanitizedStem("q1_data")).toBe("q1_data");
+		expect(sanitizedStem("  weird--name  ")).toBe("weird_name");
+		expect(sanitizedStem("2024_orders")).toBe("x_2024_orders");
 	});
 });
 

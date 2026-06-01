@@ -106,25 +106,50 @@ export function uriStem(uri: string): string {
 }
 
 /**
- * Basename stems that more than one selected file URI maps to, sorted.
+ * Mirror of the engine's `sanitize_identifier` (core/duckdb_naming.py) — the
+ * actual collision domain for raw table names: lowercase, collapse runs of
+ * non-identifier chars to `_`, strip edge underscores, prefix a leading digit
+ * with `x_`. DISTINCT from `sanitizeRecipeName` (the recipe-name `t_` rule);
+ * the FILE raw table `<source>__<stem>` collides on THIS, so the basename guard
+ * must group on it.
+ */
+export function sanitizedStem(stem: string): string {
+	const s = stem
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9_]+/g, "_")
+		.replace(/_+/g, "_")
+		.replace(/^_+|_+$/g, "");
+	return /^[0-9]/.test(s) ? `x_${s}` : s;
+}
+
+/**
+ * Display basenames whose files would collide on the same engine raw table,
+ * sorted. Empty when every file resolves to a distinct raw table.
  *
- * Empty when every file resolves to a distinct raw table. The select stage owns
- * preventing this collision (DAT-378's fix deferred it here): two files with the
- * same stem — across folders, or differing only by extension — both name
- * `<source>__<stem>`, so the engine's second `CREATE OR REPLACE` would clobber
- * the first and fail loud. We surface it BEFORE persisting so the user fixes the
- * selection, never the import.
+ * The select stage owns preventing this collision (DAT-378's fix deferred it
+ * here): the engine names each file's raw table `<source>__sanitize(<stem>)`
+ * and fails loud on the second `CREATE OR REPLACE` for a name already taken. We
+ * group on the SANITIZED stem (`sanitizedStem`, the engine's collision domain),
+ * NOT the raw stem — so files differing only by case or punctuation (`Orders`
+ * vs `orders`, `q1-data` vs `q1_data`) are caught, not just same-stem/diff-ext —
+ * and surface the offending display basenames BEFORE persisting so the user
+ * fixes the selection, never the import.
  */
 export function duplicateBasenames(uris: string[]): string[] {
-	const counts = new Map<string, number>();
+	const byKey = new Map<string, string[]>();
 	for (const uri of uris) {
 		const stem = uriStem(uri);
-		counts.set(stem, (counts.get(stem) ?? 0) + 1);
+		const key = sanitizedStem(stem);
+		const group = byKey.get(key);
+		if (group) group.push(stem);
+		else byKey.set(key, [stem]);
 	}
-	return [...counts.entries()]
-		.filter(([, n]) => n > 1)
-		.map(([stem]) => stem)
-		.sort();
+	const clashing = new Set<string>();
+	for (const stems of byKey.values()) {
+		if (stems.length > 1) for (const s of stems) clashing.add(s);
+	}
+	return [...clashing].sort();
 }
 
 // --- recipe synthesis (db_recipe `connection_config.tables`) -----------------

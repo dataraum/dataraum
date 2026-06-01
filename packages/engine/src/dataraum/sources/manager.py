@@ -7,9 +7,10 @@ Two source kinds:
 
 - **File sources** — a single CSV/TSV, Parquet, or JSON/JSONL file addressed
   by an ``s3://<lake-bucket>/<key>`` URI on the object store. The URI is
-  validated (``validate_source_uri``) and stored verbatim in
-  ``connection_config['path']``, then handed straight to DuckDB at import time
-  (DAT-389) — never resolved against the filesystem. Because that URI is a
+  validated (``validate_source_uri``) and stored as a one-element
+  ``connection_config['file_uris']`` list (DAT-378 — the same key a multi-file
+  ``select`` writes), then handed straight to DuckDB at import time (DAT-389) —
+  never resolved against the filesystem. Because that URI is a
   read primitive, registration rejects anything but the lake bucket (a local
   path, ``file://``, a foreign bucket, a cred-in-URL form). Registered via
   `add_file_source`.
@@ -43,13 +44,19 @@ _log = logging.getLogger(__name__)
 # Source name pattern: lowercase, starts with letter, 2-49 chars total.
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
 
-# File extensions for the file-source path.
+# Suffix → source_type. Mirrors the cockpit's connect/upload contract
+# (connect.ts FILE_READERS + upload/policy.ts ALLOWED_EXTENSIONS) so a file the
+# cockpit lets a user pick is one the engine can load: csv/tsv/txt → CSV,
+# parquet/pq → Parquet, json/jsonl/ndjson → JSON.
 _EXTENSION_MAP: dict[str, str] = {
     ".csv": "csv",
     ".tsv": "csv",
+    ".txt": "csv",
     ".parquet": "parquet",
+    ".pq": "parquet",
     ".json": "json",
     ".jsonl": "json",
+    ".ndjson": "json",
 }
 
 # Recipe yaml extensions for the database-source path.
@@ -88,8 +95,9 @@ class SourceManager:
         """Register a single-file source (CSV/TSV/Parquet/JSON/JSONL).
 
         ``path`` is an ``s3://<lake-bucket>/<key>`` source URI. It is validated
-        (``validate_source_uri``), stored verbatim, and handed to DuckDB at
-        import time (DAT-389) — never resolved against the filesystem, so the
+        (``validate_source_uri``), stored as a one-element ``file_uris`` list
+        (DAT-378), and handed to DuckDB at import time (DAT-389) — never resolved
+        against the filesystem, so the
         registering process needs no access to the source bytes. Because the URI
         is a read primitive, a non-lake-bucket value (a local path, ``file://``,
         a foreign bucket, a cred-in-URL form) is rejected here, not stored.
@@ -121,7 +129,7 @@ class SourceManager:
         source = Source(
             name=name,
             source_type=source_type,
-            connection_config={"path": path},
+            connection_config={"file_uris": [path]},
             status="configured",
         )
         self._session.add(source)
@@ -221,7 +229,7 @@ class SourceManager:
                 name=s.name,
                 source_type=s.source_type,
                 status=s.status or "unknown",
-                path=(s.connection_config or {}).get("path")
+                path=_first_file_uri(s.connection_config)
                 or (s.connection_config or {}).get("recipe_path"),
                 backend=s.backend,
                 discovered_schema=s.discovered_schema,
@@ -265,6 +273,11 @@ class SourceManager:
         return self._session.execute(select(Source).where(Source.name == name)).scalar_one_or_none()
 
 
+def _first_file_uri(connection_config: dict[str, Any] | None) -> str | None:
+    """The first ``file_uris`` entry of a file source, for display (None if absent)."""
+    return next(iter((connection_config or {}).get("file_uris") or []), None)
+
+
 def _recipe_table_names(source: Source) -> list[str]:
     """Extract recipe table names from a Source's connection_config."""
     if source.source_type != "db_recipe":
@@ -285,7 +298,7 @@ def _read_file_preview(
     safe = source_uri.replace("'", "''")
     suffix = uri_suffix(source_uri)
 
-    if suffix in (".csv", ".tsv"):
+    if suffix in (".csv", ".tsv", ".txt"):
         try:
             result = conn.execute(f"SELECT * FROM read_csv_auto('{safe}') LIMIT 0")
         except Exception as e:
@@ -304,12 +317,12 @@ def _read_file_preview(
         except Exception:
             return columns, None
 
-    if suffix == ".parquet":
+    if suffix in (".parquet", ".pq"):
         result = conn.execute(f"SELECT * FROM read_parquet('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         return columns, None
 
-    if suffix in (".json", ".jsonl"):
+    if suffix in (".json", ".jsonl", ".ndjson"):
         result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         try:

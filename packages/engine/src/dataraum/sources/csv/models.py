@@ -19,12 +19,3 @@ class StagedTable(BaseModel):
     raw_table_name: str
     row_count: int
     column_count: int
-
-
-class StagingResult(BaseModel):
-    """Result of staging operation."""
-
-    source_id: str
-    tables: list[StagedTable]
-    total_rows: int
-    duration_seconds: float

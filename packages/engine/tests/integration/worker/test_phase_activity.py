@@ -29,7 +29,7 @@ from sqlalchemy import select
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.investigation.db_models import InvestigationSession
-from dataraum.storage import Source
+from dataraum.storage import Source, Table
 from dataraum.worker import (
     SourceIdentity,
     raw_table_ids,
@@ -99,20 +99,29 @@ def _seed_source_and_session(
     source_id: str,
     session_id: str,
     name: str,
-    path: Path,
+    paths: Path | list[Path],
 ) -> None:
     """Seed the Source + InvestigationSession rows the workflow would create.
 
     ``begin_session``/``addSourceWorkflow`` writes these in production; the
     activity reads the Source for its config and FK-references the session.
+
+    Post-DAT-378 a file source carries its objects as an explicit ``file_uris``
+    list under ``connection_config`` (the cockpit ``select`` stage enumerated the
+    prefix into it). ``paths`` accepts a single file or a list; both seed the
+    same ``file_uris`` shape, so the multi-file tests seed >1 URI and the
+    single-file tests seed exactly one. The autouse ``_allow_local_fixture_uris``
+    fixture lets these local paths through the production ``validate_source_uri``
+    gate so ``ImportPhase._run`` loads them directly.
     """
+    file_uris = [str(p) for p in (paths if isinstance(paths, list) else [paths])]
     with manager.session_scope() as session:
         session.add(
             Source(
                 source_id=source_id,
                 name=name,
                 source_type="csv",
-                connection_config={"path": str(path)},
+                connection_config={"file_uris": file_uris},
                 status="configured",
             )
         )
@@ -126,6 +135,22 @@ def _seed_source_and_session(
                 started_at=datetime.now(UTC),
             )
         )
+
+
+# Data-file extensions the multi-file seed enumerates out of the small_finance
+# directory fixture — mirrors the cockpit ``select`` enumeration that lists an
+# s3:// prefix into an explicit URI list (DAT-378). The directory of distinct
+# CSVs stands in for that enumerated list in the test process (no object store).
+_FIXTURE_DATA_SUFFIXES = (".csv", ".tsv", ".parquet", ".pq", ".json", ".jsonl")
+
+
+def _enumerate_fixture_files(directory: Path) -> list[Path]:
+    """Sorted list of loadable data files in a directory fixture (>1 → multi-URI)."""
+    files = sorted(
+        p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in _FIXTURE_DATA_SUFFIXES
+    )
+    assert len(files) > 1, f"expected a multi-file fixture in {directory}"
+    return files
 
 
 def _lake_tables(manager: ConnectionManager, schema: str) -> list[str]:
@@ -231,69 +256,64 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
     assert "some-other-workspace" in (result.error or "")
 
 
-@pytest.mark.skip(
-    reason=(
-        "Needs DAT-378: a single production `import` activity that enumerates a "
-        "multi-file source into >1 raw tables. This test drives the real worker "
-        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
-        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1`. "
-        "Per DAT-389 production import is strictly single-URI — one `import` "
-        "activity loads exactly one object — so this multi-table fan-out premise "
-        "cannot hold until DAT-378 adds multi-file enumeration to the connect/"
-        "select surface. The harness directory enumeration added in DAT-389 fixes "
-        "the `PipelineTestHarness` fixtures but deliberately does not touch this "
-        "production-path test."
-    )
-)
 def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:
-    """The full table-local chain runs green per table on a multi-table source.
+    """The full table-local chain runs green per table on a multi-FILE source.
 
     Drives the production worker path (``run_phase`` + ``run_table_detectors``,
-    not the retired ``PipelineTestHarness``) on the one long-lived manager: import
-    once, then the typing→analytics→detect chain scoped per raw table — the
-    sequential shape of the ProcessTableWorkflow fan-out.
+    not the retired ``PipelineTestHarness``) on the one long-lived manager. The
+    source is seeded with a multi-URI ``connection_config['file_uris']`` list (the
+    DAT-378 shape the cockpit ``select`` stage writes): ONE ``import`` activity
+    loops the per-URI loader and yields >1 raw tables. Then the
+    typing→analytics→detect chain runs scoped per raw table — the sequential
+    shape of the ProcessTableWorkflow fan-out, which falls out of the >1 raw
+    tables with no Temporal-contract change.
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
-    _seed_source_and_session(
-        worker_manager, source_id, session_id, "small_finance", small_finance_path
-    )
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
     identity = _identity(source_id, session_id)
 
+    # ONE import activity over the multi-URI list yields N raw tables.
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
-    assert len(raw_ids) > 1, "expected a multi-table source"
+    assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
+    assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
+
+    # CALIBRATION GUARD (DAT-378): the per-URI loop must reproduce the EXACT
+    # ``small_finance__<file_stem>`` raw-table set the pre-DAT-389 directory
+    # branch produced, so dataraum-eval recall baselines do not move. Assert the
+    # raw-table NAME set is byte-identical to ``small_finance__<stem>`` for every
+    # enumerated fixture file.
+    with worker_manager.session_scope() as session:
+        raw_names = {
+            row[0]
+            for row in session.execute(
+                select(Table.table_name).where(Table.source_id == source_id, Table.layer == "raw")
+            )
+        }
+    expected_names = {f"small_finance__{p.stem}" for p in files}
+    assert raw_names == expected_names, (
+        "per-URI loop changed the raw-table set — dataraum-eval baselines would move"
+    )
 
     typed_ids = [_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids]
     assert len(typed_ids) == len(raw_ids)
     assert _lake_tables(worker_manager, "typed"), "no typed tables after the chain"
 
 
-@pytest.mark.skip(
-    reason=(
-        "Needs DAT-378: a single production `import` activity that enumerates a "
-        "multi-file source into >1 raw tables. This test drives the real worker "
-        'path (`run_phase("import", …)` → `ImportPhase._run`, NOT the test '
-        "harness) on the `small_finance/` directory and asserts `len(raw_ids) > 1` "
-        "before fanning the per-table chains across threads. Per DAT-389 "
-        "production import is strictly single-URI — one `import` activity loads "
-        "exactly one object — so the multi-table source this concurrency assertion "
-        "needs cannot exist until DAT-378 adds multi-file enumeration to the "
-        "connect/select surface. The harness directory enumeration added in "
-        "DAT-389 fixes the `PipelineTestHarness` fixtures but deliberately does "
-        "not touch this production-path test."
-    )
-)
 def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
     worker_manager: ConnectionManager, small_finance_path: Path
 ) -> None:
     """Per-table chains run concurrently; the stage detect step stays table-scoped.
 
-    The DAT-370 concurrency + correctness assertion. After ``import``, each raw
-    table's full chain (typing→analytics→detect) runs on its own thread — the
-    fan-out the parent does with child workflows. Each ``run_phase`` /
-    ``run_table_detectors`` call leases its own DuckDB cursor (an independent
-    channel to the shared lake), so DuckLake reconciles the writers via MVCC.
+    The DAT-370 concurrency + correctness assertion, over the DAT-378 multi-file
+    source. The source is seeded with a multi-URI ``file_uris`` list, so ONE
+    ``import`` activity yields >1 raw tables; then each raw table's full chain
+    (typing→analytics→detect) runs on its own thread — the fan-out the parent
+    does with child workflows. Each ``run_phase`` / ``run_table_detectors`` call
+    leases its own DuckDB cursor (an independent channel to the shared lake), so
+    DuckLake reconciles the writers via MVCC.
 
     The detector step is the part the per-phase post-step couldn't do safely:
     ``run_detector_post_step`` deletes-before-inserts on ``(source_id,
@@ -303,14 +323,15 @@ def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
-    _seed_source_and_session(
-        worker_manager, source_id, session_id, "small_finance", small_finance_path
-    )
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
     identity = _identity(source_id, session_id)
 
+    # ONE import activity over the multi-URI list yields N raw tables.
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
-    assert len(raw_ids) > 1, "expected a multi-table source"
+    assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
+    assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
 
     # Fan the per-table chains out across threads — concurrent typing + analytics
     # + detect against the shared lake from independent cursors.
@@ -369,9 +390,8 @@ def test_semantic_per_column_reduce_runs_live(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
-    _seed_source_and_session(
-        worker_manager, source_id, session_id, "small_finance", small_finance_path
-    )
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
     identity = _identity(source_id, session_id)
 
     assert run_phase(worker_manager, "import", identity, []).status == "completed"

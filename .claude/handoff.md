@@ -4,6 +4,52 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-31: DAT-378 — file source = explicit `file_uris` list (multi-file ingest, atomic)
+
+Makes the engine import contract correct end-to-end for the cockpit `connect → select →
+add_source` journey, and unifies the file-source connection contract.
+
+What changed in the engine (calibration-relevant):
+- **File-source contract unified on `connection_config['file_uris']` (a list).** A single-file
+  source (`add_file_source`, one uploaded object) stores a one-element list; a multi-file source
+  (the cockpit `select` stage enumerating a bucket prefix) stores many. The scalar
+  `connection_config['path']` key and the dead CLI `source_path` fallback are **retired** — the
+  worker path carried neither. `import` reads `file_uris` only; `db_recipe` sources still use the
+  DISTINCT `connection_config['tables']` recipe-query key (unchanged). `ImportPhase._resolve_file_uris`,
+  `SourceManager.add_file_source`, `SourceManager.list_sources`, and the cockpit seed
+  (`drive-add-source.ts`) all moved to `file_uris`.
+- **One raw table per URI.** `import` validates EVERY URI (`validate_source_uri` — the engine never
+  globs) then loads each in turn, so one import activity yields N raw tables; `addSourceWorkflow`
+  fans out one `processTableWorkflow` per raw table (DAT-370) — **no Temporal-contract change**.
+- **Multi-URI import is now atomic.** Raw loaders (CSV/JSON/Parquet) use `CREATE OR REPLACE TABLE`,
+  and a per-URI failure mid-list drops this run's DuckDB tables + rolls back the session, so a failed
+  import commits nothing. Previously a partial failure committed the earlier URIs (failure is a
+  RETURN, so `session_scope` committed on clean exit) and the next run's `should_skip` silently
+  dropped the rest — a data-corruption wedge, now fixed.
+- **Extension routing reconciled with the cockpit.** Engine suffix→loader now matches `connect.ts`
+  FILE_READERS / `upload/policy.ts` ALLOWED_EXTENSIONS exactly: **csv/tsv/txt → CSV, parquet/pq →
+  Parquet, json/jsonl/ndjson → JSON**. `.ndjson` previously fell through to the CSV loader (misparse);
+  `.txt`/`.pq` were accepted by the cockpit but rejected at engine registration. Both fixed.
+
+### dataraum-eval
+
+- **Eval action: behavior-preserving for single-file sources — re-verify, don't expect a shift.** A
+  single CSV/Parquet/JSON source produces the same raw table as before; only the connection key
+  (`path` → one-element `file_uris`) and the raw `CREATE` (now `OR REPLACE`) changed. The multi-file
+  path is **new capability** (a source can now be several files → several raw tables), exercised the
+  same way (`addSourceWorkflow`); detector logic is untouched.
+- **How to drive a run / seed a source**: a file source's `connection_config` is now
+  `{"file_uris": ["s3://<lake-bucket>/<key>", ...]}` (NOT `{"path": ...}`). Any eval/harness fixture
+  or seed that wrote `{"path": ...}` for a file source must switch to `{"file_uris": [...]}`. db_recipe
+  sources are unchanged (`{"tables": [{name, sql}], "backend": ...}`).
+- **`.ndjson` now lands in the JSON loader** — a fixture that relied on the old (wrong) CSV routing
+  for an `.ndjson` file would change shape; none expected.
+
+### dataraum-testdata (hints)
+
+- No new injection types. A multi-file fixture (a bucket prefix with ≥2 loadable files that should
+  ingest as ≥2 raw tables) would exercise the new fan-out + the atomic-failure path directly. Optional.
+
 ## 2026-05-31: DAT-382 — ontology induction LEAVES the engine for the cockpit agent tier
 
 Lands the ADR-0004 cut: `_adhoc` ontology induction is no longer the engine's

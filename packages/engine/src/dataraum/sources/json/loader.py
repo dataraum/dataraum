@@ -7,7 +7,6 @@ to preserve raw values and let the typing phase handle inference.
 
 from __future__ import annotations
 
-import time
 from uuid import uuid4
 
 import duckdb
@@ -17,8 +16,8 @@ from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
 from dataraum.core.uri import uri_basename, uri_stem
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
-from dataraum.sources.csv.models import StagedTable, StagingResult
-from dataraum.storage import Column, Source, Table
+from dataraum.sources.csv.models import StagedTable
+from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
@@ -90,78 +89,6 @@ class JsonLoader(LoaderBase):
         except Exception as e:
             return Result.fail(f"Failed to read JSON schema: {e}")
 
-    def load(
-        self,
-        source_config: SourceConfig,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        session: Session,
-    ) -> Result[StagingResult]:
-        """Load JSON file into DuckDB as all VARCHAR columns.
-
-        Args:
-            source_config: Source configuration.
-            duckdb_conn: DuckDB connection.
-            session: SQLAlchemy session for metadata.
-
-        Returns:
-            Result containing StagingResult.
-        """
-        if not source_config.path:
-            return Result.fail("JSON source requires 'path' in configuration")
-
-        # ``s3://<lake-bucket>/<key>`` source URI — DAT-389.
-        source_uri = source_config.path
-
-        start_time = time.time()
-
-        try:
-            source_id = str(uuid4())
-            source = Source(
-                source_id=source_id,
-                name=source_config.name,
-                source_type="json",
-                connection_config={"path": source_uri},
-            )
-            session.add(source)
-
-            file_result = self._load_single_file(
-                source_uri=source_uri,
-                source_id=source_id,
-                source_name=source_config.name,
-                duckdb_conn=duckdb_conn,
-                session=session,
-            )
-
-            if not file_result.success:
-                logger.warning("json_load_failed", file=source_uri, error=file_result.error)
-                return Result.fail(file_result.error or "Failed to load JSON")
-
-            staged_table = file_result.unwrap()
-            session.commit()
-
-            duration = time.time() - start_time
-            logger.debug(
-                "json_loaded",
-                file=source_uri,
-                table=staged_table.table_name,
-                rows=staged_table.row_count,
-                columns=staged_table.column_count,
-                duration_s=round(duration, 2),
-            )
-
-            return Result.ok(
-                StagingResult(
-                    source_id=source_id,
-                    tables=[staged_table],
-                    total_rows=staged_table.row_count,
-                    duration_seconds=duration,
-                )
-            )
-
-        except Exception as e:
-            logger.error("json_load_error", file=source_uri, error=str(e))
-            return Result.fail(f"Failed to load JSON: {e}")
-
     def _load_single_file(
         self,
         source_uri: str,
@@ -231,7 +158,7 @@ class JsonLoader(LoaderBase):
             ]
 
             sql = f"""
-                CREATE TABLE {raw_target} AS
+                CREATE OR REPLACE TABLE {raw_target} AS
                 SELECT {", ".join(select_exprs)}
                 FROM read_json_auto('{safe_path}')
             """

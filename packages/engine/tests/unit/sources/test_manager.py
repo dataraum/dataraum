@@ -93,7 +93,9 @@ class TestAddFileSource:
         assert info.path == uri
 
         source = session.execute(select(Source).where(Source.name == "s3_orders")).scalar_one()
-        assert source.connection_config == {"path": uri}
+        # A single file is stored as a one-element file_uris list (DAT-378) — the
+        # same key a multi-file select writes; there is no scalar `path` key.
+        assert source.connection_config == {"file_uris": [uri]}
 
     @pytest.mark.parametrize(
         "bad_uri",
@@ -133,6 +135,28 @@ class TestAddFileSource:
 
         assert result.success, result.error
         assert result.unwrap().source_type == "json"
+
+    @pytest.mark.parametrize(
+        ("filename", "expected_type"),
+        [
+            ("data.txt", "csv"),
+            ("data.pq", "parquet"),
+            ("events.ndjson", "json"),
+        ],
+    )
+    def test_register_cockpit_parity_extensions(
+        self, manager: SourceManager, filename: str, expected_type: str
+    ) -> None:
+        """Every extension the cockpit can select registers here (DAT-378).
+
+        ``.txt`` / ``.pq`` / ``.ndjson`` are in the cockpit's ALLOWED_EXTENSIONS +
+        connect FILE_READERS; the engine registration map must accept the same set
+        so a selectable file is never rejected at registration.
+        """
+        name = f"parity_{filename.replace('.', '_')}"
+        result = manager.add_file_source(name, f"{_LAKE}/{filename}")
+        assert result.success, result.error
+        assert result.unwrap().source_type == expected_type
 
     def test_reject_unsupported_format(self, manager: SourceManager) -> None:
         result = manager.add_file_source("bad_fmt", f"{_LAKE}/data.xlsx")

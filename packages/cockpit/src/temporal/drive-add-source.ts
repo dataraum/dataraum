@@ -62,7 +62,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			await tx.unsafe(`SET LOCAL search_path TO "${schema}", public`);
 			await tx`
 				INSERT INTO sources (source_id, name, source_type, connection_config, status, created_at, updated_at)
-				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ path: sourcePath })}, 'configured', now(), now())
+				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ file_uris: [sourcePath] })}, 'configured', now(), now())
 				ON CONFLICT (source_id) DO NOTHING`;
 			await tx`
 				INSERT INTO investigation_sessions (session_id, source_id, intent, status, started_at, step_count)

@@ -10,7 +10,7 @@
 // this stays a pure unit. The mock uses the `#/` alias (a relative one doesn't
 // intercept).
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({
 	config: {
@@ -19,10 +19,25 @@ vi.mock("#/config", () => ({
 		s3UseSsl: false,
 		s3AccessKeyId: "k",
 		s3SecretAccessKey: "s",
+		s3Bucket: "dataraum-lake",
 	},
 }));
 
-import { s3EndpointUrl } from "./s3-upload";
+// Mock the @aws-lite client so listPrefixKeys can be unit-tested without a live
+// SeaweedFS. `awsLite(...)` resolves to a client whose `S3.ListObjectsV2` is the
+// hoisted mock; the s3 plugin is opaque. (PutObject round-trip is covered by
+// connect.integration against live SeaweedFS.)
+const { listObjectsV2Mock } = vi.hoisted(() => ({
+	listObjectsV2Mock: vi.fn(),
+}));
+vi.mock("@aws-lite/client", () => ({
+	default: vi.fn(async () => ({
+		S3: { ListObjectsV2: listObjectsV2Mock, PutObject: vi.fn() },
+	})),
+}));
+vi.mock("@aws-lite/s3", () => ({ default: {} }));
+
+import { listPrefixKeys, s3EndpointUrl } from "./s3-upload";
 
 describe("s3EndpointUrl (DAT-386)", () => {
 	it("prefixes http:// for a plain (non-SSL) endpoint", () => {
@@ -40,5 +55,48 @@ describe("s3EndpointUrl (DAT-386)", () => {
 		expect(url.hostname).toBe("seaweedfs");
 		expect(url.port).toBe("8333");
 		expect(url.protocol).toBe("http:");
+	});
+});
+
+describe("listPrefixKeys (DAT-378)", () => {
+	beforeEach(() => {
+		listObjectsV2Mock.mockReset();
+	});
+
+	it("returns object keys under the prefix, dropping zero-byte folder markers", async () => {
+		listObjectsV2Mock.mockResolvedValueOnce({
+			Contents: [
+				{ Key: "sel/", Size: 0 }, // folder marker → dropped
+				{ Key: "sel/orders.csv", Size: 42 },
+				{ Key: "sel/customers.parquet", Size: 99 },
+			],
+			IsTruncated: false,
+		});
+		const keys = await listPrefixKeys("dataraum-lake", "sel/");
+		expect(keys).toEqual(["sel/orders.csv", "sel/customers.parquet"]);
+		expect(listObjectsV2Mock).toHaveBeenCalledTimes(1);
+	});
+
+	it("follows ContinuationToken pagination to completion", async () => {
+		listObjectsV2Mock
+			.mockResolvedValueOnce({
+				Contents: [{ Key: "sel/a.csv", Size: 1 }],
+				IsTruncated: true,
+				NextContinuationToken: "tok-1",
+			})
+			.mockResolvedValueOnce({
+				Contents: [{ Key: "sel/b.csv", Size: 1 }],
+				IsTruncated: false,
+			});
+		const keys = await listPrefixKeys("dataraum-lake", "sel/");
+		expect(keys).toEqual(["sel/a.csv", "sel/b.csv"]);
+		expect(listObjectsV2Mock).toHaveBeenCalledTimes(2);
+		// Second call carries the continuation token from the first page.
+		expect(listObjectsV2Mock.mock.calls[1][0].ContinuationToken).toBe("tok-1");
+	});
+
+	it("handles an empty prefix (no Contents) as an empty key list", async () => {
+		listObjectsV2Mock.mockResolvedValueOnce({ IsTruncated: false });
+		expect(await listPrefixKeys("dataraum-lake", "empty/")).toEqual([]);
 	});
 });

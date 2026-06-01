@@ -9,11 +9,12 @@ from __future__ import annotations
 import duckdb
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.core.models import SourceConfig
+from dataraum.sources.csv.models import StagedTable
 from dataraum.sources.parquet import ParquetLoader
-from dataraum.storage import init_database
+from dataraum.storage import Source, init_database
 
 
 @pytest.fixture
@@ -51,14 +52,6 @@ def test_session():
 
 
 @pytest.fixture
-def test_duckdb():
-    """Create an in-memory DuckDB connection for testing."""
-    conn = duckdb.connect(":memory:")
-    yield conn
-    conn.close()
-
-
-@pytest.fixture
 def sample_parquet(tmp_path):
     """Create a sample Parquet file with typed columns."""
     path = tmp_path / "sample.parquet"
@@ -74,6 +67,40 @@ def sample_parquet(tmp_path):
     """)
     conn.close()
     return path
+
+
+def _stage_parquet(
+    conn: duckdb.DuckDBPyConnection,
+    session: Session,
+    source_uri: str,
+    *,
+    source_name: str,
+) -> StagedTable:
+    """Seed a Source row and load a single Parquet via ``_load_single_file``.
+
+    Mirrors ``import_phase`` (create the Source row, then call the loader's
+    ``_load_single_file``); returns the resulting ``StagedTable``.
+    """
+    source_id = f"src-{source_name}"
+    source = Source(
+        source_id=source_id,
+        name=source_name,
+        source_type="parquet",
+        connection_config={"path": source_uri},
+    )
+    session.add(source)
+    session.flush()
+
+    loader = ParquetLoader()
+    result = loader._load_single_file(
+        source_uri=source_uri,
+        source_id=source_id,
+        source_name=source_name,
+        duckdb_conn=conn,
+        session=session,
+    )
+    assert result.success, result.error
+    return result.unwrap()
 
 
 class TestParquetLoader:
@@ -141,29 +168,15 @@ class TestParquetLoader:
         """Test loading a single Parquet file."""
         from dataraum.server.storage import connect_session
 
-        loader = ParquetLoader()
-        config = SourceConfig(
-            name="sample",
-            source_type="parquet",
-            path=str(sample_parquet),
-        )
-
         conn = connect_session()
         try:
-            result = loader.load(config, conn, test_session)
+            staged = _stage_parquet(conn, test_session, str(sample_parquet), source_name="sample")
 
-            assert result.success, f"Load failed: {result.error}"
-
-            staging_result = result.value
-            assert staging_result.source_id is not None
-            assert len(staging_result.tables) == 1
-
-            table = staging_result.tables[0]
             # Post-DAT-341: bare name is ``<source>__<table>``
-            assert table.table_name == "sample__sample"
-            assert table.raw_table_name == "sample__sample"
-            assert table.row_count == 3
-            assert table.column_count == 5
+            assert staged.table_name == "sample__sample"
+            assert staged.raw_table_name == "sample__sample"
+            assert staged.row_count == 3
+            assert staged.column_count == 5
 
             # Verify table exists in lake.raw
             tables = conn.execute(
@@ -179,17 +192,9 @@ class TestParquetLoader:
         """Verify Parquet types are preserved (not all VARCHAR like CSV)."""
         from dataraum.server.storage import connect_session
 
-        loader = ParquetLoader()
-        config = SourceConfig(
-            name="typed_test",
-            source_type="parquet",
-            path=str(sample_parquet),
-        )
-
         conn = connect_session()
         try:
-            result = loader.load(config, conn, test_session)
-            assert result.success
+            _stage_parquet(conn, test_session, str(sample_parquet), source_name="typed_test")
 
             schema = conn.execute('DESCRIBE lake.raw."typed_test__sample"').fetchall()
             # DESCRIBE returns (column_name, column_type, null, key, default, extra)
@@ -217,17 +222,9 @@ class TestParquetLoader:
         """)
         helper.close()
 
-        loader = ParquetLoader()
-        config = SourceConfig(
-            name="special_cols",
-            source_type="parquet",
-            path=str(path),
-        )
-
         conn = connect_session()
         try:
-            result = loader.load(config, conn, test_session)
-            assert result.success
+            _stage_parquet(conn, test_session, str(path), source_name="special_cols")
 
             schema = conn.execute('DESCRIBE lake.raw."special_cols__special_cols"').fetchall()
             col_names = [row[0] for row in schema]
@@ -239,16 +236,25 @@ class TestParquetLoader:
         """A missing URI fails the load via Result.fail (DuckDB error, DAT-389)."""
         from dataraum.server.storage import connect_session
 
-        loader = ParquetLoader()
-        config = SourceConfig(
+        source = Source(
+            source_id="src-missing",
             name="missing",
             source_type="parquet",
-            path="nonexistent.parquet",
+            connection_config={"path": "nonexistent.parquet"},
         )
+        test_session.add(source)
+        test_session.flush()
 
+        loader = ParquetLoader()
         conn = connect_session()
         try:
-            result = loader.load(config, conn, test_session)
+            result = loader._load_single_file(
+                source_uri="nonexistent.parquet",
+                source_id="src-missing",
+                source_name="missing",
+                duckdb_conn=conn,
+                session=test_session,
+            )
             assert not result.success
             assert result.error
         finally:
@@ -258,24 +264,16 @@ class TestParquetLoader:
         self, test_session, sample_parquet, lake_anchor, lake_clean
     ):
         """Test that SQLAlchemy Table and Column records are created."""
-        from dataraum.server.storage import connect_session
-        from dataraum.storage import Column, Source, Table
+        from sqlalchemy import select
 
-        loader = ParquetLoader()
-        config = SourceConfig(
-            name="metadata_test",
-            source_type="parquet",
-            path=str(sample_parquet),
-        )
+        from dataraum.server.storage import connect_session
+        from dataraum.storage import Column, Table
 
         conn = connect_session()
         try:
-            result = loader.load(config, conn, test_session)
-            assert result.success
+            _stage_parquet(conn, test_session, str(sample_parquet), source_name="metadata_test")
 
             # Check Source record
-            from sqlalchemy import select
-
             source = test_session.execute(
                 select(Source).where(Source.name == "metadata_test")
             ).scalar_one()

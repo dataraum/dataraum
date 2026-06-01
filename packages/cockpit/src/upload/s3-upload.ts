@@ -21,7 +21,16 @@ import awsLiteS3 from "@aws-lite/s3";
 
 import { config } from "../config";
 
-// @aws-lite/s3 ships no types; the only surface we touch is S3.PutObject.
+// @aws-lite/s3 ships no types; the surface we touch is S3.PutObject (upload) and
+// S3.ListObjectsV2 (select-time prefix enumeration, DAT-378).
+interface S3ListObjectsV2Response {
+	// @aws-lite returns the parsed XML: Contents is the per-object list, absent
+	// when the prefix is empty. ContinuationToken paginates a >1000-object prefix.
+	Contents?: { Key?: string; Size?: number }[];
+	IsTruncated?: boolean;
+	NextContinuationToken?: string;
+}
+
 interface S3Client {
 	S3: {
 		PutObject(params: {
@@ -30,6 +39,11 @@ interface S3Client {
 			Body: Buffer;
 			ContentType?: string;
 		}): Promise<unknown>;
+		ListObjectsV2(params: {
+			Bucket: string;
+			Prefix?: string;
+			ContinuationToken?: string;
+		}): Promise<S3ListObjectsV2Response>;
 	};
 }
 
@@ -77,4 +91,42 @@ export async function putObject(
 		Body: body,
 		ContentType: contentType,
 	});
+}
+
+/**
+ * List every object key under `prefix` in `bucket`, paginating to completion.
+ *
+ * The select-time enumeration primitive (DAT-378): the engine NEVER globs, so
+ * the cockpit lists the prefix here and hands the engine an EXPLICIT URI list.
+ * Returns raw keys (e.g. `uploads/<uuid>/orders.csv`); `enumeratePrefixUris`
+ * filters + maps them to `s3://<bucket>/<key>` URIs. A trailing-slash "directory
+ * marker" key (Size 0, ends in `/`) is dropped — it is not a real object.
+ *
+ * Pagination is followed via ContinuationToken so a prefix with >1000 objects
+ * is fully enumerated (S3 caps a page at 1000); `IsTruncated` gates the loop.
+ */
+export async function listPrefixKeys(
+	bucket: string,
+	prefix: string,
+): Promise<string[]> {
+	const client = await getS3Client();
+	const keys: string[] = [];
+	let continuationToken: string | undefined;
+	do {
+		const res = await client.S3.ListObjectsV2({
+			Bucket: bucket,
+			Prefix: prefix,
+			ContinuationToken: continuationToken,
+		});
+		for (const obj of res.Contents ?? []) {
+			const key = obj.Key;
+			// Skip the directory-marker object S3 returns for a prefix written as a
+			// folder (zero-byte key ending in `/`); it is not loadable data.
+			if (key && !(key.endsWith("/") && (obj.Size ?? 0) === 0)) {
+				keys.push(key);
+			}
+		}
+		continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+	} while (continuationToken);
+	return keys;
 }

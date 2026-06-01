@@ -4,6 +4,56 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-01: DAT-394 — one terminal `detect` step + persisted per-intent readiness
+
+Collapses detector execution into a single source-wide `detect` activity and persists
+the readiness-v2 rollup. The BBN was already retired (DAT-393); this lands its
+persistence + simplifies where detectors run.
+
+What changed in the engine (calibration-relevant):
+- **Activity rename: `detect_table` + `detect_source` → a single `detect`.** Detectors no
+  longer run per-table at the child tail (`detect_table`) or in a separate parent step
+  (`detect_source`). One `detect` activity in `addSourceWorkflow`, after
+  `semantic_per_column`, runs the **union of all wired detectors source-wide**
+  (`run_detectors`, `table_ids=None`). The set is unchanged — `type_fidelity`, `null_ratio`
+  (was detect_table) + `business_meaning`, `unit_entropy`, `temporal_entropy`,
+  `outlier_rate`, `benford` (was detect_source). **Detector scores are byte-for-byte
+  unchanged** — only the execution site/timing moved (rationale: nothing reads entropy
+  mid-run; the split bought no parallelism). The per-table analytics fan-out
+  (`typing→…→temporal`) is unchanged.
+- **New `entropy_readiness` table** (one row per analyzed column, written by `detect`):
+  collapsed `band` (ready/investigate/blocked — the contract-gate signal) + `worst_intent_risk`
+  + `intents` JSONB (`[{intent, band, risk, drivers:[{node,state,impact_delta}]}]`, the
+  query/aggregation/reporting split) + `top_drivers` JSONB + FKs. Delete-before-insert scoped
+  to `source_id` → self-refreshing on any replay.
+
+### dataraum-eval
+
+- **Eval action: confirm detector-score PARITY (the bar for this PR).** The execution site
+  moved, the scoring did not — `test_detector_precision` baselines must be unchanged. Any
+  delta is a bug in the move, not expected drift. Drive a run the same way (`addSourceWorkflow`);
+  the new `detect` step is internal to the workflow.
+- **Harness/fixture update: activity names changed.** Anything that invokes activities by name
+  or inspects Temporal history for `detect_table` / `detect_source` must switch to the single
+  `detect`. A replay still always re-runs the reduce + `detect` at the parent tail (unchanged
+  semantics; `detect` is never a `from_phase` entry point).
+- **New end-to-end surface to verify:** `entropy_readiness` now lets eval assert the readiness
+  shape directly (per-column band + per-intent breakdown). On clean below-floor data `intents`
+  is legitimately empty (band `ready`); richness appears as detector scores cross the 0.3 floor.
+- **Deploy note (dev): drain in-flight `addSourceWorkflow` runs before deploying** — the
+  removed activity names would otherwise non-determinism-fail mid-history. No `patched()` guard
+  added (dev-acceptable).
+
+### Cockpit (cross-PACKAGE — not in this branch)
+
+- **Drizzle metadata mirror must be re-pulled** (`bun run db:pull:metadata`, against a **fresh**
+  DB) to expose `entropy_readiness` to the cockpit `why`/`look` tools (DAT-353). The engine
+  schema is the source; the cockpit TS mirror is regenerated, not hand-edited.
+
+### dataraum-testdata (hints)
+
+- None. No detector or fixture surface changed.
+
 ## 2026-06-01: DAT-364 (tail) — temporal `analyze_update_frequency` NaN guard
 
 Bug fix found while building the DAT-364 isolation test (the workflow-ID change itself is

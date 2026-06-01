@@ -109,8 +109,9 @@ class EntropyReadinessRecord(Base):
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
 
-    # Scope — one readiness row per analyzed column.
-    source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
+    # Scope — one readiness row per analyzed column. ``source_id`` is the
+    # delete-before-insert scope key and is always set, so it is NOT NULL.
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
     column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE")

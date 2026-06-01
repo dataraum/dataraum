@@ -410,6 +410,7 @@ class ConnectionManager:
         """Import all DB model modules to register them with SQLAlchemy."""
         # Core models not owned by any phase
         from dataraum.documentation import db_models as _fixes  # noqa: F401
+        from dataraum.entropy import db_models as _entropy  # noqa: F401
         from dataraum.investigation import db_models as _investigation  # noqa: F401
 
         # Phase-owned models: auto-discovered from registry

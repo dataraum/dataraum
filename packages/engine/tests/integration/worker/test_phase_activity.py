@@ -411,6 +411,7 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     assert all(cid is not None for cid in column_ids), "readiness row missing column_id FK"
     assert len(column_ids) == len(set(column_ids)), "duplicate readiness rows for a column"
     for r in rows:
+        assert r.source_id == source_id, "readiness row missing/incorrect source_id FK"
         assert r.table_id in typed_ids, "readiness row points to a non-source table"
         assert r.band in ("ready", "investigate", "blocked")
         # JSONB payloads — intents may be empty on clean data (all signals below

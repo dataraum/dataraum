@@ -83,11 +83,11 @@ def _column_id_map(session: Session, table_ids: list[str]) -> dict[str, tuple[st
     Mirrors the target string the detectors write (``engine.py`` builds it as
     ``f"column:{table.table_name}.{col.column_name}"``).
     """
-    table_name_by_id: dict[str, str] = dict(
-        session.execute(
-            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
-        ).tuples()
-    )
+    table_name_by_id: dict[str, str] = {}
+    for table_id, table_name in session.execute(
+        select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+    ):
+        table_name_by_id[table_id] = table_name
     out: dict[str, tuple[str, str]] = {}
     for table_id, column_name, column_id in session.execute(
         select(Column.table_id, Column.column_name, Column.column_id).where(

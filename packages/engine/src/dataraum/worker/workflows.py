@@ -76,6 +76,10 @@ _ANALYTICS_PHASES = (
 # the ones the child body invokes. ``ReplayScope.from_phase`` always names a
 # phase listed in one of these tuples — anything else is a programmer error
 # on the cockpit side.
+# ``detect`` is intentionally absent from both orders: like ``semantic_per_column``
+# it ALWAYS re-runs at the parent tail (the workflow body owns that, not
+# ``_runs_under``), so it is never a valid ``ReplayScope.from_phase`` entry point.
+# Adding it here would make it gatable and break the always-runs invariant.
 _PARENT_PHASE_ORDER = ("import", "semantic_per_column")
 _CHILD_PHASE_ORDER = ("typing", *_ANALYTICS_PHASES)
 

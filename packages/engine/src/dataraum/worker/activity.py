@@ -305,7 +305,13 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        persist_readiness(session, identity.source_id, identity.session_id)
+        readiness_rows = persist_readiness(session, identity.source_id, identity.session_id)
+        logger.info(
+            "terminal_detect_done",
+            source_id=identity.source_id,
+            detector_records=total,
+            readiness_rows=readiness_rows,
+        )
     return total
 
 

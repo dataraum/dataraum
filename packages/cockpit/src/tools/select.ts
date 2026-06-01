@@ -79,6 +79,11 @@ export type SelectResult = z.infer<typeof SelectResult>;
 export interface SelectInput {
 	source_name: string;
 	schema: ConnectSchema;
+	// File source: an explicit list of `s3://` URIs to register as ONE multi-file
+	// source (DAT-391: several files uploaded together). Takes precedence over
+	// `prefix` — the client already holds the staged URIs, so no S3 re-listing.
+	// Ignored for a database source.
+	file_uris?: string[] | null;
 	// File source: optional `s3://<bucket>/<prefix>` to enumerate into a multi-URI
 	// `file_uris` list. Omitted → the single connect URI (`schema.source`) is the
 	// one file persisted. Ignored for a database source.
@@ -93,16 +98,22 @@ export interface SelectInput {
 }
 
 /** Build the file-source `connection_config.file_uris` list for a connect
- * schema: a prefix is enumerated to its concrete URIs, else the single connect
- * URI is the one file. `enumerate` is injected so the unit test exercises the
- * multi-file mapping without a live bucket. */
+ * schema. Precedence: an explicit `fileUris` list (DAT-391 — files uploaded
+ * together; the client already holds them) → a `prefix` enumerated to its
+ * concrete URIs → the single connect URI. `enumerate` is injected so the unit
+ * test exercises the prefix mapping without a live bucket. */
 async function resolveFileUris(
 	schema: ConnectSchema,
-	prefix: string | null | undefined,
+	opts: { fileUris?: string[] | null; prefix?: string | null },
 	enumerate: typeof enumeratePrefixUris,
 ): Promise<string[]> {
-	if (prefix) {
-		return enumerate(config.s3Bucket, prefix);
+	if (opts.fileUris && opts.fileUris.length > 0) {
+		// Register the staged URIs directly — no S3 re-listing. Sorted for a
+		// deterministic persisted artifact, matching the prefix-enumeration path.
+		return [...opts.fileUris].sort();
+	}
+	if (opts.prefix) {
+		return enumerate(config.s3Bucket, opts.prefix);
 	}
 	return [schema.source];
 }
@@ -136,7 +147,11 @@ export async function select(
 	let recipeTables: { name: string; sql: string }[] | null = null;
 
 	if (schema.sourceKind === "file") {
-		const uris = await resolveFileUris(schema, input.prefix, enumerate);
+		const uris = await resolveFileUris(
+			schema,
+			{ fileUris: input.file_uris, prefix: input.prefix },
+			enumerate,
+		);
 		const dupes = duplicateBasenames(uris);
 		if (dupes.length > 0) {
 			throw new Error(
@@ -253,6 +268,14 @@ export const selectTool = toolDefinition({
 				"Unique source name (lowercase, starts with a letter, [a-z0-9_], 2–49 chars).",
 			),
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
+		file_uris: z
+			.array(z.string())
+			.nullish()
+			.describe(
+				"File source only: an explicit list of `s3://` URIs to register as ONE " +
+					"multi-file source — e.g. several files uploaded together. Takes " +
+					"precedence over `prefix`; omit for a single connected file or a prefix.",
+			),
 		prefix: z
 			.string()
 			.nullish()

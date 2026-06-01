@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-01: DAT-364 (tail) — temporal `analyze_update_frequency` NaN guard
+
+Bug fix found while building the DAT-364 isolation test (the workflow-ID change itself is
+**not** calibration-relevant — workflow-ID naming + workspace guard only, no detector/schema/phase
+change).
+
+What changed in the engine (calibration-relevant):
+- **`analyze_update_frequency` now coerces a NaN `interval_std` to `0.0`** (`analysis/temporal/patterns.py`).
+  A date column with exactly one interval (a 2-row table) has no sample std → pandas returns NaN →
+  the JSON `profile_data` insert crashed (`invalid input syntax for type json … Token "NaN"`). A lone
+  interval is trivially regular, so `0.0` is the correct reading. `interval_cv` (derived) is now
+  finite too.
+
+### dataraum-eval
+
+- **Eval action: re-verify only if testdata has single-interval (2-row) date columns.** Previously
+  such a column crashed the `temporal` phase; now it profiles cleanly with `interval_std=0.0`. No
+  change to multi-interval columns or to detector recall/precision on healthy data — the coercion
+  only fires on the degenerate single-interval case.
+
 ## 2026-05-31: DAT-378 — file source = explicit `file_uris` list (multi-file ingest, atomic)
 
 Makes the engine import contract correct end-to-end for the cockpit `connect → select →

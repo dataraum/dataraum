@@ -469,7 +469,13 @@ def analyze_update_frequency(
             return Result.fail("No intervals found")
 
         median_interval = float(intervals_seconds.median())
+        # A single interval (a 2-row column) has no sample std — pandas returns
+        # NaN (ddof=1). NaN can't be serialized into the JSON profile_data column
+        # (Postgres rejects the literal `NaN`), and a lone interval is trivially
+        # regular, so a zero spread is the correct reading.
         interval_std = float(intervals_seconds.std())
+        if np.isnan(interval_std):
+            interval_std = 0.0
 
         # Coefficient of variation (lower = more regular)
         if median_interval > 0:

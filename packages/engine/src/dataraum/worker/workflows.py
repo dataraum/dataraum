@@ -47,6 +47,7 @@ with workflow.unsafe.imports_passed_through():
         SourceIdentity,
         TableScopedInput,
         TypingResult,
+        process_table_workflow_id,
     )
 
 # A deterministic phase failure is raised by the activity as a non-retryable
@@ -334,7 +335,9 @@ class AddSourceWorkflow:
 
         # Deterministic, collision-free child ids keep replay stable. The same
         # id is reused across teach iterations with WorkflowIdReusePolicy.ALLOW_DUPLICATE
-        # on the parent — Temporal UI groups iterations naturally.
+        # on the parent — Temporal UI groups iterations naturally. The id encodes
+        # workspace_id (DAT-364) so two workspaces sharing a source_id never
+        # collide; see process_table_workflow_id for the convention.
         children = [
             workflow.execute_child_workflow(
                 ProcessTableWorkflow.run,
@@ -343,7 +346,11 @@ class AddSourceWorkflow:
                     raw_table_id=raw_id,
                     replay=child_replay,
                 ),
-                id=f"addsource-{payload.identity.source_id}-table-{raw_id}",
+                id=process_table_workflow_id(
+                    payload.identity.workspace_id,
+                    payload.identity.source_id,
+                    raw_id,
+                ),
             )
             for raw_id in target_raw_ids
         ]

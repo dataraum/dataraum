@@ -4,8 +4,8 @@
 // Pure compute kick: takes a ReplayScope (the agent decides whether to
 // rerun source-wide, per-table, or source-tail-only), starts a fresh
 // `addSourceWorkflow` execution with the same workflow id as the initial
-// run (`addsource-<source_id>`), and uses ALLOW_DUPLICATE policy so
-// Temporal UI groups iterations naturally per source.
+// run (`addsource-<workspace_id>-<source_id>`; see workflow-id.ts, DAT-364),
+// and uses ALLOW_DUPLICATE policy so Temporal UI groups iterations per source.
 //
 // Returns the workflow id + run id immediately — the caller polls / queries
 // Temporal for progress. End-to-end "replay actually produces clean output"
@@ -34,6 +34,7 @@ import type {
 	ReplayScope,
 	SourceIdentity,
 } from "../temporal/types";
+import { addSourceWorkflowId } from "../temporal/workflow-id";
 
 export interface ReplayInput {
 	source_id: string;
@@ -61,8 +62,8 @@ export interface ReplayResult {
  * immediately with the workflow + run id; the caller polls Temporal for
  * progress and the final result.
  *
- * Workflow id is reused per source (`addsource-<source_id>`) with
- * `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the same
+ * Workflow id is reused per source (`addsource-<workspace_id>-<source_id>`)
+ * with `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the same
  * id in Temporal UI — natural grouping for "all iterations of this source's
  * teach history".
  */
@@ -89,7 +90,10 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		replay: input.scope,
 	};
 
-	const workflowId = `addsource-${input.source_id}`;
+	const workflowId = addSourceWorkflowId(
+		config.dataraumWorkspaceId,
+		input.source_id,
+	);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {

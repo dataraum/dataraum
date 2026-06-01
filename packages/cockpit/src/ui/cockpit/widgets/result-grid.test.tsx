@@ -13,11 +13,12 @@
 // path is exercised by the ColumnStore unit tests (ndjson-stream.test.ts).
 
 import { MantineProvider } from "@mantine/core";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ColumnStore } from "#/duckdb/ndjson-stream";
-import { ResultGridView } from "#/ui/cockpit/widgets/result-grid";
+import type { GridSort } from "#/duckdb/stream-sql";
+import { cycleSort, ResultGridView } from "#/ui/cockpit/widgets/result-grid";
 import { theme } from "#/ui/theme";
 
 function seeded(): ColumnStore {
@@ -42,6 +43,36 @@ function renderView(store: ColumnStore, fatal?: string | null) {
 		</MantineProvider>,
 	);
 }
+
+function renderSortable(
+	store: ColumnStore,
+	sort: GridSort | null,
+	onToggleSort: (column: string) => void,
+) {
+	render(
+		<MantineProvider theme={theme} env="test">
+			<ResultGridView store={store} sort={sort} onToggleSort={onToggleSort} />
+		</MantineProvider>,
+	);
+}
+
+describe("cycleSort (DAT-385 P3 sort state machine)", () => {
+	it("cycles unsorted → asc → desc → unsorted on the same column", () => {
+		expect(cycleSort(null, "amount")).toEqual({ column: "amount", dir: "asc" });
+		expect(cycleSort({ column: "amount", dir: "asc" }, "amount")).toEqual({
+			column: "amount",
+			dir: "desc",
+		});
+		expect(cycleSort({ column: "amount", dir: "desc" }, "amount")).toBeNull();
+	});
+
+	it("starts a different column at asc, abandoning the previous sort", () => {
+		expect(cycleSort({ column: "amount", dir: "desc" }, "id")).toEqual({
+			column: "id",
+			dir: "asc",
+		});
+	});
+});
 
 describe("ResultGridView (DAT-385 P2)", () => {
 	afterEach(() => cleanup());
@@ -74,5 +105,34 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		const err = screen.getByTestId("canvas-result-grid-error");
 		expect(err.textContent).toContain("connection refused");
 		expect(screen.getByText("error")).toBeTruthy();
+	});
+
+	it("fires onToggleSort with the clicked column name (DAT-385 P3)", () => {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		const onToggleSort = vi.fn();
+		renderSortable(store, null, onToggleSort);
+		fireEvent.click(screen.getByTestId("canvas-result-grid-header-name"));
+		expect(onToggleSort).toHaveBeenCalledWith("name");
+	});
+
+	it("shows a direction indicator on the active sort column", () => {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		renderSortable(store, { column: "id", dir: "asc" }, vi.fn());
+		// The ascending glyph rides the sorted column header; the OTHER header has
+		// no indicator. (Body rows are virtualized away in headless DOM — header
+		// is the layout-independent surface, see the file note.)
+		expect(screen.getByLabelText("sorted ascending")).toBeTruthy();
+		expect(screen.queryByLabelText("sorted descending")).toBeNull();
+	});
+
+	it("renders static (non-clickable) headers when onToggleSort is omitted", () => {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		renderView(store);
+		// No sort indicators and no crash without the callback.
+		expect(screen.queryByLabelText("sorted ascending")).toBeNull();
+		expect(screen.queryByLabelText("sorted descending")).toBeNull();
 	});
 });

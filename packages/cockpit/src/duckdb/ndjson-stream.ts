@@ -107,6 +107,9 @@ export async function readNdjsonStream(
 			}
 			if (done) break;
 		}
+		// Flush the decoder's internal buffer: a trailing frame whose last char
+		// spanned the final read boundary is only completed by this call.
+		buf += decoder.decode();
 		const tail = buf.trim();
 		if (tail) onFrame(JSON.parse(tail) as ResultFrame);
 	} finally {

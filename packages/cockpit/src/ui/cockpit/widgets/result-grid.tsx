@@ -12,16 +12,28 @@
 //
 // P2 scope: read-only. Virtualization + server-side sort/filter are P3.
 
+import type { Json } from "@duckdb/node-api";
 import { Alert, Badge, Group, Table, Text } from "@mantine/core";
 import {
 	type ColumnDef,
 	flexRender,
 	getCoreRowModel,
+	type RowData,
 	useReactTable,
 } from "@tanstack/react-table";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+
+// §7.3 hook: carry the neo column type metadata on each TanStack column. P2
+// does not consume it; P3 type-driven formatting (right-align numerics, render
+// timestamps) + sort/filter dispatch on `columnDef.meta.duckdbType`. Kept type-
+// only (Json) so the neo native driver never reaches the client bundle.
+declare module "@tanstack/react-table" {
+	interface ColumnMeta<TData extends RowData, TValue> {
+		duckdbType?: Json;
+	}
+}
 
 /** JSON-safe cell → display string. Columnar values are already coerced
  * server-side (bigint→string, dates→ISO, nested→plain JSON); we only pick a
@@ -54,15 +66,18 @@ export function ResultGridView({
 		() => Array.from({ length: store.rowCount }, (_, i) => i),
 		[store.rowCount],
 	);
-	const columns = useMemo<ColumnDef<number>[]>(
-		() =>
-			store.columns.map((name, c) => ({
-				id: `c${c}`,
-				header: name,
-				accessorFn: (rowIndex: number) => store.cols[c]?.[rowIndex] ?? null,
-			})),
-		[store.columns, store],
-	);
+	const columns = useMemo<ColumnDef<number>[]>(() => {
+		const typeList = Array.isArray(store.types) ? (store.types as Json[]) : [];
+		return store.columns.map((name, c) => ({
+			id: `c${c}`,
+			header: name,
+			// accessorFn closes over `store` by REFERENCE and reads the column array
+			// lazily at render time (not at memo creation), so cells fill in as
+			// streamed batches grow store.cols — don't freeze or copy the store.
+			accessorFn: (rowIndex: number) => store.cols[c]?.[rowIndex] ?? null,
+			meta: { duckdbType: typeList[c] },
+		}));
+	}, [store.columns, store]);
 	const table = useReactTable({
 		data,
 		columns,

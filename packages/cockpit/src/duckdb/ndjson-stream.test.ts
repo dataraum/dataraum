@@ -89,6 +89,27 @@ describe("readNdjsonStream", () => {
 		);
 		expect(frames.map((f) => f.t)).toEqual(["h", "f"]);
 	});
+
+	it("reassembles a trailing frame whose multibyte char split across the final read", async () => {
+		// 'é' is 0xC3 0xA9 in UTF-8; cut between the two bytes so the last frame's
+		// completing byte arrives in the final read and the decoder flush recovers
+		// it (no trailing newline → exercises the flush path).
+		const enc = new TextEncoder();
+		const last = JSON.stringify({ t: "b", n: 1, cols: [[1], ["café"]] });
+		const bytes = enc.encode(last);
+		const cut = bytes.indexOf(0xc3) + 1; // keep 0xC3 in chunk A, 0xA9 in chunk B
+		const frames: ResultFrame[] = [];
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(enc.encode(`${JSON.stringify(HEADER)}\n`));
+				controller.enqueue(bytes.slice(0, cut));
+				controller.enqueue(bytes.slice(cut));
+				controller.close();
+			},
+		});
+		await readNdjsonStream(stream, (f) => frames.push(f));
+		expect(frames).toEqual([HEADER, { t: "b", n: 1, cols: [[1], ["café"]] }]);
+	});
 });
 
 describe("ColumnStore", () => {

@@ -104,6 +104,7 @@ This tests the *flow* between page + chat + tools, not just one surface.
 - Type a question the engine can't answer — does the agent fail gracefully?
 - Reload mid-stream — does the page recover?
 - Open the network panel: is anything 404-ing? Any unhandled 500s?
+- **Push it to realistic scale.** Run something that returns a *large* result set — thousands to tens of thousands of rows, not the 5-row demo. Does the surface **virtualize / paginate / cap**, or does it try to render every row into the DOM? Watch for a frozen tab, multi-second render, runaway memory, or a scrollbar implying tens of thousands of live DOM nodes. **Dumping an unbounded result set into the page is a bug, not "fine"** — a practitioner's real query returns big data, and "it rendered" ≠ "it's usable." If you catch yourself thinking *"50k rows displayed, works,"* that *is* the finding to report, not a pass.
 
 ### 5. Share impressions
 

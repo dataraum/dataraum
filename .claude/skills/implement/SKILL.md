@@ -14,13 +14,24 @@ $ARGUMENTS is a Jira issue identifier, a description of the agreed approach, or 
 ## Before you start
 
 1. Verify there IS an agreed approach — from a `/refine` session, user discussion, or a clear spec. If not, run `/refine` first.
-2. Create or update the plan with explicit scope:
+2. Classify size: S / M / L / XL.
+   - **S (obvious, ~1–3 files):** skip the plan ceremony. Make the change, leave it green, done. A formal DO-change/DO-NOT-change list for a one-liner is theater.
+   - **M:** lightweight plan, single session.
+   - **L/XL:** full plan with explicit scope (below) + user sign-off before code.
+3. For M+, create or update the plan with explicit scope:
    ```
-   DO change: [list every file]
-   DO NOT change: [list files that must stay untouched]
+   DO change: [the files this work touches]
+   DO NOT change: [large/unrelated areas that must stay untouched — NOT a cage]
    ```
-3. Classify size: S / M / L / XL
-4. For M+: get explicit user sign-off on the plan before writing code
+4. For M+: get explicit user sign-off on the plan before writing code.
+
+### Scope is a fence against *unrelated* sprawl — not a cage
+
+`DO NOT change` exists to stop you from wandering into unrelated subsystems mid-task. It does **not** forbid:
+- **Design-implied cleanup** — deleting dead code, removing a retired field, adapting its tests. That's in-scope, not an "adjacent-edit violation" (see CLAUDE.md sizing note + "Default to the clean cut").
+- **An obvious correctness fix you spot in your blast radius** — a clear one-line bug in a file you're already editing. Fix it and note it in the checkpoint. Leaving a bug you can see "because it's not in the ticket" is the corporate failure mode, not discipline. A ticket is a pointer to work, not a permission boundary.
+
+If a fix is large or genuinely unrelated, *that's* when you note it for a separate item rather than expanding scope.
 
 ## Phase execution
 
@@ -49,9 +60,15 @@ After each phase: tests must be green. If they're not, fix the code (not the tes
 
 ---
 
-## Psychological safety
+## Psychological safety — and its counterweight
 
 These are not just allowed. They are EXPECTED. They are the EFFICIENT path.
+
+**But stopping is not free, and "ask the user" is not the safe default — it's a real cost too.** Every escalation spends the user's attention and your momentum. The bar for stopping is a *genuine* fork or a *real* blocker, not a routine decision you could resolve with a grep, a sensible default, or by following the agreed design. The senior-engineer move is to **solve the problem and report the outcome**, not to narrate every micro-step and wait for a nod. Default to action; reserve the stop conditions below for when they truly fire.
+
+**Don't spin in dependency circles.** If you find yourself "blocked by" a prerequisite, the answer is usually to *do the prerequisite*, build a thin vertical slice, or attack the real problem directly — not to report "blocked" and stall. Time-box deliberation: if you've spent longer deciding how to approach something than it would take to just try the obvious path and learn, try it. An over-thought, entry-level answer arrived at slowly is worse than a direct attempt that produces real information.
+
+The stop conditions below are about *honesty when something is genuinely wrong* — not a license to bail on tractable work:
 
 **"This is harder than I expected."**
 Say it immediately. Do not power through hoping it gets easier. It won't. The user can help, adjust scope, or change approach. Powering through produces bad code that needs rework.
@@ -74,7 +91,9 @@ Delete it and say so. A test that verifies mocking scaffolding is worse than no 
 **"I'm keeping dead code because removing it breaks tests."**
 STOP. Delete the dead code. Delete or rewrite the test. Note it in the checkpoint. Dead code kept for tests is technical debt that compounds.
 
-**The most expensive mistake is declaring done when you're not.** It forces the user to discover the problem later, in a new session, with lost context. Stopping early and being honest is ALWAYS cheaper.
+**The most expensive mistake is declaring done when you're not.** It forces the user to discover the problem later, in a new session, with lost context. Stopping early and being honest is cheaper than a false "done."
+
+**The second most expensive mistake is escalating what you could have solved.** Asking the user to make a call you had the context to make yourself, or stopping on a routine fork, burns the same trust from the other direction. Honesty about being stuck and ownership of what you can resolve are the *same* virtue — calibrate which one the moment calls for.
 
 ---
 

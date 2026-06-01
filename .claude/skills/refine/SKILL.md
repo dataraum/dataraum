@@ -15,6 +15,15 @@ $ARGUMENTS is a Jira issue identifier (e.g., "DAT-175"), a topic description, or
 
 If the user has a rough idea that doesn't have a Jira issue or design doc yet, suggest `/ideate` first — that's where design documents and epic structure get created. `/refine` works on an existing, scoped work item.
 
+## Step 0: Triage — does this need refining at all?
+
+Refinement is for work that is **genuinely ambiguous, risky, or large**. It is not a toll every change has to pay. Before the full pass, make a fast call:
+
+- **Clear and small** (S: ~1–3 files, obvious correct path, no cross-repo or contract risk) → **don't refine. Just do it** (or go straight to `/implement`). State the one-line approach in a sentence and act. Paying the reality-check / risk-matrix / options ceremony on a tractable change is the corporate failure mode this project rejects — see "Default to the clean cut" and "Decide, don't hedge" in CLAUDE.md.
+- **Genuinely uncertain or M+** (you can't yet name the simplest correct path, or the spec might be wrong, or it touches contracts/eval/multiple modules) → run the full pass below. This is where refinement earns its keep.
+
+When in doubt, do the cheapest thing that resolves the doubt — a five-minute grep, not a meeting. Deliberation has a cost too; don't spend more time deciding how to approach a problem than the problem would take to solve.
+
 ## Step 1: Gather context
 
 - If a Jira issue: fetch the issue AND linked Confluence pages via Jira MCP

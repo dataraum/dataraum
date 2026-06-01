@@ -185,3 +185,48 @@ class AddSourceResult(BaseModel):
 
     raw_table_ids: list[str]
     tables: list[ProcessTableResult]
+
+
+# --- Workflow ID convention (DAT-364) ----------------------------------------
+#
+# Every Temporal workflow ID encodes the ``workspace_id`` as its first segment.
+# Slice 1 runs single-workspace, so the segment is constant today — but threading
+# it through now means slice 2+ multi-workspace routing (DAT-357) is a no-op
+# rename instead of an audit of every ``start_workflow``/``getHandle`` call site,
+# and two workspaces can never collide on a shared ``source_id``. The ``ws_<id>``
+# isolation guard in :mod:`dataraum.worker.activity` is the data-side cornerstone;
+# this is its workflow-ID counterpart. See the ``durable-execution-lean`` memory.
+#
+# These helpers live here (the engine-free contracts module the determinism
+# sandbox imports through ``imports_passed_through``) so the workflow body can
+# build child IDs without dragging the engine into the sandbox. ``workspace_id``
+# is a ``str`` (raw UUID with dashes, or the ``"test"`` sentinel) — Temporal
+# workflow IDs have no charset restriction, so we keep it verbatim for grep-able
+# IDs in the Temporal UI rather than the underscored ``ws_<id>`` schema form.
+#
+# Parent IDs are owned by the cockpit Client (it starts the workflow); the TS
+# side mirrors this convention in ``packages/cockpit/src/temporal/workflow-id.ts``.
+
+
+def add_source_workflow_id(workspace_id: str, source_id: str) -> str:
+    """Workflow ID for the parent ``addSourceWorkflow`` of one source.
+
+    Reused across teach replays of the same source (with
+    ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
+    under one ID. Mirrored cockpit-side; the cockpit is the caller that starts
+    the parent, so this Python helper exists for tests + the child-ID builder.
+    """
+    return f"addsource-{workspace_id}-{source_id}"
+
+
+def process_table_workflow_id(workspace_id: str, source_id: str, raw_table_id: str) -> str:
+    """Child ``processTableWorkflow`` ID for one raw table under a source.
+
+    Deterministic + collision-free so replay stays stable: the same raw table
+    re-runs under the same child ID across teach iterations. Prefixed with the
+    parent's ``addsource-{workspace_id}-{source_id}`` so children are greppable
+    under their parent in the Temporal UI (the prefix is a naming convention, not
+    a Temporal-native hierarchy), and two workspaces sharing a ``source_id`` get
+    distinct child IDs.
+    """
+    return f"{add_source_workflow_id(workspace_id, source_id)}-table-{raw_table_id}"

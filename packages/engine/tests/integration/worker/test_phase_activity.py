@@ -24,7 +24,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.entropy.db_models import EntropyObjectRecord
@@ -254,6 +254,70 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
     assert result.status == "failed"
     assert "Workspace mismatch" in (result.error or "")
     assert "some-other-workspace" in (result.error or "")
+
+
+def test_addsource_runs_under_nondefault_workspace(
+    pg_url_clean: str,
+    lake_anchor,  # noqa: ANN001
+    lake_clean,  # noqa: ANN001
+    small_finance_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full per-table chain runs green under a non-default workspace_id.
+
+    The DAT-364 anti-footgun on the *data* side (the workflow-ID side is covered
+    by ``tests/unit/worker/test_workflow_ids.py``): nothing may hardcode the
+    default workspace pointer or a default UUID, and ``schema_name_for`` must
+    produce a valid ``ws_<id>`` schema for a real UUID — not just the ``"test"``
+    sentinel the rest of the suite runs under. We repoint the worker's active
+    workspace to a non-default UUID, bootstrap a manager exactly as the worker
+    would (which creates ``ws_<uuid>`` + its tables), and run import → the
+    per-table chain over the same multi-file fixture the default-workspace chain
+    test uses. The mismatch guard means a stray ``"test"`` left anywhere in the
+    path would fail this loudly.
+    """
+    import importlib
+
+    nondefault_workspace = "abcdef12-3456-7890-abcd-ef1234567890"
+    ws_mod = importlib.import_module("dataraum.server.workspace")
+    # Repoint BEFORE initialize(): the manager's search_path listener + CREATE
+    # SCHEMA both read the pointer at initialize() time. monkeypatch restores it
+    # so the suite's other tests keep running under "test".
+    monkeypatch.setattr(ws_mod, "_active_workspace_id", nondefault_workspace)
+
+    manager = ConnectionManager(ConnectionConfig(database_url=pg_url_clean))
+    manager.initialize()  # creates ws_abcdef12_... + Base tables under it
+    manager.open_lake()
+    try:
+        source_id = str(uuid4())
+        session_id = str(uuid4())
+        files = _enumerate_fixture_files(small_finance_path)
+        _seed_source_and_session(manager, source_id, session_id, "small_finance", files)
+        identity = SourceIdentity(
+            workspace_id=nondefault_workspace,
+            source_id=source_id,
+            session_id=session_id,
+        )
+
+        assert run_phase(manager, "import", identity, []).status == "completed"
+        raw_ids = raw_table_ids(manager, source_id)
+        assert raw_ids, "import produced no raw tables under the non-default workspace"
+
+        typed_ids = [_process_one_table(manager, identity, raw_id) for raw_id in raw_ids]
+        assert len(typed_ids) == len(raw_ids)
+        assert _lake_tables(manager, "typed"), "no typed tables after the chain"
+    finally:
+        # pg_url_clean only truncates the ``ws_test`` schema, so drop this test's
+        # one-off ``ws_<uuid>`` schema explicitly — otherwise it lingers in the
+        # session-scoped testcontainer as residue.
+        try:
+            from dataraum.server.workspace import schema_name_for
+
+            schema = schema_name_for(nondefault_workspace)
+            with manager.session_scope() as session:
+                session.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            manager.close()
 
 
 def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:

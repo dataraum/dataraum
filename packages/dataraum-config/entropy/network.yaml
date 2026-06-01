@@ -1,4 +1,9 @@
-# Bayesian Entropy Network Configuration
+# Entropy Network Configuration
+#
+# A weighted DAG of entropy sub-dimensions. Detector scores enter at observable
+# nodes and are rolled up to intent readiness via noisy-OR using the edge
+# strengths below (see entropy/network/rollup.py). No priors, no CPDs — a node
+# with no observed parents simply doesn't contribute.
 states: [low, medium, high]
 
 discretization:
@@ -7,71 +12,59 @@ discretization:
   # high: > 0.6
 
 nodes:
-  # Observable roots (8) - each has a detector and a prior
+  # Observable roots (8) - each has a detector
   type_fidelity:
     layer: structural
     dimension: types
     sub_dimension: type_fidelity
-    prior: [0.7, 0.2, 0.1]  # P(low, medium, high)
   null_ratio:
     layer: value
     dimension: nulls
     sub_dimension: null_ratio
-    prior: [0.5, 0.3, 0.2]
   outlier_rate:
     layer: value
     dimension: outliers
     sub_dimension: outlier_rate
-    prior: [0.6, 0.25, 0.15]
   naming_clarity:
     layer: semantic
     dimension: business_meaning
     sub_dimension: naming_clarity
-    prior: [0.4, 0.3, 0.3]
   unit_declaration:
     layer: semantic
     dimension: units
     sub_dimension: unit_declaration
-    prior: [0.5, 0.3, 0.2]
   time_role:
     layer: semantic
     dimension: temporal
     sub_dimension: time_role
-    prior: [0.6, 0.25, 0.15]
   temporal_drift:
     layer: value
     dimension: temporal
     sub_dimension: temporal_drift
-    prior: [0.6, 0.25, 0.15]
   benford_compliance:
     layer: value
     dimension: distribution
     sub_dimension: benford_compliance
-    prior: [0.6, 0.25, 0.15]
 
   slice_stability:
     layer: value
     dimension: variance
     sub_dimension: slice_stability
-    prior: [0.6, 0.25, 0.15]
 
   dimension_coverage:
     layer: semantic
     dimension: coverage
     sub_dimension: dimension_coverage
-    prior: [0.5, 0.3, 0.2]
 
   # Zone 3 observable roots (2) — table-scoped detectors, broadcast to columns
   cross_table_consistency:
     layer: computational
     dimension: reconciliation
     sub_dimension: cross_table_consistency
-    prior: [0.7, 0.2, 0.1]
   business_cycle_health:
     layer: semantic
     dimension: cycles
     sub_dimension: business_cycle_health
-    prior: [0.6, 0.25, 0.15]
 
   # Observable children (2) - have detectors but also real causal parents
   join_path_determinism:
@@ -125,18 +118,23 @@ edges:
   # slice_stability -> intents
   - [slice_stability, query_intent, 0.4]
   - [slice_stability, aggregation_intent, 0.5]
-  # -> query_intent (6 parents)
+  # -> query_intent (7 parents)
   - [type_fidelity, query_intent, 0.7]
   - [join_path_determinism, query_intent, 0.8]
   - [null_ratio, query_intent, 0.5]
   - [outlier_rate, query_intent, 0.4]
   - [naming_clarity, query_intent, 0.3]
   - [temporal_drift, query_intent, 0.3]
-  # -> aggregation_intent (4 parents)
+  # A broken time role (unparseable dates) makes time-filtering/ordering
+  # unreliable — more severe than drift, hence the higher strength.
+  - [time_role, query_intent, 0.5]
+  # -> aggregation_intent (5 parents)
   - [aggregation_safety, aggregation_intent, 0.9]
   - [formula_match, aggregation_intent, 0.7]
   - [temporal_drift, aggregation_intent, 0.5]
   - [benford_compliance, aggregation_intent, 0.4]
+  # Time-bucketed aggregations (monthly revenue, …) break on a bad time role.
+  - [time_role, aggregation_intent, 0.4]
   # -> reporting_intent (6+1 parents)
   - [naming_clarity, reporting_intent, 0.7]
   - [relationship_quality, reporting_intent, 0.5]
@@ -149,8 +147,3 @@ edges:
   - [cross_table_consistency, aggregation_intent, 0.8]
   - [business_cycle_health, reporting_intent, 0.5]
   - [business_cycle_health, aggregation_intent, 0.4]
-
-cpt_generation:
-  influence_blend: 0.7    # Weight for influence matrix vs uniform
-  pessimistic_shift: 0.1  # Shift probability mass toward "high" for multi-parent
-  min_probability: 0.01   # Floor to avoid zero probabilities

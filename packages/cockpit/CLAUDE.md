@@ -43,6 +43,16 @@ TanStack **Start** (React 19) · **Router** / **Query** · **Mantine v9** + **Ta
 - **Temporal is Client-only on the cockpit side** — use `@temporalio/client` from server functions to start/signal/query workflows; the workflows themselves are **Python** (`packages/engine/src/dataraum/worker/workflows.py`). No `@temporalio/worker` or `@temporalio/workflow` in the cockpit, hence no native core-bridge (stays alpine). **Bun ≥ 1.3.14** still pinned.
 - Env only through `config.ts` (never `process.env`). One Mantine component per widget; Tailwind for layout. Routes that need data use `loader: queryClient.ensureQueryData(...)` so SSR dehydrates.
 
+## UI quality bar — build for practitioner data, not demo data
+
+A widget that "renders" is not done. The user's real query returns big, messy data, and the bar is **usable at that scale**, not "it displayed something in the 5-row demo." Before you call a data surface finished, design for these up front — they are requirements, not polish:
+
+- **Never render an unbounded result set into the DOM.** Any list/grid/table that can hold a large result set **virtualizes** (the result grid uses `@tanstack/react-virtual`) or paginates/caps. Dumping 50k rows into the page is a bug — it freezes the tab and burns memory. "It rendered all 50k" is the failure, not the success.
+- **Loading, empty, and error states are part of the widget**, not afterthoughts. A surface with no empty state or no error state is incomplete.
+- **Perceived performance:** stream/skeleton long operations; don't block the UI on a slow query. Big payloads cross the wire in a bounded/columnar shape (see the run_sql streaming-grid design), not one giant JSON blob.
+
+If you notice yourself thinking "this works" about a surface you only tried with toy data, that's the cue to push it to realistic scale — which is exactly what `/smoke` step 4 checks.
+
 ## Driving the UI from a session
 
 Playwright MCP is registered per-project in `~/.claude.json` (stdio, `npx @playwright/mcp@latest`) — browser tools are available automatically when the dev server is up on `:3000`. Bring up engine + `bun run dev`, then point the agent at a page; edits land hot via Vite.

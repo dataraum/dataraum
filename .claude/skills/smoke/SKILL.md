@@ -21,10 +21,10 @@ allowed-tools:
 
 You just implemented or changed a cockpit surface, an engine kernel verb, or both. Now USE it. Not to verify correctness (that's eval's job) — to feel what the UX is like.
 
-**IMPORTANT:**
-- If you changed **engine Python code**, the engine container loaded the old code — rebuild + restart it before smoke: `docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`.
-- If you only changed **cockpit code** and `pnpm dev` is running, Vite hot-reloads — no restart needed.
-- If the **engine added or changed SQLAlchemy models**, refresh the cockpit's Drizzle metadata client: `(cd packages/cockpit && DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata)`.
+**IMPORTANT — cockpit smoke runs against the CONTAINER, never host `vite dev`/`bun run dev`/`pnpm dev`:**
+- The cockpit imports the DuckDB **neo** driver (`@duckdb/node-api` → a native `@duckdb/node-bindings-*/duckdb.node`). `vite dev`/rolldown **cannot bundle that native binary** and dies at boot — `[UNLOADABLE_DEPENDENCY] … stream did not contain valid UTF-8`. Only the **prod container build** externalizes it (`vite.config` `nitro({ rollupConfig: { external: [/^@duckdb\/node-bindings-/] } })` + the Dockerfile copies `node_modules/@duckdb`). So **don't reach for hot-reload** — build + run the cockpit container from the branch under test (step 1). This recurs every time someone tries `dev`; don't relearn it.
+- If you changed **engine Python code**, rebuild + restart its container before smoke: `docker compose -f packages/infra/docker-compose.yml up -d --build engine-worker` (the engine is a Temporal worker — service `engine-worker`, no HTTP / no `control-plane`).
+- If the **engine added or changed SQLAlchemy models**, refresh the cockpit's Drizzle metadata client (`bun run db:pull:metadata`) against a fresh DB before the smoke.
 
 ## Input
 
@@ -49,11 +49,23 @@ A quick, informal test drive. Like kicking the tires after a change. You're not 
 ### 1. Bring up the stack
 
 ```bash
-docker compose -f packages/infra/docker-compose.yml up -d --wait
-curl -fsS http://localhost:8000/health
+# Backend + a cockpit container. `env -u ANTHROPIC_API_KEY` so a stale shell key
+# doesn't shadow the .env one (compose var precedence has bitten us).
+env -u ANTHROPIC_API_KEY docker compose -f packages/infra/docker-compose.yml up -d --wait
+# Engine health = the Temporal worker heartbeat (no HTTP endpoint):
+docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
+  --entrypoint temporal temporal-admin-tools \
+  worker list --namespace default --address temporal:7233          # → Status: Running
 ```
 
-For UI iteration: also run `pnpm dev` in `packages/cockpit/` (hot-reload). For pure REST smoke: skip the cockpit, hit the engine directly.
+**Smoking a branch (not `main`):** the compose `cockpit` build context is the canonical `packages/cockpit` (= `main`), so a fresh `up` smokes `main`'s cockpit, not your branch. To smoke a branch, build the image from THAT checkout/worktree and recreate the service with it — do NOT host-`dev` it (see the duckdb-neo note above):
+
+```bash
+docker build -t infra-cockpit <checkout>/packages/cockpit --build-arg VITE_ENGINE_API_URL=http://localhost:8000
+env -u ANTHROPIC_API_KEY docker compose -f packages/infra/docker-compose.yml up -d --no-build --force-recreate cockpit
+```
+
+A chat smoke makes a **real LLM call** (the agent needs a valid `ANTHROPIC_API_KEY`) — ask before running it unprompted. For a pure engine/REST check, skip the cockpit.
 
 ### 2. Drive the cockpit via Playwright MCP
 
@@ -92,6 +104,7 @@ This tests the *flow* between page + chat + tools, not just one surface.
 - Type a question the engine can't answer — does the agent fail gracefully?
 - Reload mid-stream — does the page recover?
 - Open the network panel: is anything 404-ing? Any unhandled 500s?
+- **Push it to realistic scale.** Run something that returns a *large* result set — thousands to tens of thousands of rows, not the 5-row demo. Does the surface **virtualize / paginate / cap**, or does it try to render every row into the DOM? Watch for a frozen tab, multi-second render, runaway memory, or a scrollbar implying tens of thousands of live DOM nodes. **Dumping an unbounded result set into the page is a bug, not "fine"** — a practitioner's real query returns big data, and "it rendered" ≠ "it's usable." If you catch yourself thinking *"50k rows displayed, works,"* that *is* the finding to report, not a pass.
 
 ### 5. Share impressions
 

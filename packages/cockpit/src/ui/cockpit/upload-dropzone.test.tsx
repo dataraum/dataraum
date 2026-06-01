@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 //
-// Unit test for the upload entry-mode dropzone (DAT-386). Mocks `fetch` for the
-// /api/upload POST and asserts the dropzone uploads the picked file, hands the
-// returned `s3://` handle to `onConnect` (which drives the existing connect
-// tool), and surfaces an error response. The real PUT + sniff are covered by the
-// route unit test and connect.integration.
+// Unit test for the upload entry-mode dropzone (DAT-386; multi-file DAT-391).
+// Mocks `fetch` for the /api/upload POST and asserts: a single pick hands a
+// one-element list to `onUploaded`; a valid multi-pick uploads each and hands
+// the ordered list; the client-side batch gate (cap 6, same-kind) blocks before
+// any upload; a route error surfaces and aborts the batch. The real PUT + sniff
+// are covered by the route unit test + connect.integration.
 
 import { MantineProvider } from "@mantine/core";
 import {
@@ -17,73 +18,124 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 
-function renderDropzone(onConnect: (p: string) => void) {
+function renderDropzone(onUploaded: (paths: string[]) => void) {
 	return render(
 		<MantineProvider env="test">
-			<UploadDropzone onConnect={onConnect} />
+			<UploadDropzone onUploaded={onUploaded} />
 		</MantineProvider>,
 	);
 }
 
-function pickFile(name: string, content = "id\n1\n") {
+function pick(names: string[]) {
 	const input = screen.getByTestId("upload-input") as HTMLInputElement;
-	const file = new File([content], name, { type: "text/csv" });
-	fireEvent.change(input, { target: { files: [file] } });
+	const files = names.map(
+		(n) => new File(["id\n1\n"], n, { type: "text/csv" }),
+	);
+	fireEvent.change(input, { target: { files } });
 }
 
-describe("UploadDropzone (DAT-386)", () => {
-	beforeEach(() => {
-		vi.restoreAllMocks();
+/** fetch mock that echoes each uploaded filename back as its staged s3:// path. */
+function stubUploadOk() {
+	const fetchMock = vi.fn(async (_url: string, init: { body: FormData }) => {
+		const name = (init.body.get("file") as File).name;
+		return new Response(
+			JSON.stringify({ path: `s3://dataraum-lake/uploads/u/${name}` }),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		);
 	});
+	vi.stubGlobal("fetch", fetchMock);
+	return fetchMock;
+}
+
+describe("UploadDropzone (DAT-386 / DAT-391)", () => {
+	beforeEach(() => vi.restoreAllMocks());
 	afterEach(() => cleanup());
 
-	it("uploads the picked file and hands the s3:// handle to onConnect", async () => {
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValue(
-				new Response(
-					JSON.stringify({ path: "s3://dataraum-lake/uploads/u/people.csv" }),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-			);
-		vi.stubGlobal("fetch", fetchMock);
-		const onConnect = vi.fn();
-
-		renderDropzone(onConnect);
-		pickFile("people.csv");
-
+	it("uploads a single picked file and hands a one-element list to onUploaded", async () => {
+		stubUploadOk();
+		const onUploaded = vi.fn();
+		renderDropzone(onUploaded);
+		pick(["people.csv"]);
 		await waitFor(() =>
-			expect(onConnect).toHaveBeenCalledWith(
+			expect(onUploaded).toHaveBeenCalledWith([
 				"s3://dataraum-lake/uploads/u/people.csv",
-			),
+			]),
 		);
-
-		// POSTs multipart to the route.
-		const [url, init] = fetchMock.mock.calls[0];
-		expect(url).toBe("/api/upload");
-		expect(init.method).toBe("POST");
-		expect(init.body).toBeInstanceOf(FormData);
-		expect((init.body as FormData).get("file")).toBeInstanceOf(File);
 	});
 
-	it("surfaces a route error and does not drive connect", async () => {
+	it("uploads several files and hands the ordered s3:// list to onUploaded", async () => {
+		const fetchMock = stubUploadOk();
+		const onUploaded = vi.fn();
+		renderDropzone(onUploaded);
+		pick(["a.csv", "b.csv", "c.tsv"]);
+		await waitFor(() =>
+			expect(onUploaded).toHaveBeenCalledWith([
+				"s3://dataraum-lake/uploads/u/a.csv",
+				"s3://dataraum-lake/uploads/u/b.csv",
+				"s3://dataraum-lake/uploads/u/c.tsv",
+			]),
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it("blocks > 6 files at the client gate — no upload, no onUploaded", async () => {
+		const fetchMock = stubUploadOk();
+		const onUploaded = vi.fn();
+		renderDropzone(onUploaded);
+		pick(Array.from({ length: 7 }, (_, i) => `f${i}.csv`));
+		await waitFor(() =>
+			expect(screen.getByTestId("upload-error").textContent).toMatch(/Up to 6/),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(onUploaded).not.toHaveBeenCalled();
+	});
+
+	it("blocks a mixed-kind batch (csv + parquet) before uploading", async () => {
+		const fetchMock = stubUploadOk();
+		const onUploaded = vi.fn();
+		renderDropzone(onUploaded);
+		pick(["a.csv", "b.parquet"]);
+		await waitFor(() =>
+			expect(screen.getByTestId("upload-error").textContent).toMatch(
+				/same kind/i,
+			),
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(onUploaded).not.toHaveBeenCalled();
+	});
+
+	it("surfaces a route error and aborts the batch (no onUploaded)", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ error: "Unsupported file type." }), {
-				status: 415,
+			new Response(JSON.stringify({ error: "Upload failed (500)." }), {
+				status: 500,
 				headers: { "Content-Type": "application/json" },
 			}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
-		const onConnect = vi.fn();
-
-		renderDropzone(onConnect);
-		pickFile("sheet.csv");
-
+		const onUploaded = vi.fn();
+		renderDropzone(onUploaded);
+		pick(["a.csv", "b.csv"]);
 		await waitFor(() =>
-			expect(screen.getByTestId("upload-error").textContent).toContain(
-				"Unsupported file type.",
+			expect(screen.getByTestId("upload-error").textContent).toMatch(
+				/failed to upload/i,
 			),
 		);
-		expect(onConnect).not.toHaveBeenCalled();
+		expect(onUploaded).not.toHaveBeenCalled();
+	});
+
+	it("is inert while the agent is busy (disabled): no upload, no onUploaded", async () => {
+		const fetchMock = stubUploadOk();
+		const onUploaded = vi.fn();
+		render(
+			<MantineProvider env="test">
+				<UploadDropzone onUploaded={onUploaded} disabled />
+			</MantineProvider>,
+		);
+		const input = screen.getByTestId("upload-input") as HTMLInputElement;
+		expect(input.disabled).toBe(true);
+		pick(["a.csv"]);
+		await Promise.resolve();
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(onUploaded).not.toHaveBeenCalled();
 	});
 });

@@ -153,15 +153,26 @@ export function ChatRail() {
 		void sendMessage(text);
 	};
 
-	// Upload entry-mode (DAT-386): a staged `s3://` path drives the EXISTING
-	// connect tool through the agent loop. The tool's ConnectSchema result then
-	// projects onto the schema-preview canvas via the same canvasFromMessages
-	// bridge — no new sniff path, no canvas wiring here.
-	const onUploaded = (s3Path: string) => {
-		if (isLoading) return;
+	// Upload entry-mode (DAT-386; multi-file DAT-391): staged `s3://` path(s) drive
+	// the EXISTING connect tool through the agent loop — one connect per file for a
+	// schema preview — and, for a batch, a single select registering them as ONE
+	// `file_uris` source. The tool results project onto the canvas via the same
+	// canvasFromMessages bridge — no new sniff path, no canvas wiring here.
+	const onUploaded = (s3Paths: string[]) => {
+		if (isLoading || s3Paths.length === 0) return;
 		setCanvasState({ kind: "loading" });
+		if (s3Paths.length === 1) {
+			void sendMessage(
+				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,
+			);
+			return;
+		}
+		const list = s3Paths.map((p) => `- ${p}`).join("\n");
 		void sendMessage(
-			`Connect to the uploaded file at ${s3Path} (source_kind=file) and show me its schema.`,
+			`I uploaded ${s3Paths.length} files to import together as ONE source:\n${list}\n\n` +
+				`Connect to each file (source_kind=file) so I can preview its schema, then ` +
+				`register them as a single source with the select tool — pass all ${s3Paths.length} ` +
+				`as file_uris.`,
 		);
 	};
 
@@ -202,7 +213,7 @@ export function ChatRail() {
 					)}
 				</Stack>
 			</Box>
-			<UploadDropzone onConnect={onUploaded} />
+			<UploadDropzone onUploaded={onUploaded} disabled={isLoading} />
 			<form onSubmit={onSubmit} data-testid="chat-form">
 				<Group gap="xs" wrap="nowrap" p="xs">
 					<Textarea

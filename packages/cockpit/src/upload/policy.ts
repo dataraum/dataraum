@@ -21,6 +21,11 @@ export const UPLOAD_PREFIX = "uploads";
 // is ephemeral. Generous enough for a real CSV/Parquet a user drags in.
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MiB
 
+// Max files in ONE drag-drop/select batch (DAT-391). A CLIENT-SIDE UX gate only:
+// the upload route stays one-file-per-request and uncapped — this bounds how many
+// files a single multi-select composes into one source, not what the API accepts.
+export const MAX_UPLOAD_FILES = 6;
+
 // Extensions connect can sniff (mirrors duckdb/connect.ts FILE_READERS). The
 // upload gate rejects anything else BEFORE it touches the bucket, so an
 // unsupported file never stages a dead object DAT-389 would have to clean up.

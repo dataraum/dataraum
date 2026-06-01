@@ -123,6 +123,50 @@ describe("select (DAT-398) — file source", () => {
 		expect(result.file_uris).toHaveLength(2);
 	});
 
+	it("registers an explicit file_uris list directly (DAT-391), sorted, without enumerating", async () => {
+		const enumerate = vi.fn(); // must NOT be called — client already holds the URIs
+		const result = await select(
+			{
+				source_name: "uploaded",
+				schema: FILE_SCHEMA,
+				file_uris: [
+					"s3://dataraum-lake/uploads/u2/b.csv",
+					"s3://dataraum-lake/uploads/u1/a.csv",
+				],
+			},
+			enumerate,
+		);
+
+		expect(enumerate).not.toHaveBeenCalled();
+		expect(insertedRow?.connectionConfig).toEqual({
+			file_uris: [
+				"s3://dataraum-lake/uploads/u1/a.csv",
+				"s3://dataraum-lake/uploads/u2/b.csv",
+			],
+		});
+		expect(result.source_type).toBe("csv");
+		expect(result.file_uris).toHaveLength(2);
+	});
+
+	it("file_uris takes precedence over prefix when both are passed", async () => {
+		const enumerate = vi
+			.fn()
+			.mockResolvedValue(["s3://dataraum-lake/sel/z.csv"]);
+		await select(
+			{
+				source_name: "wins",
+				schema: FILE_SCHEMA,
+				file_uris: ["s3://dataraum-lake/uploads/u/a.csv"],
+				prefix: "sel/",
+			},
+			enumerate,
+		);
+		expect(enumerate).not.toHaveBeenCalled();
+		expect(insertedRow?.connectionConfig).toEqual({
+			file_uris: ["s3://dataraum-lake/uploads/u/a.csv"],
+		});
+	});
+
 	it("rejects a duplicate-basename selection BEFORE persisting (engine fails loud)", async () => {
 		const enumerate = vi
 			.fn()

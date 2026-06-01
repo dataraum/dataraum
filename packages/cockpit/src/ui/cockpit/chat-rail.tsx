@@ -26,7 +26,7 @@ import {
 import { useDisclosure } from "@mantine/hooks";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { SendHorizontal } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { canvasFromMessages } from "#/ui/cockpit/tool-result-to-canvas";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
@@ -125,9 +125,18 @@ export function ChatRail() {
 	const [input, setInput] = useState("");
 
 	// Project the latest tool result onto the focus canvas as messages arrive.
+	// canvasFromMessages returns a FRESH object every token tick, but the
+	// projection usually hasn't changed (same tool result). Dedupe by value so we
+	// don't churn the canvas on every token — re-setting an equal result-grid
+	// made it re-issue its stream.
+	const lastProjectedRef = useRef<string | null>(null);
 	useEffect(() => {
 		const next = canvasFromMessages(messages);
-		if (next) setCanvasState(next);
+		if (!next) return;
+		const key = JSON.stringify(next);
+		if (key === lastProjectedRef.current) return;
+		lastProjectedRef.current = key;
+		setCanvasState(next);
 	}, [messages, setCanvasState]);
 
 	// Surface a stream error on the canvas.

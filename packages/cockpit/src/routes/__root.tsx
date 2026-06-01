@@ -14,8 +14,8 @@ import {
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
 import "@mantine/core/styles.css";
+import "../styles.css";
 import { theme } from "#/ui/theme";
-import appCss from "../styles.css?url";
 
 interface RouterContext {
 	queryClient: QueryClient;
@@ -33,12 +33,6 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 			},
 			{
 				title: "DataRaum Cockpit",
-			},
-		],
-		links: [
-			{
-				rel: "stylesheet",
-				href: appCss,
 			},
 		],
 	}),

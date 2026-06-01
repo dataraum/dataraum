@@ -136,6 +136,46 @@ class TestPerColumnAssembly:
         assert "root_a" in node_names
         assert "root_b" in node_names
 
+    def test_compute_rollup_false_keeps_evidence_drops_intents(self, small_network):
+        """Rollup-free assembly (DAT-399 slice D) yields raw evidence, no bands.
+
+        The query-time contract gate uses this cheap half: node evidence (raw
+        scores keyed by dimension_path) must survive, while the noisy-OR products
+        (intents, per-node impact_delta, banded readiness) are absent.
+        """
+        objects = [
+            make_entropy_object(
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
+            ),
+        ]
+        full = assemble_readiness_context(objects, small_network)
+        cheap = assemble_readiness_context(objects, small_network, compute_rollup=False)
+
+        # Same columns + same raw scores (the contract gate reads these).
+        assert cheap.columns.keys() == full.columns.keys()
+        full_scores = {
+            ne.dimension_path: ne.score for ne in full.columns["column:t.c1"].node_evidence
+        }
+        cheap_scores = {
+            ne.dimension_path: ne.score for ne in cheap.columns["column:t.c1"].node_evidence
+        }
+        assert cheap_scores == full_scores
+        # avg_entropy_score is raw-derived -> still populated and identical.
+        assert cheap.avg_entropy_score == full.avg_entropy_score
+
+        # Rollup products are absent on the cheap path.
+        cheap_col = cheap.columns["column:t.c1"]
+        assert cheap_col.intents == []
+        assert cheap_col.worst_intent_risk == 0.0
+        assert cheap_col.readiness == "ready"
+        assert all(ne.impact_delta == 0.0 for ne in cheap_col.node_evidence)
+        # ...but the full rollup did produce intents for the same input.
+        assert full.columns["column:t.c1"].intents
+
     def test_two_columns_independent_results(self, small_network):
         """Two columns with different scores -> independent results."""
         objects = [
@@ -381,6 +421,7 @@ class TestPerColumnAssembly:
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert ne.impact_delta == 0.0
+
 
 # ===================================================================
 # E. Assembly with full_network (15-node)

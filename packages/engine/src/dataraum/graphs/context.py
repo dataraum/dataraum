@@ -583,17 +583,20 @@ def build_execution_context(
         relationships=rel_list_for_topology,
     )
 
-    # 16. Build entropy context from the readiness rollup (typed tables enforced internally)
+    # 16. Build entropy context. The band is the single source of truth the
+    # terminal detect step persisted (DAT-399 slice D) — read it, don't recompute
+    # the noisy-OR. The contract gate uses the rollup-free raw evidence + that band.
     from dataraum.entropy.views.readiness_context import (
         ColumnReadinessResult,
-        build_for_readiness,
+        build_column_evidence,
+        load_persisted_readiness,
     )
 
-    readiness_ctx = build_for_readiness(session, table_ids)
+    persisted = load_persisted_readiness(session, table_ids)
 
-    # Build column-level entropy lookup from readiness results
+    # Build column-level entropy lookup from the persisted readiness
     column_entropy_lookup: dict[str, dict[str, Any]] = {}
-    for target, col_result in readiness_ctx.columns.items():
+    for target, col_result in persisted.columns.items():
         # target is "column:table.col", extract "table.col"
         col_key = target.removeprefix("column:")
         column_entropy_lookup[col_key] = _column_readiness_to_dict(col_result)
@@ -601,36 +604,39 @@ def build_execution_context(
     # Build table-level entropy lookup aggregated from per-column readiness results
     table_entropy_lookup: dict[str, dict[str, Any]] = {}
     _table_columns: dict[str, list[ColumnReadinessResult]] = {}
-    for target, col_result in readiness_ctx.columns.items():
+    for target, col_result in persisted.columns.items():
         col_key = target.removeprefix("column:")
         tbl_name = col_key.split(".")[0] if "." in col_key else col_key
         _table_columns.setdefault(tbl_name, []).append(col_result)
     for tbl_name, col_results in _table_columns.items():
         table_entropy_lookup[tbl_name] = _table_readiness_to_dict(tbl_name, col_results)
 
-    # Build entropy summary from the readiness context
+    # Build entropy summary from the persisted readiness
     entropy_summary_dict: dict[str, Any] = {
-        "overall_readiness": readiness_ctx.overall_readiness,
-        "high_entropy_count": readiness_ctx.columns_blocked + readiness_ctx.columns_investigate,
-        "critical_entropy_count": readiness_ctx.columns_blocked,
-        "columns_blocked": readiness_ctx.columns_blocked,
-        "columns_investigate": readiness_ctx.columns_investigate,
-        "columns_ready": readiness_ctx.columns_ready,
+        "overall_readiness": persisted.overall_readiness,
+        "high_entropy_count": persisted.columns_blocked + persisted.columns_investigate,
+        "critical_entropy_count": persisted.columns_blocked,
+        "columns_blocked": persisted.columns_blocked,
+        "columns_investigate": persisted.columns_investigate,
+        "columns_ready": persisted.columns_ready,
         "readiness_blockers": [
             t.removeprefix("column:")
-            for t, c in readiness_ctx.columns.items()
+            for t, c in persisted.columns.items()
             if c.readiness == "blocked"
         ],
     }
 
-    # 16b. Build column summaries for contract evaluation (reuses readiness_ctx)
+    # 16b. Build column summaries for contract evaluation: raw dimension scores
+    # from the rollup-free evidence, readiness band from the persisted rows.
     from dataraum.entropy.views.query_context import network_to_column_summaries
 
-    column_summaries = network_to_column_summaries(readiness_ctx)
+    evidence = build_column_evidence(session, table_ids)
+    band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
+    column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)
 
-    # 16c. Overall entropy score from readiness context
+    # 16c. Overall entropy score from the raw evidence
     overall_entropy_score: float | None = (
-        readiness_ctx.avg_entropy_score if readiness_ctx.total_columns > 0 else None
+        evidence.avg_entropy_score if evidence.total_columns > 0 else None
     )
 
     # 17. Build table contexts

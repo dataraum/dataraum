@@ -400,9 +400,7 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     with worker_manager.session_scope() as session:
         rows = list(
             session.execute(
-                select(EntropyReadinessRecord).where(
-                    EntropyReadinessRecord.source_id == source_id
-                )
+                select(EntropyReadinessRecord).where(EntropyReadinessRecord.source_id == source_id)
             ).scalars()
         )
 
@@ -435,7 +433,70 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
                 ).scalars()
             )
         )
-    assert second_count == first_count, "readiness rows not overwritten on re-run (stale duplicates)"
+    assert second_count == first_count, (
+        "readiness rows not overwritten on re-run (stale duplicates)"
+    )
+
+
+def test_persisted_readiness_is_single_source_of_truth(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """Query-time reads of the persisted band match the live rollup (DAT-399 slice D).
+
+    After terminal detect persists readiness, the query-time consumers no longer
+    recompute the noisy-OR: they read ``load_persisted_readiness`` for the band and
+    ``build_column_evidence`` (rollup-free) for the contract gate. Both must equal
+    what the full ``build_for_readiness`` rollup produced — proving the persisted
+    snapshot IS the source of truth and the contract dimension_scores are unchanged
+    (calibration-preserving).
+    """
+    from dataraum.entropy.views.query_context import network_to_column_summaries
+    from dataraum.entropy.views.readiness_context import (
+        build_column_evidence,
+        build_for_readiness,
+        load_persisted_readiness,
+    )
+
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    identity = _identity(source_id, session_id)
+
+    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    raw_ids = raw_table_ids(worker_manager, source_id)
+    typed_ids = sorted({_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids})
+    assert run_detectors(worker_manager, identity) > 0
+
+    with worker_manager.session_scope() as session:
+        live = build_for_readiness(session, typed_ids)
+        persisted = load_persisted_readiness(session, typed_ids)
+
+        # Band parity: same columns, same band + worst_intent_risk per column.
+        assert persisted.columns.keys() == live.columns.keys()
+        assert persisted.columns, "expected at least one column with readiness"
+        for target, live_col in live.columns.items():
+            pcol = persisted.columns[target]
+            assert pcol.readiness == live_col.readiness, target
+            assert pcol.worst_intent_risk == round(live_col.worst_intent_risk, 4), target
+            assert {i.intent_name for i in pcol.intents} == {
+                i.intent_name for i in live_col.intents
+            }, target
+        assert persisted.overall_readiness == live.overall_readiness
+        assert persisted.columns_blocked == live.columns_blocked
+        assert persisted.columns_investigate == live.columns_investigate
+
+        # Contract parity: rollup-free evidence + persisted band yields identical
+        # dimension_scores AND readiness (the calibration-preserving invariant).
+        live_summaries = network_to_column_summaries(live)
+        band_by_target = {t: c.readiness for t, c in persisted.columns.items()}
+        evidence_summaries = network_to_column_summaries(
+            build_column_evidence(session, typed_ids), band_by_target=band_by_target
+        )
+        assert evidence_summaries.keys() == live_summaries.keys()
+        for key, live_summary in live_summaries.items():
+            assert evidence_summaries[key].dimension_scores == live_summary.dimension_scores, key
+            assert evidence_summaries[key].readiness == live_summary.readiness, key
 
 
 def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(

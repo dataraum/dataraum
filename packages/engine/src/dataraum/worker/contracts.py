@@ -56,8 +56,8 @@ class ReplayScope(BaseModel):
             to those raw table ids (per-table replays like
             ``type_pattern``). An empty list ``[]`` means "no children" —
             used for source-tail-only replays (``concept_property``) where
-            the parent re-runs ``semantic_per_column`` + ``detect_source``
-            without re-typing anything.
+            the parent re-runs ``semantic_per_column`` + the terminal
+            ``detect`` step without re-typing anything.
     """
 
     from_phase: str
@@ -68,7 +68,7 @@ class PhaseOutcome(BaseModel):
     """Lean per-activity result: outcome + human summary.
 
     Returned by the activities that don't mint an id (the analytics phases,
-    ``detect_table``, ``semantic_per_column``). A deterministic phase *failure*
+    ``semantic_per_column``, the terminal ``detect``). A deterministic phase *failure*
     never travels in here — it is raised as a non-retryable ``ApplicationError``
     by the activity wrapper — so a returned outcome is always ``completed`` or
     ``skipped``. Carries no ``table_ids``/``outputs`` god-fields.
@@ -149,10 +149,10 @@ class ReplayCleanupInput(BaseModel):
 
 
 class TableScopedInput(BaseModel):
-    """Input to the analytics activities + ``detect_table`` — one typed table.
+    """Input to the per-table analytics activities — one typed table.
 
     ``table_id`` is the *typed* table id from :class:`TypingResult`; the phase
-    scopes its work (and the detect step its measurements) to exactly this table.
+    scopes its work to exactly this table.
     """
 
     identity: SourceIdentity

@@ -13,16 +13,18 @@ Topology (DAT-370): the table is the unit of work.
       fan-out via asyncio.gather:
         ProcessTableWorkflow(raw_id) for each raw id         [child, per table]
       semantic_per_column()                                  (source-level reduce)
+      detect()                                               (single terminal detector pass)
 
     ProcessTableWorkflow(raw_table_id)                       [child]
       typing(raw_id) -> typed_id
       statistics -> column_eligibility -> statistical_quality -> temporal   (typed_id)
-      detect_table(typed_id)                                 (stage-level detectors)
 
 The child gives per-table history isolation + bounded parent history, and
 ``typed_id`` is threaded through the child's messages (persisted in history,
-replayed verbatim). Detectors run once at the tail of the stage, scoped to the
-child's typed table — not per phase (DAT-370).
+replayed verbatim). Detectors run once at the very end, source-wide, in the
+parent's terminal ``detect`` step — not per phase, not per table (DAT-394:
+nothing reads entropy mid-run, so detection has no reason to run before the run
+ends; this collapsed the old per-table ``detect_table`` + parent ``detect_source``).
 """
 
 from __future__ import annotations
@@ -57,9 +59,10 @@ _RETRY = RetryPolicy(maximum_attempts=5, non_retryable_error_types=["PhaseFailed
 _TIMEOUT = timedelta(minutes=10)
 
 # The table-local analytics phases, in dependency order. ``typing`` precedes
-# them (it mints the typed id); ``detect_table`` follows (stage-level detectors).
-# The detect step aggregates detectors over ``activity._TABLE_LOCAL_PHASES`` =
-# ``("typing", *_ANALYTICS_PHASES)``; ``test_phase_constants.py`` pins the link.
+# them (it mints the typed id). Detectors no longer run at the child's tail; the
+# single terminal ``detect`` step (parent) runs the union of the detectors these
+# phases + ``semantic_per_column`` declare (``activity._DETECTOR_PHASES``);
+# ``test_phase_constants.py`` pins that no chain-declared detector is orphaned.
 _ANALYTICS_PHASES = (
     "statistics",
     "column_eligibility",
@@ -73,8 +76,12 @@ _ANALYTICS_PHASES = (
 # the ones the child body invokes. ``ReplayScope.from_phase`` always names a
 # phase listed in one of these tuples — anything else is a programmer error
 # on the cockpit side.
+# ``detect`` is intentionally absent from both orders: like ``semantic_per_column``
+# it ALWAYS re-runs at the parent tail (the workflow body owns that, not
+# ``_runs_under``), so it is never a valid ``ReplayScope.from_phase`` entry point.
+# Adding it here would make it gatable and break the always-runs invariant.
 _PARENT_PHASE_ORDER = ("import", "semantic_per_column")
-_CHILD_PHASE_ORDER = ("typing", *_ANALYTICS_PHASES, "detect_table")
+_CHILD_PHASE_ORDER = ("typing", *_ANALYTICS_PHASES)
 
 
 def _at_or_after(phase: str, from_phase: str, order: tuple[str, ...]) -> bool:
@@ -185,10 +192,11 @@ def _phase_reruns_on_replay(phase: str, replay: ReplayScope) -> bool:
 class ProcessTableWorkflow:
     """Run the table-local chain for one raw table, then complete.
 
-    Initial run (``payload.replay is None``): ``typing`` mints the typed id,
-    the analytics phases run scoped to it, a single stage-level
-    ``detect_table`` runs the table-local detectors. The typed id travels in
-    the activity results, so it is in history and replayed verbatim.
+    Initial run (``payload.replay is None``): ``typing`` mints the typed id and
+    the analytics phases run scoped to it. The typed id travels in the activity
+    results, so it is in history and replayed verbatim. Detectors do NOT run
+    here — they run once, source-wide, in the parent's terminal ``detect`` step
+    (DAT-394).
 
     Teach replay (``payload.replay`` set; DAT-343): gates each phase on
     ``replay.from_phase``'s position in ``_CHILD_PHASE_ORDER``; if the chain
@@ -244,15 +252,6 @@ class ProcessTableWorkflow:
                 retry_policy=_RETRY,
             )
 
-        if _runs_under("detect_table", replay, _CHILD_PHASE_ORDER):
-            await workflow.execute_activity(
-                "detect_table",
-                scoped,
-                result_type=PhaseOutcome,
-                start_to_close_timeout=_TIMEOUT,
-                retry_policy=_RETRY,
-            )
-
         return ProcessTableResult(
             raw_table_id=payload.raw_table_id,
             typed_table_id=typed_table_id,
@@ -267,7 +266,8 @@ class AddSourceWorkflow:
     source's raw tables, the workflow fans out one
     :class:`ProcessTableWorkflow` per raw id via ``asyncio.gather`` and waits
     for all to complete, then ``semantic_per_column`` runs once as the
-    source-level reduce (followed by ``detect_source`` for its detectors).
+    source-level reduce (followed by the terminal ``detect`` step that runs all
+    detectors source-wide).
 
     Teach replay (``payload.replay`` set; DAT-343): per-stage gates +
     fan-out scope follow ``replay``:
@@ -280,9 +280,9 @@ class AddSourceWorkflow:
         empty list = no children at all — source-tail-only replays like
         ``concept_property``). Children carry ``replay`` so they gate
         their own activities.
-      * ``semantic_per_column`` + ``detect_source`` always re-run on any
+      * ``semantic_per_column`` + the terminal ``detect`` always re-run on any
         replay (the source-level reduce benefits from the widening data
-        breadth — see the DAT-343 refine).
+        breadth — see the DAT-343 refine; ``detect`` is cheap + idempotent).
 
     The data-dependent fan-out is driven off ``imported.raw_table_ids``
     (recorded in history whether ``import`` ran or was looked up), so
@@ -356,13 +356,12 @@ class AddSourceWorkflow:
         ]
         tables: list[ProcessTableResult] = list(await asyncio.gather(*children))
 
-        # Source-level reduce + its detectors: ALWAYS run, on both initial
-        # runs and any replay. Per the DAT-343 refine, re-running the reduce
-        # over the (possibly widened) source data is strictly better than
-        # skipping it. ``detect_source`` is cheap + idempotent
-        # (delete-before-insert) so it joins the always-runs set.
-        # ``_maybe_replay_cleanup`` is still gated on
-        # ``replay.from_phase == "semantic_per_column"`` — it only fires for
+        # Source-level reduce + the terminal detector pass: ALWAYS run, on both
+        # initial runs and any replay. Per the DAT-343 refine, re-running the
+        # reduce over the (possibly widened) source data is strictly better than
+        # skipping it. ``detect`` is cheap + idempotent (delete-before-insert) so
+        # it joins the always-runs set. ``_maybe_replay_cleanup`` is still gated
+        # on ``replay.from_phase == "semantic_per_column"`` — it only fires for
         # the concept_property entry case.
         await _maybe_replay_cleanup("semantic_per_column", replay, payload.identity, [])
         await workflow.execute_activity(
@@ -372,8 +371,11 @@ class AddSourceWorkflow:
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
+        # Single terminal detector pass (DAT-394): runs every wired detector
+        # source-wide after the reduce, then persists readiness. Replaces the old
+        # per-table detect_table + parent detect_source.
         await workflow.execute_activity(
-            "detect_source",
+            "detect",
             payload.identity,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,

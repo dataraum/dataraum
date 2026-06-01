@@ -1,0 +1,130 @@
+"""Persist per-column readiness — the terminal detect step's snapshot (DAT-394).
+
+The readiness-v2 rollup (``entropy/views/network_context.py``) rolls the persisted
+entropy objects up the network into per-column, per-intent readiness.
+:func:`persist_readiness` writes that rollup to ``entropy_readiness`` (one row per
+analyzed column) so the cockpit ``why`` / ``look`` tools read it via Drizzle with no
+engine round-trip, and as agent context.
+
+Self-refreshing: called from the terminal ``detect`` step (which re-runs on every
+(re-)measure), it delete-before-inserts scoped to the source, so a teach->replay
+overwrites the rows with no stale leftovers.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from dataraum.core.logging import get_logger
+from dataraum.entropy.db_models import EntropyReadinessRecord
+from dataraum.entropy.views.network_context import ColumnNetworkResult, build_for_network
+from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
+
+
+def persist_readiness(session: Session, source_id: str, session_id: str) -> int:
+    """Compute + persist per-column readiness for a source's typed tables.
+
+    Delete-before-insert scoped to ``source_id`` (replay-safe): the prior rows are
+    cleared even when the new rollup is empty. The caller owns the transaction
+    (commit happens at its ``session_scope`` exit). Returns the rows written.
+    """
+    typed_table_ids = [
+        row[0]
+        for row in session.execute(
+            select(Table.table_id).where(Table.source_id == source_id, Table.layer == "typed")
+        )
+    ]
+
+    # Replay-safe refresh: clear this source's prior readiness rows first.
+    session.execute(
+        delete(EntropyReadinessRecord).where(EntropyReadinessRecord.source_id == source_id)
+    )
+    if not typed_table_ids:
+        return 0
+
+    ctx = build_for_network(session, typed_table_ids)
+    if not ctx.columns:
+        return 0
+
+    target_to_ids = _column_id_map(session, typed_table_ids)
+
+    rows: list[EntropyReadinessRecord] = []
+    for target, col in ctx.columns.items():
+        ids = target_to_ids.get(target)
+        if ids is None:
+            # A column target the rollup produced but we can't map back to a
+            # Column row (e.g. a renamed/dropped column) — skip, don't guess.
+            logger.debug("readiness_target_unresolved", target=target)
+            continue
+        table_id, column_id = ids
+        rows.append(
+            EntropyReadinessRecord(
+                session_id=session_id,
+                source_id=source_id,
+                table_id=table_id,
+                column_id=column_id,
+                band=col.readiness,
+                worst_intent_risk=round(col.worst_intent_p_high, 4),
+                intents=_intents_payload(col),
+                top_drivers=_top_drivers_payload(col),
+            )
+        )
+
+    session.add_all(rows)
+    return len(rows)
+
+
+def _column_id_map(session: Session, table_ids: list[str]) -> dict[str, tuple[str, str]]:
+    """Map ``"column:{table_name}.{column_name}"`` -> ``(table_id, column_id)``.
+
+    Mirrors the target string the detectors write (``engine.py`` builds it as
+    ``f"column:{table.table_name}.{col.column_name}"``).
+    """
+    table_name_by_id: dict[str, str] = {}
+    for table_id, table_name in session.execute(
+        select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+    ):
+        table_name_by_id[table_id] = table_name
+    out: dict[str, tuple[str, str]] = {}
+    for table_id, column_name, column_id in session.execute(
+        select(Column.table_id, Column.column_name, Column.column_id).where(
+            Column.table_id.in_(table_ids)
+        )
+    ):
+        table_name = table_name_by_id.get(table_id)
+        if table_name is None:
+            continue
+        out[f"column:{table_name}.{column_name}"] = (table_id, column_id)
+    return out
+
+
+def _intents_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
+    """Per-intent breakdown: band + risk + ranked drivers, one entry per intent."""
+    return [
+        {
+            "intent": i.intent_name,
+            "band": i.readiness,
+            "risk": round(i.p_high, 4),
+            "drivers": [
+                {"node": d.node, "state": d.state, "impact_delta": round(d.impact_delta, 4)}
+                for d in i.drivers
+            ],
+        }
+        for i in col.intents
+    ]
+
+
+def _top_drivers_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
+    """Column-level non-clean nodes ranked by collapsed impact_delta."""
+    ranked = sorted(
+        (ne for ne in col.node_evidence if ne.state != "low"),
+        key=lambda ne: ne.impact_delta,
+        reverse=True,
+    )
+    return [
+        {"node": ne.node_name, "state": ne.state, "impact_delta": round(ne.impact_delta, 4)}
+        for ne in ranked
+    ]

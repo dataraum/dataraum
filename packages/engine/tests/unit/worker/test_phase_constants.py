@@ -1,33 +1,32 @@
-"""Guard the phase-list constants that the detect steps depend on (DAT-370).
+"""Guard the phase-list constant the terminal detect step depends on (DAT-394).
 
-The child workflow schedules the analytics phases from
-``workflows._ANALYTICS_PHASES``; the stage-level detect steps run detectors for
-``activity._TABLE_LOCAL_PHASES`` (``detect_table``, per typed table) and
-``activity._SOURCE_LEVEL_PHASES`` (``detect_source``, once after the reduce).
+The single terminal ``detect`` activity runs the union of the detectors declared
+by ``activity._DETECTOR_PHASES`` — the executed-chain phases (the child's
+``typing`` + ``_ANALYTICS_PHASES`` and the parent's ``semantic_per_column``
+reduce), source-wide, once, after the fan-out + reduce.
 
 Two invariants are pinned here:
-1. ``_TABLE_LOCAL_PHASES`` is ``("typing", *_ANALYTICS_PHASES)``.
+1. ``_DETECTOR_PHASES`` covers the executed chain: ``typing`` + the analytics
+   phases + ``semantic_per_column``.
 2. **No detector a chain phase declares in pipeline.yaml is orphaned** — every
-   such detector runs in one of the two detect steps. This is the regression the
+   such detector runs in the terminal detect step. This is the regression the
    original DAT-370 cut introduced and eval caught: ``semantic_per_column``
    declared five detectors but, having moved off the per-phase path, was in no
-   detect step, so they never executed.
+   detect step, so they never executed. (DAT-394 collapsed the two detect steps
+   into one, but the no-orphan property must still hold.)
 """
 
 from __future__ import annotations
 
 from dataraum.pipeline.pipeline_config import load_phase_declarations
-from dataraum.worker.activity import (
-    _SOURCE_LEVEL_PHASES,
-    _TABLE_LOCAL_PHASES,
-    declared_detector_ids,
-)
+from dataraum.worker.activity import _DETECTOR_PHASES, declared_detector_ids
 from dataraum.worker.workflows import _ANALYTICS_PHASES
 
 # The analysis phases the workflows actually execute: import + the child's
 # typing/analytics chain + the parent's source-level reduce. Source of truth is
 # workflows.py (parent + child ``run`` bodies); kept here independently so a
-# detector-bearing chain phase that isn't wired into a detect step is caught.
+# detector-bearing chain phase that isn't wired into the terminal detect step is
+# caught.
 _CHAIN_PHASES = (
     "import",
     "typing",
@@ -36,13 +35,13 @@ _CHAIN_PHASES = (
 )
 
 
-def test_table_local_phases_are_typing_plus_the_analytics_chain() -> None:
-    assert _TABLE_LOCAL_PHASES == ("typing", *_ANALYTICS_PHASES)
+def test_detector_phases_cover_the_executed_chain() -> None:
+    assert _DETECTOR_PHASES == ("typing", *_ANALYTICS_PHASES, "semantic_per_column")
 
 
 def test_no_chain_phase_detector_is_orphaned() -> None:
-    """Every detector a chain phase declares runs in detect_table or detect_source."""
-    detect_step_phases = set(_TABLE_LOCAL_PHASES) | set(_SOURCE_LEVEL_PHASES)
+    """Every detector a chain phase declares runs in the terminal detect step."""
+    detect_step_phases = set(_DETECTOR_PHASES)
     declarations = load_phase_declarations()
 
     for phase in _CHAIN_PHASES:
@@ -50,15 +49,16 @@ def test_no_chain_phase_detector_is_orphaned() -> None:
         if not decl or not decl.detectors:
             continue
         assert phase in detect_step_phases, (
-            f"phase '{phase}' declares detectors {decl.detectors} but is in no "
-            "detect step (detect_table / detect_source) — they would never run"
+            f"phase '{phase}' declares detectors {decl.detectors} but is not in "
+            "the terminal detect step (_DETECTOR_PHASES) — they would never run"
         )
 
 
-def test_source_level_detectors_resolve_to_the_semantic_reduce() -> None:
-    """detect_source picks up semantic_per_column's declared detectors."""
-    assert _SOURCE_LEVEL_PHASES == ("semantic_per_column",)
-    assert set(declared_detector_ids(_SOURCE_LEVEL_PHASES)) == {
+def test_terminal_detect_step_runs_every_wired_detector() -> None:
+    """The terminal step picks up the union of the executed chain's detectors."""
+    assert set(declared_detector_ids(_DETECTOR_PHASES)) == {
+        "type_fidelity",
+        "null_ratio",
         "business_meaning",
         "unit_entropy",
         "temporal_entropy",

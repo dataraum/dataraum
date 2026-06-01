@@ -8,11 +8,11 @@ config, scoped to ``table_ids``), and runs the sync phase — without a schedule
 or ``PipelineRun``/``PhaseLog`` monitoring rows (Temporal's event history is the
 execution log).
 
-Detectors are **not** run here. Per DAT-370 they run once per workflow stage,
-not once per phase: :func:`run_table_detectors` runs the table-local detectors
-scoped to a single typed table at the tail of ``ProcessTableWorkflow``. The
-activity wrappers (:mod:`dataraum.worker.activities`) translate these
-Temporal-agnostic helpers into the per-boundary contracts.
+Detectors are **not** run here per phase. Per DAT-394 they run once per workflow
+in a single terminal step: :func:`run_detectors` runs every wired detector over
+the whole source after the fan-out + reduce. The activity wrappers
+(:mod:`dataraum.worker.activities`) translate these Temporal-agnostic helpers
+into the per-boundary contracts.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from sqlalchemy import select
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
+from dataraum.entropy.readiness import persist_readiness
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
@@ -42,38 +43,34 @@ __all__ = [
     "PhaseRun",
     "declared_detector_ids",
     "raw_table_ids",
+    "run_detectors",
     "run_phase",
     "run_replay_cleanup",
-    "run_source_detectors",
-    "run_table_detectors",
     "typed_table_id_for_raw",
 ]
 
-# The table-local phases, in dependency order. ``detect_table`` runs the union
-# of the detectors these phases declare in pipeline.yaml (today: type_fidelity
-# from typing, null_ratio from statistics) — scoped to the one typed table, so
-# parallel child workflows never touch each other's detector rows.
+# The executed-chain phases that declare entropy detectors (DAT-394). The single
+# terminal ``detect`` activity runs the union of their detectors ONCE, source-wide
+# — after the per-table fan-out and the ``semantic_per_column`` reduce. Detectors
+# moved here from the old per-table ``detect_table`` + parent ``detect_source``
+# split: nothing reads entropy mid-run, there are no live detector->detector
+# ordering edges, and the split bought ~no parallelism (it ran two cheap structural
+# detectors), so one terminal pass is correct and simpler. Running once,
+# sequentially, makes the source-wide delete-before-insert safe (no concurrency)
+# and guarantees every detector's inputs are present.
 #
-# This is ``typing`` + ``workflows._ANALYTICS_PHASES`` (typing is here for its
-# type_fidelity detector but is scheduled separately as the id-minting step).
-# ``tests/unit/worker/test_phase_constants.py`` pins that relationship so a new
-# table-local phase can't be added to the workflow without its detectors running.
-_TABLE_LOCAL_PHASES = (
+# Source of truth is the executed chain in ``workflows.py`` (``typing`` +
+# ``_ANALYTICS_PHASES`` in the child, ``semantic_per_column`` in the parent).
+# ``tests/unit/worker/test_phase_constants.py`` pins that no chain-declared
+# detector is orphaned (the regression eval caught when DAT-370 first split them).
+_DETECTOR_PHASES = (
     "typing",
     "statistics",
     "column_eligibility",
     "statistical_quality",
     "temporal",
+    "semantic_per_column",
 )
-
-# The source-level phases whose detectors run once, after the per-table fan-out,
-# in the parent's ``detect_source`` step. ``semantic_per_column`` is a
-# source-global reduce, so its detectors (business_meaning, unit_entropy,
-# temporal_entropy, outlier_rate, benford) read the whole source's typed tables
-# and run once — no concurrency, so the source-wide delete-before-insert is safe.
-# Kept in sync with the workflow + checked against pipeline.yaml by
-# ``tests/unit/worker/test_phase_constants.py`` (no declared chain detector orphaned).
-_SOURCE_LEVEL_PHASES = ("semantic_per_column",)
 
 
 @dataclass
@@ -275,64 +272,46 @@ def run_replay_cleanup(
     )
 
 
-def run_table_detectors(
-    manager: ConnectionManager,
-    identity: SourceIdentity,
-    table_id: str,
-) -> int:
-    """Run the table-local detectors scoped to one typed table.
+def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
+    """Run every wired detector once, source-wide — the terminal ``detect`` step.
 
-    The stage-level replacement for the per-phase detector post-steps (DAT-370):
-    runs the union of the detectors the table-local phases declare in
-    pipeline.yaml, each scoped to ``table_id`` via ``run_detector_post_step``'s
-    ``table_ids`` filter. Scoping the delete-before-insert to the single table is
-    what lets parallel child workflows run their detectors without colliding on
-    the shared ``(source_id, detector_id)`` rows.
+    The single stage-level detector pass (DAT-394): runs the union of the detectors
+    the executed chain phases declare (``_DETECTOR_PHASES``) over all the source's
+    typed tables (``table_ids=None``). It runs once, sequentially, after the
+    per-table fan-out and the ``semantic_per_column`` reduce — so the source-wide
+    delete-before-insert is safe (no concurrency) and every detector's inputs are
+    present. Replaces the old per-table ``detect_table`` + parent ``detect_source``
+    split: nothing reads entropy mid-run, so there is no reason to detect earlier.
     """
-    return _run_detectors(manager, identity, _TABLE_LOCAL_PHASES, [table_id])
-
-
-def run_source_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
-    """Run the source-level detectors once, after the per-table fan-out.
-
-    The parent's ``detect_source`` step: runs the detectors the source-level
-    phases declare (``semantic_per_column``'s business_meaning / unit_entropy /
-    temporal_entropy / outlier_rate / benford), source-wide (``table_ids=None``).
-    Its ontology induction is source-global and it is a single sequential step in
-    the parent — no concurrency — so the source-wide delete-before-insert is safe.
-    Without this step those detectors would be declared but never executed (the
-    gap DAT-370 left when it moved detectors off the per-phase path).
-    """
-    return _run_detectors(manager, identity, _SOURCE_LEVEL_PHASES, None)
-
-
-def _run_detectors(
-    manager: ConnectionManager,
-    identity: SourceIdentity,
-    phase_names: Iterable[str],
-    table_ids: list[str] | None,
-) -> int:
-    """Run the detectors declared by ``phase_names``, scoped to ``table_ids``.
-
-    ``table_ids=None`` runs each detector source-wide; a single-element list
-    scopes it to that typed table. Shared by :func:`run_table_detectors` and
-    :func:`run_source_detectors`.
-    """
-    detector_ids = declared_detector_ids(phase_names)
+    detector_ids = declared_detector_ids(_DETECTOR_PHASES)
     if not detector_ids:
         return 0
 
     total = 0
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
         for detector_id in detector_ids:
+            # ``table_ids=None`` = source-wide: safe because this runs once,
+            # sequentially, after the fan-out — no concurrent writers to collide
+            # on the shared ``(source_id, detector_id)`` delete-before-insert.
             total += run_detector_post_step(
                 session,
                 identity.source_id,
                 detector_id,
                 cursor,
                 session_id=identity.session_id,
-                table_ids=table_ids,
+                table_ids=None,
             )
+        # Persist readiness from the freshly-written entropy objects, in the same
+        # transaction (DAT-394). flush() makes the just-added rows visible to the
+        # rollup's repository select before we read them back.
+        session.flush()
+        readiness_rows = persist_readiness(session, identity.source_id, identity.session_id)
+        logger.info(
+            "terminal_detect_done",
+            source_id=identity.source_id,
+            detector_records=total,
+            readiness_rows=readiness_rows,
+        )
     return total
 
 

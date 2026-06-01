@@ -35,11 +35,10 @@ class TestPhaseOrders:
     def test_parent_order_is_import_then_reduce(self) -> None:
         assert _PARENT_PHASE_ORDER == ("import", "semantic_per_column")
 
-    def test_child_order_is_typing_then_analytics_then_detect_table(self) -> None:
+    def test_child_order_is_typing_then_analytics(self) -> None:
         assert _CHILD_PHASE_ORDER == (
             "typing",
             *_ANALYTICS_PHASES,
-            "detect_table",
         )
 
 
@@ -51,7 +50,7 @@ class TestAtOrAfter:
 
     def test_phases_after_from_phase_run(self) -> None:
         assert _at_or_after("statistics", "typing", _CHILD_PHASE_ORDER) is True
-        assert _at_or_after("detect_table", "typing", _CHILD_PHASE_ORDER) is True
+        assert _at_or_after("temporal", "typing", _CHILD_PHASE_ORDER) is True
 
     def test_phases_before_from_phase_skip(self) -> None:
         assert _at_or_after("typing", "statistics", _CHILD_PHASE_ORDER) is False
@@ -84,7 +83,7 @@ class TestRunsUnder:
         # in the parent chain → both parent phases return False from
         # ``_runs_under``. The parent's workflow body owns the "always re-run
         # the source-level reduce" decision separately (semantic_per_column +
-        # detect_source aren't gated on ``_runs_under`` in the parent body).
+        # the terminal detect aren't gated on ``_runs_under`` in the parent body).
         assert _runs_under("import", replay, _PARENT_PHASE_ORDER) is False
         assert _runs_under("semantic_per_column", replay, _PARENT_PHASE_ORDER) is False
 

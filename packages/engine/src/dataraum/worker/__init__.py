@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from dataraum.worker.activity import (
     raw_table_ids,
+    run_detectors,
     run_phase,
-    run_source_detectors,
-    run_table_detectors,
     typed_table_id_for_raw,
 )
 from dataraum.worker.bootstrap import (
@@ -47,9 +46,8 @@ __all__ = [
     "TypingResult",
     "bootstrap_worker_substrate",
     "raw_table_ids",
+    "run_detectors",
     "run_phase",
-    "run_source_detectors",
-    "run_table_detectors",
     "shutdown_worker_substrate",
     "typed_table_id_for_raw",
 ]

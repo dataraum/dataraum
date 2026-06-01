@@ -16,6 +16,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
+import type { SelectResult } from "#/tools/select";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 /**
@@ -45,6 +46,14 @@ export function toolResultToCanvas(
 			// widget; a missing result leaves the canvas unchanged.
 			return result
 				? { kind: "concept-frame", frame: result as FrameResult }
+				: null;
+		case "select":
+			// The persisted Source descriptor (file_uris / recipe tables + the
+			// advanced stage) renders as the SelectedSource widget; a missing result
+			// (e.g. a rejected duplicate-basename select surfacing its error in the
+			// chat rail) leaves the canvas unchanged.
+			return result
+				? { kind: "selected-source", selection: result as SelectResult }
 				: null;
 		default:
 			// teach / replay / unknown: no canvas projection.

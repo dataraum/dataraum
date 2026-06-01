@@ -1,0 +1,194 @@
+// Lane smoke for the select tool (DAT-398) — drives select() against a REAL
+// Postgres ws_<id>.sources table and asserts the row lands with the exact keys
+// the engine import phase reads.
+//
+// This closes the cross-package contract loop a pure unit test cannot: the unit
+// tests assert the row SHAPE against a stubbed metadata client; here the row is
+// actually written through the Drizzle metadata client into the engine-created
+// `sources` table, then read back via raw SQL (independent of Drizzle) and
+// checked against the engine's consumers:
+//   - file source:     connection_config.file_uris (DISTINCT from `tables`),
+//                      source_type = the suffix-derived value (NOT "file"),
+//                      backend NULL, stage = "add_source".
+//                      (import_phase.py `_resolve_file_uris`)
+//   - database source: connection_config.tables = [{name, sql}], the backend
+//                      COLUMN set, source_type = "db_recipe", stage = "add_source".
+//                      (import_phase.py `_load_database_source` reads tables +
+//                       the backend column; an empty backend fails loud.)
+//
+// It does NOT trigger addSourceWorkflow (out of scope; that is the future
+// add_source tool, and the full forward run makes real LLM calls). Proving the
+// engine ACCEPTS the cockpit-written row end-to-end through addSourceWorkflow is
+// the compose smoke's job (temporal/drive-add-source.ts), which already seeds an
+// identically-shaped file_uris row.
+//
+// Requires a running compose stack (postgres on 127.0.0.1:5432 with the
+// engine-created ws_<id>.sources table). Skipped automatically when
+// METADATA_DATABASE_URL isn't set so unit-test CI without the stack stays green.
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
+
+// Stub the cockpit env so config.ts loads even when the test doesn't have every
+// var set (select imports config transitively for s3Bucket).
+const REQUIRED_DEFAULTS: Record<string, string> = {
+	COCKPIT_DATABASE_URL:
+		process.env.COCKPIT_DATABASE_URL ??
+		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
+	METADATA_DATABASE_URL: process.env.METADATA_DATABASE_URL ?? "",
+	DATARAUM_WORKSPACE_ID:
+		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
+	DATARAUM_LAKE_PATH:
+		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
+	DUCKLAKE_CATALOG_URL:
+		process.env.DUCKLAKE_CATALOG_URL ??
+		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
+	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
+	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
+	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
+	S3_SECRET_ACCESS_KEY:
+		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
+	S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
+};
+for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
+	if (!process.env[k]) process.env[k] = v;
+}
+
+const SCHEMA = `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll(
+	"-",
+	"_",
+)}`;
+
+describe.skipIf(!STACK_AVAILABLE)(
+	"select persists a Source row (DAT-398)",
+	() => {
+		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
+		let select: any;
+		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported postgres client
+		let sql: any;
+		const writtenNames: string[] = [];
+
+		beforeAll(async () => {
+			// Dynamic imports so the missing-env skip works — top-level imports would
+			// boot config.ts before describe.skipIf runs.
+			const mod = await import("./select");
+			select = mod.select;
+			const postgres = (await import("postgres")).default;
+			sql = postgres(process.env.METADATA_DATABASE_URL as string, {
+				onnotice: () => {},
+			});
+		});
+
+		afterAll(async () => {
+			if (sql) {
+				// Clean up the rows this smoke wrote so the shared workspace stays tidy.
+				for (const name of writtenNames) {
+					await sql`SET search_path TO ${sql(SCHEMA)}, public`;
+					await sql`DELETE FROM sources WHERE name = ${name}`;
+				}
+				await sql.end();
+			}
+		});
+
+		async function readBack(name: string): Promise<{
+			source_type: string;
+			backend: string | null;
+			stage: string | null;
+			connection_config: Record<string, unknown>;
+		}> {
+			// Raw SQL (not Drizzle) so the assertion is independent of the client that
+			// wrote it — proves the row really landed in the engine's schema.
+			const rows = await sql<
+				{
+					source_type: string;
+					backend: string | null;
+					stage: string | null;
+					connection_config: Record<string, unknown>;
+				}[]
+			>`
+			SELECT source_type, backend, stage, connection_config
+			FROM ${sql(SCHEMA)}.sources
+			WHERE name = ${name}`;
+			return rows[0];
+		}
+
+		it("writes a file source with file_uris + a suffix-derived source_type (not 'file')", async () => {
+			const name = `sel398_file_${Date.now()}`;
+			writtenNames.push(name);
+			const uri = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
+
+			const result = await select({
+				source_name: name,
+				schema: { sourceKind: "file", source: uri, tables: [] },
+			});
+
+			expect(result.stage).toBe("add_source");
+			expect(result.source_type).toBe("csv");
+
+			const row = await readBack(name);
+			expect(row.source_type).toBe("csv"); // NOT the literal "file"
+			expect(row.backend).toBeNull();
+			expect(row.stage).toBe("add_source");
+			expect(row.connection_config).toEqual({ file_uris: [uri] });
+			// file_uris and tables never cross-contaminate.
+			expect(row.connection_config).not.toHaveProperty("tables");
+		});
+
+		it("writes a db source with source_type=db_recipe, the backend column, and tables", async () => {
+			const name = `sel398_db_${Date.now()}`;
+			writtenNames.push(name);
+
+			const result = await select({
+				source_name: name,
+				backend: "mssql",
+				schema: {
+					sourceKind: "database",
+					source: name,
+					tables: [
+						{ name: "dbo.Invoices", rowCountEstimate: null, columns: [] },
+						{ name: "Customers", rowCountEstimate: null, columns: [] },
+					],
+				},
+			});
+
+			expect(result.source_type).toBe("db_recipe");
+			expect(result.backend).toBe("mssql");
+
+			const row = await readBack(name);
+			expect(row.source_type).toBe("db_recipe");
+			// The backend COLUMN is set — import_phase.py fails loud without it.
+			expect(row.backend).toBe("mssql");
+			expect(row.stage).toBe("add_source");
+			expect(row.connection_config).toEqual({
+				tables: [
+					{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
+					{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+				],
+			});
+			// tables and file_uris never cross-contaminate.
+			expect(row.connection_config).not.toHaveProperty("file_uris");
+		});
+
+		it("UPSERTs on the unique name — re-selecting re-points config without a duplicate-name error", async () => {
+			const name = `sel398_upsert_${Date.now()}`;
+			writtenNames.push(name);
+			const csv = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
+			const parquet = `s3://${process.env.S3_BUCKET}/sel398/${name}.parquet`;
+
+			await select({
+				source_name: name,
+				schema: { sourceKind: "file", source: csv, tables: [] },
+			});
+			// Re-select the same name with a different file — must update, not error.
+			await select({
+				source_name: name,
+				schema: { sourceKind: "file", source: parquet, tables: [] },
+			});
+
+			const row = await readBack(name);
+			expect(row.source_type).toBe("parquet");
+			expect(row.connection_config).toEqual({ file_uris: [parquet] });
+		});
+	},
+);

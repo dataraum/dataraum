@@ -9,6 +9,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
+import type { SelectResult } from "#/tools/select";
 
 export type CanvasState =
 	| { kind: "empty" }
@@ -17,7 +18,8 @@ export type CanvasState =
 	| { kind: "source-list"; sources: SourceSummary[] }
 	| { kind: "table-list"; tables: TableSummary[] }
 	| { kind: "schema-preview"; schema: ConnectSchema }
-	| { kind: "concept-frame"; frame: FrameResult };
+	| { kind: "concept-frame"; frame: FrameResult }
+	| { kind: "selected-source"; selection: SelectResult };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];

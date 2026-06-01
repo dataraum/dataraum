@@ -36,6 +36,7 @@ describe("chat route wiring (DAT-353)", () => {
 				"probe",
 				"connect",
 				"frame",
+				"select",
 				"teach",
 				"replay",
 			]),

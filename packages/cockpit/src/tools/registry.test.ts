@@ -24,6 +24,7 @@ describe("tool registry (DAT-353)", () => {
 			new Set([
 				"list_sources",
 				"list_tables",
+				"look_table",
 				"run_sql",
 				"probe",
 				"connect",
@@ -44,6 +45,7 @@ describe("tool registry (DAT-353)", () => {
 		// Reads must NOT require approval — they run unattended in the loop.
 		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("list_tables")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("look_table")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);

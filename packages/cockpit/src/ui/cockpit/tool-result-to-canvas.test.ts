@@ -41,6 +41,21 @@ describe("toolResultToCanvas", () => {
 		expect(state?.kind).toBe("table-list");
 	});
 
+	it("maps look_table to a table-readiness canvas", () => {
+		const state = toolResultToCanvas("look_table", {
+			table_id: "t1",
+			table_name: "orders",
+			analyzed: true,
+			pending_teaches: 0,
+			columns: [],
+		});
+		expect(state?.kind).toBe("table-readiness");
+	});
+
+	it("leaves the canvas unchanged when look_table has no result", () => {
+		expect(toolResultToCanvas("look_table", null)).toBeNull();
+	});
+
 	it("maps connect to a schema-preview canvas", () => {
 		const schema = {
 			sourceKind: "file" as const,

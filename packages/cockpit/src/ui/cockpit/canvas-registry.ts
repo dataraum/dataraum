@@ -15,6 +15,7 @@ import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SelectedSourceWidget } from "#/ui/cockpit/widgets/selected-source";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableListWidget } from "#/ui/cockpit/widgets/table-list";
+import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 
 export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "empty", component: EmptyWidget })
@@ -25,4 +26,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "schema-preview", component: SchemaPreviewWidget })
 	.register({ kind: "concept-frame", component: ConceptFrameWidget })
 	.register({ kind: "selected-source", component: SelectedSourceWidget })
-	.register({ kind: "result-grid", component: ResultGridWidget });
+	.register({ kind: "result-grid", component: ResultGridWidget })
+	.register({ kind: "table-readiness", component: TableReadinessWidget });

@@ -10,6 +10,7 @@ import { connectTool } from "./connect";
 import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
+import { lookTableTool } from "./look-table";
 import { probeTool } from "./probe";
 import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
@@ -19,6 +20,7 @@ import { teachTool } from "./teach";
 export const tools = [
 	listSourcesTool,
 	listTablesTool,
+	lookTableTool,
 	runSqlTool,
 	probeTool,
 	connectTool,

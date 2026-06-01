@@ -16,6 +16,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
+import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
@@ -36,6 +37,12 @@ export function toolResultToCanvas(
 			};
 		case "list_tables":
 			return { kind: "table-list", tables: (result as TableSummary[]) ?? [] };
+		case "look_table":
+			// The per-table readiness grid; a missing result (e.g. an errored read)
+			// leaves the canvas unchanged.
+			return result
+				? { kind: "table-readiness", readiness: result as LookTableResult }
+				: null;
 		case "connect":
 			// null/undefined → leave the canvas unchanged (e.g. a failed connect
 			// surfaces its error in the chat rail, not as an empty preview).

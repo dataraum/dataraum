@@ -17,7 +17,10 @@ from dataraum.entropy.contracts import (
     list_contracts,
 )
 from dataraum.entropy.views.query_context import network_to_column_summaries
-from dataraum.entropy.views.readiness_context import build_for_readiness
+from dataraum.entropy.views.readiness_context import (
+    build_column_evidence,
+    build_for_readiness,
+)
 
 from .conftest import PipelineTestHarness
 
@@ -28,10 +31,21 @@ def _build_column_summaries(
     harness: PipelineTestHarness,
     table_ids: list[str],
 ) -> dict[str, ColumnSummary]:
-    """Build column summaries from test harness via network."""
+    """Build column summaries the way the production contract gate does.
+
+    Mirrors ``build_for_query`` / ``graphs.context`` (DAT-399 slice D): raw
+    dimension scores from the rollup-free ``build_column_evidence``, readiness
+    band threaded in via ``band_by_target``. This harness writes entropy_objects
+    but does not run the terminal detect step's ``persist_readiness``, so the
+    band is sourced from a live ``build_for_readiness`` rollup here — its
+    equality with the persisted band is proven separately by the worker parity
+    integration test.
+    """
     with harness.session_factory() as session:
-        readiness_ctx = build_for_readiness(session, table_ids)
-        return network_to_column_summaries(readiness_ctx)
+        band_ctx = build_for_readiness(session, table_ids)
+        band_by_target = {target: col.readiness for target, col in band_ctx.columns.items()}
+        evidence = build_column_evidence(session, table_ids)
+        return network_to_column_summaries(evidence, band_by_target=band_by_target)
 
 
 class TestContractListAndStructure:

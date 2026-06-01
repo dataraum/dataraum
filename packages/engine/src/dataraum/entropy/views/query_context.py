@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -28,9 +28,6 @@ from dataraum.entropy.views.readiness_context import (
     build_column_evidence,
     load_persisted_readiness,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 

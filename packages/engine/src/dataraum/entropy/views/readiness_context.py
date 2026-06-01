@@ -518,6 +518,10 @@ def load_persisted_readiness(
     :func:`build_column_evidence` for that); reconstructed ``node_evidence``
     carries only the non-clean driver nodes, which is exactly what the band
     consumers read (``high_entropy_dimensions``).
+
+    Precondition: the terminal detect step has run. Query time always follows
+    detect in the workflow, so empty here means "no readiness yet" and is
+    treated as ready — same as a genuinely clean source.
     """
     if not table_ids:
         return EntropyForReadiness()
@@ -600,8 +604,10 @@ def _record_to_column_result(target: str, rec: EntropyReadinessRecord) -> Column
         for i in (rec.intents or [])
     ]
     # Persisted top_drivers are exactly the non-clean nodes — what the band
-    # consumers read as node_evidence (high_entropy_dimensions). Raw score is
-    # not persisted; band consumers don't read it.
+    # consumers read as node_evidence (high_entropy_dimensions). Raw per-node
+    # ``score`` is NOT persisted, so it stays 0.0 here: this reconstructed result
+    # must only feed consumers that don't read ``ne.score`` (the band view). For
+    # contract dimension_scores, use build_column_evidence (which has real scores).
     top_drivers = rec.top_drivers or []
     node_evidence = [
         ColumnNodeEvidence(

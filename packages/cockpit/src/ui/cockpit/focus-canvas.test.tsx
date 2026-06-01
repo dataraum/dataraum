@@ -2,7 +2,7 @@
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { FocusCanvas } from "#/ui/cockpit/focus-canvas";
 import { theme } from "#/ui/theme";
@@ -40,5 +40,21 @@ describe("FocusCanvas (DAT-347)", () => {
 		expect(screen.getByTestId("canvas-error").textContent).toContain(
 			"table-preview",
 		);
+	});
+
+	it("resolves the result-grid widget for a result-grid canvas (DAT-385)", () => {
+		// The widget fetches /api/run-sql on mount; stub it with a never-settling
+		// promise so the test asserts only that the widget mounts (the streaming
+		// path is covered by the ndjson-stream + result-grid view unit tests).
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		try {
+			renderCanvas({ kind: "result-grid", sql: "SELECT 1" });
+			expect(screen.getByTestId("canvas-result-grid")).toBeTruthy();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

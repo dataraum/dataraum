@@ -43,7 +43,6 @@ dependencies = [
     "structlog>=24.1.0",
     "python-dotenv>=1.0.0",
     "networkx>=3.6",
-    "pgmpy>=1.1.0",
     "anthropic>=0.76.0",
     # SQL parsing
     "sqlglot>=26.0.0",
@@ -103,8 +102,6 @@ filterwarnings = [
     "ignore:divide by zero encountered in scalar divide:RuntimeWarning",
     # DuckDB GIL warning on Python 3.14 free-threaded (external library)
     "ignore:The global interpreter lock.*:RuntimeWarning",
-    # pgmpy invalid escape sequences (external library)
-    "ignore:.*is an invalid escape sequence.*:SyntaxWarning",
 ]
 
 [tool.ruff]
@@ -176,7 +173,6 @@ module = [
     "statsmodels.*",
     "ruptures.*",
     "networkx.*",
-    "pgmpy.*",
     "sqlglot.*",
 ]
 ignore_missing_imports = true

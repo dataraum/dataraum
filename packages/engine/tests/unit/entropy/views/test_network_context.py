@@ -282,7 +282,8 @@ class TestPerColumnAssembly:
         assert intent.intent_name == "leaf_z"
         assert intent.p_high > 0
         assert intent.readiness in ("ready", "investigate", "blocked")
-        assert sum(intent.posterior.values()) == pytest.approx(1.0, abs=0.01)
+        # Risk is a single value surfaced as P(high), not a full distribution.
+        assert intent.posterior["high"] == pytest.approx(intent.p_high, abs=1e-4)
 
     def test_table_target_becomes_direct_signal(self, small_network):
         """Table-level objects always become direct signals."""
@@ -394,19 +395,19 @@ class TestCrossColumnAggregation:
                 score=0.8,
                 target="column:t.c1",
             ),
-            # Column 2: low
+            # Column 2: above floor but milder than c1
             make_entropy_object(
                 layer="structural",
                 dimension="types",
                 sub_dimension="root_a",
-                score=0.1,
+                score=0.4,
                 target="column:t.c2",
             ),
             make_entropy_object(
                 layer="value",
                 dimension="nulls",
                 sub_dimension="root_b",
-                score=0.1,
+                score=0.4,
                 target="column:t.c2",
             ),
         ]

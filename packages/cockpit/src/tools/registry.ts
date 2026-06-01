@@ -10,15 +10,19 @@ import { connectTool } from "./connect";
 import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
+import { lookTableTool } from "./look-table";
 import { probeTool } from "./probe";
 import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
+import { whyColumnTool } from "./why-column";
 
 export const tools = [
 	listSourcesTool,
 	listTablesTool,
+	lookTableTool,
+	whyColumnTool,
 	runSqlTool,
 	probeTool,
 	connectTool,

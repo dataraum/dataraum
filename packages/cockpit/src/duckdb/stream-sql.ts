@@ -53,6 +53,49 @@ export function clampGridCap(cap?: number): number {
 	return Math.min(floored, HARD_ROW_CEILING);
 }
 
+// --- Query composition (design §7.3 — server-side sort, DAT-385 P3) ----------
+
+/**
+ * A single-column sort the grid asks the server to apply. `column` is an OUTPUT
+ * column name of the user's query (the grid only offers names it received in the
+ * stream header); `dir` is the sort direction.
+ */
+export interface GridSort {
+	column: string;
+	dir: "asc" | "desc";
+}
+
+/**
+ * Quote `name` as a DuckDB identifier: wrap in double quotes and double any
+ * embedded quote. This is the ONLY safe way to interpolate a column name into
+ * SQL — the grid's sort column is user/agent-influenced (it's an output column
+ * of arbitrary `run_sql`), so it can never be concatenated raw. A bogus name
+ * still can't inject; it just yields a binder error the stream reports in-band.
+ */
+export function quoteIdentifier(name: string): string {
+	return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Wrap the user's `sql` as the grid's effective query, optionally appending a
+ * server-side `ORDER BY`.
+ *
+ * Sort MUST be server-side, not client-side: the grid caps at
+ * {@link GRID_DEFAULT_CAP} and can truncate, so sorting only the streamed window
+ * would sort an arbitrary first-N slice of a larger result. Ordering the wrapped
+ * query applies the sort BEFORE the cap, so the grid shows the true top-N.
+ *
+ * Sort carries NO bind values, so this never perturbs the caller's positional
+ * `params` ($1, $2, …) — they bind against the inner `sql` exactly as before.
+ * (Filter values, which WOULD need param renumbering, are a later phase.)
+ */
+export function buildGridQuery(sql: string, sort?: GridSort | null): string {
+	const base = `SELECT * FROM (${sql}) AS _run_sql`;
+	if (!sort) return base;
+	const dir = sort.dir === "desc" ? "DESC" : "ASC";
+	return `${base} ORDER BY ${quoteIdentifier(sort.column)} ${dir}`;
+}
+
 // --- Wire protocol (design §4) -----------------------------------------------
 
 /**

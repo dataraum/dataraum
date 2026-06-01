@@ -20,7 +20,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
 	type AbortSignalLike,
+	buildGridQuery,
 	clampGridCap,
+	type GridSort,
 	type ResultFrame,
 	type StreamableResult,
 	streamNdjson,
@@ -35,8 +37,11 @@ async function streamQuery(
 	sql: string,
 	cap: number,
 	params?: (string | number | boolean | null)[],
+	sort?: GridSort,
 ): Promise<ResultFrame[]> {
-	const wrapped = `SELECT * FROM (${sql}) AS _run_sql`;
+	// Compose through buildGridQuery — exactly what the route does — so the sort
+	// path is exercised against the real driver, not a hand-wrapped string.
+	const wrapped = buildGridQuery(sql, sort);
 	const result = (await (params
 		? readerConn.stream(wrapped, params)
 		: readerConn.stream(wrapped))) as unknown as StreamableResult;
@@ -226,6 +231,39 @@ describe("streamNdjson over a real DuckLake lake (DAT-385)", () => {
 		const total = batches.reduce((s, b) => s + (b.t === "b" ? b.n : 0), 0);
 		expect(total).toBe(5000);
 		expect(frames.at(-1)).toEqual({ t: "f", rows: 5000 });
+	});
+
+	it("applies a server-side sort (DESC) over the wrapped query", async () => {
+		const sort: GridSort = { column: "amount", dir: "desc" };
+		const frames = await streamQuery(
+			"SELECT id, customer, amount FROM lake.typed.orders",
+			1000,
+			undefined,
+			sort,
+		);
+		const batch = frames[1];
+		if (batch.t !== "b") throw new Error("expected batch");
+		// amount DESC: 50.50 (id 3), 10.00 (id 1), 9.99 (id 2).
+		expect(batch.cols[0]).toEqual([3, 1, 2]);
+		expect(batch.cols[2]).toEqual(["50.50", "10.00", "9.99"]);
+	});
+
+	it("sorts BEFORE the cap, so a truncated result still shows the true top-N", async () => {
+		// `big` is range(5000); ORDER BY n DESC then cap at 3 must surface the
+		// global top — 4999, 4998, 4997 — NOT the first 3 streamed rows. This is
+		// the whole reason sort is server-side, not client-side over the window.
+		// (range() is BIGINT → JSON-safe STRING via the bigint→string coercion.)
+		const sort: GridSort = { column: "n", dir: "desc" };
+		const frames = await streamQuery(
+			"SELECT n FROM lake.typed.big",
+			3,
+			undefined,
+			sort,
+		);
+		const batch = frames[1];
+		if (batch.t !== "b") throw new Error("expected batch");
+		expect(batch.cols[0]).toEqual(["4999", "4998", "4997"]);
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 3, truncated: true, cap: 3 });
 	});
 
 	it("emits an in-band error footer for a bad query (HTTP would stay 200)", async () => {

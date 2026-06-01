@@ -6,9 +6,11 @@ import { describe, expect, it } from "vitest";
 
 import { HARD_ROW_CEILING } from "#/duckdb/limit";
 import {
+	buildGridQuery,
 	clampGridCap,
 	encodeFrame,
 	GRID_DEFAULT_CAP,
+	quoteIdentifier,
 	type ResultFrame,
 	type StreamableChunk,
 	type StreamableResult,
@@ -88,6 +90,56 @@ describe("clampGridCap (design §5.5)", () => {
 
 	it("floors a fractional cap", () => {
 		expect(clampGridCap(10.9)).toBe(10);
+	});
+});
+
+describe("quoteIdentifier", () => {
+	it("wraps a plain name in double quotes", () => {
+		expect(quoteIdentifier("amount")).toBe('"amount"');
+	});
+
+	it("doubles embedded quotes so a name can never break out of the literal", () => {
+		// A column literally named `weird"name` (or an injection attempt) is quoted,
+		// not escaped-then-concatenated: the embedded `"` is doubled.
+		expect(quoteIdentifier('weird"name')).toBe('"weird""name"');
+		expect(quoteIdentifier('x" ; DROP TABLE t --')).toBe(
+			'"x"" ; DROP TABLE t --"',
+		);
+	});
+});
+
+describe("buildGridQuery (design §7.3 — server-side sort)", () => {
+	it("wraps the query unchanged when there is no sort", () => {
+		expect(buildGridQuery("SELECT * FROM lake.typed.orders")).toBe(
+			"SELECT * FROM (SELECT * FROM lake.typed.orders) AS _run_sql",
+		);
+		expect(buildGridQuery("SELECT 1", null)).toBe(
+			"SELECT * FROM (SELECT 1) AS _run_sql",
+		);
+	});
+
+	it("appends an ORDER BY on the quoted column for asc/desc", () => {
+		expect(
+			buildGridQuery("SELECT id, amount FROM t", {
+				column: "amount",
+				dir: "asc",
+			}),
+		).toBe(
+			'SELECT * FROM (SELECT id, amount FROM t) AS _run_sql ORDER BY "amount" ASC',
+		);
+		expect(
+			buildGridQuery("SELECT id FROM t", { column: "id", dir: "desc" }),
+		).toBe('SELECT * FROM (SELECT id FROM t) AS _run_sql ORDER BY "id" DESC');
+	});
+
+	it("quotes the sort column so a hostile name can't inject", () => {
+		const out = buildGridQuery("SELECT * FROM t", {
+			column: 'x" ; DROP TABLE t --',
+			dir: "asc",
+		});
+		expect(out).toBe(
+			'SELECT * FROM (SELECT * FROM t) AS _run_sql ORDER BY "x"" ; DROP TABLE t --" ASC',
+		);
 	});
 });
 

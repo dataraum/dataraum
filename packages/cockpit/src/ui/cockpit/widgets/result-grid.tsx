@@ -1,18 +1,23 @@
-// Result-grid widget (DAT-385 P2) — the human-facing SQL result surface.
+// Result-grid widget (DAT-385 P2 grid + P3 server-side sort) — the human-facing
+// SQL result surface.
 //
-// Splits cleanly in two:
+// Splits cleanly in three:
 //   - ResultGridView: PURE render of a ColumnStore via TanStack Table with
-//     index-rows + accessorFn (no row-object rematerialization). Trivially
-//     testable with a pre-seeded store, no I/O.
-//   - ResultGridWidget: owns the I/O — POSTs the carried SQL to the P1
-//     `/api/run-sql` NDJSON endpoint, folds frames into a ColumnStore as they
-//     arrive, and aborts the fetch on unmount/query-change (the server then
-//     emits a `cancelled` footer). The only widget that does I/O — the baseline
-//     widgets are static — so the streaming state is contained here.
+//     index-rows + accessorFn (no row-object rematerialization). Headers are
+//     interactive when given `onToggleSort`. Trivially testable, no I/O.
+//   - ResultGridWidget: the registered entry. Owns the BASE query (the agent's
+//     run_sql call) and `key`s the inner grid on it, so a new agent query
+//     remounts the grid and resets the sort cleanly.
+//   - StreamingGrid: owns the I/O + the grid-local sort. POSTs sql+params+sort
+//     to the P1 `/api/run-sql` NDJSON endpoint, folds frames into a ColumnStore
+//     as they arrive, and aborts the fetch on unmount/query-change/sort-change
+//     (the server then emits a `cancelled` footer).
 //
-// P2 scope: read-only, server-side sort/filter is P3. The body IS virtualized
-// (only the visible window hits the DOM) — load-bearing for the 50k streaming
-// cap, not optional.
+// Sort is SERVER-SIDE (re-issue with ORDER BY), not a client reorder: the grid
+// caps at 50k and can truncate, so the sort must run before the cap to show the
+// true top-N. Filter + keyset paging stay deferred (a connected, researched P3/P4
+// effort). The body IS virtualized (only the visible window hits the DOM) —
+// load-bearing for the 50k streaming cap, not optional.
 
 import type { Json } from "@duckdb/node-api";
 import { Alert, Badge, Group, Table, Text } from "@mantine/core";
@@ -24,8 +29,9 @@ import {
 	useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
+import type { GridSort } from "#/duckdb/stream-sql";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 // §7.3 hook: carry the neo column type metadata on each TanStack column. P2
@@ -55,13 +61,37 @@ const STATUS_COLOR = {
 	error: "red",
 } as const;
 
-/** Pure presentation of a (possibly still-filling) ColumnStore. */
+/**
+ * The next sort after a header click: unsorted → asc → desc → unsorted. Clicking
+ * a DIFFERENT column starts that column at asc. Pure, so the state machine is
+ * unit-testable without the streaming widget.
+ */
+export function cycleSort(
+	current: GridSort | null,
+	column: string,
+): GridSort | null {
+	if (!current || current.column !== column) return { column, dir: "asc" };
+	if (current.dir === "asc") return { column, dir: "desc" };
+	return null;
+}
+
+/** Pure presentation of a (possibly still-filling) ColumnStore.
+ *
+ * `sort` + `onToggleSort` make the column headers interactive (DAT-385 P3): a
+ * click asks the OWNER to re-issue the query with a new server-side sort. The
+ * view itself never reorders rows — sort runs before the cap, server-side, so a
+ * truncated result still shows the true top-N. Omit `onToggleSort` (e.g. in a
+ * pure-render test) and the headers stay static. */
 export function ResultGridView({
 	store,
 	fatal,
+	sort,
+	onToggleSort,
 }: {
 	store: ColumnStore;
 	fatal?: string | null;
+	sort?: GridSort | null;
+	onToggleSort?: (column: string) => void;
 }) {
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
@@ -149,14 +179,44 @@ export function ResultGridView({
 					<Table striped highlightOnHover stickyHeader>
 						<Table.Thead>
 							<Table.Tr>
-								{table.getFlatHeaders().map((header) => (
-									<Table.Th key={header.id}>
-										{flexRender(
-											header.column.columnDef.header,
-											header.getContext(),
-										)}
-									</Table.Th>
-								))}
+								{table.getFlatHeaders().map((header) => {
+									const name = String(header.column.columnDef.header ?? "");
+									const active = sort?.column === name;
+									const clickable = onToggleSort !== undefined;
+									return (
+										<Table.Th
+											key={header.id}
+											onClick={clickable ? () => onToggleSort(name) : undefined}
+											style={
+												clickable
+													? { cursor: "pointer", userSelect: "none" }
+													: undefined
+											}
+											data-testid={`canvas-result-grid-header-${name}`}
+										>
+											<Group gap={4} wrap="nowrap">
+												{flexRender(
+													header.column.columnDef.header,
+													header.getContext(),
+												)}
+												{active && (
+													<Text
+														span
+														size="xs"
+														c="dimmed"
+														aria-label={
+															sort.dir === "asc"
+																? "sorted ascending"
+																: "sorted descending"
+														}
+													>
+														{sort.dir === "asc" ? "▲" : "▼"}
+													</Text>
+												)}
+											</Group>
+										</Table.Th>
+									);
+								})}
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
@@ -198,31 +258,66 @@ export function ResultGridView({
 	);
 }
 
-/** The registered widget: streams `/api/run-sql` for the carried query. */
+/**
+ * The registered widget. Owns the BASE query (the agent's `run_sql` call) and
+ * remounts the inner grid whenever that query changes, via a value-stable `key`.
+ *
+ * The remount is deliberate: the inner grid holds the grid-local sort state, and
+ * remounting on a new base query resets the sort cleanly to "unsorted" without a
+ * reset effect (which would fire a redundant second stream). The agent's
+ * `state.sql`/`params` stay immutable — sort is a VIEW concern, never written
+ * back to the canvas state.
+ */
 export function ResultGridWidget({
 	state,
 }: {
 	state: Extract<CanvasState, { kind: "result-grid" }>;
 }) {
-	const storeRef = useRef(new ColumnStore());
-	const [, bump] = useState(0);
-	const [fatal, setFatal] = useState<string | null>(null);
-
-	// Value-stable query identity: ChatRail re-dispatches a fresh canvasState
-	// object on every message tick, so keying the stream effect on object
-	// identity would re-fire (and re-stream) constantly. Serialize sql+params so
-	// the effect only re-runs when the QUERY actually changes.
-	const queryKey = useMemo(
+	// ChatRail re-dispatches a fresh canvasState object on every message tick;
+	// serialize sql+params so a new `key` is produced only when the QUERY actually
+	// changes, not on per-tick object churn.
+	const baseKey = useMemo(
 		() => JSON.stringify([state.sql, state.params ?? null]),
 		[state.sql, state.params],
 	);
+	return <StreamingGrid key={baseKey} sql={state.sql} params={state.params} />;
+}
+
+/** Streams `/api/run-sql` for the carried query and owns the grid-local sort. */
+function StreamingGrid({
+	sql,
+	params,
+}: {
+	sql: string;
+	params?: (string | number | boolean | null)[];
+}) {
+	const storeRef = useRef(new ColumnStore());
+	const [, bump] = useState(0);
+	const [fatal, setFatal] = useState<string | null>(null);
+	// Grid-local view state: which column the SERVER should order by. Reset to
+	// null on a new base query (this component remounts — see ResultGridWidget).
+	const [sort, setSort] = useState<GridSort | null>(null);
+
+	// Header click cycles the sort for that column: unsorted → asc → desc →
+	// unsorted. Switching to a different column starts at asc.
+	// Stable identity (setSort is stable, no deps) so a future React.memo on the
+	// view doesn't re-render the grid on every sort-irrelevant parent render.
+	const toggleSort = useCallback((column: string) => {
+		setSort((cur) => cycleSort(cur, column));
+	}, []);
+
+	// Value-stable request identity: re-stream iff sql, params, OR sort changed.
+	// Parse them back out inside the effect so the effect's ONLY dependency is the
+	// key — no stale closures, no churn from ChatRail's fresh objects.
+	const requestKey = useMemo(
+		() => JSON.stringify([sql, params ?? null, sort]),
+		[sql, params, sort],
+	);
 	useEffect(() => {
-		// Parse the query back out of the value-stable key so the effect's ONLY
-		// dependency is the key itself — re-stream iff the query actually changed,
-		// never on ChatRail's per-tick fresh-object churn.
-		const [sql, params] = JSON.parse(queryKey) as [
+		const [qSql, qParams, qSort] = JSON.parse(requestKey) as [
 			string,
 			(string | number | boolean | null)[] | null,
+			GridSort | null,
 		];
 		const store = new ColumnStore();
 		storeRef.current = store;
@@ -235,7 +330,11 @@ export function ResultGridWidget({
 				const res = await fetch("/api/run-sql", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ sql, params: params ?? undefined }),
+					body: JSON.stringify({
+						sql: qSql,
+						params: qParams ?? undefined,
+						sort: qSort ?? undefined,
+					}),
 					signal: ac.signal,
 				});
 				if (!res.ok || !res.body) {
@@ -247,13 +346,20 @@ export function ResultGridWidget({
 					bump((v) => v + 1);
 				});
 			} catch (err) {
-				// An aborted fetch (unmount / new query) is expected — not an error.
+				// An aborted fetch (unmount / new query / new sort) is expected.
 				if (ac.signal.aborted) return;
 				setFatal(err instanceof Error ? err.message : String(err));
 			}
 		})();
 		return () => ac.abort();
-	}, [queryKey]);
+	}, [requestKey]);
 
-	return <ResultGridView store={storeRef.current} fatal={fatal} />;
+	return (
+		<ResultGridView
+			store={storeRef.current}
+			fatal={fatal}
+			sort={sort}
+			onToggleSort={toggleSort}
+		/>
+	);
 }

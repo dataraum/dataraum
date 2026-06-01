@@ -78,3 +78,36 @@ def entropy_objects_to_evidence(
         evidence[node_name] = state
 
     return evidence
+
+
+def entropy_objects_to_scores(
+    objects: list[EntropyObject],
+    network: EntropyNetwork,
+) -> dict[str, float]:
+    """Convert EntropyObjects to a continuous {node_name: score} map.
+
+    The deterministic rollup combines raw scores directly (no discretization),
+    so this is the evidence the network consumes. ``entropy_objects_to_evidence``
+    remains for the discrete state label shown per node.
+
+    When several objects map to the same node, the highest (worst) score wins.
+
+    Args:
+        objects: List of EntropyObject instances from detectors.
+        network: The entropy network for node lookup.
+
+    Returns:
+        Score map suitable for ``rollup.roll_up``,
+        e.g. {"type_fidelity": 0.12, "null_ratio": 0.71}.
+    """
+    path_map = build_dimension_path_to_node_map(network)
+
+    scores: dict[str, float] = {}
+    for obj in objects:
+        node_name = path_map.get(obj.dimension_path)
+        if node_name is None:
+            continue
+        if node_name not in scores or obj.score > scores[node_name]:
+            scores[node_name] = obj.score
+
+    return scores

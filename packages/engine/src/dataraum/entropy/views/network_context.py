@@ -1,7 +1,7 @@
-"""Entropy context for Bayesian network inference — per-column design.
+"""Entropy context for the network rollup — per-column design.
 
-Runs the Bayesian network independently for each column target, then
-aggregates intent readiness and cross-column fix priorities.
+Rolls detector scores up the entropy network independently for each column
+target, then aggregates intent readiness and cross-column fix priorities.
 
 Follows the build_for_* pattern from graph_context.py and query_context.py.
 """
@@ -19,11 +19,11 @@ from dataraum.entropy.core.storage import EntropyRepository
 from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import (
     build_dimension_path_to_node_map,
-    entropy_objects_to_evidence,
+    discretize_score,
+    entropy_objects_to_scores,
 )
-from dataraum.entropy.network.inference import forward_propagate
 from dataraum.entropy.network.model import EntropyNetwork
-from dataraum.entropy.network.priority import compute_network_priorities
+from dataraum.entropy.network.rollup import compute_priorities, roll_up
 
 logger = get_logger(__name__)
 
@@ -182,7 +182,7 @@ def _build_column_result(
     Args:
         target: Column target string (e.g. "column:table.col").
         objects: EntropyObjects for this column only.
-        network: The Bayesian entropy network.
+        network: The entropy network.
         path_map: Pre-built dimension_path -> node_name map.
 
     Returns:
@@ -204,21 +204,23 @@ def _build_column_result(
     if not mapped:
         return None, direct_signals
 
-    # Per-column: no collisions within a target, safe to use bridge directly
-    evidence = entropy_objects_to_evidence(mapped, network)
-    if not evidence:
+    # Per-column: no collisions within a target, safe to use bridge directly.
+    # The rollup consumes raw scores; states are derived only for display.
+    scores = entropy_objects_to_scores(mapped, network)
+    if not scores:
         return None, direct_signals
 
-    # Build column-appropriate subgraph: only nodes with evidence
-    # (or inferrable from evidence) participate in inference.
-    # This eliminates prior leakage from inapplicable detectors.
-    col_network = network.subgraph(set(evidence.keys()))
+    states = {
+        node: discretize_score(score, disc.low_upper, disc.medium_upper)
+        for node, score in scores.items()
+    }
 
-    # Forward propagate on the subgraph
-    posteriors = forward_propagate(col_network, evidence)
+    # Roll observed scores up the DAG. Unobserved nodes with no resolved parents
+    # are simply absent — no prior leakage, so no subgraph pruning is needed.
+    risk = roll_up(network.config, scores, _pmap=network.parent_map, _order=network.topo_order)
 
-    # Compute priorities on the subgraph
-    priorities = compute_network_priorities(col_network, evidence)
+    # Causal fix priorities: how much each observed node lowers intent risk.
+    priorities = compute_priorities(network.config, scores, low_upper=disc.low_upper)
 
     # Build ColumnNodeEvidence for each observed node
     # Build lookups: node_name -> source object, node_name -> impact_delta
@@ -231,11 +233,11 @@ def _build_column_result(
     node_to_delta: dict[str, float] = {pr.node: pr.impact_delta for pr in priorities}
 
     node_evidence: list[ColumnNodeEvidence] = []
-    for node_name, state in evidence.items():
+    for node_name, state in states.items():
         source_obj = node_to_obj.get(node_name)
         node_ev = ColumnNodeEvidence(
             node_name=node_name,
-            dimension_path=col_network.get_node_config(node_name).dimension_path,
+            dimension_path=network.get_node_config(node_name).dimension_path,
             state=state,
             score=source_obj.score if source_obj else 0.0,
             impact_delta=node_to_delta.get(node_name, 0.0),
@@ -244,25 +246,23 @@ def _build_column_result(
         )
         node_evidence.append(node_ev)
 
-    # Build per-column IntentReadiness
-    intent_nodes = col_network.get_intent_nodes()
+    # Build per-column IntentReadiness. Intents with no resolved parents from the
+    # observed evidence are absent from `risk` and skipped (same as before).
     intents: list[IntentReadiness] = []
 
-    for intent_name in intent_nodes:
-        if intent_name in posteriors:
-            post = posteriors[intent_name]
-        elif intent_name in evidence:
-            post = {s: (1.0 if s == evidence[intent_name] else 0.0) for s in col_network.states}
-        else:
+    for intent_name in network.get_intent_nodes():
+        if intent_name not in risk:
             continue
 
-        p_high = post.get("high", 0.0)
-        dominant = max(post, key=lambda s: post[s])
+        p_high = risk[intent_name]
         readiness = _readiness_from_p_high(p_high, disc.medium_upper, disc.low_upper)
+        # Risk is a single value, not a distribution; surface it as P(high).
+        posterior = {"high": round(p_high, 4)}
+        dominant = "high" if p_high > disc.medium_upper else "low"
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,
-                posterior=post,
+                posterior=posterior,
                 dominant_state=dominant,
                 p_high=p_high,
                 readiness=readiness,
@@ -270,8 +270,8 @@ def _build_column_result(
         )
 
     # Summary stats
-    nodes_observed = len(evidence)
-    nodes_high = sum(1 for s in evidence.values() if s == "high")
+    nodes_observed = len(scores)
+    nodes_high = sum(1 for s in states.values() if s == "high")
     worst_intent_p_high = max((i.p_high for i in intents), default=0.0)
     readiness = _readiness_from_p_high(
         worst_intent_p_high,
@@ -421,12 +421,12 @@ def assemble_network_context(
 ) -> EntropyForNetwork:
     """Assemble network context from entropy objects and network.
 
-    Runs the Bayesian network independently per column target,
+    Rolls scores up the entropy network independently per column target,
     then aggregates across columns.
 
     Args:
         objects: All EntropyObject instances for the tables being analyzed.
-        network: The Bayesian entropy network.
+        network: The entropy network.
 
     Returns:
         EntropyForNetwork with per-column results and aggregated summaries.
@@ -536,7 +536,7 @@ def build_for_network(
     """Build entropy context for network inference view.
 
     Loads entropy data for typed tables and assembles the network context
-    joining Bayesian inference results with source evidence.
+    joining rollup results with source evidence.
 
     Args:
         session: SQLAlchemy session.

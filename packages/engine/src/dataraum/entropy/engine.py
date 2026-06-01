@@ -2,7 +2,7 @@
 
 Core API:
 - run_detector_post_step: Run a single detector by ID as a phase post-step
-- compute_network: Load records from DB, build Bayesian network
+- compute_network: Load records from DB, roll up the entropy network
 - persist_records: Add EntropyObjectRecords to session
 """
 
@@ -187,7 +187,7 @@ def compute_network(
     """Compute entropy network from persisted records.
 
     Pure function: loads EntropyObjectRecords for the source, converts
-    to domain objects, builds Bayesian network inference. Returns None
+    to domain objects, rolls scores up the entropy network. Returns None
     if no records exist.
 
     Args:

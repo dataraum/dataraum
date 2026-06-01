@@ -3,7 +3,6 @@
 import pytest
 
 from dataraum.entropy.network.config import (
-    CptGenerationConfig,
     DiscretizationConfig,
     EdgeConfig,
     NetworkConfig,
@@ -31,14 +30,12 @@ def small_config() -> NetworkConfig:
                 layer="structural",
                 dimension="types",
                 sub_dimension="root_a",
-                prior=[0.6, 0.3, 0.1],
             ),
             "root_b": NodeConfig(
                 name="root_b",
                 layer="value",
                 dimension="nulls",
                 sub_dimension="root_b",
-                prior=[0.5, 0.3, 0.2],
             ),
             "child_x": NodeConfig(
                 name="child_x",
@@ -58,11 +55,6 @@ def small_config() -> NetworkConfig:
             EdgeConfig(parent="root_b", child="child_x", strength=0.6),
             EdgeConfig(parent="child_x", child="leaf_z", strength=0.7),
         ],
-        cpt_generation=CptGenerationConfig(
-            influence_blend=0.7,
-            pessimistic_shift=0.1,
-            min_probability=0.01,
-        ),
     )
 
 

@@ -33,17 +33,11 @@ class NodeConfig:
     layer: str
     dimension: str
     sub_dimension: str
-    prior: list[float] | None = None  # Only root nodes have priors
 
     @property
     def dimension_path(self) -> str:
         """Full dimension path: layer.dimension.sub_dimension."""
         return f"{self.layer}.{self.dimension}.{self.sub_dimension}"
-
-    @property
-    def is_root(self) -> bool:
-        """Root nodes have explicit prior distributions."""
-        return self.prior is not None
 
 
 @dataclass(frozen=True)
@@ -53,15 +47,6 @@ class EdgeConfig:
     parent: str
     child: str
     strength: float  # Causal influence strength in (0, 1]
-
-
-@dataclass(frozen=True)
-class CptGenerationConfig:
-    """Parameters for CPT generation from edge strengths."""
-
-    influence_blend: float = 0.7
-    pessimistic_shift: float = 0.1
-    min_probability: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -80,7 +65,6 @@ class NetworkConfig:
     discretization: DiscretizationConfig = field(default_factory=DiscretizationConfig)
     nodes: dict[str, NodeConfig] = field(default_factory=dict)
     edges: list[EdgeConfig] = field(default_factory=list)
-    cpt_generation: CptGenerationConfig = field(default_factory=CptGenerationConfig)
 
 
 # Module-level cache
@@ -132,13 +116,11 @@ def _parse_config(raw: dict[str, Any]) -> NetworkConfig:
     # Nodes
     nodes: dict[str, NodeConfig] = {}
     for name, node_raw in raw.get("nodes", {}).items():
-        prior = node_raw.get("prior")
         nodes[name] = NodeConfig(
             name=name,
             layer=node_raw["layer"],
             dimension=node_raw["dimension"],
             sub_dimension=node_raw["sub_dimension"],
-            prior=list(prior) if prior is not None else None,
         )
 
     # Edges
@@ -152,20 +134,11 @@ def _parse_config(raw: dict[str, Any]) -> NetworkConfig:
             )
         )
 
-    # CPT generation params
-    cpt_raw = raw.get("cpt_generation", {})
-    cpt_generation = CptGenerationConfig(
-        influence_blend=cpt_raw.get("influence_blend", 0.7),
-        pessimistic_shift=cpt_raw.get("pessimistic_shift", 0.1),
-        min_probability=cpt_raw.get("min_probability", 0.01),
-    )
-
     return NetworkConfig(
         states=states,
         discretization=discretization,
         nodes=nodes,
         edges=edges,
-        cpt_generation=cpt_generation,
     )
 
 

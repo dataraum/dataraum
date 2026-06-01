@@ -1,0 +1,153 @@
+// Table-readiness widget (DAT-350) — renders the `look_table` result as a
+// per-column traffic-light grid in the focus canvas: one row per column, a band
+// badge per intent (query / aggregation / reporting) plus the column's top
+// quality drivers. The bands are the engine's PERSISTED, calibrated values — this
+// widget only colors them, it never recomputes readiness.
+//
+// Reads theme/tokens only; the row type is a type-only import (erased — no server
+// code in the client bundle).
+
+import { Alert, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import type { CanvasState } from "#/ui/cockpit/canvas-state";
+
+// The three intents, in the order the engine's network models them — fixed so
+// the grid columns are stable even if a row's `intents` array is ordered
+// differently or is missing an intent. These are the engine's intent-layer NODE
+// KEYS (what `entropy_readiness.intents[].intent` actually carries, from
+// `network.get_intent_nodes()`), not the bare words — matching on the wrong
+// string silently renders every per-intent cell as a dash.
+const INTENTS = [
+	"query_intent",
+	"aggregation_intent",
+	"reporting_intent",
+] as const;
+
+// Friendly column headers for the node keys above.
+const INTENT_LABEL: Record<(typeof INTENTS)[number], string> = {
+	query_intent: "Query",
+	aggregation_intent: "Aggregation",
+	reporting_intent: "Reporting",
+};
+
+// Band → Mantine color. An absent band (column not analyzed) renders as a muted
+// dash, not a color, so "unknown" never reads as "ready".
+const BAND_COLOR: Record<string, string> = {
+	ready: "green",
+	investigate: "yellow",
+	blocked: "red",
+};
+
+function BandBadge({ band }: { band: string | null | undefined }) {
+	if (!band) {
+		return (
+			<Text span c="dimmed" size="xs">
+				—
+			</Text>
+		);
+	}
+	return (
+		<Badge color={BAND_COLOR[band] ?? "gray"} variant="light" size="sm">
+			{band}
+		</Badge>
+	);
+}
+
+export function TableReadinessWidget({
+	state,
+}: {
+	state: Extract<CanvasState, { kind: "table-readiness" }>;
+}) {
+	const { readiness } = state;
+
+	if (readiness.columns.length === 0) {
+		return (
+			<Text c="dimmed" size="sm" data-testid="canvas-table-readiness-empty">
+				{readiness.table_name
+					? `No columns found for ${readiness.table_name}.`
+					: "No such table."}
+			</Text>
+		);
+	}
+
+	return (
+		<Stack gap="xs" data-testid="canvas-table-readiness">
+			<Text size="sm" fw={600}>
+				{readiness.table_name} — readiness
+			</Text>
+
+			{!readiness.analyzed && (
+				<Alert color="gray" data-testid="canvas-table-readiness-unanalyzed">
+					This table hasn't been analyzed yet — run the source through
+					add_source to compute readiness.
+				</Alert>
+			)}
+
+			{readiness.pending_teaches > 0 && (
+				<Alert color="blue" data-testid="canvas-table-readiness-pending">
+					{readiness.pending_teaches} pending teach
+					{readiness.pending_teaches === 1 ? "" : "es"} may affect this view —
+					consider a replay before trusting it.
+				</Alert>
+			)}
+
+			<Table.ScrollContainer minWidth={480}>
+				<Table striped highlightOnHover>
+					<Table.Thead>
+						<Table.Tr>
+							<Table.Th>Column</Table.Th>
+							<Table.Th>Type</Table.Th>
+							<Table.Th>Overall</Table.Th>
+							{INTENTS.map((intent) => (
+								<Table.Th key={intent}>{INTENT_LABEL[intent]}</Table.Th>
+							))}
+							<Table.Th>Top drivers</Table.Th>
+						</Table.Tr>
+					</Table.Thead>
+					<Table.Tbody>
+						{readiness.columns.map((c) => {
+							const bandByIntent = new Map(
+								c.intents.map((i) => [i.intent, i.band]),
+							);
+							return (
+								<Table.Tr
+									key={c.column_id}
+									data-testid={`readiness-row-${c.column_name}`}
+								>
+									<Table.Td>{c.column_name}</Table.Td>
+									<Table.Td>
+										<Text span c="dimmed" size="xs">
+											{c.resolved_type ?? "—"}
+										</Text>
+									</Table.Td>
+									<Table.Td>
+										<BandBadge band={c.band} />
+									</Table.Td>
+									{INTENTS.map((intent) => (
+										<Table.Td key={intent}>
+											<BandBadge band={bandByIntent.get(intent)} />
+										</Table.Td>
+									))}
+									<Table.Td>
+										{c.top_drivers.length === 0 ? (
+											<Text span c="dimmed" size="xs">
+												—
+											</Text>
+										) : (
+											<Group gap={4} wrap="wrap">
+												{c.top_drivers.map((d) => (
+													<Text key={d.label} span size="xs" c="dimmed">
+														{d.label}
+													</Text>
+												))}
+											</Group>
+										)}
+									</Table.Td>
+								</Table.Tr>
+							);
+						})}
+					</Table.Tbody>
+				</Table>
+			</Table.ScrollContainer>
+		</Stack>
+	);
+}

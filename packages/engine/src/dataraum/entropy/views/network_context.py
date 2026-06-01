@@ -51,21 +51,23 @@ class IntentDriver:
     ``impact_delta`` is how much THIS intent's risk would drop if the node were
     fixed to clean (from ``compute_priorities``' per-intent ``affected_intents``)
     — the per-intent split the collapsed ``ColumnNodeEvidence.impact_delta`` (a
-    max across intents) loses.
+    max across intents) loses. ``dimension_path`` + ``label`` make the driver
+    self-describing so the cockpit needs no node→label dictionary (the network
+    vocabulary stays in the engine).
     """
 
     node: str = ""
+    dimension_path: str = ""
+    label: str = ""
     state: str = "low"
     impact_delta: float = 0.0
 
 
 @dataclass
 class IntentReadiness:
-    """Posterior and readiness for an intent node, with its ranked drivers."""
+    """Risk + readiness band for an intent node, with its ranked drivers."""
 
     intent_name: str = ""
-    posterior: dict[str, float] = field(default_factory=dict)
-    dominant_state: str = "low"
     p_high: float = 0.0
     readiness: str = "ready"
     drivers: list[IntentDriver] = field(default_factory=list)
@@ -77,6 +79,7 @@ class ColumnNodeEvidence:
 
     node_name: str = ""
     dimension_path: str = ""
+    label: str = ""
     state: str = "low"
     score: float = 0.0
     impact_delta: float = 0.0  # causal impact of fixing this node (from priorities)
@@ -98,49 +101,17 @@ class ColumnNetworkResult:
     worst_intent_p_high: float = 0.0
     readiness: str = "ready"
 
-    def needs_attention(self, p_high_threshold: float = 0.35) -> bool:
-        """Whether this column needs further analysis based on network inference.
-
-        A column needs attention if readiness is "investigate" or "blocked",
-        or if any intent P(high) exceeds the threshold.
-        """
-        return (
-            self.readiness in ("investigate", "blocked")
-            or self.worst_intent_p_high > p_high_threshold
-        )
-
-
-@dataclass
-class AggregateIntentReadiness:
-    """Cross-column aggregation of one intent."""
-
-    intent_name: str = ""
-    worst_p_high: float = 0.0
-    mean_p_high: float = 0.0
-    columns_blocked: int = 0
-    columns_investigate: int = 0
-    columns_ready: int = 0
-    overall_readiness: str = "ready"
-
-
-@dataclass
-class CrossColumnFix:
-    """Which node, if fixed everywhere, helps the most columns."""
-
-    node_name: str = ""
-    dimension_path: str = ""
-    columns_affected: int = 0
-    total_intent_delta: float = 0.0
-    example_columns: list[str] = field(default_factory=list)
-
 
 @dataclass
 class EntropyForNetwork:
-    """Top-level: per-column results + aggregated summaries."""
+    """Top-level: per-column results + source-wide summaries.
+
+    Cross-column aggregation (per-intent rollup + top cross-column fix) is NOT
+    here — it belongs at dataset scope (DAT-396); the only consumer of the old
+    aggregate was the retired MCP formatter.
+    """
 
     columns: dict[str, ColumnNetworkResult] = field(default_factory=dict)
-    intents: list[AggregateIntentReadiness] = field(default_factory=list)
-    top_fix: CrossColumnFix | None = None
     direct_signals: list[DirectSignal] = field(default_factory=list)
     total_columns: int = 0
     columns_blocked: int = 0
@@ -155,6 +126,15 @@ class EntropyForNetwork:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _node_label(node: str) -> str:
+    """Human-readable label for a network node (humanized node name).
+
+    Keeps the network vocabulary in the engine so the cockpit can render a
+    driver without its own node→label dictionary.
+    """
+    return node.replace("_", " ").capitalize()
 
 
 def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
@@ -254,6 +234,7 @@ def _build_column_result(
         node_ev = ColumnNodeEvidence(
             node_name=node_name,
             dimension_path=network.get_node_config(node_name).dimension_path,
+            label=_node_label(node_name),
             state=state,
             score=source_obj.score if source_obj else 0.0,
             impact_delta=node_to_delta.get(node_name, 0.0),
@@ -272,15 +253,16 @@ def _build_column_result(
 
         p_high = risk[intent_name]
         readiness = _readiness_from_p_high(p_high, disc.medium_upper, disc.low_upper)
-        # Risk is a single value, not a distribution; surface it as P(high).
-        posterior = {"high": round(p_high, 4)}
-        dominant = "high" if p_high > disc.medium_upper else "low"
         # Per-intent drivers: nodes that lower THIS intent's risk, ranked by how
         # much. ``affected_intents`` carries the per-intent split that the
         # collapsed ColumnNodeEvidence.impact_delta (a max across intents) drops.
+        # Each driver carries dimension_path + label so the payload is
+        # self-describing (the cockpit needs no node vocabulary).
         drivers = [
             IntentDriver(
                 node=pr.node,
+                dimension_path=network.get_node_config(pr.node).dimension_path,
+                label=_node_label(pr.node),
                 state=pr.current_state,
                 impact_delta=pr.affected_intents[intent_name],
             )
@@ -291,8 +273,6 @@ def _build_column_result(
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,
-                posterior=posterior,
-                dominant_state=dominant,
                 p_high=p_high,
                 readiness=readiness,
                 drivers=drivers,
@@ -329,117 +309,6 @@ def _build_column_result(
     ), direct_signals
 
 
-def _aggregate_intents(
-    columns: dict[str, ColumnNetworkResult],
-    disc_medium_upper: float = 0.6,
-    disc_low_upper: float = 0.3,
-) -> list[AggregateIntentReadiness]:
-    """Aggregate intent readiness across all columns.
-
-    Args:
-        columns: Per-column network results keyed by target.
-        disc_medium_upper: Threshold for blocked.
-        disc_low_upper: Threshold for investigate.
-
-    Returns:
-        List of AggregateIntentReadiness, one per intent.
-    """
-    # Collect per-intent p_high and readiness from all columns
-    intent_data: dict[str, list[tuple[float, str]]] = {}
-
-    for col_result in columns.values():
-        for intent in col_result.intents:
-            intent_data.setdefault(intent.intent_name, []).append((intent.p_high, intent.readiness))
-
-    aggregates: list[AggregateIntentReadiness] = []
-    for intent_name, entries in intent_data.items():
-        p_highs = [e[0] for e in entries]
-        readinesses = [e[1] for e in entries]
-
-        worst_p_high = max(p_highs)
-        mean_p_high = sum(p_highs) / len(p_highs)
-        columns_blocked = readinesses.count("blocked")
-        columns_investigate = readinesses.count("investigate")
-        columns_ready = readinesses.count("ready")
-        overall_readiness = _readiness_from_p_high(
-            worst_p_high,
-            disc_medium_upper,
-            disc_low_upper,
-        )
-
-        aggregates.append(
-            AggregateIntentReadiness(
-                intent_name=intent_name,
-                worst_p_high=worst_p_high,
-                mean_p_high=mean_p_high,
-                columns_blocked=columns_blocked,
-                columns_investigate=columns_investigate,
-                columns_ready=columns_ready,
-                overall_readiness=overall_readiness,
-            )
-        )
-
-    return aggregates
-
-
-def _compute_cross_column_fix(
-    columns: dict[str, ColumnNetworkResult],
-    network: EntropyNetwork,
-) -> CrossColumnFix | None:
-    """Find the node that, if fixed everywhere, helps the most columns.
-
-    For each network node: count columns where it is non-low,
-    sum per-column impact_delta from priorities. Pick the node with
-    the highest total_intent_delta.
-
-    Args:
-        columns: Per-column network results.
-        network: The entropy network (for node config).
-
-    Returns:
-        CrossColumnFix or None if no non-low nodes exist.
-    """
-    node_stats: dict[str, dict[str, Any]] = {}
-
-    for target, col_result in columns.items():
-        for node_ev in col_result.node_evidence:
-            if node_ev.state == "low":
-                continue
-
-            if node_ev.node_name not in node_stats:
-                node_stats[node_ev.node_name] = {
-                    "columns_affected": 0,
-                    "total_delta": 0.0,
-                    "worst_columns": [],  # (impact_delta, target)
-                    "dimension_path": node_ev.dimension_path,
-                }
-
-            stats = node_stats[node_ev.node_name]
-            stats["columns_affected"] += 1
-            # Use the node's actual causal impact from network priorities
-            stats["total_delta"] += node_ev.impact_delta
-            stats["worst_columns"].append((node_ev.impact_delta, target))
-
-    if not node_stats:
-        return None
-
-    # Pick node with highest total_delta
-    best_node = max(node_stats, key=lambda n: node_stats[n]["total_delta"])
-    stats = node_stats[best_node]
-
-    # Sort worst columns by p_high descending, take top 3
-    worst_sorted = sorted(stats["worst_columns"], key=lambda x: x[0], reverse=True)
-    example_columns = [t for _, t in worst_sorted[:3]]
-
-    return CrossColumnFix(
-        node_name=best_node,
-        dimension_path=stats["dimension_path"],
-        columns_affected=stats["columns_affected"],
-        total_intent_delta=round(stats["total_delta"], 4),
-        example_columns=example_columns,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Core assembly (pure logic, no DB)
 # ---------------------------------------------------------------------------
@@ -451,22 +320,21 @@ def assemble_network_context(
 ) -> EntropyForNetwork:
     """Assemble network context from entropy objects and network.
 
-    Rolls scores up the entropy network independently per column target,
-    then aggregates across columns.
+    Rolls scores up the entropy network independently per column target. Per-column
+    results + source-wide summary stats only; cross-column aggregation is DAT-396.
 
     Args:
         objects: All EntropyObject instances for the tables being analyzed.
         network: The entropy network.
 
     Returns:
-        EntropyForNetwork with per-column results and aggregated summaries.
+        EntropyForNetwork with per-column results + source-wide summaries.
     """
     if not objects:
         return EntropyForNetwork()
 
     # Step 1: Build path map once
     path_map = build_dimension_path_to_node_map(network)
-    disc = network.config.discretization
 
     # Step 2: Group objects by target
     by_target: dict[str, list[EntropyObject]] = {}
@@ -511,13 +379,7 @@ def assemble_network_context(
             seen[key] = ds
     all_direct_signals = list(seen.values())
 
-    # Step 6: Aggregate intents across columns
-    agg_intents = _aggregate_intents(columns, disc.medium_upper, disc.low_upper)
-
-    # Step 7: Cross-column fix
-    top_fix = _compute_cross_column_fix(columns, network)
-
-    # Step 8: Summary stats
+    # Step 6: Summary stats
     total_columns = len(columns)
     columns_blocked = sum(1 for c in columns.values() if c.readiness == "blocked")
     columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
@@ -541,8 +403,6 @@ def assemble_network_context(
 
     return EntropyForNetwork(
         columns=columns,
-        intents=agg_intents,
-        top_fix=top_fix,
         direct_signals=all_direct_signals,
         total_columns=total_columns,
         columns_blocked=columns_blocked,
@@ -592,94 +452,3 @@ def build_for_network(
 
     network = EntropyNetwork()
     return assemble_network_context(entropy_objects, network)
-
-
-# ---------------------------------------------------------------------------
-# Markdown formatter
-# ---------------------------------------------------------------------------
-
-
-def format_network_context(ctx: EntropyForNetwork) -> dict[str, Any]:
-    """Format network context as structured dict for JSON MCP output.
-
-    Args:
-        ctx: EntropyForNetwork to format.
-
-    Returns:
-        Dict with network analysis data.
-    """
-    result: dict[str, Any] = {
-        "overall_readiness": ctx.overall_readiness.upper(),
-        "total_columns": ctx.total_columns,
-        "columns_blocked": ctx.columns_blocked,
-        "columns_investigate": ctx.columns_investigate,
-        "columns_ready": ctx.columns_ready,
-        "total_direct_signals": ctx.total_direct_signals,
-    }
-
-    if ctx.intents:
-        result["intents"] = [
-            {
-                "intent": ai.intent_name,
-                "worst_p_high": round(ai.worst_p_high, 3),
-                "mean_p_high": round(ai.mean_p_high, 3),
-                "columns_blocked": ai.columns_blocked,
-                "columns_investigate": ai.columns_investigate,
-                "columns_ready": ai.columns_ready,
-            }
-            for ai in ctx.intents
-        ]
-
-    if ctx.top_fix is not None:
-        tf = ctx.top_fix
-        top_fix: dict[str, Any] = {
-            "node": tf.node_name,
-            "columns_affected": tf.columns_affected,
-            "total_intent_delta": round(tf.total_intent_delta, 3),
-            "example_columns": tf.example_columns,
-        }
-        result["top_fix"] = top_fix
-
-    # At-risk columns (blocked + investigate), capped at 10
-    at_risk = [(target, col) for target, col in ctx.columns.items() if col.readiness != "ready"]
-    at_risk.sort(key=lambda x: x[1].worst_intent_p_high, reverse=True)
-
-    if at_risk:
-        at_risk_list: list[dict[str, Any]] = []
-        for target, col in at_risk[:10]:
-            entry: dict[str, Any] = {
-                "target": target,
-                "readiness": col.readiness,
-                "worst_intent_p_high": round(col.worst_intent_p_high, 3),
-            }
-            high_nodes = sorted(
-                [ne for ne in col.node_evidence if ne.state != "low"],
-                key=lambda ne: ne.impact_delta,
-                reverse=True,
-            )
-            if high_nodes:
-                entry["high_nodes"] = [
-                    {
-                        "node": ne.node_name,
-                        "state": ne.state,
-                        "impact_delta": round(ne.impact_delta, 3),
-                    }
-                    for ne in high_nodes
-                ]
-            at_risk_list.append(entry)
-        result["at_risk_columns"] = at_risk_list
-        if len(at_risk) > 10:
-            result["at_risk_total"] = len(at_risk)
-
-    if ctx.direct_signals:
-        result["direct_signals"] = [
-            {
-                "dimension_path": ds.dimension_path,
-                "score": round(ds.score, 2),
-                "target": ds.target,
-                "evidence": ds.evidence[:1] if ds.evidence else [],
-            }
-            for ds in ctx.direct_signals
-        ]
-
-    return result

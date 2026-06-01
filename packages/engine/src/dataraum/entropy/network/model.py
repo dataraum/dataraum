@@ -87,14 +87,6 @@ class EntropyNetwork:
             raise KeyError(f"Unknown node: '{name}'")
         return self._config.nodes[name]
 
-    def get_parents(self, node: str) -> list[str]:
-        """Get parent node names for a given node."""
-        return [p for p, _ in self._parent_map.get(node, [])]
-
-    def get_children(self, node: str) -> list[str]:
-        """Get child node names for a given node."""
-        return list(self._children.get(node, []))
-
     def get_intent_nodes(self) -> list[str]:
         """Get intent nodes (nodes in the 'intent' layer)."""
         return [name for name, node in self._config.nodes.items() if node.layer == "intent"]

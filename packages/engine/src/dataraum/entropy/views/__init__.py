@@ -9,13 +9,10 @@ ensuring typed tables enforcement and appropriate data structure.
 """
 
 from dataraum.entropy.views.network_context import (
-    AggregateIntentReadiness,
     ColumnNetworkResult,
     ColumnNodeEvidence,
-    CrossColumnFix,
     EntropyForNetwork,
     build_for_network,
-    format_network_context,
 )
 from dataraum.entropy.views.query_context import (
     EntropyForQuery,
@@ -27,11 +24,8 @@ __all__ = [
     "EntropyForQuery",
     "build_for_query",
     # Network context
-    "AggregateIntentReadiness",
     "ColumnNetworkResult",
     "ColumnNodeEvidence",
-    "CrossColumnFix",
     "EntropyForNetwork",
     "build_for_network",
-    "format_network_context",
 ]

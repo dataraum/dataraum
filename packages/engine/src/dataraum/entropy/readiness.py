@@ -102,14 +102,20 @@ def _column_id_map(session: Session, table_ids: list[str]) -> dict[str, tuple[st
 
 
 def _intents_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
-    """Per-intent breakdown: band + risk + ranked drivers, one entry per intent."""
+    """Per-intent breakdown: band + risk + self-describing ranked drivers."""
     return [
         {
             "intent": i.intent_name,
             "band": i.readiness,
             "risk": round(i.p_high, 4),
             "drivers": [
-                {"node": d.node, "state": d.state, "impact_delta": round(d.impact_delta, 4)}
+                {
+                    "node": d.node,
+                    "dimension_path": d.dimension_path,
+                    "label": d.label,
+                    "state": d.state,
+                    "impact_delta": round(d.impact_delta, 4),
+                }
                 for d in i.drivers
             ],
         }
@@ -118,13 +124,19 @@ def _intents_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
 
 
 def _top_drivers_payload(col: ColumnNetworkResult) -> list[dict[str, object]]:
-    """Column-level non-clean nodes ranked by collapsed impact_delta."""
+    """Column-level non-clean nodes ranked by collapsed impact_delta (self-describing)."""
     ranked = sorted(
         (ne for ne in col.node_evidence if ne.state != "low"),
         key=lambda ne: ne.impact_delta,
         reverse=True,
     )
     return [
-        {"node": ne.node_name, "state": ne.state, "impact_delta": round(ne.impact_delta, 4)}
+        {
+            "node": ne.node_name,
+            "dimension_path": ne.dimension_path,
+            "label": ne.label,
+            "state": ne.state,
+            "impact_delta": round(ne.impact_delta, 4),
+        }
         for ne in ranked
     ]

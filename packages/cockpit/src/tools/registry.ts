@@ -16,11 +16,13 @@ import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
+import { whyColumnTool } from "./why-column";
 
 export const tools = [
 	listSourcesTool,
 	listTablesTool,
 	lookTableTool,
+	whyColumnTool,
 	runSqlTool,
 	probeTool,
 	connectTool,

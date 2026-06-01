@@ -25,6 +25,7 @@ describe("tool registry (DAT-353)", () => {
 				"list_sources",
 				"list_tables",
 				"look_table",
+				"why_column",
 				"run_sql",
 				"probe",
 				"connect",
@@ -46,6 +47,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("list_tables")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("look_table")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("why_column")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);

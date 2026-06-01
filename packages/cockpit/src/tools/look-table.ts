@@ -21,25 +21,15 @@ import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
 import { getPendingOverlays } from "../db/metadata/pending-overlays";
+import {
+	PersistedIntent,
+	ReadinessDriver,
+} from "../db/metadata/readiness-schemas";
 import { columns, entropyReadiness, tables } from "../db/metadata/schema";
 
-// --- JSONB shapes the engine persists (entropy_readiness.intents / top_drivers).
-// Parsed leniently: a malformed/absent blob degrades to empty, never throws.
-
-const ReadinessDriver = z.object({
-	node: z.string(),
-	dimension_path: z.string(),
-	label: z.string(),
-	state: z.string(),
-	impact_delta: z.number(),
-});
-
-const PersistedIntent = z.object({
-	intent: z.string(),
-	band: z.string(),
-	risk: z.number(),
-	drivers: z.array(ReadinessDriver).default([]),
-});
+// The persisted JSONB grammar (intents / top_drivers) lives in
+// `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
+// malformed/absent blob degrades to empty, never throws.
 
 // --- The tool's output: per-column bands + a few top driver labels per column.
 

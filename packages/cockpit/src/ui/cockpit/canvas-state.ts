@@ -11,6 +11,7 @@ import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
+import type { WhyColumnResult } from "#/tools/why-column";
 
 export type CanvasState =
 	| { kind: "empty" }
@@ -25,6 +26,9 @@ export type CanvasState =
 	// tool result (calibrated bands per column × intent, read from the persisted
 	// entropy_readiness rows — the cockpit never re-derives the band).
 	| { kind: "table-readiness"; readiness: LookTableResult }
+	// DAT-351: per-column readiness explanation. Carries the why_column result —
+	// per-intent drivers + detector evidence + the synthesized narrative.
+	| { kind: "column-why"; why: WhyColumnResult }
 	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
 	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
 	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool

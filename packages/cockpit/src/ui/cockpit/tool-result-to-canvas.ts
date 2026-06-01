@@ -18,6 +18,7 @@ import type { SourceSummary } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
+import type { WhyColumnResult } from "#/tools/why-column";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 /**
@@ -42,6 +43,11 @@ export function toolResultToCanvas(
 			// leaves the canvas unchanged.
 			return result
 				? { kind: "table-readiness", readiness: result as LookTableResult }
+				: null;
+		case "why_column":
+			// The per-column explanation; a missing result leaves the canvas as-is.
+			return result
+				? { kind: "column-why", why: result as WhyColumnResult }
 				: null;
 		case "connect":
 			// null/undefined → leave the canvas unchanged (e.g. a failed connect

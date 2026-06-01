@@ -45,4 +45,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 	it("the shared canvas registry has the table-readiness widget (DAT-350)", () => {
 		expect(canvasRegistry.has("table-readiness")).toBe(true);
 	});
+
+	it("the shared canvas registry has the column-why widget (DAT-351)", () => {
+		expect(canvasRegistry.has("column-why")).toBe(true);
+	});
 });

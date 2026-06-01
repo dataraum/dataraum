@@ -56,6 +56,28 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("look_table", null)).toBeNull();
 	});
 
+	it("maps why_column to a column-why canvas", () => {
+		const state = toolResultToCanvas("why_column", {
+			column_id: "c1",
+			column_name: "amount",
+			table_name: "orders",
+			found: true,
+			band: "investigate",
+			worst_intent_risk: 0.4,
+			analyzed: true,
+			intents: [],
+			evidence: [],
+			signal_count: 0,
+			analysis: "…",
+			pending_teaches: 0,
+		});
+		expect(state?.kind).toBe("column-why");
+	});
+
+	it("leaves the canvas unchanged when why_column has no result", () => {
+		expect(toolResultToCanvas("why_column", null)).toBeNull();
+	});
+
 	it("maps connect to a schema-preview canvas", () => {
 		const schema = {
 			sourceKind: "file" as const,

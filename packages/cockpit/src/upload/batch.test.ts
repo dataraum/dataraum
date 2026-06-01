@@ -43,6 +43,10 @@ describe("validateUploadBatch", () => {
 		);
 	});
 
+	it("rejects an extensionless filename", () => {
+		expect(validateUploadBatch(["data"])).toMatch(/unsupported/i);
+	});
+
 	it("rejects a mixed-kind batch (csv + parquet → two source_types)", () => {
 		const err = validateUploadBatch(["a.csv", "b.parquet"]);
 		expect(err).toMatch(/same kind/i);

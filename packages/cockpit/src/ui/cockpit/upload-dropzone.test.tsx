@@ -122,4 +122,20 @@ describe("UploadDropzone (DAT-386 / DAT-391)", () => {
 		);
 		expect(onUploaded).not.toHaveBeenCalled();
 	});
+
+	it("is inert while the agent is busy (disabled): no upload, no onUploaded", async () => {
+		const fetchMock = stubUploadOk();
+		const onUploaded = vi.fn();
+		render(
+			<MantineProvider env="test">
+				<UploadDropzone onUploaded={onUploaded} disabled />
+			</MantineProvider>,
+		);
+		const input = screen.getByTestId("upload-input") as HTMLInputElement;
+		expect(input.disabled).toBe(true);
+		pick(["a.csv"]);
+		await Promise.resolve();
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(onUploaded).not.toHaveBeenCalled();
+	});
 });

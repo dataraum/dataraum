@@ -213,7 +213,7 @@ export function ChatRail() {
 					)}
 				</Stack>
 			</Box>
-			<UploadDropzone onUploaded={onUploaded} />
+			<UploadDropzone onUploaded={onUploaded} disabled={isLoading} />
 			<form onSubmit={onSubmit} data-testid="chat-form">
 				<Group gap="xs" wrap="nowrap" p="xs">
 					<Textarea

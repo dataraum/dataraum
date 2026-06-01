@@ -51,16 +51,25 @@ async function uploadFile(file: File): Promise<string> {
  */
 export function UploadDropzone({
 	onUploaded,
+	disabled = false,
 }: {
 	onUploaded: (s3Paths: string[]) => void;
+	// True while the agent turn is running (ChatRail passes `isLoading`): the
+	// dropzone goes inert so an upload can't complete INTO a busy agent loop and
+	// get silently dropped, and so it reads as "unavailable" rather than broken.
+	disabled?: boolean;
 }) {
 	const inputRef = useRef<HTMLInputElement>(null);
+	// Synchronous re-entrancy guard: `busy` state is stale across two rapid drops
+	// in one tick, so gate on a ref, not the rendered `busy`.
+	const inFlightRef = useRef(false);
 	const [total, setTotal] = useState(0);
 	const [busy, setBusy] = useState(false);
 	const [dragOver, setDragOver] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	const handleFiles = async (files: File[]) => {
+		if (inFlightRef.current || disabled) return;
 		setError(null);
 		// Client-side UX gate: count ≤ cap, supported + same-kind. The route stays
 		// uncapped — this just stops a bad batch before it stages anything.
@@ -69,6 +78,7 @@ export function UploadDropzone({
 			setError(invalid);
 			return;
 		}
+		inFlightRef.current = true;
 		setTotal(files.length);
 		setBusy(true);
 		try {
@@ -82,8 +92,11 @@ export function UploadDropzone({
 			);
 			if (failed.length > 0) {
 				// All-or-nothing: a partial file_uris source is confusing, so don't
-				// proceed — surface which files failed and let the user retry.
-				setError(`Some files failed to upload:\n${failed.join("\n")}`);
+				// proceed — surface which failed (already-staged files are cleaned up
+				// automatically by the engine, DAT-389) and let the user retry.
+				setError(
+					`Some files failed to upload (already-staged files are cleaned up automatically):\n${failed.join("\n")}`,
+				);
 				return;
 			}
 			const paths = results.map(
@@ -91,6 +104,7 @@ export function UploadDropzone({
 			);
 			onUploaded(paths);
 		} finally {
+			inFlightRef.current = false;
 			setBusy(false);
 		}
 	};
@@ -109,6 +123,9 @@ export function UploadDropzone({
 		if (files.length > 0) void handleFiles(files);
 	};
 
+	// Inert while an upload is in flight (progress) or the agent turn is running.
+	const blocked = busy || disabled;
+
 	return (
 		<Stack gap="xs" p="xs" data-testid="upload-dropzone">
 			<Box
@@ -118,7 +135,9 @@ export function UploadDropzone({
 				}}
 				onDragLeave={() => setDragOver(false)}
 				onDrop={onDrop}
-				onClick={() => inputRef.current?.click()}
+				onClick={() => {
+					if (!blocked) inputRef.current?.click();
+				}}
 				data-testid="upload-dropzone-target"
 				style={{
 					borderWidth: 1,
@@ -126,7 +145,7 @@ export function UploadDropzone({
 					borderColor: dragOver ? tokens.colors.text : tokens.colors.border,
 					borderRadius: tokens.radii.sm,
 					padding: tokens.spacing.sm,
-					cursor: busy ? "progress" : "pointer",
+					cursor: busy ? "progress" : disabled ? "not-allowed" : "pointer",
 					backgroundColor: dragOver ? tokens.colors.surface : undefined,
 				}}
 			>
@@ -135,7 +154,9 @@ export function UploadDropzone({
 					<Text size="xs" c="dimmed">
 						{busy
 							? `Uploading ${total} file${total === 1 ? "" : "s"}…`
-							: `Drop CSV/Parquet/JSON files (up to ${MAX_UPLOAD_FILES}), or click to pick`}
+							: disabled
+								? "Agent is working — upload when it's done"
+								: `Drop CSV/Parquet/JSON files (up to ${MAX_UPLOAD_FILES}), or click to pick`}
 					</Text>
 				</Group>
 			</Box>
@@ -145,7 +166,7 @@ export function UploadDropzone({
 				accept={ACCEPT}
 				multiple
 				onChange={onInputChange}
-				disabled={busy}
+				disabled={blocked}
 				data-testid="upload-input"
 				style={{ display: "none" }}
 			/>
@@ -163,7 +184,7 @@ export function UploadDropzone({
 				size="compact-xs"
 				variant="subtle"
 				onClick={() => inputRef.current?.click()}
-				disabled={busy}
+				disabled={blocked}
 				data-testid="upload-pick"
 			>
 				Choose files

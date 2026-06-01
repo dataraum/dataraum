@@ -12,10 +12,10 @@ from dataraum.entropy.core import (
     EntropyRepository,
 )
 from dataraum.entropy.views import (
-    EntropyForNetwork,
     EntropyForQuery,
-    build_for_network,
+    EntropyForReadiness,
     build_for_query,
+    build_for_readiness,
 )
 
 __all__ = [
@@ -25,9 +25,9 @@ __all__ = [
     # Analysis
     "ColumnSummary",
     # Views
-    "EntropyForNetwork",
+    "EntropyForReadiness",
     "EntropyForQuery",
-    "build_for_network",
+    "build_for_readiness",
     "build_for_query",
     # Config
     "get_entropy_config",

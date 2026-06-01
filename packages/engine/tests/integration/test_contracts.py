@@ -16,8 +16,8 @@ from dataraum.entropy.contracts import (
     find_best_contract,
     list_contracts,
 )
-from dataraum.entropy.views.network_context import build_for_network
 from dataraum.entropy.views.query_context import network_to_column_summaries
+from dataraum.entropy.views.readiness_context import build_for_readiness
 
 from .conftest import PipelineTestHarness
 
@@ -30,8 +30,8 @@ def _build_column_summaries(
 ) -> dict[str, ColumnSummary]:
     """Build column summaries from test harness via network."""
     with harness.session_factory() as session:
-        network_ctx = build_for_network(session, table_ids)
-        return network_to_column_summaries(network_ctx)
+        readiness_ctx = build_for_readiness(session, table_ids)
+        return network_to_column_summaries(readiness_ctx)
 
 
 class TestContractListAndStructure:

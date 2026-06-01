@@ -305,7 +305,7 @@ class TestFormatMetadataDocument:
             column_name="amount",
             table_name="orders",
             entropy_scores={
-                "worst_intent_p_high": 0.75,
+                "worst_intent_risk": 0.75,
                 "readiness": "investigate",
             },
         )
@@ -552,7 +552,7 @@ class TestFormatMetadataDocument:
             table_name="orders",
             data_type="DOUBLE",
             entropy_scores={
-                "worst_intent_p_high": 0.9,
+                "worst_intent_risk": 0.9,
                 "readiness": "blocked",
             },
         )
@@ -574,7 +574,7 @@ class TestFormatMetadataDocument:
             table_name="orders",
             data_type="DOUBLE",
             entropy_scores={
-                "worst_intent_p_high": 0.45,
+                "worst_intent_risk": 0.45,
                 "readiness": "investigate",
             },
         )

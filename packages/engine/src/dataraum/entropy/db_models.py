@@ -33,7 +33,7 @@ class EntropyObjectRecord(Base):
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     # Workspace scope is structural: this row lives in its workspace's Postgres
     # schema. session_id stays NOT NULL but is no longer load-bearing post-DAT-341;
-    # entropy/engine.py + entropy/measurement.py filter by (source_id, detector_id).
+    # entropy/engine.py filters by (source_id, detector_id).
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
@@ -87,7 +87,7 @@ Index("idx_entropy_source_detector", EntropyObjectRecord.source_id, EntropyObjec
 class EntropyReadinessRecord(Base):
     """Persisted per-column readiness, written by the terminal ``detect`` step (DAT-394).
 
-    The transparent readiness-v2 rollup (``entropy/views/network_context.py``)
+    The transparent readiness-v2 rollup (``entropy/views/readiness_context.py``)
     rolls detector scores up the network into per-intent readiness. This row is
     its persisted snapshot — one per analyzed column — for the cockpit ``why`` /
     ``look`` tools (read via Drizzle) and as agent context. Self-refreshing: the

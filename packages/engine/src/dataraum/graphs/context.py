@@ -583,54 +583,54 @@ def build_execution_context(
         relationships=rel_list_for_topology,
     )
 
-    # 16. Build entropy context using Bayesian network (typed tables enforced internally)
-    from dataraum.entropy.views.network_context import (
-        ColumnNetworkResult,
-        build_for_network,
+    # 16. Build entropy context from the readiness rollup (typed tables enforced internally)
+    from dataraum.entropy.views.readiness_context import (
+        ColumnReadinessResult,
+        build_for_readiness,
     )
 
-    network_ctx = build_for_network(session, table_ids)
+    readiness_ctx = build_for_readiness(session, table_ids)
 
-    # Build column-level entropy lookup from network results
+    # Build column-level entropy lookup from readiness results
     column_entropy_lookup: dict[str, dict[str, Any]] = {}
-    for target, col_result in network_ctx.columns.items():
+    for target, col_result in readiness_ctx.columns.items():
         # target is "column:table.col", extract "table.col"
         col_key = target.removeprefix("column:")
-        column_entropy_lookup[col_key] = _column_network_to_dict(col_result)
+        column_entropy_lookup[col_key] = _column_readiness_to_dict(col_result)
 
-    # Build table-level entropy lookup aggregated from per-column network results
+    # Build table-level entropy lookup aggregated from per-column readiness results
     table_entropy_lookup: dict[str, dict[str, Any]] = {}
-    _table_columns: dict[str, list[ColumnNetworkResult]] = {}
-    for target, col_result in network_ctx.columns.items():
+    _table_columns: dict[str, list[ColumnReadinessResult]] = {}
+    for target, col_result in readiness_ctx.columns.items():
         col_key = target.removeprefix("column:")
         tbl_name = col_key.split(".")[0] if "." in col_key else col_key
         _table_columns.setdefault(tbl_name, []).append(col_result)
     for tbl_name, col_results in _table_columns.items():
-        table_entropy_lookup[tbl_name] = _table_network_to_dict(tbl_name, col_results)
+        table_entropy_lookup[tbl_name] = _table_readiness_to_dict(tbl_name, col_results)
 
-    # Build entropy summary from the network context
+    # Build entropy summary from the readiness context
     entropy_summary_dict: dict[str, Any] = {
-        "overall_readiness": network_ctx.overall_readiness,
-        "high_entropy_count": network_ctx.columns_blocked + network_ctx.columns_investigate,
-        "critical_entropy_count": network_ctx.columns_blocked,
-        "columns_blocked": network_ctx.columns_blocked,
-        "columns_investigate": network_ctx.columns_investigate,
-        "columns_ready": network_ctx.columns_ready,
+        "overall_readiness": readiness_ctx.overall_readiness,
+        "high_entropy_count": readiness_ctx.columns_blocked + readiness_ctx.columns_investigate,
+        "critical_entropy_count": readiness_ctx.columns_blocked,
+        "columns_blocked": readiness_ctx.columns_blocked,
+        "columns_investigate": readiness_ctx.columns_investigate,
+        "columns_ready": readiness_ctx.columns_ready,
         "readiness_blockers": [
             t.removeprefix("column:")
-            for t, c in network_ctx.columns.items()
+            for t, c in readiness_ctx.columns.items()
             if c.readiness == "blocked"
         ],
     }
 
-    # 16b. Build column summaries for contract evaluation (reuses network_ctx)
+    # 16b. Build column summaries for contract evaluation (reuses readiness_ctx)
     from dataraum.entropy.views.query_context import network_to_column_summaries
 
-    column_summaries = network_to_column_summaries(network_ctx)
+    column_summaries = network_to_column_summaries(readiness_ctx)
 
-    # 16c. Overall entropy score from network context
+    # 16c. Overall entropy score from readiness context
     overall_entropy_score: float | None = (
-        network_ctx.avg_entropy_score if network_ctx.total_columns > 0 else None
+        readiness_ctx.avg_entropy_score if readiness_ctx.total_columns > 0 else None
     )
 
     # 17. Build table contexts
@@ -854,42 +854,42 @@ def _generate_column_flags(
 
 
 # =============================================================================
-# Network-to-dict converters
+# Readiness-to-dict converters
 # =============================================================================
 
 
-def _column_network_to_dict(result: Any) -> dict[str, Any]:
-    """Convert ColumnNetworkResult to dict for ColumnContext.entropy_scores.
+def _column_readiness_to_dict(result: Any) -> dict[str, Any]:
+    """Convert ColumnReadinessResult to dict for ColumnContext.entropy_scores.
 
     Args:
-        result: ColumnNetworkResult from network inference
+        result: ColumnReadinessResult from the readiness rollup
 
     Returns:
         Dict compatible with existing entropy_scores consumers
     """
     high_dims = [ne.dimension_path for ne in result.node_evidence if ne.state != "low"]
     return {
-        "worst_intent_p_high": result.worst_intent_p_high,
+        "worst_intent_risk": result.worst_intent_risk,
         "readiness": result.readiness,
         "top_priority_node": result.top_priority_node,
         "top_priority_impact": result.top_priority_impact,
         "high_entropy_dimensions": high_dims,
         "intents": [
-            {"name": i.intent_name, "p_high": i.p_high, "readiness": i.readiness}
+            {"name": i.intent_name, "risk": i.risk, "readiness": i.readiness}
             for i in result.intents
         ],
     }
 
 
-def _table_network_to_dict(
+def _table_readiness_to_dict(
     table_name: str,
     col_results: list[Any],
 ) -> dict[str, Any]:
-    """Aggregate per-column network results into a table-level dict.
+    """Aggregate per-column readiness results into a table-level dict.
 
     Args:
         table_name: Table name
-        col_results: List of ColumnNetworkResult for this table
+        col_results: List of ColumnReadinessResult for this table
 
     Returns:
         Dict compatible with existing table_entropy consumers
@@ -899,7 +899,7 @@ def _table_network_to_dict(
 
     blocked = [r for r in col_results if r.readiness == "blocked"]
     investigate = [r for r in col_results if r.readiness == "investigate"]
-    p_highs = [r.worst_intent_p_high for r in col_results]
+    risks = [r.worst_intent_risk for r in col_results]
 
     if blocked:
         readiness = "blocked"
@@ -912,8 +912,8 @@ def _table_network_to_dict(
         "readiness": readiness,
         "columns_blocked": len(blocked),
         "columns_investigate": len(investigate),
-        "avg_worst_intent_p_high": sum(p_highs) / len(p_highs),
-        "max_worst_intent_p_high": max(p_highs),
+        "avg_worst_intent_risk": sum(risks) / len(risks),
+        "max_worst_intent_risk": max(risks),
         "blocked_columns": [r.target.removeprefix("column:").split(".", 1)[-1] for r in blocked],
     }
 

@@ -1,4 +1,4 @@
-"""Entropy context for the network rollup — per-column design.
+"""Entropy context for the readiness rollup — per-column design.
 
 Rolls detector scores up the entropy network independently for each column
 target, then aggregates intent readiness and cross-column fix priorities.
@@ -68,7 +68,7 @@ class IntentReadiness:
     """Risk + readiness band for an intent node, with its ranked drivers."""
 
     intent_name: str = ""
-    p_high: float = 0.0
+    risk: float = 0.0
     readiness: str = "ready"
     drivers: list[IntentDriver] = field(default_factory=list)
 
@@ -88,8 +88,8 @@ class ColumnNodeEvidence:
 
 
 @dataclass
-class ColumnNetworkResult:
-    """Network inference result for a single column."""
+class ColumnReadinessResult:
+    """Readiness rollup result for a single column."""
 
     target: str = ""
     node_evidence: list[ColumnNodeEvidence] = field(default_factory=list)
@@ -98,12 +98,12 @@ class ColumnNetworkResult:
     top_priority_impact: float = 0.0
     nodes_observed: int = 0
     nodes_high: int = 0
-    worst_intent_p_high: float = 0.0
+    worst_intent_risk: float = 0.0
     readiness: str = "ready"
 
 
 @dataclass
-class EntropyForNetwork:
+class EntropyForReadiness:
     """Top-level: per-column results + source-wide summaries.
 
     Cross-column aggregation (per-intent rollup + top cross-column fix) is NOT
@@ -111,7 +111,7 @@ class EntropyForNetwork:
     aggregate was the retired MCP formatter.
     """
 
-    columns: dict[str, ColumnNetworkResult] = field(default_factory=dict)
+    columns: dict[str, ColumnReadinessResult] = field(default_factory=dict)
     direct_signals: list[DirectSignal] = field(default_factory=list)
     total_columns: int = 0
     columns_blocked: int = 0
@@ -148,21 +148,21 @@ def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
     )
 
 
-def _readiness_from_p_high(
-    p_high: float,
+def _readiness_from_risk(
+    risk: float,
     disc_medium_upper: float = 0.6,
     disc_low_upper: float = 0.3,
 ) -> str:
-    """Determine readiness from P(intent=high).
+    """Determine readiness from an intent's risk score.
 
     Uses the same thresholds as score discretization:
-    - P(high) > medium_upper -> blocked
-    - P(high) > low_upper -> investigate
+    - risk > medium_upper -> blocked
+    - risk > low_upper -> investigate
     - else -> ready
     """
-    if p_high > disc_medium_upper:
+    if risk > disc_medium_upper:
         return "blocked"
-    if p_high > disc_low_upper:
+    if risk > disc_low_upper:
         return "investigate"
     return "ready"
 
@@ -172,7 +172,7 @@ def _build_column_result(
     objects: list[EntropyObject],
     network: EntropyNetwork,
     path_map: dict[str, str],
-) -> tuple[ColumnNetworkResult | None, list[DirectSignal]]:
+) -> tuple[ColumnReadinessResult | None, list[DirectSignal]]:
     """Run network inference for a single column's objects.
 
     Args:
@@ -182,7 +182,7 @@ def _build_column_result(
         path_map: Pre-built dimension_path -> node_name map.
 
     Returns:
-        Tuple of (ColumnNetworkResult or None, list of DirectSignals).
+        Tuple of (ColumnReadinessResult or None, list of DirectSignals).
         Returns None for the result if no objects map to network nodes.
     """
     disc = network.config.discretization
@@ -251,8 +251,8 @@ def _build_column_result(
         if intent_name not in risk:
             continue
 
-        p_high = risk[intent_name]
-        readiness = _readiness_from_p_high(p_high, disc.medium_upper, disc.low_upper)
+        intent_risk = risk[intent_name]
+        readiness = _readiness_from_risk(intent_risk, disc.medium_upper, disc.low_upper)
         # Per-intent drivers: nodes that lower THIS intent's risk, ranked by how
         # much. ``affected_intents`` carries the per-intent split that the
         # collapsed ColumnNodeEvidence.impact_delta (a max across intents) drops.
@@ -273,7 +273,7 @@ def _build_column_result(
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,
-                p_high=p_high,
+                risk=intent_risk,
                 readiness=readiness,
                 drivers=drivers,
             )
@@ -282,9 +282,9 @@ def _build_column_result(
     # Summary stats
     nodes_observed = len(scores)
     nodes_high = sum(1 for s in states.values() if s == "high")
-    worst_intent_p_high = max((i.p_high for i in intents), default=0.0)
-    readiness = _readiness_from_p_high(
-        worst_intent_p_high,
+    worst_intent_risk = max((i.risk for i in intents), default=0.0)
+    readiness = _readiness_from_risk(
+        worst_intent_risk,
         disc.medium_upper,
         disc.low_upper,
     )
@@ -296,7 +296,7 @@ def _build_column_result(
         top_priority_node = priorities[0].node
         top_priority_impact = priorities[0].impact_delta
 
-    return ColumnNetworkResult(
+    return ColumnReadinessResult(
         target=target,
         node_evidence=node_evidence,
         intents=intents,
@@ -304,7 +304,7 @@ def _build_column_result(
         top_priority_impact=top_priority_impact,
         nodes_observed=nodes_observed,
         nodes_high=nodes_high,
-        worst_intent_p_high=worst_intent_p_high,
+        worst_intent_risk=worst_intent_risk,
         readiness=readiness,
     ), direct_signals
 
@@ -314,11 +314,11 @@ def _build_column_result(
 # ---------------------------------------------------------------------------
 
 
-def assemble_network_context(
+def assemble_readiness_context(
     objects: list[EntropyObject],
     network: EntropyNetwork,
-) -> EntropyForNetwork:
-    """Assemble network context from entropy objects and network.
+) -> EntropyForReadiness:
+    """Assemble readiness context from entropy objects and network.
 
     Rolls scores up the entropy network independently per column target. Per-column
     results + source-wide summary stats only; cross-column aggregation is DAT-396.
@@ -328,10 +328,10 @@ def assemble_network_context(
         network: The entropy network.
 
     Returns:
-        EntropyForNetwork with per-column results + source-wide summaries.
+        EntropyForReadiness with per-column results + source-wide summaries.
     """
     if not objects:
-        return EntropyForNetwork()
+        return EntropyForReadiness()
 
     # Step 1: Build path map once
     path_map = build_dimension_path_to_node_map(network)
@@ -351,7 +351,7 @@ def assemble_network_context(
             table_targets[target] = target_objects
 
     # Step 4: Per-column network inference
-    columns: dict[str, ColumnNetworkResult] = {}
+    columns: dict[str, ColumnReadinessResult] = {}
     all_direct_signals: list[DirectSignal] = []
 
     for target, target_objects in column_targets.items():
@@ -401,7 +401,7 @@ def assemble_network_context(
             target_max[obj.target] = obj.score
     avg_entropy_score = sum(target_max.values()) / len(target_max) if target_max else 0.0
 
-    return EntropyForNetwork(
+    return EntropyForReadiness(
         columns=columns,
         direct_signals=all_direct_signals,
         total_columns=total_columns,
@@ -419,13 +419,13 @@ def assemble_network_context(
 # ---------------------------------------------------------------------------
 
 
-def build_for_network(
+def build_for_readiness(
     session: Session,
     table_ids: list[str],
-) -> EntropyForNetwork:
-    """Build entropy context for network inference view.
+) -> EntropyForReadiness:
+    """Build entropy context for the readiness view.
 
-    Loads entropy data for typed tables and assembles the network context
+    Loads entropy data for typed tables and assembles the readiness context
     joining rollup results with source evidence.
 
     Args:
@@ -433,22 +433,22 @@ def build_for_network(
         table_ids: List of table IDs to include.
 
     Returns:
-        EntropyForNetwork with computed context.
+        EntropyForReadiness with computed context.
     """
     if not table_ids:
-        return EntropyForNetwork()
+        return EntropyForReadiness()
 
     repo = EntropyRepository(session)
 
     typed_table_ids = repo.get_typed_table_ids(table_ids)
     if not typed_table_ids:
-        logger.warning("No typed tables found for network context")
-        return EntropyForNetwork()
+        logger.warning("No typed tables found for readiness context")
+        return EntropyForReadiness()
 
     entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
     if not entropy_objects:
-        logger.debug("No entropy objects found for network context")
-        return EntropyForNetwork()
+        logger.debug("No entropy objects found for readiness context")
+        return EntropyForReadiness()
 
     network = EntropyNetwork()
-    return assemble_network_context(entropy_objects, network)
+    return assemble_readiness_context(entropy_objects, network)

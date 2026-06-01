@@ -23,9 +23,9 @@ from dataraum.entropy.contracts import (
     find_best_contract,
     get_contract,
 )
-from dataraum.entropy.views.network_context import (
-    EntropyForNetwork,
-    build_for_network,
+from dataraum.entropy.views.readiness_context import (
+    EntropyForReadiness,
+    build_for_readiness,
 )
 
 if TYPE_CHECKING:
@@ -123,24 +123,24 @@ def build_for_query(
             confidence_level=ConfidenceLevel.YELLOW,
         )
 
-    # Build network context (handles typed table enforcement internally)
-    network_ctx = build_for_network(session, table_ids)
+    # Build readiness context (handles typed table enforcement internally)
+    readiness_ctx = build_for_readiness(session, table_ids)
 
-    if not network_ctx.columns:
+    if not readiness_ctx.columns:
         return EntropyForQuery(
-            overall_readiness=network_ctx.overall_readiness or "ready",
+            overall_readiness=readiness_ctx.overall_readiness or "ready",
             confidence_level=ConfidenceLevel.GREEN,  # No entropy data = assume good
         )
 
     # Derive readiness counts from network
-    overall_readiness = network_ctx.overall_readiness
-    high_entropy_count = network_ctx.columns_blocked + network_ctx.columns_investigate
-    critical_entropy_count = network_ctx.columns_blocked
+    overall_readiness = readiness_ctx.overall_readiness
+    high_entropy_count = readiness_ctx.columns_blocked + readiness_ctx.columns_investigate
+    critical_entropy_count = readiness_ctx.columns_blocked
 
-    overall_entropy_score: float | None = network_ctx.avg_entropy_score
+    overall_entropy_score: float | None = readiness_ctx.avg_entropy_score
 
     # Convert network results to ColumnSummary for contract evaluation
-    column_summaries = network_to_column_summaries(network_ctx)
+    column_summaries = network_to_column_summaries(readiness_ctx)
 
     # Evaluate contracts
     contract_name: str | None = None
@@ -194,7 +194,7 @@ def build_for_query(
 
 
 def network_to_column_summaries(
-    network_ctx: EntropyForNetwork,
+    readiness_ctx: EntropyForReadiness,
 ) -> dict[str, ColumnSummary]:
     """Convert network results to ColumnSummary for contract evaluation.
 
@@ -202,13 +202,13 @@ def network_to_column_summaries(
     the network's per-node evidence AND direct signals (unmapped detectors).
 
     Args:
-        network_ctx: EntropyForNetwork with per-column results
+        readiness_ctx: EntropyForReadiness with per-column results
 
     Returns:
         Dict mapping "table.column" to ColumnSummary with dimension_scores populated
     """
     summaries: dict[str, ColumnSummary] = {}
-    for target, col_result in network_ctx.columns.items():
+    for target, col_result in readiness_ctx.columns.items():
         col_key = target.removeprefix("column:")
         parts = col_key.split(".", 1)
         table_name = parts[0] if len(parts) > 1 else ""
@@ -230,7 +230,7 @@ def network_to_column_summaries(
 
     # Fold in direct signals (unmapped detector results) so that
     # dimensions like semantic.dimensional are visible to contracts.
-    for ds in network_ctx.direct_signals:
+    for ds in readiness_ctx.direct_signals:
         if not ds.dimension_path or not ds.target:
             continue
 

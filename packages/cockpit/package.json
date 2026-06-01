@@ -41,6 +41,7 @@
     "@tanstack/react-router-ssr-query": "latest",
     "@tanstack/react-start": "latest",
     "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.13.26",
     "@tanstack/router-plugin": "^1.168.12",
     "@temporalio/client": "^1.17.2",
     "drizzle-orm": "1.0.0-rc.2-e38a2ba",

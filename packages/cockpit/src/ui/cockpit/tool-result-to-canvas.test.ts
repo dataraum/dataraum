@@ -105,12 +105,16 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("maps run_sql with no params to a result-grid (params undefined)", () => {
+	it("omits params for run_sql with no bind values (absent or empty)", () => {
+		// Absent params and an empty array are the same query — both collapse to
+		// no params so the grid's queryKey can't flip between them mid-stream.
 		expect(toolResultToCanvas("run_sql", {}, { sql: "SELECT 1" })).toEqual({
 			kind: "result-grid",
 			sql: "SELECT 1",
-			params: undefined,
 		});
+		expect(
+			toolResultToCanvas("run_sql", {}, { sql: "SELECT 1", params: [] }),
+		).toEqual({ kind: "result-grid", sql: "SELECT 1" });
 	});
 
 	it("returns null for run_sql with no sql on the wire (canvas unchanged)", () => {
@@ -219,7 +223,6 @@ describe("canvasFromMessages", () => {
 		expect(canvasFromMessages(messages)).toEqual({
 			kind: "result-grid",
 			sql: "SELECT * FROM orders",
-			params: [],
 		});
 	});
 

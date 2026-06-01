@@ -10,7 +10,9 @@
 //     emits a `cancelled` footer). The only widget that does I/O — the baseline
 //     widgets are static — so the streaming state is contained here.
 //
-// P2 scope: read-only. Virtualization + server-side sort/filter are P3.
+// P2 scope: read-only, server-side sort/filter is P3. The body IS virtualized
+// (only the visible window hits the DOM) — load-bearing for the 50k streaming
+// cap, not optional.
 
 import type { Json } from "@duckdb/node-api";
 import { Alert, Badge, Group, Table, Text } from "@mantine/core";
@@ -21,6 +23,7 @@ import {
 	type RowData,
 	useReactTable,
 } from "@tanstack/react-table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -84,6 +87,30 @@ export function ResultGridView({
 		getCoreRowModel: getCoreRowModel(),
 	});
 
+	// Virtualize the body: only the visible window (+overscan) is ever in the
+	// DOM, so a 50k-row result is ~40 <tr> nodes, not 50k. The columnar store +
+	// index rows make this the intended, cheap path. `initialRect` gives a sane
+	// window before the real ResizeObserver measurement (and in tests, which have
+	// no layout). Rows are uniform-height text, so a fixed estimate is fine — no
+	// per-row measureElement (P3 can add it if variable heights ever land).
+	const rows = table.getRowModel().rows;
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const rowVirtualizer = useVirtualizer({
+		count: rows.length,
+		getScrollElement: () => scrollRef.current,
+		estimateSize: () => 36,
+		overscan: 16,
+		initialRect: { width: 800, height: 600 },
+	});
+	const virtualRows = rowVirtualizer.getVirtualItems();
+	const totalSize = rowVirtualizer.getTotalSize();
+	const padTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+	const padBottom =
+		virtualRows.length > 0
+			? totalSize - virtualRows[virtualRows.length - 1].end
+			: 0;
+	const colCount = store.columns.length;
+
 	const status = fatal ? "error" : store.status;
 
 	return (
@@ -113,8 +140,12 @@ export function ResultGridView({
 				</Alert>
 			)}
 
-			{store.columns.length > 0 && (
-				<Table.ScrollContainer minWidth={320}>
+			{colCount > 0 && (
+				<div
+					ref={scrollRef}
+					style={{ maxHeight: 480, overflow: "auto" }}
+					data-testid="canvas-result-grid-scroll"
+				>
 					<Table striped highlightOnHover stickyHeader>
 						<Table.Thead>
 							<Table.Tr>
@@ -129,18 +160,39 @@ export function ResultGridView({
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
-							{table.getRowModel().rows.map((row) => (
-								<Table.Tr key={row.id}>
-									{row.getVisibleCells().map((cell) => (
-										<Table.Td key={cell.id}>
-											{formatCell(cell.getValue())}
-										</Table.Td>
-									))}
+							{/* Spacer rows reserve the off-screen scroll height so only the
+							    visible window carries real <tr> cells. */}
+							{padTop > 0 && (
+								<Table.Tr aria-hidden>
+									<Table.Td
+										colSpan={colCount}
+										style={{ height: padTop, padding: 0, border: 0 }}
+									/>
 								</Table.Tr>
-							))}
+							)}
+							{virtualRows.map((vr) => {
+								const row = rows[vr.index];
+								return (
+									<Table.Tr key={row.id}>
+										{row.getVisibleCells().map((cell) => (
+											<Table.Td key={cell.id}>
+												{formatCell(cell.getValue())}
+											</Table.Td>
+										))}
+									</Table.Tr>
+								);
+							})}
+							{padBottom > 0 && (
+								<Table.Tr aria-hidden>
+									<Table.Td
+										colSpan={colCount}
+										style={{ height: padBottom, padding: 0, border: 0 }}
+									/>
+								</Table.Tr>
+							)}
 						</Table.Tbody>
 					</Table>
-				</Table.ScrollContainer>
+				</div>
 			)}
 		</div>
 	);

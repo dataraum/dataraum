@@ -63,13 +63,17 @@ export function toolResultToCanvas(
 			// result. No sql on the wire → leave the canvas unchanged.
 			const args = (input ?? {}) as { sql?: unknown; params?: unknown };
 			if (typeof args.sql !== "string" || args.sql.length === 0) return null;
-			return {
-				kind: "result-grid",
-				sql: args.sql,
-				params: Array.isArray(args.params)
+			// Carry params ONLY when there are bind values: an empty array and
+			// "absent" are the same query, so collapse them. Otherwise the grid's
+			// queryKey flips between `[]` and `undefined` as the streamed tool args
+			// settle, re-issuing the whole stream for no reason.
+			const params =
+				Array.isArray(args.params) && args.params.length > 0
 					? (args.params as (string | number | boolean | null)[])
-					: undefined,
-			};
+					: undefined;
+			return params
+				? { kind: "result-grid", sql: args.sql, params }
+				: { kind: "result-grid", sql: args.sql };
 		}
 		default:
 			// teach / replay / unknown: no canvas projection.

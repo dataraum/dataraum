@@ -1,11 +1,16 @@
 // @vitest-environment happy-dom
 
-// Render tests for the PURE ResultGridView (DAT-385 P2). We pre-seed a
-// ColumnStore by folding frames — exactly what the live widget's stream does —
-// and assert the TanStack index-row + accessorFn path renders the right cells
-// (no row-object rematerialization) and that the terminal states surface their
-// banners. The streaming/fetch half (ResultGridWidget) is covered by the
-// ndjson-stream unit tests + the lane smoke.
+// Render tests for the PURE ResultGridView (DAT-385 P2). Pre-seed a ColumnStore
+// (exactly what the live stream folds into) and assert the layout-INDEPENDENT
+// shell: the grid container, the (non-virtualized) header, row-count, status
+// badge, and the truncation/error banners.
+//
+// We deliberately do NOT assert the body cell values here: the body is windowed
+// by @tanstack/react-virtual, which needs a real viewport height that no
+// headless DOM (happy-dom/jsdom) provides — faking layout via ResizeObserver +
+// getBoundingClientRect stubs would be testing the polyfill, not the grid. The
+// rendered rows are verified by the browser smoke instead; the columnar accessor
+// path is exercised by the ColumnStore unit tests (ndjson-stream.test.ts).
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -41,18 +46,17 @@ function renderView(store: ColumnStore, fatal?: string | null) {
 describe("ResultGridView (DAT-385 P2)", () => {
 	afterEach(() => cleanup());
 
-	it("renders headers and columnar cells via the index-row accessor", () => {
+	it("renders the grid shell: scroll container, headers, row count, done status", () => {
 		const store = seeded();
 		store.apply({ t: "f", rows: 3 });
 		renderView(store);
 
 		expect(screen.getByTestId("canvas-result-grid")).toBeTruthy();
+		// The scroll container + header are NOT virtualized — they render without
+		// a viewport. (The windowed body rows are smoke-verified — see header.)
+		expect(screen.getByTestId("canvas-result-grid-scroll")).toBeTruthy();
 		expect(screen.getByText("id")).toBeTruthy();
 		expect(screen.getByText("name")).toBeTruthy();
-		expect(screen.getByText("alpha")).toBeTruthy();
-		expect(screen.getByText("beta")).toBeTruthy();
-		// The 3rd row's name cell was a null → em-dash.
-		expect(screen.getByText("—")).toBeTruthy();
 		expect(screen.getByText("3 rows")).toBeTruthy();
 		expect(screen.getByText("done")).toBeTruthy();
 	});

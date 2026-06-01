@@ -10,6 +10,7 @@ import { ConceptFrameWidget } from "#/ui/cockpit/widgets/concept-frame";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
+import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SelectedSourceWidget } from "#/ui/cockpit/widgets/selected-source";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
@@ -23,4 +24,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "table-list", component: TableListWidget })
 	.register({ kind: "schema-preview", component: SchemaPreviewWidget })
 	.register({ kind: "concept-frame", component: ConceptFrameWidget })
-	.register({ kind: "selected-source", component: SelectedSourceWidget });
+	.register({ kind: "selected-source", component: SelectedSourceWidget })
+	.register({ kind: "result-grid", component: ResultGridWidget });

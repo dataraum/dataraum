@@ -19,7 +19,16 @@ export type CanvasState =
 	| { kind: "table-list"; tables: TableSummary[] }
 	| { kind: "schema-preview"; schema: ConnectSchema }
 	| { kind: "concept-frame"; frame: FrameResult }
-	| { kind: "selected-source"; selection: SelectResult };
+	| { kind: "selected-source"; selection: SelectResult }
+	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
+	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
+	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool
+	// CALL input, not a server handle. Columns/types arrive on the stream header.
+	| {
+			kind: "result-grid";
+			sql: string;
+			params?: (string | number | boolean | null)[];
+	  };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];

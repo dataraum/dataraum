@@ -94,6 +94,30 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("frame", null)).toBeNull();
 	});
 
+	it("maps run_sql to a result-grid from the CALL INPUT (sql + params)", () => {
+		// The grid re-issues the query, so it reads the input, not the result.
+		const result = { columns: ["n"], rows: [{ n: 1 }], rowCount: 1 };
+		const input = { sql: "SELECT n FROM t WHERE n > $1", params: [0] };
+		expect(toolResultToCanvas("run_sql", result, input)).toEqual({
+			kind: "result-grid",
+			sql: "SELECT n FROM t WHERE n > $1",
+			params: [0],
+		});
+	});
+
+	it("maps run_sql with no params to a result-grid (params undefined)", () => {
+		expect(toolResultToCanvas("run_sql", {}, { sql: "SELECT 1" })).toEqual({
+			kind: "result-grid",
+			sql: "SELECT 1",
+			params: undefined,
+		});
+	});
+
+	it("returns null for run_sql with no sql on the wire (canvas unchanged)", () => {
+		expect(toolResultToCanvas("run_sql", {}, {})).toBeNull();
+		expect(toolResultToCanvas("run_sql", {}, undefined)).toBeNull();
+	});
+
 	it("maps select to a selected-source canvas (DAT-398)", () => {
 		const selection = {
 			source_id: "s1",
@@ -174,6 +198,29 @@ describe("canvasFromMessages", () => {
 			]),
 		];
 		expect(canvasFromMessages(messages)?.kind).toBe("table-list");
+	});
+
+	it("maps run_sql to a result-grid using the call arguments (not the result)", () => {
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "run_sql",
+					arguments: JSON.stringify({
+						sql: "SELECT * FROM orders",
+						params: [],
+					}),
+					state: "complete",
+					output: { columns: ["id"], rows: [{ id: 1 }], rowCount: 1 },
+				},
+			]),
+		];
+		expect(canvasFromMessages(messages)).toEqual({
+			kind: "result-grid",
+			sql: "SELECT * FROM orders",
+			params: [],
+		});
 	});
 
 	it("returns null when there are no tool parts", () => {

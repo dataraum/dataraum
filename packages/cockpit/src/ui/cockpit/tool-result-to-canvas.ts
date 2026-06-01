@@ -26,6 +26,7 @@ import type { CanvasState } from "#/ui/cockpit/canvas-state";
 export function toolResultToCanvas(
 	toolName: string,
 	result: unknown,
+	input?: unknown,
 ): CanvasState | null {
 	switch (toolName) {
 		case "list_sources":
@@ -55,6 +56,21 @@ export function toolResultToCanvas(
 			return result
 				? { kind: "selected-source", selection: result as SelectResult }
 				: null;
+		case "run_sql": {
+			// The agent's run_sql returns a small materialized sample for the LLM;
+			// the human grid re-issues the query against the stateless streaming
+			// endpoint, so it maps from the CALL INPUT (sql + bind params), not the
+			// result. No sql on the wire → leave the canvas unchanged.
+			const args = (input ?? {}) as { sql?: unknown; params?: unknown };
+			if (typeof args.sql !== "string" || args.sql.length === 0) return null;
+			return {
+				kind: "result-grid",
+				sql: args.sql,
+				params: Array.isArray(args.params)
+					? (args.params as (string | number | boolean | null)[])
+					: undefined,
+			};
+		}
 		default:
 			// teach / replay / unknown: no canvas projection.
 			return null;
@@ -71,30 +87,49 @@ export function toolResultToCanvas(
 export function canvasFromMessages(
 	messages: ReadonlyArray<UIMessage>,
 ): CanvasState | null {
-	let latest: { name: string; output: unknown } | null = null;
-	const nameByCallId = new Map<string, string>();
+	let latest: { name: string; output: unknown; input: unknown } | null = null;
+	const callById = new Map<string, { name: string; input: unknown }>();
 
 	for (const message of messages) {
 		for (const part of message.parts) {
 			if (part.type === "tool-call") {
-				nameByCallId.set(part.id, part.name);
+				const input = parseToolArguments(part);
+				callById.set(part.id, { name: part.name, input });
 				if (part.output !== undefined) {
-					latest = { name: part.name, output: part.output };
+					latest = { name: part.name, output: part.output, input };
 				}
 			} else if (part.type === "tool-result") {
-				const name = nameByCallId.get(part.toolCallId);
-				if (name) {
+				const call = callById.get(part.toolCallId);
+				if (call) {
 					let output: unknown = part.content;
 					try {
 						output = JSON.parse(part.content);
 					} catch {
 						// content wasn't JSON — keep the raw string.
 					}
-					latest = { name, output };
+					latest = { name: call.name, output, input: call.input };
 				}
 			}
 		}
 	}
 
-	return latest ? toolResultToCanvas(latest.name, latest.output) : null;
+	return latest
+		? toolResultToCanvas(latest.name, latest.output, latest.input)
+		: null;
+}
+
+/**
+ * Lift a tool-call's input off the part's JSON `arguments` string (the SDK
+ * carries the call input there). Tolerates a missing or non-JSON value →
+ * undefined. The `run_sql` → result-grid mapping needs this: the grid re-issues
+ * the agent's query, so it reads the SQL from the call input, not the result.
+ */
+function parseToolArguments(part: { arguments?: unknown }): unknown {
+	const raw = part.arguments;
+	if (typeof raw !== "string") return raw ?? undefined;
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
 }

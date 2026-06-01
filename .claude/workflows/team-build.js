@@ -4,11 +4,42 @@ export const meta = {
   whenToUse: 'After the lead drains the team-refine queue and approves a subset of approaches. Reviewers run per-lane as a pipeline stage spawned by the workflow RUNTIME (lane agents have no Agent tool — proven 2026-05-31), and the push gate is a deterministic JS decision on their verdicts. The lead opens PRs from the MacBook and picks merge order.',
   phases: [
     { title: 'Preflight', detail: 'one fetch + per-lane 5 parallel-safety STOP conditions (from /take Step 1)' },
-    { title: 'Implement', detail: 'worktree → implement → local CI gates + lane smoke → commit (no push)' },
+    { title: 'Implement', detail: 'worktree → implement (may ASK the lead mid-run) → local CI gates + lane smoke → commit (no push)' },
     { title: 'Review', detail: 'runtime spawns spec-compliance + senior-code + strict per lane, concurrently' },
     { title: 'Gate', detail: 'deterministic JS gate on verdicts → push branch (or park blocked / stopped-early)' },
   ],
 }
+
+// ── MID-RUN ASK PROTOCOL (course-correct without losing context) ────────────
+// A background lane that hits an ambiguous fork must NOT guess — guessing wrong
+// costs hours of work down the wrong branch, and escalate-and-die throws away
+// the lane's accumulated context. Instead the lane PAUSES and ASKS: it writes a
+// question to a file mailbox, BLOCKS until an answer appears, then RESUMES with
+// full context intact. Proven viable by probe wf_c18f4719 (2026-05-31).
+//
+// THE ORCHESTRATOR (the session that launched this workflow) is the human-proxy:
+// while team-build runs in the background, the launcher MUST watch the mailbox
+// (a Monitor on .claude/.mailbox emitting on new *.q files), and for each
+// question either answer it from project context (CLAUDE.md / memory / ADRs) or
+// PushNotification the user for a genuine fork, then write the *.a file. This is
+// the org-chart model: the lead fields the engineers' questions and shields the
+// user from the routine ones. If no orchestrator is draining the mailbox, asks
+// time out → the lane stops-early (it still never guesses). See ADR-0006.
+//
+// Mailbox is at <repo>/.claude/.mailbox/ (gitignored). Per lane: {id}.q holds the
+// open question, {id}.a the answer; both are deleted after each exchange, so a
+// lane can ask sequentially (it blocks between asks → never two open questions
+// from one lane). team-build is one-run-at-a-time (it mutates worktrees + the
+// status board), so per-lane filenames don't collide across runs.
+const ASK_PROTOCOL = (laneId) =>
+  `\n\nMID-RUN ASK (use this instead of guessing on an ambiguous fork; it is NOT failure — guessing wrong is):\n` +
+  `When you hit a real design fork the approved approach does not settle, do NOT pick a branch and barrel on. ASK the lead and wait:\n` +
+  `  1. MB="$(git rev-parse --show-toplevel)/.claude/.mailbox"; mkdir -p "$MB"; rm -f "$MB/${laneId}.a"\n` +
+  `  2. Write your question (be specific; give the options and the context the lead needs to decide) to "$MB/${laneId}.q" via a heredoc.\n` +
+  `  3. BLOCK for the answer: \`for i in $(seq 1 360); do [ -f "$MB/${laneId}.a" ] && break; sleep 5; done\` (waits up to 30 min).\n` +
+  `  4. If "$MB/${laneId}.a" exists: read it, \`rm -f "$MB/${laneId}.q" "$MB/${laneId}.a"\`, record the {question, answer} pair in your \`asks\` result, and CONTINUE with that decision (it overrides your default; honor any extra instruction it carries).\n` +
+  `  5. If it never arrived (TIMEOUT — no orchestrator was draining the mailbox): do NOT guess. Set stopped_early:true, blocker:"unanswered ask: <your question>", committed:false, and return.\n` +
+  `Ask sparingly and batch where you can — each ask blocks your lane (and holds a concurrency slot). Reserve it for forks that would be expensive to undo; keep using stop-early for "I am fundamentally blocked".`
 
 // ── Input ────────────────────────────────────────────────────────────────
 // args = approved approaches from team-refine (status:'approach' only), each
@@ -93,7 +124,19 @@ const IMPLEMENT_RESULT = {
     lane_smoke: { type: 'string', description: "this task's lane-smoke surface result" },
     committed: { type: 'boolean', description: 'true if work is committed on the branch (ready for review). false if stopped_early before any commit.' },
     stopped_early: { type: 'boolean', description: 'true if the lane parked a blocker / found a wrong assumption instead of completing' },
-    blocker: { type: 'string', description: 'if stopped_early: what blocked it' },
+    blocker: { type: 'string', description: 'if stopped_early: what blocked it (incl. "unanswered ask: ..." on ask timeout)' },
+    asks: {
+      type: 'array',
+      description: 'every mid-run ASK this lane resolved (empty if none) — the course-corrections the lead made while it ran',
+      items: {
+        type: 'object',
+        required: ['question', 'answer'],
+        properties: {
+          question: { type: 'string' },
+          answer: { type: 'string', description: "the lead's decision the lane then acted on" },
+        },
+      },
+    },
     lanes_unblocked: { type: 'array', items: { type: 'string' }, description: 'task IDs that become ready once this merges' },
     summary: { type: 'string' },
   },
@@ -165,7 +208,9 @@ const results = await pipeline(
       `Then \`pwd\` to record the ABSOLUTE worktree path (\`<repo>/.worktrees/${lane.id}\`) and report it as worktree_path — the reviewer stage Reads the code there. ` +
       `Work with absolute paths under that dir and \`git -C <worktree_path> ...\`; do not rely on EnterWorktree.\n` +
       `2. IMPLEMENT — per /implement discipline. DO-NOT-CHANGE scope: every contract file, any directory owned by another phase, any cross-cutting infra not owned by this task. ` +
-      `Honor stop-early/three-strikes: if you hit a real blocker or discover a wrong assumption, set stopped_early:true + blocker, committed:false, do NOT commit, and return — do not power through.\n` +
+      `Honor stop-early/three-strikes: if you hit a real blocker or discover a wrong assumption, set stopped_early:true + blocker, committed:false, do NOT commit, and return — do not power through. ` +
+      `BUT for an ambiguous DESIGN FORK (not a hard block) where the approved approach is silent, use the MID-RUN ASK protocol below to get the lead's decision instead of guessing or stopping.` +
+      ASK_PROTOCOL(lane.id) + `\n` +
       `3. LOCAL CI GATES — run the FULL gate set (you do NOT fire the end-of-turn hook): \`uv run ruff format\` + engine gates for Python, \`biome --write\` + \`tsc --noEmit\` for cockpit. Report ci_gates. If a gate is red and you cannot fix it cleanly, treat it as stop-early.\n` +
       `4. LANE SMOKE — run this task's lane-smoke surface; report lane_smoke.\n` +
       `5. COMMIT on the branch (\`git -C <worktree_path> add -A && git -C <worktree_path> commit\`) so the reviewers can diff origin/main...HEAD. Set committed:true. Do NOT push.\n` +
@@ -239,6 +284,7 @@ const results = await pipeline(
       blocker: reviewed.blocker,
       ci_gates: reviewed.ci_gates,
       lane_smoke: reviewed.lane_smoke,
+      asks: reviewed.asks || [],
       reviews: reviewed.reviews || [],
       lanes_unblocked: reviewed.lanes_unblocked || [],
       summary: reviewed.summary,
@@ -251,8 +297,9 @@ const lanes = results.filter(Boolean)
 const pushed = lanes.filter((l) => l.push_gate === 'passed')
 const blocked = lanes.filter((l) => l.push_gate === 'blocked-by-review')
 const stalled = lanes.filter((l) => l.push_gate === 'stopped-early')
-log(`team-build: ${pushed.length} pushed (review-green), ${blocked.length} blocked by review, ${stalled.length} stopped early`)
+const totalAsks = lanes.reduce((n, l) => n + (l.asks?.length || 0), 0)
+log(`team-build: ${pushed.length} pushed (review-green), ${blocked.length} blocked by review, ${stalled.length} stopped early, ${totalAsks} mid-run asks resolved`)
 
 // Lead opens PRs (from the MacBook) for the pushed lanes and picks merge order;
 // drains `blocked` (review disputes) and `stalled` (lane blockers) from the queue.
-return { lanes, pushed, blocked, stalled }
+return { lanes, pushed, blocked, stalled, asks_resolved: totalAsks }

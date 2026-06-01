@@ -340,6 +340,48 @@ export const entropyObjects = metadataSchema.table(
 	],
 );
 
+export const entropyReadiness = metadataSchema.table(
+	"entropy_readiness",
+	{
+		readinessId: varchar("readiness_id").primaryKey(),
+		sessionId: varchar("session_id")
+			.notNull()
+			.references(() => investigationSessions.sessionId),
+		sourceId: varchar("source_id")
+			.notNull()
+			.references(() => sources.sourceId),
+		tableId: varchar("table_id").references(() => tables.tableId, {
+			onDelete: "cascade",
+		}),
+		columnId: varchar("column_id").references(() => columns.columnId, {
+			onDelete: "cascade",
+		}),
+		band: varchar().notNull(),
+		worstIntentRisk: doublePrecision("worst_intent_risk").notNull(),
+		intents: jsonb(),
+		topDrivers: jsonb("top_drivers"),
+		computedAt: timestamp("computed_at").notNull(),
+	},
+	(table) => [
+		index("idx_readiness_column").using(
+			"btree",
+			table.columnId.asc().nullsLast(),
+		),
+		index("idx_readiness_source").using(
+			"btree",
+			table.sourceId.asc().nullsLast(),
+		),
+		index("idx_readiness_table").using(
+			"btree",
+			table.tableId.asc().nullsLast(),
+		),
+		index("ix_entropy_readiness_session_id").using(
+			"btree",
+			table.sessionId.asc().nullsLast(),
+		),
+	],
+);
+
 export const fixLedger = metadataSchema.table(
 	"fix_ledger",
 	{

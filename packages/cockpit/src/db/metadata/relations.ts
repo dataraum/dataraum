@@ -23,6 +23,7 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		enrichedViewss: r.many.enrichedViews(),
 		entropyObjectss: r.many.entropyObjects(),
+		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
 		sources: r.one.sources({
 			from: r.investigationSessions.sourceId,
@@ -108,6 +109,7 @@ export const relations = defineRelations(schema, (r) => ({
 					"investigationSessions_sessionId_sources_sourceId_via_detectedBusinessCycles",
 			}),
 		entropyObjectss: r.many.entropyObjects(),
+		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
 		investigationSessionssSourceId: r.many.investigationSessions({
 			alias: "investigationSessions_sourceId_sources_sourceId",
@@ -129,6 +131,7 @@ export const relations = defineRelations(schema, (r) => ({
 			alias: "enrichedViews_viewTableId_tables_tableId",
 		}),
 		entropyObjectss: r.many.entropyObjects(),
+		entropyReadinesss: r.many.entropyReadiness(),
 		relationshipssFromTableId: r.many.relationships({
 			alias: "relationships_fromTableId_tables_tableId",
 		}),
@@ -178,6 +181,7 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		derivedColumnss: r.many.derivedColumns(),
 		entropyObjectss: r.many.entropyObjects(),
+		entropyReadinesss: r.many.entropyReadiness(),
 		relationshipssFromColumnId: r.many.relationships({
 			alias: "relationships_fromColumnId_columns_columnId",
 		}),
@@ -277,6 +281,24 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		tables: r.one.tables({
 			from: r.entropyObjects.tableId,
+			to: r.tables.tableId,
+		}),
+	},
+	entropyReadiness: {
+		columns: r.one.columns({
+			from: r.entropyReadiness.columnId,
+			to: r.columns.columnId,
+		}),
+		investigationSessions: r.one.investigationSessions({
+			from: r.entropyReadiness.sessionId,
+			to: r.investigationSessions.sessionId,
+		}),
+		sources: r.one.sources({
+			from: r.entropyReadiness.sourceId,
+			to: r.sources.sourceId,
+		}),
+		tables: r.one.tables({
+			from: r.entropyReadiness.tableId,
 			to: r.tables.tableId,
 		}),
 	},

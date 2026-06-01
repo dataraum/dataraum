@@ -44,11 +44,14 @@ What changed in the engine (calibration-relevant):
   removed activity names would otherwise non-determinism-fail mid-history. No `patched()` guard
   added (dev-acceptable).
 
-### Cockpit (cross-PACKAGE — not in this branch)
+### Cockpit (cross-PACKAGE — DONE in this branch)
 
-- **Drizzle metadata mirror must be re-pulled** (`bun run db:pull:metadata`, against a **fresh**
-  DB) to expose `entropy_readiness` to the cockpit `why`/`look` tools (DAT-353). The engine
-  schema is the source; the cockpit TS mirror is regenerated, not hand-edited.
+- **Drizzle metadata mirror re-pulled** (`src/db/metadata/{schema,relations}.ts` now expose
+  `entropy_readiness`) so the compose-smoke Drizzle drift check stays green and the cockpit
+  `why`/`look` tools (DAT-353) can read it. Regenerated via `bun run db:pull:metadata` from a
+  fresh isolated schema built by the branch's `create_all` — diff is exactly the new table +
+  relations (no schema-name churn). The engine schema is the source; the mirror is generated,
+  never hand-edited.
 
 ### dataraum-testdata (hints)
 

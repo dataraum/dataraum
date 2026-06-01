@@ -37,4 +37,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 	it("the shared canvas registry has the result-grid widget (DAT-385)", () => {
 		expect(canvasRegistry.has("result-grid")).toBe(true);
 	});
+
+	it("the shared canvas registry has the selected-source widget (DAT-398)", () => {
+		expect(canvasRegistry.has("selected-source")).toBe(true);
+	});
 });

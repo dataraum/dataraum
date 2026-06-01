@@ -4,6 +4,23 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-01: DAT-399 (D) — persisted readiness as the single source of truth
+
+Make the engine's query-time consumers READ the persisted `entropy_readiness` band
+instead of recomputing the noisy-OR rollup at query time. The rollup now runs exactly
+once, at the terminal `detect` step. **Behavior-preserving — no calibration impact expected.**
+
+What changed in the engine:
+- **Query-time consumers stop recomputing the rollup.** `entropy/views/query_context.py::build_for_query` (the contract gate) and `graphs/context.py` (ContextDocument assembly) no longer call `build_for_readiness`. They now read `load_persisted_readiness` (reconstructs the banded view from the `entropy_readiness` rows) for the band/counts/overall_readiness, and `build_column_evidence` (rollup-free raw evidence) for the contract `dimension_scores` + `avg_entropy_score`. `build_for_readiness` (the full noisy-OR) survives ONLY as the `detect` step's computation via `persist_readiness`.
+- **Why scores are unchanged:** the contract gate's `dimension_scores` only ever read raw per-node `score`/`dimension_path` + direct signals — they never went through the noisy-OR. `build_column_evidence` is the same score-assembly code with the rollup skipped, so `dimension_scores` are byte-identical. Contracts also read `ColumnSummary.readiness` (a blocked column blocks every contract); that band is threaded in via the new `network_to_column_summaries(..., band_by_target=...)` override, sourced from the persisted rows.
+- **No schema / Drizzle-mirror change** — slice D is read-only against the existing `entropy_readiness` table.
+
+### dataraum-eval
+- **Eval action: re-verify contract-gate parity (should be unchanged).** The contract path is calibration-sensitive, but this is a behavior-preserving read-path swap: `entropy_objects`, all detector scores, the rollup, the bands, and contract `dimension_scores` are identical. An engine integration parity test (`test_persisted_readiness_is_single_source_of_truth`) asserts persisted-band == live-rollup AND contract `dimension_scores`/readiness identical, on real data. If any eval harness imported `build_for_readiness` for query-time contract summaries, switch to `build_column_evidence` + `band_by_target` (mirrors `_build_column_summaries` in `tests/integration/test_contracts.py`).
+
+### dataraum-testdata (hints)
+- None.
+
 ## 2026-06-01: DAT-399 (A+B+C) — retire BBN-era scaffolding, self-describing drivers, readiness-vocabulary rename
 
 Cleanup + extend + rename on top of DAT-394. **Behavior-preserving for detector scores** — no calibration impact expected.

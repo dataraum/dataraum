@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -25,11 +25,9 @@ from dataraum.entropy.contracts import (
 )
 from dataraum.entropy.views.readiness_context import (
     EntropyForReadiness,
-    build_for_readiness,
+    build_column_evidence,
+    load_persisted_readiness,
 )
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -123,24 +121,26 @@ def build_for_query(
             confidence_level=ConfidenceLevel.YELLOW,
         )
 
-    # Build readiness context (handles typed table enforcement internally)
-    readiness_ctx = build_for_readiness(session, table_ids)
+    # Single source of truth: read the band the terminal detect step persisted,
+    # rather than recomputing the noisy-OR per query (DAT-399 slice D).
+    persisted = load_persisted_readiness(session, table_ids)
 
-    if not readiness_ctx.columns:
+    if not persisted.columns:
         return EntropyForQuery(
-            overall_readiness=readiness_ctx.overall_readiness or "ready",
+            overall_readiness=persisted.overall_readiness or "ready",
             confidence_level=ConfidenceLevel.GREEN,  # No entropy data = assume good
         )
 
-    # Derive readiness counts from network
-    overall_readiness = readiness_ctx.overall_readiness
-    high_entropy_count = readiness_ctx.columns_blocked + readiness_ctx.columns_investigate
-    critical_entropy_count = readiness_ctx.columns_blocked
+    # Derive readiness counts from the persisted band
+    overall_readiness = persisted.overall_readiness
+    high_entropy_count = persisted.columns_blocked + persisted.columns_investigate
+    critical_entropy_count = persisted.columns_blocked
 
-    overall_entropy_score: float | None = readiness_ctx.avg_entropy_score
-
-    # Convert network results to ColumnSummary for contract evaluation
-    column_summaries = network_to_column_summaries(readiness_ctx)
+    # Contract gate: raw dimension scores (rollup-free) + the persisted band.
+    evidence = build_column_evidence(session, table_ids)
+    overall_entropy_score: float | None = evidence.avg_entropy_score
+    band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
+    column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)
 
     # Evaluate contracts
     contract_name: str | None = None
@@ -195,14 +195,25 @@ def build_for_query(
 
 def network_to_column_summaries(
     readiness_ctx: EntropyForReadiness,
+    *,
+    band_by_target: dict[str, str] | None = None,
 ) -> dict[str, ColumnSummary]:
     """Convert network results to ColumnSummary for contract evaluation.
 
     Contracts evaluate raw dimension scores, which we extract from
     the network's per-node evidence AND direct signals (unmapped detectors).
+    They also read each column's readiness band (a blocked column blocks every
+    contract). The raw scores never go through the noisy-OR, so the query-time
+    gate feeds this the rollup-free :func:`build_column_evidence` for scores and
+    passes ``band_by_target`` (the persisted band) for readiness — keeping the
+    rollup to one computation (DAT-399 slice D). When ``band_by_target`` is
+    omitted, the band is taken from ``readiness_ctx`` itself (e.g. detect-time
+    callers passing the full rollup).
 
     Args:
-        readiness_ctx: EntropyForReadiness with per-column results
+        readiness_ctx: EntropyForReadiness supplying per-column node evidence.
+        band_by_target: Optional ``target -> band`` from the persisted readiness;
+            overrides ``readiness_ctx``'s per-column band when present.
 
     Returns:
         Dict mapping "table.column" to ColumnSummary with dimension_scores populated
@@ -220,10 +231,15 @@ def network_to_column_summaries(
             if ne.dimension_path:
                 dimension_scores[ne.dimension_path] = ne.score
 
+        readiness = (
+            band_by_target.get(target, col_result.readiness)
+            if band_by_target is not None
+            else col_result.readiness
+        )
         summary = ColumnSummary(
             column_name=column_name,
             table_name=table_name,
-            readiness=col_result.readiness,
+            readiness=readiness,
             dimension_scores=dimension_scores,
         )
         summaries[col_key] = summary

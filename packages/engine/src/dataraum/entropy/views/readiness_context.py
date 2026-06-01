@@ -12,10 +12,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.core.storage import EntropyRepository
+from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import (
     build_dimension_path_to_node_map,
@@ -24,6 +26,7 @@ from dataraum.entropy.network.bridge import (
 )
 from dataraum.entropy.network.model import EntropyNetwork
 from dataraum.entropy.network.rollup import compute_priorities, roll_up
+from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
@@ -172,6 +175,8 @@ def _build_column_result(
     objects: list[EntropyObject],
     network: EntropyNetwork,
     path_map: dict[str, str],
+    *,
+    compute_rollup: bool = True,
 ) -> tuple[ColumnReadinessResult | None, list[DirectSignal]]:
     """Run network inference for a single column's objects.
 
@@ -180,6 +185,12 @@ def _build_column_result(
         objects: EntropyObjects for this column only.
         network: The entropy network.
         path_map: Pre-built dimension_path -> node_name map.
+        compute_rollup: Run the noisy-OR rollup (intents + causal priorities).
+            When False, only the raw per-node evidence + direct signals are
+            built — the cheap half the contract gate needs at query time, which
+            never went through the rollup. The persisted ``entropy_readiness``
+            rows are the source of truth for the banded result, so the rollup
+            runs only at the terminal ``detect`` step (DAT-399 slice D).
 
     Returns:
         Tuple of (ColumnReadinessResult or None, list of DirectSignals).
@@ -211,22 +222,23 @@ def _build_column_result(
         for node, score in scores.items()
     }
 
-    # Roll observed scores up the DAG. Unobserved nodes with no resolved parents
-    # are simply absent — no prior leakage, so no subgraph pruning is needed.
-    risk = roll_up(network.config, scores, _pmap=network.parent_map, _order=network.topo_order)
-
-    # Causal fix priorities: how much each observed node lowers intent risk.
-    priorities = compute_priorities(network.config, scores, low_upper=disc.low_upper)
-
-    # Build ColumnNodeEvidence for each observed node
-    # Build lookups: node_name -> source object, node_name -> impact_delta
+    # Build lookup: node_name -> source object (for raw score + evidence).
     node_to_obj: dict[str, EntropyObject] = {}
     for obj in mapped:
         node_name = path_map.get(obj.dimension_path)
         if node_name:
             node_to_obj[node_name] = obj
 
-    node_to_delta: dict[str, float] = {pr.node: pr.impact_delta for pr in priorities}
+    risk: dict[str, float] = {}
+    priorities: list[Any] = []
+    node_to_delta: dict[str, float] = {}
+    if compute_rollup:
+        # Roll observed scores up the DAG. Unobserved nodes with no resolved
+        # parents are simply absent — no prior leakage, so no subgraph pruning.
+        risk = roll_up(network.config, scores, _pmap=network.parent_map, _order=network.topo_order)
+        # Causal fix priorities: how much each observed node lowers intent risk.
+        priorities = compute_priorities(network.config, scores, low_upper=disc.low_upper)
+        node_to_delta = {pr.node: pr.impact_delta for pr in priorities}
 
     node_evidence: list[ColumnNodeEvidence] = []
     for node_name, state in states.items():
@@ -317,6 +329,8 @@ def _build_column_result(
 def assemble_readiness_context(
     objects: list[EntropyObject],
     network: EntropyNetwork,
+    *,
+    compute_rollup: bool = True,
 ) -> EntropyForReadiness:
     """Assemble readiness context from entropy objects and network.
 
@@ -326,6 +340,9 @@ def assemble_readiness_context(
     Args:
         objects: All EntropyObject instances for the tables being analyzed.
         network: The entropy network.
+        compute_rollup: Run the noisy-OR rollup. When False, per-column results
+            carry only raw node evidence (no intents/bands) — the cheap evidence
+            half for the query-time contract gate (DAT-399 slice D).
 
     Returns:
         EntropyForReadiness with per-column results + source-wide summaries.
@@ -360,6 +377,7 @@ def assemble_readiness_context(
             target_objects,
             network,
             path_map,
+            compute_rollup=compute_rollup,
         )
         all_direct_signals.extend(col_signals)
         if col_result is not None:
@@ -419,14 +437,32 @@ def assemble_readiness_context(
 # ---------------------------------------------------------------------------
 
 
+def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[EntropyObject]:
+    """Load entropy objects for the typed tables among ``table_ids`` (or empty)."""
+    if not table_ids:
+        return []
+
+    repo = EntropyRepository(session)
+    typed_table_ids = repo.get_typed_table_ids(table_ids)
+    if not typed_table_ids:
+        logger.warning("No typed tables found for readiness context")
+        return []
+
+    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
+    if not entropy_objects:
+        logger.debug("No entropy objects found for readiness context")
+    return entropy_objects
+
+
 def build_for_readiness(
     session: Session,
     table_ids: list[str],
 ) -> EntropyForReadiness:
-    """Build entropy context for the readiness view.
+    """Build the full readiness rollup (intents + bands) for typed tables.
 
-    Loads entropy data for typed tables and assembles the readiness context
-    joining rollup results with source evidence.
+    Runs the noisy-OR rollup. This is the terminal ``detect`` step's computation
+    (persisted to ``entropy_readiness``); query-time consumers read the persisted
+    band instead and use :func:`build_column_evidence` for the contract gate.
 
     Args:
         session: SQLAlchemy session.
@@ -435,20 +471,173 @@ def build_for_readiness(
     Returns:
         EntropyForReadiness with computed context.
     """
+    entropy_objects = _load_entropy_objects(session, table_ids)
+    if not entropy_objects:
+        return EntropyForReadiness()
+    return assemble_readiness_context(entropy_objects, EntropyNetwork())
+
+
+def build_column_evidence(
+    session: Session,
+    table_ids: list[str],
+) -> EntropyForReadiness:
+    """Build raw per-column entropy evidence WITHOUT the noisy-OR rollup.
+
+    The contract gate (``query_context.network_to_column_summaries``) only reads
+    raw per-node scores + direct signals, never the rollup. This loads exactly
+    that — the cheap half — so the rollup is computed once, at ``detect``, not
+    re-run per query (DAT-399 slice D). ``avg_entropy_score`` is raw-derived and
+    so still populated; intents/bands are intentionally empty.
+
+    Args:
+        session: SQLAlchemy session.
+        table_ids: List of table IDs to include.
+
+    Returns:
+        EntropyForReadiness with per-column node evidence + direct signals only.
+    """
+    entropy_objects = _load_entropy_objects(session, table_ids)
+    if not entropy_objects:
+        return EntropyForReadiness()
+    return assemble_readiness_context(entropy_objects, EntropyNetwork(), compute_rollup=False)
+
+
+def load_persisted_readiness(
+    session: Session,
+    table_ids: list[str],
+) -> EntropyForReadiness:
+    """Reconstruct the banded readiness view from persisted ``entropy_readiness``.
+
+    The single source of truth for the band/intents/drivers (DAT-399 slice D):
+    the terminal ``detect`` step ran the rollup once and persisted it, so query
+    time reads those rows rather than recomputing. Reconstructs the same
+    ``EntropyForReadiness`` shape the band consumers (graph context, query
+    counts) already read, keyed by ``column:{table}.{column}`` target.
+
+    Per-node raw ``score`` is not persisted (the contract gate uses
+    :func:`build_column_evidence` for that); reconstructed ``node_evidence``
+    carries only the non-clean driver nodes, which is exactly what the band
+    consumers read (``high_entropy_dimensions``).
+
+    Precondition: the terminal detect step has run. Query time always follows
+    detect in the workflow, so empty here means "no readiness yet" and is
+    treated as ready — same as a genuinely clean source.
+    """
     if not table_ids:
         return EntropyForReadiness()
 
-    repo = EntropyRepository(session)
-
-    typed_table_ids = repo.get_typed_table_ids(table_ids)
-    if not typed_table_ids:
-        logger.warning("No typed tables found for readiness context")
+    records = list(
+        session.execute(
+            select(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
+        ).scalars()
+    )
+    if not records:
         return EntropyForReadiness()
 
-    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
-    if not entropy_objects:
-        logger.debug("No entropy objects found for readiness context")
-        return EntropyForReadiness()
+    target_by_ids = _target_by_ids(session, table_ids)
 
-    network = EntropyNetwork()
-    return assemble_readiness_context(entropy_objects, network)
+    columns: dict[str, ColumnReadinessResult] = {}
+    for rec in records:
+        if rec.table_id is None or rec.column_id is None:
+            continue
+        target = target_by_ids.get((rec.table_id, rec.column_id))
+        if target is None:
+            # Column row the readiness record points at no longer resolves
+            # (renamed/dropped) — skip, don't guess.
+            continue
+        columns[target] = _record_to_column_result(target, rec)
+
+    columns_blocked = sum(1 for c in columns.values() if c.readiness == "blocked")
+    columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
+    columns_ready = sum(1 for c in columns.values() if c.readiness == "ready")
+    if columns_blocked > 0:
+        overall_readiness = "blocked"
+    elif columns_investigate > 0:
+        overall_readiness = "investigate"
+    else:
+        overall_readiness = "ready"
+
+    return EntropyForReadiness(
+        columns=columns,
+        total_columns=len(columns),
+        columns_blocked=columns_blocked,
+        columns_investigate=columns_investigate,
+        columns_ready=columns_ready,
+        overall_readiness=overall_readiness,
+    )
+
+
+def _target_by_ids(session: Session, table_ids: list[str]) -> dict[tuple[str, str], str]:
+    """Map ``(table_id, column_id)`` -> ``"column:{table_name}.{column_name}"``.
+
+    Inverse of the target string the detectors write (``engine.py`` builds it as
+    ``f"column:{table.table_name}.{col.column_name}"``).
+    """
+    table_name_by_id: dict[str, str] = {}
+    for table_id, table_name in session.execute(
+        select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+    ):
+        table_name_by_id[table_id] = table_name
+
+    out: dict[tuple[str, str], str] = {}
+    for table_id, column_id, column_name in session.execute(
+        select(Column.table_id, Column.column_id, Column.column_name).where(
+            Column.table_id.in_(table_ids)
+        )
+    ):
+        table_name = table_name_by_id.get(table_id)
+        if table_name is None:
+            continue
+        out[(table_id, column_id)] = f"column:{table_name}.{column_name}"
+    return out
+
+
+def _record_to_column_result(target: str, rec: EntropyReadinessRecord) -> ColumnReadinessResult:
+    """Reconstruct a ColumnReadinessResult from a persisted readiness row."""
+    intents = [
+        IntentReadiness(
+            intent_name=i.get("intent", ""),
+            risk=i.get("risk", 0.0),
+            readiness=i.get("band", "ready"),
+            drivers=[_driver_from_dict(d) for d in i.get("drivers", [])],
+        )
+        for i in (rec.intents or [])
+    ]
+    # Persisted top_drivers are exactly the non-clean nodes — what the band
+    # consumers read as node_evidence (high_entropy_dimensions). Raw per-node
+    # ``score`` is NOT persisted, so it stays 0.0 here: this reconstructed result
+    # must only feed consumers that don't read ``ne.score`` (the band view). For
+    # contract dimension_scores, use build_column_evidence (which has real scores).
+    top_drivers = rec.top_drivers or []
+    node_evidence = [
+        ColumnNodeEvidence(
+            node_name=d.get("node", ""),
+            dimension_path=d.get("dimension_path", ""),
+            label=d.get("label", ""),
+            state=d.get("state", "low"),
+            impact_delta=d.get("impact_delta", 0.0),
+        )
+        for d in top_drivers
+    ]
+    return ColumnReadinessResult(
+        target=target,
+        node_evidence=node_evidence,
+        intents=intents,
+        top_priority_node=top_drivers[0].get("node", "") if top_drivers else "",
+        top_priority_impact=top_drivers[0].get("impact_delta", 0.0) if top_drivers else 0.0,
+        nodes_observed=len(node_evidence),
+        nodes_high=sum(1 for ne in node_evidence if ne.state == "high"),
+        worst_intent_risk=rec.worst_intent_risk,
+        readiness=rec.band,
+    )
+
+
+def _driver_from_dict(d: dict[str, Any]) -> IntentDriver:
+    """Reconstruct an IntentDriver from a persisted driver dict."""
+    return IntentDriver(
+        node=d.get("node", ""),
+        dimension_path=d.get("dimension_path", ""),
+        label=d.get("label", ""),
+        state=d.get("state", "low"),
+        impact_delta=d.get("impact_delta", 0.0),
+    )

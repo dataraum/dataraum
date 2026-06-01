@@ -1,6 +1,6 @@
 ---
 name: take
-description: Take a single DAT-294 task end-to-end as one parallel lane — worktree, refine, implement, lane-smoke, PR. Invoke once per task. Launch N concurrently via the Agent tool with isolation:worktree.
+description: Take a single independently-mergeable task end-to-end as one parallel lane — worktree, refine, implement, lane-smoke, PR. Invoke once per task. Launch N concurrently via the Agent tool with isolation:worktree.
 allowed-tools:
   - Read
   - Write
@@ -20,23 +20,23 @@ allowed-tools:
 
 # Take: $ARGUMENTS
 
-You are taking a single DAT-294 task end-to-end as one parallel lane. **One task = one worktree = one branch = one PR = one focused session.**
+You are taking a single task end-to-end as one parallel lane. **One task = one worktree = one branch = one PR = one focused session.**
 
 This skill exists so the user can launch N lanes in parallel via the Agent tool with `isolation: "worktree"` — each agent inherits this skill and runs independently. Without a skill there is no parallelism unit; with it, multiple lanes ship from one orchestrator message.
 
-The full enforcement rules live in `CLAUDE.md → "Parallel platform work runbook"`. This skill executes that runbook. If you find this skill and the runbook diverging, the runbook wins — open a PR to align them.
+`/take` is a **mechanism**, not a specific epic. It was first built for the DAT-294 wave, but nothing about it is tied to that epic — it works for any task that can be merged on its own branch: a top-level ticket, a child, or a sub-item of a larger ticket. (If a parallel-work runbook exists in CLAUDE.md, follow it; if this skill and that runbook diverge, the runbook wins — open a PR to align them.)
 
-**When to use `/take` today:** reserved for genuinely parallel platform lanes. The v1 plan (post-spine cockpit + engine REST) ships PR-per-step on a shared branch — single stream, no contract-lock gate, just use `/refine` + `/implement` directly. Reach for `/take` when a future wave decomposes into 2+ independently-mergeable tasks that touch separate code areas.
+**When to reach for `/take`:** when 2+ tasks can be implemented and merged *independently* and touch *separate* code areas, so running them as concurrent worktree lanes is faster than one stream. For single-stream work — even a multi-step feature on one shared branch — skip the lane machinery and just use `/refine` + `/implement` directly. The deciding question is "are these independently mergeable?", not "which epic is this under?"
 
 ## Input
 
-$ARGUMENTS is a Jira task identifier under DAT-294 (a direct child or a child of a sub-epic). Refuse to start if the ticket is not under DAT-294.
+$ARGUMENTS is a Jira task identifier (or a sub-item of one). The only gates that matter are below: the task is **independently mergeable** and its blocking dependencies are **Done**. Being a sub-item of a larger ticket, or living outside any particular epic, is **not** a reason to refuse — a lane targets a unit of independently-mergeable work, wherever it sits in the ticket hierarchy.
 
 ## Step 1: Pre-check (lane can open)
 
 Before touching any code:
 
-1. **Fetch the task ticket.** Confirm: parent is a DAT-294 phase, status is To Do or In Progress, every `is blocked by` dependency is Done. Surface the blocker list and STOP if any is not Done.
+1. **Fetch the task ticket.** Confirm: status is To Do or In Progress, and every `is blocked by` dependency is Done. Surface the blocker list and STOP only if a *real* blocking dependency is not Done — not because of where the ticket sits in the hierarchy. If a dependency is itself small and unblocked, consider whether the right move is to take it first rather than stall.
 2. **Check for existing worktree** at `.worktrees/{task-id}/`. If branch matches `feat/{task-id}-{slug}` → resume it. If branch is something else → STOP and ask. **Note:** worktrees live INSIDE the main repo at `.worktrees/{task-id}/` (gitignored). This is load-bearing for the review gate — subagents spawned by `/implement` inherit the orchestrator's `$CLAUDE_PROJECT_DIR` and can only `Read` paths underneath it, so a sibling worktree at `../dataraum-context.worktrees/...` is invisible to them and the review gate fails silently.
 3. **Check for existing PR** via `gh pr list --search "{task-id} in:title"`. If open → the lane is already in flight. STOP and ask.
 4. **Check the status board** `.claude/platform-status.md`. STOP if another active lane claims this task or a contract this task touches.
@@ -178,18 +178,18 @@ The orchestrator session does NOT touch code — it only:
 
 ## When NOT to use /take
 
-- Non-platform work (single-stream library work): use `/refine` + `/implement` directly
-- Spikes (DAT-295/296/297/298): throwaway exploration — no worktree isolation needed
-- Contract-lock PRs: separate flow — small, focused, reviewer-heavy, not phased
-- S-size bug fixes inside an already-merged task: normal feature branch on `main`
+- Single-stream work: use `/refine` + `/implement` directly. This includes a multi-step feature that ships PR-per-step on one shared branch — that's one stream, not parallel lanes.
+- Spikes / throwaway exploration: no worktree isolation needed.
+- Contract-lock PRs: separate flow — small, focused, reviewer-heavy, not phased.
+- S-size bug fixes inside an already-merged task: normal feature branch, just do it.
 
 ## Rules
 
 - One task per worktree, one worktree per task
-- Contract locked BEFORE the lane opens — no exceptions
+- If the task names a contract, it's locked BEFORE the lane opens — no exceptions
 - Lane smoke is mandatory; integration smoke is informational
 - Do not edit contracts from inside a lane
-- Do not reach into other lanes' code
-- Three-strikes rule applies — stop and report, don't power through
+- **Don't collide with another *in-flight* lane:** don't edit files a concurrently-open lane owns (check `platform-status.md`). This is about avoiding parallel-merge conflicts between *running* lanes — it is NOT a rule against touching code outside your ticket's nominal scope. A design-implied or obviously-correct change in your blast radius is fair game (see `/implement` → "Scope is a fence, not a cage").
+- Three-strikes rule applies — stop and report, don't power through. But "blocked by a small unblocked dependency" is a cue to *take the dependency*, not to stall.
 - The lane closes when the PR opens, not when it merges
 - Update `.claude/platform-status.md` so the user sees all lanes at once

@@ -84,9 +84,8 @@ async def run_worker() -> None:
                     phase_activities.run_column_eligibility,
                     phase_activities.run_statistical_quality,
                     phase_activities.run_temporal,
-                    phase_activities.run_detect_table,
                     phase_activities.run_semantic_per_column,
-                    phase_activities.run_detect_source,
+                    phase_activities.run_detect,
                     # DAT-343 replay activities — lookups when phases are
                     # skipped on replay + per-phase cleanup before re-runs.
                     phase_activities.lookup_raw_table_ids,
@@ -121,9 +120,8 @@ async def run_worker() -> None:
                     "column_eligibility",
                     "statistical_quality",
                     "temporal",
-                    "detect_table",
                     "semantic_per_column",
-                    "detect_source",
+                    "detect",
                     "lookup_raw_table_ids",
                     "lookup_typed_table_id",
                     "replay_cleanup_for_phase",

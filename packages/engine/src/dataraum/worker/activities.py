@@ -3,8 +3,8 @@
 Thin ``@activity.defn`` wrappers that translate the per-boundary contracts into
 calls on the Temporal-agnostic helpers in :mod:`dataraum.worker.activity`. They
 hold the worker's single :class:`ConnectionManager` (set at bootstrap) and name
-each activity after its pipeline.yaml phase (plus ``detect_table``) — so the
-workflows call them by that string, no shared catalogue.
+each activity after its pipeline.yaml phase (plus the terminal ``detect``) — so
+the workflows call them by that string, no shared catalogue.
 
 Activities are **sync** (``def``): Temporal runs them on the worker's
 ``ThreadPoolExecutor``, the SDK-recommended shape for blocking SQLAlchemy/DuckDB
@@ -28,10 +28,9 @@ from temporalio.exceptions import ApplicationError
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     raw_table_ids,
+    run_detectors,
     run_phase,
     run_replay_cleanup,
-    run_source_detectors,
-    run_table_detectors,
     typed_table_id_for_raw,
 )
 from dataraum.worker.contracts import (
@@ -105,19 +104,6 @@ class PhaseActivities:
         """Temporal activity — pattern/trend profiling of date/time columns."""
         return self._run_or_raise("temporal", payload.identity, [payload.table_id])
 
-    @activity.defn(name="detect_table")
-    def run_detect_table(self, payload: TableScopedInput) -> PhaseOutcome:
-        """Run the table-local detectors scoped to one typed table (DAT-370).
-
-        The stage-level detector step: runs once per ``ProcessTableWorkflow`` after
-        its analytics phases, scoped to the child's typed table — never per phase.
-        """
-        count = run_table_detectors(self._manager, payload.identity, payload.table_id)
-        return PhaseOutcome(
-            status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} detector records for table {payload.table_id}",
-        )
-
     @activity.defn(name="semantic_per_column")
     def run_semantic_per_column(self, identity: SourceIdentity) -> PhaseOutcome:
         """Semantic-per-column activity — the source-level LLM reduce (roles, concepts, terms).
@@ -181,19 +167,20 @@ class PhaseActivities:
             summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
         )
 
-    @activity.defn(name="detect_source")
-    def run_detect_source(self, identity: SourceIdentity) -> PhaseOutcome:
-        """Run the source-level detectors after the reduce (DAT-370 follow-up).
+    @activity.defn(name="detect")
+    def run_detect(self, identity: SourceIdentity) -> PhaseOutcome:
+        """Terminal detector pass — every wired detector once, source-wide (DAT-394).
 
-        The source-level analogue of ``detect_table``: runs ``semantic_per_column``'s
-        declared detectors once, source-wide, after the reduce. Without it those
-        detectors are declared in pipeline.yaml but never execute (the gap DAT-370
-        left when detectors moved off the per-phase path).
+        The single stage-level detect step: after the per-table fan-out and the
+        ``semantic_per_column`` reduce, run the union of all chain-declared detectors
+        over the whole source. Replaces the old per-table ``detect_table`` + parent
+        ``detect_source`` split — nothing consumes entropy mid-run, so one terminal
+        pass is correct and simpler. (DAT-394 phase 2 persists readiness here too.)
         """
-        count = run_source_detectors(self._manager, identity)
+        count = run_detectors(self._manager, identity)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} source-level detector records",
+            summary=f"{count} detector records for source {identity.source_id}",
         )
 
     def _run_or_raise(

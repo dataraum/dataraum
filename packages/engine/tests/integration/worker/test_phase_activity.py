@@ -8,10 +8,11 @@ the testcontainer Postgres + a real DuckLake (``lake_anchor``), not SQLite or
 mocks — the substrate reconstitution is exactly what's under test.
 
 DAT-370 makes the table the unit of work: ``import`` enumerates raw tables,
-``typing`` mints one typed id per raw table, the analytics phases run scoped to a
-single typed table, and ``detect_table`` runs the table-local detectors scoped to
-that table. These tests drive that per-table path directly (the production
-workflows fan it out across child workflows).
+``typing`` mints one typed id per raw table, and the analytics phases run scoped
+to a single typed table. Detectors run once, source-wide, in the terminal
+``detect`` step after the fan-out (DAT-394 — ``run_detectors``). These tests
+drive that path directly (the production workflows fan the chains out across
+child workflows, then run one terminal detect in the parent).
 """
 
 from __future__ import annotations
@@ -33,16 +34,16 @@ from dataraum.storage import Source, Table
 from dataraum.worker import (
     SourceIdentity,
     raw_table_ids,
+    run_detectors,
     run_phase,
-    run_source_detectors,
-    run_table_detectors,
     typed_table_id_for_raw,
 )
 
 # The table-local analytics phases wrapped as activities, in dependency order.
-# ``typing`` precedes them (it mints the typed id); ``detect_table`` follows.
-# ``semantic_per_column`` (the source-level LLM reduce) is exercised separately,
-# gated behind a real key.
+# ``typing`` precedes them (it mints the typed id). Detectors no longer run per
+# table — the single terminal ``detect`` step (``run_detectors``) runs them once,
+# source-wide, after the fan-out + reduce (DAT-394). ``semantic_per_column`` (the
+# source-level LLM reduce) is exercised separately, gated behind a real key.
 _ANALYTICS_PHASES = (
     "statistics",
     "column_eligibility",
@@ -50,8 +51,9 @@ _ANALYTICS_PHASES = (
     "temporal",
 )
 
-# The table-local detectors the stage-level detect step runs (pipeline.yaml:
-# type_fidelity from typing, null_ratio from statistics).
+# The table-local detectors (pipeline.yaml: type_fidelity from typing, null_ratio
+# from statistics) — they end up attached per typed table after the terminal
+# source-wide detect step.
 _TABLE_LOCAL_DETECTORS = {"type_fidelity", "null_ratio"}
 
 _LIVE_LLM_ENV = "DATARAUM_LIVE_LLM_TEST"
@@ -169,8 +171,9 @@ def _process_one_table(
 ) -> str:
     """Run the table-local chain for one raw table — the ProcessTableWorkflow body.
 
-    typing(raw) -> typed_id -> analytics phases (typed_id) -> detect_table(typed_id).
-    Returns the typed table id. Asserts each step completed.
+    typing(raw) -> typed_id -> analytics phases (typed_id). Detectors do NOT run
+    here (DAT-394) — they run once, source-wide, in the terminal ``detect`` step
+    after the fan-out. Returns the typed table id. Asserts each step completed.
     """
     typing = run_phase(manager, "typing", identity, [raw_table_id])
     assert typing.status == "completed", f"typing failed: {typing.error}"
@@ -186,7 +189,6 @@ def _process_one_table(
         # only raises on FAILED.
         assert result.status in ("completed", "skipped"), f"{phase} failed: {result.error}"
 
-    run_table_detectors(manager, identity, typed_id)
     return typed_id
 
 
@@ -323,14 +325,14 @@ def test_addsource_runs_under_nondefault_workspace(
 def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:
     """The full table-local chain runs green per table on a multi-FILE source.
 
-    Drives the production worker path (``run_phase`` + ``run_table_detectors``,
-    not the retired ``PipelineTestHarness``) on the one long-lived manager. The
-    source is seeded with a multi-URI ``connection_config['file_uris']`` list (the
-    DAT-378 shape the cockpit ``select`` stage writes): ONE ``import`` activity
-    loops the per-URI loader and yields >1 raw tables. Then the
-    typing→analytics→detect chain runs scoped per raw table — the sequential
-    shape of the ProcessTableWorkflow fan-out, which falls out of the >1 raw
-    tables with no Temporal-contract change.
+    Drives the production worker path (``run_phase`` + the terminal
+    ``run_detectors``, not the retired ``PipelineTestHarness``) on the one
+    long-lived manager. The source is seeded with a multi-URI
+    ``connection_config['file_uris']`` list (the DAT-378 shape the cockpit
+    ``select`` stage writes): ONE ``import`` activity loops the per-URI loader and
+    yields >1 raw tables. Then the typing→analytics chain runs scoped per raw
+    table — the sequential shape of the ProcessTableWorkflow fan-out — and a
+    single terminal ``detect`` runs the detectors once, source-wide (DAT-394).
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
@@ -365,25 +367,29 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     assert len(typed_ids) == len(raw_ids)
     assert _lake_tables(worker_manager, "typed"), "no typed tables after the chain"
 
+    # Single terminal detect step (DAT-394): one source-wide pass after the
+    # fan-out. Offline (no LLM), so only the structural detectors persist rows;
+    # that is enough to prove the terminal step runs and writes per-table records.
+    assert run_detectors(worker_manager, identity) > 0, "terminal detect produced no records"
 
-def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
+
+def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     worker_manager: ConnectionManager, small_finance_path: Path
 ) -> None:
-    """Per-table chains run concurrently; the stage detect step stays table-scoped.
+    """Per-table analytics chains run concurrently; one terminal detect covers all.
 
-    The DAT-370 concurrency + correctness assertion, over the DAT-378 multi-file
-    source. The source is seeded with a multi-URI ``file_uris`` list, so ONE
-    ``import`` activity yields >1 raw tables; then each raw table's full chain
-    (typing→analytics→detect) runs on its own thread — the fan-out the parent
-    does with child workflows. Each ``run_phase`` / ``run_table_detectors`` call
-    leases its own DuckDB cursor (an independent channel to the shared lake), so
-    DuckLake reconciles the writers via MVCC.
+    The DAT-370 concurrency assertion (analytics fan-out) + the DAT-394 terminal
+    detect, over the DAT-378 multi-file source. The source is seeded with a
+    multi-URI ``file_uris`` list, so ONE ``import`` activity yields >1 raw tables;
+    then each raw table's typing→analytics chain runs on its own thread — the
+    fan-out the parent does with child workflows. Each ``run_phase`` call leases
+    its own DuckDB cursor (an independent channel to the shared lake), so DuckLake
+    reconciles the writers via MVCC.
 
-    The detector step is the part the per-phase post-step couldn't do safely:
-    ``run_detector_post_step`` deletes-before-inserts on ``(source_id,
-    detector_id)``. Scoped to one table, parallel children touch only their own
-    rows — so every typed table ends up with its table-local detector records and
-    none clobbers a sibling. We assert exactly that partition.
+    Detectors no longer run per table (DAT-394): a single terminal
+    ``run_detectors`` pass runs them once, source-wide, after the fan-out. We
+    assert it lands each typed table's full table-local detector set — proving the
+    one source-wide pass covers every table that the concurrent chains produced.
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
@@ -397,8 +403,8 @@ def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
     assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
 
-    # Fan the per-table chains out across threads — concurrent typing + analytics
-    # + detect against the shared lake from independent cursors.
+    # Fan the per-table analytics chains out across threads — concurrent typing +
+    # analytics against the shared lake from independent cursors.
     with ThreadPoolExecutor(max_workers=len(raw_ids)) as executor:
         futures = [
             executor.submit(_process_one_table, worker_manager, identity, raw_id)
@@ -408,10 +414,12 @@ def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
 
     assert len(typed_ids) == len(raw_ids), "each raw table maps to a distinct typed table"
 
+    # One terminal source-wide detect pass after the fan-out (DAT-394).
+    assert run_detectors(worker_manager, identity) > 0, "terminal detect produced no records"
+
     # Every detector record belongs to one of this source's typed tables (no
-    # orphan / cross-table clobber), and each typed table carries the full set of
-    # table-local detectors — proof the scoped delete-before-insert didn't wipe a
-    # sibling's rows under concurrency.
+    # orphan), and each typed table carries the full table-local detector set —
+    # proof the single source-wide pass reached every table the fan-out produced.
     with worker_manager.session_scope() as session:
         rows = session.execute(
             select(EntropyObjectRecord.table_id, EntropyObjectRecord.detector_id).where(
@@ -426,8 +434,8 @@ def test_parallel_tables_do_not_conflict_and_detectors_stay_table_scoped(
         detectors_by_table[table_id].add(detector_id)
 
     assert set(detectors_by_table) == typed_ids, (
-        "some typed table is missing all its detector records — a concurrent "
-        "scoped delete clobbered a sibling"
+        "some typed table is missing all its detector records — the terminal "
+        "source-wide detect did not reach every table"
     )
     for table_id, detectors in detectors_by_table.items():
         assert detectors == _TABLE_LOCAL_DETECTORS, (
@@ -467,8 +475,8 @@ def test_semantic_per_column_reduce_runs_live(
     result = run_phase(worker_manager, "semantic_per_column", identity, [])
     assert result.status == "completed", f"semantic_per_column failed: {result.error}"
 
-    # Source-level detect step (detect_source) runs semantic_per_column's declared
-    # detectors after the reduce — the path DAT-370 originally orphaned. With real
-    # annotations present it should persist records.
-    records = run_source_detectors(worker_manager, identity)
-    assert records > 0, "detect_source produced no source-level detector records"
+    # Terminal detect step (DAT-394) runs all wired detectors source-wide after the
+    # reduce — including semantic_per_column's (business_meaning, unit_entropy, …).
+    # With real annotations present it should persist records.
+    records = run_detectors(worker_manager, identity)
+    assert records > 0, "terminal detect produced no detector records"

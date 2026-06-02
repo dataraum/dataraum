@@ -98,8 +98,8 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide settings singleton, validating env on first call.
 
-    Call this once at boot (the Starlette lifespan / future Temporal worker
-    entrypoint) so a misconfigured deployment fails loud before serving.
+    Call this once at boot (the Temporal worker entrypoint) so a
+    misconfigured deployment fails loud before serving.
     """
     return Settings()  # type: ignore[call-arg]
 

@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.core.logging import get_logger
+from dataraum.investigation.queries import link_session_tables
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -453,6 +454,12 @@ class TypingPhase(BasePhase):
 
         if not typed_tables:
             return PhaseResult.failed("No tables were successfully typed")
+
+        # Link the run's session to the tables it just typed (DAT-407) so the
+        # session's source is derivable without a stored ``source_id``. Written
+        # here — a side-effect of typed-table creation, same transaction — rather
+        # than as a separate workflow activity. Idempotent across teach re-types.
+        link_session_tables(ctx.session, ctx.require_session_id(), typed_tables)
 
         return PhaseResult.success(
             outputs={

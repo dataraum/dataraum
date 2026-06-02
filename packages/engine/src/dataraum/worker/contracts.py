@@ -166,19 +166,6 @@ class ProcessTableResult(BaseModel):
     typed_table_id: str
 
 
-class LinkSessionTablesInput(BaseModel):
-    """Input to the ``link_session_tables`` activity (DAT-407).
-
-    Carries the run's identity header + the typed table ids the session
-    composes (for ``add_source``, the source's freshly-typed tables). The
-    activity upserts one ``session_tables`` row per id so the session's
-    source(s) are derivable without the session storing a ``source_id``.
-    """
-
-    identity: SourceIdentity
-    table_ids: list[str]
-
-
 class AddSourceInput(BaseModel):
     """Input to ``AddSourceWorkflow`` — source identity + optional replay scope.
 

@@ -5,11 +5,12 @@ from dataraum.investigation.db_models import (
     InvestigationStep,
     SessionTable,
 )
-from dataraum.investigation.queries import sources_for_session
+from dataraum.investigation.queries import link_session_tables, sources_for_session
 
 __all__ = [
     "InvestigationSession",
     "InvestigationStep",
     "SessionTable",
+    "link_session_tables",
     "sources_for_session",
 ]

@@ -136,6 +136,50 @@ export function canvasFromMessages(
 }
 
 /**
+ * Resolve ONE specific tool-call by its id and map it to the canvas (DAT-354
+ * rehydration). Walks the message list for the call's name + input and its
+ * completed output (tolerating both the `output`-on-the-call shape and a
+ * correlated `tool-result` part, mirroring `canvasFromMessages`), then reuses
+ * the same `toolResultToCanvas` mapper. Returns null when the call id isn't
+ * found, hasn't completed, or maps to no canvas member (teach/replay/probe) —
+ * the caller then leaves the canvas unchanged (those chips are display-only).
+ */
+export function canvasFromCallId(
+	messages: ReadonlyArray<UIMessage>,
+	callId: string,
+): CanvasState | null {
+	let name: string | undefined;
+	let input: unknown;
+	let output: unknown;
+	let hasOutput = false;
+
+	for (const message of messages) {
+		for (const part of message.parts) {
+			if (part.type === "tool-call" && part.id === callId) {
+				name = part.name;
+				input = parseToolArguments(part);
+				if (part.output !== undefined) {
+					output = part.output;
+					hasOutput = true;
+				}
+			} else if (part.type === "tool-result" && part.toolCallId === callId) {
+				let parsed: unknown = part.content;
+				try {
+					parsed = JSON.parse(part.content);
+				} catch {
+					// content wasn't JSON — keep the raw string.
+				}
+				output = parsed;
+				hasOutput = true;
+			}
+		}
+	}
+
+	if (name === undefined || !hasOutput) return null;
+	return toolResultToCanvas(name, output, input);
+}
+
+/**
  * Lift a tool-call's input off the part's JSON `arguments` string (the SDK
  * carries the call input there). Tolerates a missing or non-JSON value →
  * undefined. The `run_sql` → result-grid mapping needs this: the grid re-issues

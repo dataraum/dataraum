@@ -39,4 +39,30 @@ describe("cockpit-state (DAT-347)", () => {
 	it("throws when useCockpit is read outside a provider", () => {
 		expect(() => renderHook(() => useCockpit())).toThrow(/CockpitProvider/);
 	});
+
+	it("defaults to live (no pin)", () => {
+		const { result } = renderHook(() => useCockpit(), { wrapper });
+		expect(result.current.pinnedCallId).toBeNull();
+	});
+
+	it("pinCanvas sets the pin AND the canvas in one dispatch", () => {
+		const { result } = renderHook(() => useCockpit(), { wrapper });
+		act(() =>
+			result.current.pinCanvas("call-7", { kind: "source-list", sources: [] }),
+		);
+		expect(result.current.pinnedCallId).toBe("call-7");
+		expect(result.current.canvasState).toEqual({
+			kind: "source-list",
+			sources: [],
+		});
+	});
+
+	it("returnToLive clears the pin (leaving the canvas for the rail to re-project)", () => {
+		const { result } = renderHook(() => useCockpit(), { wrapper });
+		act(() =>
+			result.current.pinCanvas("call-7", { kind: "source-list", sources: [] }),
+		);
+		act(() => result.current.returnToLive());
+		expect(result.current.pinnedCallId).toBeNull();
+	});
 });

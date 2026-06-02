@@ -2,8 +2,9 @@
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
+import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
 import { CockpitView } from "#/ui/cockpit/cockpit-view";
 
 // CockpitView mounts ChatRail, which calls useChat (network on real use). The
@@ -68,5 +69,43 @@ describe("CockpitView (DAT-347)", () => {
 			metaKey: true,
 		});
 		expect(document.activeElement).toBe(canvas);
+	});
+});
+
+describe("CockpitView history banner (DAT-354)", () => {
+	afterEach(() => cleanup());
+
+	// Pins the canvas on mount so we can assert the banner is gated on the pin.
+	function PinOnMount() {
+		const { pinCanvas } = useCockpit();
+		useEffect(() => {
+			pinCanvas("c1", { kind: "source-list", sources: [] });
+		}, [pinCanvas]);
+		return null;
+	}
+
+	it("hides the banner when live (no pin)", () => {
+		render(
+			<MantineProvider env="test">
+				<CockpitProvider>
+					<CockpitView />
+				</CockpitProvider>
+			</MantineProvider>,
+		);
+		expect(screen.queryByTestId("history-banner")).toBeNull();
+	});
+
+	it("shows the banner only while pinned and clears the pin on Return to live", () => {
+		render(
+			<MantineProvider env="test">
+				<CockpitProvider>
+					<PinOnMount />
+					<CockpitView />
+				</CockpitProvider>
+			</MantineProvider>,
+		);
+		expect(screen.getByTestId("history-banner")).toBeTruthy();
+		fireEvent.click(screen.getByTestId("return-to-live"));
+		expect(screen.queryByTestId("history-banner")).toBeNull();
 	});
 });

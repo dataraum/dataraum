@@ -42,10 +42,9 @@ export const Route = createFileRoute("/api/add-source")({
 					return Response.json(result);
 				} catch (err) {
 					// A misconfigured Temporal client (the explicit guard) or a failed
-					// seed/start — surface the message so the widget can show it.
-					const message = err instanceof Error ? err.message : String(err);
+					// seed/start — log details server-side, return a generic message.
 					console.error("add-source trigger failed", err);
-					return new Response(JSON.stringify({ error: message }), {
+					return new Response(JSON.stringify({ error: "Failed to add source." }), {
 						status: 500,
 						headers: { "Content-Type": "application/json" },
 					});

@@ -8,6 +8,7 @@ import {
 	json,
 	jsonb,
 	pgSchema,
+	primaryKey,
 	text,
 	timestamp,
 	unique,
@@ -430,9 +431,6 @@ export const investigationSessions = metadataSchema.table(
 	"investigation_sessions",
 	{
 		sessionId: varchar("session_id").primaryKey(),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId),
 		status: varchar().notNull(),
 		startedAt: timestamp("started_at").notNull(),
 		endedAt: timestamp("ended_at"),
@@ -444,12 +442,6 @@ export const investigationSessions = metadataSchema.table(
 		outcomePayload: json("outcome_payload"),
 		stepCount: integer("step_count").notNull(),
 	},
-	(table) => [
-		index("idx_inv_session_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-	],
 );
 
 export const investigationSteps = metadataSchema.table(
@@ -610,6 +602,30 @@ export const semanticAnnotations = metadataSchema.table(
 			table.sessionId.asc().nullsLast(),
 		),
 		unique("uq_column_semantic_annotation").on(table.columnId),
+	],
+);
+
+export const sessionTables = metadataSchema.table(
+	"session_tables",
+	{
+		sessionId: varchar("session_id")
+			.notNull()
+			.references(() => investigationSessions.sessionId, {
+				onDelete: "cascade",
+			}),
+		tableId: varchar("table_id")
+			.notNull()
+			.references(() => tables.tableId, { onDelete: "cascade" }),
+	},
+	(table) => [
+		primaryKey({
+			columns: [table.sessionId, table.tableId],
+			name: "pk_session_tables",
+		}),
+		index("idx_session_tables_table").using(
+			"btree",
+			table.tableId.asc().nullsLast(),
+		),
 	],
 );
 

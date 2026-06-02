@@ -44,10 +44,13 @@ export const Route = createFileRoute("/api/add-source")({
 					// A misconfigured Temporal client (the explicit guard) or a failed
 					// seed/start — log details server-side, return a generic message.
 					console.error("add-source trigger failed", err);
-					return new Response(JSON.stringify({ error: "Failed to add source." }), {
-						status: 500,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({ error: "Failed to add source." }),
+						{
+							status: 500,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
 				}
 			},
 		},

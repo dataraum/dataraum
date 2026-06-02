@@ -35,6 +35,30 @@ def link_session_tables(session: Session, session_id: str, table_ids: Iterable[s
     return len(ids)
 
 
+def tables_for_session(session: Session, session_id: str) -> list[str]:
+    """Return the typed-table ids a session composes, via ``session_tables``.
+
+    The relational scope key for the analysis/readiness layer (DAT-410): the
+    detect step + readiness persist run over *these* tables, not "a source's
+    typed tables". For ``add_source`` the set is one source's freshly-typed
+    tables (linked by ``typing``); for ``begin_session`` it is the user's
+    selection, which may span sources.
+
+    Args:
+        session: active SQLAlchemy session bound to the ``ws_<id>`` schema.
+        session_id: the investigation-session id to resolve.
+
+    Returns:
+        The linked ``typed`` table ids (empty if the session links none).
+    """
+    rows = session.execute(
+        select(Table.table_id)
+        .join(SessionTable, SessionTable.table_id == Table.table_id)
+        .where(SessionTable.session_id == session_id, Table.layer == "typed")
+    )
+    return [table_id for (table_id,) in rows]
+
+
 def sources_for_session(session: Session, session_id: str) -> set[str]:
     """Return the distinct source ids of the tables a session composes.
 

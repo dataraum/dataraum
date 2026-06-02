@@ -30,7 +30,11 @@ from dataraum.worker.bootstrap import (
     bootstrap_worker_substrate,
     shutdown_worker_substrate,
 )
-from dataraum.worker.workflows import AddSourceWorkflow, ProcessTableWorkflow
+from dataraum.worker.workflows import (
+    AddSourceWorkflow,
+    BeginSessionWorkflow,
+    ProcessTableWorkflow,
+)
 
 logger = get_logger(__name__)
 
@@ -76,7 +80,7 @@ async def run_worker() -> None:
             worker = Worker(
                 client,
                 task_queue=task_queue,
-                workflows=[AddSourceWorkflow, ProcessTableWorkflow],
+                workflows=[AddSourceWorkflow, ProcessTableWorkflow, BeginSessionWorkflow],
                 activities=[
                     phase_activities.run_import,
                     phase_activities.run_typing,
@@ -91,6 +95,11 @@ async def run_worker() -> None:
                     phase_activities.lookup_raw_table_ids,
                     phase_activities.lookup_typed_table_id,
                     phase_activities.run_replay_cleanup_for_phase,
+                    # DAT-401 begin_session spine — source-free, session-scoped.
+                    phase_activities.run_begin_session_select,
+                    phase_activities.run_relationships,
+                    phase_activities.run_semantic_per_table,
+                    phase_activities.run_session_replay_cleanup_for_phase,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
@@ -112,7 +121,11 @@ async def run_worker() -> None:
                 task_queue=task_queue,
                 namespace=namespace,
                 host=host,
-                workflows=["addSourceWorkflow", "processTableWorkflow"],
+                workflows=[
+                    "addSourceWorkflow",
+                    "processTableWorkflow",
+                    "beginSessionWorkflow",
+                ],
                 activities=[
                     "import",
                     "typing",
@@ -125,6 +138,10 @@ async def run_worker() -> None:
                     "lookup_raw_table_ids",
                     "lookup_typed_table_id",
                     "replay_cleanup_for_phase",
+                    "begin_session_select",
+                    "relationships",
+                    "semantic_per_table",
+                    "session_replay_cleanup_for_phase",
                 ],
             )
             async with worker:

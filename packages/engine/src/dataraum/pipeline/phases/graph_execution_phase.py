@@ -226,7 +226,7 @@ class GraphExecutionPhase(BasePhase):
         sid = ctx.require_session_id()
         if ctx.manager is not None:
             results = _execute_metrics_parallel(
-                prep, ctx.manager, agent, ctx.source_id, table_ids, session_id=sid
+                prep, ctx.manager, agent, ctx.require_source_id(), table_ids, session_id=sid
             )
         else:
             results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, session_id=sid)

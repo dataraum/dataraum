@@ -27,10 +27,14 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
+    PhaseRun,
+    begin_session_select,
     raw_table_ids,
     run_detectors,
     run_phase,
     run_replay_cleanup,
+    run_session_phase,
+    run_session_replay_cleanup,
     typed_table_id_for_raw,
 )
 from dataraum.worker.contracts import (
@@ -38,6 +42,8 @@ from dataraum.worker.contracts import (
     PhaseOutcome,
     ProcessTableInput,
     ReplayCleanupInput,
+    SessionReplayCleanupInput,
+    SessionScopedInput,
     SourceIdentity,
     TableScopedInput,
     TypingResult,
@@ -183,6 +189,64 @@ class PhaseActivities:
             summary=f"{count} detector records for source {identity.source_id}",
         )
 
+    # --- begin_session activities (DAT-401) — source-free, session-scoped ----
+
+    @activity.defn(name="begin_session_select")
+    def run_begin_session_select(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Pre-flight the selection + link it to the session (the spine's first step).
+
+        Validates every id is a known typed table (reject unknown → non-retryable)
+        and writes the ``session_tables`` links via the idempotent merge ``typing``
+        uses for add_source. The session row itself is seeded by the caller.
+        """
+        run = begin_session_select(self._manager, payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "begin_session_select")
+
+    @activity.defn(name="relationships")
+    def run_relationships(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Relationships activity — structural cross-table candidate detection.
+
+        Source-free: scopes to the session's selected typed tables (which may
+        span sources), persisting ``detection_method='candidate'`` rows.
+        """
+        run = run_session_phase(self._manager, "relationships", payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "relationships")
+
+    @activity.defn(name="semantic_per_table")
+    def run_semantic_per_table(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Semantic-per-table activity — LLM table classification + relationship confirm.
+
+        Reasons over the per-column annotations to classify tables and confirm a
+        subset of the structural candidates (``detection_method='llm'``). Makes
+        real Anthropic calls; needs a working ``ANTHROPIC_API_KEY`` + the session's
+        ``vertical``.
+        """
+        run = run_session_phase(
+            self._manager, "semantic_per_table", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "semantic_per_table")
+
+    @activity.defn(name="session_replay_cleanup_for_phase")
+    def run_session_replay_cleanup_for_phase(
+        self, payload: SessionReplayCleanupInput
+    ) -> PhaseOutcome:
+        """Invoke a begin_session phase's ``replay_cleanup`` before a re-run (DAT-401).
+
+        The source-free sibling of ``replay_cleanup_for_phase``: clears the
+        phase's own rows (candidate rels / table entities) for the scoped tables
+        so its ``should_skip`` lets the re-run proceed.
+        """
+        run_session_replay_cleanup(
+            self._manager,
+            payload.identity,
+            payload.phase_name,
+            payload.table_ids,
+        )
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
+        )
+
     def _run_or_raise(
         self,
         phase_name: str,
@@ -198,6 +262,16 @@ class PhaseActivities:
         ``run_phase`` as ordinary exceptions and stay retryable by default.
         """
         run = run_phase(self._manager, phase_name, identity, table_ids)
+        return self._outcome_or_raise(run, phase_name)
+
+    def _outcome_or_raise(self, run: PhaseRun, phase_name: str) -> PhaseOutcome:
+        """Translate a ``PhaseRun`` into a ``PhaseOutcome`` / non-retryable failure.
+
+        Shared by the add_source (``run_phase``) and begin_session
+        (``run_session_phase`` / ``begin_session_select``) activity paths: a
+        FAILED run is a deterministic, permanent phase failure → non-retryable
+        ``PhaseFailed``; anything else (completed / skipped) is a normal outcome.
+        """
         if run.status == PhaseStatus.FAILED.value:
             raise ApplicationError(
                 run.error or f"Phase '{phase_name}' failed",

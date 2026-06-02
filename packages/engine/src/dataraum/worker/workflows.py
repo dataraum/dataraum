@@ -39,6 +39,8 @@ with workflow.unsafe.imports_passed_through():
     from dataraum.worker.contracts import (
         AddSourceInput,
         AddSourceResult,
+        BeginSessionInput,
+        BeginSessionResult,
         ImportResult,
         PhaseOutcome,
         ProcessTableInput,
@@ -46,6 +48,9 @@ with workflow.unsafe.imports_passed_through():
         ProgressSnapshot,
         ReplayCleanupInput,
         ReplayScope,
+        SessionIdentity,
+        SessionReplayCleanupInput,
+        SessionScopedInput,
         SourceIdentity,
         TableScopedInput,
         TypingResult,
@@ -434,3 +439,129 @@ class AddSourceWorkflow:
 
         self._progress.phase = "done"
         return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)
+
+
+# --- begin_session (DAT-401) -------------------------------------------------
+#
+# The session-scoped, source-free analogue of the add_source spine. A
+# begin_session run composes a user-selected set of already-typed tables (which
+# may span sources) into an analytical session. The work is cross-table
+# (relationships are meaningless on one table), so there is NO fan-out — a
+# sequential chain over the whole selection. The selection travels as an array
+# of typed table ids in the workflow input and is threaded to each activity
+# (``SessionScopedInput``); ``begin_session_select`` also persists it to
+# ``session_tables`` for provenance + the downstream readiness layer (DAT-408).
+
+# The begin_session chain, in dependency order: structural relationship
+# detection, then the LLM table-synthesis that confirms a subset of those
+# candidates. ``begin_session_select`` precedes both as the always-run scope
+# setup (it is not gatable — re-running its idempotent link is harmless), so it
+# is not part of this replay order.
+_SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
+
+# All phase names valid as a begin_session ``ReplayScope.from_phase``. Separate
+# from add_source's ``_VALID_REPLAY_PHASES`` — a begin_session replay names a
+# begin_session phase, never an ingestion one.
+_SESSION_VALID_REPLAY_PHASES: frozenset[str] = frozenset(_SESSION_PHASE_ORDER)
+
+
+def _validate_session_replay(replay: ReplayScope | None) -> None:
+    """Refuse a begin_session replay whose ``from_phase`` isn't a session phase.
+
+    Pure function over workflow input → deterministic. Raises non-retryable so
+    the workflow fails loud on the first attempt; no silent partial replay.
+    """
+    if replay is None or replay.from_phase in _SESSION_VALID_REPLAY_PHASES:
+        return
+    raise ApplicationError(
+        f"Unknown begin_session replay.from_phase '{replay.from_phase}'. "
+        f"Valid values: {sorted(_SESSION_VALID_REPLAY_PHASES)}",
+        type="PhaseFailed",
+        non_retryable=True,
+    )
+
+
+async def _maybe_session_replay_cleanup(
+    phase: str,
+    replay: ReplayScope | None,
+    identity: SessionIdentity,
+    table_ids: list[str],
+) -> None:
+    """Invoke ``session_replay_cleanup_for_phase`` for a phase that re-runs (DAT-401).
+
+    Mirrors :func:`_maybe_replay_cleanup` but source-free: each begin_session
+    phase owns its rows and clears them (scoped to ``table_ids``) before the
+    re-run so its ``should_skip`` doesn't bail. Fires exactly for the phases the
+    caller's ``_runs_under`` gate also runs (same at-or-after predicate over
+    ``_SESSION_PHASE_ORDER``); nothing to clean on the initial run.
+    """
+    if replay is None or not _at_or_after(phase, replay.from_phase, _SESSION_PHASE_ORDER):
+        return
+    await workflow.execute_activity(
+        "session_replay_cleanup_for_phase",
+        SessionReplayCleanupInput(
+            identity=identity,
+            phase_name=phase,
+            table_ids=list(table_ids),
+        ),
+        result_type=PhaseOutcome,
+        start_to_close_timeout=_TIMEOUT,
+        retry_policy=_RETRY,
+    )
+
+
+@workflow.defn(name="beginSessionWorkflow")
+class BeginSessionWorkflow:
+    """Compose a selected set of typed tables into an analytical session (DAT-401).
+
+    Source-free, session-scoped, sequential — the begin_session spine. Runs in
+    Temporal's determinism sandbox like the add_source workflows (imports only
+    the engine-free contracts).
+
+    Initial run (``payload.replay is None``): ``begin_session_select`` pre-flights
+    the selection + links it to the session (``session_tables``), then
+    ``relationships`` (structural candidates) → ``semantic_per_table`` (LLM
+    classification + confirms a subset) run over the whole selection. NO fan-out
+    (the work is cross-table) and NO terminal detect (relationship-granularity
+    readiness is DAT-408 / 2.0b).
+
+    Teach replay (``payload.replay`` set; DAT-343 pattern): the same per-phase
+    gating + self-clean as add_source — ``_runs_under`` over ``_SESSION_PHASE_ORDER``
+    decides which phases re-run, and ``_maybe_session_replay_cleanup`` clears each
+    re-running phase's own rows first. ``begin_session_select`` always runs (its
+    link merge is idempotent).
+    """
+
+    @workflow.run
+    async def run(self, payload: BeginSessionInput) -> BeginSessionResult:
+        replay = payload.replay
+        _validate_session_replay(replay)
+        identity = payload.identity
+        # The selection is the execution scope, threaded to every activity. It is
+        # also what ``begin_session_select`` persists to ``session_tables``.
+        scoped = SessionScopedInput(identity=identity, table_ids=payload.tables)
+
+        # Scope setup: pre-flight the selection (reject unknown/non-typed ids) and
+        # link it to the session. Always runs — idempotent, and the phases below
+        # read the linked set.
+        await workflow.execute_activity(
+            "begin_session_select",
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        for phase in _SESSION_PHASE_ORDER:
+            if not _runs_under(phase, replay, _SESSION_PHASE_ORDER):
+                continue
+            await _maybe_session_replay_cleanup(phase, replay, identity, payload.tables)
+            await workflow.execute_activity(
+                phase,
+                scoped,
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+
+        return BeginSessionResult(session_id=identity.session_id, table_ids=payload.tables)

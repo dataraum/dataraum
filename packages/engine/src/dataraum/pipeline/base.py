@@ -69,6 +69,23 @@ class PhaseContext:
             "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
         )
 
+    def require_source_id(self) -> str:
+        """Return ``source_id`` or raise — for add_source-lineage phases that need it.
+
+        Source is the ingestion unit; phases past the add_source boundary
+        (begin_session onward) leave it ``None`` and scope by ``table_ids``
+        (feedback-source-dies-at-addsource). A phase that still requires a single
+        source calls this to assert that invariant rather than silently scoping
+        a ``None`` source.
+        """
+        if self.source_id is None:
+            raise RuntimeError(
+                "PhaseContext.source_id is unset — this phase requires a "
+                "source-scoped context (the add_source lineage). Stages past "
+                "add_source must scope by table_ids instead."
+            )
+        return self.source_id
+
 
 @dataclass
 class PhaseResult:

@@ -156,7 +156,6 @@ def session(engine: Engine) -> Session:
         sess.add(
             InvestigationSession(
                 session_id=_TEST_SESSION_ID,
-                source_id=_TEST_SOURCE_ID,
                 intent="conftest baseline",
                 status="active",
                 started_at=datetime.now(UTC),

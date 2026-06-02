@@ -46,6 +46,17 @@ What changed in the engine:
   cardinality) so DAT-408's relationship detectors can be calibrated against a cross-source
   selection. Directional, not prescriptive — testdata owns the injection design.
 
+### For DAT-408 (relationship-granularity readiness) — known schema tension
+- Both phases' `should_skip` + `replay_cleanup` are **session-scoped** (filter by
+  `Relationship.session_id` / `TableEntity.session_id`) so a session only checks/clears its
+  own rows. But `Relationship`'s unique constraint is `(from_column_id, to_column_id,
+  detection_method)` — **global, no `session_id`** — and `_store_candidates` does a plain
+  `session.add` (no conflict handling). So two *different* sessions cannot both hold a
+  candidate for the same column pair; a cross-session re-detect would raise a unique
+  violation (loud, not silent corruption). 2.0a is single-active-session per workspace, so
+  this is unreachable now — but DAT-408 should decide whether relationships are
+  session-scoped or workspace-global and align the unique constraint accordingly.
+
 ## 2026-06-02: DAT-410 — detect/readiness scope by the session's tables, not `source_id`
 
 Behavior-preserving runtime refactor: the terminal `detect` step (`run_detectors`) +

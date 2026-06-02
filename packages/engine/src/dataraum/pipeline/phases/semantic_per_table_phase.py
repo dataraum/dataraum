@@ -63,19 +63,27 @@ class SemanticPerTablePhase(BasePhase):
         return list(ctx.session.execute(stmt).scalars())
 
     def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Drop this phase's outputs for the session's tables (DAT-401/373).
+        """Drop THIS session's outputs for its tables (DAT-401/373).
 
-        Deletes the table-entity classifications (``TableEntity``) for the scoped
-        tables AND the LLM-confirmed relationships (``detection_method='llm'``)
-        it wrote — its OWN output only. The candidate rows (owned by
-        ``relationships``) and the parent ``Table`` survive; the FK cascade is
-        NOT load-bearing, the delete is explicit and owner-scoped.
+        Deletes the table-entity classifications (``TableEntity``) and the
+        LLM-confirmed relationships (``detection_method='llm'``) THIS session
+        wrote (scoped by ``session_id``) for the scoped tables — its OWN output
+        only. Another session's rows, the candidate rows (owned by
+        ``relationships``), and the parent ``Table`` all survive; the FK cascade
+        is NOT load-bearing, the delete is explicit and owner-scoped.
         """
         if not table_ids:
             return
-        ctx.session.execute(delete(TableEntity).where(TableEntity.table_id.in_(table_ids)))
+        session_id = ctx.require_session_id()
+        ctx.session.execute(
+            delete(TableEntity).where(
+                TableEntity.session_id == session_id,
+                TableEntity.table_id.in_(table_ids),
+            )
+        )
         ctx.session.execute(
             delete(Relationship).where(
+                Relationship.session_id == session_id,
                 Relationship.detection_method == "llm",
                 or_(
                     Relationship.from_table_id.in_(table_ids),
@@ -86,15 +94,21 @@ class SemanticPerTablePhase(BasePhase):
         ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if every typed table already has an entity detection."""
+        """Skip if THIS session already classified every one of its tables."""
         typed_tables = self._typed_tables(ctx)
         if not typed_tables:
             return "No typed tables found"
 
+        # Scoped to this session's own classifications (rows carry session_id):
+        # another session's entities over a shared table must not make this
+        # session skip classification (DAT-401).
         table_ids = [t.table_id for t in typed_tables]
         entity_table_ids = set(
             ctx.session.execute(
-                select(TableEntity.table_id).where(TableEntity.table_id.in_(table_ids))
+                select(TableEntity.table_id).where(
+                    TableEntity.session_id == ctx.require_session_id(),
+                    TableEntity.table_id.in_(table_ids),
+                )
             )
             .scalars()
             .all()

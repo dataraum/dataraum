@@ -620,8 +620,8 @@ def _session_ctx(session: Session, table_ids: list[str]) -> PhaseContext:
     )
 
 
-def _typed_table_with_col(session: Session, name: str) -> tuple[Table, Column]:
-    """A typed Table (under its own Source) + one column — the begin_session unit."""
+def _typed_table_with_col(session: Session, name: str, n_cols: int = 1) -> tuple[Table, Column]:
+    """A typed Table (under its own Source) + ``n_cols`` columns; returns the first."""
     source = Source(source_id=str(uuid4()), name=f"src_{uuid4().hex[:8]}", source_type="csv")
     session.add(source)
     session.flush()
@@ -634,17 +634,30 @@ def _typed_table_with_col(session: Session, name: str) -> tuple[Table, Column]:
     )
     session.add(table)
     session.flush()
-    col = Column(
-        column_id=str(uuid4()),
-        table_id=table.table_id,
-        column_name=f"{name}_id",
-        column_position=0,
-        raw_type="VARCHAR",
-        resolved_type="BIGINT",
-    )
-    session.add(col)
+    cols = [
+        Column(
+            column_id=str(uuid4()),
+            table_id=table.table_id,
+            column_name=f"{name}_{i}",
+            column_position=i,
+            raw_type="VARCHAR",
+            resolved_type="BIGINT",
+        )
+        for i in range(n_cols)
+    ]
+    session.add_all(cols)
     session.flush()
-    return table, col
+    return table, cols[0]
+
+
+def _other_session(session: Session) -> str:
+    """A second InvestigationSession id (distinct from the baseline fixture session)."""
+    from dataraum.investigation.db_models import InvestigationSession
+
+    sid = str(uuid4())
+    session.add(InvestigationSession(session_id=sid, intent="other", status="active"))
+    session.flush()
+    return sid
 
 
 def _rel(
@@ -654,10 +667,11 @@ def _rel(
     to_t: Table,
     to_c: Column,
     detection_method: str,
+    session_id: str | None = None,
 ) -> Relationship:
     rel = Relationship(
         relationship_id=str(uuid4()),
-        session_id=baseline_session_id(),
+        session_id=session_id or baseline_session_id(),
         from_table_id=from_t.table_id,
         from_column_id=from_c.column_id,
         to_table_id=to_t.table_id,
@@ -708,6 +722,39 @@ class TestRelationshipsReplayCleanup:
 
         assert cand_ab.relationship_id in _remaining_rel_ids(session)
 
+    def test_cleanup_spares_another_sessions_candidates(self, session: Session) -> None:
+        """A replay of THIS session must not delete another session's candidates.
+
+        The unique constraint is on the column pair, so the two sessions use
+        distinct column pairs over the same two tables — both in cleanup scope.
+        Only the replaying session's row is deleted (DAT-401 session scoping).
+        """
+        ta, _ = _typed_table_with_col(session, "a", n_cols=2)
+        tb, _ = _typed_table_with_col(session, "b", n_cols=2)
+        ca = list(
+            session.execute(
+                select(Column)
+                .where(Column.table_id == ta.table_id)
+                .order_by(Column.column_position)
+            ).scalars()
+        )
+        cb = list(
+            session.execute(
+                select(Column)
+                .where(Column.table_id == tb.table_id)
+                .order_by(Column.column_position)
+            ).scalars()
+        )
+        mine = _rel(session, ta, ca[0], tb, cb[0], "candidate")  # baseline session
+        other = _other_session(session)
+        theirs = _rel(session, ta, ca[1], tb, cb[1], "candidate", session_id=other)
+
+        RelationshipsPhase().replay_cleanup(_session_ctx(session, []), [ta.table_id, tb.table_id])
+
+        remaining = _remaining_rel_ids(session)
+        assert mine.relationship_id not in remaining
+        assert theirs.relationship_id in remaining
+
 
 class TestSemanticPerTableReplayCleanup:
     """``semantic_per_table.replay_cleanup`` drops its entities + llm rels, in scope."""
@@ -751,3 +798,34 @@ class TestSemanticPerTableReplayCleanup:
         # Cascade is NOT load-bearing: parent tables untouched by the cleanup.
         assert session.get(Table, ta.table_id) is not None
         assert session.get(Table, tb.table_id) is not None
+
+    def test_empty_scope_is_a_noop(self, session: Session) -> None:
+        ta, _ = _typed_table_with_col(session, "a")
+        ent = self._entity(session, ta)
+
+        SemanticPerTablePhase().replay_cleanup(_session_ctx(session, []), [])
+
+        assert ent.entity_id in {
+            e.entity_id for e in session.execute(select(TableEntity)).scalars()
+        }
+
+    def test_cleanup_spares_another_sessions_entities(self, session: Session) -> None:
+        """A replay of THIS session must not delete another session's entities."""
+        ta, _ = _typed_table_with_col(session, "a")
+        mine = self._entity(session, ta)  # baseline session
+        other = _other_session(session)
+        theirs = TableEntity(
+            session_id=other,
+            table_id=ta.table_id,
+            detected_entity_type="thing",
+            confidence=0.9,
+            detection_source="llm",
+        )
+        session.add(theirs)
+        session.flush()
+
+        SemanticPerTablePhase().replay_cleanup(_session_ctx(session, []), [ta.table_id])
+
+        remaining = {e.entity_id for e in session.execute(select(TableEntity)).scalars()}
+        assert mine.entity_id not in remaining
+        assert theirs.entity_id in remaining

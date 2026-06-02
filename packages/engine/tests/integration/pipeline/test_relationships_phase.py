@@ -35,14 +35,20 @@ def _typed_table(session: Session, source_id: str, name: str) -> str:
     return table_id
 
 
+_TEST_SESSION_ID = "00000000-0000-0000-0000-0000000004a1"
+
+
 def _ctx(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection, table_ids: list[str]
 ) -> PhaseContext:
+    # relationships is session-scoped (should_skip filters by session_id), so the
+    # ctx must carry one. These tests seed no relationships, so any id reads 0.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         config={},
+        session_id=_TEST_SESSION_ID,
     )
 
 

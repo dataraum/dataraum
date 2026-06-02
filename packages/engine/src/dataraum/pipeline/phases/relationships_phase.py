@@ -60,7 +60,7 @@ class RelationshipsPhase(BasePhase):
         return list(ctx.session.execute(stmt).scalars())
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if relationships already detected over the session's tables."""
+        """Skip if THIS session already detected relationships over its tables."""
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
@@ -69,11 +69,14 @@ class RelationshipsPhase(BasePhase):
         if len(typed_tables) < 2:
             return "Need at least 2 tables to detect relationships"
 
-        # Check if relationships already detected
+        # Scoped to this session's own candidates (rows carry session_id): a
+        # different session's candidates over a shared table must not make this
+        # session skip detection (DAT-401).
         table_ids = [t.table_id for t in typed_tables]
         existing_count = (
             ctx.session.execute(
                 select(func.count(Relationship.relationship_id)).where(
+                    Relationship.session_id == ctx.require_session_id(),
                     Relationship.from_table_id.in_(table_ids),
                     Relationship.detection_method == "candidate",
                 )
@@ -86,17 +89,19 @@ class RelationshipsPhase(BasePhase):
         return None
 
     def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Drop this phase's candidate relationships for the session's tables (DAT-401/373).
+        """Drop THIS session's candidate relationships for its tables (DAT-401/373).
 
-        Deletes only the structural ``detection_method='candidate'`` rows whose
-        endpoints touch the scope — its OWN output. Never the ``'llm'`` rows
-        (owned by ``semantic_per_table``) nor the parent ``Table``; the FK
-        cascade is NOT load-bearing, the delete is explicit and owner-scoped.
+        Deletes only the structural ``detection_method='candidate'`` rows this
+        session wrote (scoped by ``session_id``) whose endpoints touch the scope
+        — its OWN output. Never another session's rows, the ``'llm'`` rows (owned
+        by ``semantic_per_table``), or the parent ``Table``: the FK cascade is
+        NOT load-bearing, the delete is explicit and owner-scoped.
         """
         if not table_ids:
             return
         ctx.session.execute(
             delete(Relationship).where(
+                Relationship.session_id == ctx.require_session_id(),
                 Relationship.detection_method == "candidate",
                 or_(
                     Relationship.from_table_id.in_(table_ids),

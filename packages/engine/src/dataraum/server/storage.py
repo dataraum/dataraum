@@ -1,4 +1,4 @@
-"""DuckLake bootstrap and shared in-memory anchor for the FastAPI process.
+"""DuckLake bootstrap and shared in-memory anchor for the worker process.
 
 DuckLake stores data as parquet files on an object store (DATA_PATH is an
 ``s3://`` URI — DAT-388) with metadata in a Postgres catalog database. DuckDB
@@ -9,7 +9,7 @@ connection must first register the S3 secret + ``httpfs`` (see
 Connection model (post-DAT-323):
 
 * One named in-memory DuckDB database, `:memory:dataraum_lake`, lives for the
-  lifetime of the FastAPI process. We open one *anchor* connection at startup
+  lifetime of the worker process. We open one *anchor* connection at startup
   that is never used for queries — its sole purpose is to keep the named
   database alive (DuckDB tears down a named in-memory database once the last
   connection to it closes).
@@ -21,7 +21,7 @@ Connection model (post-DAT-323):
   schema isolation without re-paying ATTACH cost.
 
 Tests bootstrap the anchor against a testcontainer Postgres + a tmp_path
-DATA_PATH; the FastAPI app does the same against the compose stack.
+DATA_PATH; the worker does the same against the compose stack.
 """
 
 from __future__ import annotations

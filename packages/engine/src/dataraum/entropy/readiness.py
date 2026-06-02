@@ -36,12 +36,13 @@ def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -
     row's ``source_id`` is derived per-table so a multi-source session's rows stay
     well-formed. Returns the rows written.
     """
+    if not table_ids:
+        return 0
+
     # Replay-safe refresh: clear these tables' prior readiness rows first.
     session.execute(
         delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
     )
-    if not table_ids:
-        return 0
 
     ctx = build_for_readiness(session, table_ids)
     if not ctx.columns:

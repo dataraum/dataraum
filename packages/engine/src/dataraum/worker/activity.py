@@ -51,14 +51,16 @@ __all__ = [
 ]
 
 # The executed-chain phases that declare entropy detectors (DAT-394). The single
-# terminal ``detect`` activity runs the union of their detectors ONCE, source-wide
-# — after the per-table fan-out and the ``semantic_per_column`` reduce. Detectors
-# moved here from the old per-table ``detect_table`` + parent ``detect_source``
-# split: nothing reads entropy mid-run, there are no live detector->detector
-# ordering edges, and the split bought ~no parallelism (it ran two cheap structural
-# detectors), so one terminal pass is correct and simpler. Running once,
-# sequentially, makes the source-wide delete-before-insert safe (no concurrency)
-# and guarantees every detector's inputs are present.
+# terminal ``detect`` activity runs the union of their detectors ONCE over the
+# run-session's tables — after the per-table fan-out and the ``semantic_per_column``
+# reduce. Detectors moved here from the old per-table ``detect_table`` + parent
+# ``detect_source`` split: nothing reads entropy mid-run, there are no live
+# detector->detector ordering edges, and the split bought ~no parallelism (it ran
+# two cheap structural detectors), so one terminal pass is correct and simpler.
+# Running once, sequentially, makes the delete-before-insert safe (no concurrency)
+# and guarantees every detector's inputs are present: ``entropy_objects`` deletes by
+# ``(source_id, detector_id)`` scoped to the table set, ``entropy_readiness`` deletes
+# by ``table_id.in_()`` (the session's tables, DAT-410).
 #
 # Source of truth is the executed chain in ``workflows.py`` (``typing`` +
 # ``_ANALYTICS_PHASES`` in the child, ``semantic_per_column`` in the parent).

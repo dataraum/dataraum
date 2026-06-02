@@ -420,7 +420,8 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     first_count = len(rows)
 
     # Re-run the terminal detect (the replay path always re-runs it): the
-    # delete-before-insert scoped to source_id must overwrite, not duplicate.
+    # delete-before-insert scoped to the session's tables (DAT-410) must
+    # overwrite, not duplicate. (Single-source run: session tables = source tables.)
     assert run_detectors(worker_manager, identity) > 0
     with worker_manager.session_scope() as session:
         second_count = len(

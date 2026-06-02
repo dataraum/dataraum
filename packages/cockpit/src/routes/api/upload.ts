@@ -18,13 +18,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
+import { digestBytes } from "../../upload/digest";
 import {
 	buildUploadKey,
 	buildUploadUri,
 	isAllowedExtension,
 	MAX_UPLOAD_BYTES,
+	UPLOAD_PREFIX,
 } from "../../upload/policy";
-import { putObject } from "../../upload/s3-upload";
+import { listPrefixKeys, putObject } from "../../upload/s3-upload";
 
 function jsonError(message: string, status: number): Response {
 	return new Response(JSON.stringify({ error: message }), {
@@ -34,11 +36,15 @@ function jsonError(message: string, status: number): Response {
 }
 
 /**
- * Core upload handler: parse the multipart body, gate on extension + size, PUT
- * to the bucket under `uploads/<uuid>/<name>`, and return the locked s3:// handle.
+ * Core upload handler: parse the multipart body, gate on extension + size,
+ * content-digest the bytes, and stage to `uploads/<digest>/<name>` — UNLESS that
+ * content is already staged (this workspace), in which case the existing handle
+ * is returned and the PUT skipped (dedup). Returns the locked s3:// handle plus
+ * a `deduped` flag.
  *
- * `bucket` and `put` are injected so the unit test can assert the call without a
- * live SeaweedFS; the route passes the real config bucket + @aws-lite putObject.
+ * `bucket`, `put`, `digest`, and `listPrefix` are injected so the unit test can
+ * assert the flow without a live SeaweedFS; the route passes the real config
+ * bucket, @aws-lite putObject/listPrefixKeys, and a workspace-salted digest.
  */
 export async function handleUpload(
 	request: Request,
@@ -50,7 +56,8 @@ export async function handleUpload(
 			body: Buffer,
 			contentType?: string,
 		) => Promise<void>;
-		uuid: () => string;
+		digest: (bytes: Uint8Array) => Promise<string>;
+		listPrefix: (bucket: string, prefix: string) => Promise<string[]>;
 	},
 ): Promise<Response> {
 	let form: FormData;
@@ -81,8 +88,26 @@ export async function handleUpload(
 		return jsonError(`File is too large (max ${MAX_UPLOAD_BYTES} bytes).`, 413);
 	}
 
-	// One uuid directory per upload → no cross-upload filename collision.
-	const key = buildUploadKey(deps.uuid(), file.name);
+	// Content-address the upload so identical bytes dedup instead of piling up a
+	// fresh copy per upload (the "S3 sink-hole" + no-dedup bug). If the digest
+	// directory already holds an object, this content is already staged — reuse
+	// its handle and skip the re-PUT.
+	const digest = await deps.digest(body);
+	const existing = await deps.listPrefix(
+		deps.bucket,
+		`${UPLOAD_PREFIX}/${digest}/`,
+	);
+	if (existing.length > 0) {
+		return new Response(
+			JSON.stringify({
+				path: buildUploadUri(deps.bucket, existing[0]),
+				deduped: true,
+			}),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		);
+	}
+
+	const key = buildUploadKey(digest, file.name);
 	try {
 		await deps.put(deps.bucket, key, body, file.type || undefined);
 	} catch (err) {
@@ -91,7 +116,7 @@ export async function handleUpload(
 	}
 
 	return new Response(
-		JSON.stringify({ path: buildUploadUri(deps.bucket, key) }),
+		JSON.stringify({ path: buildUploadUri(deps.bucket, key), deduped: false }),
 		{
 			status: 200,
 			headers: { "Content-Type": "application/json" },
@@ -106,7 +131,10 @@ export const Route = createFileRoute("/api/upload")({
 				handleUpload(request, {
 					bucket: config.s3Bucket,
 					put: putObject,
-					uuid: () => crypto.randomUUID(),
+					// Workspace-scoped content digest (salt = workspace id) so the same
+					// bytes dedup within a workspace, not across.
+					digest: (bytes) => digestBytes(bytes, config.dataraumWorkspaceId),
+					listPrefix: listPrefixKeys,
 				}),
 		},
 	},

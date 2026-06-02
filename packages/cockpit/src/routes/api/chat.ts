@@ -24,6 +24,30 @@ type ChatMessages = Awaited<
 	ReturnType<typeof chatParamsFromRequest>
 >["messages"];
 
+type BunRuntimeRequest = Request & {
+	runtime?: {
+		name?: string;
+		bun?: {
+			server?: {
+				timeout?: (request: Request, seconds: number) => void;
+			};
+		};
+	};
+};
+
+function disableBunIdleTimeoutForSse(request: Request) {
+	const runtime = (request as BunRuntimeRequest).runtime;
+	const server = runtime?.bun?.server;
+
+	if (runtime?.name !== "bun" || !server || typeof server.timeout !== "function") {
+		return;
+	}
+
+	// SSE streams are often quiet between events. Bun closes idle requests after
+	// a short default timeout; disable it for this request so the stream can stay open.
+	server.timeout(request, 0);
+}
+
 /**
  * Assemble the chat() options for a turn. Pure + side-effect-free (no network,
  * no model call) so the wiring — cached system prompt + the tool registry — is
@@ -56,6 +80,7 @@ export const Route = createFileRoute("/api/chat")({
 			// chatParamsFromRequest throws a 400 Response on a malformed AG-UI body,
 			// which TanStack Start surfaces to the client automatically.
 			POST: async ({ request }: { request: Request }) => {
+				disableBunIdleTimeoutForSse(request);
 				const { messages } = await chatParamsFromRequest(request);
 				const stream = chat(buildChatOptions(messages));
 				return toServerSentEventsResponse(stream);

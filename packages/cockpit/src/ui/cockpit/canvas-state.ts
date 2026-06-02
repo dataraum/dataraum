@@ -7,7 +7,7 @@
 
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
-import type { SourceSummary } from "#/tools/list-sources";
+import type { AvailableSource } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
@@ -17,7 +17,7 @@ export type CanvasState =
 	| { kind: "empty" }
 	| { kind: "loading" }
 	| { kind: "error"; message: string }
-	| { kind: "source-list"; sources: SourceSummary[] }
+	| { kind: "source-list"; sources: AvailableSource[] }
 	| { kind: "table-list"; tables: TableSummary[] }
 	| { kind: "schema-preview"; schema: ConnectSchema }
 	| { kind: "concept-frame"; frame: FrameResult }

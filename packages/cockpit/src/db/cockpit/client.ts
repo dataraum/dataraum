@@ -4,12 +4,11 @@
 // Source of truth for the schema lives in ./schema.ts; the engine's metadata
 // schema is consumed via ../metadata/client.ts instead.
 
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-
+import { SQL } from "bun";
+import { drizzle } from "drizzle-orm/bun-sql";
 import { config } from "../../config";
 
-const client = postgres(config.cockpitDatabaseUrl, { prepare: false });
+const client = new SQL(config.cockpitDatabaseUrl);
 
 // schema is intentionally not passed yet — ./schema.ts is a placeholder. Once
 // real tables land (e.g. workspaces registry), pass `{ client, schema }`.

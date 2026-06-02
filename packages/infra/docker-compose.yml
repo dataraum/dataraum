@@ -240,6 +240,8 @@ services:
         condition: service_started
       seaweedfs-init:
         condition: service_completed_successfully
+      temporal-ui:
+        condition: service_started
     environment:
       # cockpit_db — TanStack Start side of the substrate. Created at
       # postgres first-boot by init-databases.sh. Holds workspaces

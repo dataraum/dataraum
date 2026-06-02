@@ -8,13 +8,13 @@
 //
 // Source of truth: the engine's SQLAlchemy models. Never push from here.
 
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import { SQL } from "bun";
+import { drizzle } from "drizzle-orm/bun-sql";
 
 import { config } from "../../config";
 import { relations } from "./relations";
 
-const client = postgres(config.metadataDatabaseUrl, { prepare: false });
+const client = new SQL(config.metadataDatabaseUrl);
 
 // drizzle 1.0 takes a single options object. `relations` already encodes
 // every table reference (via defineRelations(schema, ...)), so we don't need

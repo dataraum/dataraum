@@ -141,7 +141,7 @@ const ReplayScopeSchema = z.object({
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Re-run processing for a source to apply pending teaches. Provide a ReplayScope (from_phase + raw_table_ids). Requires user approval. Returns the workflow + run id immediately; poll Temporal for progress.",
+		"Re-run processing for a source to apply pending teaches. Provide a ReplayScope (from_phase + raw_table_ids). Requires user approval. Returns the workflow + run id immediately; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
 		source_id: z.string(),
 		scope: ReplayScopeSchema,

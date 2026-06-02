@@ -21,13 +21,13 @@
 #   docker compose -f packages/infra/docker-compose.yml build cockpit
 
 # ---------- 1. deps ----------
-FROM oven/bun:1.3.14-alpine AS deps
+FROM oven/bun:1 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ---------- 2. build ----------
-FROM oven/bun:1.3.14-alpine AS build
+FROM oven/bun:1 AS build
 WORKDIR /app
 
 ARG VITE_ENGINE_API_URL=http://localhost:8000
@@ -42,14 +42,15 @@ COPY . .
 RUN bun run build
 
 # ---------- 3. runner ----------
-FROM oven/bun:1.3.14-alpine AS runner
+FROM oven/bun:1-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-# oven/bun:1-alpine ships without wget; add it for the healthcheck.
-RUN apk add --no-cache wget
+# oven/bun:1-slim ships without wget; add it for the healthcheck.
+RUN apt-get update && apt-get install -y wget \
+    && rm -rf /var/lib/apt/lists/*
 
 # Nitro produces a self-contained server bundle at .output/server/index.mjs.
 COPY --from=build /app/.output ./.output
@@ -68,4 +69,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- --spider http://localhost:3000/ || exit 1
 
-CMD ["bun", ".output/server/index.mjs"]
+CMD ["bun", "run", ".output/server/index.mjs"]

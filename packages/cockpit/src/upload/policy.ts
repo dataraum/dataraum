@@ -4,13 +4,15 @@
 // returned `s3://` handle are all derived here so the route stays a thin I/O
 // shell and the contract is unit-testable without SeaweedFS or @aws-lite.
 //
-// The handle shape `s3://<bucket>/uploads/<uuid>/<filename>` is a DE-FACTO
+// The handle shape `s3://<bucket>/uploads/<digest>/<filename>` is a DE-FACTO
 // CONTRACT that DAT-389 (ingest + cleanup) reads to find the staged file. It is
 // locked, not improvised: the `uploads/` prefix is sibling to the lake's
-// `lake/` prefix in the SAME bucket (the lake stays at `lake/`), one upload =
-// one `<uuid>/` directory so a filename collision across uploads never clobbers,
-// and the original filename is preserved as the leaf so the extension drives the
-// DuckDB reader on the connect sniff (read_csv_auto / read_parquet / …).
+// `lake/` prefix in the SAME bucket (the lake stays at `lake/`), the directory
+// segment is the file's CONTENT DIGEST (workspace-scoped, see upload/digest.ts)
+// so identical bytes land at one key — re-uploads dedup instead of accumulating
+// — while distinct files never clobber, and the original filename is preserved
+// as the leaf so the extension drives the DuckDB reader on the connect sniff
+// (read_csv_auto / read_parquet / …).
 
 // Object-key prefix uploads land under, sibling to the lake's `lake/` prefix in
 // the same bucket. DAT-389 lists this prefix to find staged files.
@@ -69,19 +71,20 @@ export function sanitizeFilename(filename: string): string {
 }
 
 /**
- * The object key a staged upload lands at: `uploads/<uuid>/<safe-filename>`.
+ * The object key a staged upload lands at: `uploads/<digest>/<safe-filename>`.
  *
- * `uuid` is the caller-supplied collision-free directory (one per upload);
- * `filename` is sanitized to a single safe leaf. Pure — the route generates the
- * uuid (crypto.randomUUID) and passes it in so this stays deterministic/testable.
+ * `digest` is the file's content digest (upload/digest.ts) — the content-address
+ * directory that makes identical bytes dedup; `filename` is sanitized to a
+ * single safe leaf. Pure — the route computes the digest and passes it in so
+ * this stays deterministic/testable.
  *
- * The `uuid` is itself sanitized to a single safe segment: a non-UUID value
- * (a caller that didn't use crypto.randomUUID) must not be able to inject `/`
- * or `..` and re-point the key at another upload, the `lake/` prefix, or the
- * bucket root. Same allowlist as the filename leaf.
+ * The `digest` segment is itself sanitized to a single safe segment: a value
+ * that somehow carried `/` or `..` must not be able to re-point the key at
+ * another upload, the `lake/` prefix, or the bucket root. Same allowlist as the
+ * filename leaf.
  */
-export function buildUploadKey(uuid: string, filename: string): string {
-	return `${UPLOAD_PREFIX}/${sanitizeFilename(uuid)}/${sanitizeFilename(filename)}`;
+export function buildUploadKey(digest: string, filename: string): string {
+	return `${UPLOAD_PREFIX}/${sanitizeFilename(digest)}/${sanitizeFilename(filename)}`;
 }
 
 /**

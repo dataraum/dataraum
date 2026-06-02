@@ -14,7 +14,7 @@
 import type { UIMessage } from "@tanstack/ai-react";
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
-import type { SourceSummary } from "#/tools/list-sources";
+import type { AvailableSource } from "#/tools/list-sources";
 import type { TableSummary } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
@@ -31,12 +31,12 @@ type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
  * (plus its widget + one register() line); `CANVAS_TOOLS` / `isCanvasTool`
  * derive from these keys, so the chat rail's chip clickability never needs a
  * second, hand-maintained list (DAT-354 de-dup). Tools absent from the map
- * (teach / replay / probe) project nothing → their chips are display-only.
+ * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
 	list_sources: (result) => ({
 		kind: "source-list",
-		sources: (result as SourceSummary[]) ?? [],
+		sources: (result as AvailableSource[]) ?? [],
 	}),
 	list_tables: (result) => ({
 		kind: "table-list",
@@ -64,6 +64,20 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		result
 			? { kind: "selected-source", selection: result as SelectResult }
 			: null,
+	// A replay is an addSourceWorkflow run (reused workflow id, fresh run_id), so
+	// project the SAME live-progress widget the add_source trigger uses — sourced
+	// from the tool result here instead of the button click. A rejected/failed
+	// replay (no ids) leaves the canvas unchanged.
+	replay: (result) => {
+		const r = result as { workflow_id?: string; run_id?: string } | null;
+		return r?.workflow_id && r?.run_id
+			? {
+					kind: "add-source-progress",
+					workflowId: r.workflow_id,
+					runId: r.run_id,
+				}
+			: null;
+	},
 	// The agent's run_sql returns a small sample for the LLM; the human grid
 	// re-issues the query against the stateless streaming endpoint, so it maps
 	// from the CALL INPUT (sql + bind params), not the result. No sql → unchanged.
@@ -134,10 +148,14 @@ export function canvasFromMessages(
 				const call = callById.get(part.toolCallId);
 				if (call) {
 					let output: unknown = part.content;
-					try {
-						output = JSON.parse(part.content);
-					} catch {
-						// content wasn't JSON — keep the raw string.
+					// `part.content` is `string | ContentPart[]`: only a JSON string is
+					// parsed; structured content (or a non-JSON string) passes through.
+					if (typeof part.content === "string") {
+						try {
+							output = JSON.parse(part.content);
+						} catch {
+							// content wasn't JSON — keep the raw string.
+						}
 					}
 					latest = { name: call.name, output, input: call.input };
 				}
@@ -179,10 +197,14 @@ export function canvasFromCallId(
 				}
 			} else if (part.type === "tool-result" && part.toolCallId === callId) {
 				let parsed: unknown = part.content;
-				try {
-					parsed = JSON.parse(part.content);
-				} catch {
-					// content wasn't JSON — keep the raw string.
+				// `part.content` is `string | ContentPart[]`: only a JSON string is
+				// parsed; structured content (or a non-JSON string) passes through.
+				if (typeof part.content === "string") {
+					try {
+						parsed = JSON.parse(part.content);
+					} catch {
+						// content wasn't JSON — keep the raw string.
+					}
 				}
 				output = parsed;
 				hasOutput = true;

@@ -54,3 +54,53 @@ export function resolveCredential(
 	}
 	return null;
 }
+
+/** One configured database source, as surfaced by `list_sources`. */
+export interface ConfiguredDatabase {
+	/** Source name (the `<NAME>` in `DATARAUM_<NAME>_URL`), lowercased. */
+	name: string;
+	/** Backend kind inferred from the URL scheme, or null when unrecognized. */
+	backend: string | null;
+}
+
+// `DATARAUM_<NAME>_URL` is the only env shape that names a DB source credential.
+// `DATARAUM_WORKSPACE_ID` / `_LAKE_PATH` / `_CONFIG_PATH` don't end in `_URL`,
+// and `METADATA_/COCKPIT_/DUCKLAKE_*_URL` don't start with `DATARAUM_`, so this
+// matches source creds only.
+const DB_URL_KEY = /^DATARAUM_(.+)_URL$/;
+
+// URL scheme → backend kind (mirrors probe.ts SUPPORTED_BACKENDS). Used to label
+// a configured source WITHOUT exposing the secret URL — only the scheme is read.
+const SCHEME_BACKEND: Record<string, string> = {
+	postgres: "postgres",
+	postgresql: "postgres",
+	mysql: "mysql",
+	mariadb: "mysql",
+	sqlite: "sqlite",
+	mssql: "mssql",
+	sqlserver: "mssql",
+};
+
+/** Infer the backend kind from a connection URL's scheme; never returns the URL. */
+function inferBackend(url: string): string | null {
+	const idx = url.indexOf("://");
+	if (idx <= 0) return null;
+	return SCHEME_BACKEND[url.slice(0, idx).toLowerCase()] ?? null;
+}
+
+/**
+ * Enumerate the database sources configured via `DATARAUM_<NAME>_URL` env vars.
+ *
+ * These are "available inputs" the user can `connect`/`select` — the pre-select
+ * inventory `list_sources` reports, NOT registered sources. The secret URL is
+ * never returned: only the source name and the scheme-inferred backend.
+ */
+export function listConfiguredDatabases(): ConfiguredDatabase[] {
+	const out: ConfiguredDatabase[] = [];
+	for (const [key, value] of Object.entries(process.env)) {
+		const match = DB_URL_KEY.exec(key);
+		if (!match || !value) continue;
+		out.push({ name: match[1].toLowerCase(), backend: inferBackend(value) });
+	}
+	return out.sort((a, b) => a.name.localeCompare(b.name));
+}

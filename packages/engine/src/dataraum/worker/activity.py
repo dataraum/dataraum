@@ -27,13 +27,14 @@ from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
-from dataraum.investigation.queries import tables_for_session
+from dataraum.investigation.db_models import InvestigationSession
+from dataraum.investigation.queries import link_session_tables, tables_for_session
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
 from dataraum.storage import Source, Table
-from dataraum.worker.contracts import SourceIdentity
+from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
     from dataraum.core.connections import ConnectionManager
@@ -42,11 +43,14 @@ logger = get_logger(__name__)
 
 __all__ = [
     "PhaseRun",
+    "begin_session_select",
     "declared_detector_ids",
     "raw_table_ids",
     "run_detectors",
     "run_phase",
     "run_replay_cleanup",
+    "run_session_phase",
+    "run_session_replay_cleanup",
     "typed_table_id_for_raw",
 ]
 
@@ -275,6 +279,197 @@ def run_replay_cleanup(
     )
 
 
+def begin_session_select(
+    manager: ConnectionManager,
+    identity: SessionIdentity,
+    table_ids: list[str],
+) -> PhaseRun:
+    """Pre-flight the selected tables + link them to the session (DAT-401).
+
+    The first step of ``beginSessionWorkflow``: validate every id is a known
+    *typed* table (reject unknown — a deterministic FAILED → non-retryable
+    ``PhaseFailed`` in the wrapper) and write the ``session_tables`` links via
+    the same idempotent merge ``typing`` uses for add_source. The session row
+    itself is seeded by the caller (cockpit in 2.0c; the test driver now),
+    mirroring add_source — so its absence is a fail-loud caller error, not a
+    create-on-demand path.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error=(
+                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
+                f"but this worker is bound to '{active_workspace_id}'. Refusing "
+                "to run to avoid a cross-workspace miswrite (DAT-364)."
+            ),
+        )
+    if not table_ids:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error="begin_session requires at least one table id.",
+        )
+
+    with manager.session_scope() as session:
+        if session.get(InvestigationSession, identity.session_id) is None:
+            return PhaseRun(
+                status=PhaseStatus.FAILED.value,
+                error=(
+                    f"InvestigationSession '{identity.session_id}' not found — the "
+                    "begin_session caller must seed the session row before the "
+                    "workflow runs (mirrors add_source's cockpit seed)."
+                ),
+            )
+        found = set(
+            session.execute(
+                select(Table.table_id).where(Table.table_id.in_(table_ids), Table.layer == "typed")
+            ).scalars()
+        )
+        unknown = [tid for tid in table_ids if tid not in found]
+        if unknown:
+            return PhaseRun(
+                status=PhaseStatus.FAILED.value,
+                error=f"Unknown or non-typed table ids in selection: {unknown}",
+            )
+        link_session_tables(session, identity.session_id, table_ids)
+
+    logger.info(
+        "activity.begin_session_select",
+        session_id=identity.session_id,
+        table_count=len(table_ids),
+    )
+    return PhaseRun(
+        status=PhaseStatus.COMPLETED.value,
+        summary=f"linked {len(table_ids)} table(s) to session {identity.session_id}",
+    )
+
+
+def run_session_phase(
+    manager: ConnectionManager,
+    phase_name: str,
+    identity: SessionIdentity,
+    table_ids: list[str],
+) -> PhaseRun:
+    """Run one begin_session phase over ``table_ids`` — source-free (DAT-401).
+
+    The session-scoped sibling of :func:`run_phase`. Past the add_source
+    boundary a source is meaningless (feedback-source-dies-at-addsource): the
+    phase scopes purely by the typed ``table_ids`` (the session's selection,
+    threaded from the workflow input) and reads the frame ``vertical`` off the
+    ``InvestigationSession`` row — never a ``Source``. The ``PhaseContext`` is
+    built with ``source_id=None`` so the phase body cannot silently fall back to
+    source scoping.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error=(
+                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
+                f"but this worker is bound to '{active_workspace_id}'. Refusing "
+                "to run to avoid a cross-workspace miswrite (DAT-364)."
+            ),
+        )
+
+    phase_cls = get_phase_class(phase_name)
+    if phase_cls is None:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error=f"Unknown phase '{phase_name}' — not in the phase registry.",
+        )
+    phase = phase_cls()
+
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        inv_session = session.get(InvestigationSession, identity.session_id)
+        if inv_session is None:
+            return PhaseRun(
+                status=PhaseStatus.FAILED.value,
+                error=(
+                    f"InvestigationSession '{identity.session_id}' not found in "
+                    f"workspace '{identity.workspace_id}'. The begin_session caller "
+                    "must seed the session row before the workflow runs."
+                ),
+            )
+        config = _build_session_phase_config(phase_name, inv_session.vertical)
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=cursor,
+            source_id=None,
+            table_ids=list(table_ids),
+            config=config,
+            session_factory=manager.session_scope,
+            manager=manager,
+            session_id=identity.session_id,
+        )
+
+        skip_reason = phase.should_skip(ctx)
+        if skip_reason:
+            logger.info("activity.session_phase_skipped", phase=phase_name, reason=skip_reason)
+            return PhaseRun(status=PhaseStatus.SKIPPED.value, summary=skip_reason)
+
+        result = phase.run(ctx)
+
+    logger.info(
+        "activity.session_phase_done",
+        phase=phase_name,
+        status=result.status.value,
+        duration=result.duration_seconds,
+    )
+    return PhaseRun(
+        status=result.status.value,
+        summary=result.summary,
+        error=result.error,
+    )
+
+
+def run_session_replay_cleanup(
+    manager: ConnectionManager,
+    identity: SessionIdentity,
+    phase_name: str,
+    table_ids: list[str],
+) -> None:
+    """Invoke ``phase.replay_cleanup`` for a begin_session phase (DAT-401).
+
+    Source-free sibling of :func:`run_replay_cleanup`: builds a session-scoped
+    ``PhaseContext`` (``source_id=None``, scoped to ``table_ids``) and calls the
+    phase's owner-scoped cleanup so its ``should_skip`` doesn't bail on the
+    re-run. The cleanup deletes only the phase's own rows for these tables — it
+    never relies on a parent ``Table`` cascade (DAT-373).
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: session replay_cleanup payload targets "
+            f"'{identity.workspace_id}' but this worker is bound to "
+            f"'{active_workspace_id}'."
+        )
+
+    phase_cls = get_phase_class(phase_name)
+    if phase_cls is None:
+        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
+    phase = phase_cls()
+
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=cursor,
+            source_id=None,
+            table_ids=list(table_ids),
+            config={},
+            session_factory=manager.session_scope,
+            manager=manager,
+            session_id=identity.session_id,
+        )
+        phase.replay_cleanup(ctx, list(table_ids))
+
+    logger.info(
+        "activity.session_replay_cleanup",
+        phase=phase_name,
+        table_ids=table_ids,
+        session_id=identity.session_id,
+    )
+
+
 def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
     """Run every wired detector once over the run-session's tables — the terminal ``detect`` step.
 
@@ -352,4 +547,19 @@ def _build_phase_config(
     config: dict[str, Any] = {}
     config.update(load_phase_config(phase_name))
     config.update(runtime_config)
+    return config
+
+
+def _build_session_phase_config(phase_name: str, vertical: str | None) -> dict[str, Any]:
+    """Phase static config + the session's frame ``vertical`` (DAT-401).
+
+    Source-free analogue of :func:`_build_phase_config`: a begin_session phase
+    needs its pipeline.yaml static config (e.g. relationships' ``min_confidence``
+    / ``sample_percent``) plus the ``vertical`` the LLM table-synthesis reads —
+    sourced from the session's frame, defaulting to ``"_adhoc"`` on a cold-start
+    session (mirrors add_source's ``identity.vertical or "_adhoc"``).
+    """
+    config: dict[str, Any] = {}
+    config.update(load_phase_config(phase_name))
+    config["vertical"] = vertical or "_adhoc"
     return config

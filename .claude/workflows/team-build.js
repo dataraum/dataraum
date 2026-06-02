@@ -3,7 +3,7 @@ export const meta = {
   description: 'Fan out approved approaches into autonomous build lanes: per-lane pipeline implement → runtime-spawned 3-reviewer stage → DETERMINISTIC JS gate → push branch',
   whenToUse: 'After the lead drains the team-refine queue and approves a subset of approaches. Reviewers run per-lane as a pipeline stage spawned by the workflow RUNTIME (lane agents have no Agent tool — proven 2026-05-31), and the push gate is a deterministic JS decision on their verdicts. The lead opens PRs from the MacBook and picks merge order.',
   phases: [
-    { title: 'Preflight', detail: 'one fetch + per-lane 5 parallel-safety STOP conditions (from /take Step 1)' },
+    { title: 'Preflight', detail: 'one fetch + per-lane PHYSICAL-collision check only (trust the lead; never block on Jira status)' },
     { title: 'Implement', detail: 'worktree → implement (may ASK the lead mid-run) → local CI gates + lane smoke → commit (no push)' },
     { title: 'Review', detail: 'runtime spawns spec-compliance + senior-code + strict per lane, concurrently' },
     { title: 'Gate', detail: 'deterministic JS gate on verdicts → push branch (or park blocked / stopped-early)' },
@@ -26,7 +26,11 @@ export const meta = {
 // user from the routine ones. If no orchestrator is draining the mailbox, asks
 // time out → the lane stops-early (it still never guesses). See ADR-0006.
 //
-// Mailbox is at <repo>/.claude/.mailbox/ (gitignored). Per lane: {id}.q holds the
+// Mailbox is the CANONICAL repo's .claude/.mailbox/ (gitignored), resolved via
+// `git rev-parse --git-common-dir` so a lane running inside a worktree writes to the
+// SAME mailbox the orchestrator watches — NOT the worktree's (that worktree-path trap
+// silently blocked DAT-354 for ~30 min, 2026-06-02). Orchestrators should also watch
+// .worktrees/*/.claude/.mailbox/ as belt-and-suspenders. Per lane: {id}.q holds the
 // open question, {id}.a the answer; both are deleted after each exchange, so a
 // lane can ask sequentially (it blocks between asks → never two open questions
 // from one lane). team-build is one-run-at-a-time (it mutates worktrees + the
@@ -34,7 +38,7 @@ export const meta = {
 const ASK_PROTOCOL = (laneId) =>
   `\n\nMID-RUN ASK (use this instead of guessing on an ambiguous fork; it is NOT failure — guessing wrong is):\n` +
   `When you hit a real design fork the approved approach does not settle, do NOT pick a branch and barrel on. ASK the lead and wait:\n` +
-  `  1. MB="$(git rev-parse --show-toplevel)/.claude/.mailbox"; mkdir -p "$MB"; rm -f "$MB/${laneId}.a"\n` +
+  `  1. MB="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/.claude/.mailbox"; mkdir -p "$MB"; rm -f "$MB/${laneId}.a"   — NOTE: that resolves the CANONICAL repo mailbox even from inside a worktree. Do NOT use \`git rev-parse --show-toplevel\` or \`git -C <worktree>\`: from a worktree they point at the WORKTREE's mailbox, which the orchestrator does NOT watch → your ask is invisible and you block the full 30 min.\n` +
   `  2. Write your question (be specific; give the options and the context the lead needs to decide) to "$MB/${laneId}.q" via a heredoc.\n` +
   `  3. BLOCK for the answer: \`for i in $(seq 1 360); do [ -f "$MB/${laneId}.a" ] && break; sleep 5; done\` (waits up to 30 min).\n` +
   `  4. If "$MB/${laneId}.a" exists: read it, \`rm -f "$MB/${laneId}.q" "$MB/${laneId}.a"\`, record the {question, answer} pair in your \`asks\` result, and CONTINUE with that decision (it overrides your default; honor any extra instruction it carries).\n` +
@@ -107,8 +111,8 @@ const PREFLIGHT = {
   required: ['id', 'can_open', 'blockers'],
   properties: {
     id: { type: 'string' },
-    can_open: { type: 'boolean', description: 'true only if ALL five STOP conditions pass' },
-    blockers: { type: 'array', items: { type: 'string' }, description: 'which of the 5 conditions failed (empty if can_open)' },
+    can_open: { type: 'boolean', description: 'true UNLESS a real physical collision exists (mismatched worktree, PR already open, status-board claim, or a depended-on contract genuinely missing from origin/main). NEVER gated on Jira ticket status or blocked-by links.' },
+    blockers: { type: 'array', items: { type: 'string' }, description: 'the concrete physical collisions that forced can_open=false (empty if can_open). Jira ticket status / blocked-by links are NEVER blockers.' },
     slug: { type: 'string', description: 'kebab slug for the branch feat/{id}-{slug}' },
   },
 }
@@ -174,17 +178,23 @@ await agent(
 const results = await pipeline(
   LANES,
 
-  // Stage 1 — preflight (the 5 STOP conditions from /take Step 1, CALLED not reinvented)
+  // Stage 1 — preflight: catch REAL physical collisions only, TRUST the lead's cut.
+  // The lead already approved this cut and said implement — do NOT re-litigate the
+  // decision or block on Jira. Jira lags reality (tickets are transitioned late);
+  // refusing to build because a dependency TICKET isn't "Done" — when its CODE is
+  // already on main — is corporate gatekeeping we explicitly forbid. The only gate
+  // is "would opening this lane physically collide or build on code that isn't on
+  // main", verified by reading the repo, never by reading Jira status.
   (lane) =>
     agent(
-      `Pre-flight check for build lane ${lane.id} ("${lane.title}"), per /take Step 1 (read .claude/skills/take/SKILL.md). ` +
-      `Verify ALL five parallel-safety conditions and report can_open + any blockers:\n` +
-      `1. Parent is a real epic phase; ticket status is To Do / In Progress.\n` +
-      `2. Every \`blocked by\` dependency is Done.\n` +
-      `3. No existing worktree on a mismatched branch at .worktrees/${lane.id}/ (resume if branch matches feat/${lane.id}-{slug}).\n` +
-      `4. No PR already open (\`gh pr list --search "${lane.id} in:title"\` — may fail in sandbox; if gh has no token, note it and rely on the status board).\n` +
-      `5. No status-board claim (.claude/platform-status.md) on this task or a contract it touches; and if the approach names a contract (${(lane.contract_dependencies || []).join(', ') || 'none'}), it must be locked on main.\n` +
-      `Return the structured preflight result with a kebab slug for the branch.`,
+      `Pre-flight for build lane ${lane.id} ("${lane.title}"). The lead has ALREADY approved this cut and told you to implement — TRUST THAT; your only job is to catch a REAL physical hazard, not to second-guess the decision.\n` +
+      `Do NOT block on Jira: ticket status, \`is blocked by\` links, and ticket-prose "blocked by" notes are NEVER blockers here — Jira lags reality and the lead has verified dependencies. Refusing because a dependency ticket isn't marked Done is exactly the gatekeeping we forbid.\n` +
+      `Set can_open=FALSE only for one of these concrete, physical collisions:\n` +
+      `1. An existing worktree at .worktrees/${lane.id}/ sits on a MISMATCHED branch (a branch matching feat/${lane.id}-{slug} is fine — resume it).\n` +
+      `2. A PR is already open for THIS task (\`gh pr list --search "${lane.id} in:title"\`). gh has no token in the sandbox → if it errors, fall back to the status board (.claude/platform-status.md); a gh failure is NOT a blocker.\n` +
+      `3. The status board (.claude/platform-status.md) shows another in-flight lane already claims this task or a file/contract it touches.\n` +
+      `4. A contract this approach DEPENDS ON is genuinely ABSENT from origin/main — verify by READING THE CODE on origin/main (depends-on contracts: ${(lane.contract_dependencies || []).join(', ') || 'none'}). If the code/contract is present on main it is satisfied, regardless of any ticket's status.\n` +
+      `If none of those four hold, can_open=TRUE. Put only real physical collisions in blockers; mention any Jira-status quirk as a one-line note at most, never as a refusal. Return the structured result with a kebab slug for the branch.`,
       { label: `preflight:${lane.id}`, phase: 'Preflight', schema: PREFLIGHT }
     ).then((pf) => {
       if (!pf.can_open) throw new Error(`preflight failed for ${lane.id}: ${pf.blockers.join('; ')}`)

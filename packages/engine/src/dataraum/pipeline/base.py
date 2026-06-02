@@ -37,7 +37,11 @@ class PhaseContext:
 
     session: Session
     duckdb_conn: duckdb.DuckDBPyConnection
-    source_id: str
+    # The ingestion unit — set for add_source's own phases (import/typing/…).
+    # ``None`` for stages past the add_source boundary (begin_session onward):
+    # a source is meaningless there, so those phases scope by ``table_ids``
+    # alone and never read ``source_id`` (see feedback-source-dies-at-addsource).
+    source_id: str | None = None
     table_ids: list[str] = field(default_factory=list)
 
     # Configuration overrides

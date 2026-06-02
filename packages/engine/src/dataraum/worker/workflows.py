@@ -41,6 +41,7 @@ with workflow.unsafe.imports_passed_through():
         AddSourceInput,
         AddSourceResult,
         ImportResult,
+        LinkSessionTablesInput,
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
@@ -355,6 +356,22 @@ class AddSourceWorkflow:
             for raw_id in target_raw_ids
         ]
         tables: list[ProcessTableResult] = list(await asyncio.gather(*children))
+
+        # Link the session to its freshly-typed tables (DAT-407) so the session's
+        # source is derivable without storing a ``source_id`` on it. Idempotent
+        # upsert — a replay with narrowed/empty children re-links only what it
+        # re-typed; prior links survive. Skipped when no children re-ran.
+        if tables:
+            await workflow.execute_activity(
+                "link_session_tables",
+                LinkSessionTablesInput(
+                    identity=payload.identity,
+                    table_ids=[t.typed_table_id for t in tables],
+                ),
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
 
         # Source-level reduce + the terminal detector pass: ALWAYS run, on both
         # initial runs and any replay. Per the DAT-343 refine, re-running the

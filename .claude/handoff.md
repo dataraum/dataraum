@@ -4,6 +4,65 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-02: DAT-406 — add_source progress via `@workflow.query get_progress` (parent-level)
+
+Adds a read-only parent-level progress surface to `addSourceWorkflow` and reshapes
+the per-table fan-out so progress can advance as children resolve. **No detector,
+schema, score, or rollup behavior changed** — this is orchestration/observability
+only. The one calibration-adjacent point is a workflow-contract order change in
+`AddSourceResult.tables` (see below), called out so the eval harness does not treat
+that ordering as stable.
+
+What changed in the engine (`packages/engine/src/dataraum/worker/`):
+- **Fan-out swap: `asyncio.gather` → `workflow.as_completed`.** The parent previously
+  collected children with `tables = list(await asyncio.gather(*children))`, which
+  preserves **input/index order** — i.e. `AddSourceResult.tables` came back in
+  `target_raw_ids` order. It now consumes them with the deterministic
+  `workflow.as_completed(children)` (so `tables_completed` can tick up as each child
+  lands), which yields in **child-completion order**. **Behavioral consequence:
+  `AddSourceResult.tables` ordering is now non-deterministic** (completion-order, not
+  input-order). The approved DAT-406 spec explicitly says `tables` order need not be
+  preserved — the field is a set of raw→typed mappings the reduce/`detect` read from
+  substrate, not by position — so this is intended, not a regression. Flagged here
+  because it is a workflow-return-shape change: **any eval assertion that depends on
+  `AddSourceResult.tables[i]` lining up with `target_raw_ids[i]` (or on a stable
+  ordering of `tables`) will now flake — compare as an unordered set / key by the
+  raw or typed id, not by position.** The fan-out width and the set of children are
+  unchanged; only collection order moved.
+- **New `get_progress` `@workflow.query` handler + `ProgressSnapshot` contract.**
+  `AddSourceWorkflow` now carries a `ProgressSnapshot` (plain stdlib `@dataclass` in
+  `worker/contracts.py`: `{phase: str, tables_total: int, tables_completed: int}`)
+  in `self._progress`, advances `phase` before each stage
+  (`import` → `processing_tables` → `semantic_per_column` → `detect` → `done`), sets
+  `tables_total` once the fan-out width is known, and bumps `tables_completed` after
+  each awaited (history-recorded) child completion. The read-only `get_progress`
+  query returns it; the cockpit Client polls it by workflow/run id while the parent
+  is blocked in the fan-out. Query is non-mutating and every mutation sits behind an
+  awaited recorded-history event, so replay reconstructs the identical snapshot —
+  determinism preserved. **No calibration impact** — this is a brand-new observation
+  surface, but the eval harness should know the query name `get_progress` and the
+  `ProgressSnapshot` shape now exist on `addSourceWorkflow` (e.g. if it inspects
+  Temporal history or the workflow's query/return surface).
+- **No schema / Drizzle-mirror change, no detector/threshold/rollup touch.**
+  `entropy_objects`, all detector scores, the readiness rollup, the bands, and
+  `entropy_readiness` are untouched. Only `worker/workflows.py`, `worker/contracts.py`,
+  `worker/__init__.py`, and two worker tests changed.
+
+### dataraum-eval
+- **Eval action: confirm detector-score parity stays unchanged (it should be — no
+  scoring code was touched).** Drive a run the same way (`addSourceWorkflow`).
+- **Treat `AddSourceResult.tables` as unordered.** If any harness keyed on the
+  `tables` list position (input/`gather` order), switch to set/membership comparison
+  or key by raw/typed id. The order is now child-completion order and is
+  non-deterministic by design.
+- **New surface, no calibration consumption:** the `get_progress` query +
+  `ProgressSnapshot` (`{phase, tables_total, tables_completed}`) are observability
+  only — nothing for calibration to baseline, just noted so history/contract
+  introspection isn't surprised by the new query.
+
+### dataraum-testdata (hints)
+- None.
+
 ## 2026-06-01: DAT-399 (D) — persisted readiness as the single source of truth
 
 Make the engine's query-time consumers READ the persisted `entropy_readiness` band

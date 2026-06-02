@@ -143,10 +143,24 @@ export const replayTool = toolDefinition({
 	description:
 		"Re-run processing for a source to apply pending teaches. Provide a ReplayScope (from_phase + raw_table_ids). Requires user approval. Returns the workflow + run id immediately; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
-		source_id: z.string(),
+		source_id: z
+			.string()
+			.describe(
+				"The registered source to re-process (a source_id from list_tables or a select result).",
+			),
 		scope: ReplayScopeSchema,
-		session_id: z.string().optional(),
-		vertical: z.string().optional(),
+		session_id: z
+			.string()
+			.optional()
+			.describe(
+				"Optional session id for the replay run; omit to auto-generate.",
+			),
+		vertical: z
+			.string()
+			.optional()
+			.describe(
+				"Optional vertical the engine resolves config/ontology against; defaults to _adhoc engine-side.",
+			),
 	}),
 	outputSchema: z.object({
 		workflow_id: z.string(),

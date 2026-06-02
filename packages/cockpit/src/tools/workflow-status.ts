@@ -37,8 +37,16 @@ export const workflowStatusTool = toolDefinition({
 		"(true once the run is closed). Use this to detect completion — do NOT poll " +
 		"list_tables as a proxy.",
 	inputSchema: z.object({
-		workflow_id: z.string().min(1),
-		run_id: z.string().min(1),
+		workflow_id: z
+			.string()
+			.min(1)
+			.describe("The workflow_id returned by add_source or replay."),
+		run_id: z
+			.string()
+			.min(1)
+			.describe(
+				"The run_id returned by add_source or replay (pins the exact run).",
+			),
 	}),
 	outputSchema: WorkflowStatus,
 }).server((input) => getAddSourceProgress(input));

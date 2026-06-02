@@ -177,7 +177,13 @@ export async function synthesizeAnalysis(data: WhyColumnData): Promise<string> {
 				)}`,
 			},
 		],
-		outputSchema: z.object({ analysis: z.string() }),
+		outputSchema: z.object({
+			analysis: z
+				.string()
+				.describe(
+					"The grounded narrative explaining why the column lands in its band per intent — drawn ONLY from the provided drivers + evidence, no outside facts.",
+				),
+		}),
 	});
 	return result.analysis;
 }

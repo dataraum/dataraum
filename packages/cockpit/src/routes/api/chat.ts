@@ -39,7 +39,11 @@ function disableBunIdleTimeoutForSse(request: Request) {
 	const runtime = (request as BunRuntimeRequest).runtime;
 	const server = runtime?.bun?.server;
 
-	if (runtime?.name !== "bun" || !server || typeof server.timeout !== "function") {
+	if (
+		runtime?.name !== "bun" ||
+		!server ||
+		typeof server.timeout !== "function"
+	) {
 		return;
 	}
 

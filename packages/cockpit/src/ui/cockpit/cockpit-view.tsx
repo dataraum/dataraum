@@ -8,7 +8,7 @@
 // input (mod+/) and the canvas (mod+.) without colliding with the shell's ⌘K.
 // All sizes/colors read from theme tokens — no hardcoded px/hex.
 
-import { Box, Group, Stack } from "@mantine/core";
+import { Box, Button, Group, Stack, Text } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 import { useRef } from "react";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
@@ -18,7 +18,7 @@ import { StageNavigator } from "#/ui/cockpit/stage-navigator";
 import { tokens } from "#/ui/theme";
 
 export function CockpitView() {
-	const { canvasState } = useCockpit();
+	const { canvasState, pinnedCallId, returnToLive } = useCockpit();
 	const chatRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +64,37 @@ export function CockpitView() {
 				data-testid="region-work"
 			>
 				<StageNavigator />
+				{/* Rehydration banner (DAT-354): shown only while the canvas is pinned
+				    to a past tool result, so the user knows they're viewing history and
+				    can snap back to the latest live result. */}
+				{pinnedCallId && (
+					<Group
+						justify="space-between"
+						wrap="nowrap"
+						gap="sm"
+						data-testid="history-banner"
+						style={{
+							backgroundColor: tokens.colors.surface,
+							borderWidth: 1,
+							borderStyle: "solid",
+							borderColor: tokens.colors.border,
+							borderRadius: tokens.radii.sm,
+							padding: tokens.spacing.xs,
+						}}
+					>
+						<Text size="sm" c="dimmed">
+							Viewing history
+						</Text>
+						<Button
+							size="xs"
+							variant="light"
+							onClick={returnToLive}
+							data-testid="return-to-live"
+						>
+							Return to live
+						</Button>
+					</Group>
+				)}
 				<Box
 					ref={canvasRef}
 					tabIndex={-1}

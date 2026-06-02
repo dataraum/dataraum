@@ -16,47 +16,72 @@ import {
 	Box,
 	Button,
 	Card,
-	Collapse,
 	Group,
 	Loader,
 	Stack,
 	Text,
 	Textarea,
 } from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
 import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { SendHorizontal } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
-import { canvasFromMessages } from "#/ui/cockpit/tool-result-to-canvas";
+import { isCanvasTool, toolChipSummary } from "#/ui/cockpit/tool-chip-summary";
+import {
+	canvasFromCallId,
+	canvasFromMessages,
+} from "#/ui/cockpit/tool-result-to-canvas";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 import { tokens } from "#/ui/theme";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
-// sees them untyped). Narrowed off `part.type === "tool-call"`.
+// sees them untyped). Narrowed off `part.type === "tool-call"`. `arguments` is
+// the SDK's JSON-encoded call input, carried in EVERY state (incl. approval-
+// requested) — the chip summary reads it so teach/replay are readable before
+// they run.
 interface ToolCallPart {
 	type: "tool-call";
 	id: string;
 	name: string;
 	state: string;
 	approval?: { id: string; needsApproval: boolean; approved?: boolean };
+	arguments?: unknown;
 	output?: unknown;
+}
+
+/** Lift a tool-call's parsed input off the SDK part's JSON `arguments` string. */
+function parseArguments(raw: unknown): unknown {
+	if (typeof raw !== "string") return raw ?? undefined;
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
 }
 
 function ToolCallCard({
 	part,
 	onApprove,
+	onRehydrate,
 }: {
 	part: ToolCallPart;
 	onApprove: (approvalId: string, approved: boolean) => void;
+	onRehydrate: (callId: string) => void;
 }) {
-	const [opened, { toggle }] = useDisclosure(false);
 	const done = part.state === "complete";
 	const approvalId = part.approval?.id;
 	const awaitingApproval =
 		part.state === "approval-requested" &&
 		approvalId !== undefined &&
 		part.approval?.approved === undefined;
+
+	// A canvas-producing tool's chip rehydrates the focus canvas to THIS call's
+	// result on click (pins by call-id). Only once complete — an in-flight call
+	// has no result to project. probe / teach / replay map to no canvas member,
+	// so their chips are display-only (no click).
+	const clickable = done && isCanvasTool(part.name);
+	const input = parseArguments(part.arguments);
+	const summary = toolChipSummary(part.name, input, part.output);
 
 	return (
 		<Card
@@ -68,16 +93,29 @@ function ToolCallCard({
 			<Group
 				justify="space-between"
 				wrap="nowrap"
-				onClick={toggle}
-				style={{ cursor: "pointer" }}
+				onClick={clickable ? () => onRehydrate(part.id) : undefined}
+				style={clickable ? { cursor: "pointer" } : undefined}
+				data-testid={clickable ? `tool-chip-${part.id}` : undefined}
 			>
-				<Text size="sm" fw={600}>
-					{part.name}
-				</Text>
-				{done ? (
-					<Text size="xs" c="dimmed">
-						{opened ? "hide" : "show"}
+				<Box style={{ minWidth: 0 }}>
+					<Text size="sm" fw={600}>
+						{part.name}
 					</Text>
+					<Text
+						size="xs"
+						c="dimmed"
+						truncate
+						data-testid={`tool-call-summary-${part.id}`}
+					>
+						{summary}
+					</Text>
+				</Box>
+				{done ? (
+					clickable ? (
+						<Text size="xs" c="blue">
+							view
+						</Text>
+					) : null
 				) : (
 					<Loader size="xs" />
 				)}
@@ -102,24 +140,12 @@ function ToolCallCard({
 					</Button>
 				</Group>
 			)}
-
-			<Collapse expanded={opened && part.output !== undefined}>
-				<Text
-					size="xs"
-					c="dimmed"
-					ff="monospace"
-					style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-					data-testid={`tool-call-result-${part.id}`}
-				>
-					{JSON.stringify(part.output, null, 2)}
-				</Text>
-			</Collapse>
 		</Card>
 	);
 }
 
 export function ChatRail() {
-	const { setCanvasState } = useCockpit();
+	const { setCanvasState, pinCanvas, pinnedCallId } = useCockpit();
 	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
 		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
@@ -129,15 +155,39 @@ export function ChatRail() {
 	// projection usually hasn't changed (same tool result). Dedupe by value so we
 	// don't churn the canvas on every token — re-setting an equal result-grid
 	// made it re-issue its stream.
+	//
+	// Pinned mode (DAT-354): when the user has clicked an earlier result chip
+	// (`pinnedCallId` set) the canvas is showing HISTORY, so we suppress the
+	// always-project-latest behavior — a freshly-streamed result must NOT clobber
+	// the pinned view. CRITICAL: while pinned we also reset the dedupe ref to
+	// null. On return-to-live (`pinnedCallId` → null) the effect re-fires (the
+	// pin is in the deps) and re-projects the latest UNCONDITIONALLY — even when
+	// the newest result equals the pre-pin projected value, which a stale ref
+	// would otherwise suppress, leaving return-to-live showing nothing. The pin
+	// is a primitive string, so adding it to the deps keeps them stable.
 	const lastProjectedRef = useRef<string | null>(null);
 	useEffect(() => {
+		if (pinnedCallId) {
+			lastProjectedRef.current = null;
+			return;
+		}
 		const next = canvasFromMessages(messages);
 		if (!next) return;
 		const key = JSON.stringify(next);
 		if (key === lastProjectedRef.current) return;
 		lastProjectedRef.current = key;
 		setCanvasState(next);
-	}, [messages, setCanvasState]);
+	}, [messages, setCanvasState, pinnedCallId]);
+
+	// A result-chip click pins the canvas to that call's result. We resolve the
+	// canvas from the call id (reusing the same toolResultToCanvas mapper) and
+	// pin in one dispatch. A call that maps to no canvas member (display-only
+	// tool, or a not-yet-complete call) yields null → no-op.
+	const onRehydrate = (callId: string) => {
+		const canvas = canvasFromCallId(messages, callId);
+		if (!canvas) return;
+		pinCanvas(callId, canvas);
+	};
 
 	// Surface a stream error on the canvas.
 	useEffect(() => {
@@ -205,6 +255,7 @@ export function ChatRail() {
 										onApprove={(approvalId, approved) =>
 											void addToolApprovalResponse({ id: approvalId, approved })
 										}
+										onRehydrate={onRehydrate}
 									/>
 								);
 							}

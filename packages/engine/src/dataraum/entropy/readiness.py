@@ -49,12 +49,11 @@ def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -
         return 0
 
     target_to_ids = _column_id_map(session, table_ids)
-    source_by_table = {
-        table_id: source_id
-        for table_id, source_id in session.execute(
+    source_by_table: dict[str, str] = dict(
+        session.execute(
             select(Table.table_id, Table.source_id).where(Table.table_id.in_(table_ids))
-        )
-    }
+        ).tuples()
+    )
 
     rows: list[EntropyReadinessRecord] = []
     for target, col in ctx.columns.items():

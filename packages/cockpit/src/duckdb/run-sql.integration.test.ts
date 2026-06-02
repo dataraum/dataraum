@@ -112,4 +112,38 @@ describe("runSql over a real DuckLake lake (DAT-367)", () => {
 		});
 		expect(result.rowCount).toBe(2);
 	});
+
+	it("bounds the agent sample at AGENT_SAMPLE_ROWS with truncated set (DAT-400)", async () => {
+		const { runSql } = await import("./run-sql");
+		const { AGENT_SAMPLE_ROWS } = await import("./agent-sample");
+		// A large generated result far exceeding the agent sample cap. A huge
+		// `limit` must NOT raise the in-context sample — the bound is independent
+		// of the requested limit.
+		const result = await runSql({
+			sql: "SELECT i AS n FROM range(60000) AS t(i)",
+			limit: 50_000,
+		});
+		expect(result.rowCount).toBe(AGENT_SAMPLE_ROWS);
+		expect(result.rows).toHaveLength(AGENT_SAMPLE_ROWS);
+		expect(result.truncated).toBe(true);
+	});
+
+	it("does NOT report truncated for an exact-fit / small result (no false positive)", async () => {
+		const { runSql } = await import("./run-sql");
+		const { AGENT_SAMPLE_ROWS } = await import("./agent-sample");
+		// A small result is complete.
+		const small = await runSql({
+			sql: "SELECT id FROM lake.typed.orders ORDER BY id",
+		});
+		expect(small.rowCount).toBe(3);
+		expect(small.truncated).toBe(false);
+
+		// An EXACT-fit result (exactly AGENT_SAMPLE_ROWS rows) is also complete —
+		// the peek-one-past-cap probe must not flag it.
+		const exact = await runSql({
+			sql: `SELECT i AS n FROM range(${AGENT_SAMPLE_ROWS}) AS t(i)`,
+		});
+		expect(exact.rowCount).toBe(AGENT_SAMPLE_ROWS);
+		expect(exact.truncated).toBe(false);
+	});
 });

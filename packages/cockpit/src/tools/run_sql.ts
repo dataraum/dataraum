@@ -9,18 +9,34 @@
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
+import { AGENT_SAMPLE_ROWS } from "../duckdb/agent-sample";
 import { HARD_ROW_CEILING } from "../duckdb/limit";
 import { runSql } from "../duckdb/run-sql";
 
-// QueryResult shape ({columns, rows, rowCount}). `rows` is intentionally
-// permissive — `runSql` returns `Record<string, Json>[]` (arbitrary JSON-safe
-// values via the neo driver's getRowObjectsJson), so we keep the value type as
-// `z.unknown()` rather than enumerating per-column types we can't know ahead of
-// the query.
+// Agent-result shape ({columns, rows, rowCount, truncated}). `rows` is
+// intentionally permissive — `runSql` returns `Record<string, Json>[]`
+// (arbitrary JSON-safe values via the neo driver's getRowObjectsJson), so we
+// keep the value type as `z.unknown()` rather than enumerating per-column types
+// we can't know ahead of the query.
+//
+// `truncated` MUST be a real field on this schema (not an extra runtime
+// property): the TanStack AI `chat()` loop feeds the tool's VALIDATED `output`
+// back into model context, so a property absent from the schema would be
+// stripped before the model ever sees the signal (DAT-400).
 const QueryResultSchema = z.object({
 	columns: z.array(z.string()),
 	rows: z.array(z.record(z.string(), z.unknown())),
 	rowCount: z.number(),
+	truncated: z
+		.boolean()
+		.describe(
+			"True when this in-context sample was trimmed below the full result " +
+				"(by the row or serialized-size bound). The COMPLETE result is " +
+				"already streaming in the result grid the user sees — do NOT re-run " +
+				"with a larger limit to get more rows into chat; instead point the " +
+				"user at the grid and/or refine via aggregation (GROUP BY, COUNT, " +
+				"summary stats).",
+		),
 });
 
 export const runSqlTool = toolDefinition({
@@ -29,10 +45,15 @@ export const runSqlTool = toolDefinition({
 		"Run read-only DuckDB SQL over the data lake and return JSON rows. " +
 		"Address tables by their fully-qualified lake name, e.g. " +
 		"`lake.typed.<table>` (type-resolved), `lake.raw.<table>` (VARCHAR " +
-		"staging), or `lake.quarantine.<table>` (failed casts). The result is " +
-		"capped (default 1000 rows, hard ceiling 200000); pass `limit` to change " +
-		"it within that ceiling. Use `params` for any literal value instead of " +
-		"concatenating it into the SQL.",
+		"staging), or `lake.quarantine.<table>` (failed casts). The rows you " +
+		`receive are a BOUNDED in-context SAMPLE (at most ${AGENT_SAMPLE_ROWS} ` +
+		"rows, and trimmed further if the serialized result is large) — they are " +
+		"for YOUR inspection, not the user's full answer. When `truncated` is " +
+		"true the full result is already streaming in the result grid the user " +
+		"sees; point them there and/or refine via aggregation rather than asking " +
+		"for more raw rows. `limit` bounds the underlying query but does NOT " +
+		"raise the in-context sample. Use `params` for any literal value instead " +
+		"of concatenating it into the SQL.",
 	inputSchema: z.object({
 		sql: z.string().describe("DuckDB SQL to run (read-only)."),
 		params: z

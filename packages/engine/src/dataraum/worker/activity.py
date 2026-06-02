@@ -27,6 +27,7 @@ from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
+from dataraum.investigation.queries import tables_for_session
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
@@ -50,14 +51,16 @@ __all__ = [
 ]
 
 # The executed-chain phases that declare entropy detectors (DAT-394). The single
-# terminal ``detect`` activity runs the union of their detectors ONCE, source-wide
-# — after the per-table fan-out and the ``semantic_per_column`` reduce. Detectors
-# moved here from the old per-table ``detect_table`` + parent ``detect_source``
-# split: nothing reads entropy mid-run, there are no live detector->detector
-# ordering edges, and the split bought ~no parallelism (it ran two cheap structural
-# detectors), so one terminal pass is correct and simpler. Running once,
-# sequentially, makes the source-wide delete-before-insert safe (no concurrency)
-# and guarantees every detector's inputs are present.
+# terminal ``detect`` activity runs the union of their detectors ONCE over the
+# run-session's tables — after the per-table fan-out and the ``semantic_per_column``
+# reduce. Detectors moved here from the old per-table ``detect_table`` + parent
+# ``detect_source`` split: nothing reads entropy mid-run, there are no live
+# detector->detector ordering edges, and the split bought ~no parallelism (it ran
+# two cheap structural detectors), so one terminal pass is correct and simpler.
+# Running once, sequentially, makes the delete-before-insert safe (no concurrency)
+# and guarantees every detector's inputs are present: ``entropy_objects`` deletes by
+# ``(source_id, detector_id)`` scoped to the table set, ``entropy_readiness`` deletes
+# by ``table_id.in_()`` (the session's tables, DAT-410).
 #
 # Source of truth is the executed chain in ``workflows.py`` (``typing`` +
 # ``_ANALYTICS_PHASES`` in the child, ``semantic_per_column`` in the parent).
@@ -273,15 +276,15 @@ def run_replay_cleanup(
 
 
 def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
-    """Run every wired detector once, source-wide — the terminal ``detect`` step.
+    """Run every wired detector once over the run-session's tables — the terminal ``detect`` step.
 
     The single stage-level detector pass (DAT-394): runs the union of the detectors
-    the executed chain phases declare (``_DETECTOR_PHASES``) over all the source's
-    typed tables (``table_ids=None``). It runs once, sequentially, after the
-    per-table fan-out and the ``semantic_per_column`` reduce — so the source-wide
-    delete-before-insert is safe (no concurrency) and every detector's inputs are
-    present. Replaces the old per-table ``detect_table`` + parent ``detect_source``
-    split: nothing reads entropy mid-run, so there is no reason to detect earlier.
+    the executed chain phases declare (``_DETECTOR_PHASES``) over the tables the run's
+    session composes (``session_tables``, DAT-407/410) — for ``add_source`` that is
+    exactly the source's freshly-typed tables, so the scope is identical to the prior
+    source-wide pass. It runs once, sequentially, after the per-table fan-out and the
+    ``semantic_per_column`` reduce — so the delete-before-insert is safe (no
+    concurrency) and every detector's inputs are present.
     """
     detector_ids = declared_detector_ids(_DETECTOR_PHASES)
     if not detector_ids:
@@ -289,23 +292,34 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
 
     total = 0
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        table_ids = tables_for_session(session, identity.session_id)
+        if not table_ids:
+            # add_source links its typed tables in ``typing`` (same transaction as
+            # the Table row), so an empty set here means the session has no tables —
+            # nothing to detect. Log it: a populated source with no links is a bug.
+            logger.warning(
+                "detect_no_session_tables",
+                source_id=identity.source_id,
+                session_id=identity.session_id,
+            )
+            return 0
         for detector_id in detector_ids:
-            # ``table_ids=None`` = source-wide: safe because this runs once,
-            # sequentially, after the fan-out — no concurrent writers to collide
-            # on the shared ``(source_id, detector_id)`` delete-before-insert.
+            # Scoped to the session's tables. The single terminal pass runs once,
+            # sequentially after the fan-out — no concurrent writers to collide on
+            # the per-(detector, table) delete-before-insert.
             total += run_detector_post_step(
                 session,
                 identity.source_id,
                 detector_id,
                 cursor,
                 session_id=identity.session_id,
-                table_ids=None,
+                table_ids=table_ids,
             )
         # Persist readiness from the freshly-written entropy objects, in the same
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        readiness_rows = persist_readiness(session, identity.source_id, identity.session_id)
+        readiness_rows = persist_readiness(session, identity.session_id, table_ids)
         logger.info(
             "terminal_detect_done",
             source_id=identity.source_id,

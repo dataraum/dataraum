@@ -92,7 +92,7 @@ class EntropyReadinessRecord(Base):
     its persisted snapshot — one per analyzed column — for the cockpit ``why`` /
     ``look`` tools (read via Drizzle) and as agent context. Self-refreshing: the
     terminal detect step re-runs on every (re-)measure and rewrites these rows
-    (delete-before-insert scoped to ``source_id``).
+    (delete-before-insert scoped to ``table_id`` — the session's table set, DAT-410).
 
     ``band`` is the collapsed worst-of-intents band the contract gate already
     consumes; ``intents`` carries the per-intent breakdown (query / aggregation /
@@ -109,8 +109,9 @@ class EntropyReadinessRecord(Base):
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
 
-    # Scope — one readiness row per analyzed column. ``source_id`` is the
-    # delete-before-insert scope key and is always set, so it is NOT NULL.
+    # Scope — one readiness row per analyzed column. ``source_id`` is the per-row
+    # FK stamp, derived per-table (always set, NOT NULL); ``table_id`` is the
+    # delete-before-insert scope key (DAT-410).
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
     column_id: Mapped[str | None] = mapped_column(

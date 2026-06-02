@@ -19,7 +19,7 @@
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { SourceSummary } from "#/tools/list-sources";
-import type { TableSummary } from "#/tools/list-tables";
+import type { InventoryTable } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
@@ -63,7 +63,7 @@ export function toolChipSummary(
 		case "list_tables": {
 			const src = (input as { source_id?: string } | undefined)?.source_id;
 			if (!done) return src ? `listing tables for ${src}…` : "listing tables…";
-			const tables = (output as TableSummary[]) ?? [];
+			const tables = (output as InventoryTable[]) ?? [];
 			return src
 				? `${plural(tables.length, "table")} in ${src}`
 				: plural(tables.length, "table");

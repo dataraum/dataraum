@@ -195,7 +195,20 @@ def _worker(client: Client) -> Worker:
         activities=_MOCK_ACTIVITIES,
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                "dataraum", "pydantic", "pydantic_core"
+                # `coverage` + `platform`: under `pytest --cov` (CI) the coverage
+                # sysmon branch tracer fires inside the sandboxed workflow and
+                # lazily imports `coverage.env`, which calls
+                # `platform.python_implementation()` — a call the sandbox forbids,
+                # failing workflow activation (the real cause of the CI
+                # "RPCError: Timeout expired"; reproduces locally with `--cov`).
+                # Passing them through routes coverage to the host modules so the
+                # tracer never trips the determinism guard. Test-only — the
+                # production worker doesn't run under coverage.
+                "dataraum",
+                "pydantic",
+                "pydantic_core",
+                "coverage",
+                "platform",
             )
         ),
     )
@@ -260,7 +273,20 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
         data_converter=pydantic_data_converter,
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                "dataraum", "pydantic", "pydantic_core"
+                # `coverage` + `platform`: under `pytest --cov` (CI) the coverage
+                # sysmon branch tracer fires inside the sandboxed workflow and
+                # lazily imports `coverage.env`, which calls
+                # `platform.python_implementation()` — a call the sandbox forbids,
+                # failing workflow activation (the real cause of the CI
+                # "RPCError: Timeout expired"; reproduces locally with `--cov`).
+                # Passing them through routes coverage to the host modules so the
+                # tracer never trips the determinism guard. Test-only — the
+                # production worker doesn't run under coverage.
+                "dataraum",
+                "pydantic",
+                "pydantic_core",
+                "coverage",
+                "platform",
             )
         ),
     )

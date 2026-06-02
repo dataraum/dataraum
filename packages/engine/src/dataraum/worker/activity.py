@@ -330,7 +330,8 @@ def link_session_tables(
     tables; the link write is idempotent (``merge`` on the ``(session_id,
     table_id)`` PK) so a teach replay re-links without duplicate-key errors.
 
-    Returns the number of links upserted.
+    Returns the number of tables processed (including any already linked — a
+    ``merge`` over an existing PK is a no-op, not a new row).
     """
     ids = list(table_ids)
     if not ids:

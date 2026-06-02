@@ -359,8 +359,10 @@ class AddSourceWorkflow:
 
         # Link the session to its freshly-typed tables (DAT-407) so the session's
         # source is derivable without storing a ``source_id`` on it. Idempotent
-        # upsert — a replay with narrowed/empty children re-links only what it
-        # re-typed; prior links survive. Skipped when no children re-ran.
+        # upsert — links only the tables that ran in this execution. Prior links
+        # for tables NOT in this run survive; if an import-replay dropped a table,
+        # the DB-level ``ondelete=CASCADE`` on ``tables.table_id`` clears its stale
+        # link automatically. Skipped when no children re-ran (empty-list replays).
         if tables:
             await workflow.execute_activity(
                 "link_session_tables",

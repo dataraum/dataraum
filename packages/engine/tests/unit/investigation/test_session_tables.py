@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.orm import Session
 
-from dataraum.investigation import link_session_tables, sources_for_session
+from dataraum.investigation import (
+    link_session_tables,
+    sources_for_session,
+    tables_for_session,
+)
 from dataraum.investigation.db_models import InvestigationSession, SessionTable
 from dataraum.storage import Source
 from dataraum.storage.models import Table
@@ -136,3 +140,33 @@ def test_link_session_tables_empty_is_noop(seeded: Session) -> None:
 
     assert link_session_tables(seeded, "sess_empty_link", []) == 0
     assert seeded.query(SessionTable).filter_by(session_id="sess_empty_link").count() == 0
+
+
+# --- tables_for_session (the detect/readiness scope key, DAT-410) -----------
+
+
+def test_tables_for_session_returns_linked_typed_tables(seeded: Session) -> None:
+    _make_session(seeded, "sess_scope")
+    _link(seeded, "sess_scope", "t_a1")
+    _link(seeded, "sess_scope", "t_b1")
+    seeded.flush()
+
+    assert set(tables_for_session(seeded, "sess_scope")) == {"t_a1", "t_b1"}
+
+
+def test_tables_for_session_empty_when_no_links(seeded: Session) -> None:
+    _make_session(seeded, "sess_none")
+    seeded.flush()
+
+    assert tables_for_session(seeded, "sess_none") == []
+
+
+def test_tables_for_session_excludes_raw_layer(seeded: Session) -> None:
+    """A link to a non-typed table is not returned (scope is typed only)."""
+    seeded.add(Table(table_id="t_raw", source_id="src_a", table_name="t_raw", layer="raw"))
+    _make_session(seeded, "sess_raw")
+    _link(seeded, "sess_raw", "t_a1")
+    _link(seeded, "sess_raw", "t_raw")
+    seeded.flush()
+
+    assert tables_for_session(seeded, "sess_raw") == ["t_a1"]

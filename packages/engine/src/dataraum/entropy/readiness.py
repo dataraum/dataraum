@@ -7,8 +7,8 @@ analyzed column) so the cockpit ``why`` / ``look`` tools read it via Drizzle wit
 engine round-trip, and as agent context.
 
 Self-refreshing: called from the terminal ``detect`` step (which re-runs on every
-(re-)measure), it delete-before-inserts scoped to the source, so a teach->replay
-overwrites the rows with no stale leftovers.
+(re-)measure), it delete-before-inserts scoped to the session's table set, so a
+teach->replay overwrites the rows with no stale leftovers.
 """
 
 from __future__ import annotations
@@ -24,32 +24,38 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 
-def persist_readiness(session: Session, source_id: str, session_id: str) -> int:
-    """Compute + persist per-column readiness for a source's typed tables.
+def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -> int:
+    """Compute + persist per-column readiness for the session's typed tables.
 
-    Delete-before-insert scoped to ``source_id`` (replay-safe): the prior rows are
-    cleared even when the new rollup is empty. The caller owns the transaction
-    (commit happens at its ``session_scope`` exit). Returns the rows written.
+    Delete-before-insert scoped to ``table_ids`` — the session's tables (DAT-410),
+    not a source. Replay-safe: the prior rows for these tables are cleared even
+    when the new rollup is empty, and a per-table replay clears only that table's
+    rows (not the whole source's). For ``add_source`` the set is one source's
+    typed tables, so the result is identical to the prior source-scoped behaviour.
+    The caller owns the transaction (commit at its ``session_scope`` exit). Each
+    row's ``source_id`` is derived per-table so a multi-source session's rows stay
+    well-formed. Returns the rows written.
     """
-    typed_table_ids = [
-        row[0]
-        for row in session.execute(
-            select(Table.table_id).where(Table.source_id == source_id, Table.layer == "typed")
-        )
-    ]
-
-    # Replay-safe refresh: clear this source's prior readiness rows first.
-    session.execute(
-        delete(EntropyReadinessRecord).where(EntropyReadinessRecord.source_id == source_id)
-    )
-    if not typed_table_ids:
+    if not table_ids:
         return 0
 
-    ctx = build_for_readiness(session, typed_table_ids)
+    # Replay-safe refresh: clear these tables' prior readiness rows first.
+    session.execute(
+        delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
+    )
+
+    ctx = build_for_readiness(session, table_ids)
     if not ctx.columns:
         return 0
 
-    target_to_ids = _column_id_map(session, typed_table_ids)
+    target_to_ids = _column_id_map(session, table_ids)
+    source_by_table: dict[str, str] = dict(
+        session.execute(
+            select(Table.table_id, Table.source_id).where(Table.table_id.in_(table_ids))
+        )
+        .tuples()
+        .all()
+    )
 
     rows: list[EntropyReadinessRecord] = []
     for target, col in ctx.columns.items():
@@ -63,7 +69,7 @@ def persist_readiness(session: Session, source_id: str, session_id: str) -> int:
         rows.append(
             EntropyReadinessRecord(
                 session_id=session_id,
-                source_id=source_id,
+                source_id=source_by_table[table_id],
                 table_id=table_id,
                 column_id=column_id,
                 band=col.readiness,

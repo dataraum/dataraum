@@ -1,10 +1,10 @@
 """Worker I/O contracts (DAT-344, redesigned per-boundary in DAT-370).
 
-Deliberately engine-free: imports nothing but Pydantic. Both the activity runner
-(:mod:`dataraum.worker.activity`, which pulls in the whole engine) and the
-workflows (:mod:`dataraum.worker.workflows`, which run in Temporal's determinism
-sandbox) import these models from here — so the workflow module never drags
-SQLAlchemy/DuckDB/the registry into the sandbox.
+Deliberately engine-free: imports nothing but the stdlib + Pydantic. Both the
+activity runner (:mod:`dataraum.worker.activity`, which pulls in the whole engine)
+and the workflows (:mod:`dataraum.worker.workflows`, which run in Temporal's
+determinism sandbox) import these models from here — so the workflow module never
+drags SQLAlchemy/DuckDB/the registry into the sandbox.
 
 The shapes are **typed per boundary**, not one uniform envelope: ``import``
 discovers raw tables, ``typing`` mints a typed id, the analytics phases are
@@ -16,7 +16,47 @@ gone — the fan-out (DAT-370) made the per-boundary inputs concrete.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel
+
+
+@dataclass
+class ProgressSnapshot:
+    """Parent-level progress for ``addSourceWorkflow``, served by ``get_progress`` (DAT-406).
+
+    Read-only snapshot the cockpit polls via the Temporal Client's
+    ``query`` API while the parent runs (queries answer against current
+    state even while ``@workflow.run`` is blocked awaiting the fan-out).
+    The workflow body advances ``phase`` before each stage and bumps
+    ``tables_completed`` as each child resolves; ``tables_total`` is set
+    once the fan-out set is known.
+
+    Deliberately a plain stdlib ``@dataclass`` (NOT a Pydantic engine
+    type): it carries only primitives, and the worker's
+    ``pydantic_data_converter`` serializes it to the flat JSON shape
+    ``{phase, tables_total, tables_completed}`` that the cockpit Client
+    (a TS process that cannot import Python types) consumes. That shape
+    is the FROZEN cross-package contract DAT-352 mirrors in
+    ``packages/cockpit/src/temporal/types.ts`` — do not change a field
+    name/type without re-mirroring it there.
+
+    Attributes:
+        phase: The stage the parent is currently in. Advances
+            ``"import"`` → ``"processing_tables"`` → ``"semantic_per_column"``
+            → ``"detect"`` → ``"done"``. A plain string (not an enum) so the
+            wire value stays a bare JSON string for the cockpit.
+        tables_total: The number of child ``ProcessTableWorkflow``s fanned
+            out. ``0`` until ``import`` enumerates the raw tables (or a
+            replay narrows the set); set once before the fan-out awaits.
+        tables_completed: How many children have resolved so far —
+            monotonically increasing toward ``tables_total`` during the
+            ``"processing_tables"`` phase.
+    """
+
+    phase: str
+    tables_total: int = 0
+    tables_completed: int = 0
 
 
 class SourceIdentity(BaseModel):

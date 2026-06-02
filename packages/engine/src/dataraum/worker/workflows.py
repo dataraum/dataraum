@@ -1,16 +1,16 @@
 """Temporal workflows (DAT-344; per-table fan-out DAT-370) — orchestration in Python.
 
 Runs in Temporal's determinism sandbox, so this module imports ONLY
-``temporalio`` + ``asyncio`` + the engine-free :mod:`dataraum.worker.contracts`
-shapes (pulled through the sandbox via ``imports_passed_through``). It calls
-activities by their registered string names — it never imports the activity
-implementations, which would drag the engine into the sandbox.
+``temporalio`` + the engine-free :mod:`dataraum.worker.contracts` shapes (pulled
+through the sandbox via ``imports_passed_through``). It calls activities by their
+registered string names — it never imports the activity implementations, which
+would drag the engine into the sandbox.
 
 Topology (DAT-370): the table is the unit of work.
 
     AddSourceWorkflow(identity)                              [parent]
       import()                  -> raw table ids             (source-level enumerator)
-      fan-out via asyncio.gather:
+      fan-out via workflow.as_completed:
         ProcessTableWorkflow(raw_id) for each raw id         [child, per table]
       semantic_per_column()                                  (source-level reduce)
       detect()                                               (single terminal detector pass)
@@ -29,7 +29,6 @@ ends; this collapsed the old per-table ``detect_table`` + parent ``detect_source
 
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -44,6 +43,7 @@ with workflow.unsafe.imports_passed_through():
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
+        ProgressSnapshot,
         ReplayCleanupInput,
         ReplayScope,
         SourceIdentity,
@@ -264,10 +264,12 @@ class AddSourceWorkflow:
 
     Initial run (``payload.replay is None``): ``import`` enumerates the
     source's raw tables, the workflow fans out one
-    :class:`ProcessTableWorkflow` per raw id via ``asyncio.gather`` and waits
-    for all to complete, then ``semantic_per_column`` runs once as the
-    source-level reduce (followed by the terminal ``detect`` step that runs all
-    detectors source-wide).
+    :class:`ProcessTableWorkflow` per raw id and consumes them with
+    :func:`workflow.as_completed` (the deterministic SDK counterpart to
+    ``asyncio.as_completed``) so progress can advance as each child resolves,
+    then ``semantic_per_column`` runs once as the source-level reduce
+    (followed by the terminal ``detect`` step that runs all detectors
+    source-wide).
 
     Teach replay (``payload.replay`` set; DAT-343): per-stage gates +
     fan-out scope follow ``replay``:
@@ -287,7 +289,35 @@ class AddSourceWorkflow:
     The data-dependent fan-out is driven off ``imported.raw_table_ids``
     (recorded in history whether ``import`` ran or was looked up), so
     replay stays deterministic.
+
+    Progress (DAT-406): the body keeps a :class:`ProgressSnapshot` in
+    ``self._progress`` — it advances ``phase`` before each stage and bumps
+    ``tables_completed`` as each child resolves. The read-only
+    :meth:`get_progress` query returns it; the cockpit Client polls it while
+    the parent is blocked in the fan-out (a query answers against current
+    state without the workflow having to await). All mutations sit at points
+    gated by awaiting recorded history events, so a replay reconstructs the
+    identical snapshot — determinism is preserved.
     """
+
+    def __init__(self) -> None:
+        # Initialized to the pre-import state so a query that lands before the
+        # first stage still returns a well-formed snapshot (never None).
+        self._progress = ProgressSnapshot(phase="import", tables_total=0, tables_completed=0)
+
+    @workflow.query
+    def get_progress(self) -> ProgressSnapshot:
+        """Return the current parent-level progress snapshot (DAT-406).
+
+        Read-only, non-mutating → determinism-safe; Temporal answers it
+        against current state even while :meth:`run` is blocked awaiting the
+        fan-out. The cockpit Client polls this by workflow id (queried per
+        ``run_id``; a ReplayScope replay reuses the id under ALLOW_DUPLICATE
+        and resets progress per run). Per-table phase detail is out of scope
+        here — the cockpit would query each child by
+        ``process_table_workflow_id`` (additive follow-up).
+        """
+        return self._progress
 
     @workflow.run
     async def run(self, payload: AddSourceInput) -> AddSourceResult:
@@ -322,6 +352,11 @@ class AddSourceWorkflow:
             allowed = set(replay.raw_table_ids)
             target_raw_ids = [r for r in target_raw_ids if r in allowed]
 
+        # The fan-out width is now known (import recorded ``raw_table_ids`` in
+        # history → deterministic on replay). Set the progress denominator
+        # before any child is awaited so an early query already sees the total.
+        self._progress.tables_total = len(target_raw_ids)
+
         # Replay forwarded to children only when ``from_phase`` is a child
         # chain phase. A parent-stage replay (``from_phase="import"``) has
         # already cleaned the children's substrate state via the import
@@ -354,7 +389,20 @@ class AddSourceWorkflow:
             )
             for raw_id in target_raw_ids
         ]
-        tables: list[ProcessTableResult] = list(await asyncio.gather(*children))
+        # Consume the children with the deterministic ``workflow.as_completed``
+        # (NOT ``asyncio.gather``) so ``tables_completed`` advances as each child
+        # resolves — a polling query sees real progress mid-fan-out instead of a
+        # frozen 0 until the whole batch lands. Each yielded value is a coroutine
+        # that resolves to one child's ProcessTableResult; order is not preserved,
+        # which AddSourceResult.tables does not rely on (it is a set of raw→typed
+        # mappings the reduce/detect read from substrate, not by position). The
+        # ``tables_completed`` bump sits after an awaited (history-recorded) child
+        # completion, so a replay reconstructs the identical counter.
+        self._progress.phase = "processing_tables"
+        tables: list[ProcessTableResult] = []
+        for child in workflow.as_completed(children):
+            tables.append(await child)
+            self._progress.tables_completed += 1
 
         # Source-level reduce + the terminal detector pass: ALWAYS run, on both
         # initial runs and any replay. Per the DAT-343 refine, re-running the
@@ -363,6 +411,7 @@ class AddSourceWorkflow:
         # it joins the always-runs set. ``_maybe_replay_cleanup`` is still gated
         # on ``replay.from_phase == "semantic_per_column"`` — it only fires for
         # the concept_property entry case.
+        self._progress.phase = "semantic_per_column"
         await _maybe_replay_cleanup("semantic_per_column", replay, payload.identity, [])
         await workflow.execute_activity(
             "semantic_per_column",
@@ -374,6 +423,7 @@ class AddSourceWorkflow:
         # Single terminal detector pass (DAT-394): runs every wired detector
         # source-wide after the reduce, then persists readiness. Replaces the old
         # per-table detect_table + parent detect_source.
+        self._progress.phase = "detect"
         await workflow.execute_activity(
             "detect",
             payload.identity,
@@ -382,4 +432,5 @@ class AddSourceWorkflow:
             retry_policy=_RETRY,
         )
 
+        self._progress.phase = "done"
         return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)

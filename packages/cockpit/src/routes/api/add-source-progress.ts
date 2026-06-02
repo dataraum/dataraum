@@ -42,12 +42,14 @@ export const Route = createFileRoute("/api/add-source-progress")({
 					const result = await getAddSourceProgress(parsed.data);
 					return Response.json(result);
 				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
 					console.error("add-source-progress query failed", err);
-					return new Response(JSON.stringify({ error: message }), {
-						status: 500,
-						headers: { "Content-Type": "application/json" },
-					});
+					return new Response(
+						JSON.stringify({ error: "Internal server error." }),
+						{
+							status: 500,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
 				}
 			},
 		},

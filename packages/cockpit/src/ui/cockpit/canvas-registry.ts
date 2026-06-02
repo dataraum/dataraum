@@ -11,6 +11,7 @@ import { ConceptFrameWidget } from "#/ui/cockpit/widgets/concept-frame";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
+import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SelectedSourceWidget } from "#/ui/cockpit/widgets/selected-source";
@@ -29,4 +30,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "selected-source", component: SelectedSourceWidget })
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
-	.register({ kind: "column-why", component: ColumnWhyWidget });
+	.register({ kind: "column-why", component: ColumnWhyWidget })
+	.register({ kind: "add-source-progress", component: MeasureProgressWidget });

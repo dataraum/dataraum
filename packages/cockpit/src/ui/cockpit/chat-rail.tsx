@@ -119,10 +119,22 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const { setCanvasState } = useCockpit();
+	const { setCanvasState, registerChatSender } = useCockpit();
 	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
 		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
+
+	// Publish `sendMessage` to the cockpit context so canvas widgets (which have
+	// no chat handle) can drive a turn — the column→why click-through (DAT-352)
+	// dispatches a why_column request this way. The canvas flips to loading so the
+	// drilled column's explanation streaming feels responsive.
+	useEffect(() => {
+		registerChatSender((text) => {
+			setCanvasState({ kind: "loading" });
+			void sendMessage(text);
+		});
+		return () => registerChatSender(null);
+	}, [registerChatSender, sendMessage, setCanvasState]);
 
 	// Project the latest tool result onto the focus canvas as messages arrive.
 	// canvasFromMessages returns a FRESH object every token tick, but the

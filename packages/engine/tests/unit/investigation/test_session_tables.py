@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.orm import Session
 
-from dataraum.investigation import sources_for_session
+from dataraum.investigation import link_session_tables, sources_for_session
 from dataraum.investigation.db_models import InvestigationSession, SessionTable
 from dataraum.storage import Source
 from dataraum.storage.models import Table
@@ -104,3 +104,35 @@ def test_ending_a_session_removes_only_its_links(seeded: Session) -> None:
     # Link gone, table untouched.
     assert seeded.query(SessionTable).filter_by(session_id="sess_doomed").count() == 0
     assert seeded.get(Table, "t_a1") is not None
+
+
+# --- link_session_tables (the typing-phase write helper) --------------------
+
+
+def test_link_session_tables_writes_links_and_derives_source(seeded: Session) -> None:
+    _make_session(seeded, "sess_link")
+
+    count = link_session_tables(seeded, "sess_link", ["t_a1", "t_b1"])
+    seeded.flush()
+
+    assert count == 2
+    assert seeded.query(SessionTable).filter_by(session_id="sess_link").count() == 2
+    assert sources_for_session(seeded, "sess_link") == {"src_a", "src_b"}
+
+
+def test_link_session_tables_is_idempotent(seeded: Session) -> None:
+    """A teach re-type re-links the same tables — must not raise on the PK."""
+    _make_session(seeded, "sess_idem")
+
+    link_session_tables(seeded, "sess_idem", ["t_a1", "t_a2"])
+    link_session_tables(seeded, "sess_idem", ["t_a1"])
+    seeded.flush()
+
+    assert seeded.query(SessionTable).filter_by(session_id="sess_idem").count() == 2
+
+
+def test_link_session_tables_empty_is_noop(seeded: Session) -> None:
+    _make_session(seeded, "sess_empty_link")
+
+    assert link_session_tables(seeded, "sess_empty_link", []) == 0
+    assert seeded.query(SessionTable).filter_by(session_id="sess_empty_link").count() == 0

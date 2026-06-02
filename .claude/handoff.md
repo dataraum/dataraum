@@ -4,6 +4,31 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-02: DAT-410 — detect/readiness scope by the session's tables, not `source_id`
+
+Behavior-preserving runtime refactor: the terminal `detect` step (`run_detectors`) +
+`persist_readiness` now scope by the run-session's `session_tables` (DAT-407's rail)
+instead of `Table.source_id`. **No detector logic, threshold, rollup, or readiness
+band/driver computation changed** — only the *table-set the same detectors run over*
+and the *delete-before-insert scope* of `entropy_readiness`.
+
+### dataraum-eval
+- **Expectation: readiness output is byte-identical for add_source.** A single-source
+  add_source run's `session_tables` is exactly that source's freshly-typed tables (linked
+  in the `typing` phase, same transaction as the `Table` row), so `run_detectors` +
+  `persist_readiness` see the identical table set as the prior `source_id`-scoped code.
+- **Calibrate / guard**: re-run the readiness snapshot calibration and confirm
+  `entropy_readiness` rows (band, `worst_intent_risk`, intents, drivers) and detector
+  recall do **not** move. This is the no-regression gate for the change; any drift is a bug.
+- **Signature change** (engine-internal, not an eval surface): `persist_readiness(session, source_id, session_id)` → `persist_readiness(session, session_id, table_ids)`. New helper `tables_for_session(session, session_id) -> list[str]`.
+- **Improved (not a regression)**: a per-table teach replay now clears only that table's
+  `entropy_readiness` rows (delete scoped by `table_id`), not the whole source's.
+- **Multi-source note**: the change makes the layer multi-source-ready but add_source is
+  still single-source; multi-source detect (begin_session) is wired in DAT-408. The
+  `run_detector_post_step` `source_id` anchor is intentionally kept here (harmless for
+  single-source); DAT-408 drops it.
+- **Status**: pending
+
 ## 2026-06-02: DAT-406 — add_source progress via `@workflow.query get_progress` (parent-level)
 
 Adds a read-only parent-level progress surface to `addSourceWorkflow` and reshapes

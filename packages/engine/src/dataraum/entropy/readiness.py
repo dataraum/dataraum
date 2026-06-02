@@ -52,7 +52,9 @@ def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -
     source_by_table: dict[str, str] = dict(
         session.execute(
             select(Table.table_id, Table.source_id).where(Table.table_id.in_(table_ids))
-        ).tuples()
+        )
+        .tuples()
+        .all()
     )
 
     rows: list[EntropyReadinessRecord] = []

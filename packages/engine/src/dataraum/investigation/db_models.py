@@ -18,16 +18,21 @@ from dataraum.storage.base import Base
 
 
 class InvestigationSession(Base):
-    """A bounded investigation session initiated by an MCP agent.
+    """A bounded run over a set of tables.
 
-    Created by ``begin_session``, closed by ``deliver``, ``refuse``,
-    or ``escalate``. Contains an ordered list of investigation steps.
+    A session owns one run's measurements: an ``add_source`` run is a session
+    whose table set is one source's typed tables; a ``begin_session`` run is a
+    session whose table set spans sources. The composed tables are reached
+    through the :class:`SessionTable` M:N association — a session never
+    references a source directly. A session's source(s) are *derived* from its
+    tables (see :func:`sources_for_session`), the same way
+    :class:`~dataraum.analysis.relationships.db_models.Relationship` derives
+    source from its from/to tables rather than storing it.
     """
 
     __tablename__ = "investigation_sessions"
 
     session_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
 
     # Lifecycle
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
@@ -49,12 +54,17 @@ class InvestigationSession(Base):
     # Denormalized metrics
     step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Relationship
+    # Relationships
     steps: Mapped[list[InvestigationStep]] = relationship(
         "InvestigationStep",
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="InvestigationStep.ordinal",
+    )
+    table_links: Mapped[list[SessionTable]] = relationship(
+        "SessionTable",
+        back_populates="session",
+        cascade="all, delete-orphan",
     )
 
 
@@ -96,6 +106,31 @@ class InvestigationStep(Base):
     )
 
 
-Index("idx_inv_session_source", InvestigationSession.source_id)
+class SessionTable(Base):
+    """Association linking a session to the typed tables it composes (M:N).
+
+    The source(s) of a session are derived by joining through this table to
+    ``Table.source_id`` — the session carries no ``source_id`` of its own. An
+    ``add_source`` run links one source's typed tables; a ``begin_session`` run
+    links a selection that may span sources.
+    """
+
+    __tablename__ = "session_tables"
+
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    table_id: Mapped[str] = mapped_column(
+        ForeignKey("tables.table_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    session: Mapped[InvestigationSession] = relationship(
+        "InvestigationSession", back_populates="table_links"
+    )
+
+
 Index("idx_inv_step_tool", InvestigationStep.tool_name)
 Index("idx_inv_step_target", InvestigationStep.target)
+Index("idx_session_tables_table", SessionTable.table_id)

@@ -366,7 +366,6 @@ def _make_workspace_engine(pg_url: str) -> Engine:
         sess.add(
             InvestigationSession(
                 session_id=baseline_session_id(),
-                source_id="00000000-0000-0000-0000-000000000002",
                 intent="integration baseline",
                 status="active",
                 started_at=datetime.now(UTC),

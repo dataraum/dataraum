@@ -131,7 +131,6 @@ def _seed_source_and_session(
         session.add(
             InvestigationSession(
                 session_id=session_id,
-                source_id=source_id,
                 intent="e4a de-risk",
                 status="active",
                 started_at=datetime.now(UTC),

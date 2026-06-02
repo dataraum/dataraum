@@ -40,6 +40,7 @@ with workflow.unsafe.imports_passed_through():
         AddSourceInput,
         AddSourceResult,
         ImportResult,
+        LinkSessionTablesInput,
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
@@ -403,6 +404,24 @@ class AddSourceWorkflow:
         for child in workflow.as_completed(children):
             tables.append(await child)
             self._progress.tables_completed += 1
+
+        # Link the session to its freshly-typed tables (DAT-407) so the session's
+        # source is derivable without storing a ``source_id`` on it. Idempotent
+        # upsert — links only the tables that ran in this execution. Prior links
+        # for tables NOT in this run survive; if an import-replay dropped a table,
+        # the DB-level ``ondelete=CASCADE`` on ``tables.table_id`` clears its stale
+        # link automatically. Skipped when no children re-ran (empty-list replays).
+        if tables:
+            await workflow.execute_activity(
+                "link_session_tables",
+                LinkSessionTablesInput(
+                    identity=payload.identity,
+                    table_ids=[t.typed_table_id for t in tables],
+                ),
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
 
         # Source-level reduce + the terminal detector pass: ALWAYS run, on both
         # initial runs and any replay. Per the DAT-343 refine, re-running the

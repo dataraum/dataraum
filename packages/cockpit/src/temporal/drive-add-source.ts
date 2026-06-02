@@ -65,9 +65,12 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 				INSERT INTO sources (source_id, name, source_type, connection_config, status, created_at, updated_at)
 				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ file_uris: [sourcePath] })}, 'configured', now(), now())
 				ON CONFLICT (source_id) DO NOTHING`;
+			// No source_id on the session (DAT-407): a session's source is derived
+			// from its linked tables. The add_source workflow writes the
+			// session_tables links once the per-table fan-out resolves typed ids.
 			await tx`
-				INSERT INTO investigation_sessions (session_id, source_id, intent, status, started_at, step_count)
-				VALUES (${sessionId}, ${sourceId}, 'e4a drive', 'active', now(), 0)
+				INSERT INTO investigation_sessions (session_id, intent, status, started_at, step_count)
+				VALUES (${sessionId}, 'e4a drive', 'active', now(), 0)
 				ON CONFLICT (session_id) DO NOTHING`;
 		});
 	} finally {

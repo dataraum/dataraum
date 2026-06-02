@@ -27,6 +27,7 @@ from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
+from dataraum.investigation.db_models import SessionTable
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
@@ -42,6 +43,7 @@ logger = get_logger(__name__)
 __all__ = [
     "PhaseRun",
     "declared_detector_ids",
+    "link_session_tables",
     "raw_table_ids",
     "run_detectors",
     "run_phase",
@@ -313,6 +315,31 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
             readiness_rows=readiness_rows,
         )
     return total
+
+
+def link_session_tables(
+    manager: ConnectionManager,
+    identity: SourceIdentity,
+    table_ids: Iterable[str],
+) -> int:
+    """Link a session to the typed tables it composes (DAT-407).
+
+    Writes one ``session_tables`` row per typed table so a session's source(s)
+    are derivable (``sources_for_session``) without the session storing a
+    ``source_id``. For ``add_source`` the table set is one source's typed
+    tables; the link write is idempotent (``merge`` on the ``(session_id,
+    table_id)`` PK) so a teach replay re-links without duplicate-key errors.
+
+    Returns the number of tables processed (including any already linked — a
+    ``merge`` over an existing PK is a no-op, not a new row).
+    """
+    ids = list(table_ids)
+    if not ids:
+        return 0
+    with manager.session_scope() as session:
+        for table_id in ids:
+            session.merge(SessionTable(session_id=identity.session_id, table_id=table_id))
+    return len(ids)
 
 
 def _build_phase_config(

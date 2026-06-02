@@ -6,7 +6,7 @@ latter scoped via ``session_id`` FK).
 
 DuckDB-side post-DAT-341: managers obtain a fresh DuckDB connection from
 the process-wide DuckLake anchor (:mod:`dataraum.server.storage`). The
-anchor must be bootstrapped before any manager initializes (FastAPI
+anchor must be bootstrapped before any manager initializes (worker
 startup, or the ``lake_anchor`` test fixture). Each manager's connection
 has its own ``USE``/search_path state but shares the DuckLake catalog
 (schemas, tables) with every other connection to the same named in-memory

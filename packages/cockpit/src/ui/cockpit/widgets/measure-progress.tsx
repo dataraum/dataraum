@@ -2,7 +2,7 @@
 // (or replay) run the TRIGGER started.
 //
 // Polls the engine's `get_progress` @workflow.query (DAT-406) via the
-// `getAddSourceProgressFn` server fn on a TanStack Query `refetchInterval` (~1s),
+// `/api/add-source-progress` route (→ `getAddSourceProgress`) on a TanStack Query `refetchInterval` (~1s),
 // keyed on the precise (workflowId, runId) the TRIGGER returned. It STOPS polling
 // once the snapshot reports `done` — either phase==="done" OR a terminal
 // describe() status (so a FAILED run, which never sets "done", still halts).
@@ -23,6 +23,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import type { AddSourceProgress } from "#/temporal/progress";
+import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 // The phase pipeline in order, with friendly labels. Mirrors the engine's
@@ -111,8 +112,11 @@ export function MeasureProgressWidget({
 
 	const activeIdx = phaseIndex(data.phase);
 	const failed =
-		data.done && data.phase !== "done" && data.status !== "COMPLETED";
-	const succeeded = data.phase === "done" || data.status === "COMPLETED";
+		data.done &&
+		data.phase !== PROGRESS_DONE_PHASE &&
+		data.status !== "COMPLETED";
+	const succeeded =
+		data.phase === PROGRESS_DONE_PHASE || data.status === "COMPLETED";
 
 	// During the per-table fan-out, surface the tally as a determinate bar.
 	const showTally = data.phase === "processing_tables" && data.tables_total > 0;

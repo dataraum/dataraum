@@ -14,7 +14,7 @@ import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
 
 import { config } from "../config";
-import type { ProgressSnapshot } from "./types";
+import { PROGRESS_DONE_PHASE, type ProgressSnapshot } from "./types";
 
 // The terminal describe() statuses — a run that reached one of these will not
 // advance `phase` further, so the poll stops even if phase !== "done" (a FAILED
@@ -61,7 +61,7 @@ function requireTemporalConfig(): { host: string; namespace: string } {
 
 /** True when the snapshot's phase OR the describe() status marks the run done. */
 export function isProgressDone(phase: string, status: string): boolean {
-	return phase === "done" || TERMINAL_STATUSES.has(status);
+	return phase === PROGRESS_DONE_PHASE || TERMINAL_STATUSES.has(status);
 }
 
 /**

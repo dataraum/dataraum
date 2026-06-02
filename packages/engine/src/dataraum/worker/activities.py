@@ -27,7 +27,6 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
-    link_session_tables,
     raw_table_ids,
     run_detectors,
     run_phase,
@@ -36,7 +35,6 @@ from dataraum.worker.activity import (
 )
 from dataraum.worker.contracts import (
     ImportResult,
-    LinkSessionTablesInput,
     PhaseOutcome,
     ProcessTableInput,
     ReplayCleanupInput,
@@ -167,21 +165,6 @@ class PhaseActivities:
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
-        )
-
-    @activity.defn(name="link_session_tables")
-    def run_link_session_tables(self, payload: LinkSessionTablesInput) -> PhaseOutcome:
-        """Link the session to the typed tables it composes (DAT-407).
-
-        Called by ``addSourceWorkflow`` after the per-table fan-out resolves the
-        typed ids — writes the ``session_tables`` rows that make the session's
-        source(s) derivable. Idempotent (upsert), so a teach replay re-links
-        cleanly.
-        """
-        count = link_session_tables(self._manager, payload.identity, payload.table_ids)
-        return PhaseOutcome(
-            status=PhaseStatus.COMPLETED.value,
-            summary=f"linked {count} table(s) to session {payload.identity.session_id}",
         )
 
     @activity.defn(name="detect")

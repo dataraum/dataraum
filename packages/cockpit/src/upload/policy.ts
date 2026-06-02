@@ -24,7 +24,7 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MiB
 // Max files in ONE drag-drop/select batch (DAT-391). A CLIENT-SIDE UX gate only:
 // the upload route stays one-file-per-request and uncapped — this bounds how many
 // files a single multi-select composes into one source, not what the API accepts.
-export const MAX_UPLOAD_FILES = 6;
+export const MAX_UPLOAD_FILES = 12;
 
 // Extensions connect can sniff (mirrors duckdb/connect.ts FILE_READERS). The
 // upload gate rejects anything else BEFORE it touches the bucket, so an

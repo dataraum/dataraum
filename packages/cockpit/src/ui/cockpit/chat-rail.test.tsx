@@ -177,10 +177,13 @@ describe("ChatRail (DAT-353)", () => {
 		});
 	});
 
-	it("surfaces a stream error on the canvas", () => {
+	it("surfaces a run/stream error as a highlighted message in the chat (not a canvas takeover)", () => {
 		h.error = new Error("kaboom");
 		renderRail();
-		expect(screen.getByTestId("canvas-kind").textContent).toBe("error");
+		// The RUN_ERROR text lands inline in the chat rail, highlighted…
+		expect(screen.getByTestId("chat-error").textContent).toContain("kaboom");
+		// …and the canvas stops spinning rather than showing a generic error widget.
+		expect(screen.getByTestId("canvas-kind").textContent).toBe("empty");
 	});
 
 	it("mounts the upload entry-mode dropzone", () => {

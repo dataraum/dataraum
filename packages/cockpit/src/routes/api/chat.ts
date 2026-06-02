@@ -16,10 +16,9 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
+import { MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
 import { tools } from "../../tools/registry";
-
-const MODEL = "claude-sonnet-4-6";
 
 type ChatMessages = Awaited<
 	ReturnType<typeof chatParamsFromRequest>
@@ -37,6 +36,9 @@ type ChatMessages = Awaited<
 export function buildChatOptions(messages: ChatMessages) {
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		// Explicit output budget — the adapter defaults to 1024, which truncates
+		// real turns mid-tool-call / mid-narrative (see src/llm.ts).
+		maxTokens: MAX_OUTPUT_TOKENS,
 		systemPrompts: [
 			{
 				content: getOrchestratorInstructions(),

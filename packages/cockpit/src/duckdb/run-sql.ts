@@ -9,6 +9,9 @@
 // Tables are addressed by their fully-qualified lake name, e.g.
 // `lake.typed.orders` (the `lake` alias matches the engine's catalog alias).
 
+import type { Json } from "@duckdb/node-api";
+
+import { AGENT_SAMPLE_ROWS, boundSampleBytes } from "./agent-sample";
 import { getLakeConnection } from "./lake";
 import { clampRowLimit } from "./limit";
 import type { QueryResult } from "./query-result";
@@ -32,20 +35,86 @@ export interface RunSqlInput {
 }
 
 /**
- * Run read-only SQL against the lake and return JSON-safe rows.
+ * The agent-facing `run_sql` result. Extends the shared {@link QueryResult}
+ * with a `truncated` signal: the in-context sample is bounded ON TOP of the
+ * requested `limit` (see {@link AGENT_SAMPLE_ROWS} / the serialized-byte budget
+ * in `agent-sample.ts`), so the model needs to know when what it sees is a
+ * partial view and the full result lives in the human grid.
+ */
+export interface AgentQueryResult extends QueryResult {
+	/**
+	 * `true` when the agent's in-context sample was trimmed below the full
+	 * result — either by the row cap or the serialized-byte budget. The model
+	 * should pivot the user to the streaming grid (which fetches the full result
+	 * independently) and/or refine the query via aggregation. `rowCount` reflects
+	 * the trimmed sample, NOT the full result size.
+	 */
+	truncated: boolean;
+}
+
+/**
+ * Run read-only SQL against the lake and return a JSON-safe, context-bounded
+ * sample for the agent.
  *
  * The query is wrapped in `SELECT * FROM (<sql>) LIMIT <n>` so every result is
- * bounded — the limit defaults to {@link DEFAULT_ROW_LIMIT} and is clamped to
- * {@link HARD_ROW_CEILING} regardless of what the caller asks for. The lake
- * connection is ATTACHed READ_ONLY, so writes fail at the engine level — this
- * is a read verb by construction, not by convention.
+ * bounded by the requested `limit` (defaulted via {@link DEFAULT_ROW_LIMIT},
+ * clamped to {@link HARD_ROW_CEILING}). ON TOP of that, the AGENT path applies
+ * a second, smaller bound so a broad `SELECT *` can't flood the LLM context
+ * window even when the requested `limit` is large:
+ *
+ *   - a hard {@link AGENT_SAMPLE_ROWS} row cap, AND
+ *   - a serialized-byte budget (so wide TEXT/STRUCT/LIST rows can't blow the
+ *     window even under the row cap).
+ *
+ * To detect truncation WITHOUT a false positive on an exact-fit result, the
+ * effective LIMIT peeks one row past the agent cap; an over-cap read marks the
+ * sample `truncated`. The human-facing grid is decoupled — it re-issues the SQL
+ * over the stateless `/api/run-sql` stream (GRID_DEFAULT_CAP = 50_000,
+ * virtualized) — so this bound shrinks ONLY what the model sees, never the user.
+ *
+ * The lake connection is ATTACHed READ_ONLY, so writes fail at the engine
+ * level — this is a read verb by construction, not by convention.
  */
-export async function runSql(input: RunSqlInput): Promise<QueryResult> {
+export async function runSql(input: RunSqlInput): Promise<AgentQueryResult> {
 	const conn = await getLakeConnection();
-	const limit = clampRowLimit(input.limit);
-	const wrapped = `SELECT * FROM (${input.sql}) AS _run_sql LIMIT ${limit}`;
+	// The agent sample never needs more than AGENT_SAMPLE_ROWS regardless of the
+	// requested `limit`; fetch one extra row to distinguish a capped result from
+	// an exact-fit one (cheap — the read stops at the LIMIT).
+	const requested = clampRowLimit(input.limit);
+	const effective = Math.min(requested, AGENT_SAMPLE_ROWS);
+	const wrapped = `SELECT * FROM (${input.sql}) AS _run_sql LIMIT ${effective + 1}`;
 	const reader = input.params
 		? await conn.runAndReadAll(wrapped, input.params)
 		: await conn.runAndReadAll(wrapped);
-	return readerToResult(reader);
+	const base = readerToResult(reader);
+
+	return boundAgentSample(base, effective);
+}
+
+/**
+ * Apply the agent-path row + byte bounds to a materialized result.
+ *
+ * `base.rows` was read with `LIMIT effective + 1`, so a length over `effective`
+ * means the underlying result had more rows than the cap → `truncated`. After
+ * the row cap, the serialized-byte budget can trim further (and also set
+ * `truncated`). Returns the trimmed sample with a `rowCount` reflecting the
+ * rows the model actually sees.
+ */
+function boundAgentSample(
+	base: QueryResult,
+	effective: number,
+): AgentQueryResult {
+	const overRowCap = base.rows.length > effective;
+	const rowCapped: Record<string, Json>[] = overRowCap
+		? base.rows.slice(0, effective)
+		: base.rows;
+
+	const { rows, truncated: byteTruncated } = boundSampleBytes(rowCapped);
+
+	return {
+		columns: base.columns,
+		rows,
+		rowCount: rows.length,
+		truncated: overRowCap || byteTruncated,
+	};
 }

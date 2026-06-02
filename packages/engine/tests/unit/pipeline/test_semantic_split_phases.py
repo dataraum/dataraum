@@ -57,6 +57,13 @@ def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: st
     return PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id)
 
 
+def _session_ctx(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection, table_ids: list[str]
+) -> PhaseContext:
+    """Source-free ctx for the begin_session phases — scoped by ``table_ids`` (DAT-401)."""
+    return PhaseContext(session=session, duckdb_conn=duckdb_conn, table_ids=table_ids)
+
+
 class TestPerColumnShouldSkip:
     def test_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -167,11 +174,12 @@ class TestPerColumnAdhocFailLoud:
 
 
 class TestPerTableShouldSkip:
+    """The per-table phase scopes by the session's ``table_ids`` (DAT-401, source-free)."""
+
     def test_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        src = _source(session)
-        assert SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
+        assert SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [])) == (
             "No typed tables found"
         )
 
@@ -179,9 +187,10 @@ class TestPerTableShouldSkip:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
         src = _source(session)
-        _typed_table(session, src.source_id, "t1", ["a"])
+        t1 = _typed_table(session, src.source_id, "t1", ["a"])
         assert (
-            SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
+            SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [t1.table_id]))
+            is None
         )
 
     def test_skips_when_all_tables_classified(
@@ -199,6 +208,6 @@ class TestPerTableShouldSkip:
             )
         )
         session.flush()
-        assert SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
-            "All tables already classified"
-        )
+        assert SemanticPerTablePhase().should_skip(
+            _session_ctx(session, duckdb_conn, [t1.table_id])
+        ) == ("All tables already classified")

@@ -1,4 +1,9 @@
-"""Tests for relationships phase."""
+"""Tests for relationships phase (DAT-401: session-scoped, source-free).
+
+The phase scopes purely by ``ctx.table_ids`` — the begin_session selection —
+never ``ctx.source_id``. Tables still belong to a source (the ingestion FK),
+but the phase is driven by the selected table ids, which may span sources.
+"""
 
 from __future__ import annotations
 
@@ -15,63 +20,58 @@ if TYPE_CHECKING:
     import duckdb
 
 
+def _typed_table(session: Session, source_id: str, name: str) -> str:
+    table_id = str(uuid4())
+    session.add(
+        Table(
+            table_id=table_id,
+            source_id=source_id,
+            table_name=name,
+            layer="typed",
+            duckdb_path=f"typed_{name}",
+            row_count=10,
+        )
+    )
+    return table_id
+
+
+def _ctx(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection, table_ids: list[str]
+) -> PhaseContext:
+    return PhaseContext(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        config={},
+    )
+
+
 class TestRelationshipsPhase:
-    """Tests for RelationshipsPhase."""
+    """Tests for RelationshipsPhase scoped by the session's selected tables."""
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test skip when no typed tables exist."""
-        phase = RelationshipsPhase()
-        source_id = str(uuid4())
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        skip_reason = phase.should_skip(ctx)
+        """Empty selection → nothing to relate."""
+        skip_reason = RelationshipsPhase().should_skip(_ctx(session, duckdb_conn, []))
         assert skip_reason is not None
         assert "No typed tables" in skip_reason
 
     def test_skip_when_single_table(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
-        """Test skip and empty success when only one typed table exists."""
-        phase = RelationshipsPhase()
+        """A single-table selection is valid but has no relationships to detect."""
         source_id = str(uuid4())
-
-        source = Source(
-            source_id=source_id,
-            name="test_source",
-            source_type="csv",
-        )
-        session.add(source)
-
-        table = Table(
-            table_id=str(uuid4()),
-            source_id=source_id,
-            table_name="test_table",
-            layer="typed",
-            duckdb_path="typed_test_table",
-            row_count=10,
-        )
-        session.add(table)
+        session.add(Source(source_id=source_id, name="s", source_type="csv"))
+        table_id = _typed_table(session, source_id, "test_table")
         session.commit()
 
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
+        ctx = _ctx(session, duckdb_conn, [table_id])
 
-        skip_reason = phase.should_skip(ctx)
+        skip_reason = RelationshipsPhase().should_skip(ctx)
         assert skip_reason is not None
         assert "at least 2 tables" in skip_reason
 
-        # Running the phase also succeeds with empty results
-        result = phase.run(ctx)
+        # Running the phase also succeeds with empty results.
+        result = RelationshipsPhase().run(ctx)
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["relationship_candidates"] == []
         assert "at least 2" in result.outputs.get("message", "")
@@ -79,57 +79,42 @@ class TestRelationshipsPhase:
     def test_fails_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test failure when run without typed tables."""
-        phase = RelationshipsPhase()
-        source_id = str(uuid4())
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        result = phase.run(ctx)
-
+        """Running with an empty selection fails loud."""
+        result = RelationshipsPhase().run(_ctx(session, duckdb_conn, []))
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
 
     def test_does_not_skip_with_multiple_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test does not skip when multiple tables exist and no relationships detected."""
-        phase = RelationshipsPhase()
+        """A multi-table selection with no existing relationships runs."""
         source_id = str(uuid4())
-
-        # Create a source with multiple typed tables
-        source = Source(
-            source_id=source_id,
-            name="test_source",
-            source_type="csv",
-        )
-        session.add(source)
-
-        for i in range(3):
-            table = Table(
-                table_id=str(uuid4()),
-                source_id=source_id,
-                table_name=f"test_table_{i}",
-                layer="typed",
-                duckdb_path=f"typed_test_table_{i}",
-                row_count=10,
-            )
-            session.add(table)
-
+        session.add(Source(source_id=source_id, name="s", source_type="csv"))
+        table_ids = [_typed_table(session, source_id, f"test_table_{i}") for i in range(3)]
         session.commit()
 
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        skip_reason = phase.should_skip(ctx)
-        # Should not skip - has multiple tables and no existing relationships
+        skip_reason = RelationshipsPhase().should_skip(_ctx(session, duckdb_conn, table_ids))
         assert skip_reason is None
+
+    def test_scopes_to_selection_across_sources(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ):
+        """The selection may span sources; tables outside it are ignored.
+
+        Two tables from two different sources form a valid ≥2 selection (so the
+        phase runs), while a third typed table left out of ``table_ids`` is not
+        seen — proving the phase scopes by the selection, not by any source.
+        """
+        src_a, src_b = str(uuid4()), str(uuid4())
+        session.add(Source(source_id=src_a, name="a", source_type="csv"))
+        session.add(Source(source_id=src_b, name="b", source_type="csv"))
+        a = _typed_table(session, src_a, "a_tbl")
+        b = _typed_table(session, src_b, "b_tbl")
+        _typed_table(session, src_a, "a_tbl_excluded")  # not in the selection
+        session.commit()
+
+        phase = RelationshipsPhase()
+        selected = phase._typed_tables(_ctx(session, duckdb_conn, [a, b]))
+        assert {t.table_id for t in selected} == {a, b}
+        # A ≥2-table cross-source selection is not skipped on the count gate.
+        assert phase.should_skip(_ctx(session, duckdb_conn, [a, b])) is None

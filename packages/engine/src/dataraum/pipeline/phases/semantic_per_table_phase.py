@@ -12,8 +12,9 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 
+from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import TableEntity
@@ -50,8 +51,39 @@ class SemanticPerTablePhase(BasePhase):
         return [db_models]
 
     def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
+        """The session's selected typed tables (DAT-401, source-free).
+
+        Scopes purely by ``ctx.table_ids`` — the begin_session selection, which
+        may span sources. A source is meaningless past add_source, so this phase
+        never reads ``ctx.source_id`` (feedback-source-dies-at-addsource).
+        """
+        if not ctx.table_ids:
+            return []
+        stmt = select(Table).where(Table.layer == "typed", Table.table_id.in_(ctx.table_ids))
         return list(ctx.session.execute(stmt).scalars())
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop this phase's outputs for the session's tables (DAT-401/373).
+
+        Deletes the table-entity classifications (``TableEntity``) for the scoped
+        tables AND the LLM-confirmed relationships (``detection_method='llm'``)
+        it wrote — its OWN output only. The candidate rows (owned by
+        ``relationships``) and the parent ``Table`` survive; the FK cascade is
+        NOT load-bearing, the delete is explicit and owner-scoped.
+        """
+        if not table_ids:
+            return
+        ctx.session.execute(delete(TableEntity).where(TableEntity.table_id.in_(table_ids)))
+        ctx.session.execute(
+            delete(Relationship).where(
+                Relationship.detection_method == "llm",
+                or_(
+                    Relationship.from_table_id.in_(table_ids),
+                    Relationship.to_table_id.in_(table_ids),
+                ),
+            )
+        )
+        ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if every typed table already has an entity detection."""

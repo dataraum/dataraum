@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 
 from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
@@ -47,12 +47,21 @@ class RelationshipsPhase(BasePhase):
 
         return [db_models]
 
+    def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
+        """The session's selected typed tables (DAT-401, source-free).
+
+        Scopes purely by ``ctx.table_ids`` — the begin_session selection, which
+        may span sources. A source is meaningless past add_source, so this phase
+        never reads ``ctx.source_id`` (feedback-source-dies-at-addsource).
+        """
+        if not ctx.table_ids:
+            return []
+        stmt = select(Table).where(Table.layer == "typed", Table.table_id.in_(ctx.table_ids))
+        return list(ctx.session.execute(stmt).scalars())
+
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if relationships already detected for this source."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if relationships already detected over the session's tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -76,12 +85,30 @@ class RelationshipsPhase(BasePhase):
 
         return None
 
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop this phase's candidate relationships for the session's tables (DAT-401/373).
+
+        Deletes only the structural ``detection_method='candidate'`` rows whose
+        endpoints touch the scope — its OWN output. Never the ``'llm'`` rows
+        (owned by ``semantic_per_table``) nor the parent ``Table``; the FK
+        cascade is NOT load-bearing, the delete is explicit and owner-scoped.
+        """
+        if not table_ids:
+            return
+        ctx.session.execute(
+            delete(Relationship).where(
+                Relationship.detection_method == "candidate",
+                or_(
+                    Relationship.from_table_id.in_(table_ids),
+                    Relationship.to_table_id.in_(table_ids),
+                ),
+            )
+        )
+        ctx.session.flush()
+
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run relationship detection on typed tables."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Run relationship detection over the session's selected typed tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

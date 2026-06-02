@@ -90,8 +90,17 @@ class BasePhase(ABC):
         ``ctx.table_ids`` carries the single typed table the child workflow is
         processing, so the phase analyzes exactly that table. An empty
         ``ctx.table_ids`` means source-wide (direct/test invocation).
+
+        This base implementation is **source-scoped** (add_source lineage) — it
+        calls :meth:`PhaseContext.require_source_id`, so a phase past the
+        add_source boundary (``source_id is None``) that forgets to override it
+        fails loud rather than silently matching zero rows on ``source_id IS
+        NULL``. Session-scoped phases (begin_session) MUST override this to scope
+        by ``ctx.table_ids`` alone.
         """
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
+        stmt = select(Table).where(
+            Table.layer == "typed", Table.source_id == ctx.require_source_id()
+        )
         if ctx.table_ids:
             stmt = stmt.where(Table.table_id.in_(ctx.table_ids))
         return list(ctx.session.execute(stmt).scalars().all())

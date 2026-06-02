@@ -290,7 +290,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
         from dataraum.analysis.slicing.profiling import build_slice_profiles
 
         slice_profiles_count = build_slice_profiles(
-            ctx.session, ctx.source_id, session_id=ctx.require_session_id()
+            ctx.session, ctx.require_source_id(), session_id=ctx.require_session_id()
         )
 
         outputs: dict[str, object] = {

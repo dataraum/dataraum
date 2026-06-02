@@ -37,7 +37,11 @@ class PhaseContext:
 
     session: Session
     duckdb_conn: duckdb.DuckDBPyConnection
-    source_id: str
+    # The ingestion unit — set for add_source's own phases (import/typing/…).
+    # ``None`` for stages past the add_source boundary (begin_session onward):
+    # a source is meaningless there, so those phases scope by ``table_ids``
+    # alone and never read ``source_id`` (see feedback-source-dies-at-addsource).
+    source_id: str | None = None
     table_ids: list[str] = field(default_factory=list)
 
     # Configuration overrides
@@ -64,6 +68,23 @@ class PhaseContext:
             "PhaseContext.session_id is unset — phases persisting per-session rows "
             "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
         )
+
+    def require_source_id(self) -> str:
+        """Return ``source_id`` or raise — for add_source-lineage phases that need it.
+
+        Source is the ingestion unit; phases past the add_source boundary
+        (begin_session onward) leave it ``None`` and scope by ``table_ids``
+        (feedback-source-dies-at-addsource). A phase that still requires a single
+        source calls this to assert that invariant rather than silently scoping
+        a ``None`` source.
+        """
+        if self.source_id is None:
+            raise RuntimeError(
+                "PhaseContext.source_id is unset — this phase requires a "
+                "source-scoped context (the add_source lineage). Stages past "
+                "add_source must scope by table_ids instead."
+            )
+        return self.source_id
 
 
 @dataclass

@@ -4,6 +4,59 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-02: DAT-401 — begin_session spine revives `relationships` + `semantic_per_table` (session-scoped)
+
+Slice 2.0a. A new `BeginSessionWorkflow` composes a user-selected set of typed tables
+(may span sources) into an analytical session and revives the two dormant cross-table
+phases over that selection. **Both phases' internal logic is unchanged — only their
+*scope* moved** from `Table.source_id == ctx.source_id` to `ctx.table_ids` (the
+session's selection). No terminal `detect` runs in begin_session (relationship-/table-
+granularity readiness is DAT-408 / 2.0b), so **no `entropy_readiness` rows are produced
+by this stage yet**.
+
+What changed in the engine:
+- **`relationships` phase** (`pipeline/phases/relationships_phase.py`): now scopes by
+  `ctx.table_ids`; still persists `Relationship` rows with `detection_method='candidate'`.
+  Added `replay_cleanup` (drops its own candidate rows for the scoped tables).
+- **`semantic_per_table` phase** (`pipeline/phases/semantic_per_table_phase.py`): now
+  scopes by `ctx.table_ids`; still classifies tables (`TableEntity`) + confirms a subset
+  of candidates as `detection_method='llm'`, reasoning over the per-column annotations.
+  **LLM behavior preserved verbatim** — only the table-set selection changed. Added
+  `replay_cleanup` (drops its `TableEntity` + `'llm'` rels for the scoped tables).
+- New source-free runner `run_session_phase` + `begin_session_select` (writes
+  `session_tables`); `PhaseContext.source_id` is now `str | None` (begin_session passes
+  `None`; add_source lineage uses `require_source_id()`).
+
+### dataraum-eval
+- **Expectation: `semantic_per_table` recall is unchanged by the revival.** The phase is
+  preserved verbatim except for scoping by the session's selected tables instead of a
+  source. For a selection equal to a source's typed tables, the input set is identical, so
+  the table classifications + LLM-confirmed relationships must match the retired monolithic
+  `semantic` phase's table half. **This is the Slice-2 eval gate (DAT-405).** Verify the
+  golden output (recorded fixture) does not move.
+- **Relationship *detector* calibration does NOT move here** — `relationships` only persists
+  structural `candidate` rows (unchanged logic); the relationship-granularity readiness +
+  detectors (`join_path_determinism`, `relationship_entropy`) land in DAT-408.
+- **No readiness snapshot impact** — begin_session 2.0a writes no `entropy_readiness` rows.
+- **Status**: pending
+
+### dataraum-testdata
+- Needs **multi-table, multi-source** fixtures with a known join structure + ground-truth
+  relationships (which `from_table.col -> to_table.col` pairs are real, expected
+  cardinality) so DAT-408's relationship detectors can be calibrated against a cross-source
+  selection. Directional, not prescriptive — testdata owns the injection design.
+
+### For DAT-408 (relationship-granularity readiness) — known schema tension
+- Both phases' `should_skip` + `replay_cleanup` are **session-scoped** (filter by
+  `Relationship.session_id` / `TableEntity.session_id`) so a session only checks/clears its
+  own rows. But `Relationship`'s unique constraint is `(from_column_id, to_column_id,
+  detection_method)` — **global, no `session_id`** — and `_store_candidates` does a plain
+  `session.add` (no conflict handling). So two *different* sessions cannot both hold a
+  candidate for the same column pair; a cross-session re-detect would raise a unique
+  violation (loud, not silent corruption). 2.0a is single-active-session per workspace, so
+  this is unreachable now — but DAT-408 should decide whether relationships are
+  session-scoped or workspace-global and align the unique constraint accordingly.
+
 ## 2026-06-02: DAT-410 — detect/readiness scope by the session's tables, not `source_id`
 
 Behavior-preserving runtime refactor: the terminal `detect` step (`run_detectors`) +

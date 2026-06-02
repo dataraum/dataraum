@@ -7,12 +7,14 @@ here we pin the skip gates that decide whether each phase re-runs.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.investigation.db_models import InvestigationSession
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
@@ -55,6 +57,23 @@ def _annotate(session: Session, table: Table) -> None:
 
 def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: str) -> PhaseContext:
     return PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id)
+
+
+def _session_ctx(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection, table_ids: list[str]
+) -> PhaseContext:
+    """Source-free ctx for the begin_session phases — scoped by ``table_ids`` (DAT-401).
+
+    Carries the baseline session id: the begin_session phases are session-scoped
+    (``should_skip`` / ``replay_cleanup`` filter by ``session_id``), so the ctx
+    must supply one, matching the rows seeded under ``baseline_session_id()``.
+    """
+    return PhaseContext(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        session_id=baseline_session_id(),
+    )
 
 
 class TestPerColumnShouldSkip:
@@ -167,11 +186,12 @@ class TestPerColumnAdhocFailLoud:
 
 
 class TestPerTableShouldSkip:
+    """The per-table phase scopes by the session's ``table_ids`` (DAT-401, source-free)."""
+
     def test_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        src = _source(session)
-        assert SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
+        assert SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [])) == (
             "No typed tables found"
         )
 
@@ -179,9 +199,10 @@ class TestPerTableShouldSkip:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
         src = _source(session)
-        _typed_table(session, src.source_id, "t1", ["a"])
+        t1 = _typed_table(session, src.source_id, "t1", ["a"])
         assert (
-            SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
+            SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [t1.table_id]))
+            is None
         )
 
     def test_skips_when_all_tables_classified(
@@ -199,6 +220,51 @@ class TestPerTableShouldSkip:
             )
         )
         session.flush()
-        assert SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
-            "All tables already classified"
+        assert SemanticPerTablePhase().should_skip(
+            _session_ctx(session, duckdb_conn, [t1.table_id])
+        ) == ("All tables already classified")
+
+    def test_scopes_across_sources_and_ignores_excluded(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A selection spanning two sources is seen whole; an unselected table is not."""
+        src_a = _source(session)
+        src_b = Source(name="s2", source_type="csv")
+        session.add(src_b)
+        session.flush()
+        a = _typed_table(session, src_a.source_id, "a", ["x"])
+        b = _typed_table(session, src_b.source_id, "b", ["y"])
+        _typed_table(session, src_a.source_id, "a_excluded", ["z"])  # not selected
+
+        phase = SemanticPerTablePhase()
+        selected = phase._typed_tables(_session_ctx(session, duckdb_conn, [a.table_id, b.table_id]))
+        assert {t.table_id for t in selected} == {a.table_id, b.table_id}
+        # Neither selected table is classified yet → the phase runs (no skip).
+        assert (
+            phase.should_skip(_session_ctx(session, duckdb_conn, [a.table_id, b.table_id])) is None
+        )
+
+    def test_another_sessions_classification_does_not_skip(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A different session's entity over a shared table must not skip THIS session."""
+        src = _source(session)
+        t1 = _typed_table(session, src.source_id, "t1", ["a"])
+        other_session = str(uuid4())
+        session.add(InvestigationSession(session_id=other_session, intent="other", status="active"))
+        session.flush()
+        session.add(
+            TableEntity(
+                session_id=other_session,  # classified by a DIFFERENT session
+                table_id=t1.table_id,
+                detected_entity_type="thing",
+                confidence=0.9,
+                detection_source="llm",
+            )
+        )
+        session.flush()
+        # This (baseline) session has not classified t1 → it must still run.
+        assert (
+            SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [t1.table_id]))
+            is None
         )

@@ -22,14 +22,18 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.pipeline.base import PhaseContext
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.phases.import_phase import ImportPhase
+from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
+from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_session_id
 
 
 class _StubDuckDB:
@@ -597,3 +601,231 @@ class TestSemanticPerColumnReplayCleanup:
         ctx = _make_ctx(session, source.source_id)
 
         SemanticPerColumnPhase().replay_cleanup(ctx, [])  # no raise
+
+
+# ---------------------------------------------------------------------------
+# begin_session phases (DAT-401) — source-free, scoped by ``table_ids``.
+# Each clears ONLY its own rows for the scoped tables; the parent ``Table``
+# survives, proving the FK cascade is NOT load-bearing.
+# ---------------------------------------------------------------------------
+
+
+def _session_ctx(session: Session, table_ids: list[str]) -> PhaseContext:
+    """Source-free ctx for the begin_session phases (DAT-401)."""
+    return PhaseContext(
+        session=session,
+        duckdb_conn=_StubDuckDB(),  # type: ignore[arg-type]
+        table_ids=table_ids,
+        session_id=baseline_session_id(),
+    )
+
+
+def _typed_table_with_col(session: Session, name: str, n_cols: int = 1) -> tuple[Table, Column]:
+    """A typed Table (under its own Source) + ``n_cols`` columns; returns the first."""
+    source = Source(source_id=str(uuid4()), name=f"src_{uuid4().hex[:8]}", source_type="csv")
+    session.add(source)
+    session.flush()
+    table = Table(
+        table_id=str(uuid4()),
+        source_id=source.source_id,
+        table_name=name,
+        layer="typed",
+        duckdb_path=f"{source.name}__{name}",
+    )
+    session.add(table)
+    session.flush()
+    cols = [
+        Column(
+            column_id=str(uuid4()),
+            table_id=table.table_id,
+            column_name=f"{name}_{i}",
+            column_position=i,
+            raw_type="VARCHAR",
+            resolved_type="BIGINT",
+        )
+        for i in range(n_cols)
+    ]
+    session.add_all(cols)
+    session.flush()
+    return table, cols[0]
+
+
+def _other_session(session: Session) -> str:
+    """A second InvestigationSession id (distinct from the baseline fixture session)."""
+    from dataraum.investigation.db_models import InvestigationSession
+
+    sid = str(uuid4())
+    session.add(InvestigationSession(session_id=sid, intent="other", status="active"))
+    session.flush()
+    return sid
+
+
+def _rel(
+    session: Session,
+    from_t: Table,
+    from_c: Column,
+    to_t: Table,
+    to_c: Column,
+    detection_method: str,
+    session_id: str | None = None,
+) -> Relationship:
+    rel = Relationship(
+        relationship_id=str(uuid4()),
+        session_id=session_id or baseline_session_id(),
+        from_table_id=from_t.table_id,
+        from_column_id=from_c.column_id,
+        to_table_id=to_t.table_id,
+        to_column_id=to_c.column_id,
+        relationship_type="candidate" if detection_method == "candidate" else "foreign_key",
+        confidence=0.8,
+        detection_method=detection_method,
+        is_confirmed=False,
+    )
+    session.add(rel)
+    session.flush()
+    return rel
+
+
+def _remaining_rel_ids(session: Session) -> set[str]:
+    return {r.relationship_id for r in session.execute(select(Relationship)).scalars()}
+
+
+class TestRelationshipsReplayCleanup:
+    """``relationships.replay_cleanup`` drops only its candidate rows, in scope."""
+
+    def test_drops_only_candidate_rels_for_scoped_tables(self, session: Session) -> None:
+        ta, ca = _typed_table_with_col(session, "a")
+        tb, cb = _typed_table_with_col(session, "b")
+        tc, cc = _typed_table_with_col(session, "c")  # out of selection
+        td, cd = _typed_table_with_col(session, "d")  # out of selection
+
+        cand_ab = _rel(session, ta, ca, tb, cb, "candidate")  # in scope, ours → gone
+        llm_ab = _rel(session, ta, ca, tb, cb, "llm")  # in scope, NOT ours → survives
+        cand_cd = _rel(session, tc, cc, td, cd, "candidate")  # out of scope → survives
+
+        RelationshipsPhase().replay_cleanup(_session_ctx(session, []), [ta.table_id, tb.table_id])
+
+        remaining = _remaining_rel_ids(session)
+        assert cand_ab.relationship_id not in remaining
+        assert llm_ab.relationship_id in remaining
+        assert cand_cd.relationship_id in remaining
+        # Cascade is NOT load-bearing: parent tables untouched by the cleanup.
+        assert session.get(Table, ta.table_id) is not None
+        assert session.get(Table, tb.table_id) is not None
+
+    def test_empty_scope_is_a_noop(self, session: Session) -> None:
+        ta, ca = _typed_table_with_col(session, "a")
+        tb, cb = _typed_table_with_col(session, "b")
+        cand_ab = _rel(session, ta, ca, tb, cb, "candidate")
+
+        RelationshipsPhase().replay_cleanup(_session_ctx(session, []), [])
+
+        assert cand_ab.relationship_id in _remaining_rel_ids(session)
+
+    def test_cleanup_spares_another_sessions_candidates(self, session: Session) -> None:
+        """A replay of THIS session must not delete another session's candidates.
+
+        The unique constraint is on the column pair, so the two sessions use
+        distinct column pairs over the same two tables — both in cleanup scope.
+        Only the replaying session's row is deleted (DAT-401 session scoping).
+        """
+        ta, _ = _typed_table_with_col(session, "a", n_cols=2)
+        tb, _ = _typed_table_with_col(session, "b", n_cols=2)
+        ca = list(
+            session.execute(
+                select(Column)
+                .where(Column.table_id == ta.table_id)
+                .order_by(Column.column_position)
+            ).scalars()
+        )
+        cb = list(
+            session.execute(
+                select(Column)
+                .where(Column.table_id == tb.table_id)
+                .order_by(Column.column_position)
+            ).scalars()
+        )
+        mine = _rel(session, ta, ca[0], tb, cb[0], "candidate")  # baseline session
+        other = _other_session(session)
+        theirs = _rel(session, ta, ca[1], tb, cb[1], "candidate", session_id=other)
+
+        RelationshipsPhase().replay_cleanup(_session_ctx(session, []), [ta.table_id, tb.table_id])
+
+        remaining = _remaining_rel_ids(session)
+        assert mine.relationship_id not in remaining
+        assert theirs.relationship_id in remaining
+
+
+class TestSemanticPerTableReplayCleanup:
+    """``semantic_per_table.replay_cleanup`` drops its entities + llm rels, in scope."""
+
+    def _entity(self, session: Session, table: Table) -> TableEntity:
+        entity = TableEntity(
+            session_id=baseline_session_id(),
+            table_id=table.table_id,
+            detected_entity_type="thing",
+            confidence=0.9,
+            detection_source="llm",
+        )
+        session.add(entity)
+        session.flush()
+        return entity
+
+    def test_drops_entities_and_llm_rels_for_scoped_tables(self, session: Session) -> None:
+        ta, ca = _typed_table_with_col(session, "a")
+        tb, cb = _typed_table_with_col(session, "b")
+        tc, cc = _typed_table_with_col(session, "c")  # out of selection
+        td, cd = _typed_table_with_col(session, "d")  # out of selection
+
+        ent_a = self._entity(session, ta)  # in scope → gone
+        ent_c = self._entity(session, tc)  # out of scope → survives
+        llm_ab = _rel(session, ta, ca, tb, cb, "llm")  # in scope, ours → gone
+        cand_ab = _rel(session, ta, ca, tb, cb, "candidate")  # in scope, NOT ours → survives
+        llm_cd = _rel(session, tc, cc, td, cd, "llm")  # out of scope → survives
+
+        SemanticPerTablePhase().replay_cleanup(
+            _session_ctx(session, []), [ta.table_id, tb.table_id]
+        )
+
+        remaining_entities = {e.entity_id for e in session.execute(select(TableEntity)).scalars()}
+        assert ent_a.entity_id not in remaining_entities
+        assert ent_c.entity_id in remaining_entities
+
+        remaining = _remaining_rel_ids(session)
+        assert llm_ab.relationship_id not in remaining
+        assert cand_ab.relationship_id in remaining
+        assert llm_cd.relationship_id in remaining
+        # Cascade is NOT load-bearing: parent tables untouched by the cleanup.
+        assert session.get(Table, ta.table_id) is not None
+        assert session.get(Table, tb.table_id) is not None
+
+    def test_empty_scope_is_a_noop(self, session: Session) -> None:
+        ta, _ = _typed_table_with_col(session, "a")
+        ent = self._entity(session, ta)
+
+        SemanticPerTablePhase().replay_cleanup(_session_ctx(session, []), [])
+
+        assert ent.entity_id in {
+            e.entity_id for e in session.execute(select(TableEntity)).scalars()
+        }
+
+    def test_cleanup_spares_another_sessions_entities(self, session: Session) -> None:
+        """A replay of THIS session must not delete another session's entities."""
+        ta, _ = _typed_table_with_col(session, "a")
+        mine = self._entity(session, ta)  # baseline session
+        other = _other_session(session)
+        theirs = TableEntity(
+            session_id=other,
+            table_id=ta.table_id,
+            detected_entity_type="thing",
+            confidence=0.9,
+            detection_source="llm",
+        )
+        session.add(theirs)
+        session.flush()
+
+        SemanticPerTablePhase().replay_cleanup(_session_ctx(session, []), [ta.table_id])
+
+        remaining = {e.entity_id for e in session.execute(select(TableEntity)).scalars()}
+        assert mine.entity_id not in remaining
+        assert theirs.entity_id in remaining

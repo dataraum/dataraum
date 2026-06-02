@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import duckdb
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -30,7 +30,7 @@ from dataraum.pipeline.phases.statistics_phase import StatisticsPhase
 from dataraum.pipeline.phases.temporal_phase import TemporalPhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.pipeline.pipeline_config import load_phase_declarations
-from dataraum.storage import init_database
+from dataraum.storage import Table, init_database
 from tests.conftest import baseline_session_id
 
 # Paths to test data
@@ -97,11 +97,26 @@ class PipelineTestHarness:
             raise ValueError(f"Phase '{phase_name}' not registered")
 
         with self.session_factory() as session:
+            # The session-scoped phases (relationships, semantic_per_table) read
+            # ctx.table_ids, not ctx.source_id (DAT-401). When a caller doesn't
+            # pin a scope, default to the source's typed tables so those phases
+            # see the whole source — a no-op narrowing for the still-source-scoped
+            # phases (which read source_id and ignore table_ids).
+            scoped_table_ids = table_ids
+            if scoped_table_ids is None:
+                scoped_table_ids = [
+                    row[0]
+                    for row in session.execute(
+                        select(Table.table_id).where(
+                            Table.source_id == self.source_id, Table.layer == "typed"
+                        )
+                    )
+                ]
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=self.duckdb_conn,
                 source_id=self.source_id,
-                table_ids=table_ids or [],
+                table_ids=scoped_table_ids,
                 config=config or {},
                 session_id=baseline_session_id(),
             )

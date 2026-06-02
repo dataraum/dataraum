@@ -75,6 +75,23 @@ class SourceIdentity(BaseModel):
     vertical: str | None = None
 
 
+class SessionIdentity(BaseModel):
+    """The identity header ``beginSessionWorkflow`` carries into every activity.
+
+    Source-free by construction (see feedback-source-dies-at-addsource-boundary):
+    a session past the add_source boundary composes typed tables that may span
+    sources, so "source" is meaningless here. The identity stays small —
+    ``workspace_id`` (the DAT-364 routing key the runner checks against the
+    worker's bound workspace) + ``session_id`` (the per-run FK + the key that
+    resolves the selected table set via ``session_tables``). The session's
+    ``vertical`` (frame ontology) is read off the ``InvestigationSession`` row,
+    not threaded here — it is session state, not part of the identity.
+    """
+
+    workspace_id: str
+    session_id: str
+
+
 class ReplayScope(BaseModel):
     """Scope for a teach-driven replay of ``addSourceWorkflow`` (DAT-343).
 
@@ -206,6 +223,57 @@ class ProcessTableResult(BaseModel):
     typed_table_id: str
 
 
+class SessionScopedInput(BaseModel):
+    """Input to a begin_session activity — session identity + the typed table set.
+
+    The session-scoped analogue of :class:`TableScopedInput`, but plural: the
+    begin_session phases are cross-table (relationships are meaningless on one
+    table), so the activity carries the whole selection as an array of typed
+    table ids. The array is the execution scope, threaded from the workflow
+    input (``begin_session(tables=[…])``) — the same set ``begin_session_select``
+    persists to ``session_tables`` for provenance.
+    """
+
+    identity: SessionIdentity
+    table_ids: list[str]
+
+
+class SessionReplayCleanupInput(BaseModel):
+    """Input to the ``session_replay_cleanup_for_phase`` activity (DAT-401).
+
+    The source-free sibling of :class:`ReplayCleanupInput`: a begin_session
+    teach replay clears a phase's own rows (candidate relationships, table
+    entities) before the re-run, scoped to ``table_ids``. Mirrors the add_source
+    cleanup path but carries a :class:`SessionIdentity` (no ``source_id``).
+    """
+
+    identity: SessionIdentity
+    phase_name: str
+    table_ids: list[str] = []
+
+
+class BeginSessionInput(BaseModel):
+    """Input to ``beginSessionWorkflow`` — session identity + the selected tables.
+
+    Unlike ``add_source`` (whose table set is discovered by ``import``), the
+    begin_session table set is the user's explicit selection of already-typed
+    tables, so it travels in the input as ``tables`` (an array of typed table
+    ids, possibly spanning sources). ``replay`` (DAT-343 pattern) is set when
+    re-running after a teach; ``None`` is the initial-run shape.
+    """
+
+    identity: SessionIdentity
+    tables: list[str]
+    replay: ReplayScope | None = None
+
+
+class BeginSessionResult(BaseModel):
+    """``beginSessionWorkflow`` result — the session + the tables it composed."""
+
+    session_id: str
+    table_ids: list[str]
+
+
 class AddSourceInput(BaseModel):
     """Input to ``AddSourceWorkflow`` — source identity + optional replay scope.
 
@@ -257,6 +325,18 @@ def add_source_workflow_id(workspace_id: str, source_id: str) -> str:
     the parent, so this Python helper exists for tests + the child-ID builder.
     """
     return f"addsource-{workspace_id}-{source_id}"
+
+
+def begin_session_workflow_id(workspace_id: str, session_id: str) -> str:
+    """Workflow ID for ``beginSessionWorkflow`` of one session.
+
+    A begin_session run is keyed by its session id (not a source — a session
+    spans sources). Reused across teach replays of the same session (with
+    ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
+    under one ID. The cockpit is the caller that starts the workflow (slice
+    2.0c); this Python helper exists for tests + the ID convention.
+    """
+    return f"beginsession-{workspace_id}-{session_id}"
 
 
 def process_table_workflow_id(workspace_id: str, source_id: str, raw_table_id: str) -> str:

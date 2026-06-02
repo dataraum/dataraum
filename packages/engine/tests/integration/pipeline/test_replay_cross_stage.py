@@ -144,8 +144,8 @@ class _CleanupCtx:
     """Minimal PhaseContext stand-in for invoking replay_cleanup directly.
 
     ``replay_cleanup`` only reads ``session`` / ``duckdb_conn`` / ``source_id``
-    plus ``_typed_tables`` (which uses ``source_id`` + ``table_ids``); the rest
-    of ``PhaseContext`` is unused by the cleanup path.
+    plus ``_typed_tables`` (the base impl scopes by ``require_source_id()`` +
+    ``table_ids``); the rest of ``PhaseContext`` is unused by the cleanup path.
     """
 
     def __init__(self, session, duckdb_conn, source_id) -> None:
@@ -155,6 +155,11 @@ class _CleanupCtx:
         self.table_ids: list[str] = []
         self.config: dict = {}
         self.session_id = baseline_session_id()
+
+    def require_source_id(self) -> str:
+        """Mirror ``PhaseContext.require_source_id`` — these cleanups are source-scoped."""
+        assert self.source_id is not None
+        return self.source_id
 
 
 class TestCrossStageSurvival:

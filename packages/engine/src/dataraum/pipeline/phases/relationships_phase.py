@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 
 from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
@@ -47,12 +47,24 @@ class RelationshipsPhase(BasePhase):
 
         return [db_models]
 
+    def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
+        """The session's selected tables (DAT-401, source-free).
+
+        Scopes purely by ``ctx.table_ids`` — the begin_session selection, which
+        may span sources. The ids are already validated as typed by
+        ``begin_session_select``'s pre-flight (the single enforcement point), so
+        no ``layer`` filter is repeated here. A source is meaningless past
+        add_source, so this phase never reads ``ctx.source_id``
+        (feedback-source-dies-at-addsource).
+        """
+        if not ctx.table_ids:
+            return []
+        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids))
+        return list(ctx.session.execute(stmt).scalars())
+
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if relationships already detected for this source."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if THIS session already detected relationships over its tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -60,11 +72,14 @@ class RelationshipsPhase(BasePhase):
         if len(typed_tables) < 2:
             return "Need at least 2 tables to detect relationships"
 
-        # Check if relationships already detected
+        # Scoped to this session's own candidates (rows carry session_id): a
+        # different session's candidates over a shared table must not make this
+        # session skip detection (DAT-401).
         table_ids = [t.table_id for t in typed_tables]
         existing_count = (
             ctx.session.execute(
                 select(func.count(Relationship.relationship_id)).where(
+                    Relationship.session_id == ctx.require_session_id(),
                     Relationship.from_table_id.in_(table_ids),
                     Relationship.detection_method == "candidate",
                 )
@@ -76,12 +91,32 @@ class RelationshipsPhase(BasePhase):
 
         return None
 
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop THIS session's candidate relationships for its tables (DAT-401/373).
+
+        Deletes only the structural ``detection_method='candidate'`` rows this
+        session wrote (scoped by ``session_id``) whose endpoints touch the scope
+        — its OWN output. Never another session's rows, the ``'llm'`` rows (owned
+        by ``semantic_per_table``), or the parent ``Table``: the FK cascade is
+        NOT load-bearing, the delete is explicit and owner-scoped.
+        """
+        if not table_ids:
+            return
+        ctx.session.execute(
+            delete(Relationship).where(
+                Relationship.session_id == ctx.require_session_id(),
+                Relationship.detection_method == "candidate",
+                or_(
+                    Relationship.from_table_id.in_(table_ids),
+                    Relationship.to_table_id.in_(table_ids),
+                ),
+            )
+        )
+        ctx.session.flush()
+
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run relationship detection on typed tables."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Run relationship detection over the session's selected typed tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

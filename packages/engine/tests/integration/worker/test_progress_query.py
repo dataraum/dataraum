@@ -27,20 +27,19 @@ compose-smoke, not here.
 from __future__ import annotations
 
 import asyncio
-import socket
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from temporalio import activity
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.service import RPCError
 from temporalio.worker import Replayer, Worker
 from temporalio.worker.workflow_sandbox import (
     SandboxedWorkflowRunner,
     SandboxRestrictions,
 )
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
 
 from dataraum.worker.contracts import (
     AddSourceInput,
@@ -122,15 +121,9 @@ _MOCK_ACTIVITIES = [
 _IDENTITY = SourceIdentity(workspace_id="test", source_id="src-dat406", session_id="sess-dat406")
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="module")
 def temporal_dev_address() -> Iterator[str]:
-    """A single-container Temporal dev server (CLI ``server start-dev``).
+    """A single-container Temporal CLI dev server (``server start-dev``).
 
     The CLI dev server runs an in-memory SQLite Temporal in ONE container — no
     Postgres dependency, fast startup — which is all a query/replay test needs.
@@ -138,17 +131,24 @@ def temporal_dev_address() -> Iterator[str]:
     that downloads a test-server binary that stalls CI (project convention:
     Temporal tests use testcontainers, determinism is covered offline by the
     Replayer).
+
+    Addressing uses the STANDARD testcontainers port-MAPPING idiom — expose the
+    frontend gRPC (7233) and reach it via ``get_container_host_ip()`` + the
+    mapped host port, exactly like the ``PostgresContainer`` fixture. We do NOT
+    use ``network_mode="host"`` + a fixed port: that routes on a local Docker but
+    NOT on CI runners, where the server logs ready yet the client's RPC can't
+    reach it (the ``RPCError: Timeout expired`` this test hit in CI).
     """
-    port = _free_port()
     container = (
         DockerContainer("temporalio/temporal:latest")
-        .with_command(f"server start-dev --ip 0.0.0.0 --port {port} --namespace default")
-        .with_kwargs(network_mode="host")
+        .with_command("server start-dev --ip 0.0.0.0 --namespace default")
+        .with_exposed_ports(7233)
     )
     container.start()
     try:
-        wait_for_logs(container, "Server:.*:" + str(port), timeout=60)
-        yield f"127.0.0.1:{port}"
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(7233)
+        yield f"{host}:{port}"
     finally:
         container.stop()
 
@@ -160,13 +160,30 @@ async def temporal_client(temporal_dev_address: str) -> AsyncIterator[Client]:
     The same ``pydantic_data_converter`` the production worker uses (so the
     plain-``@dataclass`` ProgressSnapshot serializes to its flat JSON shape on
     the query wire exactly as it will in production).
+
+    The dev server's gRPC frontend lags the container start, so connect with a
+    bounded retry — this is the real readiness gate (a log line doesn't prove the
+    frontend is accepting RPCs, which is what burned the host-networking version
+    in CI). ``Client.connect`` is eager (it runs ``get_system_info`` on connect)
+    and raises a bare ``RuntimeError`` ("connection closed" / Cancelled) while the
+    server is still booting — so that, not just ``RPCError``, is the retry signal.
     """
-    client = await Client.connect(
-        temporal_dev_address,
-        namespace="default",
-        data_converter=pydantic_data_converter,
+    last_err: Exception | None = None
+    for _ in range(120):  # ~60s budget after the image is warmed
+        try:
+            client = await Client.connect(
+                temporal_dev_address,
+                namespace="default",
+                data_converter=pydantic_data_converter,
+            )
+            yield client
+            return
+        except (RPCError, RuntimeError, OSError) as err:
+            last_err = err
+            await asyncio.sleep(0.5)
+    raise RuntimeError(
+        f"Temporal dev server at {temporal_dev_address} never accepted a connection: {last_err}"
     )
-    yield client
 
 
 def _worker(client: Client) -> Worker:

@@ -51,15 +51,18 @@ class SemanticPerTablePhase(BasePhase):
         return [db_models]
 
     def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
-        """The session's selected typed tables (DAT-401, source-free).
+        """The session's selected tables (DAT-401, source-free).
 
         Scopes purely by ``ctx.table_ids`` — the begin_session selection, which
-        may span sources. A source is meaningless past add_source, so this phase
-        never reads ``ctx.source_id`` (feedback-source-dies-at-addsource).
+        may span sources. The ids are already validated as typed by
+        ``begin_session_select``'s pre-flight (the single enforcement point), so
+        no ``layer`` filter is repeated here. A source is meaningless past
+        add_source, so this phase never reads ``ctx.source_id``
+        (feedback-source-dies-at-addsource).
         """
         if not ctx.table_ids:
             return []
-        stmt = select(Table).where(Table.layer == "typed", Table.table_id.in_(ctx.table_ids))
+        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids))
         return list(ctx.session.execute(stmt).scalars())
 
     def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:

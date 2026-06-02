@@ -96,7 +96,9 @@ def _seed_typed_table(
         if session.get(Source, source_id) is None:
             # Source.name is UNIQUE — keep it unique per source within a run.
             session.add(
-                Source(source_id=source_id, name=f"{source_name}_{source_id[:8]}", source_type="csv")
+                Source(
+                    source_id=source_id, name=f"{source_name}_{source_id[:8]}", source_type="csv"
+                )
             )
             session.flush()
         session.add(

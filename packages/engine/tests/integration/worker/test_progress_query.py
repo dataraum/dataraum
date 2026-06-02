@@ -27,19 +27,12 @@ compose-smoke, not here.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from temporalio import activity
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.service import RPCError
 from temporalio.worker import Replayer, Worker
-from temporalio.worker.workflow_sandbox import (
-    SandboxedWorkflowRunner,
-    SandboxRestrictions,
-)
-from testcontainers.core.container import DockerContainer
 
 from dataraum.worker.contracts import (
     AddSourceInput,
@@ -52,6 +45,7 @@ from dataraum.worker.contracts import (
     add_source_workflow_id,
 )
 from dataraum.worker.workflows import AddSourceWorkflow, ProcessTableWorkflow
+from tests.integration.worker.conftest import make_sandboxed_runner
 
 _TASK_QUEUE = "dat406-progress-test"
 _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
@@ -121,71 +115,6 @@ _MOCK_ACTIVITIES = [
 _IDENTITY = SourceIdentity(workspace_id="test", source_id="src-dat406", session_id="sess-dat406")
 
 
-@pytest.fixture(scope="module")
-def temporal_dev_address() -> Iterator[str]:
-    """A single-container Temporal CLI dev server (``server start-dev``).
-
-    The CLI dev server runs an in-memory SQLite Temporal in ONE container — no
-    Postgres dependency, fast startup — which is all a query/replay test needs.
-    We use it instead of ``WorkflowEnvironment.start_time_skipping()`` because
-    that downloads a test-server binary that stalls CI (project convention:
-    Temporal tests use testcontainers, determinism is covered offline by the
-    Replayer).
-
-    Addressing uses the STANDARD testcontainers port-MAPPING idiom — expose the
-    frontend gRPC (7233) and reach it via ``get_container_host_ip()`` + the
-    mapped host port, exactly like the ``PostgresContainer`` fixture. We do NOT
-    use ``network_mode="host"`` + a fixed port: that routes on a local Docker but
-    NOT on CI runners, where the server logs ready yet the client's RPC can't
-    reach it (the ``RPCError: Timeout expired`` this test hit in CI).
-    """
-    container = (
-        DockerContainer("temporalio/temporal:latest")
-        .with_command("server start-dev --ip 0.0.0.0 --namespace default")
-        .with_exposed_ports(7233)
-    )
-    container.start()
-    try:
-        host = container.get_container_host_ip()
-        port = container.get_exposed_port(7233)
-        yield f"{host}:{port}"
-    finally:
-        container.stop()
-
-
-@pytest.fixture
-async def temporal_client(temporal_dev_address: str) -> AsyncIterator[Client]:
-    """Client bound to the dev server with the worker's pydantic data converter.
-
-    The same ``pydantic_data_converter`` the production worker uses (so the
-    plain-``@dataclass`` ProgressSnapshot serializes to its flat JSON shape on
-    the query wire exactly as it will in production).
-
-    The dev server's gRPC frontend lags the container start, so connect with a
-    bounded retry — this is the real readiness gate (a log line doesn't prove the
-    frontend is accepting RPCs, which is what burned the host-networking version
-    in CI). ``Client.connect`` is eager (it runs ``get_system_info`` on connect)
-    and raises a bare ``RuntimeError`` ("connection closed" / Cancelled) while the
-    server is still booting — so that, not just ``RPCError``, is the retry signal.
-    """
-    last_err: Exception | None = None
-    for _ in range(120):  # ~60s budget after the image is warmed
-        try:
-            client = await Client.connect(
-                temporal_dev_address,
-                namespace="default",
-                data_converter=pydantic_data_converter,
-            )
-            yield client
-            return
-        except (RPCError, RuntimeError, OSError) as err:
-            last_err = err
-            await asyncio.sleep(0.5)
-    raise RuntimeError(
-        f"Temporal dev server at {temporal_dev_address} never accepted a connection: {last_err}"
-    )
-
-
 def _worker(client: Client) -> Worker:
     """A worker serving both workflows + the mocked activities for this test."""
     return Worker(
@@ -193,24 +122,7 @@ def _worker(client: Client) -> Worker:
         task_queue=_TASK_QUEUE,
         workflows=[AddSourceWorkflow, ProcessTableWorkflow],
         activities=_MOCK_ACTIVITIES,
-        workflow_runner=SandboxedWorkflowRunner(
-            restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                # `coverage` + `platform`: under `pytest --cov` (CI) the coverage
-                # sysmon branch tracer fires inside the sandboxed workflow and
-                # lazily imports `coverage.env`, which calls
-                # `platform.python_implementation()` — a call the sandbox forbids,
-                # failing workflow activation (the real cause of the CI
-                # "RPCError: Timeout expired"; reproduces locally with `--cov`).
-                # Passing them through routes coverage to the host modules so the
-                # tracer never trips the determinism guard. Test-only — the
-                # production worker doesn't run under coverage.
-                "dataraum",
-                "pydantic",
-                "pydantic_core",
-                "coverage",
-                "platform",
-            )
-        ),
+        workflow_runner=make_sandboxed_runner(),
     )
 
 
@@ -271,24 +183,7 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     replayer = Replayer(
         workflows=[AddSourceWorkflow, ProcessTableWorkflow],
         data_converter=pydantic_data_converter,
-        workflow_runner=SandboxedWorkflowRunner(
-            restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                # `coverage` + `platform`: under `pytest --cov` (CI) the coverage
-                # sysmon branch tracer fires inside the sandboxed workflow and
-                # lazily imports `coverage.env`, which calls
-                # `platform.python_implementation()` — a call the sandbox forbids,
-                # failing workflow activation (the real cause of the CI
-                # "RPCError: Timeout expired"; reproduces locally with `--cov`).
-                # Passing them through routes coverage to the host modules so the
-                # tracer never trips the determinism guard. Test-only — the
-                # production worker doesn't run under coverage.
-                "dataraum",
-                "pydantic",
-                "pydantic_core",
-                "coverage",
-                "platform",
-            )
-        ),
+        workflow_runner=make_sandboxed_runner(),
     )
     # replay_workflow raises on any non-determinism — the as_completed swap + the
     # phase/counter mutations must reconstruct identically. The parent history is

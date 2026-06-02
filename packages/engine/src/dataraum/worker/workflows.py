@@ -491,11 +491,13 @@ async def _maybe_session_replay_cleanup(
 
     Mirrors :func:`_maybe_replay_cleanup` but source-free: each begin_session
     phase owns its rows and clears them (scoped to ``table_ids``) before the
-    re-run so its ``should_skip`` doesn't bail. Fires exactly for the phases the
-    caller's ``_runs_under`` gate also runs (the same predicate, used here too);
-    nothing to clean on the initial run (``replay is None``).
+    re-run so its ``should_skip`` doesn't bail. Mirrors the add_source
+    ``_maybe_replay_cleanup`` guard shape: NOTHING is cleaned on the initial run
+    (``replay is None``) — only on a replay, and only for phases at-or-after
+    ``from_phase``. (Do NOT use ``_runs_under`` here: it returns True for the
+    initial run, which would wrongly fire cleanup before the first real run.)
     """
-    if not _runs_under(phase, replay, _SESSION_PHASE_ORDER):
+    if replay is None or not _at_or_after(phase, replay.from_phase, _SESSION_PHASE_ORDER):
         return
     await workflow.execute_activity(
         "session_replay_cleanup_for_phase",

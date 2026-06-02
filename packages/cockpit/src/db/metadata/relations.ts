@@ -25,11 +25,6 @@ export const relations = defineRelations(schema, (r) => ({
 		entropyObjectss: r.many.entropyObjects(),
 		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
-		sources: r.one.sources({
-			from: r.investigationSessions.sourceId,
-			to: r.sources.sourceId,
-			alias: "investigationSessions_sourceId_sources_sourceId",
-		}),
 		investigationStepss: r.many.investigationSteps(),
 		sourcessViaQueryExecutions: r.many.sources({
 			from: r.investigationSessions.sessionId.through(
@@ -43,6 +38,13 @@ export const relations = defineRelations(schema, (r) => ({
 		columnssViaSemanticAnnotations: r.many.columns({
 			alias:
 				"columns_columnId_investigationSessions_sessionId_via_semanticAnnotations",
+		}),
+		tablessViaSessionTables: r.many.tables({
+			from: r.investigationSessions.sessionId.through(
+				r.sessionTables.sessionId,
+			),
+			to: r.tables.tableId.through(r.sessionTables.tableId),
+			alias: "investigationSessions_sessionId_tables_tableId_via_sessionTables",
 		}),
 		sliceDefinitionss: r.many.sliceDefinitions(),
 		tablessViaSlicingViews: r.many.tables({
@@ -111,9 +113,6 @@ export const relations = defineRelations(schema, (r) => ({
 		entropyObjectss: r.many.entropyObjects(),
 		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
-		investigationSessionssSourceId: r.many.investigationSessions({
-			alias: "investigationSessions_sourceId_sources_sourceId",
-		}),
 		investigationSessionssViaQueryExecutions: r.many.investigationSessions({
 			alias:
 				"investigationSessions_sessionId_sources_sourceId_via_queryExecutions",
@@ -137,6 +136,9 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		relationshipssToTableId: r.many.relationships({
 			alias: "relationships_toTableId_tables_tableId",
+		}),
+		investigationSessionssViaSessionTables: r.many.investigationSessions({
+			alias: "investigationSessions_sessionId_tables_tableId_via_sessionTables",
 		}),
 		sliceDefinitionss: r.many.sliceDefinitions(),
 		investigationSessionssViaSlicingViews: r.many.investigationSessions({

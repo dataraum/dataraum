@@ -85,8 +85,9 @@ export interface ColumnBandRow {
  * grouping + worst-band logic is unit-testable without a live schema. Tables with
  * no columns get a zeroed rollup (analyzed=false, worst_band=null); a column with
  * a null band counts as `unanalyzed`. Assumes the engine's three-band vocabulary
- * and at most one readiness row per column (delete-before-insert per source —
- * the same 1:1 contract `look_table` relies on).
+ * and at most one readiness row per column. That 1:1 invariant is engine-enforced
+ * (the measure step delete-before-inserts readiness scoped per table, DAT-410) —
+ * NOT a DB unique constraint — and is the same contract `look_table` relies on.
  */
 export function buildInventory(
 	tableRows: InventoryTableRow[],

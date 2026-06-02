@@ -156,4 +156,44 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		fireEvent.click(screen.getByTestId("inventory-source-card-close"));
 		expect(screen.queryByTestId("inventory-source-card")).toBeNull();
 	});
+
+	it("switches the SourceCard to a different source on a new badge click", () => {
+		renderWidget(inventory);
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_sales")[0]);
+		expect(
+			within(screen.getByTestId("inventory-source-card")).getByText(
+				"sales.csv",
+			),
+		).toBeTruthy();
+		// Click the other source's badge — the card body switches (head re-derives
+		// from the newly-selected source's rows).
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_crm")[0]);
+		const card = within(screen.getByTestId("inventory-source-card"));
+		expect(card.getByText("crm")).toBeTruthy();
+		expect(card.getByText("users")).toBeTruthy();
+		expect(card.queryByText("orders")).toBeNull();
+	});
+
+	it("SourceCard aggregates readiness totals across the source's tables", () => {
+		renderWidget(inventory);
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_sales")[0]);
+		const card = within(screen.getByTestId("inventory-source-card"));
+		// sales = orders {r3,i1,b1} + items {r2} → 5 ready, 1 investigate, 1 blocked.
+		expect(card.getByText("5 ready")).toBeTruthy();
+		expect(card.getByText("1 investigate")).toBeTruthy();
+		expect(card.getByText("1 blocked")).toBeTruthy();
+	});
+
+	it("caps the master list and shows an overflow tail past the row limit", () => {
+		const many: InventoryTable[] = Array.from({ length: 120 }, (_, i) =>
+			table({ table_id: `t_${i}`, table_name: `tbl_${i}` }),
+		);
+		renderWidget(many);
+		// The first 100 render; the 101st does not.
+		expect(screen.getByTestId("inventory-row-t_0")).toBeTruthy();
+		expect(screen.getByTestId("inventory-row-t_99")).toBeTruthy();
+		expect(screen.queryByTestId("inventory-row-t_100")).toBeNull();
+		const tail = screen.getByTestId("inventory-overflow");
+		expect(tail.textContent).toContain("20 more");
+	});
 });

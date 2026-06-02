@@ -46,6 +46,13 @@ function BandBadge({ band }: { band: string | null }) {
 	);
 }
 
+// Cap the rows rendered into the DOM (a DB source can register 100s of tables).
+// The inventory is a navigation surface, not a result set — past the cap we show
+// a "…and N more" tail and steer the user to filter by source, rather than
+// virtualizing (overkill for bounded metadata). Applies to the master list and a
+// single source's table list alike.
+const MAX_VISIBLE_ROWS = 100;
+
 /** The per-source drill-in rail: source metadata + its tables' rolled-up bands.
  * Built entirely from the inventory rows already in hand (no extra fetch). */
 function SourceCard({
@@ -56,6 +63,8 @@ function SourceCard({
 	onClose: () => void;
 }) {
 	const head = tables[0];
+	const visibleTables = tables.slice(0, MAX_VISIBLE_ROWS);
+	const overflow = tables.length - visibleTables.length;
 	const totals = tables.reduce(
 		(acc, t) => ({
 			ready: acc.ready + t.readiness.ready,
@@ -120,7 +129,7 @@ function SourceCard({
 				</Text>
 			</Group>
 			<Stack gap={4}>
-				{tables.map((t) => (
+				{visibleTables.map((t) => (
 					<Group
 						key={t.table_id}
 						justify="space-between"
@@ -133,6 +142,11 @@ function SourceCard({
 						<BandBadge band={t.worst_band} />
 					</Group>
 				))}
+				{overflow > 0 && (
+					<Text span size="xs" c="dimmed" data-testid="source-card-overflow">
+						…and {overflow} more
+					</Text>
+				)}
 			</Stack>
 		</Stack>
 	);
@@ -174,6 +188,9 @@ export function WorkspaceInventoryWidget({
 		? tables.filter((t) => t.source_id === selectedSourceId)
 		: [];
 
+	const visible = tables.slice(0, MAX_VISIBLE_ROWS);
+	const overflow = tables.length - visible.length;
+
 	return (
 		<Group
 			align="flex-start"
@@ -207,7 +224,7 @@ export function WorkspaceInventoryWidget({
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
-							{tables.map((t) => (
+							{visible.map((t) => (
 								<Table.Tr
 									key={t.table_id}
 									data-testid={`inventory-row-${t.table_id}`}
@@ -234,7 +251,11 @@ export function WorkspaceInventoryWidget({
 											}
 											color="gray"
 											style={{ cursor: "pointer" }}
-											onClick={() => setSelectedSourceId(t.source_id)}
+											onClick={() =>
+												setSelectedSourceId((prev) =>
+													prev === t.source_id ? null : t.source_id,
+												)
+											}
 											data-testid={`inventory-source-badge-${t.source_id}`}
 										>
 											{t.source_name} · {t.source_type}
@@ -247,6 +268,15 @@ export function WorkspaceInventoryWidget({
 									</Table.Td>
 								</Table.Tr>
 							))}
+							{overflow > 0 && (
+								<Table.Tr data-testid="inventory-overflow">
+									<Table.Td colSpan={5}>
+										<Text c="dimmed" size="xs">
+											…and {overflow} more — ask the agent to filter by source.
+										</Text>
+									</Table.Td>
+								</Table.Tr>
+							)}
 						</Table.Tbody>
 					</Table>
 				</Table.ScrollContainer>

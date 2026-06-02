@@ -6,12 +6,26 @@
 // state. The live DB read is smoke-covered.
 
 import { MantineProvider } from "@mantine/core";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LookTableResult } from "#/tools/look-table";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { theme } from "#/ui/theme";
+
+// The widget reads the chat-loop hook from the cockpit context (DAT-352
+// click-through). Mock it so the render tests don't need a CockpitProvider and
+// the click test can observe the dispatched request.
+const sendChatMessage = vi.fn();
+vi.mock("#/ui/cockpit/cockpit-state", () => ({
+	useCockpit: () => ({ sendChatMessage }),
+}));
 
 function renderWidget(readiness: LookTableResult) {
 	render(
@@ -57,7 +71,10 @@ const analyzed: LookTableResult = {
 };
 
 describe("TableReadinessWidget (DAT-350)", () => {
-	afterEach(() => cleanup());
+	afterEach(() => {
+		cleanup();
+		sendChatMessage.mockClear();
+	});
 
 	it("renders a row per column with band badges + the top driver label", () => {
 		renderWidget(analyzed);
@@ -107,5 +124,19 @@ describe("TableReadinessWidget (DAT-350)", () => {
 	it("renders the empty state when the table has no columns", () => {
 		renderWidget({ ...analyzed, columns: [] });
 		expect(screen.getByTestId("canvas-table-readiness-empty")).toBeTruthy();
+	});
+
+	// DAT-352: clicking a column routes a why_column request through the chat-loop
+	// hook (sendChatMessage), carrying the row's column_id — it does NOT call
+	// whyColumn directly (the request runs once per click through the agent loop,
+	// where the paid Anthropic synthesis is gated).
+	it("click-through dispatches a why_column request for the row's column_id", () => {
+		renderWidget(analyzed);
+		fireEvent.click(screen.getByTestId("readiness-why-amount"));
+		expect(sendChatMessage).toHaveBeenCalledTimes(1);
+		const text = sendChatMessage.mock.calls[0][0] as string;
+		expect(text).toContain("c_amount");
+		expect(text).toContain("amount");
+		expect(text).toContain("why_column");
 	});
 });

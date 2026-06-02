@@ -7,8 +7,9 @@
 // Reads theme/tokens only; the row type is a type-only import (erased — no server
 // code in the client bundle).
 
-import { Alert, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { useCockpit } from "#/ui/cockpit/cockpit-state";
 
 // The three intents, in the order the engine's network models them — fixed so
 // the grid columns are stable even if a row's `intents` array is ordered
@@ -58,6 +59,19 @@ export function TableReadinessWidget({
 	state: Extract<CanvasState, { kind: "table-readiness" }>;
 }) {
 	const { readiness } = state;
+	const { sendChatMessage } = useCockpit();
+
+	// Click-through to the per-column explanation (DAT-352): route the click
+	// through the agent loop (sendChatMessage) so `why_column` runs once per
+	// click. why_column takes the row's column_id; its paid Anthropic synthesis
+	// is gated inside whyColumn (skipped for an un-analyzed column), so this just
+	// asks for the explanation by id — it does NOT call whyColumn directly.
+	const explainColumn = (columnId: string, columnName: string) => {
+		sendChatMessage(
+			`Explain the readiness for column "${columnName}" (column_id ${columnId}) ` +
+				`using the why_column tool.`,
+		);
+	};
 
 	if (readiness.columns.length === 0) {
 		return (
@@ -113,7 +127,17 @@ export function TableReadinessWidget({
 									key={c.column_id}
 									data-testid={`readiness-row-${c.column_name}`}
 								>
-									<Table.Td>{c.column_name}</Table.Td>
+									<Table.Td>
+										<Anchor
+											component="button"
+											type="button"
+											size="sm"
+											onClick={() => explainColumn(c.column_id, c.column_name)}
+											data-testid={`readiness-why-${c.column_name}`}
+										>
+											{c.column_name}
+										</Anchor>
+									</Table.Td>
 									<Table.Td>
 										<Text span c="dimmed" size="xs">
 											{c.resolved_type ?? "—"}

@@ -4,11 +4,12 @@
 // HUMAN-READABLE one-liner — never raw JSON. The chat rail renders each tool
 // card as a chip showing this summary instead of a `<Collapse>` JSON dump.
 //
-// `clickable` marks the canvas-producing tools (the 8 whose result rehydrates
-// the focus canvas via toolResultToCanvas). The non-canvas tools (probe / teach
-// / replay) are display-only — they read in the rail but never project, so a
-// click on them is a no-op. This set is the inverse of toolResultToCanvas's
-// `default: return null`, kept here as data so the rail stays declarative.
+// Chip clickability (canvas-producing vs display-only) is decided by
+// `isCanvasTool` / `CANVAS_TOOLS`, which now live in — and DERIVE from — the
+// toolResultToCanvas projector map (single source of truth); they're re-exported
+// here so the chat rail keeps importing them from one place. The non-canvas
+// tools (probe / teach / replay) project nothing → display-only chips (click is
+// a no-op).
 //
 // Input is lifted off the SDK part's `arguments` string (present in EVERY state,
 // including approval-requested) so a teach chip is readable at approval time —
@@ -24,22 +25,12 @@ import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
 import type { WhyColumnResult } from "#/tools/why-column";
 
-/** The tool names whose result rehydrates the focus canvas (clickable chips). */
-export const CANVAS_TOOLS: ReadonlySet<string> = new Set([
-	"list_sources",
-	"list_tables",
-	"look_table",
-	"why_column",
-	"connect",
-	"frame",
-	"select",
-	"run_sql",
-]);
-
-/** A tool whose result maps to a canvas member → its chip is clickable. */
-export function isCanvasTool(toolName: string): boolean {
-	return CANVAS_TOOLS.has(toolName);
-}
+// Re-exported from the canvas bridge: defined ONCE there (derived from the
+// projector map), surfaced here so the chat rail's existing import is unchanged.
+export {
+	CANVAS_TOOLS,
+	isCanvasTool,
+} from "#/ui/cockpit/tool-result-to-canvas";
 
 function plural(n: number, noun: string): string {
 	return `${n} ${noun}${n === 1 ? "" : "s"}`;

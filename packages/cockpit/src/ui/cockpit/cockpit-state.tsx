@@ -13,9 +13,16 @@ import {
 	useContext,
 	useMemo,
 	useReducer,
+	useRef,
 } from "react";
 import type { Stage } from "#/journey/stages";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+
+/** Send a turn into the agent chat loop. The chat lives in ChatRail (which owns
+ * `useChat`); a canvas widget has no `sendMessage`, so ChatRail registers its
+ * sender here once and widgets reach it through `useCockpit().sendChatMessage`
+ * (DAT-352, CRITICAL #2 — the column→why click-through is cross-cutting). */
+export type SendChatMessage = (text: string) => void;
 
 interface CockpitState {
 	activeStage: Stage;
@@ -73,6 +80,11 @@ function cockpitReducer(
 interface CockpitContextValue extends CockpitState {
 	setActiveStage: (stage: Stage) => void;
 	setCanvasState: (canvasState: CanvasState) => void;
+	// Register the chat sender (ChatRail calls this once with its `sendMessage`).
+	registerChatSender: (send: SendChatMessage | null) => void;
+	// Send a turn into the agent loop from anywhere (a canvas widget). A no-op
+	// until ChatRail has registered its sender — never throws.
+	sendChatMessage: SendChatMessage;
 	pinCanvas: (callId: string, canvasState: CanvasState) => void;
 	returnToLive: () => void;
 }
@@ -81,6 +93,12 @@ const CockpitContext = createContext<CockpitContextValue | null>(null);
 
 export function CockpitProvider({ children }: { children: ReactNode }) {
 	const [state, dispatch] = useReducer(cockpitReducer, INITIAL_STATE);
+
+	// The chat sender lives in a ref, not state: ChatRail registers it in an
+	// effect, and a widget reads it lazily on click. Holding it in state would
+	// re-render every consumer on registration (and ChatRail's `sendMessage`
+	// identity is stable anyway), so a ref keeps the context value stable.
+	const chatSenderRef = useRef<SendChatMessage | null>(null);
 
 	// Dispatchers are stable for the provider's lifetime (dispatch identity is
 	// constant). This matters: ChatRail keys its canvas effect on setCanvasState,
@@ -96,6 +114,14 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 			dispatch({ type: "setCanvasState", canvasState }),
 		[],
 	);
+	const registerChatSender = useCallback((send: SendChatMessage | null) => {
+		chatSenderRef.current = send;
+	}, []);
+	// Stable identity (reads the ref lazily) so it doesn't re-fire consumers'
+	// effects; a click before ChatRail registers is a silent no-op, not a crash.
+	const sendChatMessage = useCallback<SendChatMessage>((text) => {
+		chatSenderRef.current?.(text);
+	}, []);
 	const pinCanvas = useCallback(
 		(callId: string, canvasState: CanvasState) =>
 			dispatch({ type: "pinCanvas", callId, canvasState }),
@@ -111,10 +137,20 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 			...state,
 			setActiveStage,
 			setCanvasState,
+			registerChatSender,
+			sendChatMessage,
 			pinCanvas,
 			returnToLive,
 		}),
-		[state, setActiveStage, setCanvasState, pinCanvas, returnToLive],
+		[
+			state,
+			setActiveStage,
+			setCanvasState,
+			registerChatSender,
+			sendChatMessage,
+			pinCanvas,
+			returnToLive,
+		],
 	);
 
 	return (

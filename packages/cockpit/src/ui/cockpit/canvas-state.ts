@@ -29,6 +29,12 @@ export type CanvasState =
 	// DAT-351: per-column readiness explanation. Carries the why_column result —
 	// per-intent drivers + detector evidence + the synthesized narrative.
 	| { kind: "column-why"; why: WhyColumnResult }
+	// DAT-352: live add_source workflow progress. Carries ONLY the (workflowId,
+	// runId) the TRIGGER returned — the widget polls `get_progress` for the
+	// snapshot; the run id pins the precise iteration (the id is reused per source
+	// under ALLOW_DUPLICATE). Projected by the TRIGGER UI action, NOT by the
+	// tool-result mapper (progress is not a tool result).
+	| { kind: "add-source-progress"; workflowId: string; runId: string }
 	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
 	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
 	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool

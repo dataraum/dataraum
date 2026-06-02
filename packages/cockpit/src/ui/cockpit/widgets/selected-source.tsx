@@ -7,9 +7,44 @@
 // A file source shows its `file_uris` (one row per object the import will load
 // into a `<source>__<stem>` raw table); a database source shows the synthesized
 // recipe `tables` ({name, sql}). Exactly one of the two is non-null per source.
+//
+// It also carries the explicit "Add source" TRIGGER (DAT-352): the button starts
+// the engine's addSourceWorkflow for this selected source (seeding the
+// investigation_sessions row first) and projects the live MeasureProgress widget
+// onto the canvas keyed on the precise (workflowId, runId) the trigger returns.
 
-import { Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
+import {
+	Alert,
+	Badge,
+	Button,
+	Code,
+	Group,
+	Stack,
+	Table,
+	Text,
+} from "@mantine/core";
+import { useState } from "react";
+import type { TriggerAddSourceResult } from "#/temporal/trigger-add-source";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { useCockpit } from "#/ui/cockpit/cockpit-state";
+
+/** POST the trigger API route. Throws on a non-2xx so the caller shows the
+ * error. The widget fetches rather than importing the server module — keeping
+ * the Temporal/Postgres/config deps out of the client bundle. */
+async function triggerAddSourceRequest(
+	sourceId: string,
+): Promise<TriggerAddSourceResult> {
+	const res = await fetch("/api/add-source", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ source_id: sourceId }),
+	});
+	if (!res.ok) {
+		const body = (await res.json().catch(() => ({}))) as { error?: string };
+		throw new Error(body.error ?? `Add source failed (${res.status}).`);
+	}
+	return (await res.json()) as TriggerAddSourceResult;
+}
 
 export function SelectedSourceWidget({
 	state,
@@ -17,8 +52,32 @@ export function SelectedSourceWidget({
 	state: Extract<CanvasState, { kind: "selected-source" }>;
 }) {
 	const { selection } = state;
+	const { setCanvasState } = useCockpit();
+	const [triggering, setTriggering] = useState(false);
+	const [triggerError, setTriggerError] = useState<string | null>(null);
 	const fileUris = selection.file_uris ?? [];
 	const recipeTables = selection.recipe_tables ?? [];
+
+	// Fire the workflow, then swap the canvas to the live progress widget keyed on
+	// the returned run. The trigger fn seeds the investigation_sessions row before
+	// starting the workflow (the typing-phase FK precondition), so a clean start
+	// guarantees the per-table fan-out won't die at that FK.
+	const onAddSource = async () => {
+		setTriggering(true);
+		setTriggerError(null);
+		try {
+			const result = await triggerAddSourceRequest(selection.source_id);
+			setCanvasState({
+				kind: "add-source-progress",
+				workflowId: result.workflow_id,
+				runId: result.run_id,
+			});
+		} catch (err) {
+			setTriggerError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setTriggering(false);
+		}
+	};
 
 	return (
 		<Stack gap="md" data-testid="canvas-selected-source">
@@ -37,6 +96,26 @@ export function SelectedSourceWidget({
 					stage: {selection.stage}
 				</Text>
 			</Group>
+
+			<Group gap="xs">
+				<Button
+					size="xs"
+					onClick={() => void onAddSource()}
+					loading={triggering}
+					data-testid="trigger-add-source"
+				>
+					Add source
+				</Button>
+				<Text c="dimmed" size="xs">
+					Import + analyze this source — runs the engine pipeline.
+				</Text>
+			</Group>
+
+			{triggerError && (
+				<Alert color="red" data-testid="trigger-add-source-error">
+					Couldn't start add source: {triggerError}
+				</Alert>
+			)}
 
 			{fileUris.length > 0 && (
 				<Stack gap={4} data-testid="selected-source-files">

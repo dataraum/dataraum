@@ -2,6 +2,7 @@ import type { UIMessage } from "@tanstack/ai-react";
 import { describe, expect, it } from "vitest";
 
 import {
+	canvasFromCallId,
 	canvasFromMessages,
 	toolResultToCanvas,
 } from "./tool-result-to-canvas";
@@ -291,5 +292,109 @@ describe("canvasFromMessages", () => {
 			]),
 		];
 		expect(canvasFromMessages(messages)?.kind).toBe("table-list");
+	});
+});
+
+describe("canvasFromCallId (DAT-354 rehydration)", () => {
+	const twoCalls = [
+		msg([
+			{
+				type: "tool-call",
+				id: "c1",
+				name: "list_sources",
+				arguments: "{}",
+				state: "complete",
+				output: [{ source_id: "s1" }],
+			},
+			{
+				type: "tool-call",
+				id: "c2",
+				name: "list_tables",
+				arguments: "{}",
+				state: "complete",
+				output: [{ table_id: "t1" }],
+			},
+		]),
+	];
+
+	it("resolves an EARLIER call's result, not just the latest", () => {
+		// The latest is list_tables (c2); addressing c1 by id rehydrates the
+		// earlier source-list.
+		expect(canvasFromCallId(twoCalls, "c1")?.kind).toBe("source-list");
+		expect(canvasFromCallId(twoCalls, "c2")?.kind).toBe("table-list");
+	});
+
+	it("reads run_sql's call arguments for the result-grid, like canvasFromMessages", () => {
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "q1",
+					name: "run_sql",
+					arguments: JSON.stringify({ sql: "SELECT 1" }),
+					state: "complete",
+					output: { columns: [], rows: [], rowCount: 0 },
+				},
+			]),
+		];
+		expect(canvasFromCallId(messages, "q1")).toEqual({
+			kind: "result-grid",
+			sql: "SELECT 1",
+		});
+	});
+
+	it("reads a result from a correlated tool-result part", () => {
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "list_tables",
+					arguments: "{}",
+					state: "complete",
+				},
+				{
+					type: "tool-result",
+					toolCallId: "c1",
+					content: JSON.stringify([{ table_id: "t1" }]),
+				},
+			]),
+		];
+		expect(canvasFromCallId(messages, "c1")?.kind).toBe("table-list");
+	});
+
+	it("returns null for an unknown call id", () => {
+		expect(canvasFromCallId(twoCalls, "nope")).toBeNull();
+	});
+
+	it("returns null for a not-yet-complete call (no output)", () => {
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "list_sources",
+					arguments: "{}",
+					state: "partial-call",
+				},
+			]),
+		];
+		expect(canvasFromCallId(messages, "c1")).toBeNull();
+	});
+
+	it("returns null for a display-only tool (teach maps to no canvas member)", () => {
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "teach",
+					arguments: JSON.stringify({ type: "null_value", payload: {} }),
+					state: "complete",
+					output: { overlay_id: "ov1", type: "null_value" },
+				},
+			]),
+		];
+		expect(canvasFromCallId(messages, "c1")).toBeNull();
 	});
 });

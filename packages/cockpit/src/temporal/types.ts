@@ -49,3 +49,23 @@ export interface AddSourceResult {
 	// One entry per processed table; tables.length === raw_table_ids.length on success.
 	tables: ProcessTableResult[];
 }
+
+// Parent-level progress for addSourceWorkflow, served by the `get_progress`
+// @workflow.query (DAT-406). FROZEN cross-package contract — hand-mirrored from
+// `dataraum.worker.contracts.ProgressSnapshot` (a plain @dataclass of primitives),
+// carried over Temporal's pydantic data converter as the flat JSON shape
+// `{phase, tables_total, tables_completed}`. snake_case, no key remap. Do NOT
+// change a field name/type without re-mirroring the engine dataclass.
+//
+// `phase` advances "import" → "processing_tables" → "semantic_per_column" →
+// "detect" → "done" (a bare string, not an enum, so the wire value is plain
+// JSON). `tables_total` is 0 until import enumerates the fan-out; resets per run.
+export interface ProgressSnapshot {
+	phase: string;
+	tables_total: number;
+	tables_completed: number;
+}
+
+// The terminal `phase` the parent sets just before returning AddSourceResult —
+// the cockpit's progress poll stops here (alongside a terminal describe() status).
+export const PROGRESS_DONE_PHASE = "done";

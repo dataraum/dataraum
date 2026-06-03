@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
@@ -27,6 +26,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -165,41 +165,33 @@ class TypingPhase(BasePhase):
         ctx.session.flush()
 
         # Stamp a TypeDecision per typed column. Strongly-typed columns are
-        # "trusted source" decisions. On a re-type the stable column ids are
-        # reused (DAT-373), so clear THIS run's prior copies first to respect
-        # ``uq_column_type_decision`` (one decision per column per run). Scoped
-        # to ``ctx.run_id`` (DAT-413) so a NEW run's rows coexist with prior
-        # runs' under the widened constraint; the promoted head names which run
+        # "trusted source" decisions. ``TypeDecision`` is one-per-column-per-run,
+        # so upsert on ``(column_id, run_id)``: idempotent under a Temporal
+        # at-least-once retry (same run_id, no delete needed) while a NEW run's
+        # rows still coexist with prior runs'; the promoted head names which run
         # is current.
         from dataraum.analysis.typing.db_models import TypeDecision
 
-        typed_col_ids = list(column_map.values())
-        if typed_col_ids:
-            ctx.session.execute(
-                delete(TypeDecision).where(
-                    TypeDecision.column_id.in_(typed_col_ids),
-                    TypeDecision.run_id == ctx.run_id,
-                )
-            )
-            ctx.session.flush()
-
+        decided_at = datetime.now(UTC)
         type_decisions: dict[str, str] = {}
+        td_rows: list[dict[str, Any]] = []
         for col in table.columns:
             resolved = col.raw_type or "VARCHAR"
             typed_col_id = column_map[col.column_name]
-            ctx.session.add(
-                TypeDecision(
-                    decision_id=str(uuid4()),
-                    session_id=ctx.require_session_id(),
-                    column_id=typed_col_id,
-                    run_id=ctx.run_id,
-                    decided_type=resolved,
-                    decision_source="automatic",
-                    decided_at=datetime.now(UTC),
-                    decision_reason="strongly-typed source (types trusted)",
-                )
+            # PK omitted so the model's Python-side default applies.
+            td_rows.append(
+                {
+                    "session_id": ctx.require_session_id(),
+                    "column_id": typed_col_id,
+                    "run_id": ctx.run_id,
+                    "decided_type": resolved,
+                    "decision_source": "automatic",
+                    "decided_at": decided_at,
+                    "decision_reason": "strongly-typed source (types trusted)",
+                }
             )
             type_decisions[typed_col_id] = resolved
+        upsert(ctx.session, TypeDecision, td_rows, index_elements=["column_id", "run_id"])
 
         logger.debug(
             "strongly_typed_promoted",

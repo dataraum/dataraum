@@ -53,6 +53,7 @@ from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -258,7 +259,7 @@ def profile_temporal(
 
         profiled_at = datetime.now(UTC)
         profiles: list[TemporalAnalysisResult] = []
-        db_profiles: list[TemporalColumnProfile] = []
+        rows: list[dict[str, Any]] = []
         start_time = time.time()
 
         # Use parallel processing with cursors from shared connection
@@ -284,40 +285,43 @@ def profile_temporal(
                 if profile:
                     profiles.append(profile)
 
-                    # Create DB object (sequential - SQLite writes)
-                    db_profile = TemporalColumnProfile(
-                        profile_id=profile.metric_id,
-                        session_id=session_id,
-                        column_id=profile.column_id,
-                        run_id=run_id,
-                        profiled_at=profiled_at,
-                        min_timestamp=profile.min_timestamp,
-                        max_timestamp=profile.max_timestamp,
-                        detected_granularity=profile.detected_granularity,
-                        completeness_ratio=(
-                            profile.completeness.completeness_ratio
-                            if profile.completeness
-                            else None
-                        ),
-                        has_seasonality=profile.seasonality.has_seasonality
-                        if profile.seasonality
-                        else False,
-                        has_trend=profile.trend.has_trend if profile.trend else False,
-                        is_stale=profile.update_frequency.is_stale
-                        if profile.update_frequency
-                        else False,
-                        profile_data=profile.model_dump(mode="json"),
+                    # Build the row for an idempotent upsert (sequential).
+                    # ``profile_id`` PK is supplied (the model has no default).
+                    rows.append(
+                        {
+                            "profile_id": profile.metric_id,
+                            "session_id": session_id,
+                            "column_id": profile.column_id,
+                            "run_id": run_id,
+                            "profiled_at": profiled_at,
+                            "min_timestamp": profile.min_timestamp,
+                            "max_timestamp": profile.max_timestamp,
+                            "detected_granularity": profile.detected_granularity,
+                            "completeness_ratio": (
+                                profile.completeness.completeness_ratio
+                                if profile.completeness
+                                else None
+                            ),
+                            "has_seasonality": profile.seasonality.has_seasonality
+                            if profile.seasonality
+                            else False,
+                            "has_trend": profile.trend.has_trend if profile.trend else False,
+                            "is_stale": profile.update_frequency.is_stale
+                            if profile.update_frequency
+                            else False,
+                            "profile_data": profile.model_dump(mode="json"),
+                        }
                     )
-                    db_profiles.append(db_profile)
 
         # Compute table-level summary
         table_summary = None
         if profiles:
             table_summary = _compute_table_summary(table, profiles, profiled_at)
 
-        # Now add all objects to session at once (avoids autoflush issues)
-        for db_profile in db_profiles:
-            session.add(db_profile)
+        # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
+        # (same run_id) updates the row in place instead of duplicating it —
+        # which would make the head-resolved loaders' scalar_one_or_none() raise.
+        upsert(session, TemporalColumnProfile, rows, index_elements=["column_id", "run_id"])
 
         # No flush needed - commit happens at session_scope() end
         # The caller (phase) manages the transaction

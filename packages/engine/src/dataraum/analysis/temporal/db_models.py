@@ -11,7 +11,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
@@ -36,6 +45,12 @@ class TemporalColumnProfile(Base):
     """
 
     __tablename__ = "temporal_column_profiles"
+    # One profile per column PER RUN (DAT-413): widened to ``(column_id, run_id)``
+    # so the writer can upsert idempotently under Temporal at-least-once retries
+    # and two coexisting runs' rows don't collide.
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_temporal_column_profiles_column_run"),
+    )
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(

@@ -83,46 +83,65 @@ def test_two_runs_type_decisions_for_same_column_coexist(session_factory: Any) -
     assert len(rows) == 2
 
 
-def test_run_scoped_delete_leaves_the_prior_runs_decision_intact(session_factory: Any) -> None:
-    """Run B's delete-before-insert is scoped to its own ``run_id`` (DAT-413).
+def test_typing_re_derivation_upserts_its_own_run_leaving_prior_run_intact(
+    session_factory: Any,
+) -> None:
+    """Typing re-derivation upserts ``TypeDecision`` on ``(column_id, run_id)`` (DAT-413).
 
-    The typing re-derivation (``typing_phase`` strongly-typed path and
-    ``resolution.resolve_types``) clears THIS run's prior ``TypeDecision`` /
-    ``TypeCandidate`` copies before re-inserting — scoped to ``ctx.run_id`` so a
-    *new* run never touches a prior run's rows. This pins that exact delete
-    statement: seed run-A's decision, run run-B's run-scoped delete for the same
-    column, and assert run-A survives while only run-B's (absent) rows are
-    targeted.
+    The typing writers (``typing_phase`` strongly-typed path and
+    ``resolution.resolve_types``) no longer delete-before-insert their
+    ``TypeDecision`` rows — they ``upsert`` on the widened ``(column_id, run_id)``
+    key, which is idempotent under a Temporal at-least-once retry (same run_id →
+    the row updates in place, no duplicate) and still leaves a *prior* run's row
+    untouched. Seed run-A's decision, then run run-B's writer twice (the retry)
+    for the same column, and assert: run-A survives, run-B has exactly one row
+    carrying the retry's value.
     """
+    from dataraum.storage.upsert import upsert
+
+    def _row(run_id: str, decided_type: str) -> dict[str, Any]:
+        return {
+            "session_id": "sess-1",
+            "column_id": "col-1",
+            "run_id": run_id,
+            "decided_type": decided_type,
+            "decision_source": "automatic",
+        }
+
     with session_factory() as session:
-        session.add(
-            TypeDecision(
-                session_id="sess-1",
-                column_id="col-1",
-                run_id="run-A",
-                decided_type="INTEGER",
-                decision_source="automatic",
-            )
+        upsert(
+            session,
+            TypeDecision,
+            [_row("run-A", "INTEGER")],
+            index_elements=["column_id", "run_id"],
         )
         session.commit()
 
-    # Run B's re-derivation: delete its own run's prior copies for these columns.
+    # Run B's writer fires, then fires AGAIN (the at-least-once retry) with a
+    # refreshed value — both via upsert, never a delete.
     with session_factory() as session:
-        session.execute(
-            delete(TypeDecision).where(
-                TypeDecision.column_id.in_(["col-1"]),
-                TypeDecision.run_id == "run-B",
-            )
+        upsert(
+            session, TypeDecision, [_row("run-B", "BIGINT")], index_elements=["column_id", "run_id"]
+        )
+        session.commit()
+    with session_factory() as session:
+        upsert(
+            session, TypeDecision, [_row("run-B", "DOUBLE")], index_elements=["column_id", "run_id"]
         )
         session.commit()
 
     with session_factory() as session:
         rows = list(
-            session.execute(select(TypeDecision).where(TypeDecision.column_id == "col-1")).scalars()
+            session.execute(
+                select(TypeDecision)
+                .where(TypeDecision.column_id == "col-1")
+                .order_by(TypeDecision.run_id)
+            ).scalars()
         )
-    # Run-A's decision is untouched by run-B's run-scoped delete.
-    assert [r.run_id for r in rows] == ["run-A"]
+    # Two coexisting runs, one row each; run-A intact, run-B carries the retry value.
+    assert [r.run_id for r in rows] == ["run-A", "run-B"]
     assert rows[0].decided_type == "INTEGER"
+    assert rows[1].decided_type == "DOUBLE"
 
 
 def test_two_runs_semantic_annotations_for_same_column_coexist(session_factory: Any) -> None:

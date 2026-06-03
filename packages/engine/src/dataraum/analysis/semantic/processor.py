@@ -37,6 +37,7 @@ from dataraum.analysis.semantic.models import (
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import DecisionSource, Result
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -172,33 +173,38 @@ def persist_column_annotations(
         {c.name: c.temporal_behavior for c in ontology_def.concepts} if ontology_def else {}
     )
 
-    count = 0
+    rows: list[dict[str, Any]] = []
     for table in column_output.tables:
         for col in table.columns:
             column_id = column_map.get((table.table_name, col.column_name))
             if not column_id:
                 continue
-            session.add(
-                AnnotationModel(
-                    session_id=session_id,
-                    column_id=column_id,
-                    run_id=run_id,
-                    semantic_role=col.semantic_role,
-                    entity_type=col.entity_type,
-                    business_name=col.business_term,
-                    business_description=col.description,
-                    business_concept=col.business_concept,
-                    temporal_behavior=concept_temporal.get(col.business_concept)
+            # PK omitted so the model's Python-side default applies.
+            rows.append(
+                {
+                    "session_id": session_id,
+                    "column_id": column_id,
+                    "run_id": run_id,
+                    "semantic_role": col.semantic_role,
+                    "entity_type": col.entity_type,
+                    "business_name": col.business_term,
+                    "business_description": col.description,
+                    "business_concept": col.business_concept,
+                    "temporal_behavior": concept_temporal.get(col.business_concept)
                     if col.business_concept
                     else None,
-                    unit_source_column=col.unit_source_column,
-                    annotation_source=DecisionSource.LLM.value,
-                    annotated_by=annotated_by,
-                    confidence=col.confidence,
-                )
+                    "unit_source_column": col.unit_source_column,
+                    "annotation_source": DecisionSource.LLM.value,
+                    "annotated_by": annotated_by,
+                    "confidence": col.confidence,
+                }
             )
-            count += 1
-    return count
+
+    # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
+    # (same run_id) updates the annotation in place instead of duplicating it —
+    # which would make the head-resolved loaders' scalar_one_or_none() raise.
+    upsert(session, AnnotationModel, rows, index_elements=["column_id", "run_id"])
+    return len(rows)
 
 
 def ground_columns(

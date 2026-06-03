@@ -11,14 +11,29 @@
 // Returns the workflow id + run id immediately — the caller polls / queries
 // Temporal for progress. End-to-end "replay actually produces clean output"
 // coverage lives in the integration smoke that drives the running stack.
+//
+// HARD PRECONDITION (DAT-407 FK), same as triggerAddSource: the re-run's typing
+// phase writes per-session rows (type_candidates, session_tables) with a NOT-NULL
+// FK to investigation_sessions.session_id. A full replay (DAT-413) re-runs typing,
+// so it MUST seed that parent row first — otherwise the run dies deep in the
+// per-table fan-out with a ForeignKeyViolation. The initial add_source seeds via
+// the "Add source" trigger; a replay mints (or reuses) its own session id, so it
+// seeds here too (onConflictDoNothing makes reusing an existing session a no-op).
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
+import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
+import { metadataDb } from "../db/metadata/client";
+import {
+	investigationSessions,
+	sessionTables,
+	tables,
+} from "../db/metadata/schema";
 import type {
 	AddSourceInput,
 	AddSourceResult,
@@ -26,16 +41,45 @@ import type {
 } from "../temporal/types";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 
+/**
+ * Resolve the vertical a source was framed on — a replay must re-run against the
+ * SAME ontology, never silently fall back to `_adhoc`. The vertical isn't on the
+ * `sources` row (DAT-407: it lives on the session, which has no `source_id`), so
+ * walk source → tables → session_tables → investigation_sessions and take the
+ * most-recent NON-`_adhoc` vertical. Returns null when the source has no framed
+ * session yet (the caller then falls back to `_adhoc`).
+ */
+async function resolveSourceVertical(sourceId: string): Promise<string | null> {
+	const [row] = await metadataDb
+		.select({ vertical: investigationSessions.vertical })
+		.from(investigationSessions)
+		.innerJoin(
+			sessionTables,
+			eq(sessionTables.sessionId, investigationSessions.sessionId),
+		)
+		.innerJoin(tables, eq(tables.tableId, sessionTables.tableId))
+		.where(
+			and(
+				eq(tables.sourceId, sourceId),
+				isNotNull(investigationSessions.vertical),
+				ne(investigationSessions.vertical, "_adhoc"),
+			),
+		)
+		.orderBy(desc(investigationSessions.startedAt))
+		.limit(1);
+	return row?.vertical ?? null;
+}
+
 export interface ReplayInput {
 	source_id: string;
 	// Per-replay session id — the engine uses it as the FK on per-session
 	// rows the activities create. Optional: a stable random uuid is fine
 	// for slice 1 (no session lifecycle).
 	session_id?: string;
-	// Vertical the engine resolves phase config + ontology against. Defaults
-	// to "_adhoc" engine-side when unset; pass an explicit vertical to keep
-	// the replay's source-level reduce on the same ontology as the initial
-	// run.
+	// Vertical to ground the re-run against. Optional: when omitted, replay
+	// resolves the source's FRAMED vertical (resolveSourceVertical), falling back
+	// to "_adhoc" only if the source was never framed. Pass an explicit vertical
+	// to override.
 	vertical?: string;
 }
 
@@ -43,6 +87,7 @@ export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
 	source_id: string;
+	session_id: string;
 }
 
 /**
@@ -67,11 +112,35 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
+	const sessionId = input.session_id ?? randomUUID();
+	// Explicit input wins (override); else the source's framed vertical; else the
+	// cold-start `_adhoc`. Omitting it must NOT silently re-run against `_adhoc` —
+	// that grounds the semantic pass against an empty ontology and fails the run.
+	const vertical =
+		input.vertical ?? (await resolveSourceVertical(input.source_id)) ?? "_adhoc";
+
+	// Seed the investigation_sessions parent row the re-run's per-table fan-out FKs
+	// against, BEFORE starting the workflow (see the HARD PRECONDITION note above).
+	// onConflictDoNothing: a caller-supplied existing session id (e.g. the drive
+	// smoke reusing the initial run's session) is a no-op, a fresh random one is
+	// seeded. Mirrors triggerAddSource's seed through the same metadata write seam.
+	await metadataDb
+		.insert(investigationSessions)
+		.values({
+			sessionId,
+			intent: "replay",
+			status: "active",
+			startedAt: new Date(),
+			stepCount: 0,
+			vertical,
+		})
+		.onConflictDoNothing({ target: investigationSessions.sessionId });
+
 	const identity: SourceIdentity = {
 		workspace_id: config.dataraumWorkspaceId,
 		source_id: input.source_id,
-		session_id: input.session_id ?? randomUUID(),
-		vertical: input.vertical,
+		session_id: sessionId,
+		vertical,
 	};
 	const payload: AddSourceInput = { identity };
 
@@ -99,6 +168,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
 			source_id: input.source_id,
+			session_id: sessionId,
 		};
 	} finally {
 		await connection.close();
@@ -130,13 +200,14 @@ export const replayTool = toolDefinition({
 			.string()
 			.optional()
 			.describe(
-				"Optional vertical the engine resolves config/ontology against; defaults to _adhoc engine-side.",
+				"Optional. Omit to re-run on the vertical the source was framed on (resolved automatically); pass one only to override.",
 			),
 	}),
 	outputSchema: z.object({
 		workflow_id: z.string(),
 		run_id: z.string(),
 		source_id: z.string(),
+		session_id: z.string(),
 	}),
 	needsApproval: true,
 }).server((input) => replay(input));

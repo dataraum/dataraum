@@ -116,6 +116,14 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("connect", null)).toBeNull();
 	});
 
+	it("returns null for a PARTIAL connect result (no tables array — no SchemaPreview crash)", () => {
+		// A truthy-but-partial/streaming or errored connect output has no `tables`
+		// array; projecting it crashed SchemaPreview on `schema.tables.length` (the
+		// multi-file drag-drop crash). Leave the canvas unchanged until complete.
+		expect(toolResultToCanvas("connect", { source: "people.csv" })).toBeNull();
+		expect(toolResultToCanvas("connect", {})).toBeNull();
+	});
+
 	it("maps frame to a concept-frame canvas (DAT-382)", () => {
 		const frame = {
 			vertical: "_adhoc",
@@ -137,6 +145,10 @@ describe("toolResultToCanvas", () => {
 
 	it("returns null for a missing frame result (canvas unchanged)", () => {
 		expect(toolResultToCanvas("frame", null)).toBeNull();
+	});
+
+	it("returns null for a PARTIAL frame result (no concepts array)", () => {
+		expect(toolResultToCanvas("frame", { vertical: "finance" })).toBeNull();
 	});
 
 	it("maps run_sql to a result-grid from the CALL INPUT (sql + params)", () => {
@@ -208,8 +220,15 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("replay", {})).toBeNull();
 	});
 
-	it("tolerates a missing result array", () => {
-		expect(toolResultToCanvas("list_sources", undefined)).toEqual({
+	it("returns null for a missing or NON-array list result (no .filter/.reduce crash)", () => {
+		// A partial/streaming or errored output can be undefined or a truthy
+		// NON-array; projecting it crashed SourceList/Inventory on .filter/.reduce/
+		// .length ("e.filter is not a function"). Leave the canvas unchanged.
+		expect(toolResultToCanvas("list_sources", undefined)).toBeNull();
+		expect(toolResultToCanvas("list_sources", {})).toBeNull();
+		expect(toolResultToCanvas("list_tables", { error: "x" })).toBeNull();
+		// A genuine empty array still projects (correctly an empty source-list).
+		expect(toolResultToCanvas("list_sources", [])).toEqual({
 			kind: "source-list",
 			sources: [],
 		});
@@ -315,6 +334,35 @@ describe("canvasFromMessages", () => {
 			]),
 		];
 		expect(canvasFromMessages(messages)?.kind).toBe("workspace-inventory");
+	});
+
+	it("does not let a trailing non-canvas tool shadow the last canvas result", () => {
+		// connect (maps to schema-preview) then list_verticals (no canvas projector).
+		// The canvas must STAY on the connect result, not collapse to null because a
+		// non-canvas tool completed last. This is the substrate of the denied-select
+		// stuck-spinner fix: that turn ends on a non-canvas list_verticals, yet the
+		// canvas must still reconcile to a real result instead of spinning forever.
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "connect",
+					arguments: "{}",
+					state: "complete",
+					output: { tables: [{ name: "t", columns: [] }] },
+				},
+				{
+					type: "tool-call",
+					id: "c2",
+					name: "list_verticals",
+					arguments: "{}",
+					state: "complete",
+					output: [{ name: "finance" }],
+				},
+			]),
+		];
+		expect(canvasFromMessages(messages)?.kind).toBe("schema-preview");
 	});
 });
 

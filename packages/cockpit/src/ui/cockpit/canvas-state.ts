@@ -15,7 +15,11 @@ import type { WhyColumnResult } from "#/tools/why-column";
 
 export type CanvasState =
 	| { kind: "empty" }
-	| { kind: "loading" }
+	// Optimistic placeholder while a turn runs before a tool result maps to a
+	// richer canvas member. `label` says WHAT is in flight (e.g. "Reading the
+	// file…", "Explaining the column…") so it reads as progress, not a bare wheel;
+	// defaults to "Working…".
+	| { kind: "loading"; label?: string }
 	| { kind: "error"; message: string }
 	| { kind: "source-list"; sources: AvailableSource[] }
 	// DAT-349: the workspace table inventory — one row per table with its

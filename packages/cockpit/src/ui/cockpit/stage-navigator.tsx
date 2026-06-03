@@ -1,9 +1,11 @@
 // Stage navigator (DAT-347, C1).
 //
 // A horizontal strip of the seven journey stages, each tinted by its theme
-// stage color. The active stage is highlighted; non-interactive stages are
-// disabled with a tooltip explaining why. Clicking an interactive stage sets it
-// active. Colors come from tokens.colors.stage — no hardcoded hex here.
+// stage color and rendered NEUTRAL — no stage is highlighted as "active" yet
+// (the strip can't reflect real journey progress until app state lands; a full
+// status bar is deferred to then). Non-interactive stages are disabled with a
+// tooltip explaining why. Clicking an interactive stage still sets it active
+// (state only; no visual emphasis). Colors come from tokens.colors.stage.
 
 import { Group, Tooltip, UnstyledButton } from "@mantine/core";
 import { JOURNEY_STAGES, type JourneyStage } from "#/journey/stages";
@@ -28,8 +30,12 @@ function StageChip({ stage }: { stage: JourneyStage }) {
 				whiteSpace: "nowrap",
 				cursor: stage.interactive ? "pointer" : "not-allowed",
 				opacity: stage.interactive ? 1 : 0.5,
-				color: isActive ? tokens.colors.surface : color,
-				backgroundColor: isActive ? color : tokens.colors.surfaceMuted,
+				// No active-stage highlight yet: the strip doesn't track real journey
+				// progress until app state lands, so filling Add Source as "active" was
+				// misleading. Render every chip neutral; `data-active` still marks the
+				// active stage in the DOM for the future state-driven version.
+				color,
+				backgroundColor: tokens.colors.surfaceMuted,
 				borderWidth: 1,
 				borderStyle: "solid",
 				borderColor: color,

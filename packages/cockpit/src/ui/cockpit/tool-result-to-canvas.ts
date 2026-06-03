@@ -34,14 +34,17 @@ type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
  * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
-	list_sources: (result) => ({
-		kind: "source-list",
-		sources: (result as AvailableSource[]) ?? [],
-	}),
-	list_tables: (result) => ({
-		kind: "workspace-inventory",
-		tables: (result as InventoryTable[]) ?? [],
-	}),
+	// Project only a real array — a partial/streaming or errored output can be a
+	// truthy NON-array, and the SourceList/Inventory widgets call .filter/.reduce/
+	// .length on it ("e.filter is not a function"). Non-array → leave unchanged.
+	list_sources: (result) =>
+		Array.isArray(result)
+			? { kind: "source-list", sources: result as AvailableSource[] }
+			: null,
+	list_tables: (result) =>
+		Array.isArray(result)
+			? { kind: "workspace-inventory", tables: result as InventoryTable[] }
+			: null,
 	// The per-table readiness grid; a missing result (e.g. an errored read)
 	// leaves the canvas unchanged.
 	look_table: (result) =>
@@ -51,13 +54,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The per-column explanation; a missing result leaves the canvas as-is.
 	why_column: (result) =>
 		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
-	// null/undefined → leave the canvas unchanged (a failed connect surfaces its
-	// error in the chat rail, not as an empty preview).
+	// Only project once the result is a COMPLETE schema (a `tables` array): a
+	// partial/streaming or errored connect output is truthy-but-tables-less, and
+	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file
+	// drag-drop crash). Not-yet-complete → leave the canvas unchanged (the last
+	// good preview stays; a failed connect surfaces its error in the chat rail).
 	connect: (result) =>
-		result ? { kind: "schema-preview", schema: result as ConnectSchema } : null,
-	// Declared concepts render as the ConceptFrame widget; missing → unchanged.
+		Array.isArray((result as { tables?: unknown } | null)?.tables)
+			? { kind: "schema-preview", schema: result as ConnectSchema }
+			: null,
+	// Declared concepts render as the ConceptFrame widget; only once the result
+	// carries a `concepts` array (same partial-output guard as connect).
 	frame: (result) =>
-		result ? { kind: "concept-frame", frame: result as FrameResult } : null,
+		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
+			? { kind: "concept-frame", frame: result as FrameResult }
+			: null,
 	// The persisted Source descriptor renders as SelectedSource; a missing result
 	// (e.g. a rejected duplicate-basename select) leaves the canvas unchanged.
 	select: (result) =>
@@ -125,15 +136,21 @@ export function toolResultToCanvas(
 
 /**
  * Adapt the useChat message list to the canvas. Walks every message part and
- * tracks the latest completed tool result, tolerating both shapes the SDK can
- * emit: an `output` on the `tool-call` part, or a correlated `tool-result` part
- * (content is JSON; fall back to the raw string if it isn't). Returns the mapped
- * CanvasState, or null when nothing maps (caller leaves the canvas unchanged).
+ * tracks the latest completed tool result that MAPS to a canvas, tolerating both
+ * shapes the SDK can emit: an `output` on the `tool-call` part, or a correlated
+ * `tool-result` part (content is JSON; fall back to the raw string if it isn't).
+ *
+ * "Maps to a canvas" is the key word: a non-canvas tool (list_verticals, teach,
+ * probe) completing LAST must NOT shadow the last real canvas result — otherwise
+ * `canvasFromMessages` returns null and the caller, which optimistically set the
+ * canvas to "loading" on submit, has nothing to reconcile to (the stuck-spinner
+ * bug after a denied select, whose turn ends on a non-canvas list_verticals).
+ * Returns the latest mappable CanvasState, or null when no part maps at all.
  */
 export function canvasFromMessages(
 	messages: ReadonlyArray<UIMessage>,
 ): CanvasState | null {
-	let latest: { name: string; output: unknown; input: unknown } | null = null;
+	let latestCanvas: CanvasState | null = null;
 	const callById = new Map<string, { name: string; input: unknown }>();
 
 	for (const message of messages) {
@@ -142,7 +159,8 @@ export function canvasFromMessages(
 				const input = parseToolArguments(part);
 				callById.set(part.id, { name: part.name, input });
 				if (part.output !== undefined) {
-					latest = { name: part.name, output: part.output, input };
+					const canvas = toolResultToCanvas(part.name, part.output, input);
+					if (canvas) latestCanvas = canvas;
 				}
 			} else if (part.type === "tool-result") {
 				const call = callById.get(part.toolCallId);
@@ -157,15 +175,14 @@ export function canvasFromMessages(
 							// content wasn't JSON — keep the raw string.
 						}
 					}
-					latest = { name: call.name, output, input: call.input };
+					const canvas = toolResultToCanvas(call.name, output, call.input);
+					if (canvas) latestCanvas = canvas;
 				}
 			}
 		}
 	}
 
-	return latest
-		? toolResultToCanvas(latest.name, latest.output, latest.input)
-		: null;
+	return latestCanvas;
 }
 
 /**

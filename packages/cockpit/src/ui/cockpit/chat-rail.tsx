@@ -75,6 +75,10 @@ function ToolCallCard({
 		part.state === "approval-requested" &&
 		approvalId !== undefined &&
 		part.approval?.approved === undefined;
+	// A denied approval is terminal: the tool never runs, so the call never
+	// reaches "complete". Without this the card would spin its Loader forever
+	// (the buttons vanish once `approved` is defined) — show "denied" instead.
+	const denied = part.approval?.approved === false;
 
 	// A canvas-producing tool's chip rehydrates the focus canvas to THIS call's
 	// result on click (pins by call-id). Only once complete — an in-flight call
@@ -117,6 +121,10 @@ function ToolCallCard({
 							view
 						</Text>
 					) : null
+				) : denied ? (
+					<Text size="xs" c="dimmed" data-testid={`tool-denied-${part.id}`}>
+						denied
+					</Text>
 				) : (
 					<Loader size="xs" />
 				)}
@@ -146,8 +154,13 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const { setCanvasState, registerChatSender, pinCanvas, pinnedCallId } =
-		useCockpit();
+	const {
+		canvasState,
+		setCanvasState,
+		registerChatSender,
+		pinCanvas,
+		pinnedCallId,
+	} = useCockpit();
 	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
 		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
@@ -158,7 +171,7 @@ export function ChatRail() {
 	// drilled column's explanation streaming feels responsive.
 	useEffect(() => {
 		registerChatSender((text) => {
-			setCanvasState({ kind: "loading" });
+			setCanvasState({ kind: "loading", label: "Explaining the column…" });
 			void sendMessage(text);
 		});
 		return () => registerChatSender(null);
@@ -223,6 +236,24 @@ export function ChatRail() {
 		if (error) setCanvasState({ kind: "empty" });
 	}, [error, setCanvasState]);
 
+	// A turn can finish WITHOUT producing a canvas result: the user denied an
+	// approval-gated tool (select/teach/replay), or only non-canvas tools ran
+	// (e.g. list_verticals). onSubmit set the canvas to "loading" optimistically,
+	// and the project-latest effect only ADVANCES on a new result (and dedupes an
+	// unchanged one), so the canvas would spin "Working…" forever. When a turn
+	// ENDS (isLoading true→false, not pinned) and the canvas is still that
+	// optimistic "loading", reconcile to the latest canvas result — or empty if
+	// none. Mirrors the error guard above (same stuck-spinner symptom, the
+	// non-error path). Gated on the true→false transition, not steady-state
+	// `!isLoading`, so it never clears the loading optimism before a turn has run.
+	const prevLoadingRef = useRef(false);
+	useEffect(() => {
+		const turnEnded = prevLoadingRef.current && !isLoading;
+		prevLoadingRef.current = isLoading;
+		if (!turnEnded || pinnedCallId || canvasState.kind !== "loading") return;
+		setCanvasState(canvasFromMessages(messages) ?? { kind: "empty" });
+	}, [isLoading, pinnedCallId, canvasState, messages, setCanvasState]);
+
 	const onSubmit = (e: FormEvent) => {
 		e.preventDefault();
 		const text = input.trim();
@@ -239,7 +270,10 @@ export function ChatRail() {
 	// canvasFromMessages bridge — no new sniff path, no canvas wiring here.
 	const onUploaded = (s3Paths: string[]) => {
 		if (isLoading || s3Paths.length === 0) return;
-		setCanvasState({ kind: "loading" });
+		setCanvasState({
+			kind: "loading",
+			label: s3Paths.length === 1 ? "Reading the file…" : "Reading the files…",
+		});
 		if (s3Paths.length === 1) {
 			void sendMessage(
 				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,
@@ -255,6 +289,19 @@ export function ChatRail() {
 		);
 	};
 
+	// An approval-gated tool-call part is carried in BOTH the approval-request turn
+	// and the post-approval turn that completes it — same part id, two messages —
+	// so a naive per-message render shows the chip TWICE ("select shows twice after
+	// approve"). The two live in different inner arrays, so the shared React key
+	// doesn't collide/warn. Render each tool-call id ONCE, at its LAST occurrence
+	// (the most-complete state). Maps tool-call id → "msgIdx:partIdx".
+	const lastToolCallAt = new Map<string, string>();
+	messages.forEach((m, mi) => {
+		m.parts.forEach((part, i) => {
+			if (part.type === "tool-call") lastToolCallAt.set(part.id, `${mi}:${i}`);
+		});
+	});
+
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
 			<Box
@@ -263,7 +310,7 @@ export function ChatRail() {
 				data-testid="chat-messages"
 			>
 				<Stack gap="xs" p="xs">
-					{messages.map((m) =>
+					{messages.map((m, mi) =>
 						m.parts.map((part, i) => {
 							if (part.type === "text") {
 								return (
@@ -281,6 +328,10 @@ export function ChatRail() {
 								);
 							}
 							if (part.type === "tool-call") {
+								// Skip all but the last occurrence of this tool-call id (see
+								// lastToolCallAt) — collapses the approval-request + completion
+								// duplicate into one chip.
+								if (lastToolCallAt.get(part.id) !== `${mi}:${i}`) return null;
 								return (
 									<ToolCallCard
 										key={part.id}

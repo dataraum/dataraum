@@ -28,6 +28,7 @@ import {
 	columns,
 	entropyObjects,
 	entropyReadiness,
+	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
 import { getWhyInstructions } from "../prompts";
@@ -81,14 +82,11 @@ export type WhyColumnResult = z.infer<typeof WhyColumnResult>;
 /** The structured non-narrative payload (everything except `analysis`). */
 export type WhyColumnData = Omit<WhyColumnResult, "analysis">;
 
-/** One joined (columns ⟕ entropy_readiness) row for the target column. */
+/** The target column's readiness + table context (from the promoted detect run). */
 export interface WhyReadinessRow {
 	columnId: string;
 	columnName: string;
 	tableName: string;
-	// The detect run that wrote this readiness row — used to scope evidence to the
-	// SAME run (entropy_objects accumulate across re-runs). Null when not analyzed.
-	sessionId: string | null;
 	band: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
@@ -190,23 +188,20 @@ export interface WhyColumnInput {
 export async function whyColumn(
 	input: WhyColumnInput,
 ): Promise<WhyColumnResult> {
-	const [readiness] = await metadataDb
+	// Resolve the column + its table first — even an unanalyzed column has a name.
+	const [col] = await metadataDb
 		.select({
 			columnId: columns.columnId,
 			columnName: columns.columnName,
 			tableName: tables.tableName,
-			sessionId: entropyReadiness.sessionId,
-			band: entropyReadiness.band,
-			worstIntentRisk: entropyReadiness.worstIntentRisk,
-			intents: entropyReadiness.intents,
+			tableId: tables.tableId,
 		})
 		.from(columns)
 		.innerJoin(tables, eq(tables.tableId, columns.tableId))
-		.leftJoin(entropyReadiness, eq(entropyReadiness.columnId, columns.columnId))
 		.where(eq(columns.columnId, input.column_id))
 		.limit(1);
 
-	if (!readiness) {
+	if (!col) {
 		return {
 			column_id: input.column_id,
 			column_name: "",
@@ -223,12 +218,52 @@ export async function whyColumn(
 		};
 	}
 
-	// Scope evidence to the SAME detect run that wrote the readiness row:
-	// entropy_objects accumulate across re-runs (no per-run cleanup / unique
-	// constraint), so an unscoped read would inflate signal_count with stale
-	// duplicates and make the "based on N signals" honesty a lie. A not-analyzed
-	// column (sessionId null) matches no rows — correct, there's nothing to show.
-	const evidenceRows = readiness.sessionId
+	// Readiness is versioned by run_id now (DAT-413): pick the PROMOTED detect
+	// snapshot for the column's table via the head pointer, then read that run's
+	// readiness row. No promoted run → unanalyzed (null band).
+	const [head] = await metadataDb
+		.select({ runId: metadataSnapshotHead.runId })
+		.from(metadataSnapshotHead)
+		.where(
+			and(
+				eq(metadataSnapshotHead.tableId, col.tableId),
+				eq(metadataSnapshotHead.stage, "detect"),
+			),
+		)
+		.limit(1);
+	const headRunId = head?.runId ?? null;
+
+	const [readinessRow] = headRunId
+		? await metadataDb
+				.select({
+					band: entropyReadiness.band,
+					worstIntentRisk: entropyReadiness.worstIntentRisk,
+					intents: entropyReadiness.intents,
+				})
+				.from(entropyReadiness)
+				.where(
+					and(
+						eq(entropyReadiness.columnId, input.column_id),
+						eq(entropyReadiness.runId, headRunId),
+					),
+				)
+				.limit(1)
+		: [];
+
+	const readiness: WhyReadinessRow = {
+		columnId: col.columnId,
+		columnName: col.columnName,
+		tableName: col.tableName,
+		band: readinessRow?.band ?? null,
+		worstIntentRisk: readinessRow?.worstIntentRisk ?? null,
+		intents: readinessRow?.intents ?? null,
+	};
+
+	// Scope evidence to the SAME promoted run (DAT-413): entropy_objects are
+	// versioned by run_id and coexist across runs, so filter to the head run_id —
+	// an unscoped read would mix stale runs and inflate signal_count. No promoted
+	// run → no evidence (nothing to show).
+	const evidenceRows = headRunId
 		? await metadataDb
 				.select({
 					layer: entropyObjects.layer,
@@ -242,7 +277,7 @@ export async function whyColumn(
 				.where(
 					and(
 						eq(entropyObjects.columnId, input.column_id),
-						eq(entropyObjects.sessionId, readiness.sessionId),
+						eq(entropyObjects.runId, headRunId),
 					),
 				)
 				.orderBy(asc(entropyObjects.dimension))

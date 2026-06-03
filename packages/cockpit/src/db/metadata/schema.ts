@@ -66,6 +66,7 @@ export const columnEligibility = metadataSchema.table(
 		sourceId: varchar("source_id")
 			.notNull()
 			.references(() => sources.sourceId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		columnName: varchar("column_name").notNull(),
 		tableName: varchar("table_name").notNull(),
 		resolvedType: varchar("resolved_type"),
@@ -97,6 +98,7 @@ export const columnEligibility = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_column_eligibility_column_run").on(table.columnId, table.runId),
 	],
 );
 
@@ -310,6 +312,7 @@ export const entropyObjects = metadataSchema.table(
 		columnId: varchar("column_id").references(() => columns.columnId, {
 			onDelete: "cascade",
 		}),
+		runId: varchar("run_id"),
 		score: doublePrecision().notNull(),
 		evidence: jsonb(),
 		detectorId: varchar("detector_id").notNull(),
@@ -357,6 +360,7 @@ export const entropyReadiness = metadataSchema.table(
 		columnId: varchar("column_id").references(() => columns.columnId, {
 			onDelete: "cascade",
 		}),
+		runId: varchar("run_id"),
 		band: varchar().notNull(),
 		worstIntentRisk: doublePrecision("worst_intent_risk").notNull(),
 		intents: jsonb(),
@@ -474,6 +478,23 @@ export const investigationSteps = metadataSchema.table(
 	],
 );
 
+export const metadataSnapshotHead = metadataSchema.table(
+	"metadata_snapshot_head",
+	{
+		headId: varchar("head_id").primaryKey(),
+		tableId: varchar("table_id")
+			.notNull()
+			.references(() => tables.tableId, { onDelete: "cascade" }),
+		stage: varchar().notNull(),
+		runId: varchar("run_id").notNull(),
+		promotedAt: timestamp("promoted_at").notNull(),
+		version: integer().notNull(),
+	},
+	(table) => [
+		unique("uq_snapshot_head_table_stage").on(table.tableId, table.stage),
+	],
+);
+
 export const queryExecutions = metadataSchema.table(
 	"query_executions",
 	{
@@ -584,6 +605,7 @@ export const semanticAnnotations = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		semanticRole: varchar("semantic_role"),
 		entityType: varchar("entity_type"),
 		businessName: varchar("business_name"),
@@ -601,7 +623,7 @@ export const semanticAnnotations = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
-		unique("uq_column_semantic_annotation").on(table.columnId),
+		unique("uq_column_semantic_annotation").on(table.columnId, table.runId),
 	],
 );
 
@@ -817,6 +839,7 @@ export const statisticalProfiles = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		profiledAt: timestamp("profiled_at").notNull(),
 		layer: varchar().notNull(),
 		totalCount: integer("total_count").notNull(),
@@ -838,6 +861,10 @@ export const statisticalProfiles = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_statistical_profiles_column_run").on(
+			table.columnId,
+			table.runId,
+		),
 	],
 );
 
@@ -851,6 +878,7 @@ export const statisticalQualityMetrics = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		computedAt: timestamp("computed_at").notNull(),
 		benfordCompliant: integer("benford_compliant"),
 		hasOutliers: integer("has_outliers"),
@@ -868,6 +896,10 @@ export const statisticalQualityMetrics = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_statistical_quality_metrics_column_run").on(
+			table.columnId,
+			table.runId,
+		),
 	],
 );
 
@@ -881,6 +913,7 @@ export const tableEntities = metadataSchema.table(
 		tableId: varchar("table_id")
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		detectedEntityType: varchar("detected_entity_type").notNull(),
 		description: text(),
 		confidence: doublePrecision(),
@@ -934,6 +967,7 @@ export const temporalColumnProfiles = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		profiledAt: timestamp("profiled_at").notNull(),
 		minTimestamp: timestamp("min_timestamp").notNull(),
 		maxTimestamp: timestamp("max_timestamp").notNull(),
@@ -952,6 +986,10 @@ export const temporalColumnProfiles = metadataSchema.table(
 		index("ix_temporal_column_profiles_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
+		),
+		unique("uq_temporal_column_profiles_column_run").on(
+			table.columnId,
+			table.runId,
 		),
 	],
 );
@@ -1011,6 +1049,7 @@ export const typeCandidates = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		detectedAt: timestamp("detected_at").notNull(),
 		dataType: varchar("data_type").notNull(),
 		confidence: doublePrecision().notNull(),
@@ -1045,6 +1084,7 @@ export const typeDecisions = metadataSchema.table(
 		columnId: varchar("column_id")
 			.notNull()
 			.references(() => columns.columnId, { onDelete: "cascade" }),
+		runId: varchar("run_id"),
 		decidedType: varchar("decided_type").notNull(),
 		decisionSource: varchar("decision_source").notNull(),
 		decidedAt: timestamp("decided_at").notNull(),
@@ -1061,7 +1101,7 @@ export const typeDecisions = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
-		unique("uq_column_type_decision").on(table.columnId),
+		unique("uq_column_type_decision").on(table.columnId, table.runId),
 	],
 );
 

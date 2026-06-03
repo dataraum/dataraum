@@ -22,7 +22,6 @@ function readiness(overrides: Partial<WhyReadinessRow> = {}): WhyReadinessRow {
 		columnId: "c_amount",
 		columnName: "amount",
 		tableName: "orders",
-		sessionId: "sess_1",
 		band: "investigate",
 		worstIntentRisk: 0.42,
 		intents: [

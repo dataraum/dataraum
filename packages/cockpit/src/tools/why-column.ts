@@ -232,7 +232,9 @@ export async function whyColumn(
 		.from(metadataSnapshotHead)
 		.where(
 			and(
-				eq(metadataSnapshotHead.tableId, col.tableId),
+				// Head key generalized to a target string (DAT-408): column readiness
+				// is table-grain, so the key is `table:{id}`.
+				eq(metadataSnapshotHead.target, `table:${col.tableId}`),
 				eq(metadataSnapshotHead.stage, "detect"),
 			),
 		)

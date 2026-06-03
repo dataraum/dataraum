@@ -131,7 +131,6 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		entropyObjectss: r.many.entropyObjects(),
 		entropyReadinesss: r.many.entropyReadiness(),
-		metadataSnapshotHeads: r.many.metadataSnapshotHead(),
 		relationshipssFromTableId: r.many.relationships({
 			alias: "relationships_fromTableId_tables_tableId",
 		}),
@@ -327,12 +326,6 @@ export const relations = defineRelations(schema, (r) => ({
 		investigationSessions: r.one.investigationSessions({
 			from: r.investigationSteps.sessionId,
 			to: r.investigationSessions.sessionId,
-		}),
-	},
-	metadataSnapshotHead: {
-		tables: r.one.tables({
-			from: r.metadataSnapshotHead.tableId,
-			to: r.tables.tableId,
 		}),
 	},
 	relationships: {

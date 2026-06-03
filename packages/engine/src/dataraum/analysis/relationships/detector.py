@@ -152,16 +152,18 @@ def _store_candidates(
     column_map = load_column_mappings(session, table_ids)
     table_map = load_table_mappings(session, table_ids)
 
-    # Retry-only clear (DAT-408): scoped to (session, run_id, candidate) so a
-    # re-executed run replaces its OWN partial candidate writes; a new run never
-    # touches a prior run's rows, and durable llm/manual/keeper rows are untouched.
-    del_stmt = delete(RelationshipDB).where(
-        RelationshipDB.session_id == session_id,
-        RelationshipDB.detection_method == "candidate",
+    # Retry-only clear (DAT-408): ALWAYS scoped to this exact run (``run_id ==``,
+    # which is ``IS NULL`` for the un-versioned test path) so a re-executed run
+    # replaces only its OWN partial candidate writes — never another run's. There is
+    # no unscoped branch: a delete with no run_id would wipe every run's candidates,
+    # the destructive behaviour the run-versioning exists to remove.
+    session.execute(
+        delete(RelationshipDB).where(
+            RelationshipDB.session_id == session_id,
+            RelationshipDB.detection_method == "candidate",
+            RelationshipDB.run_id == run_id,
+        )
     )
-    if run_id is not None:
-        del_stmt = del_stmt.where(RelationshipDB.run_id == run_id)
-    session.execute(del_stmt)
 
     # A user-dropped relationship must not be re-created on re-run (DAT-408).
     suppressed = load_suppressed_relationship_pairs(session)

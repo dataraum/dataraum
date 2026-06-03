@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
 	// Records the order of side effects so we can assert seed-before-start.
 	calls: [] as string[],
 	seededRow: null as Record<string, unknown> | null,
+	// Rows the resolveSourceVertical query returns (empty = source never framed).
+	verticalRows: [] as Array<{ vertical: string }>,
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -40,11 +42,39 @@ const valuesMock = vi.fn((row: Record<string, unknown>) => {
 	h.calls.push("seed");
 	return { onConflictDoNothing: onConflictMock };
 });
+// resolveSourceVertical's read chain: select().from().innerJoin().innerJoin()
+// .where().orderBy().limit() → rows. A chainable stub; limit() resolves the rows.
+const selectChain: Record<string, unknown> = {};
+for (const m of ["from", "innerJoin", "where", "orderBy"]) {
+	selectChain[m] = () => selectChain;
+}
+selectChain.limit = () => {
+	h.calls.push("resolveVertical");
+	return Promise.resolve(h.verticalRows);
+};
 vi.mock("#/db/metadata/client", () => ({
-	metadataDb: { insert: vi.fn(() => ({ values: valuesMock })) },
+	metadataDb: {
+		insert: vi.fn(() => ({ values: valuesMock })),
+		select: vi.fn(() => selectChain),
+	},
 }));
 vi.mock("#/db/metadata/schema", () => ({
-	investigationSessions: { sessionId: "session_id" },
+	investigationSessions: {
+		sessionId: "session_id",
+		vertical: "vertical",
+		startedAt: "started_at",
+	},
+	sessionTables: { sessionId: "session_id", tableId: "table_id" },
+	tables: { tableId: "table_id", sourceId: "source_id" },
+}));
+// metadataDb is fully mocked, so the drizzle operators only need to be callable —
+// no-op stubs whose return values flow into the ignored chain args.
+vi.mock("drizzle-orm", () => ({
+	and: (...a: unknown[]) => a,
+	desc: (x: unknown) => x,
+	eq: (...a: unknown[]) => a,
+	isNotNull: (x: unknown) => x,
+	ne: (...a: unknown[]) => a,
 }));
 
 // Temporal client: record the start args (after the seed) + hand back a run id.
@@ -74,6 +104,7 @@ beforeEach(() => {
 	};
 	h.calls = [];
 	h.seededRow = null;
+	h.verticalRows = [];
 	valuesMock.mockClear();
 	onConflictMock.mockClear();
 	startMock.mockClear();
@@ -129,5 +160,38 @@ describe("replay (DAT-413)", () => {
 		);
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+	});
+
+	it("resolves the source's framed vertical when vertical is OMITTED", async () => {
+		// The whole fix: an omitted vertical must re-run on the source's framed
+		// ontology, not silently fall back to _adhoc (which fails the semantic pass).
+		h.verticalRows = [{ vertical: "finance" }];
+		await replay({ source_id: "src-1" }); // no vertical passed
+
+		expect(h.calls).toContain("resolveVertical");
+		expect(h.seededRow?.vertical).toBe("finance");
+		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
+		const args = opts.args as [{ identity: Record<string, unknown> }];
+		expect(args[0].identity.vertical).toBe("finance");
+	});
+
+	it("falls back to _adhoc only when the source has no framed vertical", async () => {
+		h.verticalRows = []; // resolver finds nothing
+		await replay({ source_id: "src-1" }); // no vertical passed
+
+		expect(h.calls).toContain("resolveVertical");
+		expect(h.seededRow?.vertical).toBe("_adhoc");
+		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
+		const args = opts.args as [{ identity: Record<string, unknown> }];
+		expect(args[0].identity.vertical).toBe("_adhoc");
+	});
+
+	it("an explicit vertical OVERRIDES resolution (no resolver query)", async () => {
+		h.verticalRows = [{ vertical: "finance" }];
+		await replay({ source_id: "src-1", vertical: "marketing" });
+
+		// Explicit input short-circuits the resolver — it must not even query.
+		expect(h.calls).not.toContain("resolveVertical");
+		expect(h.seededRow?.vertical).toBe("marketing");
 	});
 });

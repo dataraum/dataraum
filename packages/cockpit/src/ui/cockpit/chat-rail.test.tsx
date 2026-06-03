@@ -385,6 +385,47 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		expect(screen.queryByTestId("tool-deny-c1")).toBeNull();
 	});
 
+	it("renders an approval-gated tool-call carried in two messages only ONCE", () => {
+		// The SDK carries the same tool-call id in BOTH the approval-request turn
+		// and the post-approval completion turn — different messages, shared id.
+		// The rail must collapse them to one chip (at the completed occurrence),
+		// not render the select twice ("shows twice after approve").
+		h.messages = [
+			{
+				id: "m1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-call",
+						id: "c1",
+						name: "select",
+						state: "approval-requested",
+						arguments: "{}",
+						approval: { id: "a1", needsApproval: true, approved: true },
+					},
+				],
+			},
+			{
+				id: "m2",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-call",
+						id: "c1",
+						name: "select",
+						state: "complete",
+						arguments: "{}",
+						output: { source_id: "s1", name: "fx_rates", source_type: "csv" },
+					},
+				],
+			},
+		];
+		renderRail();
+		expect(screen.getAllByTestId("tool-call-c1")).toHaveLength(1);
+		// The surviving card is the completed one (a clickable rehydrate chip).
+		expect(screen.getByTestId("tool-chip-c1")).toBeTruthy();
+	});
+
 	it("clicking a canvas-tool chip pins by call-id and projects that call's result", () => {
 		// Two completed calls: list_tables is latest (live projection), list_sources
 		// is the earlier one we want to rehydrate.

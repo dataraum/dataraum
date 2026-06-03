@@ -286,6 +286,19 @@ export function ChatRail() {
 		);
 	};
 
+	// An approval-gated tool-call part is carried in BOTH the approval-request turn
+	// and the post-approval turn that completes it — same part id, two messages —
+	// so a naive per-message render shows the chip TWICE ("select shows twice after
+	// approve"). The two live in different inner arrays, so the shared React key
+	// doesn't collide/warn. Render each tool-call id ONCE, at its LAST occurrence
+	// (the most-complete state). Maps tool-call id → "msgIdx:partIdx".
+	const lastToolCallAt = new Map<string, string>();
+	messages.forEach((m, mi) => {
+		m.parts.forEach((part, i) => {
+			if (part.type === "tool-call") lastToolCallAt.set(part.id, `${mi}:${i}`);
+		});
+	});
+
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
 			<Box
@@ -294,7 +307,7 @@ export function ChatRail() {
 				data-testid="chat-messages"
 			>
 				<Stack gap="xs" p="xs">
-					{messages.map((m) =>
+					{messages.map((m, mi) =>
 						m.parts.map((part, i) => {
 							if (part.type === "text") {
 								return (
@@ -312,6 +325,10 @@ export function ChatRail() {
 								);
 							}
 							if (part.type === "tool-call") {
+								// Skip all but the last occurrence of this tool-call id (see
+								// lastToolCallAt) — collapses the approval-request + completion
+								// duplicate into one chip.
+								if (lastToolCallAt.get(part.id) !== `${mi}:${i}`) return null;
 								return (
 									<ToolCallCard
 										key={part.id}

@@ -211,8 +211,9 @@ def _build_induction_context(
     )
 
     # The defined relationships (not candidate) within the selection, columns eager.
-    # TODO(DAT-403/404): thread the current run_id when this runs in a begin_session
-    # run, so the read scopes to the run's catalog (DAT-408).
+    # Run-agnostic by design (DAT-408): induction authors a vertical's rules from
+    # sample tables, not a session run — there is no run_id to scope to, so it reads
+    # the catalog as-is.
     relationships = load_defined_relationships(session, table_ids, eager_columns=True)
 
     rel_lines: list[str] = []

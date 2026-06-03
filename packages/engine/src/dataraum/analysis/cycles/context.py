@@ -136,8 +136,11 @@ def build_cycle_detection_context(
     ]
 
     # 3. The defined relationships (not candidate) within the selection.
-    # TODO(DAT-402/403): thread the current run_id when this stage runs in a
-    # begin_session run, so the read scopes to the run's catalog (DAT-408).
+    # TODO(DAT-408 follow-on): this is an agent-tier context builder — to scope to the
+    # session's current run, resolve it via the per-session head
+    # (head_run_id(session_head_target(session_id), "detect")) and pass run_id. The
+    # caller (cycles agent) has session_id; not threaded yet, so this reads the
+    # catalog across runs.
     relationships = load_defined_relationships(session, table_ids)
 
     rel_list = []

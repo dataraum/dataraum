@@ -383,8 +383,10 @@ def build_execution_context(
         table_entities[entity.table_id] = entity
 
     # 9. The defined relationships (not candidate) within the selection.
-    # TODO(DAT-402+): thread the current run_id when this runs in a begin_session
-    # run, so the read scopes to the run's catalog (DAT-408).
+    # TODO(DAT-408 follow-on): agent-tier read — to scope to the session's current
+    # run, resolve it via the per-session head (head_run_id(session_head_target(
+    # session_id), "detect")) and pass run_id. The graph/query agents have session_id;
+    # not threaded yet, so this reads the catalog across runs.
     from dataraum.analysis.relationships.utils import load_defined_relationships
 
     relationships_db = load_defined_relationships(session, table_ids)

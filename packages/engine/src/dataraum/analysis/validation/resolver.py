@@ -98,8 +98,10 @@ def get_multi_table_schema_for_llm(
         return {"error": "No tables with DuckDB paths found"}
 
     # The defined relationships (not candidate) between these tables.
-    # TODO(DAT-404): thread the current run_id when this runs in a begin_session
-    # run, so the read scopes to the run's catalog (DAT-408).
+    # TODO(DAT-408 follow-on): agent-tier read — to scope to the session's current
+    # run, resolve it via the per-session head (head_run_id(session_head_target(
+    # session_id), "detect")) and pass run_id. The validation agent has session_id;
+    # not threaded yet, so this reads the catalog across runs.
     relationships = load_defined_relationships(session, table_ids)
 
     # Format relationships

@@ -47,9 +47,9 @@ def run_detector_post_step(
         duckdb_conn: DuckDB connection for detectors that query data directly.
         session_id: Per-run FK for the persisted records.
         table_ids: The typed-table scope — the run's table set (delete + scan).
-        run_id: Snapshot version axis (DAT-413); stamped on each record. Scopes the
-            delete to this run when set so a re-run clears only its OWN prior rows
-            (non-destructive); ``None`` (tests) keeps the broad per-table delete.
+        run_id: Snapshot version axis (DAT-413); stamped on each record and ALWAYS
+            the delete scope, so a re-run clears only its OWN prior rows
+            (non-destructive). ``None`` (tests) scopes to ``run_id IS NULL``.
 
     Returns:
         Number of records created.
@@ -64,16 +64,17 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Scoped delete: remove this detector's stale records for the tables in scope.
-    # Scoped to ``run_id`` when set (the workflow path, DAT-413) so a re-run clears
-    # only its OWN prior rows and leaves earlier runs intact (non-destructive).
-    delete_stmt = delete(EntropyObjectRecord).where(
-        EntropyObjectRecord.detector_id == detector_id,
-        EntropyObjectRecord.table_id.in_(table_ids),
+    # Retry-only clear (DAT-413): ALWAYS scoped to this exact run (``run_id ==``,
+    # which is ``IS NULL`` for the un-versioned test path) so it clears only its OWN
+    # prior rows and leaves earlier runs intact. No unscoped branch — a delete with
+    # no run_id would wipe every run's objects for this (detector, tables).
+    session.execute(
+        delete(EntropyObjectRecord).where(
+            EntropyObjectRecord.detector_id == detector_id,
+            EntropyObjectRecord.table_id.in_(table_ids),
+            EntropyObjectRecord.run_id == run_id,
+        )
     )
-    if run_id is not None:
-        delete_stmt = delete_stmt.where(EntropyObjectRecord.run_id == run_id)
-    session.execute(delete_stmt)
 
     # Typed tables in scope — the run's table set (source-free).
     typed_stmt = select(Table).where(Table.table_id.in_(table_ids), Table.layer == "typed")

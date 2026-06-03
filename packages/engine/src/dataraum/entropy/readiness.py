@@ -47,20 +47,21 @@ def persist_readiness(
     if not table_ids:
         return 0
 
-    # Replay-safe refresh: clear prior readiness rows first. Scoped to ``run_id``
-    # when set (the workflow path, DAT-413) so a re-run clears only its OWN prior
-    # rows and earlier runs survive (non-destructive); the ``None`` path (tests)
-    # keeps the broad delete. Two scopes (DAT-408): column rows carry ``table_id``
-    # so they delete by the table set; relationship rows carry no ``table_id`` (the
-    # identity is in ``target``), so they delete by ``(session_id, relationship:%)``.
-    col_del = delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
+    # Replay-safe refresh: clear THIS run's prior readiness rows first. ALWAYS
+    # scoped to the run (``run_id ==``, i.e. ``IS NULL`` for the un-versioned test
+    # path) — never an unscoped delete, which would wipe every run's readiness.
+    # Two scopes (DAT-408): column rows carry ``table_id`` so they delete by the
+    # table set; relationship rows carry no ``table_id`` (the identity is in
+    # ``target``), so they delete by ``(session_id, relationship:%)``.
+    col_del = delete(EntropyReadinessRecord).where(
+        EntropyReadinessRecord.table_id.in_(table_ids),
+        EntropyReadinessRecord.run_id == run_id,
+    )
     rel_del = delete(EntropyReadinessRecord).where(
         EntropyReadinessRecord.session_id == session_id,
         EntropyReadinessRecord.target.like("relationship:%"),
+        EntropyReadinessRecord.run_id == run_id,
     )
-    if run_id is not None:
-        col_del = col_del.where(EntropyReadinessRecord.run_id == run_id)
-        rel_del = rel_del.where(EntropyReadinessRecord.run_id == run_id)
     session.execute(col_del)
     session.execute(rel_del)
 

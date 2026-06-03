@@ -8,10 +8,11 @@
 //   1. initial addSourceWorkflow run — asserts import discovered raw tables
 //      and every table was processed to a typed table.
 //   2. two teaches via `teach(...)` (batchable; no replay between them).
-//   3. one replay via `replay(...)` with from_phase="typing" — asserts the
-//      replay completed, the typed_table_ids are STABLE across the in-place
-//      re-type (DAT-373: typing reconciles Columns by name, no re-mint), and
-//      both teach overlay rows landed in config_overlay.
+//   3. one replay via `replay(...)` — a full add_source re-run (DAT-413: no
+//      scope, no from_phase; the engine mints a fresh run_id internally).
+//      Asserts the re-run completes under a NEW run_id, the table count is
+//      stable, and the active teach overlay count did NOT drop (replay reads
+//      the overlays, it doesn't consume them).
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \
@@ -100,7 +101,7 @@ async function runInitial(
 	client: Client,
 	sourceId: string,
 	sessionId: string,
-): Promise<AddSourceResult> {
+): Promise<{ result: AddSourceResult; runId: string }> {
 	const input: AddSourceInput = {
 		identity: {
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
@@ -114,13 +115,16 @@ async function runInitial(
 			vertical: "_adhoc",
 		},
 	};
-	const result = await client.workflow.execute<
+	// `start` (not `execute`) so we can capture the run id — the replay
+	// assertion compares its fresh run_id against the initial one.
+	const handle = await client.workflow.start<
 		(input: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
 		args: [input],
 	});
+	const result = (await handle.result()) as AddSourceResult;
 
 	if (result.raw_table_ids.length === 0) {
 		throw new Error("initial run: import discovered no raw tables");
@@ -138,7 +142,7 @@ async function runInitial(
 			);
 		}
 	}
-	return result;
+	return { result, runId: handle.firstExecutionRunId };
 }
 
 async function awaitReplay(
@@ -166,9 +170,10 @@ async function main(): Promise<void> {
 		});
 
 		// ---- Initial run -------------------------------------------------
-		const initial = await runInitial(client, sourceId, sessionId);
-		const initialTypedIds = new Set(
-			initial.tables.map((t) => t.typed_table_id),
+		const { result: initial, runId: initialRunId } = await runInitial(
+			client,
+			sourceId,
+			sessionId,
 		);
 		console.log(
 			`✓ initial run: ${initial.tables.length} table(s) fanned out + typed via Temporal`,
@@ -199,46 +204,40 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ---- Replay from typing for the affected raw tables --------------
+		// ---- Replay: a full source re-run (DAT-413) ----------------------
 		// Reuse the seeded InvestigationSession — per-session rows the replay
 		// re-creates (TypeCandidate, etc.) FK to investigation_sessions, and
 		// the replay tool would otherwise mint a random session_id with no
 		// matching row. Slice 1 has no session lifecycle; one session per
-		// driver run is fine.
+		// driver run is fine. There is no scope/from_phase: replay re-runs the
+		// whole source, and the engine mints a fresh run_id internally.
 		const replayResult = await replay({
 			source_id: sourceId,
 			session_id: sessionId,
 			vertical: "_adhoc",
-			scope: {
-				from_phase: "typing",
-				raw_table_ids: initial.raw_table_ids,
-			},
 		});
 		const replayed = await awaitReplay(client, sourceId, replayResult.run_id);
 
+		// A replay is a fresh execution, so it carries a NEW run_id (≠ the
+		// initial run). The engine mints the version run_id internally; here we
+		// only assert the replay started its own Temporal run.
+		if (replayResult.run_id === initialRunId) {
+			throw new Error(
+				`replay: expected a fresh run_id, got the initial run ${initialRunId}`,
+			);
+		}
+
+		// The re-run is non-destructive (versioned, append-only snapshots — no
+		// in-place delete/re-type surgery): it re-processes the same source, so
+		// the table count is stable across the re-run.
 		if (replayed.tables.length !== initial.tables.length) {
 			throw new Error(
 				`replay: table count changed ${initial.tables.length} -> ${replayed.tables.length}`,
 			);
 		}
-		// DAT-373: typing.replay_cleanup no longer drops the typed Table —
-		// re-typing reconciles Columns/Table by (table_id, column_name), so the
-		// typed_table_id is STABLE for every affected table on a
-		// from_phase="typing" replay. That stability is what lets a second
-		// stage's per-Column data survive an add_source teach (cross-stage
-		// survival itself is proven by the engine integration test
-		// test_replay_cross_stage). Here we assert the ids did NOT change.
-		for (const table of replayed.tables) {
-			if (!initialTypedIds.has(table.typed_table_id)) {
-				throw new Error(
-					`replay: typed_table_id for raw ${table.raw_table_id} changed to ` +
-						`${table.typed_table_id} — DAT-373 expects stable ids on re-type`,
-				);
-			}
-		}
 		console.log(
-			`✓ replay (from_phase=typing): ${replayed.tables.length} table(s) re-typed in place; ` +
-				`typed_table_ids stable for all of them (DAT-373)`,
+			`✓ replay (full re-run): ${replayed.tables.length} table(s) re-processed ` +
+				`under fresh run ${replayResult.run_id}`,
 		);
 
 		// Sanity: the overlay rows are still active after replay (replay

@@ -1,25 +1,16 @@
-// Replay tool (DAT-343) — starts addSourceWorkflow with a ReplayScope to
-// re-apply one or more pending teaches.
+// Replay tool (DAT-343, DAT-413) — re-runs the whole source to apply pending
+// teaches as a full add_source re-run under a fresh run_id.
 //
-// Pure compute kick: takes a ReplayScope (the agent decides whether to
-// rerun source-wide, per-table, or source-tail-only), starts a fresh
-// `addSourceWorkflow` execution with the same workflow id as the initial
-// run (`addsource-<workspace_id>-<source_id>`; see workflow-id.ts, DAT-364),
-// and uses ALLOW_DUPLICATE policy so Temporal UI groups iterations per source.
+// Pure compute kick: starts a fresh `addSourceWorkflow` execution with the same
+// workflow id as the initial run (`addsource-<workspace_id>-<source_id>`; see
+// workflow-id.ts, DAT-364), and uses ALLOW_DUPLICATE policy so Temporal UI
+// groups iterations per source. The engine mints a fresh `run_id` internally
+// (versioned metadata, append-only snapshots) — the cockpit does NOT choose a
+// scope or a from_phase; a replay is always a full, non-destructive re-run.
 //
 // Returns the workflow id + run id immediately — the caller polls / queries
 // Temporal for progress. End-to-end "replay actually produces clean output"
 // coverage lives in the integration smoke that drives the running stack.
-//
-// Suggested replay scopes per teach type (the agent maps from teach type
-// to ReplayScope; this tool just runs whatever scope it's handed):
-//
-//   type_pattern    → { from_phase: "typing",              raw_table_ids: [...] }
-//                     (per-table — narrow to the tables affected by the pattern)
-//   null_value      → { from_phase: "import",              raw_table_ids: null }
-//                     (source-wide — null parsing affects every raw load)
-//   concept_property → { from_phase: "semantic_per_column", raw_table_ids: [] }
-//                     (source-tail-only — no children, just the reduce + detect)
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
@@ -31,14 +22,12 @@ import { config } from "../config";
 import type {
 	AddSourceInput,
 	AddSourceResult,
-	ReplayScope,
 	SourceIdentity,
 } from "../temporal/types";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 
 export interface ReplayInput {
 	source_id: string;
-	scope: ReplayScope;
 	// Per-replay session id — the engine uses it as the FK on per-session
 	// rows the activities create. Optional: a stable random uuid is fine
 	// for slice 1 (no session lifecycle).
@@ -54,13 +43,12 @@ export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
 	source_id: string;
-	scope: ReplayScope;
 }
 
 /**
- * Start an `addSourceWorkflow` execution with a teach `ReplayScope`. Returns
- * immediately with the workflow + run id; the caller polls Temporal for
- * progress and the final result.
+ * Start an `addSourceWorkflow` execution to re-apply pending teaches as a full
+ * source re-run. Returns immediately with the workflow + run id; the caller
+ * polls Temporal for progress and the final result.
  *
  * Workflow id is reused per source (`addsource-<workspace_id>-<source_id>`)
  * with `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the same
@@ -85,10 +73,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		session_id: input.session_id ?? randomUUID(),
 		vertical: input.vertical,
 	};
-	const payload: AddSourceInput = {
-		identity,
-		replay: input.scope,
-	};
+	const payload: AddSourceInput = { identity };
 
 	const workflowId = addSourceWorkflowId(
 		config.dataraumWorkspaceId,
@@ -114,24 +99,11 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
 			source_id: input.source_id,
-			scope: input.scope,
 		};
 	} finally {
 		await connection.close();
 	}
 }
-
-const ReplayScopeSchema = z.object({
-	from_phase: z
-		.string()
-		.describe(
-			'Phase to restart at, e.g. "import", "typing", "semantic_per_column".',
-		),
-	raw_table_ids: z
-		.array(z.string())
-		.nullable()
-		.describe("null = source-wide fan-out; [...] = only those raw table ids."),
-});
 
 /**
  * The `replay` tool for the agent loop. `needsApproval: true` — replay re-runs
@@ -141,10 +113,9 @@ const ReplayScopeSchema = z.object({
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Re-run processing for a source to apply pending teaches. Provide a ReplayScope (from_phase + raw_table_ids). Requires user approval. Returns the workflow + run id immediately; poll Temporal for progress.",
+		"Re-run the whole source to apply pending teaches (a full re-run under a fresh run_id). Requires user approval. Returns workflow + run id; poll Temporal for progress.",
 	inputSchema: z.object({
 		source_id: z.string(),
-		scope: ReplayScopeSchema,
 		session_id: z.string().optional(),
 		vertical: z.string().optional(),
 	}),
@@ -152,7 +123,6 @@ export const replayTool = toolDefinition({
 		workflow_id: z.string(),
 		run_id: z.string(),
 		source_id: z.string(),
-		scope: ReplayScopeSchema,
 	}),
 	needsApproval: true,
 }).server((input) => replay(input));

@@ -115,11 +115,10 @@ export function toolChipSummary(
 		case "teach":
 			return teachChipSummary(input, output);
 		case "replay": {
-			const args = input as { source_id?: string; scope?: string } | undefined;
-			const scope = args?.scope ? ` (${args.scope})` : "";
+			const args = input as { source_id?: string } | undefined;
 			const out = output as { run_id?: string } | undefined;
-			if (out?.run_id) return `replay${scope} — run ${out.run_id}`;
-			return args?.source_id ? `replay ${args.source_id}${scope}` : "replay…";
+			if (out?.run_id) return `replay — run ${out.run_id}`;
+			return args?.source_id ? `replay ${args.source_id}` : "replay…";
 		}
 		default:
 			return toolName;

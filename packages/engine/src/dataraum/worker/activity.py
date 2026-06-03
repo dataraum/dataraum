@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = [
+    "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
     "declared_detector_ids",
@@ -102,7 +103,9 @@ _PROMOTE_STAGES = (
 # detectors (join_path_determinism + relationship_entropy). Distinct from the
 # source-scoped ``_DETECTOR_PHASES`` so add_source never runs the relationship
 # detectors and begin_session never runs the column ones.
-_SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
+# Public (imported by ``activities.py`` + tests) — unlike ``_DETECTOR_PHASES`` /
+# ``_PROMOTE_STAGES``, which are used only within this module.
+SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
 
 
 @dataclass

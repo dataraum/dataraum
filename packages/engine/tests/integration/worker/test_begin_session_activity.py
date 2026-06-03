@@ -344,7 +344,7 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
     from dataraum.entropy.models import relationship_target_key
     from dataraum.entropy.views.readiness_context import load_relationship_readiness
     from dataraum.worker.activity import (
-        _SESSION_DETECTOR_PHASES,
+        SESSION_DETECTOR_PHASES,
         promote_session_run,
         run_detectors,
     )
@@ -366,7 +366,7 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
         worker_manager,
         session_id=session_id,
         run_id="run-A",
-        detector_phases=_SESSION_DETECTOR_PHASES,
+        detector_phases=SESSION_DETECTOR_PHASES,
     )
     assert n > 0, "relationship detect produced no records"
     promote_session_run(worker_manager, _session_identity_run(session_id, "run-A"))
@@ -383,7 +383,7 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
         worker_manager,
         session_id=session_id,
         run_id="run-B",
-        detector_phases=_SESSION_DETECTOR_PHASES,
+        detector_phases=SESSION_DETECTOR_PHASES,
     )
     promote_session_run(worker_manager, _session_identity_run(session_id, "run-B"))
 

@@ -27,7 +27,7 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
-    _SESSION_DETECTOR_PHASES,
+    SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
     promote_run,
@@ -195,7 +195,7 @@ class PhaseActivities:
         """Terminal relationship-detector pass for begin_session (DAT-408).
 
         Source-free analogue of ``detect``: runs the relationship detectors
-        (``_SESSION_DETECTOR_PHASES``) over the session's tables, persisting
+        (``SESSION_DETECTOR_PHASES``) over the session's tables, persisting
         relationship-granularity entropy objects + readiness rows stamped with the
         run's ``run_id``.
         """
@@ -203,7 +203,7 @@ class PhaseActivities:
             self._manager,
             session_id=identity.session_id,
             run_id=identity.run_id,
-            detector_phases=_SESSION_DETECTOR_PHASES,
+            detector_phases=SESSION_DETECTOR_PHASES,
         )
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,

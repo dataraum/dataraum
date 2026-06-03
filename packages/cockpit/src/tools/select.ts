@@ -60,6 +60,29 @@ const STAGE_AFTER_SELECT = "add_source";
 // yet imported reads `configured`.
 const INITIAL_STATUS = "configured";
 
+// The default vertical when none is chosen — the unnamed cold-start ontology.
+const DEFAULT_VERTICAL = "_adhoc";
+// A chosen vertical keys the engine's `verticals/<name>` config resolution, so a
+// supplied name must be a safe segment + engine-valid (lowercase, starts with a
+// letter) — or the `_adhoc` default (exempt: the built-in leading-underscore key).
+const VERTICAL_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
+
+/** The vertical add_source will ground against — a builtin the user adopted
+ * (e.g. finance), a vertical just framed, or `_adhoc`. Echoed in the result so
+ * the add_source trigger seeds the session with it (it isn't persisted on the
+ * source row — the conversation carries it). */
+function resolveVertical(name?: string | null): string {
+	const trimmed = name?.trim();
+	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
+	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
+		throw new Error(
+			`Invalid vertical '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +
+				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]) or be '_adhoc'.",
+		);
+	}
+	return trimmed;
+}
+
 /** The persisted Source descriptor `select` returns (and the canvas renders). */
 export const SelectResult = z.object({
 	source_id: z.string(),
@@ -67,6 +90,9 @@ export const SelectResult = z.object({
 	source_type: z.string(),
 	backend: z.string().nullable(),
 	stage: z.string(),
+	// The vertical add_source will ground against (adopted builtin / framed /
+	// `_adhoc`). The trigger reads it off the selection to seed the session.
+	vertical: z.string(),
 	// The concrete file URIs persisted (file source), else null (db source).
 	file_uris: z.array(z.string()).nullable(),
 	// The synthesized recipe tables persisted (db source), else null (file).
@@ -94,6 +120,10 @@ export interface SelectInput {
 	// Database backend, persisted as the `backend` COLUMN (required for db sources;
 	// the engine import fails loud without it). For a file source it is ignored.
 	backend?: string | null;
+	// The vertical add_source grounds against: a builtin the user adopted (e.g.
+	// finance), a vertical just framed (the SAME `vertical_name` passed to frame),
+	// or omitted → `_adhoc`. Echoed in the result for the trigger; not persisted.
+	vertical?: string | null;
 	session_id?: string | null;
 }
 
@@ -138,6 +168,7 @@ export async function select(
 				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]).",
 		);
 	}
+	const vertical = resolveVertical(input.vertical);
 	const schema = ConnectSchema.parse(input.schema);
 
 	let sourceType: string;
@@ -239,6 +270,7 @@ export async function select(
 		source_type: row.sourceType,
 		backend: row.backend ?? null,
 		stage: row.stage ?? STAGE_AFTER_SELECT,
+		vertical,
 		file_uris: fileUris,
 		recipe_tables: recipeTables,
 	};
@@ -295,6 +327,15 @@ export const selectTool = toolDefinition({
 			.nullish()
 			.describe(
 				"Database source only: the backend (required for a db source).",
+			),
+		vertical: z
+			.string()
+			.nullish()
+			.describe(
+				"The vertical add_source grounds against. Pass a builtin from " +
+					"`list_verticals` (e.g. finance) to ADOPT it — no frame needed, it " +
+					"ships its concepts. Pass the SAME `vertical_name` you gave `frame` for " +
+					"a newly framed vertical. Omit only for an unnamed cold-start (_adhoc).",
 			),
 		session_id: z.string().nullish(),
 	}),

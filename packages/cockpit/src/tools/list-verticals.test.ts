@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
 	existing: new Set<string>(),
 	// Grouped active concept-overlay rows: payload.vertical → count.
 	overlayRows: [] as { vertical: string; n: number }[],
+	// Single-vertical overlay count (verticalConceptCount path).
+	overlayCountForOne: 0,
 }));
 
 vi.mock("#/config", () => ({
@@ -61,6 +63,11 @@ vi.mock("#/db/metadata/schema", () => ({
 		type: "type",
 	},
 }));
+// verticalConceptCount() counts a single vertical's overlay rows through this
+// helper (a different query path than listVerticals' grouped read).
+vi.mock("#/db/metadata/concept-overlays", () => ({
+	countActiveConcepts: vi.fn(async () => h.overlayCountForOne),
+}));
 // Stub the drizzle helpers the tool feeds to the (mocked) query builder, so they
 // don't choke on the stubbed string "columns"; the builder ignores them.
 vi.mock("drizzle-orm", () => ({
@@ -71,7 +78,7 @@ vi.mock("drizzle-orm", () => ({
 	isNull: () => "isnull-expr",
 }));
 
-import { listVerticals } from "./list-verticals";
+import { listVerticals, verticalConceptCount } from "./list-verticals";
 
 function dir(name: string) {
 	return { name, isDirectory: () => true };
@@ -83,6 +90,7 @@ beforeEach(() => {
 	h.files = {};
 	h.existing = new Set();
 	h.overlayRows = [];
+	h.overlayCountForOne = 0;
 	groupByMock.mockClear();
 });
 
@@ -182,5 +190,29 @@ describe("listVerticals (DAT-411)", () => {
 		];
 		const result = await listVerticals();
 		expect(result.map((v) => v.name)).toEqual(["sales"]);
+	});
+});
+
+describe("verticalConceptCount (add_source pre-flight)", () => {
+	it("sums a builtin's ontology concepts and its overlay rows", async () => {
+		h.files["/cfg/verticals/finance/ontology.yaml"] = JSON.stringify({
+			concepts: [{ name: "revenue" }, { name: "cogs" }],
+		});
+		h.overlayCountForOne = 1; // a taught extension concept
+		expect(await verticalConceptCount("finance")).toBe(3);
+	});
+
+	it("counts a framed (directory-less) vertical from overlay alone", async () => {
+		// No on-disk file → readOntology yields null → overlay-only.
+		h.overlayCountForOne = 4;
+		expect(await verticalConceptCount("sales")).toBe(4);
+	});
+
+	it("is zero for an unframed / empty vertical (the guard refuses on this)", async () => {
+		h.files["/cfg/verticals/_adhoc/ontology.yaml"] = JSON.stringify({
+			concepts: [],
+		});
+		h.overlayCountForOne = 0;
+		expect(await verticalConceptCount("_adhoc")).toBe(0);
 	});
 });

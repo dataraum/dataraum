@@ -26,6 +26,7 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
+import { countActiveConcepts } from "../db/metadata/concept-overlays";
 import { configOverlay } from "../db/metadata/schema";
 
 const Vertical = z.object({
@@ -95,6 +96,18 @@ async function readOntology(
 	} catch {
 		return null;
 	}
+}
+
+/** How many concepts a SINGLE vertical resolves to — its builtin ontology.yaml
+ * concepts (zero for a framed/directory-less vertical) plus active concept
+ * overlay rows naming it. The add_source pre-flight guard uses this to refuse a
+ * vertical that would ground against nothing. */
+export async function verticalConceptCount(vertical: string): Promise<number> {
+	const onto = await readOntology(
+		join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),
+	);
+	const overlay = await countActiveConcepts(vertical);
+	return (onto?.concepts?.length ?? 0) + overlay;
 }
 
 /** The builtin verticals — every directory under `<config>/verticals/`. */

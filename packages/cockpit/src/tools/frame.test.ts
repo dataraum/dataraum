@@ -108,6 +108,28 @@ describe("frame (DAT-382)", () => {
 		expect(result.concepts[0].overlay_id).toEqual(expect.any(String));
 	});
 
+	it("declares concepts under a named vertical and returns it", async () => {
+		const result = await frame({
+			schema: SCHEMA,
+			vertical_name: "sales",
+			concepts: [{ name: "deal_value", typical_role: "measure" }],
+		});
+		expect((insertedRows[0].payload as { vertical: string }).vertical).toBe(
+			"sales",
+		);
+		expect(result.vertical).toBe("sales");
+	});
+
+	it("rejects an unsafe vertical name", async () => {
+		await expect(
+			frame({
+				schema: SCHEMA,
+				vertical_name: "../etc",
+				concepts: [{ name: "x" }],
+			}),
+		).rejects.toThrow(/Invalid vertical name/);
+	});
+
 	it("declares a user-edited concept set verbatim, skipping induction", async () => {
 		const result = await frame({
 			schema: SCHEMA,

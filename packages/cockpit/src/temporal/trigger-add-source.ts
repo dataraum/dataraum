@@ -28,8 +28,8 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
-import { countActiveConcepts } from "../db/metadata/concept-overlays";
 import { investigationSessions } from "../db/metadata/schema";
+import { verticalConceptCount } from "../tools/list-verticals";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
@@ -40,32 +40,21 @@ const SEED_INTENT = "onboarding";
 const SEED_STATUS = "active";
 
 /**
- * The chosen vertical is overlay-backed (its concepts come only from
- * `config_overlay`) and none are declared yet — so add_source would fail loud
- * deep in the engine's grounding phase (semantic_per_column). A user-fixable
- * PRECONDITION, not a server fault: the API route surfaces it as a 400 with
- * this message, and the trigger never starts the doomed workflow.
+ * The chosen vertical resolves to ZERO concepts (no builtin ontology.yaml
+ * concepts AND no overlay rows) — so add_source would fail loud deep in the
+ * engine's grounding phase (semantic_per_column). A user-fixable PRECONDITION,
+ * not a server fault: the API route surfaces it as a 400 with this message, and
+ * the trigger never starts the doomed workflow.
  */
 export class NoConceptsError extends Error {
 	constructor(public readonly vertical: string) {
 		super(
 			vertical === "_adhoc"
 				? "No concepts declared yet — run frame to declare concepts before adding this source."
-				: `The "${vertical}" vertical has no concepts declared yet — run frame to declare concepts before adding this source.`,
+				: `The "${vertical}" vertical has no concepts — frame it (or pick a builtin with list_verticals) before adding this source.`,
 		);
 		this.name = "NoConceptsError";
 	}
-}
-
-/**
- * Verticals whose concepts come ONLY from `config_overlay` (no on-disk
- * `ontology.yaml` concepts). Built-in verticals (e.g. `finance`) ship concepts
- * on disk and are exempt from the pre-flight concept check. `_adhoc` is the
- * only overlay-backed vertical today; Theme A's framed verticals join it (this
- * predicate generalizes to "not a built-in" once `list_verticals` lands).
- */
-function isOverlayBackedVertical(vertical: string): boolean {
-	return vertical === "_adhoc";
 }
 
 export interface TriggerAddSourceInput {
@@ -127,18 +116,16 @@ export async function triggerAddSource(
 	const sessionId = randomUUID();
 	const vertical = input.vertical ?? "_adhoc";
 
-	// PRE-FLIGHT (Theme B / obs 4): refuse early when an overlay-backed vertical
-	// has zero declared concepts. The engine fails loud on this deep in
+	// PRE-FLIGHT (Theme B obs 4, generalized in Theme A): refuse early when the
+	// chosen vertical resolves to zero concepts — builtin ontology.yaml concepts
+	// PLUS active overlay rows. The engine fails loud on this deep in
 	// semantic_per_column (semantic_per_column_phase.py), surfacing only as a
-	// dead Temporal run; catching it here gives the user a readable "run frame
-	// first" message and never starts the doomed workflow (no orphan session row
-	// either — this runs before the seed). Built-in verticals ship concepts on
-	// disk, so they're exempt.
-	if (isOverlayBackedVertical(vertical)) {
-		const conceptCount = await countActiveConcepts(vertical);
-		if (conceptCount === 0) {
-			throw new NoConceptsError(vertical);
-		}
+	// dead Temporal run; catching it here gives the user a readable message and
+	// never starts the doomed workflow (no orphan session row either — this runs
+	// before the seed). An adopted builtin (finance) ships concepts → passes; an
+	// empty _adhoc or an un-framed vertical → refused.
+	if ((await verticalConceptCount(vertical)) === 0) {
+		throw new NoConceptsError(vertical);
 	}
 
 	// CRITICAL: seed the session BEFORE starting the workflow. typing_phase's

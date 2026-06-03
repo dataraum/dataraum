@@ -1,9 +1,13 @@
-"""Unit tests for TypingPhase per-table filtering (DAT-342).
+"""Unit tests for TypingPhase per-table filtering (DAT-342) + re-run (DAT-413).
 
 Covers the ``table_filter`` behavior: ``ctx.table_ids`` narrows which raw
-tables get typed (per-table teach replay) without touching siblings, and
-``should_skip`` honors the same filter so a targeted untyped table still runs
-when its sibling tables are already typed.
+tables get typed (per-table teach replay) without touching siblings.
+
+``should_skip`` is now a STRUCTURAL early-out only (DAT-413): it skips solely
+when there are no raw tables to type (none registered, or the filter matches
+none). The old output-existence bail ("typed counterpart already exists →
+skip") is gone — a re-run mints a fresh ``run_id`` and must always re-derive
+typing under it, so an already-typed table re-runs rather than skipping.
 
 These exercise the filter resolution + skip logic directly via a constructed
 ``PhaseContext`` — no live entry point, no real type inference needed.
@@ -40,10 +44,9 @@ def _make_table(session: Session, source_id: str, name: str, layer: str = "raw")
 def _make_typed_table(session: Session, source_id: str, name: str) -> Table:
     """A fully-typed table: a typed Table + one Column carrying a TypeDecision.
 
-    Post-DAT-373 a typed ``Table`` row alone is no longer the "done" signal —
-    its columns must still carry the ``TypeDecision`` rows ``_run`` writes (the
-    rows ``replay_cleanup`` clears for a re-type). ``should_skip`` only treats a
-    table as typed when that decision is present.
+    Models the post-run state a re-run encounters. Under DAT-413 this state no
+    longer gates ``should_skip`` (the output-existence bail is gone), so these
+    rows exist only to prove the re-run is NOT short-circuited by prior output.
     """
     table = _make_table(session, source_id, name, layer="typed")
     col = Column(
@@ -169,15 +172,22 @@ class TestShouldSkip:
         reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
         assert reason == "No raw tables to process"
 
-    def test_all_typed_skips_when_unfiltered(
+    def test_already_typed_re_runs_when_unfiltered(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
+        """A fully-typed table no longer skips — it re-types under a new run (DAT-413).
+
+        The output-existence skip ("all tables already typed → skip") is gone:
+        a re-run mints a fresh ``run_id`` and must always re-derive typing under
+        it. With a raw table present, ``should_skip`` returns ``None`` even though
+        the typed counterpart (with a prior run's ``TypeDecision``) already exists.
+        """
         src = _make_source(session)
         _make_table(session, src.source_id, "t1")
         _make_typed_table(session, src.source_id, "t1")
 
         reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
-        assert reason == "All tables already typed"
+        assert reason is None
 
     def test_one_untyped_runs_when_unfiltered(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -186,35 +196,6 @@ class TestShouldSkip:
         _make_table(session, src.source_id, "t1")
         _make_typed_table(session, src.source_id, "t1")
         _make_table(session, src.source_id, "t2")  # raw, no typed → must run
-
-        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
-        assert reason is None
-
-    def test_decisionless_typed_table_re_types(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """A typed table whose decisions were cleared (post-cleanup) re-types.
-
-        Post-DAT-373 the typed ``Table`` row survives ``replay_cleanup``, so its
-        mere presence can't gate skipping — only its columns' ``TypeDecision``
-        rows do. A typed table with a column but no decision (the cleaned-up
-        state) must re-run.
-        """
-        src = _make_source(session)
-        _make_table(session, src.source_id, "t1")
-        typed = _make_table(session, src.source_id, "t1", layer="typed")
-        # A typed column but NO TypeDecision — exactly the post-cleanup state.
-        session.add(
-            Column(
-                column_id=str(uuid4()),
-                table_id=typed.table_id,
-                column_name="c0",
-                column_position=0,
-                raw_type="VARCHAR",
-                resolved_type="BIGINT",
-            )
-        )
-        session.flush()
 
         reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
         assert reason is None
@@ -235,9 +216,15 @@ class TestShouldSkip:
         )
         assert reason is None
 
-    def test_targeted_already_typed_skips(
+    def test_targeted_already_typed_re_runs(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
+        """A targeted already-typed table re-types under a new run (DAT-413).
+
+        The structural early-out only checks that the *raw* table the filter
+        targets still exists; the typed counterpart already existing no longer
+        gates a skip, so the re-run re-derives typing under a fresh ``run_id``.
+        """
         src = _make_source(session)
         t1 = _make_table(session, src.source_id, "t1")
         _make_typed_table(session, src.source_id, "t1")
@@ -246,7 +233,7 @@ class TestShouldSkip:
         reason = TypingPhase().should_skip(
             _ctx(session, duckdb_conn, src.source_id, table_ids=[t1.table_id])
         )
-        assert reason == "All tables already typed"
+        assert reason is None
 
     def test_filter_matches_no_raw_tables_skips(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

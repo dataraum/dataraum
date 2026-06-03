@@ -511,13 +511,24 @@ def resolve_types(
     # Note: quarantine_count/rate are already set on raw TypeCandidates above.
     #
     # The typed columns are now reused across re-types (stable ids, DAT-373), so
-    # clear any prior copies first — otherwise the fresh TypeDecision insert would
-    # hit ``uq_column_type_decision`` (one decision per column). Self-contained
-    # idempotency: correct even when called outside the workflow's replay_cleanup.
+    # clear THIS run's prior copies first — otherwise a re-type within the same
+    # run would hit ``uq_column_type_decision`` (one decision per column per run,
+    # DAT-413). Scoped to ``run_id`` so a NEW run's rows coexist with prior runs'
+    # under the widened constraint; the promoted head names which run is current.
     typed_col_ids = list(typed_column_map.values())
     if typed_col_ids:
-        session.execute(delete(TypeCandidate).where(TypeCandidate.column_id.in_(typed_col_ids)))
-        session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(typed_col_ids)))
+        session.execute(
+            delete(TypeCandidate).where(
+                TypeCandidate.column_id.in_(typed_col_ids),
+                TypeCandidate.run_id == run_id,
+            )
+        )
+        session.execute(
+            delete(TypeDecision).where(
+                TypeDecision.column_id.in_(typed_col_ids),
+                TypeDecision.run_id == run_id,
+            )
+        )
         session.flush()
 
     for raw_col in table.columns:

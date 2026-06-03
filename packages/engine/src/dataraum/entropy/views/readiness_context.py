@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -27,6 +27,7 @@ from dataraum.entropy.network.bridge import (
 from dataraum.entropy.network.model import EntropyNetwork
 from dataraum.entropy.network.rollup import compute_priorities, roll_up
 from dataraum.storage import Column, Table
+from dataraum.storage.snapshot_head import head_run_id
 
 logger = get_logger(__name__)
 
@@ -522,15 +523,36 @@ def load_persisted_readiness(
     Precondition: the terminal detect step has run. Query time always follows
     detect in the workflow, so empty here means "no readiness yet" and is
     treated as ready — same as a genuinely clean source.
+
+    Multi-run head-resolution (DAT-413): two add_source runs over the same table
+    leave two readiness snapshots (distinct ``run_id`` under stage ``"detect"``).
+    Per table, the promoted head names the current run, so the query is filtered
+    to ``(table_id, run_id == head)`` — never a blind ``table_id.in_()`` that
+    would mix runs. A table with no promoted detect run yet contributes nothing
+    (graceful ``None`` — treated as "no readiness", i.e. ready).
     """
     if not table_ids:
         return EntropyForReadiness()
 
-    records = list(
-        session.execute(
-            select(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
-        ).scalars()
+    # Resolve each table's promoted detect run; keep only tables that have one.
+    head_by_table = {
+        table_id: run_id
+        for table_id in table_ids
+        if (run_id := head_run_id(session, table_id, "detect")) is not None
+    }
+    if not head_by_table:
+        return EntropyForReadiness()
+
+    record_filter = or_(
+        *(
+            and_(
+                EntropyReadinessRecord.table_id == table_id,
+                EntropyReadinessRecord.run_id == run_id,
+            )
+            for table_id, run_id in head_by_table.items()
+        )
     )
+    records = list(session.execute(select(EntropyReadinessRecord).where(record_filter)).scalars())
     if not records:
         return EntropyForReadiness()
 

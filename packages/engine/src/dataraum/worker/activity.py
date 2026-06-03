@@ -50,9 +50,7 @@ __all__ = [
     "raw_table_ids",
     "run_detectors",
     "run_phase",
-    "run_replay_cleanup",
     "run_session_phase",
-    "run_session_replay_cleanup",
     "typed_table_id_for_raw",
 ]
 
@@ -247,57 +245,6 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
     return detector_ids
 
 
-def run_replay_cleanup(
-    manager: ConnectionManager,
-    identity: SourceIdentity,
-    phase_name: str,
-    table_ids: list[str],
-) -> None:
-    """Invoke ``phase.replay_cleanup`` for ``phase_name`` (DAT-343).
-
-    The activity-side counterpart to ``BasePhase.replay_cleanup``: leases a
-    scoped session + DuckDB cursor, builds the minimal ``PhaseContext`` the
-    cleanup needs (source_id + connections; no per-phase static config —
-    cleanup deletes rows, doesn't read config), and calls the phase's
-    cleanup method. Commits via ``session_scope`` on clean exit.
-
-    Workspace-mismatch guard mirrors :func:`run_phase` so a payload
-    addressed to another workspace can't accidentally clean up this one.
-    """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: replay_cleanup payload targets "
-            f"'{identity.workspace_id}' but this worker is bound to "
-            f"'{active_workspace_id}'."
-        )
-
-    phase_cls = get_phase_class(phase_name)
-    if phase_cls is None:
-        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
-    phase = phase_cls()
-
-    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=cursor,
-            source_id=identity.source_id,
-            table_ids=list(table_ids),
-            config={},
-            session_factory=manager.session_scope,
-            manager=manager,
-            session_id=identity.session_id,
-        )
-        phase.replay_cleanup(ctx, list(table_ids))
-
-    logger.info(
-        "activity.replay_cleanup",
-        phase=phase_name,
-        table_ids=table_ids,
-        source_id=identity.source_id,
-    )
-
-
 def begin_session_select(
     manager: ConnectionManager,
     identity: SessionIdentity,
@@ -438,54 +385,6 @@ def run_session_phase(
         status=result.status.value,
         summary=result.summary,
         error=result.error,
-    )
-
-
-def run_session_replay_cleanup(
-    manager: ConnectionManager,
-    identity: SessionIdentity,
-    phase_name: str,
-    table_ids: list[str],
-) -> None:
-    """Invoke ``phase.replay_cleanup`` for a begin_session phase (DAT-401).
-
-    Source-free sibling of :func:`run_replay_cleanup`: builds a session-scoped
-    ``PhaseContext`` (``source_id=None``, scoped to ``table_ids``) and calls the
-    phase's owner-scoped cleanup so its ``should_skip`` doesn't bail on the
-    re-run. The cleanup deletes only the phase's own rows for these tables — it
-    never relies on a parent ``Table`` cascade (DAT-373).
-    """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: session replay_cleanup payload targets "
-            f"'{identity.workspace_id}' but this worker is bound to "
-            f"'{active_workspace_id}'."
-        )
-
-    phase_cls = get_phase_class(phase_name)
-    if phase_cls is None:
-        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
-    phase = phase_cls()
-
-    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=cursor,
-            source_id=None,
-            table_ids=list(table_ids),
-            config={},
-            session_factory=manager.session_scope,
-            manager=manager,
-            session_id=identity.session_id,
-        )
-        phase.replay_cleanup(ctx, list(table_ids))
-
-    logger.info(
-        "activity.session_replay_cleanup",
-        phase=phase_name,
-        table_ids=table_ids,
-        session_id=identity.session_id,
     )
 
 

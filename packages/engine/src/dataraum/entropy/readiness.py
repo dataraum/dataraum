@@ -47,10 +47,14 @@ def persist_readiness(
     if not table_ids:
         return 0
 
-    # Replay-safe refresh: clear these tables' prior readiness rows first.
-    session.execute(
-        delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
-    )
+    # Replay-safe refresh: clear these tables' prior readiness rows first. Scoped to
+    # ``run_id`` when set (the workflow path, DAT-413) so a re-run clears only its OWN
+    # prior rows and earlier runs survive (non-destructive); the ``None`` path
+    # (begin_session/tests) keeps the prior table-scoped delete.
+    del_stmt = delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
+    if run_id is not None:
+        del_stmt = del_stmt.where(EntropyReadinessRecord.run_id == run_id)
+    session.execute(del_stmt)
 
     ctx = build_for_readiness(session, table_ids)
     if not ctx.columns:

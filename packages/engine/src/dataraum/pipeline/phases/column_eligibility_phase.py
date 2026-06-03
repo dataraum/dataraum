@@ -10,7 +10,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.eligibility.config import load_eligibility_config
 from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
@@ -54,28 +54,16 @@ class ColumnEligibilityPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Delete this phase's ColumnEligibilityRecord rows for the scoped tables (DAT-373).
-
-        Owner-scoped by ``table_id``: drops only the eligibility records of the
-        typed tables in ``table_ids`` so the re-run (after a re-type) re-evaluates
-        eligibility against the freshly-typed columns. The re-typed DuckDB table
-        is rebuilt with its full column set, so any columns this phase previously
-        dropped are present again for re-evaluation. Never touches another phase's
-        per-Column rows.
-        """
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return
-        ctx.session.execute(
-            delete(ColumnEligibilityRecord).where(
-                ColumnEligibilityRecord.table_id.in_([t.table_id for t in typed_tables])
-            )
-        )
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the scoped tables' columns all have eligibility records."""
+        """Skip only when there are genuinely no typed columns to evaluate.
+
+        Structural early-out only (DAT-413): a re-run mints a fresh ``run_id``
+        and must always re-evaluate eligibility under it, so the old "all columns
+        already have records → skip" bail is gone. ``_run`` stamps ``run_id`` on
+        each ``ColumnEligibilityRecord`` and only treats THIS run's records as
+        already-evaluated, so a new run re-derives while prior runs' records stay
+        intact; the promoted head names which run is current.
+        """
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
@@ -88,16 +76,6 @@ class ColumnEligibilityPhase(BasePhase):
 
         if not columns:
             return "No columns found"
-
-        column_ids = [c.column_id for c in columns]
-
-        existing_stmt = select(ColumnEligibilityRecord.column_id).where(
-            ColumnEligibilityRecord.column_id.in_(column_ids)
-        )
-        existing = set(ctx.session.execute(existing_stmt).scalars().all())
-
-        if len(existing) >= len(column_ids):
-            return "All columns already have eligibility records"
 
         return None
 
@@ -129,9 +107,13 @@ class ColumnEligibilityPhase(BasePhase):
         profiles = ctx.session.execute(profiles_stmt).scalars().all()
         profile_map = {p.column_id: p for p in profiles}
 
-        # Check for existing eligibility records
+        # Check for THIS run's existing eligibility records (DAT-413): scope the
+        # already-evaluated set to ``ctx.run_id`` so a re-run re-evaluates every
+        # column under its new run, leaving prior runs' records untouched (the
+        # model is a pure insert with no run-spanning unique constraint).
         existing_stmt = select(ColumnEligibilityRecord.column_id).where(
-            ColumnEligibilityRecord.column_id.in_([c.column_id for c in all_columns])
+            ColumnEligibilityRecord.column_id.in_([c.column_id for c in all_columns]),
+            ColumnEligibilityRecord.run_id == ctx.run_id,
         )
         existing_column_ids = set(ctx.session.execute(existing_stmt).scalars().all())
 

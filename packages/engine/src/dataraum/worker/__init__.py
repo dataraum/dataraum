@@ -15,7 +15,6 @@ from dataraum.worker.activity import (
     run_detectors,
     run_phase,
     run_session_phase,
-    run_session_replay_cleanup,
     typed_table_id_for_raw,
 )
 from dataraum.worker.bootstrap import (
@@ -33,7 +32,6 @@ from dataraum.worker.contracts import (
     ProcessTableResult,
     ProgressSnapshot,
     SessionIdentity,
-    SessionReplayCleanupInput,
     SessionScopedInput,
     SourceIdentity,
     TableScopedInput,
@@ -59,7 +57,6 @@ __all__ = [
     "ProcessTableWorkflow",
     "ProgressSnapshot",
     "SessionIdentity",
-    "SessionReplayCleanupInput",
     "SessionScopedInput",
     "SourceIdentity",
     "TableScopedInput",
@@ -70,7 +67,6 @@ __all__ = [
     "run_detectors",
     "run_phase",
     "run_session_phase",
-    "run_session_replay_cleanup",
     "shutdown_worker_substrate",
     "typed_table_id_for_raw",
 ]

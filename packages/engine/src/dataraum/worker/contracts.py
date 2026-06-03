@@ -97,35 +97,6 @@ class SessionIdentity(BaseModel):
     session_id: str
 
 
-class ReplayScope(BaseModel):
-    """Scope for a teach-driven replay of ``addSourceWorkflow`` (DAT-343).
-
-    Attached to ``AddSourceInput`` (and propagated to child
-    ``ProcessTableInput``) when the cockpit's teach tool starts the
-    workflow to re-apply a teach. Optional on the inputs because the
-    initial-run call from the cockpit doesn't carry one — every
-    pre-replay invocation reads the field as ``None`` and the workflow
-    body's gates take the initial-run path.
-
-    Attributes:
-        from_phase: Phase name to start the replay at. The workflow runs
-            this phase and everything downstream of it; everything before
-            is skipped. One of ``"import"``, ``"typing"``, or
-            ``"semantic_per_column"`` in slice 1.
-        raw_table_ids: Per-child scope filter. ``None`` = all tables (the
-            initial-run shape, used by source-wide replays like
-            ``null_value``). A non-empty list narrows the parent's fan-out
-            to those raw table ids (per-table replays like
-            ``type_pattern``). An empty list ``[]`` means "no children" —
-            used for source-tail-only replays (``concept_property``) where
-            the parent re-runs ``semantic_per_column`` + the terminal
-            ``detect`` step without re-typing anything.
-    """
-
-    from_phase: str
-    raw_table_ids: list[str] | None = None
-
-
 class PhaseOutcome(BaseModel):
     """Lean per-activity result: outcome + human summary.
 
@@ -155,13 +126,11 @@ class ProcessTableInput(BaseModel):
     """Input to ``ProcessTableWorkflow`` (and its ``typing`` activity).
 
     One raw table is the unit of work; the child workflow runs the table-local
-    chain over it. ``replay`` (DAT-343) is set when the parent is replaying
-    this child for a teach — the child gates which of its activities run.
+    chain over it.
     """
 
     identity: SourceIdentity
     raw_table_id: str
-    replay: ReplayScope | None = None
 
 
 class TypingResult(BaseModel):
@@ -171,43 +140,9 @@ class TypingResult(BaseModel):
     result, so it is persisted in Temporal history and replayed verbatim — the
     downstream analytics activities read it from the child workflow, never
     recompute it.
-
-    Also the return shape of ``lookup_typed_table_id`` (DAT-343), which the
-    child workflow calls when a teach replay starts past ``typing`` and the
-    typed id has to be re-read from substrate.
     """
 
     typed_table_id: str
-
-
-class ReplayCleanupInput(BaseModel):
-    """Input to the ``replay_cleanup_for_phase`` activity (DAT-343 / DAT-373).
-
-    Carried by the workflow before EVERY phase that re-executes under a teach
-    replay (DAT-373), not just the ``from_phase``; the activity invokes that
-    phase's owner-scoped ``replay_cleanup`` so its existing ``should_skip``
-    doesn't bail on the re-run. Pre-DAT-373 only the entry phase was cleaned and
-    downstream phases rode the now-removed typed-Table cascade.
-
-    Attributes:
-        identity: source identity header (same as every other phase activity).
-        phase_name: which phase's ``replay_cleanup`` to invoke — one of the
-            chain phases at-or-after ``replay.from_phase`` (plus the always-rerun
-            source-level reduce).
-        table_ids: scope passed through to the phase's ``replay_cleanup``.
-            For ``typing`` / ``import`` this is the raw table id(s); for the
-            table-local analytics phases it is the typed table id their rows
-            hang off. An empty list collapses two source-wide shapes onto one
-            wire value: (1) ``replay.raw_table_ids is None`` (e.g. ``null_value``
-            → ``ImportPhase.replay_cleanup``, which ignores the scope and drops
-            everything for the source); and (2) ``replay.raw_table_ids == []``
-            (e.g. ``concept_property`` → ``SemanticPerColumnPhase.replay_cleanup``,
-            intrinsically source-wide).
-    """
-
-    identity: SourceIdentity
-    phase_name: str
-    table_ids: list[str] = []
 
 
 class TableScopedInput(BaseModel):
@@ -243,33 +178,17 @@ class SessionScopedInput(BaseModel):
     table_ids: list[str]
 
 
-class SessionReplayCleanupInput(BaseModel):
-    """Input to the ``session_replay_cleanup_for_phase`` activity (DAT-401).
-
-    The source-free sibling of :class:`ReplayCleanupInput`: a begin_session
-    teach replay clears a phase's own rows (candidate relationships, table
-    entities) before the re-run, scoped to ``table_ids``. Mirrors the add_source
-    cleanup path but carries a :class:`SessionIdentity` (no ``source_id``).
-    """
-
-    identity: SessionIdentity
-    phase_name: str
-    table_ids: list[str] = []
-
-
 class BeginSessionInput(BaseModel):
     """Input to ``beginSessionWorkflow`` — session identity + the selected tables.
 
     Unlike ``add_source`` (whose table set is discovered by ``import``), the
     begin_session table set is the user's explicit selection of already-typed
     tables, so it travels in the input as ``tables`` (an array of typed table
-    ids, possibly spanning sources). ``replay`` (DAT-343 pattern) is set when
-    re-running after a teach; ``None`` is the initial-run shape.
+    ids, possibly spanning sources).
     """
 
     identity: SessionIdentity
     tables: list[str]
-    replay: ReplayScope | None = None
 
 
 class BeginSessionResult(BaseModel):
@@ -280,17 +199,13 @@ class BeginSessionResult(BaseModel):
 
 
 class AddSourceInput(BaseModel):
-    """Input to ``AddSourceWorkflow`` — source identity + optional replay scope.
+    """Input to ``AddSourceWorkflow`` — the source identity header.
 
     The table set is unknown until ``import`` enumerates it (a source is a dir /
     DB recipe), so the parent carries identity only and discovers tables at run.
-
-    ``replay`` (DAT-343) is set by the cockpit's ``replay`` tool when re-running
-    after a teach; ``None`` is the initial-run shape.
     """
 
     identity: SourceIdentity
-    replay: ReplayScope | None = None
 
 
 class AddSourceResult(BaseModel):

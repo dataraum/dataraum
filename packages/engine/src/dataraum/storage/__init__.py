@@ -16,7 +16,7 @@ from dataraum.storage.base import (
 )
 from dataraum.storage.models import Column, Source, Table
 from dataraum.storage.overlay_models import ConfigOverlay
-from dataraum.storage.snapshot_head import MetadataSnapshotHead
+from dataraum.storage.snapshot_head import MetadataSnapshotHead, head_run_id
 
 __all__ = [
     # Base and metadata
@@ -30,6 +30,7 @@ __all__ = [
     "ConfigOverlay",
     # Snapshot version axis (DAT-413)
     "MetadataSnapshotHead",
+    "head_run_id",
     # Database management
     "init_database",
     "reset_database",

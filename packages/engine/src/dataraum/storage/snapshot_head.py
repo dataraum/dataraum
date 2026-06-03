@@ -16,12 +16,16 @@ The grain is ``table_id`` for Slice A; a ``target``-string generalization
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 
 class MetadataSnapshotHead(Base):
@@ -49,3 +53,24 @@ class MetadataSnapshotHead(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+def head_run_id(session: Session, table_id: str, stage: str) -> str | None:
+    """The promoted (current) ``run_id`` for one ``(table_id, stage)`` grain (DAT-413).
+
+    The query-time resolver an external reader of run_id-stamped metadata uses to
+    pick which run's rows are current. Under multi-run coexistence (Phase 3) two
+    runs' rows share a ``(table_id, stage)`` but carry distinct ``run_id``s; the
+    head names the promoted one, so a reader filters its query by this value
+    instead of assuming a single row per column.
+
+    Returns ``None`` when no run has been promoted for this ``(table_id, stage)``
+    yet — the caller treats that as "nothing current" and falls back to its
+    no-data behaviour, never guessing a run.
+    """
+    return session.execute(
+        select(MetadataSnapshotHead.run_id).where(
+            MetadataSnapshotHead.table_id == table_id,
+            MetadataSnapshotHead.stage == stage,
+        )
+    ).scalar_one_or_none()

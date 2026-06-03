@@ -67,11 +67,16 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Scoped delete: remove stale records for this detector (and table scope) only
+    # Scoped delete: remove stale records for this detector (and table scope) only.
+    # Scoped to ``run_id`` when set (the workflow path, DAT-413) so a re-run clears
+    # only its OWN prior rows and leaves earlier runs intact (non-destructive); the
+    # ``None`` path (begin_session/tests) keeps the prior broad delete.
     delete_stmt = delete(EntropyObjectRecord).where(
         EntropyObjectRecord.source_id == source_id,
         EntropyObjectRecord.detector_id == detector_id,
     )
+    if run_id is not None:
+        delete_stmt = delete_stmt.where(EntropyObjectRecord.run_id == run_id)
     if table_ids is not None:
         delete_stmt = delete_stmt.where(EntropyObjectRecord.table_id.in_(table_ids))
     session.execute(delete_stmt)

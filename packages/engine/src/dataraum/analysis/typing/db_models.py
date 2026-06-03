@@ -101,7 +101,11 @@ class TypeDecision(Base):
     """
 
     __tablename__ = "type_decisions"
-    __table_args__ = (UniqueConstraint("column_id", name="uq_column_type_decision"),)
+    # One decision per column PER RUN (DAT-413): the snapshot version axis widens
+    # this from ``column_id`` to ``(column_id, run_id)`` so two coexisting runs'
+    # rows for the same column don't collide. The promoted head names which run is
+    # current; readers head-resolve rather than assume one row per column.
+    __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_type_decision"),)
 
     decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(

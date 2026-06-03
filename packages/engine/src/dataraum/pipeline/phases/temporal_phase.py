@@ -14,9 +14,9 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import select
 
-from dataraum.analysis.temporal import TemporalColumnProfile, profile_temporal
+from dataraum.analysis.temporal import profile_temporal
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -46,34 +46,16 @@ class TemporalPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Delete this phase's TemporalColumnProfile rows for the scoped tables (DAT-373).
-
-        Owner-scoped: drops only the temporal profiles whose column belongs to a
-        typed table in ``table_ids`` so the re-run (after a re-type) recomputes
-        them against the freshly-typed data. ``_run`` is a pure insert, so this
-        self-clean is also what keeps a replay from double-inserting profiles.
-        Never touches any other phase's per-Column rows.
-        """
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return
-        column_ids = list(
-            ctx.session.execute(
-                select(Column.column_id).where(
-                    Column.table_id.in_([t.table_id for t in typed_tables])
-                )
-            ).scalars()
-        )
-        if not column_ids:
-            return
-        ctx.session.execute(
-            delete(TemporalColumnProfile).where(TemporalColumnProfile.column_id.in_(column_ids))
-        )
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the scoped tables have no temporal columns or all are profiled."""
+        """Skip only when there are genuinely no temporal columns to profile.
+
+        Structural early-outs only (DAT-413): "no typed tables" and "no temporal
+        columns". A re-run mints a fresh ``run_id`` and must always re-profile
+        under it, so the old "all temporal columns already profiled → skip" bail
+        is gone. ``profile_temporal`` is a pure insert stamping ``run_id`` on each
+        ``TemporalColumnProfile``, so a new run's profiles coexist with prior
+        runs'; the promoted head names which run is current.
+        """
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
@@ -100,19 +82,6 @@ class TemporalPhase(BasePhase):
             return f"No temporal columns found (types: {temporal_types}, available: {list(type_counts.keys())})"
 
         logger.debug(f"Temporal: Found {len(temporal_columns)} temporal columns")
-
-        # Check existing profiles for THIS scope's temporal columns only.
-        temporal_column_ids = [c.column_id for c in temporal_columns]
-        existing_count = (
-            ctx.session.execute(
-                select(func.count(TemporalColumnProfile.profile_id)).where(
-                    TemporalColumnProfile.column_id.in_(temporal_column_ids)
-                )
-            )
-        ).scalar() or 0
-
-        if existing_count >= len(temporal_columns):
-            return f"All {existing_count} temporal columns already profiled"
 
         return None
 

@@ -151,6 +151,30 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 		expect(toolChipSummary("connect", {}, undefined)).toBe("connecting…");
 		expect(toolChipSummary("run_sql", {}, undefined)).toBe("running query…");
 	});
+
+	it("treats a truthy-but-PARTIAL result as still running (no .length crash)", () => {
+		// The SDK can surface a partial/streaming or errored tool output: truthy but
+		// missing its array. Accessing `.tables.length` / `.concepts.length` /
+		// `.columns.length` on it crashed the chat rail (the multi-file drag-drop
+		// crash). These must degrade to the running label, not throw.
+		expect(toolChipSummary("connect", {}, { source: "people.csv" })).toBe(
+			"connecting…",
+		);
+		expect(toolChipSummary("frame", {}, { vertical: "finance" })).toBe(
+			"framing concepts…",
+		);
+		expect(toolChipSummary("look_table", {}, { table_name: "orders" })).toBe(
+			"reading table readiness…",
+		);
+	});
+
+	it("treats a truthy NON-array list output as empty (no .filter crash)", () => {
+		// list_* outputs are arrays; a partial/errored truthy non-array reached
+		// `.filter`/`.length` → "e.filter is not a function" crashed the rail.
+		expect(toolChipSummary("list_sources", {}, {})).toBe("no available inputs");
+		expect(toolChipSummary("list_verticals", {}, {})).toBe("no verticals");
+		expect(toolChipSummary("list_tables", {}, {})).toBe("0 tables");
+	});
 });
 
 describe("teachChipSummary (display-only, readable at every state)", () => {

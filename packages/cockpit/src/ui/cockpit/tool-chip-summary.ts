@@ -59,7 +59,12 @@ export function toolChipSummary(
 	switch (toolName) {
 		case "list_sources": {
 			if (!done) return "listing available inputs…";
-			const sources = (output as AvailableSource[]) ?? [];
+			// `Array.isArray` not `?? []`: a partial/streaming or errored output can be
+			// a truthy NON-array, which `?? []` wouldn't catch → `.filter` then throws
+			// "e.filter is not a function" and crashes the rail. Degrade to empty.
+			const sources = Array.isArray(output)
+				? (output as AvailableSource[])
+				: [];
 			if (sources.length === 0) return "no available inputs";
 			const dbs = sources.filter((s) => s.kind === "database").length;
 			const files = sources.filter((s) => s.kind === "file").length;
@@ -70,7 +75,7 @@ export function toolChipSummary(
 		}
 		case "list_verticals": {
 			if (!done) return "listing verticals…";
-			const verticals = (output as Vertical[]) ?? [];
+			const verticals = Array.isArray(output) ? (output as Vertical[]) : [];
 			if (verticals.length === 0) return "no verticals";
 			const builtin = verticals.filter((v) => v.kind === "builtin").length;
 			const framed = verticals.filter((v) => v.kind === "framed").length;
@@ -82,14 +87,14 @@ export function toolChipSummary(
 		case "list_tables": {
 			const src = (input as { source_id?: string } | undefined)?.source_id;
 			if (!done) return src ? `listing tables for ${src}…` : "listing tables…";
-			const tables = (output as InventoryTable[]) ?? [];
+			const tables = Array.isArray(output) ? (output as InventoryTable[]) : [];
 			return src
 				? `${plural(tables.length, "table")} in ${src}`
 				: plural(tables.length, "table");
 		}
 		case "look_table": {
 			const r = output as LookTableResult | undefined;
-			if (!r) return "reading table readiness…";
+			if (!r || !Array.isArray(r.columns)) return "reading table readiness…";
 			const cols = plural(r.columns.length, "column");
 			return r.analyzed
 				? `${r.table_name} — ${cols}`
@@ -104,12 +109,16 @@ export function toolChipSummary(
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;
-			if (!s) return "connecting…";
+			// `output` can be a truthy-but-PARTIAL object while the result streams in
+			// (tables not populated yet) — treat a missing tables array as still
+			// connecting rather than crashing on `.length` (the multi-file drag-drop
+			// crash). The complete result always carries the array.
+			if (!s || !Array.isArray(s.tables)) return "connecting…";
 			return `${s.source} — ${plural(s.tables.length, "table")}`;
 		}
 		case "frame": {
 			const f = output as FrameResult | undefined;
-			if (!f) return "framing concepts…";
+			if (!f || !Array.isArray(f.concepts)) return "framing concepts…";
 			return `${f.vertical} — ${plural(f.concepts.length, "concept")}`;
 		}
 		case "select": {

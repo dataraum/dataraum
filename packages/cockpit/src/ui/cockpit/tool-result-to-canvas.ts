@@ -34,14 +34,17 @@ type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
  * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
-	list_sources: (result) => ({
-		kind: "source-list",
-		sources: (result as AvailableSource[]) ?? [],
-	}),
-	list_tables: (result) => ({
-		kind: "workspace-inventory",
-		tables: (result as InventoryTable[]) ?? [],
-	}),
+	// Project only a real array — a partial/streaming or errored output can be a
+	// truthy NON-array, and the SourceList/Inventory widgets call .filter/.reduce/
+	// .length on it ("e.filter is not a function"). Non-array → leave unchanged.
+	list_sources: (result) =>
+		Array.isArray(result)
+			? { kind: "source-list", sources: result as AvailableSource[] }
+			: null,
+	list_tables: (result) =>
+		Array.isArray(result)
+			? { kind: "workspace-inventory", tables: result as InventoryTable[] }
+			: null,
 	// The per-table readiness grid; a missing result (e.g. an errored read)
 	// leaves the canvas unchanged.
 	look_table: (result) =>
@@ -51,13 +54,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The per-column explanation; a missing result leaves the canvas as-is.
 	why_column: (result) =>
 		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
-	// null/undefined → leave the canvas unchanged (a failed connect surfaces its
-	// error in the chat rail, not as an empty preview).
+	// Only project once the result is a COMPLETE schema (a `tables` array): a
+	// partial/streaming or errored connect output is truthy-but-tables-less, and
+	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file
+	// drag-drop crash). Not-yet-complete → leave the canvas unchanged (the last
+	// good preview stays; a failed connect surfaces its error in the chat rail).
 	connect: (result) =>
-		result ? { kind: "schema-preview", schema: result as ConnectSchema } : null,
-	// Declared concepts render as the ConceptFrame widget; missing → unchanged.
+		Array.isArray((result as { tables?: unknown } | null)?.tables)
+			? { kind: "schema-preview", schema: result as ConnectSchema }
+			: null,
+	// Declared concepts render as the ConceptFrame widget; only once the result
+	// carries a `concepts` array (same partial-output guard as connect).
 	frame: (result) =>
-		result ? { kind: "concept-frame", frame: result as FrameResult } : null,
+		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
+			? { kind: "concept-frame", frame: result as FrameResult }
+			: null,
 	// The persisted Source descriptor renders as SelectedSource; a missing result
 	// (e.g. a rejected duplicate-basename select) leaves the canvas unchanged.
 	select: (result) =>

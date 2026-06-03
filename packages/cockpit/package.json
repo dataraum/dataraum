@@ -19,7 +19,7 @@
     "format": "bun --bun biome format",
     "lint": "bun --bun biome lint",
     "check": "bun --bun biome check",
-    "db:pull:metadata": "bunx drizzle-kit pull --config drizzle.config.metadata.ts && bun scripts/normalize-metadata-pull.mjs && bun --bun biome check --write --unsafe src/db/metadata/",
+    "db:pull:metadata": "bunx drizzle-kit pull --config drizzle.config.metadata.ts && bun --bun scripts/normalize-metadata-pull.mjs && bun --bun biome check --write --unsafe src/db/metadata/",
     "db:push:cockpit": "bunx drizzle-kit push --config drizzle.config.cockpit.ts",
     "db:generate:cockpit": "bunx drizzle-kit generate --config drizzle.config.cockpit.ts"
   },

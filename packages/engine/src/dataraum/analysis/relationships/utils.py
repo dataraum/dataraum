@@ -6,10 +6,57 @@ Helper functions for loading and formatting relationship data.
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.storage import Column, Table
+
+
+def load_defined_relationships(
+    session: Session,
+    table_ids: list[str],
+    *,
+    run_id: str | None = None,
+    both_tables: bool = True,
+    eager_columns: bool = False,
+    min_confidence: float | None = None,
+) -> list[Relationship]:
+    """The session's **defined** relationships for ``table_ids`` (DAT-408).
+
+    "Defined" = ``detection_method != 'candidate'`` — the durable catalog (llm +
+    materialized manual/keeper), NOT the ephemeral per-run structural candidates.
+    One definition so every downstream consumer (enriched_views, cycles,
+    validation, graphs, …) agrees on what "the relationships" are and on
+    run-scoping; they only vary the flags:
+
+    - ``run_id``: scope to the current run's catalog (DAT-408). ``None`` reads all
+      runs — only safe for callers that don't yet thread a run_id (dormant stages
+      reactivated by their own slices must pass it).
+    - ``both_tables``: require BOTH endpoints in ``table_ids`` (intra-selection
+      joins) vs either endpoint.
+    - ``eager_columns``: eager-load from/to columns + their tables.
+    - ``min_confidence``: optional confidence floor.
+    """
+    stmt = select(Relationship).where(Relationship.detection_method != "candidate")
+    if eager_columns:
+        stmt = stmt.options(
+            selectinload(Relationship.from_column).selectinload(Column.table),
+            selectinload(Relationship.to_column).selectinload(Column.table),
+        )
+    if both_tables:
+        stmt = stmt.where(
+            Relationship.from_table_id.in_(table_ids),
+            Relationship.to_table_id.in_(table_ids),
+        )
+    else:
+        stmt = stmt.where(
+            Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids)
+        )
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    if min_confidence is not None:
+        stmt = stmt.where(Relationship.confidence >= min_confidence)
+    return list(session.execute(stmt).scalars())
 
 
 def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:

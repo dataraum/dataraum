@@ -24,6 +24,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
@@ -129,13 +130,14 @@ class EnrichedViewsPhase(BasePhase):
                 records_created=0,
             )
 
-        # Load all LLM-confirmed relationships for these tables
-        rel_stmt = select(Relationship).where(
-            Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids),
-            Relationship.detection_method == "llm",
-            Relationship.confidence >= _MIN_CONFIDENCE,
+        # The session's defined relationships (not candidate) touching these tables.
+        all_relationships = load_defined_relationships(
+            ctx.session,
+            table_ids,
+            run_id=ctx.run_id,
+            both_tables=False,
+            min_confidence=_MIN_CONFIDENCE,
         )
-        all_relationships = ctx.session.execute(rel_stmt).scalars().all()
 
         # Build column lookups
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))

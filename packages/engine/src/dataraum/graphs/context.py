@@ -303,7 +303,6 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-    from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.relationships.graph_topology import (
         analyze_graph_topology,
     )
@@ -383,13 +382,12 @@ def build_execution_context(
     for entity in session.execute(entity_stmt).scalars().all():
         table_entities[entity.table_id] = entity
 
-    # 9. Load relationships
-    rel_stmt = select(Relationship).where(
-        (Relationship.from_table_id.in_(table_ids))
-        & (Relationship.to_table_id.in_(table_ids))
-        & (Relationship.detection_method == "llm")
-    )
-    relationships_db = session.execute(rel_stmt).scalars().all()
+    # 9. The defined relationships (not candidate) within the selection.
+    # TODO(DAT-402+): thread the current run_id when this runs in a begin_session
+    # run, so the read scopes to the run's catalog (DAT-408).
+    from dataraum.analysis.relationships.utils import load_defined_relationships
+
+    relationships_db = load_defined_relationships(session, table_ids)
 
     # Build relationship contexts
     relationships: list[RelationshipContext] = []

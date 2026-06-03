@@ -162,7 +162,7 @@ def _build_induction_context(
     Returns:
         Tuple of (tables_json, annotations_summary, relationships_summary)
     """
-    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.analysis.relationships.utils import load_defined_relationships
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
     # Load tables with annotations
@@ -210,20 +210,10 @@ def _build_induction_context(
         "\n".join(annotation_lines) if annotation_lines else "No annotations available."
     )
 
-    # Load LLM-confirmed relationships (not raw statistical candidates)
-    rel_stmt = (
-        select(Relationship)
-        .options(
-            selectinload(Relationship.from_column).selectinload(Column.table),
-            selectinload(Relationship.to_column).selectinload(Column.table),
-        )
-        .where(
-            Relationship.from_table_id.in_(table_ids),
-            Relationship.to_table_id.in_(table_ids),
-            Relationship.detection_method == "llm",
-        )
-    )
-    relationships = session.execute(rel_stmt).scalars().all()
+    # The defined relationships (not candidate) within the selection, columns eager.
+    # TODO(DAT-403/404): thread the current run_id when this runs in a begin_session
+    # run, so the read scopes to the run's catalog (DAT-408).
+    relationships = load_defined_relationships(session, table_ids, eager_columns=True)
 
     rel_lines: list[str] = []
     for rel in relationships:

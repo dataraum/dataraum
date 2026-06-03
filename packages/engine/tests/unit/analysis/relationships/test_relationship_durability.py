@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.detector import _store_candidates
-from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
+from dataraum.analysis.relationships.utils import (
+    load_defined_relationships,
+    load_suppressed_relationship_pairs,
+)
 from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.models import relationship_target_key
 from dataraum.entropy.views.readiness_context import load_relationship_readiness
@@ -89,6 +92,21 @@ def test_redrive_skips_a_suppressed_candidate(session: Session) -> None:
 
     made = session.query(Relationship).filter_by(detection_method="candidate").all()
     assert made == [], "a suppressed pair must not be re-created on re-derive"
+
+
+def test_load_defined_relationships_excludes_candidates_and_scopes_run(session: Session) -> None:
+    """The shared 'defined' read = not candidate, run-scoped (DAT-408)."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "candidate", run_id="run-A")
+    _rel(session, "ca", "cb", "llm", run_id="run-A")
+    _rel(session, "ca", "cb", "manual", run_id="run-A")
+    _rel(session, "ca", "cb", "llm", run_id="run-B")  # a different run
+    session.flush()
+
+    defined = load_defined_relationships(session, ["t1", "t2"], run_id="run-A")
+    methods = sorted(r.detection_method for r in defined)
+    assert methods == ["llm", "manual"], "candidate excluded; run-B's llm out of scope"
+    assert all(r.run_id == "run-A" for r in defined)
 
 
 def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:

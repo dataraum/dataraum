@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -97,14 +97,10 @@ def get_multi_table_schema_for_llm(
     if not table_schemas:
         return {"error": "No tables with DuckDB paths found"}
 
-    # Fetch LLM-confirmed relationships between these tables
-    rel_query = select(Relationship).where(
-        Relationship.from_table_id.in_(table_ids),
-        Relationship.to_table_id.in_(table_ids),
-        Relationship.detection_method == "llm",
-    )
-    rel_result = session.execute(rel_query)
-    relationships = rel_result.scalars().all()
+    # The defined relationships (not candidate) between these tables.
+    # TODO(DAT-404): thread the current run_id when this runs in a begin_session
+    # run, so the read scopes to the run's catalog (DAT-408).
+    relationships = load_defined_relationships(session, table_ids)
 
     # Format relationships
     formatted_rels = []

@@ -98,6 +98,30 @@ describe("select (DAT-398) — file source", () => {
 			"s3://dataraum-lake/uploads/abc/orders.csv",
 		]);
 		expect(result.recipe_tables).toBeNull();
+		// No vertical chosen → the unnamed cold-start default.
+		expect(result.vertical).toBe("_adhoc");
+	});
+
+	it("echoes the chosen vertical (adopted builtin or framed) in the result", async () => {
+		const adopted = await select({
+			source_name: "ledger",
+			schema: FILE_SCHEMA,
+			vertical: "finance",
+		});
+		expect(adopted.vertical).toBe("finance");
+
+		const framed = await select({
+			source_name: "deals",
+			schema: FILE_SCHEMA,
+			vertical: "sales",
+		});
+		expect(framed.vertical).toBe("sales");
+	});
+
+	it("rejects an unsafe vertical", async () => {
+		await expect(
+			select({ source_name: "orders", schema: FILE_SCHEMA, vertical: "../x" }),
+		).rejects.toThrow(/Invalid vertical/);
 	});
 
 	it("enumerates a prefix into a multi-URI file_uris list via the injected driver", async () => {

@@ -49,9 +49,9 @@ vi.mock("#/db/metadata/client", () => ({
 vi.mock("#/db/metadata/schema", () => ({
 	investigationSessions: { name: "investigation_sessions" },
 }));
-// Pre-flight concept count (Theme B / obs 4) — records that the guard ran and
-// returns the configured count. Records "count" in the call order so the guard
-// test can assert it ran BEFORE any seed/start.
+// Pre-flight effective-concept count (Theme A guard) — records that the guard
+// ran and returns the configured count. Records "count" in the call order so
+// the guard test can assert it ran BEFORE any seed/start.
 const countMock = vi.fn(async (_vertical: string) => {
 	h.calls.push("count");
 	return h.conceptCount;
@@ -59,8 +59,8 @@ const countMock = vi.fn(async (_vertical: string) => {
 // Reference countMock LAZILY (through a wrapper) — a direct reference in the
 // factory return is evaluated at import time, before the `const` initializes
 // (the seed/start mocks dodge this by referencing their fns inside inner fns).
-vi.mock("#/db/metadata/concept-overlays", () => ({
-	countActiveConcepts: (vertical: string) => countMock(vertical),
+vi.mock("#/tools/list-verticals", () => ({
+	verticalConceptCount: (vertical: string) => countMock(vertical),
 }));
 
 // Temporal client: record the start args (after the seed) + hand back a run id.
@@ -81,7 +81,11 @@ vi.mock("@temporalio/common", () => ({
 	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
 
-import { NoConceptsError, triggerAddSource } from "./trigger-add-source";
+import {
+	NoConceptsError,
+	TriggerAddSourceInputSchema,
+	triggerAddSource,
+} from "./trigger-add-source";
 
 beforeEach(() => {
 	h.config = {
@@ -159,9 +163,9 @@ describe("triggerAddSource (DAT-352)", () => {
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [{ identity: Record<string, unknown> }];
 		expect(args[0].identity.vertical).toBe("financial_reporting");
-		// A built-in vertical (concepts ship on disk) is EXEMPT from the pre-flight
-		// concept check — the count is overlay-backed only.
-		expect(countMock).not.toHaveBeenCalled();
+		// The pre-flight effective-concept count runs for EVERY vertical now
+		// (builtin ontology + overlay) — a builtin with concepts simply passes it.
+		expect(countMock).toHaveBeenCalledWith("financial_reporting");
 	});
 
 	it("refuses an overlay-backed vertical with zero declared concepts (no seed, no start)", async () => {
@@ -186,5 +190,25 @@ describe("triggerAddSource (DAT-352)", () => {
 		// The guard runs first — no orphan session row, no workflow start.
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("TriggerAddSourceInputSchema (API trust boundary)", () => {
+	it("accepts a valid framed name, a builtin, and the _adhoc default", () => {
+		for (const vertical of ["sales", "finance", "_adhoc", undefined]) {
+			expect(
+				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+					.success,
+			).toBe(true);
+		}
+	});
+
+	it("rejects a path-traversal / unsafe vertical before it reaches the engine", () => {
+		for (const vertical of ["../etc", "a/b", "Finance", "_nope", ""]) {
+			expect(
+				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+					.success,
+			).toBe(false);
+		}
 	});
 });

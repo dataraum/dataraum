@@ -33,11 +33,12 @@ import { useCockpit } from "#/ui/cockpit/cockpit-state";
  * the Temporal/Postgres/config deps out of the client bundle. */
 async function triggerAddSourceRequest(
 	sourceId: string,
+	vertical: string,
 ): Promise<TriggerAddSourceResult> {
 	const res = await fetch("/api/add-source", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ source_id: sourceId }),
+		body: JSON.stringify({ source_id: sourceId, vertical }),
 	});
 	if (!res.ok) {
 		const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -66,7 +67,10 @@ export function SelectedSourceWidget({
 		setTriggering(true);
 		setTriggerError(null);
 		try {
-			const result = await triggerAddSourceRequest(selection.source_id);
+			const result = await triggerAddSourceRequest(
+				selection.source_id,
+				selection.vertical,
+			);
 			setCanvasState({
 				kind: "add-source-progress",
 				workflowId: result.workflow_id,
@@ -92,6 +96,13 @@ export function SelectedSourceWidget({
 						{selection.backend}
 					</Badge>
 				)}
+				<Badge
+					variant="light"
+					color="grape"
+					data-testid="selected-source-vertical"
+				>
+					vertical: {selection.vertical}
+				</Badge>
 				<Text c="dimmed" size="xs">
 					stage: {selection.stage}
 				</Text>

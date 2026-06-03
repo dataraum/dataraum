@@ -21,6 +21,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { Vertical } from "#/tools/list-verticals";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
@@ -66,6 +67,17 @@ export function toolChipSummary(
 			if (dbs > 0) parts.push(plural(dbs, "database"));
 			if (files > 0) parts.push(plural(files, "file"));
 			return parts.join(", ");
+		}
+		case "list_verticals": {
+			if (!done) return "listing verticals…";
+			const verticals = (output as Vertical[]) ?? [];
+			if (verticals.length === 0) return "no verticals";
+			const builtin = verticals.filter((v) => v.kind === "builtin").length;
+			const framed = verticals.filter((v) => v.kind === "framed").length;
+			const parts: string[] = [];
+			if (builtin > 0) parts.push(`${builtin} builtin`);
+			if (framed > 0) parts.push(`${framed} framed`);
+			return `${plural(verticals.length, "vertical")} (${parts.join(", ")})`;
 		}
 		case "list_tables": {
 			const src = (input as { source_id?: string } | undefined)?.source_id;

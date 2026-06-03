@@ -7,6 +7,7 @@ const REQUIRED: Record<string, string> = {
 	COCKPIT_DATABASE_URL: "postgresql://u:p@localhost:5432/cockpit",
 	METADATA_DATABASE_URL: "postgresql://u:p@localhost:5432/meta",
 	DATARAUM_WORKSPACE_ID: "00000000-0000-0000-0000-000000000001",
+	DATARAUM_CONFIG_PATH: "/opt/dataraum/config",
 	DATARAUM_LAKE_PATH: "s3://test-lake/lake",
 	DUCKLAKE_CATALOG_URL: "postgresql://u:p@localhost:5432/lake_catalog",
 	ANTHROPIC_API_KEY: "sk-ant-test",

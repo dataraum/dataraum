@@ -1,0 +1,186 @@
+// Unit tests for list_verticals (DAT-411). Mocks the three seams the tool
+// reads: the config-tree fs scan (`node:fs/promises`), Bun's YAML parser, and
+// the grouped concept-overlay count (`#/db/metadata/client`). Asserts the
+// builtin ∪ framed union, the concept-count = ontology + overlay rule, and the
+// capability flags.
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const h = vi.hoisted(() => ({
+	// Directory entries under <config>/verticals; each looks like a Dirent.
+	dirEntries: [] as { name: string; isDirectory: () => boolean }[],
+	readdirThrows: false,
+	// ontology.yaml content by absolute path (JSON — a valid YAML subset).
+	files: {} as Record<string, string>,
+	// Paths that exist (for `stat` → capability flags).
+	existing: new Set<string>(),
+	// Grouped active concept-overlay rows: payload.vertical → count.
+	overlayRows: [] as { vertical: string; n: number }[],
+}));
+
+vi.mock("#/config", () => ({
+	config: { dataraumConfigPath: "/cfg" },
+}));
+
+// Bun's YAML — the tool parses ontology.yaml with it; JSON is a YAML subset so
+// the test feeds JSON strings and parses them as JSON.
+vi.mock("bun", () => ({
+	YAML: { parse: (text: string) => JSON.parse(text) },
+}));
+
+vi.mock("node:fs/promises", () => ({
+	readdir: vi.fn(async () => {
+		if (h.readdirThrows) throw new Error("ENOENT: config tree not mounted");
+		return h.dirEntries;
+	}),
+	readFile: vi.fn(async (path: string) => {
+		const content = h.files[path];
+		if (content === undefined) throw new Error(`ENOENT: ${path}`);
+		return content;
+	}),
+	stat: vi.fn(async (path: string) => {
+		if (!h.existing.has(path)) throw new Error(`ENOENT: ${path}`);
+		return {};
+	}),
+}));
+
+// The grouped overlay count: select().from().where().groupBy() → rows. Referenced
+// lazily inside the returned objects so the factory doesn't touch consts early.
+const groupByMock = vi.fn(async () => h.overlayRows);
+vi.mock("#/db/metadata/client", () => ({
+	metadataDb: {
+		select: vi.fn(() => ({
+			from: vi.fn(() => ({ where: vi.fn(() => ({ groupBy: groupByMock })) })),
+		})),
+	},
+}));
+vi.mock("#/db/metadata/schema", () => ({
+	configOverlay: {
+		payload: "payload",
+		supersededAt: "superseded_at",
+		type: "type",
+	},
+}));
+// Stub the drizzle helpers the tool feeds to the (mocked) query builder, so they
+// don't choke on the stubbed string "columns"; the builder ignores them.
+vi.mock("drizzle-orm", () => ({
+	sql: (..._a: unknown[]) => "sql-expr",
+	count: () => "count-expr",
+	and: () => "and-expr",
+	eq: () => "eq-expr",
+	isNull: () => "isnull-expr",
+}));
+
+import { listVerticals } from "./list-verticals";
+
+function dir(name: string) {
+	return { name, isDirectory: () => true };
+}
+
+beforeEach(() => {
+	h.dirEntries = [];
+	h.readdirThrows = false;
+	h.files = {};
+	h.existing = new Set();
+	h.overlayRows = [];
+	groupByMock.mockClear();
+});
+
+describe("listVerticals (DAT-411)", () => {
+	it("lists builtin verticals with description, concept count, and capability flags", async () => {
+		h.dirEntries = [dir("finance")];
+		h.files["/cfg/verticals/finance/ontology.yaml"] = JSON.stringify({
+			description: "Financial analysis and reporting.\n",
+			concepts: [{ name: "revenue" }, { name: "cogs" }, { name: "cash" }],
+		});
+		h.existing = new Set([
+			"/cfg/verticals/finance/cycles.yaml",
+			"/cfg/verticals/finance/validations",
+			"/cfg/verticals/finance/metrics",
+		]);
+
+		const result = await listVerticals();
+		expect(result).toEqual([
+			{
+				name: "finance",
+				kind: "builtin",
+				description: "Financial analysis and reporting.",
+				concept_count: 3,
+				has_cycles: true,
+				has_validations: true,
+				has_metrics: true,
+			},
+		]);
+	});
+
+	it("counts a builtin's concepts as ontology + overlay (so _adhoc reports its induced concepts)", async () => {
+		h.dirEntries = [dir("_adhoc")];
+		// _adhoc ships an empty ontology — its concepts come from the overlay.
+		h.files["/cfg/verticals/_adhoc/ontology.yaml"] = JSON.stringify({
+			concepts: [],
+		});
+		h.overlayRows = [{ vertical: "_adhoc", n: 5 }];
+
+		const [adhoc] = await listVerticals();
+		expect(adhoc).toMatchObject({
+			name: "_adhoc",
+			kind: "builtin",
+			description: null,
+			concept_count: 5,
+			has_cycles: false,
+			has_validations: false,
+			has_metrics: false,
+		});
+	});
+
+	it("includes framed verticals (overlay names with no directory), sorted builtins-first", async () => {
+		h.dirEntries = [dir("finance"), dir("_adhoc")];
+		h.files["/cfg/verticals/finance/ontology.yaml"] = JSON.stringify({
+			description: "Finance",
+			concepts: [{ name: "revenue" }],
+		});
+		h.files["/cfg/verticals/_adhoc/ontology.yaml"] = JSON.stringify({
+			concepts: [],
+		});
+		// "sales" is framed (in the overlay, no directory); _adhoc is a builtin
+		// that also has overlay concepts.
+		h.overlayRows = [
+			{ vertical: "sales", n: 4 },
+			{ vertical: "_adhoc", n: 2 },
+		];
+
+		const result = await listVerticals();
+		expect(result.map((v) => [v.name, v.kind, v.concept_count])).toEqual([
+			["_adhoc", "builtin", 2],
+			["finance", "builtin", 1],
+			["sales", "framed", 4],
+		]);
+	});
+
+	it("returns framed-only when the config tree is unreadable", async () => {
+		h.readdirThrows = true;
+		h.overlayRows = [{ vertical: "sales", n: 3 }];
+		const result = await listVerticals();
+		expect(result).toEqual([
+			{
+				name: "sales",
+				kind: "framed",
+				description: null,
+				concept_count: 3,
+				has_cycles: false,
+				has_validations: false,
+				has_metrics: false,
+			},
+		]);
+	});
+
+	it("ignores a null overlay vertical (rows whose payload has no vertical)", async () => {
+		h.dirEntries = [];
+		h.overlayRows = [
+			{ vertical: null as unknown as string, n: 9 },
+			{ vertical: "sales", n: 1 },
+		];
+		const result = await listVerticals();
+		expect(result.map((v) => v.name)).toEqual(["sales"]);
+	});
+});

@@ -10,6 +10,7 @@ import { connectTool } from "./connect";
 import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
+import { listVerticalsTool } from "./list-verticals";
 import { lookTableTool } from "./look-table";
 import { probeTool } from "./probe";
 import { replayTool } from "./replay";
@@ -22,6 +23,7 @@ import { workflowStatusTool } from "./workflow-status";
 export const tools = [
 	listSourcesTool,
 	listTablesTool,
+	listVerticalsTool,
 	lookTableTool,
 	whyColumnTool,
 	runSqlTool,

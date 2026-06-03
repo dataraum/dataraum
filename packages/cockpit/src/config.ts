@@ -19,6 +19,11 @@ const ConfigSchema = z.object({
 	// Plain non-empty string (not .uuid()) to match the engine, which accepts
 	// stable non-UUID ids (e.g. "test"); both sides must agree on the value.
 	dataraumWorkspaceId: z.string().min(1),
+	// The read-only config tree bind-mounted at DATARAUM_CONFIG_PATH (the same
+	// `/opt/dataraum/config` the engine resolves through `dataraum.core.config`).
+	// The cockpit reads it via `fs` — `list_verticals` scans `verticals/*` here.
+	// Required, like the engine's hard dependency on it.
+	dataraumConfigPath: z.string().min(1),
 	// DuckLake DATA_PATH — the `s3://bucket/prefix` URI where DuckLake writes
 	// parquet (DAT-388). The engine writes here; the cockpit ATTACHes it
 	// READ_ONLY (DAT-367). Must be byte-identical to the engine's value or the
@@ -67,6 +72,7 @@ function loadConfig(): Config {
 		cockpitDatabaseUrl: process.env.COCKPIT_DATABASE_URL,
 		metadataDatabaseUrl: process.env.METADATA_DATABASE_URL,
 		dataraumWorkspaceId: process.env.DATARAUM_WORKSPACE_ID,
+		dataraumConfigPath: process.env.DATARAUM_CONFIG_PATH,
 		dataraumLakePath: process.env.DATARAUM_LAKE_PATH,
 		ducklakeCatalogUrl: process.env.DUCKLAKE_CATALOG_URL,
 		anthropicApiKey: process.env.ANTHROPIC_API_KEY,

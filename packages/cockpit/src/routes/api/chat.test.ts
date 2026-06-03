@@ -32,6 +32,7 @@ describe("chat route wiring (DAT-353)", () => {
 			new Set([
 				"list_sources",
 				"list_tables",
+				"list_verticals",
 				"look_table",
 				"why_column",
 				"run_sql",

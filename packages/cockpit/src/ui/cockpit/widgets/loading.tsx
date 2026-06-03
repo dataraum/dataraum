@@ -6,7 +6,9 @@
 import { Loader, Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
-export function LoadingWidget(_props: {
+export function LoadingWidget({
+	state,
+}: {
 	state: Extract<CanvasState, { kind: "loading" }>;
 }) {
 	return (
@@ -19,7 +21,7 @@ export function LoadingWidget(_props: {
 		>
 			<Loader size="sm" />
 			<Text c="dimmed" size="sm">
-				Working…
+				{state.label ?? "Working…"}
 			</Text>
 		</Stack>
 	);

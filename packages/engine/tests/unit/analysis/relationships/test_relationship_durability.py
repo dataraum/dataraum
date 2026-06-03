@@ -113,7 +113,6 @@ def _readiness_row(session: Session, target: str, run_id: str) -> None:
         EntropyReadinessRecord(
             session_id=baseline_session_id(),
             target=target,
-            source_id=None,
             table_id=None,
             column_id=None,
             run_id=run_id,

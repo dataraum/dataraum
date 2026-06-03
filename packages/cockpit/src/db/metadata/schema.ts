@@ -305,7 +305,6 @@ export const entropyObjects = metadataSchema.table(
 		dimension: varchar().notNull(),
 		subDimension: varchar("sub_dimension").notNull(),
 		target: varchar().notNull(),
-		sourceId: varchar("source_id").references(() => sources.sourceId),
 		tableId: varchar("table_id").references(() => tables.tableId, {
 			onDelete: "cascade",
 		}),
@@ -330,11 +329,6 @@ export const entropyObjects = metadataSchema.table(
 			table.dimension.asc().nullsLast(),
 		),
 		index("idx_entropy_score").using("btree", table.score.asc().nullsLast()),
-		index("idx_entropy_source_detector").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-			table.detectorId.asc().nullsLast(),
-		),
 		index("idx_entropy_table").using("btree", table.tableId.asc().nullsLast()),
 		index("idx_entropy_target").using("btree", table.target.asc().nullsLast()),
 		index("ix_entropy_objects_session_id").using(
@@ -352,7 +346,6 @@ export const entropyReadiness = metadataSchema.table(
 			.notNull()
 			.references(() => investigationSessions.sessionId),
 		target: varchar().notNull(),
-		sourceId: varchar("source_id").references(() => sources.sourceId),
 		tableId: varchar("table_id").references(() => tables.tableId, {
 			onDelete: "cascade",
 		}),
@@ -370,10 +363,6 @@ export const entropyReadiness = metadataSchema.table(
 		index("idx_readiness_column").using(
 			"btree",
 			table.columnId.asc().nullsLast(),
-		),
-		index("idx_readiness_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
 		),
 		index("idx_readiness_table").using(
 			"btree",

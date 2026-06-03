@@ -38,8 +38,8 @@ def run_detector_post_step(
     against those typed tables and persists new records. The scope is the table
     set, never a single ``source_id`` — a begin_session run spans sources, and an
     add_source run's tables are exactly its source's tables, so the table-scoped
-    delete is byte-identical there. Per-record ``source_id`` is derived from the
-    table being measured (provenance only, not a scope key).
+    delete is byte-identical there. Records carry no ``source_id`` (DAT-408) —
+    source is reachable via ``table_id`` and was never read off the row.
 
     Args:
         session: SQLAlchemy session (caller manages commit).
@@ -82,7 +82,6 @@ def run_detector_post_step(
         return 0
 
     table_id_by_name = {t.table_name: t.table_id for t in typed_tables}
-    source_by_table_id = {t.table_id: t.source_id for t in typed_tables}
     all_records: list[EntropyObjectRecord] = []
 
     if detector.scope == "column":
@@ -105,7 +104,6 @@ def run_detector_post_step(
                 for obj in snapshot.objects:
                     all_records.append(
                         _make_record(
-                            source_id=table.source_id,
                             session_id=session_id,
                             run_id=run_id,
                             entropy_obj=obj,
@@ -131,7 +129,6 @@ def run_detector_post_step(
                 )
                 all_records.append(
                     _make_record(
-                        source_id=source_by_table_id.get(resolved_table_id),
                         session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
@@ -182,7 +179,6 @@ def run_detector_post_step(
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
-                        source_id=source_by_table_id.get(from_table),
                         session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
@@ -216,7 +212,6 @@ def run_detector_post_step(
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
-                        source_id=source_by_table_id.get(ev.fact_table_id),
                         session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
@@ -259,7 +254,6 @@ def persist_records(
 
 
 def _make_record(
-    source_id: str | None,
     entropy_obj: EntropyObject,
     table_id: str | None,
     column_id: str | None,
@@ -270,7 +264,6 @@ def _make_record(
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
         session_id=session_id,
-        source_id=source_id,
         table_id=table_id,
         column_id=column_id,
         run_id=run_id,

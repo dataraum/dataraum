@@ -404,7 +404,9 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     with worker_manager.session_scope() as session:
         rows = list(
             session.execute(
-                select(EntropyReadinessRecord).where(EntropyReadinessRecord.source_id == source_id)
+                select(EntropyReadinessRecord).where(
+                    EntropyReadinessRecord.session_id == session_id
+                )
             ).scalars()
         )
 
@@ -413,7 +415,6 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     assert all(cid is not None for cid in column_ids), "readiness row missing column_id FK"
     assert len(column_ids) == len(set(column_ids)), "duplicate readiness rows for a column"
     for r in rows:
-        assert r.source_id == source_id, "readiness row missing/incorrect source_id FK"
         assert r.table_id in typed_ids, "readiness row points to a non-source table"
         assert r.band in ("ready", "investigate", "blocked")
         # JSONB payloads — intents may be empty on clean data (all signals below
@@ -433,7 +434,7 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
             list(
                 session.execute(
                     select(EntropyReadinessRecord).where(
-                        EntropyReadinessRecord.source_id == source_id
+                        EntropyReadinessRecord.session_id == session_id
                     )
                 ).scalars()
             )
@@ -564,7 +565,7 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     with worker_manager.session_scope() as session:
         rows = session.execute(
             select(EntropyObjectRecord.table_id, EntropyObjectRecord.detector_id).where(
-                EntropyObjectRecord.source_id == source_id,
+                EntropyObjectRecord.session_id == session_id,
                 EntropyObjectRecord.detector_id.in_(_TABLE_LOCAL_DETECTORS),
             )
         ).all()

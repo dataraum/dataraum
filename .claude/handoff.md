@@ -46,10 +46,14 @@ versioned snapshot substrate at begin_session's terminal `detect`.
   (prior run's relationship readiness survives; head advances). `should_skip`'s
   "already detected/classified → skip" idempotency branch was removed on `relationships` +
   `semantic_per_table` (it would make a replay a silent no-op); genuine preconditions kept.
-- **Schema** (fresh DB / re-pull): `EntropyReadinessRecord.target` (NOT NULL) +
-  `source_id` now nullable; `MetadataSnapshotHead.table_id` → **`target`** string
-  (add_source uses `table:{id}`); `Relationship` unique key widened to
-  `(session_id, from_col, to_col, method)`; `SessionIdentity.run_id` (input field).
+- **Schema** (fresh DB / re-pull): `EntropyReadinessRecord.target` (NOT NULL);
+  **`source_id` DROPPED from `entropy_objects` + `entropy_readiness`** (it was
+  write-only — nothing ever read it; source is reachable via `table_id`) along with
+  the `idx_entropy_source_detector` + `idx_readiness_source` indexes;
+  `MetadataSnapshotHead.table_id` → **`target`** string (add_source uses
+  `table:{id}`); `Relationship` unique key widened to `(session_id, from_col,
+  to_col, method)`; `SessionIdentity.run_id` (input field). If an eval path filtered
+  entropy/readiness by `source_id`, switch to `session_id` or `table_id`.
 
 ### dataraum-testdata
 - Hints: ground truth for **relationship-level** quality would help calibrate the reshaped

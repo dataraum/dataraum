@@ -210,7 +210,6 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
                 EntropyReadinessRecord(
                     session_id="sess-1",
                     target="column:orders.amount",
-                    source_id="src-1",
                     table_id="tbl-1",
                     column_id="col-1",
                     run_id="run-A",
@@ -219,7 +218,6 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
                 EntropyReadinessRecord(
                     session_id="sess-1",
                     target="column:orders.amount",
-                    source_id="src-1",
                     table_id="tbl-1",
                     column_id="col-1",
                     run_id="run-B",
@@ -248,7 +246,6 @@ def test_load_persisted_readiness_no_promoted_run_is_empty(session_factory: Any)
             EntropyReadinessRecord(
                 session_id="sess-1",
                 target="column:orders.amount",
-                source_id="src-1",
                 table_id="tbl-1",
                 column_id="col-1",
                 run_id="run-A",
@@ -280,7 +277,6 @@ def test_readiness_run_scoped_delete_leaves_prior_run_intact(session_factory: An
             EntropyReadinessRecord(
                 session_id="sess-1",
                 target="column:orders.amount",
-                source_id="src-1",
                 table_id="tbl-1",
                 column_id="col-1",
                 run_id="run-A",

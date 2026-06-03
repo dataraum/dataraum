@@ -16,12 +16,11 @@ from dataraum.storage.models import Table
 from tests.conftest import baseline_session_id
 
 
-def _readiness_row(session: Session, table_id: str, source_id: str) -> None:
+def _readiness_row(session: Session, table_id: str) -> None:
     session.add(
         EntropyReadinessRecord(
             session_id=baseline_session_id(),
             target=f"table:{table_id}",
-            source_id=source_id,
             table_id=table_id,
             column_id=None,
             band="ready",
@@ -36,8 +35,8 @@ def test_per_table_replay_clears_only_its_own_rows(session: Session) -> None:
     for tid in ("tbl_a", "tbl_b"):
         session.add(Table(table_id=tid, source_id="src_x", table_name=tid, layer="typed"))
     session.flush()
-    _readiness_row(session, "tbl_a", "src_x")
-    _readiness_row(session, "tbl_b", "src_x")
+    _readiness_row(session, "tbl_a")
+    _readiness_row(session, "tbl_b")
     session.flush()
 
     # A per-table replay scoped to tbl_a only. No entropy objects exist, so the
@@ -52,12 +51,11 @@ def test_per_table_replay_clears_only_its_own_rows(session: Session) -> None:
 
 def _relationship_row(session: Session, target: str, run_id: str) -> None:
     """A relationship-granularity readiness row (DAT-408): identity in ``target``,
-    no table_id/column_id/source_id."""
+    no table_id/column_id."""
     session.add(
         EntropyReadinessRecord(
             session_id=baseline_session_id(),
             target=target,
-            source_id=None,
             table_id=None,
             column_id=None,
             run_id=run_id,
@@ -101,7 +99,7 @@ def test_empty_table_set_is_a_noop(session: Session) -> None:
     session.add(Source(source_id="src_y", name="src_y", source_type="csv"))
     session.add(Table(table_id="tbl_c", source_id="src_y", table_name="tbl_c", layer="typed"))
     session.flush()
-    _readiness_row(session, "tbl_c", "src_y")
+    _readiness_row(session, "tbl_c")
     session.flush()
 
     assert persist_readiness(session, baseline_session_id(), []) == 0

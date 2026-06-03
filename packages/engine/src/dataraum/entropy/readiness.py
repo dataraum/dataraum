@@ -38,11 +38,11 @@ def persist_readiness(
     when the new rollup is empty, and a per-table replay clears only that table's
     rows (not the whole source's). For ``add_source`` the set is one source's
     typed tables, so the result is identical to the prior source-scoped behaviour.
-    The caller owns the transaction (commit at its ``session_scope`` exit). Each
-    row's ``source_id`` is derived per-table so a multi-source session's rows stay
-    well-formed. ``run_id`` is the snapshot version axis (DAT-413), stamped on each
-    row (``None`` outside the workflow path); the head pointer is not consulted yet.
-    Returns the rows written.
+    The caller owns the transaction (commit at its ``session_scope`` exit). Rows
+    carry no ``source_id`` (DAT-408) — source is reachable via ``table_id``.
+    ``run_id`` is the snapshot version axis (DAT-413), stamped on each row (``None``
+    outside the workflow path); the head pointer is not consulted yet. Returns the
+    rows written.
     """
     if not table_ids:
         return 0
@@ -69,22 +69,14 @@ def persist_readiness(
         return 0
 
     target_to_ids = _column_id_map(session, table_ids)
-    source_by_table: dict[str, str] = dict(
-        session.execute(
-            select(Table.table_id, Table.source_id).where(Table.table_id.in_(table_ids))
-        )
-        .tuples()
-        .all()
-    )
 
     rows: list[EntropyReadinessRecord] = []
     for target, col in ctx.columns.items():
         if target.startswith("relationship:"):
             # Relationship readiness: the identity is the target; a relationship
-            # spans two columns/sources so it carries no single column/source FK.
+            # spans two columns so it carries no single column FK.
             table_id: str | None = None
             column_id: str | None = None
-            source_id: str | None = None
         else:
             ids = target_to_ids.get(target)
             if ids is None:
@@ -93,12 +85,10 @@ def persist_readiness(
                 logger.debug("readiness_target_unresolved", target=target)
                 continue
             table_id, column_id = ids
-            source_id = source_by_table[table_id]
         rows.append(
             EntropyReadinessRecord(
                 session_id=session_id,
                 target=target,
-                source_id=source_id,
                 table_id=table_id,
                 column_id=column_id,
                 run_id=run_id,

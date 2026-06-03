@@ -33,7 +33,8 @@ class EntropyObjectRecord(Base):
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     # Workspace scope is structural: this row lives in its workspace's Postgres
     # schema. session_id stays NOT NULL but is no longer load-bearing post-DAT-341;
-    # entropy/engine.py filters by (source_id, detector_id).
+    # entropy/engine.py scopes by (detector_id, table_ids, run_id) — source-free
+    # (DAT-408). Source provenance, when needed, is reachable via ``table_id``.
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
@@ -50,8 +51,9 @@ class EntropyObjectRecord(Base):
         String, nullable=False
     )  # column:{t}.{c}, table:{t}, relationship:{t1}-{t2}
 
-    # Foreign keys to link to source data
-    source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
+    # Foreign keys to link to analyzed data. No ``source_id`` (DAT-408): a
+    # measurement is about a table/column/relationship; its source is reachable via
+    # ``table_id`` and was never read off this row.
     table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
     column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE")
@@ -85,7 +87,6 @@ Index("idx_entropy_layer_dimension", EntropyObjectRecord.layer, EntropyObjectRec
 Index("idx_entropy_table", EntropyObjectRecord.table_id)
 Index("idx_entropy_column", EntropyObjectRecord.column_id)
 Index("idx_entropy_score", EntropyObjectRecord.score)
-Index("idx_entropy_source_detector", EntropyObjectRecord.source_id, EntropyObjectRecord.detector_id)
 
 
 class EntropyReadinessRecord(Base):
@@ -116,14 +117,13 @@ class EntropyReadinessRecord(Base):
     # Target identity (DAT-408): the single key the cockpit reads (DAT-399 D),
     # carrying ``column:`` / ``relationship:`` / ``table:`` uniformly. For column
     # rows it mirrors the ``(table_id, column_id)`` pair below; for relationship
-    # rows it is the only identity (those carry no single column/source).
+    # rows it is the only identity (those carry no single column).
     target: Mapped[str] = mapped_column(String, nullable=False)
 
-    # Scope. ``source_id`` is the per-row FK stamp, derived per-table for column
-    # rows; NULL for relationship rows, which span sources in a multi-source
-    # session (DAT-408). ``table_id`` is the column-row delete-before-insert scope
-    # key (DAT-410); relationship rows scope by ``(session_id, target)``.
-    source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
+    # Scope. ``table_id`` is the column-row delete-before-insert scope key (DAT-410);
+    # relationship rows carry no ``table_id`` and scope by ``(session_id, target)``.
+    # No ``source_id`` (DAT-408): source is reachable via ``table_id`` and was never
+    # read off this row.
     table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
     column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE")
@@ -148,7 +148,6 @@ class EntropyReadinessRecord(Base):
     )
 
 
-Index("idx_readiness_source", EntropyReadinessRecord.source_id)
 Index("idx_readiness_table", EntropyReadinessRecord.table_id)
 Index("idx_readiness_column", EntropyReadinessRecord.column_id)
 Index("idx_readiness_target", EntropyReadinessRecord.target)

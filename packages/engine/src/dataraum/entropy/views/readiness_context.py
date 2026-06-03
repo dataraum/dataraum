@@ -535,10 +535,11 @@ def load_persisted_readiness(
         return EntropyForReadiness()
 
     # Resolve each table's promoted detect run; keep only tables that have one.
+    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-408).
     head_by_table = {
         table_id: run_id
         for table_id in table_ids
-        if (run_id := head_run_id(session, table_id, "detect")) is not None
+        if (run_id := head_run_id(session, f"table:{table_id}", "detect")) is not None
     }
     if not head_by_table:
         return EntropyForReadiness()

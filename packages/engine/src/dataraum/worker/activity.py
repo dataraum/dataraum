@@ -498,17 +498,21 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
             return 0
         now = datetime.now(UTC)
         for table_id in table_ids:
+            # add_source's per-table stages key the head by the generic
+            # ``table:{id}`` target (DAT-408); relationship targets are promoted by
+            # begin_session's own promote.
+            target = f"table:{table_id}"
             for stage in _PROMOTE_STAGES:
                 head = session.execute(
                     select(MetadataSnapshotHead).where(
-                        MetadataSnapshotHead.table_id == table_id,
+                        MetadataSnapshotHead.target == target,
                         MetadataSnapshotHead.stage == stage,
                     )
                 ).scalar_one_or_none()
                 if head is None:
                     session.add(
                         MetadataSnapshotHead(
-                            table_id=table_id,
+                            target=target,
                             stage=stage,
                             run_id=run_id,
                             promoted_at=now,

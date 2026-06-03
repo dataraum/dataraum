@@ -89,8 +89,8 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
 
     heads = _heads(session_factory)
     assert len(heads) == len(table_ids) * len(_PROMOTE_STAGES)
-    assert {(h.table_id, h.stage) for h in heads} == {
-        (t, s) for t in table_ids for s in _PROMOTE_STAGES
+    assert {(h.target, h.stage) for h in heads} == {
+        (f"table:{t}", s) for t in table_ids for s in _PROMOTE_STAGES
     }
     assert all(h.run_id == "run-A" for h in heads)
     assert all(h.version == 0 for h in heads)

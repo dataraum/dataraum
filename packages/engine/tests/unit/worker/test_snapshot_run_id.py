@@ -40,11 +40,11 @@ def test_snapshot_head_table_created_and_instantiates() -> None:
     assert "metadata_snapshot_head" in inspect(engine).get_table_names()
 
     head = MetadataSnapshotHead(
-        table_id="tbl-1",
+        target="table:tbl-1",
         stage="statistics",
         run_id="run-1",
     )
-    assert head.table_id == "tbl-1"
+    assert head.target == "table:tbl-1"
     assert head.stage == "statistics"
     assert head.run_id == "run-1"
 

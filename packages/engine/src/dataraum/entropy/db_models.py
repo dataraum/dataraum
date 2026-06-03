@@ -57,6 +57,10 @@ class EntropyObjectRecord(Base):
         ForeignKey("columns.column_id", ondelete="CASCADE")
     )
 
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
     # Measurement
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
@@ -117,6 +121,10 @@ class EntropyReadinessRecord(Base):
     column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE")
     )
+
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Collapsed worst-of-intents band ("ready" / "investigate" / "blocked") — the
     # signal the contract gate consumes — plus the worst per-intent risk behind it.

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
@@ -28,6 +28,12 @@ class ColumnEligibilityRecord(Base):
     """
 
     __tablename__ = "column_eligibility"
+    # One eligibility record per column PER RUN (DAT-413): widened to
+    # ``(column_id, run_id)`` so the writer can upsert idempotently under Temporal
+    # at-least-once retries and two coexisting runs' rows don't collide.
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_column_eligibility_column_run"),
+    )
 
     eligibility_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
@@ -42,6 +48,9 @@ class ColumnEligibilityRecord(Base):
     source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Denormalized column metadata (survives column deletion)
     column_name: Mapped[str] = mapped_column(String, nullable=False)

@@ -33,6 +33,7 @@ from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Source, Table
 from dataraum.worker import (
     SourceIdentity,
+    promote_run,
     raw_table_ids,
     run_detectors,
     run_phase,
@@ -92,8 +93,10 @@ def worker_manager(pg_url_clean: str, lake_anchor, lake_clean):  # noqa: ANN001
     manager.close()
 
 
-def _identity(source_id: str, session_id: str) -> SourceIdentity:
-    return SourceIdentity(workspace_id="test", source_id=source_id, session_id=session_id)
+def _identity(source_id: str, session_id: str, run_id: str | None = None) -> SourceIdentity:
+    return SourceIdentity(
+        workspace_id="test", source_id=source_id, session_id=session_id, run_id=run_id
+    )
 
 
 def _seed_source_and_session(
@@ -459,14 +462,22 @@ def test_persisted_readiness_is_single_source_of_truth(
 
     source_id = str(uuid4())
     session_id = str(uuid4())
+    # Stamp a run_id + promote at the end, exactly as AddSourceWorkflow does: the
+    # workflow mints run_id via workflow.uuid4() before the first activity and runs
+    # the terminal promote_to_latest after detect. load_persisted_readiness is
+    # head-resolved (DAT-413) — it reads the run the snapshot head names — so the
+    # query-time read only resolves once this run is promoted.
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id)
+    identity = _identity(source_id, session_id, run_id=run_id)
 
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     typed_ids = sorted({_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids})
     assert run_detectors(worker_manager, identity) > 0
+    # Promote this run so the head names it — the query-time read is head-resolved.
+    assert promote_run(worker_manager, identity) > 0
 
     with worker_manager.session_scope() as session:
         live = build_for_readiness(session, typed_ids)

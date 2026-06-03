@@ -61,9 +61,9 @@ export type Readiness =
 
 /**
  * Cost of re-entering a stage after it has been left (re-running upstream work,
- * replay surgery, etc.). STUB for C1 — the slot is reserved so the stage
+ * a full source replay, etc.). STUB for C1 — the slot is reserved so the stage
  * navigator and readiness logic can wire to it without a churn later. The real
- * cost model (replay scope × stage depth) lands with the replay column.
+ * cost model (re-run depth) lands with the replay column.
  */
 export function reEntryCost(_stage: Stage): never {
 	throw new Error("reEntryCost is not implemented (DAT-347 C1 stub)");

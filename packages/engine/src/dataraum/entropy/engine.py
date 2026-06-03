@@ -30,6 +30,7 @@ def run_detector_post_step(
     *,
     session_id: str,
     table_ids: list[str] | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Run a single detector as a phase post-step.
 
@@ -49,6 +50,9 @@ def run_detector_post_step(
         duckdb_conn: DuckDB connection for detectors that query data directly.
         session_id: Per-run FK for the persisted records.
         table_ids: Optional typed-table scope; ``None`` runs over all typed tables.
+        run_id: Snapshot version axis (DAT-413); stamped on each record. ``None``
+            outside the workflow path (begin_session / tests) — additive, the head
+            pointer is not consulted yet.
 
     Returns:
         Number of records created.
@@ -63,11 +67,16 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Scoped delete: remove stale records for this detector (and table scope) only
+    # Scoped delete: remove stale records for this detector (and table scope) only.
+    # Scoped to ``run_id`` when set (the workflow path, DAT-413) so a re-run clears
+    # only its OWN prior rows and leaves earlier runs intact (non-destructive); the
+    # ``None`` path (begin_session/tests) keeps the prior broad delete.
     delete_stmt = delete(EntropyObjectRecord).where(
         EntropyObjectRecord.source_id == source_id,
         EntropyObjectRecord.detector_id == detector_id,
     )
+    if run_id is not None:
+        delete_stmt = delete_stmt.where(EntropyObjectRecord.run_id == run_id)
     if table_ids is not None:
         delete_stmt = delete_stmt.where(EntropyObjectRecord.table_id.in_(table_ids))
     session.execute(delete_stmt)
@@ -98,12 +107,14 @@ def run_detector_post_step(
                     session=session,
                     duckdb_conn=duckdb_conn,
                     dimensions=[detector.sub_dimension],
+                    run_id=run_id,
                 )
                 for obj in snapshot.objects:
                     all_records.append(
                         _make_record(
                             source_id=source_id,
                             session_id=session_id,
+                            run_id=run_id,
                             entropy_obj=obj,
                             table_id=table.table_id,
                             column_id=col.column_id,
@@ -119,12 +130,14 @@ def run_detector_post_step(
                 session=session,
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
+                run_id=run_id,
             )
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        run_id=run_id,
                         entropy_obj=obj,
                         table_id=_resolve_table_id_from_target(
                             obj.target, table_id_by_name, table.table_id
@@ -153,12 +166,14 @@ def run_detector_post_step(
                 session=session,
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
+                run_id=run_id,
             )
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        run_id=run_id,
                         entropy_obj=obj,
                         table_id=ev.fact_table_id,
                         column_id=_extract_column_id(obj),
@@ -205,6 +220,7 @@ def _make_record(
     column_id: str | None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
@@ -212,6 +228,7 @@ def _make_record(
         source_id=source_id,
         table_id=table_id,
         column_id=column_id,
+        run_id=run_id,
         target=entropy_obj.target,
         layer=entropy_obj.layer,
         dimension=entropy_obj.dimension,

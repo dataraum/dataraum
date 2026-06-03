@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
@@ -26,7 +25,8 @@ from dataraum.investigation.queries import link_session_tables
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Table
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -55,102 +55,21 @@ class TypingPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Clear typing's OWN state in place for raw tables in ``table_ids`` (DAT-373).
-
-        Triggered when a teach (e.g. ``type_pattern``) requires re-typing
-        one or more raw tables. Scoped to ``table_ids`` (raw table ids from
-        ``replay.raw_table_ids``) so parallel siblings in a fan-out keep
-        their typed state.
-
-        Owner-scoped, in-place (DAT-373 Option A). The typed/quarantine
-        ``Table`` and ``Column`` rows are **kept** — ``_run`` reconciles them
-        in place on the re-type, keeping their ids stable so other stages'
-        per-Column rows (begin_session / frame-ground findings, etc.) stay
-        attached. The cascade-drop of the whole typed ``Table`` is reserved
-        for ``import`` / source teardown, NOT a re-type.
-
-        Clears only typing-owned state:
-            1. ``TypeCandidate`` / ``TypeDecision`` rows for the raw AND typed
-               columns in scope. The raw rows are typing's inference audit;
-               the typed rows are typing's copies (``resolve_types`` writes
-               one ``TypeDecision`` per typed column, guarded by
-               ``uq_column_type_decision``). Both are deleted so the re-run's
-               fresh inserts get a clean slate.
-            2. The DuckDB ``lake.typed.<bare>`` / ``lake.quarantine.<bare>``
-               tables. ``CREATE OR REPLACE`` on the next run rebuilds them;
-               we drop them explicitly to keep ``DROP TABLE IF EXISTS``
-               idempotent against schema drift between teach iterations.
-
-        It does NOT touch ``StatisticalProfile`` / ``SemanticAnnotation`` /
-        temporal / quality / eligibility rows — those belong to their phases,
-        which own their own ``replay_cleanup`` and run after typing on the
-        replay.
-
-        Empty ``table_ids`` means source-wide — re-types every raw table.
-        """
-        from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
-        from dataraum.core.duckdb_naming import schema_for_layer
-        from dataraum.server.storage import LAKE_CATALOG_ALIAS
-
-        raw_stmt = select(Table).where(Table.source_id == ctx.source_id, Table.layer == "raw")
-        if table_ids:
-            raw_stmt = raw_stmt.where(Table.table_id.in_(table_ids))
-        raw_tables = list(ctx.session.execute(raw_stmt).scalars())
-        if not raw_tables:
-            return
-
-        # 1: clear TypeCandidate/TypeDecision for the raw columns AND the typed
-        # columns sharing the raw table_name. Typed/quarantine columns are
-        # reached by joining the typed/quarantine Table rows (same table_name).
-        names = [t.table_name for t in raw_tables]
-        owned_table_ids = list(
-            ctx.session.execute(
-                select(Table.table_id).where(
-                    Table.source_id == ctx.source_id,
-                    Table.table_name.in_(names),
-                    Table.layer.in_(["raw", "typed", "quarantine"]),
-                )
-            ).scalars()
-        )
-        col_ids = list(
-            ctx.session.execute(
-                select(Column.column_id).where(Column.table_id.in_(owned_table_ids))
-            ).scalars()
-        )
-        if col_ids:
-            ctx.session.execute(delete(TypeCandidate).where(TypeCandidate.column_id.in_(col_ids)))
-            ctx.session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(col_ids)))
-            ctx.session.flush()
-
-        # 2: drop the DuckDB typed/quarantine tables for these bare names.
-        # The raw row carries the canonical bare name (``<source>__<table>``),
-        # and typed/quarantine share it (post-DAT-341). The Postgres typed +
-        # quarantine Table/Column rows are intentionally left in place.
-        for raw in raw_tables:
-            if not raw.duckdb_path:
-                continue
-            for layer in ("typed", "quarantine"):
-                fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer(layer)}."{raw.duckdb_path}"'
-                ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the targeted raw tables are already typed.
+        """Skip only when there are genuinely no raw tables to type.
 
-        When ``ctx.table_ids`` is set (per-table teach replay), only the
-        requested raw tables are considered — so a targeted untyped table
-        still runs even if its sibling tables are already typed.
+        Structural early-out only (DAT-413): a re-run mints a fresh ``run_id``
+        and must always re-derive typing under it, so the old "typed counterpart
+        already exists → skip" bail is gone. ``_run`` is idempotent on a re-type
+        — it ``CREATE OR REPLACE``s the typed/quarantine DuckDB tables and reuses
+        the stable typed ``Table``/``Column`` ids (DAT-373), re-deriving
+        ``TypeDecision``/``TypeCandidate`` rows under the new ``run_id`` (the
+        delete-before-insert is scoped to ``ctx.run_id`` so the prior run's rows
+        survive). The promoted head names which run is current.
 
-        A typed table counts as "done" only if its columns still carry the
-        ``TypeDecision`` rows ``_run`` writes (DAT-373). The typed ``Table``
-        row now survives a re-type replay (stable identity), so its mere
-        presence is no longer the signal: ``replay_cleanup`` clears the typed
-        columns' ``TypeDecision`` in place, and an empty/decisionless typed
-        table re-types. This is the Postgres signal ``replay_cleanup`` deletes,
-        keeping skip and cleanup in lock-step.
+        When ``ctx.table_ids`` is set (per-table scope), only the requested raw
+        tables are considered.
         """
-        from dataraum.analysis.typing.db_models import TypeDecision
-
         stmt = select(Table).where(
             Table.source_id == ctx.source_id,
             Table.layer == "raw",
@@ -165,29 +84,7 @@ class TypingPhase(BasePhase):
             if not raw_tables:
                 return "No raw tables match the requested table_ids filter"
 
-        # A targeted raw table needs typing if it has no typed counterpart OR
-        # that counterpart's columns have lost their TypeDecisions (post-cleanup).
-        for raw_table in raw_tables:
-            typed_table = ctx.session.execute(
-                select(Table).where(
-                    Table.source_id == ctx.source_id,
-                    Table.table_name == raw_table.table_name,
-                    Table.layer == "typed",
-                )
-            ).scalar_one_or_none()
-            if not typed_table:
-                return None  # At least one table needs typing
-
-            has_decision = ctx.session.execute(
-                select(TypeDecision.decision_id)
-                .join(Column, Column.column_id == TypeDecision.column_id)
-                .where(Column.table_id == typed_table.table_id)
-                .limit(1)
-            ).first()
-            if has_decision is None:
-                return None  # Typed row exists but was cleaned for a re-type
-
-        return "All tables already typed"
+        return None
 
     def _is_strongly_typed(self, table: Table) -> bool:
         """Check if a table comes from a strongly-typed source (e.g., Parquet).
@@ -268,36 +165,33 @@ class TypingPhase(BasePhase):
         ctx.session.flush()
 
         # Stamp a TypeDecision per typed column. Strongly-typed columns are
-        # "trusted source" decisions; writing them keeps the typed-table skip
-        # signal uniform with the untyped path (``should_skip`` treats a typed
-        # table with no TypeDecisions as needing a re-type — DAT-373). On a
-        # re-type the stable column ids are reused, so clear prior copies first
-        # to respect ``uq_column_type_decision``.
+        # "trusted source" decisions. ``TypeDecision`` is one-per-column-per-run,
+        # so upsert on ``(column_id, run_id)``: idempotent under a Temporal
+        # at-least-once retry (same run_id, no delete needed) while a NEW run's
+        # rows still coexist with prior runs'; the promoted head names which run
+        # is current.
         from dataraum.analysis.typing.db_models import TypeDecision
 
-        typed_col_ids = list(column_map.values())
-        if typed_col_ids:
-            ctx.session.execute(
-                delete(TypeDecision).where(TypeDecision.column_id.in_(typed_col_ids))
-            )
-            ctx.session.flush()
-
+        decided_at = datetime.now(UTC)
         type_decisions: dict[str, str] = {}
+        td_rows: list[dict[str, Any]] = []
         for col in table.columns:
             resolved = col.raw_type or "VARCHAR"
             typed_col_id = column_map[col.column_name]
-            ctx.session.add(
-                TypeDecision(
-                    decision_id=str(uuid4()),
-                    session_id=ctx.require_session_id(),
-                    column_id=typed_col_id,
-                    decided_type=resolved,
-                    decision_source="automatic",
-                    decided_at=datetime.now(UTC),
-                    decision_reason="strongly-typed source (types trusted)",
-                )
+            # PK omitted so the model's Python-side default applies.
+            td_rows.append(
+                {
+                    "session_id": ctx.require_session_id(),
+                    "column_id": typed_col_id,
+                    "run_id": ctx.run_id,
+                    "decided_type": resolved,
+                    "decision_source": "automatic",
+                    "decided_at": decided_at,
+                    "decision_reason": "strongly-typed source (types trusted)",
+                }
             )
             type_decisions[typed_col_id] = resolved
+        upsert(ctx.session, TypeDecision, td_rows, index_elements=["column_id", "run_id"])
 
         logger.debug(
             "strongly_typed_promoted",
@@ -399,6 +293,7 @@ class TypingPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not inference_result.success:
@@ -421,6 +316,7 @@ class TypingPhase(BasePhase):
                 session=ctx.session,
                 min_confidence=min_confidence,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not resolution_result.success:

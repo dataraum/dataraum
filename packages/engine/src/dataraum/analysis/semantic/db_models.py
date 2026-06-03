@@ -35,7 +35,13 @@ class SemanticAnnotation(Base):
     """
 
     __tablename__ = "semantic_annotations"
-    __table_args__ = (UniqueConstraint("column_id", name="uq_column_semantic_annotation"),)
+    # One annotation per column PER RUN (DAT-413): the snapshot version axis widens
+    # this from ``column_id`` to ``(column_id, run_id)`` so two coexisting runs'
+    # rows for the same column don't collide. The promoted head names which run is
+    # current; readers head-resolve rather than assume one row per column.
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_column_semantic_annotation"),
+    )
 
     annotation_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
@@ -46,6 +52,9 @@ class SemanticAnnotation(Base):
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Classification
     semantic_role: Mapped[str | None] = mapped_column(
@@ -99,6 +108,9 @@ class TableEntity(Base):
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     detected_entity_type: Mapped[str] = mapped_column(
         String, nullable=False

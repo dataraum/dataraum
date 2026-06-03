@@ -18,7 +18,7 @@ from dataraum.investigation.db_models import InvestigationSession
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
-from dataraum.storage import Column, ConfigOverlay, Source, Table
+from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_session_id
 
 
@@ -41,12 +41,13 @@ def _typed_table(session: Session, source_id: str, name: str, cols: list[str]) -
     return t
 
 
-def _annotate(session: Session, table: Table) -> None:
+def _annotate(session: Session, table: Table, run_id: str | None = None) -> None:
     for col in table.columns:
         session.add(
             SemanticAnnotation(
                 session_id=baseline_session_id(),
                 column_id=col.column_id,
+                run_id=run_id,
                 semantic_role="attribute",
                 annotation_source="llm",
                 confidence=0.9,
@@ -65,8 +66,8 @@ def _session_ctx(
     """Source-free ctx for the begin_session phases — scoped by ``table_ids`` (DAT-401).
 
     Carries the baseline session id: the begin_session phases are session-scoped
-    (``should_skip`` / ``replay_cleanup`` filter by ``session_id``), so the ctx
-    must supply one, matching the rows seeded under ``baseline_session_id()``.
+    (``should_skip`` filters by ``session_id``), so the ctx must supply one,
+    matching the rows seeded under ``baseline_session_id()``.
     """
     return PhaseContext(
         session=session,
@@ -94,47 +95,24 @@ class TestPerColumnShouldSkip:
             SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
         )
 
-    def test_skips_when_all_annotated(
+    def test_re_runs_when_only_a_prior_runs_annotations_exist(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        src = _source(session)
-        t1 = _typed_table(session, src.source_id, "t1", ["a", "b"])
-        _annotate(session, t1)
-        assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
-            "All columns already have semantic annotations"
-        )
+        """A prior run's annotations no longer gate a skip (DAT-413).
 
-
-class TestPerColumnReplayCleanup:
-    def test_drops_annotation_but_leaves_concept_overlay(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """DAT-376: replay_cleanup wipes SemanticAnnotation, never concept rows.
-
-        Induced ``_adhoc`` concepts live as workspace-scoped ``concept``
-        ConfigOverlay rows (DAT-371). A reduce replay must re-annotate columns
-        against the *existing* ontology — it must not delete the induced
-        concepts that ontology is built from.
+        The output-existence bail ("all columns already annotated → skip") is
+        gone: a re-run mints a fresh ``run_id`` and re-grounds under it, its rows
+        coexisting with the prior run's via the ``(column_id, run_id)``
+        constraint. With the columns fully annotated under run-A, ``should_skip``
+        still returns ``None`` — only the structural early-outs ("no typed
+        tables" / "no columns") can skip.
         """
         src = _source(session)
-        t1 = _typed_table(session, src.source_id, "t1", ["a"])
-        _annotate(session, t1)
-        overlay = ConfigOverlay(
-            session_id=None,
-            type="concept",
-            payload={"vertical": "_adhoc", "name": "revenue"},
+        t1 = _typed_table(session, src.source_id, "t1", ["a", "b"])
+        _annotate(session, t1, run_id="run-A")
+        assert (
+            SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
         )
-        session.add(overlay)
-        session.flush()
-
-        SemanticPerColumnPhase().replay_cleanup(_ctx(session, duckdb_conn, src.source_id), [])
-        session.flush()
-
-        assert session.execute(select(SemanticAnnotation)).scalars().all() == []
-        overlays = session.execute(select(ConfigOverlay)).scalars().all()
-        assert len(overlays) == 1
-        assert overlays[0].type == "concept"
-        assert overlays[0].payload["name"] == "revenue"
 
 
 class TestPerColumnAdhocFailLoud:

@@ -16,7 +16,7 @@
 // rows); the pure row→shape projection is unit-tested directly here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -25,7 +25,12 @@ import {
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
-import { columns, entropyReadiness, tables } from "../db/metadata/schema";
+import {
+	columns,
+	entropyReadiness,
+	metadataSnapshotHead,
+	tables,
+} from "../db/metadata/schema";
 
 // The persisted JSONB grammar (intents / top_drivers) lives in
 // `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
@@ -142,9 +147,22 @@ export async function lookTable(
 		};
 	}
 
-	// 1:1 join: `column_id` is table-scoped (uq_table_column) and a table belongs
-	// to one source, while the engine delete-before-inserts readiness per source —
-	// so a column has at most one readiness row. No fan-out to dedupe.
+	// Readiness is versioned by run_id now (DAT-413): a column has one readiness
+	// row PER run, so resolve the PROMOTED detect snapshot for this table via the
+	// head pointer and join only that run's rows. No promoted run (never detected)
+	// → the join matches nothing and every column reads back unanalyzed.
+	const [head] = await metadataDb
+		.select({ runId: metadataSnapshotHead.runId })
+		.from(metadataSnapshotHead)
+		.where(
+			and(
+				eq(metadataSnapshotHead.tableId, input.table_id),
+				eq(metadataSnapshotHead.stage, "detect"),
+			),
+		)
+		.limit(1);
+	const headRunId = head?.runId ?? null;
+
 	const rows = await metadataDb
 		.select({
 			columnId: columns.columnId,
@@ -156,7 +174,15 @@ export async function lookTable(
 			topDrivers: entropyReadiness.topDrivers,
 		})
 		.from(columns)
-		.leftJoin(entropyReadiness, eq(entropyReadiness.columnId, columns.columnId))
+		.leftJoin(
+			entropyReadiness,
+			headRunId
+				? and(
+						eq(entropyReadiness.columnId, columns.columnId),
+						eq(entropyReadiness.runId, headRunId),
+					)
+				: sql`false`,
+		)
 		.where(eq(columns.tableId, input.table_id))
 		.orderBy(asc(columns.columnPosition));
 

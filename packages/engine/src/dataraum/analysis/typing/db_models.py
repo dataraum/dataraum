@@ -59,6 +59,9 @@ class TypeCandidate(Base):
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -98,7 +101,11 @@ class TypeDecision(Base):
     """
 
     __tablename__ = "type_decisions"
-    __table_args__ = (UniqueConstraint("column_id", name="uq_column_type_decision"),)
+    # One decision per column PER RUN (DAT-413): the snapshot version axis widens
+    # this from ``column_id`` to ``(column_id, run_id)`` so two coexisting runs'
+    # rows for the same column don't collide. The promoted head names which run is
+    # current; readers head-resolve rather than assume one row per column.
+    __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_type_decision"),)
 
     decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(
@@ -107,6 +114,9 @@ class TypeDecision(Base):
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     decided_type: Mapped[str] = mapped_column(String, nullable=False)
     decision_source: Mapped[str] = mapped_column(

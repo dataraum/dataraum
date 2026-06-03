@@ -83,52 +83,6 @@ class ImportPhase(BasePhase):
     def name(self) -> str:
         return "import"
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Drop the source's loaded state so a replay from ``import`` starts fresh.
-
-        Triggered when a teach (e.g. ``null_value``) changes how data should
-        load: re-importing means everything downstream of import is stale.
-
-        Drops, in order:
-            1. All DuckDB tables (raw/typed/quarantine) for the source's
-               existing ``Table`` rows, for a clean slate on re-import.
-            2. All ``Table`` rows for this source (any layer). Cascades to
-               ``Column`` + every per-column row via the model relationships.
-
-        ``table_ids`` is ignored — ``import`` is source-wide; a per-table
-        re-import is out of scope (see the DAT-343 refine on the connector
-        future where per-table import gets first-class support).
-        """
-        del table_ids
-        from dataraum.core.duckdb_naming import schema_for_layer
-        from dataraum.server.storage import LAKE_CATALOG_ALIAS
-
-        source = ctx.session.get(Source, ctx.source_id)
-        if source is None:
-            return
-
-        rows = list(
-            ctx.session.execute(select(Table).where(Table.source_id == ctx.source_id)).scalars()
-        )
-        # Two loops on purpose: DROP the DuckDB tables FIRST while the rows
-        # still know their ``duckdb_path`` (and layer), then delete the
-        # Postgres rows. Folding both into one loop would lose the
-        # DuckDB-before-Postgres ordering — a partial failure mid-loop
-        # would leave Postgres saying "no raw tables for this source"
-        # while DuckDB still holds them. (Raw loads are CREATE OR REPLACE since
-        # DAT-378, so a leftover raw table no longer collides on re-import; the
-        # DROP-first ordering still gives a clean teardown of all layers.)
-        for table in rows:
-            if not table.duckdb_path:
-                continue
-            schema = schema_for_layer(table.layer)
-            fqn = f'{LAKE_CATALOG_ALIAS}.{schema}."{table.duckdb_path}"'
-            ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
-
-        for table in rows:
-            ctx.session.delete(table)
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if raw tables already exist for this source."""
         # Check if source exists and has tables

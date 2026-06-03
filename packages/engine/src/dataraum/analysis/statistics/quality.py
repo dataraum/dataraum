@@ -17,7 +17,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import duckdb
 import numpy as np
@@ -36,6 +35,7 @@ from dataraum.analysis.statistics.quality_db_models import (
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -392,6 +392,7 @@ def assess_statistical_quality(
     exclude_outlier_columns: set[str] | None = None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.
 
@@ -442,6 +443,7 @@ def assess_statistical_quality(
             return Result.fail("Table has no DuckDB path")
 
         results: list[StatisticalQualityResult] = []
+        rows: list[dict[str, Any]] = []
         computed_at = datetime.now(UTC)
 
         _exclude = exclude_outlier_columns or set()
@@ -487,27 +489,34 @@ def assess_statistical_quality(
                     )
                     results.append(quality_result)
 
-                    # Persist using hybrid storage (sequential - SQLite writes)
-                    db_metric = DBStatisticalQualityMetrics(
-                        metric_id=str(uuid4()),
-                        session_id=session_id,
-                        column_id=column_id,
-                        computed_at=computed_at,
-                        benford_compliant=benford_analysis.is_compliant
-                        if benford_analysis
-                        else None,
-                        has_outliers=(outlier_detection.iqr_outlier_ratio > 0.05)
-                        if outlier_detection
-                        else None,
-                        iqr_outlier_ratio=outlier_detection.iqr_outlier_ratio
-                        if outlier_detection
-                        else None,
-                        zscore_outlier_ratio=outlier_detection.zscore_outlier_ratio
-                        if outlier_detection
-                        else None,
-                        quality_data=quality_result.model_dump(mode="json"),
+                    # Build the row for an idempotent upsert (sequential).
+                    # PK omitted so the model's Python-side default applies.
+                    rows.append(
+                        {
+                            "session_id": session_id,
+                            "column_id": column_id,
+                            "run_id": run_id,
+                            "computed_at": computed_at,
+                            "benford_compliant": benford_analysis.is_compliant
+                            if benford_analysis
+                            else None,
+                            "has_outliers": (outlier_detection.iqr_outlier_ratio > 0.05)
+                            if outlier_detection
+                            else None,
+                            "iqr_outlier_ratio": outlier_detection.iqr_outlier_ratio
+                            if outlier_detection
+                            else None,
+                            "zscore_outlier_ratio": outlier_detection.zscore_outlier_ratio
+                            if outlier_detection
+                            else None,
+                            "quality_data": quality_result.model_dump(mode="json"),
+                        }
                     )
-                    session.add(db_metric)
+
+        # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
+        # (same run_id) updates the row in place instead of duplicating it —
+        # which would make the head-resolved loaders' scalar_one_or_none() raise.
+        upsert(session, DBStatisticalQualityMetrics, rows, index_elements=["column_id", "run_id"])
 
         logger.debug(
             "statistical_quality_assessment_complete",

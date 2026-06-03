@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -26,6 +27,7 @@ from dataraum.analysis.typing.patterns import Pattern, load_pattern_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, DataType, Result
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -327,6 +329,7 @@ def resolve_types(
     min_confidence: float,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
 
@@ -396,6 +399,7 @@ def resolve_types(
                 decision_id=str(uuid4()),
                 session_id=session_id,
                 column=raw_col,
+                run_id=run_id,
                 decided_type=spec.data_type.value,
                 decision_source=spec.decision_source,
                 decided_at=datetime.now(UTC),
@@ -508,16 +512,24 @@ def resolve_types(
     # downstream consumers can query by typed column_id directly.
     # Note: quarantine_count/rate are already set on raw TypeCandidates above.
     #
-    # The typed columns are now reused across re-types (stable ids, DAT-373), so
-    # clear any prior copies first — otherwise the fresh TypeDecision insert would
-    # hit ``uq_column_type_decision`` (one decision per column). Self-contained
-    # idempotency: correct even when called outside the workflow's replay_cleanup.
+    # TypeCandidate is many-per-column, so its grain can't take a
+    # ``(column_id, run_id)`` key — clear THIS run's prior copies first (scoped to
+    # ``run_id`` so a NEW run's rows coexist with prior runs'). TypeDecision is
+    # one-per-column-per-run, so it upserts on ``(column_id, run_id)`` instead:
+    # idempotent under a Temporal at-least-once retry (same run_id) without the
+    # delete, and a new run still coexists. The promoted head names which run is
+    # current.
     typed_col_ids = list(typed_column_map.values())
     if typed_col_ids:
-        session.execute(delete(TypeCandidate).where(TypeCandidate.column_id.in_(typed_col_ids)))
-        session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(typed_col_ids)))
+        session.execute(
+            delete(TypeCandidate).where(
+                TypeCandidate.column_id.in_(typed_col_ids),
+                TypeCandidate.run_id == run_id,
+            )
+        )
         session.flush()
 
+    type_decision_rows: list[dict[str, Any]] = []
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:
@@ -525,18 +537,19 @@ def resolve_types(
 
         if raw_col.type_decision:
             td = raw_col.type_decision
-            session.add(
-                TypeDecision(
-                    decision_id=str(uuid4()),
-                    session_id=session_id,
-                    column_id=target_col_id,
-                    decided_type=td.decided_type,
-                    decision_source=td.decision_source,
-                    decided_at=td.decided_at,
-                    decided_by=td.decided_by,
-                    previous_type=td.previous_type,
-                    decision_reason=td.decision_reason,
-                )
+            # PK omitted so the model's Python-side default applies.
+            type_decision_rows.append(
+                {
+                    "session_id": session_id,
+                    "column_id": target_col_id,
+                    "run_id": run_id,
+                    "decided_type": td.decided_type,
+                    "decision_source": td.decision_source,
+                    "decided_at": td.decided_at,
+                    "decided_by": td.decided_by,
+                    "previous_type": td.previous_type,
+                    "decision_reason": td.decision_reason,
+                }
             )
 
         for tc in raw_col.type_candidates:
@@ -545,6 +558,7 @@ def resolve_types(
                     candidate_id=str(uuid4()),
                     session_id=session_id,
                     column_id=target_col_id,
+                    run_id=run_id,
                     detected_at=tc.detected_at,
                     data_type=tc.data_type,
                     confidence=tc.confidence,
@@ -558,6 +572,10 @@ def resolve_types(
                     quarantine_rate=tc.quarantine_rate,
                 )
             )
+
+    # Upsert the typed TypeDecision copies on ``(column_id, run_id)`` (idempotent
+    # under a same-run retry; the delete-before-insert is gone for this model).
+    upsert(session, TypeDecision, type_decision_rows, index_elements=["column_id", "run_id"])
 
     logger.debug(
         "type_resolution_completed",

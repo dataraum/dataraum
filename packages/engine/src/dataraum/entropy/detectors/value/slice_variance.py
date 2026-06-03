@@ -200,7 +200,7 @@ class SliceVarianceDetector(EntropyDetector):
         if semantic_role is None and context.session is not None and context.column_id is not None:
             from dataraum.entropy.detectors.loaders import load_semantic
 
-            sem = load_semantic(context.session, context.column_id)
+            sem = load_semantic(context.session, context.column_id, context.run_id)
             if sem is not None:
                 semantic_role = sem.get("semantic_role")
                 context.analysis_results["semantic_role"] = semantic_role

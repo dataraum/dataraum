@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import func, select
 
 from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
@@ -90,29 +90,6 @@ class RelationshipsPhase(BasePhase):
             return f"Already detected {existing_count} relationship candidates"
 
         return None
-
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Drop THIS session's candidate relationships for its tables (DAT-401/373).
-
-        Deletes only the structural ``detection_method='candidate'`` rows this
-        session wrote (scoped by ``session_id``) whose endpoints touch the scope
-        — its OWN output. Never another session's rows, the ``'llm'`` rows (owned
-        by ``semantic_per_table``), or the parent ``Table``: the FK cascade is
-        NOT load-bearing, the delete is explicit and owner-scoped.
-        """
-        if not table_ids:
-            return
-        ctx.session.execute(
-            delete(Relationship).where(
-                Relationship.session_id == ctx.require_session_id(),
-                Relationship.detection_method == "candidate",
-                or_(
-                    Relationship.from_table_id.in_(table_ids),
-                    Relationship.to_table_id.in_(table_ids),
-                ),
-            )
-        )
-        ctx.session.flush()
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run relationship detection over the session's selected typed tables."""

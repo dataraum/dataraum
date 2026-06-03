@@ -187,19 +187,19 @@ describe("teachChipSummary (display-only, readable at every state)", () => {
 });
 
 describe("toolChipSummary — replay / probe (display-only)", () => {
-	it("replay shows scope + source before run, run id after", () => {
-		expect(
-			toolChipSummary("replay", { source_id: "src1", scope: "all" }, undefined),
-		).toBe("replay src1 (all)");
+	it("replay shows the source before run, run id after", () => {
+		expect(toolChipSummary("replay", { source_id: "src1" }, undefined)).toBe(
+			"replay src1",
+		);
 		expect(
 			toolChipSummary(
 				"replay",
-				{ source_id: "src1", scope: "all" },
+				{ source_id: "src1" },
 				{
 					run_id: "r9",
 				},
 			),
-		).toBe("replay (all) — run r9");
+		).toBe("replay — run r9");
 	});
 
 	it("probe shows the source name + row count", () => {

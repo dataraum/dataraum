@@ -38,42 +38,6 @@ class BasePhase(ABC):
         """Unique identifier for this phase."""
         ...
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Clear this phase's OWN outputs so a replay re-runs it cleanly (DAT-343/373).
-
-        Invoked by the worker (``replay_cleanup_for_phase`` activity) **before**
-        ``run`` for EVERY phase that re-executes under a replay — not just the
-        ``from_phase``. The purpose is to clear whatever would make this phase's
-        ``should_skip`` return an "already done" reason, so the re-run rebuilds
-        its outputs against the (possibly re-typed) data.
-
-        Ownership contract (DAT-373 — read before adding/changing an override):
-
-        - **Delete ONLY your own per-Column / per-Table rows**, scoped to
-          ``table_ids`` (or source-wide on the empty-list shape). The
-          per-phase pattern is "delete-own-rows-by-column_id for the columns of
-          the typed tables in scope".
-        - **NEVER delete a parent ``Table`` you do not exclusively own.** Typing
-          reuses the typed ``Table`` + ``Column`` rows in place (stable identity)
-          precisely so other stages' per-Column findings stay attached. The
-          Table-delete cascade (``Table`` → ``Column`` → every per-Column row)
-          is reserved for ``import`` / source teardown, where dropping the whole
-          source IS the intent — never for a phase-local re-run.
-        - Cross-stage data (e.g. ``begin_session`` / frame-ground findings on a
-          typed column) belongs to OTHER stages and MUST survive your cleanup.
-
-        Default: no-op (a phase with no replay-relevant outputs, e.g. a pure
-        DuckDB-view builder whose ``_run`` is ``CREATE OR REPLACE``-idempotent).
-
-        Args:
-            ctx: phase context (session + DuckDB cursor + source_id).
-            table_ids: replay scope. Empty list = source-wide cleanup
-                (matches the source-level reduce shape); a single-element list
-                scopes to one table id — a raw table id for ``typing`` /
-                ``import``, a typed table id for the table-local analytics phases.
-        """
-        return None
-
     @property
     def db_models(self) -> list[ModuleType]:
         """Modules containing SQLAlchemy models owned by this phase.

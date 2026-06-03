@@ -12,19 +12,11 @@ Computes statistical profiles for typed tables:
 from __future__ import annotations
 
 from types import ModuleType
-from typing import TYPE_CHECKING
-
-from sqlalchemy import delete, select
 
 from dataraum.analysis.statistics import profile_statistics
-from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column
-
-if TYPE_CHECKING:
-    pass
 
 
 @analysis_phase
@@ -45,60 +37,21 @@ class StatisticsPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Delete this phase's StatisticalProfile rows for the scoped tables (DAT-373).
-
-        Owner-scoped: drops only the profiles whose column belongs to a typed
-        table in ``table_ids`` so the re-run (after a re-type) recomputes them
-        against the freshly-typed data. The typed ``Table``/``Column`` rows
-        survive the re-type now (stable identity), so without this self-clean
-        ``should_skip`` would see the stale profiles and bail. Never touches any
-        other phase's per-Column rows.
-        """
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return
-        column_ids = list(
-            ctx.session.execute(
-                select(Column.column_id).where(
-                    Column.table_id.in_([t.table_id for t in typed_tables])
-                )
-            ).scalars()
-        )
-        if not column_ids:
-            return
-        ctx.session.execute(
-            delete(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
-        )
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the scoped typed tables already have profiles."""
+        """Skip only when there are genuinely no typed tables to profile.
+
+        Structural early-out only (DAT-413): a re-run mints a fresh ``run_id``
+        and must always re-profile under it, so the old "profiles already exist
+        → skip" bail is gone. ``profile_statistics`` is a pure insert stamping
+        ``run_id`` on each ``StatisticalProfile``, so a new run's profiles coexist
+        with prior runs'; the promoted head names which run is current.
+        """
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
 
-        # Check which tables already have profiles
-        typed_table_ids = [t.table_id for t in typed_tables]
-        columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        columns = ctx.session.execute(columns_stmt).scalars().all()
-
-        profiled_stmt = (
-            select(StatisticalProfile.column_id)
-            .where(StatisticalProfile.layer == "typed")
-            .distinct()
-        )
-        profiled_column_ids = set(ctx.session.execute(profiled_stmt).scalars().all())
-
-        # Check if any table has unprofiled columns
-        for tt in typed_tables:
-            table_columns = [c for c in columns if c.table_id == tt.table_id]
-            table_column_ids = {c.column_id for c in table_columns}
-            if table_column_ids - profiled_column_ids:
-                return None  # At least one table needs profiling
-
-        return "All typed tables already profiled"
+        return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run statistical profiling on the scoped typed tables."""
@@ -107,48 +60,22 @@ class StatisticsPhase(BasePhase):
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
-        # Get all columns for typed tables
-        typed_table_ids = [t.table_id for t in typed_tables]
-        columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        all_columns = ctx.session.execute(columns_stmt).scalars().all()
-
-        # Get already profiled columns
-        profiled_stmt = (
-            select(StatisticalProfile.column_id)
-            .where(StatisticalProfile.layer == "typed")
-            .distinct()
-        )
-        profiled_column_ids = set(ctx.session.execute(profiled_stmt).scalars().all())
-
-        # Find tables that need profiling
-        unprofiled_tables = []
-        for tt in typed_tables:
-            table_columns = [c for c in all_columns if c.table_id == tt.table_id]
-            table_column_ids = {c.column_id for c in table_columns}
-            if table_column_ids - profiled_column_ids:
-                unprofiled_tables.append(tt)
-
-        if not unprofiled_tables:
-            # All already profiled - return success with existing profiles
-            return PhaseResult.success(
-                outputs={"statistical_profiles": [t.table_name for t in typed_tables]},
-                records_processed=0,
-                records_created=0,
-            )
-
-        # Profile each table
+        # Re-derive every scoped typed table under this run (DAT-413): no
+        # "already profiled" filter — a re-run re-profiles, stamping its own
+        # ``run_id``, and prior runs' profiles are left intact.
         profiled_tables = []
         total_profiles_created = 0
         total_columns_processed = 0
         warnings = []
 
-        for typed_table in unprofiled_tables:
+        for typed_table in typed_tables:
             stats_result = profile_statistics(
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 config=ctx.config,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not stats_result.success:

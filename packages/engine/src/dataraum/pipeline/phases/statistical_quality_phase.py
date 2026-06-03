@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from dataraum.analysis.statistics import assess_statistical_quality
 from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
@@ -44,35 +44,16 @@ class StatisticalQualityPhase(BasePhase):
 
         return [quality_db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Delete this phase's StatisticalQualityMetrics for the scoped tables (DAT-373).
-
-        Owner-scoped: drops only the quality metrics whose column belongs to a
-        typed table in ``table_ids`` so the re-run (after a re-type) recomputes
-        Benford / outlier metrics against the freshly-typed data. Never touches
-        any other phase's per-Column rows.
-        """
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return
-        column_ids = list(
-            ctx.session.execute(
-                select(Column.column_id).where(
-                    Column.table_id.in_([t.table_id for t in typed_tables])
-                )
-            ).scalars()
-        )
-        if not column_ids:
-            return
-        ctx.session.execute(
-            delete(StatisticalQualityMetrics).where(
-                StatisticalQualityMetrics.column_id.in_(column_ids)
-            )
-        )
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the scoped tables' numeric columns all have quality metrics."""
+        """Skip only when there are genuinely no numeric columns to assess.
+
+        Structural early-outs only (DAT-413): "no typed tables" and "no numeric
+        columns". A re-run mints a fresh ``run_id`` and must always re-assess
+        under it, so the old "all numeric columns already assessed → skip" bail
+        is gone. ``assess_statistical_quality`` is a pure insert stamping
+        ``run_id`` on each ``StatisticalQualityMetrics``, so a new run's metrics
+        coexist with prior runs'; the promoted head names which run is current.
+        """
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
@@ -101,16 +82,6 @@ class StatisticalQualityPhase(BasePhase):
 
         logger.debug(f"StatQuality: Found {len(numeric_columns)} numeric columns")
 
-        # Check which of THIS scope's numeric columns already have metrics.
-        numeric_ids = {c.column_id for c in numeric_columns}
-        assessed_stmt = select(StatisticalQualityMetrics.column_id).where(
-            StatisticalQualityMetrics.column_id.in_(numeric_ids)
-        )
-        assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
-
-        if not (numeric_ids - assessed_ids):
-            return "All numeric columns already assessed"
-
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
@@ -125,9 +96,13 @@ class StatisticalQualityPhase(BasePhase):
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
         all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
-        # Check which of these columns already have quality metrics
+        # Check which of these columns already have THIS run's quality metrics
+        # (DAT-413): scope to ``ctx.run_id`` so a re-run re-assesses every numeric
+        # column under its new run, leaving prior runs' metrics untouched (the
+        # model is a pure insert with no run-spanning unique constraint).
         assessed_stmt = select(StatisticalQualityMetrics.column_id).where(
-            StatisticalQualityMetrics.column_id.in_([c.column_id for c in all_columns])
+            StatisticalQualityMetrics.column_id.in_([c.column_id for c in all_columns]),
+            StatisticalQualityMetrics.run_id == ctx.run_id,
         )
         assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
 
@@ -168,6 +143,7 @@ class StatisticalQualityPhase(BasePhase):
                 session=ctx.session,
                 exclude_outlier_columns=exclude_outlier_columns,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not quality_result.success:

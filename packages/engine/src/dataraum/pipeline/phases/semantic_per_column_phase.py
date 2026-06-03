@@ -14,9 +14,8 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
@@ -51,36 +50,6 @@ class SemanticPerColumnPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Drop the source's LLM annotations so the reduce re-annotates (DAT-343).
-
-        Triggered when a teach (e.g. ``concept_property``) changes the
-        ontology this reduce reads. Re-running source-wide is the right
-        shape per the user's "widening breadth is good input" framing —
-        re-annotation sees the now-bigger source and the new ontology.
-
-        Drops every ``SemanticAnnotation`` whose column belongs to a typed
-        table of this source. The next run produces a fresh annotation
-        per column. ``table_ids`` is ignored — the reduce is source-wide
-        and so is its cleanup (matches the empty ``raw_table_ids`` shape
-        the workflow uses for source-tail-only replays).
-        """
-        del table_ids
-        typed_table_ids = self._typed_table_ids(ctx)
-        if not typed_table_ids:
-            return
-        column_ids = list(
-            ctx.session.execute(
-                select(Column.column_id).where(Column.table_id.in_(typed_table_ids))
-            ).scalars()
-        )
-        if not column_ids:
-            return
-        ctx.session.execute(
-            delete(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        )
-        ctx.session.flush()
-
     def _typed_table_ids(self, ctx: PhaseContext) -> list[str]:
         stmt = select(Table.table_id).where(
             Table.layer == "typed", Table.source_id == ctx.source_id
@@ -88,11 +57,15 @@ class SemanticPerColumnPhase(BasePhase):
         return [row[0] for row in ctx.session.execute(stmt)]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if every column in the typed tables already has an LLM annotation.
+        """Skip only when there are genuinely no typed columns to annotate.
 
-        Only ``annotation_source == "llm"`` rows count: teach-sourced rows are
-        excluded so a re-run after a teach regenerates the LLM annotation (and
-        thus the post-teach context the per-table phase reads).
+        Structural early-outs only (DAT-413): "no typed tables" and "no columns".
+        A re-run mints a fresh ``run_id`` and must always re-annotate under it, so
+        the old "all columns already have an LLM annotation → skip" bail is gone.
+        ``ground_columns`` is a pure insert stamping ``run_id`` on each
+        ``SemanticAnnotation`` (the ``(column_id, run_id)`` unique constraint lets
+        a new run's rows coexist with prior runs'); the promoted head names which
+        run is current.
         """
         table_ids = self._typed_table_ids(ctx)
         if not table_ids:
@@ -107,19 +80,6 @@ class SemanticPerColumnPhase(BasePhase):
         if total_columns == 0:
             return "No columns found in typed tables"
 
-        annotated = (
-            ctx.session.execute(
-                select(func.count(SemanticAnnotation.annotation_id))
-                .join(Column)
-                .where(
-                    Column.table_id.in_(table_ids),
-                    SemanticAnnotation.annotation_source == "llm",
-                )
-            ).scalar()
-            or 0
-        )
-        if annotated >= total_columns:
-            return "All columns already have semantic annotations"
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
@@ -183,6 +143,7 @@ class SemanticPerColumnPhase(BasePhase):
             table_ids=table_ids,
             ontology=ontology,
             session_id=ctx.require_session_id(),
+            run_id=ctx.run_id,
         )
         if not grounding.success:
             return PhaseResult.failed(grounding.error or "Column annotation failed")

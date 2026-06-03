@@ -90,16 +90,11 @@ async def run_worker() -> None:
                     phase_activities.run_temporal,
                     phase_activities.run_semantic_per_column,
                     phase_activities.run_detect,
-                    # DAT-343 replay activities — lookups when phases are
-                    # skipped on replay + per-phase cleanup before re-runs.
-                    phase_activities.lookup_raw_table_ids,
-                    phase_activities.lookup_typed_table_id,
-                    phase_activities.run_replay_cleanup_for_phase,
+                    phase_activities.run_promote_to_latest,
                     # DAT-401 begin_session spine — source-free, session-scoped.
                     phase_activities.run_begin_session_select,
                     phase_activities.run_relationships,
                     phase_activities.run_semantic_per_table,
-                    phase_activities.run_session_replay_cleanup_for_phase,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
@@ -135,13 +130,10 @@ async def run_worker() -> None:
                     "temporal",
                     "semantic_per_column",
                     "detect",
-                    "lookup_raw_table_ids",
-                    "lookup_typed_table_id",
-                    "replay_cleanup_for_phase",
+                    "promote_to_latest",
                     "begin_session_select",
                     "relationships",
                     "semantic_per_table",
-                    "session_replay_cleanup_for_phase",
                 ],
             )
             async with worker:

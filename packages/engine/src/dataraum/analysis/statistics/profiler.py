@@ -23,7 +23,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy.orm import Session
@@ -42,6 +41,7 @@ from dataraum.analysis.statistics.models import (
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -287,6 +287,7 @@ def profile_statistics(
     config: dict[str, Any] | None = None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.
 
@@ -349,6 +350,7 @@ def profile_statistics(
 
         profiled_at = datetime.now(UTC)
         profiles: list[ColumnProfile] = []
+        rows: list[dict[str, Any]] = []
         top_k = stats_config["top_k_values"]
 
         # Use parallel processing with cursors from shared connection
@@ -374,28 +376,35 @@ def profile_statistics(
                 if profile:
                     profiles.append(profile)
 
-                    # Store in metadata database (sequential - SQLite writes)
+                    # Build the row for an idempotent upsert (sequential).
                     non_null_count = profile.total_count - profile.null_count
                     is_unique = (
                         profile.distinct_count == non_null_count if non_null_count > 0 else False
                     )
 
-                    db_profile = DBColumnProfile(
-                        profile_id=str(uuid4()),
-                        session_id=session_id,
-                        column_id=profile.column_id,
-                        profiled_at=profiled_at,
-                        layer="typed",
-                        total_count=profile.total_count,
-                        null_count=profile.null_count,
-                        distinct_count=profile.distinct_count,
-                        null_ratio=profile.null_ratio,
-                        cardinality_ratio=profile.cardinality_ratio,
-                        is_unique=is_unique,
-                        is_numeric=profile.numeric_stats is not None,
-                        profile_data=profile.model_dump(mode="json"),
+                    # PK omitted so the model's Python-side default applies.
+                    rows.append(
+                        {
+                            "session_id": session_id,
+                            "column_id": profile.column_id,
+                            "run_id": run_id,
+                            "profiled_at": profiled_at,
+                            "layer": "typed",
+                            "total_count": profile.total_count,
+                            "null_count": profile.null_count,
+                            "distinct_count": profile.distinct_count,
+                            "null_ratio": profile.null_ratio,
+                            "cardinality_ratio": profile.cardinality_ratio,
+                            "is_unique": is_unique,
+                            "is_numeric": profile.numeric_stats is not None,
+                            "profile_data": profile.model_dump(mode="json"),
+                        }
                     )
-                    session.add(db_profile)
+
+        # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
+        # (same run_id) updates the row in place instead of duplicating it —
+        # which would make the head-resolved loaders' scalar_one_or_none() raise.
+        upsert(session, DBColumnProfile, rows, index_elements=["column_id", "run_id"])
 
         # Update table's last_profiled_at
         table.last_profiled_at = profiled_at

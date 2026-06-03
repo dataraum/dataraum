@@ -38,6 +38,11 @@ class DetectorContext:
     column_name: str = ""
     view_name: str = ""
 
+    # Snapshot version axis (DAT-413). Set on the detect path so a detector's
+    # ``load_data`` reads THIS run's upstream metadata; ``None`` outside the
+    # workflow (test/legacy callers) → loaders add no run_id filter.
+    run_id: str | None = None
+
     # SQLAlchemy session for detector-driven data loading
     session: Session | None = None
 

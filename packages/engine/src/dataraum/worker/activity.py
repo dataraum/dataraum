@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -33,7 +34,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
-from dataraum.storage import Source, Table
+from dataraum.storage import MetadataSnapshotHead, Source, Table
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
@@ -45,12 +46,11 @@ __all__ = [
     "PhaseRun",
     "begin_session_select",
     "declared_detector_ids",
+    "promote_run",
     "raw_table_ids",
     "run_detectors",
     "run_phase",
-    "run_replay_cleanup",
     "run_session_phase",
-    "run_session_replay_cleanup",
     "typed_table_id_for_raw",
 ]
 
@@ -77,6 +77,22 @@ _DETECTOR_PHASES = (
     "statistical_quality",
     "temporal",
     "semantic_per_column",
+)
+
+# The add_source stages whose per-(table, stage) snapshot the terminal
+# ``promote_to_latest`` step flips the head pointer to (DAT-413). This is the
+# producing-stage axis ``MetadataSnapshotHead.stage`` records — every add_source
+# stage that writes run_id-stamped metadata, plus the terminal ``detect``. With
+# exactly one run at a time (Phase 2) nothing reads the head yet, so promoting it
+# is byte-identical to today's delete-then-insert; Phase 3 switches the readers.
+_PROMOTE_STAGES = (
+    "typing",
+    "statistics",
+    "column_eligibility",
+    "statistical_quality",
+    "temporal",
+    "semantic_per_column",
+    "detect",
 )
 
 
@@ -154,6 +170,7 @@ def run_phase(
             session_factory=manager.session_scope,
             manager=manager,
             session_id=identity.session_id,
+            run_id=identity.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -226,57 +243,6 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
             if detector_id not in detector_ids:
                 detector_ids.append(detector_id)
     return detector_ids
-
-
-def run_replay_cleanup(
-    manager: ConnectionManager,
-    identity: SourceIdentity,
-    phase_name: str,
-    table_ids: list[str],
-) -> None:
-    """Invoke ``phase.replay_cleanup`` for ``phase_name`` (DAT-343).
-
-    The activity-side counterpart to ``BasePhase.replay_cleanup``: leases a
-    scoped session + DuckDB cursor, builds the minimal ``PhaseContext`` the
-    cleanup needs (source_id + connections; no per-phase static config —
-    cleanup deletes rows, doesn't read config), and calls the phase's
-    cleanup method. Commits via ``session_scope`` on clean exit.
-
-    Workspace-mismatch guard mirrors :func:`run_phase` so a payload
-    addressed to another workspace can't accidentally clean up this one.
-    """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: replay_cleanup payload targets "
-            f"'{identity.workspace_id}' but this worker is bound to "
-            f"'{active_workspace_id}'."
-        )
-
-    phase_cls = get_phase_class(phase_name)
-    if phase_cls is None:
-        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
-    phase = phase_cls()
-
-    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=cursor,
-            source_id=identity.source_id,
-            table_ids=list(table_ids),
-            config={},
-            session_factory=manager.session_scope,
-            manager=manager,
-            session_id=identity.session_id,
-        )
-        phase.replay_cleanup(ctx, list(table_ids))
-
-    logger.info(
-        "activity.replay_cleanup",
-        phase=phase_name,
-        table_ids=table_ids,
-        source_id=identity.source_id,
-    )
 
 
 def begin_session_select(
@@ -422,54 +388,6 @@ def run_session_phase(
     )
 
 
-def run_session_replay_cleanup(
-    manager: ConnectionManager,
-    identity: SessionIdentity,
-    phase_name: str,
-    table_ids: list[str],
-) -> None:
-    """Invoke ``phase.replay_cleanup`` for a begin_session phase (DAT-401).
-
-    Source-free sibling of :func:`run_replay_cleanup`: builds a session-scoped
-    ``PhaseContext`` (``source_id=None``, scoped to ``table_ids``) and calls the
-    phase's owner-scoped cleanup so its ``should_skip`` doesn't bail on the
-    re-run. The cleanup deletes only the phase's own rows for these tables — it
-    never relies on a parent ``Table`` cascade (DAT-373).
-    """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: session replay_cleanup payload targets "
-            f"'{identity.workspace_id}' but this worker is bound to "
-            f"'{active_workspace_id}'."
-        )
-
-    phase_cls = get_phase_class(phase_name)
-    if phase_cls is None:
-        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
-    phase = phase_cls()
-
-    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=cursor,
-            source_id=None,
-            table_ids=list(table_ids),
-            config={},
-            session_factory=manager.session_scope,
-            manager=manager,
-            session_id=identity.session_id,
-        )
-        phase.replay_cleanup(ctx, list(table_ids))
-
-    logger.info(
-        "activity.session_replay_cleanup",
-        phase=phase_name,
-        table_ids=table_ids,
-        session_id=identity.session_id,
-    )
-
-
 def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
     """Run every wired detector once over the run-session's tables — the terminal ``detect`` step.
 
@@ -501,7 +419,8 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
         for detector_id in detector_ids:
             # Scoped to the session's tables. The single terminal pass runs once,
             # sequentially after the fan-out — no concurrent writers to collide on
-            # the per-(detector, table) delete-before-insert.
+            # the per-(detector, table) delete-before-insert. ``run_id`` stamps the
+            # snapshot version axis (DAT-413) on every entropy object written.
             total += run_detector_post_step(
                 session,
                 identity.source_id,
@@ -509,12 +428,15 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
                 cursor,
                 session_id=identity.session_id,
                 table_ids=table_ids,
+                run_id=identity.run_id,
             )
         # Persist readiness from the freshly-written entropy objects, in the same
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        readiness_rows = persist_readiness(session, identity.session_id, table_ids)
+        readiness_rows = persist_readiness(
+            session, identity.session_id, table_ids, run_id=identity.run_id
+        )
         logger.info(
             "terminal_detect_done",
             source_id=identity.source_id,
@@ -522,6 +444,91 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
             readiness_rows=readiness_rows,
         )
     return total
+
+
+def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
+    """Flip the snapshot head to this run for every ``(table_id, stage)`` — terminal step (DAT-413).
+
+    The single terminal ``promote_to_latest`` step: after ``detect``, record this
+    run as the *current* (promoted) snapshot for each of the run's tables × each
+    add_source stage (``_PROMOTE_STAGES``). It resolves the run's tables via
+    ``session_tables`` (the exact set :func:`run_detectors` scopes to) and
+    **upserts** :class:`MetadataSnapshotHead`: an existing ``(table_id, stage)``
+    row has its ``run_id`` re-pointed + ``version`` bumped; a missing one is
+    inserted at ``version=0``.
+
+    Behavior-preserving in Phase 2: with exactly one run at a time nothing reads
+    the head yet (every phase still does delete-then-insert), so writing it has no
+    effect on downstream output — Phase 3 switches the readers to head-resolution.
+
+    Workspace-mismatch guard mirrors the other run-side helpers (DAT-364).
+
+    Returns:
+        Number of head rows promoted (``len(tables) * len(_PROMOTE_STAGES)``).
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: promote payload targets "
+            f"'{identity.workspace_id}' but this worker is bound to "
+            f"'{active_workspace_id}'."
+        )
+
+    # The head names a run, so promote is meaningless without one. The
+    # AddSourceWorkflow always mints + stamps ``run_id`` before any activity, so a
+    # missing one here is a caller bug — fail loud rather than write a NULL head.
+    run_id = identity.run_id
+    if run_id is None:
+        raise RuntimeError(
+            "promote_run requires a stamped identity.run_id — the workflow mints "
+            "it via workflow.uuid4() before the first activity (DAT-413)."
+        )
+
+    promoted = 0
+    with manager.session_scope() as session:
+        table_ids = tables_for_session(session, identity.session_id)
+        if not table_ids:
+            # Same empty-set signal as run_detectors: a populated source with no
+            # session links is a bug; nothing to promote.
+            logger.warning(
+                "promote_no_session_tables",
+                source_id=identity.source_id,
+                session_id=identity.session_id,
+            )
+            return 0
+        now = datetime.now(UTC)
+        for table_id in table_ids:
+            for stage in _PROMOTE_STAGES:
+                head = session.execute(
+                    select(MetadataSnapshotHead).where(
+                        MetadataSnapshotHead.table_id == table_id,
+                        MetadataSnapshotHead.stage == stage,
+                    )
+                ).scalar_one_or_none()
+                if head is None:
+                    session.add(
+                        MetadataSnapshotHead(
+                            table_id=table_id,
+                            stage=stage,
+                            run_id=run_id,
+                            promoted_at=now,
+                            version=0,
+                        )
+                    )
+                else:
+                    head.run_id = run_id
+                    head.promoted_at = now
+                    head.version = head.version + 1
+                promoted += 1
+
+    logger.info(
+        "promote_to_latest_done",
+        source_id=identity.source_id,
+        session_id=identity.session_id,
+        run_id=run_id,
+        heads_promoted=promoted,
+    )
+    return promoted
 
 
 def _build_phase_config(

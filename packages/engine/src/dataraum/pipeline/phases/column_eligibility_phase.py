@@ -7,10 +7,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.eligibility.config import load_eligibility_config
 from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
@@ -26,6 +25,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     pass
@@ -54,28 +54,16 @@ class ColumnEligibilityPhase(BasePhase):
 
         return [db_models]
 
-    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
-        """Delete this phase's ColumnEligibilityRecord rows for the scoped tables (DAT-373).
-
-        Owner-scoped by ``table_id``: drops only the eligibility records of the
-        typed tables in ``table_ids`` so the re-run (after a re-type) re-evaluates
-        eligibility against the freshly-typed columns. The re-typed DuckDB table
-        is rebuilt with its full column set, so any columns this phase previously
-        dropped are present again for re-evaluation. Never touches another phase's
-        per-Column rows.
-        """
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return
-        ctx.session.execute(
-            delete(ColumnEligibilityRecord).where(
-                ColumnEligibilityRecord.table_id.in_([t.table_id for t in typed_tables])
-            )
-        )
-        ctx.session.flush()
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if the scoped tables' columns all have eligibility records."""
+        """Skip only when there are genuinely no typed columns to evaluate.
+
+        Structural early-out only (DAT-413): a re-run mints a fresh ``run_id``
+        and must always re-evaluate eligibility under it, so the old "all columns
+        already have records → skip" bail is gone. ``_run`` stamps ``run_id`` on
+        each ``ColumnEligibilityRecord`` and only treats THIS run's records as
+        already-evaluated, so a new run re-derives while prior runs' records stay
+        intact; the promoted head names which run is current.
+        """
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
@@ -88,16 +76,6 @@ class ColumnEligibilityPhase(BasePhase):
 
         if not columns:
             return "No columns found"
-
-        column_ids = [c.column_id for c in columns]
-
-        existing_stmt = select(ColumnEligibilityRecord.column_id).where(
-            ColumnEligibilityRecord.column_id.in_(column_ids)
-        )
-        existing = set(ctx.session.execute(existing_stmt).scalars().all())
-
-        if len(existing) >= len(column_ids):
-            return "All columns already have eligibility records"
 
         return None
 
@@ -117,29 +95,31 @@ class ColumnEligibilityPhase(BasePhase):
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))
         all_columns = ctx.session.execute(cols_stmt).scalars().all()
 
+        # Filter to THIS run's profiles (DAT-413): the statistics phase stamps
+        # ``run_id`` on every StatisticalProfile it writes, and eligibility reads
+        # its own run's upstream output. No-op under one run; the head pointer is
+        # not consulted yet (Phase 3).
         profiles_stmt = select(StatisticalProfile).where(
             StatisticalProfile.column_id.in_([c.column_id for c in all_columns]),
             StatisticalProfile.layer == "typed",
+            StatisticalProfile.run_id == ctx.run_id,
         )
         profiles = ctx.session.execute(profiles_stmt).scalars().all()
         profile_map = {p.column_id: p for p in profiles}
-
-        # Check for existing eligibility records
-        existing_stmt = select(ColumnEligibilityRecord.column_id).where(
-            ColumnEligibilityRecord.column_id.in_([c.column_id for c in all_columns])
-        )
-        existing_column_ids = set(ctx.session.execute(existing_stmt).scalars().all())
 
         # Track results
         counts = {"ELIGIBLE": 0, "WARN": 0, "INELIGIBLE": 0}
         columns_to_drop: dict[str, list[tuple[Column, str]]] = {}
         warnings: list[str] = []
+        evaluated_at = datetime.now(UTC)
+        rows: list[dict[str, Any]] = []
 
-        # Evaluate each column
+        # Evaluate every column under THIS run and upsert (DAT-413). The old
+        # "already has a record for this run → skip" guard is gone: a Temporal
+        # at-least-once retry re-runs this whole activity against committed rows,
+        # so we re-derive and upsert on ``(column_id, run_id)`` instead of either
+        # duplicating (which would make scalar_one_or_none() raise) or skipping.
         for column in all_columns:
-            if column.column_id in existing_column_ids:
-                continue
-
             table = table_map.get(column.table_id)
             if not table:
                 continue
@@ -155,23 +135,25 @@ class ColumnEligibilityPhase(BasePhase):
                     f"is ineligible: {reason}. Cannot proceed with unusable key column."
                 )
 
-            record = ColumnEligibilityRecord(
-                eligibility_id=str(uuid4()),
-                session_id=ctx.require_session_id(),
-                column_id=column.column_id,
-                table_id=table.table_id,
-                source_id=ctx.source_id,
-                column_name=column.column_name,
-                table_name=table.table_name,
-                resolved_type=column.resolved_type,
-                status=status,
-                triggered_rule=rule_id,
-                reason=reason,
-                metrics_snapshot=metrics,
-                config_version=config.version,
-                evaluated_at=datetime.now(UTC),
+            # PK omitted so the model's Python-side default applies.
+            rows.append(
+                {
+                    "session_id": ctx.require_session_id(),
+                    "column_id": column.column_id,
+                    "table_id": table.table_id,
+                    "source_id": ctx.source_id,
+                    "run_id": ctx.run_id,
+                    "column_name": column.column_name,
+                    "table_name": table.table_name,
+                    "resolved_type": column.resolved_type,
+                    "status": status,
+                    "triggered_rule": rule_id,
+                    "reason": reason,
+                    "metrics_snapshot": metrics,
+                    "config_version": config.version,
+                    "evaluated_at": evaluated_at,
+                }
             )
-            ctx.session.add(record)
             counts[status] += 1
 
             if status == "INELIGIBLE":
@@ -186,6 +168,9 @@ class ColumnEligibilityPhase(BasePhase):
                 status=status,
                 rule=rule_id,
             )
+
+        # Upsert on ``(column_id, run_id)`` so a retry refreshes rows in place.
+        upsert(ctx.session, ColumnEligibilityRecord, rows, index_elements=["column_id", "run_id"])
 
         # Drop ineligible columns from DuckDB tables
         for table_id, columns_data in columns_to_drop.items():

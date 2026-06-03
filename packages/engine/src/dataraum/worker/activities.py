@@ -29,20 +29,17 @@ from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     PhaseRun,
     begin_session_select,
+    promote_run,
     raw_table_ids,
     run_detectors,
     run_phase,
-    run_replay_cleanup,
     run_session_phase,
-    run_session_replay_cleanup,
     typed_table_id_for_raw,
 )
 from dataraum.worker.contracts import (
     ImportResult,
     PhaseOutcome,
     ProcessTableInput,
-    ReplayCleanupInput,
-    SessionReplayCleanupInput,
     SessionScopedInput,
     SourceIdentity,
     TableScopedInput,
@@ -121,58 +118,6 @@ class PhaseActivities:
         """
         return self._run_or_raise("semantic_per_column", identity, [])
 
-    @activity.defn(name="lookup_raw_table_ids")
-    def lookup_raw_table_ids(self, identity: SourceIdentity) -> ImportResult:
-        """Read the source's raw table ids without re-running import (DAT-343).
-
-        Called by ``addSourceWorkflow`` on a teach replay that starts past
-        ``import`` — the parent still needs the raw ids to drive the
-        fan-out, and reading them in an activity (so the result lands in
-        history) keeps replay deterministic.
-        """
-        return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
-
-    @activity.defn(name="lookup_typed_table_id")
-    def lookup_typed_table_id(self, payload: ProcessTableInput) -> TypingResult:
-        """Resolve an existing typed table id without re-running typing (DAT-343).
-
-        Called by ``processTableWorkflow`` on a teach replay that starts past
-        ``typing``. Same shape as the ``typing`` activity's result so the
-        downstream child workflow code path stays identical.
-        """
-        typed_id = typed_table_id_for_raw(
-            self._manager, payload.identity.source_id, payload.raw_table_id
-        )
-        if typed_id is None:
-            raise ApplicationError(
-                f"No typed table for raw table '{payload.raw_table_id}' — replay "
-                "started past typing but typing's output is missing. Re-run from "
-                "an earlier phase.",
-                type="PhaseFailed",
-                non_retryable=True,
-            )
-        return TypingResult(typed_table_id=typed_id)
-
-    @activity.defn(name="replay_cleanup_for_phase")
-    def run_replay_cleanup_for_phase(self, payload: ReplayCleanupInput) -> PhaseOutcome:
-        """Invoke a phase's ``replay_cleanup`` before the workflow re-runs it (DAT-343).
-
-        The workflow calls this immediately before the first phase activity
-        of a teach replay — that's where ``replay.from_phase`` enters the
-        chain, and the cleanup wipes the phase's prior outputs so its
-        existing ``should_skip`` lets the re-run proceed.
-        """
-        run_replay_cleanup(
-            self._manager,
-            payload.identity,
-            payload.phase_name,
-            payload.table_ids,
-        )
-        return PhaseOutcome(
-            status=PhaseStatus.COMPLETED.value,
-            summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
-        )
-
     @activity.defn(name="detect")
     def run_detect(self, identity: SourceIdentity) -> PhaseOutcome:
         """Terminal detector pass — every wired detector once, source-wide (DAT-394).
@@ -187,6 +132,22 @@ class PhaseActivities:
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"{count} detector records for source {identity.source_id}",
+        )
+
+    @activity.defn(name="promote_to_latest")
+    def run_promote_to_latest(self, identity: SourceIdentity) -> PhaseOutcome:
+        """Terminal promote step — flip the snapshot head to this run (DAT-413).
+
+        Runs last in ``addSourceWorkflow``, after ``detect``: upserts
+        :class:`MetadataSnapshotHead` for each of the run's tables × add_source
+        stage so the head names this ``run_id`` as current. Behavior-preserving
+        in Phase 2 — nothing reads the head yet (one run at a time), so promoting
+        it cannot change downstream output; Phase 3 switches readers to it.
+        """
+        count = promote_run(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"promoted {count} snapshot head(s) for source {identity.source_id}",
         )
 
     # --- begin_session activities (DAT-401) — source-free, session-scoped ----
@@ -225,27 +186,6 @@ class PhaseActivities:
             self._manager, "semantic_per_table", payload.identity, payload.table_ids
         )
         return self._outcome_or_raise(run, "semantic_per_table")
-
-    @activity.defn(name="session_replay_cleanup_for_phase")
-    def run_session_replay_cleanup_for_phase(
-        self, payload: SessionReplayCleanupInput
-    ) -> PhaseOutcome:
-        """Invoke a begin_session phase's ``replay_cleanup`` before a re-run (DAT-401).
-
-        The source-free sibling of ``replay_cleanup_for_phase``: clears the
-        phase's own rows (candidate rels / table entities) for the scoped tables
-        so its ``should_skip`` lets the re-run proceed.
-        """
-        run_session_replay_cleanup(
-            self._manager,
-            payload.identity,
-            payload.phase_name,
-            payload.table_ids,
-        )
-        return PhaseOutcome(
-            status=PhaseStatus.COMPLETED.value,
-            summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
-        )
 
     def _run_or_raise(
         self,

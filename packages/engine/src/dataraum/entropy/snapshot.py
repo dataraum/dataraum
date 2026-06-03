@@ -152,6 +152,7 @@ def _run_detectors(
             column_name=context.column_name,
             view_name=context.view_name,
             duckdb_conn=context.duckdb_conn,
+            run_id=context.run_id,
             # Copy pre-populated analysis_results (for test/legacy paths)
             analysis_results=dict(context.analysis_results),
         )
@@ -187,6 +188,7 @@ def take_snapshot(
     session: Session,
     duckdb_conn: Any,
     dimensions: Sequence[str] | None = None,
+    run_id: str | None = None,
 ) -> Snapshot:
     """Run detectors on a target and return canonical scores.
 
@@ -202,6 +204,9 @@ def take_snapshot(
         session: SQLAlchemy session for loading analysis data
         duckdb_conn: DuckDB connection for detectors that query data directly
         dimensions: Optional filter -- only run detectors for these sub_dimensions
+        run_id: Snapshot version axis (DAT-413). Threaded onto the DetectorContext
+            so each detector's ``load_data`` reads THIS run's upstream metadata.
+            ``None`` (non-detect callers) → loaders add no run_id filter.
 
     Returns:
         Snapshot with scores from all applicable detectors
@@ -223,6 +228,7 @@ def take_snapshot(
             table_id=fact_table_id,
             view_name=view_name,
             duckdb_conn=duckdb_conn,
+            run_id=run_id,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "view"]
@@ -240,6 +246,7 @@ def take_snapshot(
             table_id=table_id,
             table_name=table_name,
             duckdb_conn=duckdb_conn,
+            run_id=run_id,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "table"]
@@ -258,6 +265,7 @@ def take_snapshot(
             table_name=table_name,
             column_name=column_name,
             duckdb_conn=duckdb_conn,
+            run_id=run_id,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "column"]

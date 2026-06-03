@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,6 +45,12 @@ class StatisticalQualityMetrics(Base):
     """
 
     __tablename__ = "statistical_quality_metrics"
+    # One metric row per column PER RUN (DAT-413): widened to ``(column_id, run_id)``
+    # so the writer can upsert idempotently under Temporal at-least-once retries
+    # and two coexisting runs' rows don't collide.
+    __table_args__ = (
+        UniqueConstraint("column_id", "run_id", name="uq_statistical_quality_metrics_column_run"),
+    )
 
     metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(
@@ -52,6 +59,9 @@ class StatisticalQualityMetrics(Base):
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

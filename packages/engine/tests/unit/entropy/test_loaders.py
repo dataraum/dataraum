@@ -1,6 +1,12 @@
 """Tests for entropy detector loader helpers."""
 
 from unittest.mock import MagicMock
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from dataraum.entropy.detectors.loaders import (
     load_correlation,
@@ -10,6 +16,7 @@ from dataraum.entropy.detectors.loaders import (
     load_statistics,
     load_typing,
 )
+from dataraum.storage import init_database
 
 
 class TestLoadTyping:
@@ -270,3 +277,67 @@ class TestLoadDriftSummaries:
         session.execute.side_effect = [col_result, slice_result, cols_result]
 
         assert load_drift_summaries(session, "col1", "tbl1", "orders") is None
+
+
+@pytest.fixture
+def real_session():
+    """In-memory SQLite session with all tables; FKs off so we skip parent rows."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _pragma(dbapi_conn, _record):  # noqa: ANN001, ANN202
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=OFF")
+        cur.close()
+
+    init_database(engine)
+    factory = sessionmaker(bind=engine)
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
+
+
+class TestLoaderRunIdFilter:
+    """DAT-413: the run_id-stamped loaders read only the requested run's row.
+
+    Real-DB tests (the MagicMock tests above can't exercise the SQL filter): a
+    single ``TypeDecision`` stamped with one run is returned when the loader is
+    asked for that run and skipped for any other; ``run_id=None`` (non-detect
+    callers) keeps the legacy unfiltered behavior.
+    """
+
+    def _insert_decision(self, session, column_id: str, run_id: str) -> None:
+        from dataraum.analysis.typing.db_models import TypeDecision
+
+        session.add(
+            TypeDecision(
+                decision_id=str(uuid4()),
+                session_id="sess-1",
+                column_id=column_id,
+                run_id=run_id,
+                decided_type="DECIMAL",
+                decision_source="automatic",
+            )
+        )
+        session.flush()
+
+    def test_load_typing_picks_matching_run(self, real_session):
+        self._insert_decision(real_session, "col-1", "run-A")
+
+        # Requested run matches the stored row → returned.
+        matched = load_typing(real_session, "col-1", run_id="run-A")
+        assert matched is not None
+        assert matched["resolved_type"] == "DECIMAL"
+
+        # A different run → the filter excludes the only row → None.
+        assert load_typing(real_session, "col-1", run_id="run-B") is None
+
+        # No run_id (non-detect / legacy callers) → unfiltered → still found.
+        assert load_typing(real_session, "col-1") is not None

@@ -12,6 +12,37 @@ from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.storage import Column, Table
 
 
+def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:
+    """Directional column pairs the user has dropped (DAT-408).
+
+    A drop is a ``ConfigOverlay(type='relationship')`` whose payload carries
+    ``action == "reject"`` plus the directional ``from_column_id`` / ``to_column_id``
+    (confirm and reject are two states of the one relationship overlay type). A
+    re-run must not re-create a suppressed relationship, and its readiness must not
+    surface. ``superseded_at IS NULL`` filters undone drops out.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "relationship",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+    out: set[tuple[str, str]] = set()
+    for row in rows:
+        payload = row.payload or {}
+        if payload.get("action") != "reject":
+            continue
+        from_col = payload.get("from_column_id")
+        to_col = payload.get("to_column_id")
+        if from_col and to_col:
+            out.add((from_col, to_col))
+    return out
+
+
 def load_relationship_candidates_for_semantic(
     session: Session,
     table_ids: list[str] | None = None,

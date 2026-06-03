@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import duckdb
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import (
@@ -21,6 +21,7 @@ from dataraum.analysis.relationships.models import (
     RelationshipCandidate,
     RelationshipDetectionResult,
 )
+from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -145,6 +146,21 @@ def _store_candidates(
     column_map = load_column_mappings(session, table_ids)
     table_map = load_table_mappings(session, table_ids)
 
+    # Re-derive candidates (DAT-408): delete this session's prior CANDIDATE rows
+    # before re-inserting, so a begin_session re-run refreshes the deterministic
+    # candidate set without violating the (session, from, to, method) unique key —
+    # and without ever touching durable ``llm``/``manual`` rows (user-curated /
+    # silently-accepted; only a user drop removes those).
+    session.execute(
+        delete(RelationshipDB).where(
+            RelationshipDB.session_id == session_id,
+            RelationshipDB.detection_method == "candidate",
+        )
+    )
+
+    # A user-dropped relationship must not be re-created on re-run (DAT-408).
+    suppressed = load_suppressed_relationship_pairs(session)
+
     for candidate in candidates:
         table1_id = table_map.get(candidate.table1)
         table2_id = table_map.get(candidate.table2)
@@ -158,6 +174,10 @@ def _store_candidates(
             col2_id = column_map.get((candidate.table2, jc.column2))
 
             if not col1_id or not col2_id:
+                continue
+
+            if (col1_id, col2_id) in suppressed:
+                # User dropped this relationship — honor the suppression overlay.
                 continue
 
             # Build evidence with value overlap and column characteristics

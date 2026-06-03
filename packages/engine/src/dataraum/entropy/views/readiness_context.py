@@ -594,6 +594,52 @@ def load_persisted_readiness(
     )
 
 
+def load_relationship_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
+    """Current, gated relationship readiness for a session (DAT-408).
+
+    Resolves each ``relationship:`` readiness row via the per-(target, "detect")
+    head — never a blind read that would mix runs — and **gates** on a live,
+    non-suppressed ``Relationship``: a dropped (overlay-rejected) relationship and
+    a vanished candidate keep their prior-run rows for audit but are not surfaced,
+    so there is no ghost readiness. Returns the promoted, gated records.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
+    from dataraum.entropy.models import parse_relationship_target
+
+    rows = list(
+        session.execute(
+            select(EntropyReadinessRecord).where(
+                EntropyReadinessRecord.session_id == session_id,
+                EntropyReadinessRecord.target.like("relationship:%"),
+            )
+        ).scalars()
+    )
+    if not rows:
+        return []
+
+    # Live directional column pairs in this session, minus user-dropped ones.
+    live_pairs = set(
+        session.execute(
+            select(Relationship.from_column_id, Relationship.to_column_id).where(
+                Relationship.session_id == session_id
+            )
+        ).tuples()
+    )
+    live_pairs -= load_suppressed_relationship_pairs(session)
+
+    gated: list[EntropyReadinessRecord] = []
+    for rec in rows:
+        # Head resolution: only the promoted run for this target is current.
+        if head_run_id(session, rec.target, "detect") != rec.run_id:
+            continue
+        pair = parse_relationship_target(rec.target)
+        if pair is None or pair not in live_pairs:
+            continue
+        gated.append(rec)
+    return gated
+
+
 def _target_by_ids(session: Session, table_ids: list[str]) -> dict[tuple[str, str], str]:
     """Map ``(table_id, column_id)`` -> ``"column:{table_name}.{column_name}"``.
 

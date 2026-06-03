@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -33,7 +34,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
-from dataraum.storage import Source, Table
+from dataraum.storage import MetadataSnapshotHead, Source, Table
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
@@ -45,6 +46,7 @@ __all__ = [
     "PhaseRun",
     "begin_session_select",
     "declared_detector_ids",
+    "promote_run",
     "raw_table_ids",
     "run_detectors",
     "run_phase",
@@ -77,6 +79,22 @@ _DETECTOR_PHASES = (
     "statistical_quality",
     "temporal",
     "semantic_per_column",
+)
+
+# The add_source stages whose per-(table, stage) snapshot the terminal
+# ``promote_to_latest`` step flips the head pointer to (DAT-413). This is the
+# producing-stage axis ``MetadataSnapshotHead.stage`` records — every add_source
+# stage that writes run_id-stamped metadata, plus the terminal ``detect``. With
+# exactly one run at a time (Phase 2) nothing reads the head yet, so promoting it
+# is byte-identical to today's delete-then-insert; Phase 3 switches the readers.
+_PROMOTE_STAGES = (
+    "typing",
+    "statistics",
+    "column_eligibility",
+    "statistical_quality",
+    "temporal",
+    "semantic_per_column",
+    "detect",
 )
 
 
@@ -527,6 +545,91 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
             readiness_rows=readiness_rows,
         )
     return total
+
+
+def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
+    """Flip the snapshot head to this run for every ``(table_id, stage)`` — terminal step (DAT-413).
+
+    The single terminal ``promote_to_latest`` step: after ``detect``, record this
+    run as the *current* (promoted) snapshot for each of the run's tables × each
+    add_source stage (``_PROMOTE_STAGES``). It resolves the run's tables via
+    ``session_tables`` (the exact set :func:`run_detectors` scopes to) and
+    **upserts** :class:`MetadataSnapshotHead`: an existing ``(table_id, stage)``
+    row has its ``run_id`` re-pointed + ``version`` bumped; a missing one is
+    inserted at ``version=0``.
+
+    Behavior-preserving in Phase 2: with exactly one run at a time nothing reads
+    the head yet (every phase still does delete-then-insert), so writing it has no
+    effect on downstream output — Phase 3 switches the readers to head-resolution.
+
+    Workspace-mismatch guard mirrors the other run-side helpers (DAT-364).
+
+    Returns:
+        Number of head rows promoted (``len(tables) * len(_PROMOTE_STAGES)``).
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: promote payload targets "
+            f"'{identity.workspace_id}' but this worker is bound to "
+            f"'{active_workspace_id}'."
+        )
+
+    # The head names a run, so promote is meaningless without one. The
+    # AddSourceWorkflow always mints + stamps ``run_id`` before any activity, so a
+    # missing one here is a caller bug — fail loud rather than write a NULL head.
+    run_id = identity.run_id
+    if run_id is None:
+        raise RuntimeError(
+            "promote_run requires a stamped identity.run_id — the workflow mints "
+            "it via workflow.uuid4() before the first activity (DAT-413)."
+        )
+
+    promoted = 0
+    with manager.session_scope() as session:
+        table_ids = tables_for_session(session, identity.session_id)
+        if not table_ids:
+            # Same empty-set signal as run_detectors: a populated source with no
+            # session links is a bug; nothing to promote.
+            logger.warning(
+                "promote_no_session_tables",
+                source_id=identity.source_id,
+                session_id=identity.session_id,
+            )
+            return 0
+        now = datetime.now(UTC)
+        for table_id in table_ids:
+            for stage in _PROMOTE_STAGES:
+                head = session.execute(
+                    select(MetadataSnapshotHead).where(
+                        MetadataSnapshotHead.table_id == table_id,
+                        MetadataSnapshotHead.stage == stage,
+                    )
+                ).scalar_one_or_none()
+                if head is None:
+                    session.add(
+                        MetadataSnapshotHead(
+                            table_id=table_id,
+                            stage=stage,
+                            run_id=run_id,
+                            promoted_at=now,
+                            version=0,
+                        )
+                    )
+                else:
+                    head.run_id = run_id
+                    head.promoted_at = now
+                    head.version = head.version + 1
+                promoted += 1
+
+    logger.info(
+        "promote_to_latest_done",
+        source_id=identity.source_id,
+        session_id=identity.session_id,
+        run_id=run_id,
+        heads_promoted=promoted,
+    )
+    return promoted
 
 
 def _build_phase_config(

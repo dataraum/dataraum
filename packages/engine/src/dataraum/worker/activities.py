@@ -29,6 +29,7 @@ from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     PhaseRun,
     begin_session_select,
+    promote_run,
     raw_table_ids,
     run_detectors,
     run_phase,
@@ -187,6 +188,22 @@ class PhaseActivities:
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"{count} detector records for source {identity.source_id}",
+        )
+
+    @activity.defn(name="promote_to_latest")
+    def run_promote_to_latest(self, identity: SourceIdentity) -> PhaseOutcome:
+        """Terminal promote step — flip the snapshot head to this run (DAT-413).
+
+        Runs last in ``addSourceWorkflow``, after ``detect``: upserts
+        :class:`MetadataSnapshotHead` for each of the run's tables × add_source
+        stage so the head names this ``run_id`` as current. Behavior-preserving
+        in Phase 2 — nothing reads the head yet (one run at a time), so promoting
+        it cannot change downstream output; Phase 3 switches readers to it.
+        """
+        count = promote_run(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"promoted {count} snapshot head(s) for source {identity.source_id}",
         )
 
     # --- begin_session activities (DAT-401) — source-free, session-scoped ----

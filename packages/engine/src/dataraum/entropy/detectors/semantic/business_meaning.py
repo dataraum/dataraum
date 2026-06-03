@@ -49,7 +49,7 @@ class BusinessMeaningDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_semantic
 
-        result = load_semantic(context.session, context.column_id)
+        result = load_semantic(context.session, context.column_id, context.run_id)
         if result is not None:
             context.analysis_results["semantic"] = result
 

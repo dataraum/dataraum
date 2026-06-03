@@ -444,6 +444,19 @@ class AddSourceWorkflow:
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
+        # Terminal promote step (DAT-413): flip the per-(table, stage) snapshot
+        # head to this run's run_id. Always runs last, after detect — the run's
+        # metadata is now fully written, so the head can name it current.
+        # Behavior-preserving in Phase 2 (nothing reads the head yet); Phase 3
+        # switches the readers. Not added to begin_session (Slice B).
+        self._progress.phase = "promote"
+        await workflow.execute_activity(
+            "promote_to_latest",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
 
         self._progress.phase = "done"
         return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)

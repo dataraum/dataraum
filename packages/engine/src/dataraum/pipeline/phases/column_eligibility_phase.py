@@ -117,9 +117,14 @@ class ColumnEligibilityPhase(BasePhase):
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))
         all_columns = ctx.session.execute(cols_stmt).scalars().all()
 
+        # Filter to THIS run's profiles (DAT-413): the statistics phase stamps
+        # ``run_id`` on every StatisticalProfile it writes, and eligibility reads
+        # its own run's upstream output. No-op under one run; the head pointer is
+        # not consulted yet (Phase 3).
         profiles_stmt = select(StatisticalProfile).where(
             StatisticalProfile.column_id.in_([c.column_id for c in all_columns]),
             StatisticalProfile.layer == "typed",
+            StatisticalProfile.run_id == ctx.run_id,
         )
         profiles = ctx.session.execute(profiles_stmt).scalars().all()
         profile_map = {p.column_id: p for p in profiles}

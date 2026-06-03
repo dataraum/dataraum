@@ -102,6 +102,7 @@ def run_detector_post_step(
                     session=session,
                     duckdb_conn=duckdb_conn,
                     dimensions=[detector.sub_dimension],
+                    run_id=run_id,
                 )
                 for obj in snapshot.objects:
                     all_records.append(
@@ -124,6 +125,7 @@ def run_detector_post_step(
                 session=session,
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
+                run_id=run_id,
             )
             for obj in snapshot.objects:
                 all_records.append(
@@ -159,6 +161,7 @@ def run_detector_post_step(
                 session=session,
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
+                run_id=run_id,
             )
             for obj in snapshot.objects:
                 all_records.append(

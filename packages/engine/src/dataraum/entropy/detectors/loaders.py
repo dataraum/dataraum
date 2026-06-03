@@ -16,23 +16,33 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
-def load_typing(session: Session, column_id: str) -> dict[str, Any] | None:
+def load_typing(
+    session: Session, column_id: str, run_id: str | None = None
+) -> dict[str, Any] | None:
     """Load type decision and candidate info for a column.
 
     Returns dict with resolved_type, confidence, parse_success_rate, etc.
     or None if no typing data exists.
+
+    ``run_id`` (DAT-413): when set, restrict to THIS run's typing output — the
+    detect path always passes the run's run_id so a detector reads its own run's
+    upstream metadata. ``None`` (non-detect / test callers) adds no filter, so
+    they stay behavior-preserving.
     """
     from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 
-    td = session.execute(
-        select(TypeDecision).where(TypeDecision.column_id == column_id)
-    ).scalar_one_or_none()
-    tc = session.execute(
+    td_stmt = select(TypeDecision).where(TypeDecision.column_id == column_id)
+    tc_stmt = (
         select(TypeCandidate)
         .where(TypeCandidate.column_id == column_id)
         .order_by(TypeCandidate.confidence.desc())
         .limit(1)
-    ).scalar_one_or_none()
+    )
+    if run_id is not None:
+        td_stmt = td_stmt.where(TypeDecision.run_id == run_id)
+        tc_stmt = tc_stmt.where(TypeCandidate.run_id == run_id)
+    td = session.execute(td_stmt).scalar_one_or_none()
+    tc = session.execute(tc_stmt).scalar_one_or_none()
 
     if td:
         typing_dict: dict[str, Any] = {
@@ -68,18 +78,24 @@ def load_typing(session: Session, column_id: str) -> dict[str, Any] | None:
     return None
 
 
-def load_statistics(session: Session, column_id: str) -> dict[str, Any] | None:
+def load_statistics(
+    session: Session, column_id: str, run_id: str | None = None
+) -> dict[str, Any] | None:
     """Load statistical profile and quality metrics for a column.
 
     Returns dict with null_count, null_ratio, distinct_count, quality, etc.
     or None if no statistics exist.
+
+    ``run_id`` (DAT-413): when set, restrict to THIS run's profile + quality
+    metrics. ``None`` (non-detect / test callers) adds no filter.
     """
     from dataraum.analysis.statistics.db_models import StatisticalProfile
     from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
 
-    sp = session.execute(
-        select(StatisticalProfile).where(StatisticalProfile.column_id == column_id)
-    ).scalar_one_or_none()
+    sp_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id == column_id)
+    if run_id is not None:
+        sp_stmt = sp_stmt.where(StatisticalProfile.run_id == run_id)
+    sp = session.execute(sp_stmt).scalar_one_or_none()
 
     if not sp:
         return None
@@ -92,9 +108,12 @@ def load_statistics(session: Session, column_id: str) -> dict[str, Any] | None:
         "total_count": sp.total_count,
         "profile_data": sp.profile_data,
     }
-    qm = session.execute(
-        select(StatisticalQualityMetrics).where(StatisticalQualityMetrics.column_id == column_id)
-    ).scalar_one_or_none()
+    qm_stmt = select(StatisticalQualityMetrics).where(
+        StatisticalQualityMetrics.column_id == column_id
+    )
+    if run_id is not None:
+        qm_stmt = qm_stmt.where(StatisticalQualityMetrics.run_id == run_id)
+    qm = session.execute(qm_stmt).scalar_one_or_none()
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
@@ -122,17 +141,23 @@ def load_statistics(session: Session, column_id: str) -> dict[str, Any] | None:
     return stats_dict
 
 
-def load_semantic(session: Session, column_id: str) -> dict[str, Any] | None:
+def load_semantic(
+    session: Session, column_id: str, run_id: str | None = None
+) -> dict[str, Any] | None:
     """Load semantic annotation for a column.
 
     Returns dict with semantic_role, entity_type, business_name, etc.
     or None if no annotation exists.
+
+    ``run_id`` (DAT-413): when set, restrict to THIS run's annotation. ``None``
+    (non-detect / test callers) adds no filter.
     """
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
-    sa = session.execute(
-        select(SemanticAnnotation).where(SemanticAnnotation.column_id == column_id)
-    ).scalar_one_or_none()
+    sa_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id == column_id)
+    if run_id is not None:
+        sa_stmt = sa_stmt.where(SemanticAnnotation.run_id == run_id)
+    sa = session.execute(sa_stmt).scalar_one_or_none()
     if not sa:
         return None
 

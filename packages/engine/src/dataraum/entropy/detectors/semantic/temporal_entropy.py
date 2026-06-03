@@ -43,10 +43,10 @@ class TemporalEntropyDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_semantic, load_typing
 
-        typing_result = load_typing(context.session, context.column_id)
+        typing_result = load_typing(context.session, context.column_id, context.run_id)
         if typing_result is not None:
             context.analysis_results["typing"] = typing_result
-        sem = load_semantic(context.session, context.column_id)
+        sem = load_semantic(context.session, context.column_id, context.run_id)
         if sem is not None:
             context.analysis_results["semantic"] = sem
 

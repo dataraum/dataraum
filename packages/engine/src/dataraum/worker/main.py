@@ -90,6 +90,7 @@ async def run_worker() -> None:
                     phase_activities.run_temporal,
                     phase_activities.run_semantic_per_column,
                     phase_activities.run_detect,
+                    phase_activities.run_promote_to_latest,
                     # DAT-343 replay activities — lookups when phases are
                     # skipped on replay + per-phase cleanup before re-runs.
                     phase_activities.lookup_raw_table_ids,
@@ -135,6 +136,7 @@ async def run_worker() -> None:
                     "temporal",
                     "semantic_per_column",
                     "detect",
+                    "promote_to_latest",
                     "lookup_raw_table_ids",
                     "lookup_typed_table_id",
                     "replay_cleanup_for_phase",

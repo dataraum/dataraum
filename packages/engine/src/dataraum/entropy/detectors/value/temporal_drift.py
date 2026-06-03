@@ -54,10 +54,10 @@ class TemporalDriftDetector(EntropyDetector):
         )
         if drift is not None:
             context.analysis_results["drift_summaries"] = drift
-        sem = load_semantic(context.session, context.column_id)
+        sem = load_semantic(context.session, context.column_id, context.run_id)
         if sem is not None:
             context.analysis_results["semantic"] = sem
-        stats = load_statistics(context.session, context.column_id)
+        stats = load_statistics(context.session, context.column_id, context.run_id)
         if stats is not None:
             context.analysis_results["statistics"] = stats
 

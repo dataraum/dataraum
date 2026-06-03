@@ -58,10 +58,10 @@ class BenfordDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_semantic, load_statistics
 
-        stats = load_statistics(context.session, context.column_id)
+        stats = load_statistics(context.session, context.column_id, context.run_id)
         if stats is not None:
             context.analysis_results["statistics"] = stats
-        sem = load_semantic(context.session, context.column_id)
+        sem = load_semantic(context.session, context.column_id, context.run_id)
         if sem is not None:
             context.analysis_results["semantic"] = sem
 

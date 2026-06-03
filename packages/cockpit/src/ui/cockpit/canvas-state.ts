@@ -7,7 +7,7 @@
 
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
-import type { SourceSummary } from "#/tools/list-sources";
+import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
@@ -17,7 +17,7 @@ export type CanvasState =
 	| { kind: "empty" }
 	| { kind: "loading" }
 	| { kind: "error"; message: string }
-	| { kind: "source-list"; sources: SourceSummary[] }
+	| { kind: "source-list"; sources: AvailableSource[] }
 	// DAT-349: the workspace table inventory — one row per table with its
 	// provenance + a rolled-up readiness band. Carries the (enriched) list_tables
 	// result; the widget derives the per-source SourceCard drill-in locally.

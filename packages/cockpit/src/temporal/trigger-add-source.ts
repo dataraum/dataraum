@@ -29,6 +29,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessions } from "../db/metadata/schema";
+import { verticalConceptCount } from "../tools/list-verticals";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
@@ -37,6 +38,24 @@ import { addSourceWorkflowId } from "./workflow-id";
 const SEED_INTENT = "onboarding";
 // Session status the engine treats as live (mirrors drive-add-source.ts seed).
 const SEED_STATUS = "active";
+
+/**
+ * The chosen vertical resolves to ZERO concepts (no builtin ontology.yaml
+ * concepts AND no overlay rows) — so add_source would fail loud deep in the
+ * engine's grounding phase (semantic_per_column). A user-fixable PRECONDITION,
+ * not a server fault: the API route surfaces it as a 400 with this message, and
+ * the trigger never starts the doomed workflow.
+ */
+export class NoConceptsError extends Error {
+	constructor(public readonly vertical: string) {
+		super(
+			vertical === "_adhoc"
+				? "No concepts declared yet — run frame to declare concepts before adding this source."
+				: `The "${vertical}" vertical has no concepts — frame it (or pick a builtin with list_verticals) before adding this source.`,
+		);
+		this.name = "NoConceptsError";
+	}
+}
 
 export interface TriggerAddSourceInput {
 	source_id: string;
@@ -97,6 +116,18 @@ export async function triggerAddSource(
 	const sessionId = randomUUID();
 	const vertical = input.vertical ?? "_adhoc";
 
+	// PRE-FLIGHT (Theme B obs 4, generalized in Theme A): refuse early when the
+	// chosen vertical resolves to zero concepts — builtin ontology.yaml concepts
+	// PLUS active overlay rows. The engine fails loud on this deep in
+	// semantic_per_column (semantic_per_column_phase.py), surfacing only as a
+	// dead Temporal run; catching it here gives the user a readable message and
+	// never starts the doomed workflow (no orphan session row either — this runs
+	// before the seed). An adopted builtin (finance) ships concepts → passes; an
+	// empty _adhoc or an un-framed vertical → refused.
+	if ((await verticalConceptCount(vertical)) === 0) {
+		throw new NoConceptsError(vertical);
+	}
+
 	// CRITICAL: seed the session BEFORE starting the workflow. typing_phase's
 	// link_session_tables writes a session_tables row with a NOT-NULL FK to this
 	// session_id; without the parent row the run dies mid-fan-out at that FK. No
@@ -150,8 +181,19 @@ export async function triggerAddSource(
 }
 
 /** Request-body schema for `POST /api/add-source` — the API route validates the
- * trigger input against this before firing the workflow. */
+ * trigger input against this before firing the workflow. The API is the trust
+ * boundary: a direct call bypasses `select`/`frame` validation, and the vertical
+ * flows into `OntologyLoader.load(vertical)` → `verticals/<v>/ontology.yaml` path
+ * construction (engine) + a config-tree fs read (`verticalConceptCount`), so it
+ * MUST be a safe segment here — a path-traversal `../…` is rejected. Allows the
+ * `_adhoc` default (leading underscore) plus the engine-valid name shape. */
 export const TriggerAddSourceInputSchema = z.object({
 	source_id: z.string().min(1),
-	vertical: z.string().optional(),
+	vertical: z
+		.string()
+		.refine((v) => v === "_adhoc" || /^[a-z][a-z0-9_]{1,48}$/.test(v), {
+			message:
+				"Invalid vertical (lowercase, starts with a letter, 2–49 chars of [a-z0-9_]) or '_adhoc'.",
+		})
+		.optional(),
 });

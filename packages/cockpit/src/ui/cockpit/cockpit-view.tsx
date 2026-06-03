@@ -101,6 +101,7 @@ export function CockpitView() {
 					data-testid="region-canvas"
 					style={{
 						flex: 1,
+						minHeight: 0,
 						overflowY: "auto",
 						backgroundColor: tokens.colors.surface,
 						borderWidth: 1,

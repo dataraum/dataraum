@@ -1,55 +1,81 @@
-// list_sources tool (DAT-353) — read the workspace's registered sources.
+// list_sources tool — the workspace's AVAILABLE inputs (the pre-`select`
+// inventory), unified across configured databases and uploaded files.
 //
-// Pure read via the Drizzle metadata client (ws_<id>.sources). No approval:
-// reads are unattended. The DB query is covered by the gated integration test
-// (skips without METADATA_DATABASE_URL), mirroring teach's split — no mocking.
+// This is what a user (and the agent) means by "what data do I have to work
+// with": the configured DB sources (`DATARAUM_<NAME>_URL`) plus the files staged
+// in the bucket's `uploads/` prefix — BEFORE any of them is registered or
+// imported. It is deliberately NOT the post-`select` `sources` table: once a
+// source is selected + imported it materializes as tables, which `list_tables`
+// reports. (Earlier this tool read the post-`select` rows, so a freshly uploaded
+// file showed up nowhere until the whole connect→frame→select dance completed —
+// the agent's natural first call, `list_sources`, came back empty.)
+//
+// Pure reads (env scan + an S3 prefix list), no approval. No secret is exposed:
+// a database entry carries only its name + scheme-inferred backend, never the
+// connection URL.
 
 import { toolDefinition } from "@tanstack/ai";
-import { isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { metadataDb } from "../db/metadata/client";
-import { sources } from "../db/metadata/schema";
+import { config } from "../config";
+import { listConfiguredDatabases } from "../duckdb/credentials";
+import { UPLOAD_PREFIX } from "../upload/policy";
+import { listPrefixObjects } from "../upload/s3-upload";
 
-const SourceSummary = z.object({
-	source_id: z.string(),
+const AvailableSource = z.object({
+	// "database" = a configured DB source; "file" = a staged uploaded file.
+	kind: z.enum(["database", "file"]),
+	// database: the source name (the key for connect/select); file: the filename.
 	name: z.string(),
-	source_type: z.string(),
-	status: z.string().nullable(),
+	// database: backend kind (postgres/mysql/sqlite/mssql); file: null.
 	backend: z.string().nullable(),
-	created_at: z.string(),
+	// file: the s3:// handle to pass to connect/select; database: null.
+	uri: z.string().nullable(),
+	// file: object size in bytes; database: null.
+	size_bytes: z.number().nullable(),
 });
-export type SourceSummary = z.infer<typeof SourceSummary>;
+export type AvailableSource = z.infer<typeof AvailableSource>;
 
-/** All non-archived sources in the active workspace, oldest first. */
-export async function listSources(): Promise<SourceSummary[]> {
-	const rows = await metadataDb
-		.select({
-			sourceId: sources.sourceId,
-			name: sources.name,
-			sourceType: sources.sourceType,
-			status: sources.status,
-			backend: sources.backend,
-			createdAt: sources.createdAt,
-		})
-		.from(sources)
-		.where(isNull(sources.archivedAt))
-		.orderBy(sources.createdAt);
-
-	return rows.map((r) => ({
-		source_id: r.sourceId,
-		name: r.name,
-		source_type: r.sourceType,
-		status: r.status,
-		backend: r.backend,
-		created_at: r.createdAt.toISOString(),
+/** The configured database sources, as `AvailableSource` rows. */
+function databaseSources(): AvailableSource[] {
+	return listConfiguredDatabases().map((d) => ({
+		kind: "database" as const,
+		name: d.name,
+		backend: d.backend,
+		uri: null,
+		size_bytes: null,
 	}));
+}
+
+/** The staged uploaded files (under the bucket's `uploads/` prefix). */
+async function uploadedFileSources(): Promise<AvailableSource[]> {
+	const objects = await listPrefixObjects(config.s3Bucket, `${UPLOAD_PREFIX}/`);
+	return objects.map((o) => ({
+		kind: "file" as const,
+		// Key is `uploads/<digest>/<filename>`: the leaf is the original filename.
+		name: o.key.split("/").pop() ?? o.key,
+		backend: null,
+		uri: `s3://${config.s3Bucket}/${o.key}`,
+		size_bytes: o.size,
+	}));
+}
+
+/** All available inputs in the workspace: configured databases + uploaded files. */
+export async function listSources(): Promise<AvailableSource[]> {
+	const files = await uploadedFileSources();
+	return [...databaseSources(), ...files];
 }
 
 export const listSourcesTool = toolDefinition({
 	name: "list_sources",
 	description:
-		"List the data sources registered in the workspace (excludes archived). Returns each source's id, name, type, status, and backend.",
+		"List the data inputs AVAILABLE to import into the workspace — configured " +
+		"databases and uploaded files — i.e. the pre-`select` inventory of what the " +
+		"user has to work with. Use it to see what's available, then `connect` to " +
+		"preview one and `select` to register it. Each entry has a `kind` " +
+		"(database | file), a `name`, the `backend` (databases) and the s3:// `uri` " +
+		"(files). Data that has already been imported appears as TABLES via " +
+		"`list_tables`, not here.",
 	inputSchema: z.object({}),
-	outputSchema: z.array(SourceSummary),
+	outputSchema: z.array(AvailableSource),
 }).server(() => listSources());

@@ -8,8 +8,9 @@
 // `isCanvasTool` / `CANVAS_TOOLS`, which now live in — and DERIVE from — the
 // toolResultToCanvas projector map (single source of truth); they're re-exported
 // here so the chat rail keeps importing them from one place. The non-canvas
-// tools (probe / teach / replay) project nothing → display-only chips (click is
-// a no-op).
+// tools (probe / teach) project nothing → display-only chips (click is a no-op);
+// replay now projects the live add-source-progress widget, so its chip is
+// clickable.
 //
 // Input is lifted off the SDK part's `arguments` string (present in EVERY state,
 // including approval-requested) so a teach chip is readable at approval time —
@@ -18,8 +19,9 @@
 
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
-import type { SourceSummary } from "#/tools/list-sources";
+import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { Vertical } from "#/tools/list-verticals";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
@@ -56,9 +58,26 @@ export function toolChipSummary(
 	const done = output !== undefined;
 	switch (toolName) {
 		case "list_sources": {
-			if (!done) return "listing sources…";
-			const sources = (output as SourceSummary[]) ?? [];
-			return plural(sources.length, "source");
+			if (!done) return "listing available inputs…";
+			const sources = (output as AvailableSource[]) ?? [];
+			if (sources.length === 0) return "no available inputs";
+			const dbs = sources.filter((s) => s.kind === "database").length;
+			const files = sources.filter((s) => s.kind === "file").length;
+			const parts: string[] = [];
+			if (dbs > 0) parts.push(plural(dbs, "database"));
+			if (files > 0) parts.push(plural(files, "file"));
+			return parts.join(", ");
+		}
+		case "list_verticals": {
+			if (!done) return "listing verticals…";
+			const verticals = (output as Vertical[]) ?? [];
+			if (verticals.length === 0) return "no verticals";
+			const builtin = verticals.filter((v) => v.kind === "builtin").length;
+			const framed = verticals.filter((v) => v.kind === "framed").length;
+			const parts: string[] = [];
+			if (builtin > 0) parts.push(`${builtin} builtin`);
+			if (framed > 0) parts.push(`${framed} framed`);
+			return `${plural(verticals.length, "vertical")} (${parts.join(", ")})`;
 		}
 		case "list_tables": {
 			const src = (input as { source_id?: string } | undefined)?.source_id;

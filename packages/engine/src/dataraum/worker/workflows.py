@@ -44,8 +44,10 @@ with workflow.unsafe.imports_passed_through():
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
+        ProgressFailure,
         ProgressSnapshot,
         SessionScopedInput,
+        TableProgress,
         TableScopedInput,
         TypingResult,
         process_table_workflow_id,
@@ -68,6 +70,22 @@ _ANALYTICS_PHASES = (
     "statistical_quality",
     "temporal",
 )
+
+
+def _failure_message(err: BaseException) -> str:
+    """Unwrap a workflow failure to its root-cause message for the snapshot.
+
+    Temporal wraps a phase failure as ``ActivityError`` →
+    ``ApplicationError`` (and a child failure as ``ChildWorkflowError`` → …);
+    the useful text is the innermost cause's message — the phase's own
+    non-retryable failure string. Walk the ``__cause__`` chain to it; fall back
+    to the type name when the root carries no message. Pure over the (replayed,
+    history-recorded) exception, so deterministic.
+    """
+    cause: BaseException = err
+    while cause.__cause__ is not None:
+        cause = cause.__cause__
+    return str(cause) or type(cause).__name__
 
 
 @workflow.defn(name="processTableWorkflow")
@@ -156,15 +174,45 @@ class AddSourceWorkflow:
 
         Read-only, non-mutating → determinism-safe; Temporal answers it
         against current state even while :meth:`run` is blocked awaiting the
-        fan-out. The cockpit Client polls this by workflow id (a teach re-run
-        reuses the id under ALLOW_DUPLICATE and resets progress per run). Per-table
-        phase detail is out of scope here — the cockpit would query each child by
-        ``process_table_workflow_id`` (additive follow-up).
+        fan-out (and on a CLOSED run by replaying history, so the cockpit can
+        read the final snapshot — including ``failure`` — off a failed run). The
+        cockpit Client polls this by workflow id (a teach re-run reuses the id
+        under ALLOW_DUPLICATE and resets progress per run). The snapshot carries
+        the per-table ``tables`` steps and any ``failure`` directly, so the
+        cockpit needs no per-child queries.
         """
         return self._progress
 
     @workflow.run
     async def run(self, payload: AddSourceInput) -> AddSourceResult:
+        """Run the add_source spine, recording any failure into the snapshot.
+
+        Thin wrapper over :meth:`_run_inner`: on any stage failure it stamps
+        ``self._progress.failure`` (root-cause message + the phase in flight)
+        before re-raising, so a polling cockpit sees WHY the run ended, not just
+        a FAILED status. A failing child has already stamped a table-scoped
+        failure (see the fan-out), so the ``is None`` guard preserves it.
+        ``except Exception`` deliberately misses ``CancelledError`` (a
+        ``BaseException``) so cancellation still propagates clean.
+        """
+        try:
+            return await self._run_inner(payload)
+        except Exception as err:
+            if self._progress.failure is None:
+                self._progress.failure = ProgressFailure(
+                    message=_failure_message(err),
+                    phase=self._progress.phase,
+                )
+            raise
+
+    def _mark_table(self, raw_table_id: str, status: str) -> None:
+        """Flip one fanned-out table's status in the snapshot (done / failed)."""
+        for entry in self._progress.tables:
+            if entry.raw_table_id == raw_table_id:
+                entry.status = status
+                return
+
+    async def _run_inner(self, payload: AddSourceInput) -> AddSourceResult:
         # Mint the snapshot version axis once per execution (DAT-413) and stamp
         # it onto the identity threaded into every activity, so all of this run's
         # metadata rows share one run_id. ``workflow.uuid4`` is the deterministic,
@@ -187,44 +235,63 @@ class AddSourceWorkflow:
         target_raw_ids = imported.raw_table_ids
 
         # The fan-out width is now known (import recorded ``raw_table_ids`` in
-        # history → deterministic on replay). Set the progress denominator
-        # before any child is awaited so an early query already sees the total.
+        # history → deterministic on replay). Set the progress denominator + seed
+        # the per-table steps as "running" before any child is awaited, so an
+        # early query already sees the named steps behind the count. Each flips to
+        # "done"/"failed" as its child resolves.
         self._progress.tables_total = len(target_raw_ids)
+        self._progress.tables = [
+            TableProgress(raw_table_id=raw_id, status="running") for raw_id in target_raw_ids
+        ]
+        self._progress.phase = "processing_tables"
 
         # Deterministic, collision-free child ids keep replay stable. The same
         # id is reused across teach iterations with WorkflowIdReusePolicy.ALLOW_DUPLICATE
         # on the parent — Temporal UI groups iterations naturally. The id encodes
         # workspace_id (DAT-364) so two workspaces sharing a source_id never
         # collide; see process_table_workflow_id for the convention.
-        children = [
-            workflow.execute_child_workflow(
-                ProcessTableWorkflow.run,
-                ProcessTableInput(
-                    identity=identity,
-                    raw_table_id=raw_id,
-                ),
-                id=process_table_workflow_id(
-                    identity.workspace_id,
-                    identity.source_id,
-                    raw_id,
-                ),
-            )
-            for raw_id in target_raw_ids
-        ]
-        # Consume the children with the deterministic ``workflow.as_completed``
-        # (NOT ``asyncio.gather``) so ``tables_completed`` advances as each child
-        # resolves — a polling query sees real progress mid-fan-out instead of a
-        # frozen 0 until the whole batch lands. Each yielded value is a coroutine
-        # that resolves to one child's ProcessTableResult; order is not preserved,
-        # which AddSourceResult.tables does not rely on (it is a set of raw→typed
-        # mappings the reduce/detect read from substrate, not by position). The
-        # ``tables_completed`` bump sits after an awaited (history-recorded) child
-        # completion, so a replay reconstructs the identical counter.
-        self._progress.phase = "processing_tables"
-        tables: list[ProcessTableResult] = []
-        for child in workflow.as_completed(children):
-            tables.append(await child)
+        async def _process(raw_id: str) -> ProcessTableResult:
+            # Wrap the child so a failure is attributed to THIS table before it
+            # propagates — ``as_completed`` yields in completion order, not input
+            # order, so the attribution has to live with the await. The status
+            # flip + counter bump sit after the awaited, history-recorded child
+            # completion, so a replay reconstructs the identical snapshot.
+            try:
+                result = await workflow.execute_child_workflow(
+                    ProcessTableWorkflow.run,
+                    ProcessTableInput(
+                        identity=identity,
+                        raw_table_id=raw_id,
+                    ),
+                    id=process_table_workflow_id(
+                        identity.workspace_id,
+                        identity.source_id,
+                        raw_id,
+                    ),
+                )
+            except Exception as err:
+                self._mark_table(raw_id, "failed")
+                if self._progress.failure is None:
+                    self._progress.failure = ProgressFailure(
+                        message=_failure_message(err),
+                        phase="processing_tables",
+                        table_id=raw_id,
+                    )
+                raise
+            self._mark_table(raw_id, "done")
             self._progress.tables_completed += 1
+            return result
+
+        # Consume with the deterministic ``workflow.as_completed`` (NOT
+        # ``asyncio.gather``) so the per-table flips + ``tables_completed`` land
+        # as each child resolves — a polling query sees real progress mid-fan-out
+        # instead of a frozen 0 until the whole batch lands. Order is not
+        # preserved, which AddSourceResult.tables does not rely on (it is a set of
+        # raw→typed mappings the reduce/detect read from substrate, not by
+        # position).
+        tables: list[ProcessTableResult] = []
+        for child in workflow.as_completed([_process(raw_id) for raw_id in target_raw_ids]):
+            tables.append(await child)
 
         # Source-level reduce + the terminal detector pass. The reduce runs once
         # over the run's tables after the fan-out; ``detect`` follows, running

@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from dataraum.core.config import get_config_dir, load_yaml_config
+from dataraum.core.overlay import apply_overlay
 
 
 class OntologyConcept(BaseModel):
@@ -74,14 +75,26 @@ class OntologyLoader:
             vertical: Vertical name (e.g. ``'finance'`` or ``'_adhoc'``).
 
         Returns:
-            Loaded (and overlay-merged) ontology definition, or ``None``
-            if the baked-in YAML doesn't exist.
+            Loaded (and overlay-merged) ontology definition. A builtin
+            vertical resolves its baked-in YAML; a framed vertical (declared
+            via the cockpit `frame` stage — no on-disk directory, since the
+            config tree is read-only) resolves overlay-only. ``None`` only on
+            the test path when the YAML doesn't exist.
         """
         if self.verticals_dir is None:
+            relative = f"verticals/{vertical}/ontology.yaml"
             try:
-                data = load_yaml_config(f"verticals/{vertical}/ontology.yaml")
+                data = load_yaml_config(relative)
             except FileNotFoundError:
-                return None
+                # No on-disk vertical → try a framed (overlay-only) vertical:
+                # layer its active `concept`/`concept_property` rows over an
+                # empty base. If that yields concepts it's a real framed
+                # vertical; if nothing resolves (no file AND no rows) the
+                # vertical is unknown → keep the `None` contract.
+                merged = apply_overlay(relative, {"name": vertical, "concepts": []})
+                if not merged.get("concepts"):
+                    return None
+                data = merged
             return OntologyDefinition(**data)
 
         ontology_path = self.verticals_dir / vertical / "ontology.yaml"

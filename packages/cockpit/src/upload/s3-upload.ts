@@ -1,82 +1,49 @@
-// Object-store PUT for staged uploads (DAT-386).
+// Object-store access for staged uploads — Bun's built-in S3 client.
 //
-// The upload entry-mode stages a dragged file to the SAME SeaweedFS/S3 bucket
-// the lake lives in (NO shared filesystem post-DAT-388), under the `uploads/`
-// prefix, so the cockpit's DuckDB httpfs reader can sniff it over `s3://` and
-// DAT-389 can ingest + clean it up. The DuckLake reader (`s3-secret.ts`) reads
-// via DuckDB's own S3 client; this WRITE path needs a real S3 PUT, so it uses
-// `@aws-lite/client` + the `@aws-lite/s3` plugin (the lib the object-store seam
-// picked — DD/28278785; NOT aws-sdk).
+// The cockpit runs on Bun (dev `bun --bun vite dev`, prod
+// `bun run .output/server/index.mjs`), so S3 access uses `Bun.S3Client`. It is
+// PATH-STYLE by default (`endpoint/<bucket>/<key>`), which is exactly what the
+// self-hosted SeaweedFS gateway requires — it has no virtual-host bucket
+// subdomain, so a `<bucket>.<host>` request fails to resolve. (This replaced
+// @aws-lite, whose ListObjectsV2 defaulted to virtual-host addressing and 500'd
+// against SeaweedFS; PutObject happened to be path-style, hiding it until the
+// upload path started listing for dedup.)
 //
-// SeaweedFS is a non-AWS, path-style endpoint: the s3 plugin builds the request
-// path as `/<Bucket>/<Key>` (path-style), which is what SeaweedFS expects — no
-// virtual-host bucket subdomain. config.s3Endpoint is `host:port` (no scheme,
-// the engine + DuckDB ENDPOINT form); @aws-lite's `endpoint` wants a FULL URL
-// it parses with `new URL()` (host + port + protocol), so we prefix the scheme
-// off `s3UseSsl` — passing a bare `host:port` makes it treat the whole string
-// as a hostname (getaddrinfo ENOTFOUND `host:port`).
-
-import awsLite from "@aws-lite/client";
-import awsLiteS3 from "@aws-lite/s3";
+// The DuckLake reader (`s3-secret.ts`) reads parquet via DuckDB's OWN S3 client;
+// this module owns the cockpit's bucket WRITE + LIST. config.s3Endpoint is
+// `host:port` (no scheme — the engine + DuckDB ENDPOINT form); Bun's client
+// wants a full URL, so we prefix the scheme off `s3UseSsl`.
 
 import { config } from "../config";
 
-// @aws-lite/s3 ships no types; the surface we touch is S3.PutObject (upload) and
-// S3.ListObjectsV2 (select-time prefix enumeration, DAT-378).
-interface S3ListObjectsV2Response {
-	// @aws-lite returns the parsed XML: Contents is the per-object list, absent
-	// when the prefix is empty. ContinuationToken paginates a >1000-object prefix.
-	Contents?: { Key?: string; Size?: number }[];
-	IsTruncated?: boolean;
-	NextContinuationToken?: string;
-}
+let client: Bun.S3Client | null = null;
 
-interface S3Client {
-	S3: {
-		PutObject(params: {
-			Bucket: string;
-			Key: string;
-			Body: Buffer;
-			ContentType?: string;
-		}): Promise<unknown>;
-		ListObjectsV2(params: {
-			Bucket: string;
-			Prefix?: string;
-			ContinuationToken?: string;
-		}): Promise<S3ListObjectsV2Response>;
-	};
-}
-
-let clientPromise: Promise<S3Client> | null = null;
-
-/** Full-URL endpoint @aws-lite parses: `http[s]://host:port` (scheme off SSL). */
+/** Full-URL endpoint Bun's S3 client parses: `http[s]://host:port`. */
 export function s3EndpointUrl(endpoint: string, useSsl: boolean): string {
 	return `${useSsl ? "https" : "http"}://${endpoint}`;
 }
 
 // One memoized client per process — the upload route reuses it across requests.
-function getS3Client(): Promise<S3Client> {
-	if (!clientPromise) {
-		// The base AwsLiteClient is a callable request fn; the s3 plugin augments it
-		// with the `S3.*` namespace at runtime, which its untyped ESM can't express.
-		// Cast through unknown to the minimal S3 surface we actually call.
-		clientPromise = awsLite({
+// The bucket is passed per call (there is one configured bucket today, but
+// keeping it per-call leaves the client bucket-agnostic).
+function getS3Client(): Bun.S3Client {
+	if (!client) {
+		client = new Bun.S3Client({
 			accessKeyId: config.s3AccessKeyId,
 			secretAccessKey: config.s3SecretAccessKey,
 			region: config.s3Region,
 			endpoint: s3EndpointUrl(config.s3Endpoint, config.s3UseSsl),
-			plugins: [awsLiteS3],
-		}) as unknown as Promise<S3Client>;
+		});
 	}
-	return clientPromise;
+	return client;
 }
 
 /**
  * PUT `body` to `bucket/key` on the object store.
  *
- * Thin wrapper over the memoized @aws-lite S3 client so the route stays an I/O
- * shell and unit tests mock THIS function (not the network). Fails loud — a
- * rejected PUT surfaces to the route, which maps it to a 502.
+ * Thin wrapper over the memoized Bun S3 client so the route stays an I/O shell
+ * and unit tests mock THIS function. Fails loud — a rejected write surfaces to
+ * the route, which maps it to a 502.
  */
 export async function putObject(
 	bucket: string,
@@ -84,49 +51,60 @@ export async function putObject(
 	body: Buffer,
 	contentType?: string,
 ): Promise<void> {
-	const client = await getS3Client();
-	await client.S3.PutObject({
-		Bucket: bucket,
-		Key: key,
-		Body: body,
-		ContentType: contentType,
-	});
+	await getS3Client().write(key, body, { bucket, type: contentType });
+}
+
+/** One real object under a prefix: its key and byte size. */
+export interface PrefixObject {
+	key: string;
+	size: number;
 }
 
 /**
- * List every object key under `prefix` in `bucket`, paginating to completion.
+ * List every object (key + size) under `prefix` in `bucket`, paginating to
+ * completion. A trailing-slash "directory marker" key (Size 0, ends in `/`) is
+ * dropped — it is not a real object.
+ *
+ * Pagination follows the continuation token so a prefix with >1000 objects is
+ * fully enumerated (S3 caps a page at 1000); `isTruncated` gates the loop.
+ */
+export async function listPrefixObjects(
+	bucket: string,
+	prefix: string,
+): Promise<PrefixObject[]> {
+	const s3 = getS3Client();
+	const objects: PrefixObject[] = [];
+	let continuationToken: string | undefined;
+	do {
+		// `bucket` rides in the second arg (S3Options); the first is the list query.
+		const res = await s3.list(
+			{ prefix, maxKeys: 1000, continuationToken },
+			{ bucket },
+		);
+		for (const obj of res.contents ?? []) {
+			const size = obj.size ?? 0;
+			// Skip the directory-marker object S3 returns for a prefix written as a
+			// folder (zero-byte key ending in `/`); it is not loadable data.
+			if (!(obj.key.endsWith("/") && size === 0)) {
+				objects.push({ key: obj.key, size });
+			}
+		}
+		continuationToken = res.isTruncated ? res.nextContinuationToken : undefined;
+	} while (continuationToken);
+	return objects;
+}
+
+/**
+ * List every object KEY under `prefix` in `bucket`, paginating to completion.
  *
  * The select-time enumeration primitive (DAT-378): the engine NEVER globs, so
  * the cockpit lists the prefix here and hands the engine an EXPLICIT URI list.
- * Returns raw keys (e.g. `uploads/<uuid>/orders.csv`); `enumeratePrefixUris`
- * filters + maps them to `s3://<bucket>/<key>` URIs. A trailing-slash "directory
- * marker" key (Size 0, ends in `/`) is dropped — it is not a real object.
- *
- * Pagination is followed via ContinuationToken so a prefix with >1000 objects
- * is fully enumerated (S3 caps a page at 1000); `IsTruncated` gates the loop.
+ * Returns raw keys (e.g. `uploads/<digest>/orders.csv`); `enumeratePrefixUris`
+ * filters + maps them to `s3://<bucket>/<key>` URIs.
  */
 export async function listPrefixKeys(
 	bucket: string,
 	prefix: string,
 ): Promise<string[]> {
-	const client = await getS3Client();
-	const keys: string[] = [];
-	let continuationToken: string | undefined;
-	do {
-		const res = await client.S3.ListObjectsV2({
-			Bucket: bucket,
-			Prefix: prefix,
-			ContinuationToken: continuationToken,
-		});
-		for (const obj of res.Contents ?? []) {
-			const key = obj.Key;
-			// Skip the directory-marker object S3 returns for a prefix written as a
-			// folder (zero-byte key ending in `/`); it is not loadable data.
-			if (key && !(key.endsWith("/") && (obj.Size ?? 0) === 0)) {
-				keys.push(key);
-			}
-		}
-		continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
-	} while (continuationToken);
-	return keys;
+	return (await listPrefixObjects(bucket, prefix)).map((o) => o.key);
 }

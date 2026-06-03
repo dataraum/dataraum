@@ -26,16 +26,36 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { ConnectSchema } from "../duckdb/connect";
+import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getFrameInstructions } from "../prompts";
 import { teach } from "./teach";
 
-// The frame stage runs on the cold-start ontology — the engine resolves phase
-// config + ontology against this vertical when none is named.
-const FRAME_VERTICAL = "_adhoc";
+// The fallback vertical when frame isn't given a name — the cold-start ontology
+// the engine resolves against when nothing else is declared.
+const DEFAULT_VERTICAL = "_adhoc";
 
-// Same model the orchestrator loop uses (DAT-353) — induction is a reasoning
-// task; keep one model for the cockpit agent tier.
-const MODEL = "claude-sonnet-4-6";
+// A framed vertical name becomes the engine's `verticals/<name>/ontology.yaml`
+// resolution key, so it must be a safe path segment + match the engine's naming
+// (lowercase, starts with a letter). `_adhoc` (the leading-underscore default)
+// is exempt — it's the built-in fallback, never user-supplied here.
+const VERTICAL_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
+
+/** Resolve + validate the vertical concepts are declared under. A blank/absent
+ * name falls back to `_adhoc`; a supplied name must be a safe, engine-valid
+ * key (it keys `verticals/<name>` config resolution). */
+function resolveVertical(name?: string | null): string {
+	const trimmed = name?.trim();
+	// Blank OR an explicit `_adhoc` → the unnamed default (consistent with
+	// select's resolveVertical; `_adhoc`'s leading underscore fails the pattern).
+	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
+	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
+		throw new Error(
+			`Invalid vertical name '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +
+				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]).",
+		);
+	}
+	return trimmed;
+}
 
 // One induced/declared business concept. Mirrors the engine's `OntologyConcept`
 // (packages/engine/.../analysis/semantic/ontology.py) and the `concept` teach
@@ -100,6 +120,10 @@ export interface FrameInput {
 	// A user-reviewed / edited concept set. When present, these are written
 	// verbatim (no induction call) — the accept/edit path of the ConceptFrame.
 	concepts?: ProposedConcept[];
+	// The vertical to declare the concepts under (a NEW, framed vertical). The
+	// agent proposes a name that fits the data; the user can rename. Omitted →
+	// `_adhoc` (the unnamed cold-start fallback). Pass the SAME name to `select`.
+	vertical_name?: string | null;
 	session_id?: string | null;
 }
 
@@ -114,6 +138,7 @@ export async function induceConcepts(
 ): Promise<ProposedConcept[]> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		maxTokens: MAX_OUTPUT_TOKENS,
 		systemPrompts: [getFrameInstructions()],
 		messages: [
 			{
@@ -137,6 +162,7 @@ export async function induceConcepts(
  */
 export async function frame(input: FrameInput): Promise<FrameResult> {
 	const schema = ConnectSchema.parse(input.schema);
+	const vertical = resolveVertical(input.vertical_name);
 	const concepts =
 		input.concepts && input.concepts.length > 0
 			? input.concepts.map((c) => ProposedConcept.parse(c))
@@ -152,16 +178,16 @@ export async function frame(input: FrameInput): Promise<FrameResult> {
 	for (const concept of concepts) {
 		// Mirror teach's concept write: type="concept", vertical-tagged payload.
 		// The engine's _apply_concept (core/overlay.py) materializes these onto
-		// the _adhoc ontology, keyed/replaced by `name`.
+		// the named vertical's ontology, keyed/replaced by `name`.
 		const { overlay_id } = await teach({
 			type: "concept",
-			payload: { vertical: FRAME_VERTICAL, ...stripUndefined(concept) },
+			payload: { vertical, ...stripUndefined(concept) },
 			session_id: input.session_id ?? null,
 		});
 		written.push({ ...concept, overlay_id });
 	}
 
-	return { vertical: FRAME_VERTICAL, concepts: written };
+	return { vertical, concepts: written };
 }
 
 /** Drop undefined-valued keys so the overlay payload mirrors the engine's
@@ -184,14 +210,25 @@ function stripUndefined(obj: ProposedConcept): Record<string, unknown> {
 export const frameTool = toolDefinition({
 	name: "frame",
 	description:
-		"Co-design the business vocabulary for a connected source: induce candidate " +
-		"concepts from its schema + samples, then write the declared frame as concept " +
-		"overlay rows. Pass `schema` (the connect result) to induce a proposal; pass " +
-		"`concepts` (a user-reviewed/edited set) to declare those verbatim. Requires " +
-		"user approval — it writes to the workspace. Run this after `connect` and " +
-		"before `add_source` on a cold-start workspace.",
+		"Co-design the business vocabulary for a connected source as a NEW vertical: " +
+		"induce candidate concepts from its schema + samples, then write the declared " +
+		"frame as concept overlay rows under a named vertical. Propose a `vertical_name` " +
+		"that fits the data (e.g. sales, logistics) — the user can rename. Pass `schema` " +
+		"(the connect result) to induce a proposal; pass `concepts` (a user-reviewed/" +
+		"edited set) to declare those verbatim. If `list_verticals` shows a builtin that " +
+		"already fits (e.g. finance), DON'T frame — `select` that vertical directly. " +
+		"Requires user approval — it writes to the workspace. Run after `connect` and " +
+		"before `add_source`; pass the SAME `vertical_name` to `select`.",
 	inputSchema: z.object({
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
+		vertical_name: z
+			.string()
+			.nullish()
+			.describe(
+				"Name for the new vertical to declare the concepts under (lowercase, " +
+					"starts with a letter, [a-z0-9_]). Propose one that fits the data; the " +
+					"user can rename. Omit only for an unnamed cold-start (defaults _adhoc).",
+			),
 		concepts: z
 			.array(ProposedConcept)
 			.optional()

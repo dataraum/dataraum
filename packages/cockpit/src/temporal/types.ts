@@ -32,20 +32,42 @@ export interface AddSourceResult {
 	tables: ProcessTableResult[];
 }
 
+// One fanned-out table's status — mirrors `worker.contracts.TableProgress`.
+// `raw_table_id` is the engine's id; the cockpit resolves it to a human table
+// name (see progress.ts). `status`: "running" once fanned out, "done" when its
+// child resolves, "failed" if that child errored.
+export interface TableProgress {
+	raw_table_id: string;
+	status: "running" | "done" | "failed";
+}
+
+// Why an add_source run ended badly — mirrors `worker.contracts.ProgressFailure`.
+// `message` is the root-cause text (the phase's own failure, not a Temporal
+// wrapper); `phase` is the stage in flight; `table_id` pins a table-scoped
+// failure (null for source-level stages import/semantic_per_column/detect).
+export interface ProgressFailure {
+	message: string;
+	phase: string;
+	table_id: string | null;
+}
+
 // Parent-level progress for addSourceWorkflow, served by the `get_progress`
-// @workflow.query (DAT-406). FROZEN cross-package contract — hand-mirrored from
-// `dataraum.worker.contracts.ProgressSnapshot` (a plain @dataclass of primitives),
-// carried over Temporal's pydantic data converter as the flat JSON shape
-// `{phase, tables_total, tables_completed}`. snake_case, no key remap. Do NOT
-// change a field name/type without re-mirroring the engine dataclass.
+// @workflow.query (DAT-406). Cross-package contract — hand-mirrored from
+// `dataraum.worker.contracts.ProgressSnapshot` (a plain @dataclass), carried
+// over Temporal's pydantic data converter. snake_case, no key remap. Evolve
+// this and the engine dataclass in lockstep (a field rename is cross-PACKAGE).
 //
 // `phase` advances "import" → "processing_tables" → "semantic_per_column" →
 // "detect" → "done" (a bare string, not an enum, so the wire value is plain
 // JSON). `tables_total` is 0 until import enumerates the fan-out; resets per run.
+// `tables` are the named steps behind the count; `failure` is set (non-null)
+// once a run ends badly.
 export interface ProgressSnapshot {
 	phase: string;
 	tables_total: number;
 	tables_completed: number;
+	tables: TableProgress[];
+	failure: ProgressFailure | null;
 }
 
 // The terminal `phase` the parent sets just before returning AddSourceResult —

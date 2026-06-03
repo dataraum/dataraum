@@ -3,8 +3,9 @@
 // Unit tests for the MeasureProgress widget (DAT-352). Mocks `useQuery` at the
 // TanStack Query boundary (the test controls the polled snapshot) and the
 // progress server fn (so importing the widget doesn't pull `#/config`). Asserts
-// the phase pipeline highlight, the per-table tally, and the done / failed
-// states. The real poll loop + server fn are exercised by the compose smoke.
+// the phase pipeline highlight, the per-table tally + named steps, and the done
+// / failed states. The real poll loop + server fn are exercised by the compose
+// smoke.
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -59,6 +60,8 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 				phase: "import",
 				tables_total: 0,
 				tables_completed: 0,
+				tables: [],
+				failure: null,
 				status: "RUNNING",
 				done: false,
 			},
@@ -91,6 +94,8 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 				phase: "semantic_per_column",
 				tables_total: 3,
 				tables_completed: 3,
+				tables: [],
+				failure: null,
 				status: "RUNNING",
 				done: false,
 			},
@@ -117,6 +122,8 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 				phase: "processing_tables",
 				tables_total: 4,
 				tables_completed: 2,
+				tables: [],
+				failure: null,
 				status: "RUNNING",
 				done: false,
 			},
@@ -129,12 +136,41 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		);
 	});
 
+	it("renders the named per-table steps with their status", () => {
+		h.queryResult = {
+			data: {
+				phase: "processing_tables",
+				tables_total: 2,
+				tables_completed: 1,
+				tables: [
+					{ raw_table_id: "r1", name: "orders", status: "done" },
+					{ raw_table_id: "r2", name: "customers", status: "running" },
+				],
+				failure: null,
+				status: "RUNNING",
+				done: false,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		const list = screen.getByTestId("measure-progress-tables");
+		expect(list.textContent).toContain("orders");
+		expect(list.textContent).toContain("customers");
+		expect(screen.getByTestId("measure-table-r1")).toBeTruthy();
+		// r1 done → check glyph; r2 running → loader glyph.
+		expect(screen.getByTestId("table-status-done")).toBeTruthy();
+		expect(screen.getByTestId("table-status-running")).toBeTruthy();
+	});
+
 	it("renders the done state on completion", () => {
 		h.queryResult = {
 			data: {
 				phase: "done",
 				tables_total: 4,
 				tables_completed: 4,
+				tables: [],
+				failure: null,
 				status: "COMPLETED",
 				done: true,
 			},
@@ -146,12 +182,21 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		expect(screen.queryByTestId("measure-progress-spinner")).toBeNull();
 	});
 
-	it("renders the failed state when the run ends terminal without 'done'", () => {
+	it("shows the real failure reason scoped to the failed table (no Temporal-UI punt)", () => {
 		h.queryResult = {
 			data: {
 				phase: "processing_tables",
-				tables_total: 4,
+				tables_total: 2,
 				tables_completed: 1,
+				tables: [
+					{ raw_table_id: "r1", name: "orders", status: "done" },
+					{ raw_table_id: "r2", name: "customers", status: "failed" },
+				],
+				failure: {
+					message: "typing failed: bad cast",
+					phase: "processing_tables",
+					table_id: "r2",
+				},
 				status: "FAILED",
 				done: true,
 			},
@@ -159,7 +204,40 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 			isLoading: false,
 		};
 		renderWidget();
-		expect(screen.getByTestId("measure-progress-failed")).toBeTruthy();
+		const alert = screen.getByTestId("measure-progress-failed");
+		expect(alert.textContent).toContain("customers");
+		expect(alert.textContent).toContain("typing failed: bad cast");
+		expect(alert.textContent).not.toContain("Temporal UI");
+		expect(screen.getByTestId("table-status-failed")).toBeTruthy();
+	});
+
+	it("shows a source-level failure reason when no table is implicated", () => {
+		h.queryResult = {
+			data: {
+				phase: "detect",
+				tables_total: 2,
+				tables_completed: 2,
+				tables: [
+					{ raw_table_id: "r1", name: "orders", status: "done" },
+					{ raw_table_id: "r2", name: "customers", status: "done" },
+				],
+				failure: {
+					message: "detector pass failed: missing readiness",
+					phase: "detect",
+					table_id: null,
+				},
+				status: "FAILED",
+				done: true,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		const alert = screen.getByTestId("measure-progress-failed");
+		expect(alert.textContent).toContain("Detect");
+		expect(alert.textContent).toContain(
+			"detector pass failed: missing readiness",
+		);
 	});
 
 	it("surfaces a query error", () => {

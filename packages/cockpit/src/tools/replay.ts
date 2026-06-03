@@ -113,11 +113,25 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Re-run the whole source to apply pending teaches (a full re-run under a fresh run_id). Requires user approval. Returns workflow + run id; poll Temporal for progress.",
+		"Re-run the whole source to apply pending teaches — a full re-run under a fresh run_id (no scope to choose). Requires user approval. Returns the workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
-		source_id: z.string(),
-		session_id: z.string().optional(),
-		vertical: z.string().optional(),
+		source_id: z
+			.string()
+			.describe(
+				"The registered source to re-process (a source_id from list_tables or a select result).",
+			),
+		session_id: z
+			.string()
+			.optional()
+			.describe(
+				"Optional session id for the replay run; omit to auto-generate.",
+			),
+		vertical: z
+			.string()
+			.optional()
+			.describe(
+				"Optional vertical the engine resolves config/ontology against; defaults to _adhoc engine-side.",
+			),
 	}),
 	outputSchema: z.object({
 		workflow_id: z.string(),

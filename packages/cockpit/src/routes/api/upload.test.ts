@@ -13,12 +13,14 @@ vi.mock("#/upload/s3-upload", () => ({ putObject: putMock }));
 
 import { handleUpload } from "./upload";
 
-// Deterministic uuid so the asserted key/handle is stable.
-const FIXED_UUID = "uuuuuuuu-uuuu-uuuu-uuuu-uuuuuuuuuuuu";
-const deps = () => ({
+// Deterministic digest so the asserted key/handle is stable; `listPrefix`
+// returns no existing object by default (so each test stages a fresh upload).
+const FIXED_DIGEST = "deadbeefcafe";
+const deps = (existing: string[] = []) => ({
 	bucket: "dataraum-lake",
 	put: putMock,
-	uuid: () => FIXED_UUID,
+	digest: async () => FIXED_DIGEST,
+	listPrefix: async () => existing,
 });
 
 function formRequest(file?: File): Request {
@@ -28,7 +30,7 @@ function formRequest(file?: File): Request {
 }
 
 describe("handleUpload (DAT-386)", () => {
-	it("PUTs to uploads/<uuid>/<name> and returns the locked s3:// handle", async () => {
+	it("PUTs to uploads/<digest>/<name> and returns the locked s3:// handle", async () => {
 		putMock.mockReset();
 		putMock.mockResolvedValue(undefined);
 		const file = new File(["id,name\n1,Ada\n"], "people.csv", {
@@ -38,18 +40,36 @@ describe("handleUpload (DAT-386)", () => {
 		const res = await handleUpload(formRequest(file), deps());
 
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { path: string };
+		const body = (await res.json()) as { path: string; deduped: boolean };
 		expect(body.path).toBe(
-			`s3://dataraum-lake/uploads/${FIXED_UUID}/people.csv`,
+			`s3://dataraum-lake/uploads/${FIXED_DIGEST}/people.csv`,
 		);
+		expect(body.deduped).toBe(false);
 
 		expect(putMock).toHaveBeenCalledTimes(1);
 		const [bucket, key, payload, contentType] = putMock.mock.calls[0];
 		expect(bucket).toBe("dataraum-lake");
-		expect(key).toBe(`uploads/${FIXED_UUID}/people.csv`);
+		expect(key).toBe(`uploads/${FIXED_DIGEST}/people.csv`);
 		expect(Buffer.isBuffer(payload)).toBe(true);
 		expect((payload as Buffer).toString()).toBe("id,name\n1,Ada\n");
 		expect(contentType).toBe("text/csv");
+	});
+
+	it("dedups identical content: skips the PUT and returns the existing handle", async () => {
+		putMock.mockReset();
+		const file = new File(["id,name\n1,Ada\n"], "people-again.csv", {
+			type: "text/csv",
+		});
+		const existingKey = `uploads/${FIXED_DIGEST}/people.csv`;
+
+		const res = await handleUpload(formRequest(file), deps([existingKey]));
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { path: string; deduped: boolean };
+		// The EXISTING object's handle (the first-staged filename), not the new one.
+		expect(body.path).toBe(`s3://dataraum-lake/${existingKey}`);
+		expect(body.deduped).toBe(true);
+		expect(putMock).not.toHaveBeenCalled();
 	});
 
 	it("sanitizes a path-bearing filename into a single safe leaf", async () => {
@@ -60,7 +80,9 @@ describe("handleUpload (DAT-386)", () => {
 		const res = await handleUpload(formRequest(file), deps());
 
 		const body = (await res.json()) as { path: string };
-		expect(body.path).toBe(`s3://dataraum-lake/uploads/${FIXED_UUID}/evil.csv`);
+		expect(body.path).toBe(
+			`s3://dataraum-lake/uploads/${FIXED_DIGEST}/evil.csv`,
+		);
 	});
 
 	it("rejects a missing file with 400", async () => {

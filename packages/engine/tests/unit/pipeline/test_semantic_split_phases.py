@@ -158,7 +158,7 @@ class TestPerColumnAdhocFailLoud:
         result = SemanticPerColumnPhase()._run(self._adhoc_ctx(session, duckdb_conn, src.source_id))
 
         assert result.status == PhaseStatus.FAILED
-        assert "_adhoc concepts" in (result.error or "")
+        assert "No concepts found for vertical '_adhoc'" in (result.error or "")
         # Grounded nothing — no annotations written.
         assert session.execute(select(SemanticAnnotation)).scalars().all() == []
 

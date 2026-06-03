@@ -31,9 +31,8 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
-
-const MODEL = "claude-sonnet-4-6";
 
 // The persisted JSONB grammar (intents / drivers) is shared with look_table —
 // see `db/metadata/readiness-schemas.ts`. Parsed leniently below.
@@ -159,6 +158,7 @@ export function projectWhyData(
 export async function synthesizeAnalysis(data: WhyColumnData): Promise<string> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		maxTokens: MAX_OUTPUT_TOKENS,
 		systemPrompts: [getWhyInstructions()],
 		messages: [
 			{
@@ -175,7 +175,13 @@ export async function synthesizeAnalysis(data: WhyColumnData): Promise<string> {
 				)}`,
 			},
 		],
-		outputSchema: z.object({ analysis: z.string() }),
+		outputSchema: z.object({
+			analysis: z
+				.string()
+				.describe(
+					"The grounded narrative explaining why the column lands in its band per intent — drawn ONLY from the provided drivers + evidence, no outside facts.",
+				),
+		}),
 	});
 	return result.analysis;
 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import duckdb
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
@@ -288,6 +289,7 @@ def synthesize_and_store_tables(
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[SemanticEnrichmentResult]:
     """Run per-table synthesis and store entities + relationships (DAT-362).
 
@@ -313,6 +315,18 @@ def synthesize_and_store_tables(
     table_map = load_table_mappings(session, table_ids)
     column_map = load_column_mappings(session, table_ids)
 
+    # Idempotent + non-destructive (DAT-408): TableEntity is versioned by ``run_id``
+    # (a session has MANY runs). Clear only THIS run's prior entities before
+    # re-inserting — a Temporal at-least-once retry (same run_id) is idempotent,
+    # and EARLIER runs in the session survive (no unique key to upsert on, so a
+    # run-scoped delete-before-insert is the equivalent of the run_id upsert the
+    # other versioned metadata uses).
+    session.execute(
+        delete(EntityModel).where(
+            EntityModel.session_id == session_id, EntityModel.run_id == run_id
+        )
+    )
+
     for entity in enrichment.entity_detections:
         table_id = table_map.get(entity.table_name)
         if not table_id:
@@ -320,6 +334,7 @@ def synthesize_and_store_tables(
         session.add(
             EntityModel(
                 session_id=session_id,
+                run_id=run_id,
                 table_id=table_id,
                 detected_entity_type=entity.entity_type,
                 description=entity.description,
@@ -334,6 +349,7 @@ def synthesize_and_store_tables(
 
     candidate_metrics = _build_candidate_metrics_lookup(relationship_candidates)
 
+    rel_rows: list[dict[str, Any]] = []
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
         to_col_id = column_map.get((rel.to_table, rel.to_column))
@@ -372,20 +388,31 @@ def synthesize_and_store_tables(
 
         cardinality = _resolve_cardinality(rel=rel, evidence=evidence, duckdb_conn=duckdb_conn)
 
-        session.add(
-            RelationshipModel(
-                relationship_id=rel.relationship_id,
-                session_id=session_id,
-                from_table_id=from_table_id,
-                from_column_id=from_col_id,
-                to_table_id=to_table_id,
-                to_column_id=to_col_id,
-                relationship_type=rel.relationship_type.value,
-                cardinality=cardinality,
-                confidence=rel.confidence,
-                detection_method="llm",
-                evidence=evidence,
-            )
+        rel_rows.append(
+            {
+                "session_id": session_id,
+                "from_table_id": from_table_id,
+                "from_column_id": from_col_id,
+                "to_table_id": to_table_id,
+                "to_column_id": to_col_id,
+                "relationship_type": rel.relationship_type.value,
+                "cardinality": cardinality,
+                "confidence": rel.confidence,
+                "detection_method": "llm",
+                "evidence": evidence,
+            }
         )
+
+    # Idempotent + durable (DAT-408): upsert on the session-grain unique key so a
+    # begin_session re-run REFRESHES an existing ``llm`` relationship's metrics
+    # (and a Temporal at-least-once retry is a no-op) instead of hitting the
+    # widened unique constraint. A later pass not re-finding a row leaves it —
+    # "silent acceptance"; only a user drop (ConfigOverlay reject) removes it.
+    upsert(
+        session,
+        RelationshipModel,
+        rel_rows,
+        index_elements=["session_id", "from_column_id", "to_column_id", "detection_method"],
+    )
 
     return Result.ok(enrichment)

@@ -61,6 +61,35 @@ def test_redrive_deletes_candidates_keeps_llm_and_manual(session: Session) -> No
     assert methods == {"llm", "manual"}, "candidate re-derive must not touch llm/manual"
 
 
+def test_redrive_skips_a_suppressed_candidate(session: Session) -> None:
+    """A user-dropped pair is not re-created by candidate re-derivation (AC4)."""
+    from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
+
+    _seed_tables_columns(session)
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "reject", "from_column_id": "ca", "to_column_id": "cb"},
+        )
+    )
+    session.flush()
+
+    candidate = RelationshipCandidate(
+        table1="orders",
+        table2="customers",
+        join_candidates=[
+            JoinCandidate(
+                column1="customer_id", column2="id", join_confidence=0.9, cardinality="many-to-one"
+            )
+        ],
+    )
+    _store_candidates(session, baseline_session_id(), ["t1", "t2"], [candidate])
+    session.flush()
+
+    made = session.query(Relationship).filter_by(detection_method="candidate").all()
+    assert made == [], "a suppressed pair must not be re-created on re-derive"
+
+
 def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
     """``load_suppressed_relationship_pairs`` returns only active reject pairs."""
     session.add(

@@ -156,8 +156,11 @@ def run_detector_post_step(
                     Relationship.from_table_id,
                 )
                 .where(
+                    # Session-grain: only THIS session's relationships (two sessions
+                    # can share the same tables/column pairs).
+                    Relationship.session_id == session_id,
                     Relationship.from_table_id.in_(table_ids)
-                    | Relationship.to_table_id.in_(table_ids)
+                    | Relationship.to_table_id.in_(table_ids),
                 )
                 .distinct()
             ).tuples()
@@ -174,6 +177,7 @@ def run_detector_post_step(
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
                 run_id=run_id,
+                session_id=session_id,
             )
             for obj in snapshot.objects:
                 all_records.append(

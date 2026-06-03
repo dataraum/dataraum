@@ -9,7 +9,7 @@ delete-then-insert to insert-new-run-then-flip-head without widening any unique
 constraint.
 
 ``target`` is the generic scope-string key (DAT-408): ``table:{id}`` for
-add_source's per-table stages and detect column readiness, ``relationship:{a}-{b}``
+add_source's per-table stages and detect column readiness, ``relationship:{from_col}::{to_col}``
 for begin_session relationship readiness (and ``column:…`` / ``workspace:…`` when
 later grains need it). It is a free string, not an FK — a relationship target has
 no single owning table.
@@ -35,7 +35,7 @@ class MetadataSnapshotHead(Base):
 
     Columns:
         head_id: uuid4 primary key.
-        target: the scope-string key — ``table:{id}`` / ``relationship:{a}-{b}``
+        target: the scope-string key — ``table:{id}`` / ``relationship:{from_col}::{to_col}``
             / ``column:…`` (DAT-408). Free string, not an FK.
         stage: the producing phase name (e.g. ``"statistics"``, ``"detect"``).
         run_id: the current (promoted) snapshot's run, minted by the workflow.

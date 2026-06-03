@@ -133,13 +133,17 @@ _REL_METHOD_PRECEDENCE = {"manual": 3, "llm": 2, "candidate": 1}
 def _resolve_relationship_target(
     session: Session,
     target: str,
+    session_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a ``relationship:{from_col}::{to_col}`` target to context fields.
 
     Readiness is per directional column pair; several method-rows (candidate / llm
     / manual) may share the pair, so the representative is the highest-precedence
-    one. Returns the focal endpoints + ``session_id`` (a relationship detector may
-    need the whole session's relationships), or ``None`` if no row matches.
+    one. ``session_id`` scopes the lookup — relationships are session-grain, so two
+    sessions sharing a column pair must not cross-resolve (the picked row's session
+    becomes the detector context's). Returns the focal endpoints + ``session_id``
+    (a relationship detector may need the whole session's relationships), or
+    ``None`` if no row matches.
     """
     parsed = parse_relationship_target(target)
     if parsed is None:
@@ -149,14 +153,13 @@ def _resolve_relationship_target(
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
-    rels = list(
-        session.execute(
-            select(Relationship).where(
-                Relationship.from_column_id == from_column_id,
-                Relationship.to_column_id == to_column_id,
-            )
-        ).scalars()
+    stmt = select(Relationship).where(
+        Relationship.from_column_id == from_column_id,
+        Relationship.to_column_id == to_column_id,
     )
+    if session_id is not None:
+        stmt = stmt.where(Relationship.session_id == session_id)
+    rels = list(session.execute(stmt).scalars())
     if not rels:
         return None
     rel = max(rels, key=lambda r: _REL_METHOD_PRECEDENCE.get(r.detection_method or "", 0))
@@ -255,11 +258,13 @@ def take_snapshot(
     duckdb_conn: Any,
     dimensions: Sequence[str] | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
 ) -> Snapshot:
     """Run detectors on a target and return canonical scores.
 
     Dispatches on target prefix:
     - "table:" -> table-scoped detectors (scope="table")
+    - "relationship:" -> relationship-scoped detectors (scope="relationship")
     - "column:" or default -> column-scoped detectors (scope="column")
 
     Each detector loads its own data via load_data(). The session is
@@ -273,6 +278,9 @@ def take_snapshot(
         run_id: Snapshot version axis (DAT-413). Threaded onto the DetectorContext
             so each detector's ``load_data`` reads THIS run's upstream metadata.
             ``None`` (non-detect callers) → loaders add no run_id filter.
+        session_id: scopes a ``relationship:`` resolution to one session (DAT-408) —
+            relationships are session-grain, so two sessions sharing a column pair
+            must not cross-resolve. Ignored for other target kinds.
 
     Returns:
         Snapshot with scores from all applicable detectors
@@ -283,7 +291,7 @@ def take_snapshot(
     is_relationship_target = target.startswith("relationship:")
 
     if is_relationship_target:
-        resolved_rel = _resolve_relationship_target(session, target)
+        resolved_rel = _resolve_relationship_target(session, target, session_id)
         if resolved_rel is None:
             logger.warning(f"Cannot resolve relationship target for snapshot: {target}")
             return Snapshot(scores={}, detectors_run=[])

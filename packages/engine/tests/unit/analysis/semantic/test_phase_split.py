@@ -182,6 +182,87 @@ class TestSynthesizeAndStoreTables:
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
+    @staticmethod
+    def _agent() -> MagicMock:
+        """An agent that always classifies `orders` and confirms the orders→customers FK."""
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[
+                        EntityDetection(
+                            table_id="",
+                            table_name="orders",
+                            entity_type="orders",
+                            confidence=0.9,
+                            grain_columns=["order_id"],
+                            is_fact_table=True,
+                            is_dimension_table=False,
+                        )
+                    ],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-1",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},
+                        )
+                    ],
+                )
+            )
+        )
+        return agent
+
+    def test_rerun_is_run_versioned_and_idempotent(self, session) -> None:
+        """A re-run is non-destructive for entities (run-versioned) + idempotent for llm.
+
+        DAT-408: a session has MANY runs. `TableEntity` is versioned by `run_id`, so a
+        new run COEXISTS with earlier runs (non-destructive); a same-run retry is a
+        no-op (run-scoped delete-before-insert). The `llm` relationship is session-grain
+        — upserted on the `(session, from, to, method)` key, so it never duplicates and
+        a re-run refreshes it.
+        """
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+        tids = [orders.table_id, customers.table_id]
+        sid = baseline_session_id()
+
+        def run(run_id: str) -> None:
+            assert synthesize_and_store_tables(
+                session, self._agent(), tids, session_id=sid, run_id=run_id
+            ).success
+            session.flush()
+
+        def counts() -> tuple[int, int]:
+            ents = session.execute(select(TableEntity)).scalars().all()
+            rels = (
+                session.execute(
+                    select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+                )
+                .scalars()
+                .all()
+            )
+            return len(ents), len(rels)
+
+        run("run-A")
+        assert counts() == (1, 1)
+
+        run("run-A")  # Temporal at-least-once retry: same run_id → idempotent.
+        assert counts() == (1, 1), "a same-run retry must not duplicate"
+
+        run("run-B")  # A second run in the SAME session.
+        ent_runs = {e.run_id for e in session.execute(select(TableEntity)).scalars()}
+        assert counts() == (2, 1), (
+            "run-B's entity coexists with run-A's (non-destructive); llm stays single"
+        )
+        assert ent_runs == {"run-A", "run-B"}, "earlier run's entity survives the re-run"
+
     def test_propagates_agent_failure(self, session) -> None:
         agent = MagicMock()
         agent.synthesize_tables = MagicMock(return_value=Result.fail("LLM down"))

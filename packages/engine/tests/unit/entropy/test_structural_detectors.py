@@ -212,7 +212,11 @@ class TestRelationshipEntropyDetector:
             from_column_id="c_fk",
             to_column_id="c_pk",
             analysis_results={
-                "relationship": {
+                # Key MUST match the detector's required_analyses (AnalysisKey.RELATIONSHIPS):
+                # can_run() gates on it and detect() reads it. The old singular "relationship"
+                # key left can_run() False in production -> the detector was silently skipped
+                # (zero recall), which these detect()-only tests couldn't see (DAT-405).
+                "relationships": {
                     "from_table": "orders",
                     "to_table": "customers",
                     "relationship_type": "foreign_key",

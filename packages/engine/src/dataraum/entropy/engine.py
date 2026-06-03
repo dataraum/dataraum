@@ -161,6 +161,14 @@ def run_detector_post_step(
                 # keeps the from-endpoint anchor (object table_id) inside table_ids so
                 # the run_id-scoped delete reliably clears it on retry.
                 Relationship.session_id == session_id,
+                # Defined catalog only (DAT-408 contract — see db_models.py /
+                # relationships.utils): the LLM in semantic_per_table is the selector,
+                # so the relationship detectors measure what it confirmed (llm +
+                # materialized manual/keeper), NOT the ephemeral structural
+                # ``candidate`` superset. Enumerating bare candidates as focal pairs
+                # manufactured join-path ambiguity the schema doesn't have and scored
+                # spurious relationship_entropy. Found by DAT-405 calibration.
+                Relationship.detection_method != "candidate",
                 Relationship.from_table_id.in_(table_ids),
                 Relationship.to_table_id.in_(table_ids),
             )

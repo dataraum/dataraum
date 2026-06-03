@@ -9,6 +9,7 @@
 
 import { createFileRoute } from "@tanstack/react-router";
 import {
+	NoConceptsError,
 	TriggerAddSourceInputSchema,
 	triggerAddSource,
 } from "../../temporal/trigger-add-source";
@@ -41,6 +42,11 @@ export const Route = createFileRoute("/api/add-source")({
 					const result = await triggerAddSource(parsed.data);
 					return Response.json(result);
 				} catch (err) {
+					// A user-fixable precondition (no concepts declared yet): surface the
+					// "run frame first" message verbatim as a 400 so the widget shows it.
+					if (err instanceof NoConceptsError) {
+						return badRequest(err.message);
+					}
 					// A misconfigured Temporal client (the explicit guard) or a failed
 					// seed/start — log details server-side, return a generic message.
 					console.error("add-source trigger failed", err);

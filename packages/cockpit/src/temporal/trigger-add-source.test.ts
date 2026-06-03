@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
 	calls: [] as string[],
 	startArgs: null as unknown,
 	seededRow: null as Record<string, unknown> | null,
+	// Active concept-overlay count the pre-flight guard reads. Default > 0 so the
+	// happy-path tests pass the guard; the guard test flips it to 0.
+	conceptCount: 1,
 }));
 
 // A live getter, not a snapshot: the unconfigured-guard test reassigns
@@ -46,6 +49,19 @@ vi.mock("#/db/metadata/client", () => ({
 vi.mock("#/db/metadata/schema", () => ({
 	investigationSessions: { name: "investigation_sessions" },
 }));
+// Pre-flight concept count (Theme B / obs 4) — records that the guard ran and
+// returns the configured count. Records "count" in the call order so the guard
+// test can assert it ran BEFORE any seed/start.
+const countMock = vi.fn(async (_vertical: string) => {
+	h.calls.push("count");
+	return h.conceptCount;
+});
+// Reference countMock LAZILY (through a wrapper) — a direct reference in the
+// factory return is evaluated at import time, before the `const` initializes
+// (the seed/start mocks dodge this by referencing their fns inside inner fns).
+vi.mock("#/db/metadata/concept-overlays", () => ({
+	countActiveConcepts: (vertical: string) => countMock(vertical),
+}));
 
 // Temporal client: record the start args (after the seed) + hand back a run id.
 const startMock = vi.fn(async (_name: string, opts: unknown) => {
@@ -65,7 +81,7 @@ vi.mock("@temporalio/common", () => ({
 	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
 
-import { triggerAddSource } from "./trigger-add-source";
+import { NoConceptsError, triggerAddSource } from "./trigger-add-source";
 
 beforeEach(() => {
 	h.config = {
@@ -77,18 +93,21 @@ beforeEach(() => {
 	h.calls = [];
 	h.startArgs = null;
 	h.seededRow = null;
+	h.conceptCount = 1;
 	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
+	countMock.mockClear();
 });
 
 describe("triggerAddSource (DAT-352)", () => {
 	it("seeds the investigation_sessions row BEFORE starting the workflow", async () => {
 		await triggerAddSource({ source_id: "src-1" });
 
-		// Order is the whole point: the typing-phase FK needs the parent row to
-		// exist before the run reaches it.
-		expect(h.calls).toEqual(["seed", "start"]);
+		// Order is the whole point: the pre-flight concept check runs first (no
+		// orphan session on failure), then the typing-phase FK needs the parent
+		// row to exist before the run reaches it.
+		expect(h.calls).toEqual(["count", "seed", "start"]);
 
 		expect(h.seededRow?.status).toBe("active");
 		expect(h.seededRow?.stepCount).toBe(0);
@@ -140,6 +159,23 @@ describe("triggerAddSource (DAT-352)", () => {
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [{ identity: Record<string, unknown> }];
 		expect(args[0].identity.vertical).toBe("financial_reporting");
+		// A built-in vertical (concepts ship on disk) is EXEMPT from the pre-flight
+		// concept check — the count is overlay-backed only.
+		expect(countMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses an overlay-backed vertical with zero declared concepts (no seed, no start)", async () => {
+		// Pre-flight (obs 4): _adhoc grounds only against frame-written concept
+		// overlay rows. With none, the engine would fail loud deep in
+		// semantic_per_column — so reject here with a readable "run frame" message
+		// and never seed a session or start a doomed workflow.
+		h.conceptCount = 0;
+		await expect(triggerAddSource({ source_id: "src-1" })).rejects.toThrow(
+			NoConceptsError,
+		);
+		expect(h.calls).toEqual(["count"]);
+		expect(valuesMock).not.toHaveBeenCalled();
+		expect(startMock).not.toHaveBeenCalled();
 	});
 
 	it("throws when Temporal is unconfigured (like replay.ts) and does NOT seed", async () => {

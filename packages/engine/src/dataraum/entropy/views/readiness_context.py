@@ -359,20 +359,24 @@ def assemble_readiness_context(
     for obj in objects:
         by_target.setdefault(obj.target, []).append(obj)
 
-    # Step 3: Separate column targets from table targets
-    column_targets: dict[str, list[EntropyObject]] = {}
-    table_targets: dict[str, list[EntropyObject]] = {}
+    # Step 3: Targets that roll up the network — column AND relationship
+    # granularity (DAT-408) — vs the rest (table:/view:), which stay raw
+    # DirectSignals. The rollup (``_build_column_result``) is target-agnostic, so
+    # a relationship's objects roll up the same intents as a column's.
+    rollup_targets: dict[str, list[EntropyObject]] = {}
+    other_targets: dict[str, list[EntropyObject]] = {}
     for target, target_objects in by_target.items():
-        if target.startswith("column:"):
-            column_targets[target] = target_objects
+        if target.startswith("column:") or target.startswith("relationship:"):
+            rollup_targets[target] = target_objects
         else:
-            table_targets[target] = target_objects
+            other_targets[target] = target_objects
 
-    # Step 4: Per-column network inference
+    # Step 4: Per-target network inference. ``columns`` is keyed by target string
+    # and may hold ``relationship:`` targets alongside ``column:`` ones (DAT-408).
     columns: dict[str, ColumnReadinessResult] = {}
     all_direct_signals: list[DirectSignal] = []
 
-    for target, target_objects in column_targets.items():
+    for target, target_objects in rollup_targets.items():
         col_result, col_signals = _build_column_result(
             target,
             target_objects,
@@ -384,8 +388,8 @@ def assemble_readiness_context(
         if col_result is not None:
             columns[target] = col_result
 
-    # Step 5: Table targets -> all objects become DirectSignal
-    for _target, target_objects in table_targets.items():
+    # Step 5: Other targets (table:/view:) -> all objects become DirectSignal
+    for _target, target_objects in other_targets.items():
         for obj in target_objects:
             all_direct_signals.append(_object_to_direct_signal(obj))
 

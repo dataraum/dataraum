@@ -136,6 +136,38 @@ class TestPerColumnAssembly:
         assert "root_a" in node_names
         assert "root_b" in node_names
 
+    def test_relationship_target_produces_readiness_result(self, small_network):
+        """A ``relationship:`` target rolls up like a column (DAT-408), not dropped.
+
+        Pre-DAT-408 only ``column:`` targets produced readiness results; everything
+        else became a dropped ``DirectSignal``. Relationship-granularity readiness
+        routes ``relationship:`` targets through the same target-agnostic rollup.
+        """
+        rel = "relationship:orders.customer_id-customers.id"
+        objects = [
+            make_entropy_object(
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target=rel,
+            ),
+            make_entropy_object(
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.2,
+                target=rel,
+            ),
+        ]
+        result = assemble_readiness_context(objects, small_network)
+        assert rel in result.columns, "relationship target must produce a readiness result"
+        res = result.columns[rel]
+        assert res.target == rel
+        assert res.nodes_observed == 2
+        # Not leaked into the dropped direct-signal bucket.
+        assert all(ds.target != rel for ds in result.direct_signals)
+
     def test_compute_rollup_false_keeps_evidence_drops_intents(self, small_network):
         """Rollup-free assembly (DAT-399 slice D) yields raw evidence, no bands.
 

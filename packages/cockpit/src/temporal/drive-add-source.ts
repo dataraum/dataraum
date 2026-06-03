@@ -27,8 +27,14 @@
 
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
-import postgres from "postgres";
+import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { metadataDb } from "../db/metadata/client";
+import {
+	configOverlay,
+	investigationSessions,
+	sources,
+} from "../db/metadata/schema";
 import { replay } from "../tools/replay";
 import { teach } from "../tools/teach";
 import type { AddSourceInput, AddSourceResult } from "./types";
@@ -39,7 +45,6 @@ const env = z
 		TEMPORAL_HOST: z.string().min(1),
 		TEMPORAL_NAMESPACE: z.string().min(1),
 		TEMPORAL_TASK_QUEUE: z.string().min(1),
-		METADATA_DATABASE_URL: z.string().min(1),
 		DATARAUM_WORKSPACE_ID: z.string().min(1),
 		// Object-store bucket holding both the lake and uploaded source files.
 		S3_BUCKET: z.string().min(1).default("dataraum-lake"),
@@ -52,48 +57,52 @@ const env = z
 
 const sourcePath = env.SOURCE_PATH ?? `s3://${env.S3_BUCKET}/orders.csv`;
 
-const schema = `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`;
-
 async function seed(sourceId: string, sessionId: string): Promise<void> {
-	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
+	// Seed through the SAME Drizzle metadata client the cockpit's write seams use
+	// (select writes `sources`, the trigger writes `investigation_sessions`); the
+	// client targets the active workspace's `ws_<id>` schema via pgSchema, so no
+	// raw connection / search_path juggling. Source.name is UNIQUE — keep it
+	// unique per run so the driver is repeatable.
 	const name = `orders_${sourceId.slice(0, 8)}`;
-	const sql = postgres(env.METADATA_DATABASE_URL, { onnotice: () => {} });
-	try {
-		await sql.begin(async (tx) => {
-			await tx.unsafe(`SET LOCAL search_path TO "${schema}", public`);
-			await tx`
-				INSERT INTO sources (source_id, name, source_type, connection_config, status, created_at, updated_at)
-				VALUES (${sourceId}, ${name}, 'csv', ${sql.json({ file_uris: [sourcePath] })}, 'configured', now(), now())
-				ON CONFLICT (source_id) DO NOTHING`;
-			// No source_id on the session (DAT-407): a session's source is derived
-			// from its linked tables. The add_source workflow writes the
-			// session_tables links once the per-table fan-out resolves typed ids.
-			await tx`
-				INSERT INTO investigation_sessions (session_id, intent, status, started_at, step_count)
-				VALUES (${sessionId}, 'e4a drive', 'active', now(), 0)
-				ON CONFLICT (session_id) DO NOTHING`;
-		});
-	} finally {
-		await sql.end();
-	}
+	const now = new Date();
+	await metadataDb
+		.insert(sources)
+		.values({
+			sourceId,
+			name,
+			sourceType: "csv",
+			connectionConfig: { file_uris: [sourcePath] },
+			status: "configured",
+			createdAt: now,
+			updatedAt: now,
+		})
+		.onConflictDoNothing({ target: sources.sourceId });
+	// No source_id on the session (DAT-407): a session's source is derived from
+	// its linked tables. The add_source workflow writes the session_tables links
+	// once the per-table fan-out resolves typed ids.
+	await metadataDb
+		.insert(investigationSessions)
+		.values({
+			sessionId,
+			intent: "e4a drive",
+			status: "active",
+			startedAt: now,
+			stepCount: 0,
+		})
+		.onConflictDoNothing({ target: investigationSessions.sessionId });
 }
 
 async function countOverlays(): Promise<number> {
-	// Counted via raw SQL (not Drizzle) so the assertion stays independent
-	// of the metadata client — proves the rows actually landed in the
-	// engine's schema, not just that Drizzle returned what it inserted.
-	// Workspace scope is implicit in the ws_<id> schema (DAT-343 dropped
-	// the workspace_id column).
-	const sql = postgres(env.METADATA_DATABASE_URL, { onnotice: () => {} });
-	try {
-		const rows = await sql<{ count: number }[]>`
-			SELECT count(*)::int AS count
-			FROM ${sql(schema)}.config_overlay
-			WHERE superseded_at IS NULL`;
-		return rows[0]?.count ?? 0;
-	} finally {
-		await sql.end();
-	}
+	// Count the active (non-superseded) overlay rows in the workspace's schema —
+	// proves the teach rows landed. Drizzle issues real SQL to Postgres (no echo
+	// to be fooled by), and the teaches we're counting were written through this
+	// same seam. Workspace scope is implicit in the ws_<id> schema (DAT-343
+	// dropped the workspace_id column).
+	const [row] = await metadataDb
+		.select({ n: count() })
+		.from(configOverlay)
+		.where(isNull(configOverlay.supersededAt));
+	return row?.n ?? 0;
 }
 
 async function runInitial(

@@ -16,9 +16,50 @@ gone — the fan-out (DAT-370) made the per-boundary inputs concrete.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
+
+
+@dataclass
+class TableProgress:
+    """Per-table fan-out status for the add_source progress snapshot (DAT-406+).
+
+    One entry per child ``ProcessTableWorkflow`` so the cockpit can show *which*
+    tables are in flight / done / failed, not just an aggregate count.
+
+    Attributes:
+        raw_table_id: The engine id of the raw table this child processes. The
+            cockpit resolves it to a human table name from the metadata
+            ``tables`` table — the engine stays id-only (names live in the DB the
+            cockpit reads), so no name lookup leaks into the determinism sandbox.
+        status: ``"running"`` once fanned out, ``"done"`` when the child
+            resolves, ``"failed"`` if that child errored.
+    """
+
+    raw_table_id: str
+    status: str
+
+
+@dataclass
+class ProgressFailure:
+    """Why an add_source run ended badly — surfaced in the cockpit, not buried.
+
+    A polling cockpit reads this off the snapshot instead of opening the Temporal
+    UI for the failure detail.
+
+    Attributes:
+        message: The root-cause message — Temporal's Activity/ChildWorkflow
+            error chain unwrapped to the phase's own non-retryable failure text.
+        phase: The stage in flight when it failed (the snapshot's ``phase``).
+        table_id: The raw table whose child failed, when the failure is
+            table-scoped; ``None`` for source-level stages (``import`` /
+            ``semantic_per_column`` / ``detect``).
+    """
+
+    message: str
+    phase: str
+    table_id: str | None = None
 
 
 @dataclass
@@ -28,18 +69,17 @@ class ProgressSnapshot:
     Read-only snapshot the cockpit polls via the Temporal Client's
     ``query`` API while the parent runs (queries answer against current
     state even while ``@workflow.run`` is blocked awaiting the fan-out).
-    The workflow body advances ``phase`` before each stage and bumps
-    ``tables_completed`` as each child resolves; ``tables_total`` is set
-    once the fan-out set is known.
+    The workflow body advances ``phase`` before each stage, seeds the
+    per-table ``tables`` list once the fan-out set is known, and flips each
+    entry (plus ``tables_completed``) as its child resolves.
 
     Deliberately a plain stdlib ``@dataclass`` (NOT a Pydantic engine
-    type): it carries only primitives, and the worker's
-    ``pydantic_data_converter`` serializes it to the flat JSON shape
-    ``{phase, tables_total, tables_completed}`` that the cockpit Client
-    (a TS process that cannot import Python types) consumes. That shape
-    is the FROZEN cross-package contract DAT-352 mirrors in
-    ``packages/cockpit/src/temporal/types.ts`` — do not change a field
-    name/type without re-mirroring it there.
+    type): it carries only primitives + nested dataclasses, and the worker's
+    ``pydantic_data_converter`` serializes it to the JSON shape the cockpit
+    Client (a TS process that cannot import Python types) consumes. That shape
+    is the cross-package contract mirrored in
+    ``packages/cockpit/src/temporal/types.ts`` — evolve the two in lockstep
+    (a field rename/retype here is a cross-PACKAGE change).
 
     Attributes:
         phase: The stage the parent is currently in. Advances
@@ -52,11 +92,20 @@ class ProgressSnapshot:
         tables_completed: How many children have resolved so far —
             monotonically increasing toward ``tables_total`` during the
             ``"processing_tables"`` phase.
+        tables: One :class:`TableProgress` per fanned-out child — the named
+            steps behind the count. Seeded all-``"running"`` at fan-out (after
+            ``import`` recorded the ids → deterministic), flipped to
+            ``"done"``/``"failed"`` as each child resolves.
+        failure: Set when the run ends badly (any stage), so a polling cockpit
+            sees the reason without opening the Temporal UI; ``None`` while the
+            run is healthy.
     """
 
     phase: str
     tables_total: int = 0
     tables_completed: int = 0
+    tables: list[TableProgress] = field(default_factory=list)
+    failure: ProgressFailure | None = None
 
 
 class SourceIdentity(BaseModel):

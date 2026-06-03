@@ -18,11 +18,13 @@ import {
 	Group,
 	Loader,
 	Progress,
+	ScrollArea,
 	Stack,
 	Text,
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import type { AddSourceProgress } from "#/temporal/progress";
+import { Check, X } from "lucide-react";
+import type { AddSourceProgress, TableStep } from "#/temporal/progress";
 import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
@@ -42,6 +44,35 @@ const PHASES = [
 // reported phase in PHASES; everything before it reads as completed.
 function phaseIndex(phase: string): number {
 	return PHASES.findIndex((p) => p.key === phase);
+}
+
+// The friendly label for a phase key (for the failure message); falls back to
+// the raw key for a forward-compat phase not in PHASES.
+function phaseLabel(phase: string): string {
+	return PHASES.find((p) => p.key === phase)?.label ?? phase;
+}
+
+/** The leading status glyph for one fanned-out table row. */
+function TableStatusIcon({ status }: { status: TableStep["status"] }) {
+	if (status === "done") {
+		return (
+			<Check
+				size={14}
+				color="var(--mantine-color-green-6)"
+				data-testid="table-status-done"
+			/>
+		);
+	}
+	if (status === "failed") {
+		return (
+			<X
+				size={14}
+				color="var(--mantine-color-red-6)"
+				data-testid="table-status-failed"
+			/>
+		);
+	}
+	return <Loader size={12} data-testid="table-status-running" />;
 }
 
 const POLL_INTERVAL_MS = 1000;
@@ -166,6 +197,35 @@ export function MeasureProgressWidget({
 				</Stack>
 			)}
 
+			{/* The named steps behind the count — which tables are running / done /
+			    failed. Scrolls past a handful so a wide source can't blow out the
+			    canvas. */}
+			{data.tables.length > 0 && (
+				<ScrollArea.Autosize mah={180} data-testid="measure-progress-tables">
+					<Stack gap={2}>
+						{data.tables.map((t) => (
+							<Group key={t.raw_table_id} gap={6} wrap="nowrap">
+								<TableStatusIcon status={t.status} />
+								<Text
+									size="xs"
+									c={
+										t.status === "failed"
+											? "red"
+											: t.status === "running"
+												? "dimmed"
+												: undefined
+									}
+									truncate
+									data-testid={`measure-table-${t.raw_table_id}`}
+								>
+									{t.name}
+								</Text>
+							</Group>
+						))}
+					</Stack>
+				</ScrollArea.Autosize>
+			)}
+
 			{succeeded && (
 				<Alert color="green" data-testid="measure-progress-done">
 					Add source complete — readiness is ready to inspect.
@@ -174,10 +234,27 @@ export function MeasureProgressWidget({
 
 			{failed && (
 				<Alert color="red" data-testid="measure-progress-failed">
-					The add source run ended in {data.status.toLowerCase()} at the{" "}
-					{data.phase} phase. Check the Temporal UI for the failure detail.
+					{failureMessage(data)}
 				</Alert>
 			)}
 		</Stack>
 	);
+}
+
+/** The human-readable failure line: the engine's root-cause message, scoped to
+ * the failed table (by name) or the failed source-level phase. Falls back to the
+ * describe() status when the snapshot carried no failure detail (e.g. a run
+ * TERMINATED out-of-band, which never stamps `failure`). */
+function failureMessage(data: AddSourceProgress): string {
+	const f = data.failure;
+	if (!f) {
+		return `The add source run ended in ${data.status.toLowerCase()} at the ${data.phase} phase.`;
+	}
+	if (f.table_id) {
+		const name =
+			data.tables.find((t) => t.raw_table_id === f.table_id)?.name ??
+			`table ${f.table_id.slice(0, 8)}`;
+		return `Add source failed on ${name}: ${f.message}`;
+	}
+	return `Add source failed during ${phaseLabel(f.phase)}: ${f.message}`;
 }

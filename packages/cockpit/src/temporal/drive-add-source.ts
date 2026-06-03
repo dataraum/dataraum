@@ -10,9 +10,10 @@
 //   2. two teaches via `teach(...)` (batchable; no replay between them).
 //   3. one replay via `replay(...)` — a full add_source re-run (DAT-413: no
 //      scope, no from_phase; the engine mints a fresh run_id internally).
-//      Asserts the re-run completes under a NEW run_id, the table count is
-//      stable, and the active teach overlay count did NOT drop (replay reads
-//      the overlays, it doesn't consume them).
+//      Asserts the re-run completes as a NEW Temporal execution (a fresh
+//      Temporal run id — the engine's internal snapshot run_id is opaque to the
+//      Client), the table count is stable, and the active teach overlay count
+//      did NOT drop (replay reads the overlays, it doesn't consume them).
 //
 // Run against the published compose ports, e.g.:
 //   COCKPIT_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/cockpit \

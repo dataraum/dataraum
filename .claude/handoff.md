@@ -4,6 +4,25 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-03: DAT-413 — versioned metadata substrate + non-destructive replay (Slice A)
+
+### dataraum-eval
+- **Changed**: add_source metadata is now versioned by a `run_id` (the snapshot axis, minted per workflow run). Replay is a **full add_source re-run under a fresh `run_id`** — the partial-replay machinery (`ReplayScope` / `from_phase` / `replay_cleanup`) is gone. New `metadata_snapshot_head (table_id, stage) → run_id` table + a terminal `promote_to_latest` activity that flips the head. `run_id` columns added to `TypeCandidate`, `TypeDecision`, `StatisticalProfile`, `StatisticalQualityMetrics`, `ColumnEligibilityRecord`, `SemanticAnnotation`, `TemporalColumnProfile`, `TableEntity`, `EntropyObjectRecord`, `EntropyReadinessRecord`.
+- **Affects**: any eval path that reads persisted readiness or re-runs add_source.
+  1. **`load_persisted_readiness` now head-resolves** — it returns readiness ONLY for the promoted `(table_id, stage='detect')` run. A run that wrote readiness but did NOT call `promote_to_latest` returns EMPTY. The normal `AddSourceWorkflow` runs `detect` then `promote_to_latest`, so the pipeline path is fine; but a harness that drives `persist_readiness`/`detect` directly without promoting will now read empty.
+  2. **Single-row-per-column is gone** — `TypeDecision`/`SemanticAnnotation`/`StatisticalProfile`/`StatisticalQualityMetrics`/`ColumnEligibilityRecord`/`TemporalColumnProfile` are now keyed `(column_id, run_id)`; multiple runs coexist. Reads must resolve the current run via the head (the `detect` loaders already filter by the current `run_id`).
+  3. **Replay path reads versioned snapshots** — on a teach + re-run the detectors see THIS run's freshly-derived metadata (prior runs intact). Recalibrate the replay path: a teach + re-run should reflect the teach, non-destructively.
+- **Schema / setup**: requires a **fresh DB**. `create_all` adds the new `metadata_snapshot_head` table but will NOT add the new `run_id` columns or widened unique constraints to existing tables on a reused volume — drop the Postgres/workspace volume before running the worker / `bun run db:pull:metadata` against this schema.
+- **Notes**:
+  - Idempotency (Temporal at-least-once): one-row-per-column models use unique `(column_id, run_id)` + upsert; `TypeCandidate` + the two entropy records use `run_id`-scoped delete-before-insert.
+  - `should_skip`'s "outputs already exist → skip" bail was removed on the 6 add_source metadata phases (a re-run always re-derives under the new `run_id`); `import`'s re-load guard kept.
+  - **Deferred (NOT this slice)**: begin_session versioning (Slice B / DAT-415); relationship-head granularity + the `Relationship` constraint (DAT-408); DDL/materialization versioning (DAT-414); the cockpit Drizzle mirror regen + `look_table`/`why_column` head-join (bucket 2, pending).
+
+### dataraum-testdata
+- No new injections. Existing add_source + teach-replay scenarios still apply; a re-run now appends a new `run_id`'s rows rather than mutating in place.
+
+### Status: pending
+
 ## 2026-06-02: DAT-401 — begin_session spine revives `relationships` + `semantic_per_table` (session-scoped)
 
 Slice 2.0a. A new `BeginSessionWorkflow` composes a user-selected set of typed tables

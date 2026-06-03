@@ -128,10 +128,12 @@ class AddSourceWorkflow:
     terminal ``promote_to_latest`` step that flips the snapshot head).
 
     A teach re-run is now a full re-run (DAT-413): there is no partial replay
-    scope. Every execution mints a fresh ``run_id``, re-imports, re-types every
-    table, and re-reduces — its metadata coexists with prior runs' under the
-    widened per-(column, run_id) constraints, and ``promote_to_latest`` makes
-    this run the current snapshot at the end.
+    scope. Every execution mints a fresh ``run_id`` and re-derives the pipeline —
+    re-types every table and re-reduces (``import`` reuses the source's
+    already-loaded raw tables; it does NOT re-load source data). The fresh run's
+    metadata coexists with prior runs' under the widened per-(column, run_id)
+    constraints, and ``promote_to_latest`` makes this run the current snapshot at
+    the end.
 
     Progress (DAT-406): the body keeps a :class:`ProgressSnapshot` in
     ``self._progress`` — it advances ``phase`` before each stage and bumps
@@ -172,9 +174,9 @@ class AddSourceWorkflow:
         identity = payload.identity.model_copy(update={"run_id": run_id})
 
         # Import always runs and enumerates the source's raw tables — the fan-out
-        # source. A teach re-run re-imports from scratch (DAT-413: no partial
-        # replay scope), minting a fresh run's metadata that coexists with prior
-        # runs' rows.
+        # source. On a teach re-run it reuses the already-loaded raw tables
+        # (``ImportPhase.should_skip`` still bails on re-load); the re-run re-derives
+        # the downstream metadata under the fresh run_id, coexisting with prior runs.
         imported = await workflow.execute_activity(
             "import",
             identity,

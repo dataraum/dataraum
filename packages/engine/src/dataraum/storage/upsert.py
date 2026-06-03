@@ -37,7 +37,7 @@ def upsert(
     """
     if not rows:
         return
-    name = session.bind.dialect.name  # type: ignore[union-attr]
+    name = session.get_bind().dialect.name
     # Postgres and SQLite return distinct dialect ``Insert`` types that share the
     # ``.values()`` / ``.excluded`` / ``.on_conflict_do_update()`` surface; ``Any``
     # bridges them so the two branches can assign one ``stmt``.

@@ -65,7 +65,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 	() => {
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
 		let select: any;
-		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported postgres client
+		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported Bun SQL client
 		let sql: any;
 		const writtenNames: string[] = [];
 
@@ -74,20 +74,22 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// boot config.ts before describe.skipIf runs.
 			const mod = await import("./select");
 			select = mod.select;
-			const postgres = (await import("postgres")).default;
-			sql = postgres(process.env.METADATA_DATABASE_URL as string, {
-				onnotice: () => {},
-			});
+			const { SQL } = await import("bun");
+			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
 		});
 
 		afterAll(async () => {
 			if (sql) {
 				// Clean up the rows this smoke wrote so the shared workspace stays tidy.
+				// Schema-qualify via unsafe — Bun SQL reads `sql(string)` as a query,
+				// not an identifier, and a pooled connection wouldn't carry a
+				// per-statement search_path. SCHEMA derives from the workspace id.
 				for (const name of writtenNames) {
-					await sql`SET search_path TO ${sql(SCHEMA)}, public`;
-					await sql`DELETE FROM sources WHERE name = ${name}`;
+					await sql.unsafe(`DELETE FROM "${SCHEMA}".sources WHERE name = $1`, [
+						name,
+					]);
 				}
-				await sql.end();
+				await sql.close();
 			}
 		});
 

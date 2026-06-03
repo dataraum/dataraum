@@ -236,15 +236,22 @@ def load_relationship_for_pair(
 def load_session_relationships(
     session: Session, session_id: str, run_id: str | None = None
 ) -> list[dict[str, Any]]:
-    """This run's relationships for a session (DAT-408) — join-path ambiguity needs the set.
+    """This run's **defined** relationships for a session (DAT-408) — the join-path set.
 
-    Scoped to ``run_id`` (the current run's catalog) so coexisting prior-run rows
-    don't double-count; ``None`` (tests) reads the session unscoped.
+    "Defined" = ``detection_method != 'candidate'`` (the catalog contract in
+    db_models.py / relationships.utils): join-path ambiguity is measured among the
+    LLM-selected relationships, not the ephemeral structural candidates — two bare
+    candidates between the same two tables are not a real ambiguous join. Scoped to
+    ``run_id`` (the current run's catalog) so coexisting prior-run rows don't
+    double-count; ``None`` (tests) reads the session unscoped.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
-    stmt = select(Relationship).where(Relationship.session_id == session_id)
+    stmt = select(Relationship).where(
+        Relationship.session_id == session_id,
+        Relationship.detection_method != "candidate",
+    )
     if run_id is not None:
         stmt = stmt.where(Relationship.run_id == run_id)
     rels = list(session.execute(stmt).scalars())

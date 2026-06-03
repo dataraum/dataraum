@@ -24,7 +24,7 @@ from dataraum.entropy.detectors.base import (
     DetectorContext,
     get_default_registry,
 )
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import EntropyObject, parse_relationship_target
 
 logger = get_logger(__name__)
 
@@ -125,6 +125,61 @@ def _resolve_column_target(
     return table.table_id, column.column_id, table_name, column_name
 
 
+# Representative-row precedence for a directional column pair (DAT-408): a user
+# teach (manual) wins over an LLM confirmation, which wins over a raw candidate.
+_REL_METHOD_PRECEDENCE = {"manual": 3, "llm": 2, "candidate": 1}
+
+
+def _resolve_relationship_target(
+    session: Session,
+    target: str,
+) -> dict[str, Any] | None:
+    """Resolve a ``relationship:{from_col}::{to_col}`` target to context fields.
+
+    Readiness is per directional column pair; several method-rows (candidate / llm
+    / manual) may share the pair, so the representative is the highest-precedence
+    one. Returns the focal endpoints + ``session_id`` (a relationship detector may
+    need the whole session's relationships), or ``None`` if no row matches.
+    """
+    parsed = parse_relationship_target(target)
+    if parsed is None:
+        return None
+    from_column_id, to_column_id = parsed
+
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    rels = list(
+        session.execute(
+            select(Relationship).where(
+                Relationship.from_column_id == from_column_id,
+                Relationship.to_column_id == to_column_id,
+            )
+        ).scalars()
+    )
+    if not rels:
+        return None
+    rel = max(rels, key=lambda r: _REL_METHOD_PRECEDENCE.get(r.detection_method or "", 0))
+
+    names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(
+                Table.table_id.in_([rel.from_table_id, rel.to_table_id])
+            )
+        ).tuples()
+    )
+    return {
+        "relationship_id": rel.relationship_id,
+        "session_id": rel.session_id,
+        "from_table_id": rel.from_table_id,
+        "from_table_name": names.get(rel.from_table_id, ""),
+        "from_column_id": rel.from_column_id,
+        "to_table_id": rel.to_table_id,
+        "to_table_name": names.get(rel.to_table_id, ""),
+        "to_column_id": rel.to_column_id,
+    }
+
+
 def _run_detectors(
     target: str,
     context: DetectorContext,
@@ -151,6 +206,15 @@ def _run_detectors(
             column_id=context.column_id,
             column_name=context.column_name,
             view_name=context.view_name,
+            # Relationship-scoped fields (DAT-408) — copied so they reach detect().
+            session_id=context.session_id,
+            relationship_id=context.relationship_id,
+            from_table_id=context.from_table_id,
+            from_table_name=context.from_table_name,
+            from_column_id=context.from_column_id,
+            to_table_id=context.to_table_id,
+            to_table_name=context.to_table_name,
+            to_column_id=context.to_column_id,
             duckdb_conn=context.duckdb_conn,
             run_id=context.run_id,
             # Copy pre-populated analysis_results (for test/legacy paths)
@@ -214,8 +278,22 @@ def take_snapshot(
     registry = get_default_registry()
     is_view_target = target.startswith("view:")
     is_table_target = target.startswith("table:")
+    is_relationship_target = target.startswith("relationship:")
 
-    if is_view_target:
+    if is_relationship_target:
+        resolved_rel = _resolve_relationship_target(session, target)
+        if resolved_rel is None:
+            logger.warning(f"Cannot resolve relationship target for snapshot: {target}")
+            return Snapshot(scores={}, detectors_run=[])
+
+        context = DetectorContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            run_id=run_id,
+            **resolved_rel,
+        )
+        detectors = [d for d in registry.get_all_detectors() if d.scope == "relationship"]
+    elif is_view_target:
         resolved_view = _resolve_view_target(session, target)
         if resolved_view is None:
             logger.warning(f"Cannot resolve view target for snapshot: {target}")

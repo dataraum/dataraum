@@ -224,6 +224,102 @@ def load_relationships(
     ]
 
 
+def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, Any]:
+    """Shape a ``Relationship`` row into the dict the relationship detectors read."""
+    return {
+        "relationship_type": rel.relationship_type,
+        "confidence": rel.confidence,
+        "detection_method": rel.detection_method,
+        "from_table": table_names.get(rel.from_table_id, "unknown"),
+        "to_table": table_names.get(rel.to_table_id, "unknown"),
+        "from_column_id": rel.from_column_id,
+        "to_column_id": rel.to_column_id,
+        "cardinality": rel.cardinality,
+        "evidence": rel.evidence,
+    }
+
+
+def load_relationship_for_pair(
+    session: Session, from_column_id: str, to_column_id: str
+) -> dict[str, Any] | None:
+    """The representative relationship for one directional column pair (DAT-408).
+
+    Several method-rows (candidate / llm / manual) may share a pair; the
+    representative is the highest-precedence one (manual > llm > candidate) — that
+    is the relationship the readiness measures.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    rels = list(
+        session.execute(
+            select(Relationship).where(
+                Relationship.from_column_id == from_column_id,
+                Relationship.to_column_id == to_column_id,
+            )
+        ).scalars()
+    )
+    if not rels:
+        return None
+    precedence = {"manual": 3, "llm": 2, "candidate": 1}
+    rel = max(rels, key=lambda r: precedence.get(r.detection_method or "", 0))
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(
+                Table.table_id.in_([rel.from_table_id, rel.to_table_id])
+            )
+        ).tuples()
+    )
+    return _relationship_to_dict(rel, table_names)
+
+
+def load_session_relationships(session: Session, session_id: str) -> list[dict[str, Any]]:
+    """All relationships in a session (DAT-408) — join-path ambiguity needs the set."""
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    rels = list(
+        session.execute(select(Relationship).where(Relationship.session_id == session_id)).scalars()
+    )
+    if not rels:
+        return []
+    table_ids = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+        ).tuples()
+    )
+    return [_relationship_to_dict(rel, table_names) for rel in rels]
+
+
+def load_preferred_join_overlays(session: Session) -> dict[str, dict[str, Any]]:
+    """Active ``ConfigOverlay(type='relationship')`` rows keyed ``{table}->{target}``.
+
+    Multi-source (DAT-372/DAT-408): a session spans sources, so this is NOT filtered
+    by a single ``source_id`` — both ``join_path_determinism`` and
+    ``relationship_entropy`` read it so they agree on what the user has confirmed.
+    ``superseded_at IS NULL`` filters undone teaches out.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "relationship",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = row.payload or {}
+        table = payload.get("table", "")
+        target_table = payload.get("target_table", "")
+        if table and target_table:
+            out[f"{table}->{target_table}"] = payload
+    return out
+
+
 def load_correlation(session: Session, column_id: str, column_name: str) -> dict[str, Any] | None:
     """Load derived column info for a column.
 

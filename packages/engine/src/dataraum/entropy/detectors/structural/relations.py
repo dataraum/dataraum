@@ -5,7 +5,6 @@ Ambiguity (multiple paths to SAME table) indicates higher uncertainty,
 not connectivity (paths to different tables, which is normal star schema).
 """
 
-from collections import defaultdict
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
@@ -14,58 +13,16 @@ from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimens
 from dataraum.entropy.models import EntropyObject
 
 
-def _get_preferred_joins(context: DetectorContext) -> dict[str, object]:
-    """Load preferred join paths from ``relationship`` overlay rows.
-
-    Reads ``ConfigOverlay`` rows of ``type == "relationship"`` whose
-    payload targets this source (DAT-343 — the substrate the legacy
-    ``DataFix`` machinery replaces). The cockpit's teach tool writes
-    these rows; ``superseded_at IS NULL`` filters undone teaches out.
-
-    Payload shape:
-        ``{source_id, table, target_table, ...}`` — flat (no nested
-        ``parameters`` wrapper). Rows missing ``table``/``target_table``
-        or targeting another source are ignored.
-    """
-    if not context.session or not context.source_id:
-        return {}
-
-    from sqlalchemy import select
-
-    from dataraum.storage import ConfigOverlay
-
-    rows = (
-        context.session.execute(
-            select(ConfigOverlay).where(
-                ConfigOverlay.type == "relationship",
-                ConfigOverlay.superseded_at.is_(None),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    result: dict[str, object] = {}
-    for row in rows:
-        payload = row.payload or {}
-        if payload.get("source_id") != context.source_id:
-            continue
-        table = payload.get("table", "")
-        target_table = payload.get("target_table", "")
-        if table and target_table:
-            result[f"{table}->{target_table}"] = payload
-    return result
-
-
 class JoinPathDeterminismDetector(EntropyDetector):
-    """Detector for join path determinism.
+    """Detector for join path determinism — relationship-scoped (DAT-408).
 
-    Measures whether there's a clear, unambiguous join path between
-    the current column's table and other related tables.
+    Measures whether the focal relationship is an *unambiguous* way to join its
+    two tables. Multiple distinct column-pair paths between the SAME two tables =
+    HIGH entropy (ambiguous which to use); a single path = LOW (deterministic). A
+    user teach (``ConfigOverlay(type='relationship')``) that picks the path
+    resolves the ambiguity.
 
-    Key insight: Multiple paths to DIFFERENT tables (star schema) = LOW entropy.
-    Multiple paths to the SAME table = HIGH entropy (ambiguous which to use).
-
-    Source: relationships from semantic analysis (LLM-confirmed)
+    Source: the session's relationships (LLM-confirmed + candidates).
     Scores configurable in config/entropy/thresholds.yaml.
     """
 
@@ -74,105 +31,79 @@ class JoinPathDeterminismDetector(EntropyDetector):
     dimension = Dimension.RELATIONS
     sub_dimension = SubDimension.JOIN_PATH_DETERMINISM
     required_analyses = [AnalysisKey.RELATIONSHIPS]
+    scope = "relationship"
     description = "Measures ambiguity in join paths (not just connectivity)"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load relationships for this column."""
-        if context.session is None or context.column_id is None or context.table_id is None:
+        """Load the whole session's relationships (ambiguity needs the full set)."""
+        if context.session is None or context.session_id is None:
             return
-        from dataraum.entropy.detectors.loaders import load_relationships
+        from dataraum.entropy.detectors.loaders import load_session_relationships
 
-        result = load_relationships(context.session, context.column_id, context.table_id)
-        if result is not None:
-            context.analysis_results["relationships"] = result
+        context.analysis_results["relationships"] = load_session_relationships(
+            context.session, context.session_id
+        )
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
-        """Detect join path determinism entropy.
+        """Detect join-path ambiguity for the focal relationship (DAT-408).
 
-        Entropy is based on AMBIGUITY, not connectivity:
-        - Orphan (no relationships): high entropy (can't join)
-        - Star schema (one path per target table): low entropy (deterministic)
-        - Ambiguous (multiple paths to same table): high entropy
-
-        Args:
-            context: Detector context with relationship analysis results
-
-        Returns:
-            List with single EntropyObject for join path determinism
+        Counts the distinct column-pair join paths between the focal relationship's
+        two tables. More than one (and not resolved by a preferred-join teach) =
+        ambiguous; exactly one = deterministic. Emits a single EntropyObject keyed
+        ``relationship:{from}::{to}``.
         """
         config = get_entropy_config()
         detector_config = config.detector("join_path")
 
-        # Configurable scores
-        score_orphan = detector_config.get("score_orphan", 0.9)
         score_deterministic = detector_config.get("score_deterministic", 0.1)
         score_ambiguous = detector_config.get("score_ambiguous", 0.7)
 
-        relationships = context.get_analysis("relationships", [])
+        from_table = context.from_table_name
+        to_table = context.to_table_name
+        if not from_table or not to_table:
+            return []
 
-        # Handle different input formats
-        if isinstance(relationships, dict):
-            rels = relationships.get("relationships", [])
-        elif isinstance(relationships, list):
-            rels = relationships
-        else:
+        rels = context.get_analysis("relationships", [])
+        if isinstance(rels, dict):
+            rels = rels.get("relationships", [])
+        elif not isinstance(rels, list):
             rels = []
 
-        # Group relationships by target table to detect ambiguity
-        # For this column, check paths TO other tables (outgoing)
-        # and paths FROM other tables (incoming)
-        paths_to_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
-
+        # Distinct column-pair paths connecting THIS pair of tables (either
+        # direction). A frozenset of the two column ids dedups mirror rows; >1
+        # distinct path = ambiguous which join to use.
+        table_pair = {from_table, to_table}
+        col_paths: set[frozenset[str]] = set()
         for rel in rels:
-            from_table = self._get_table(rel, "from_table")
-            to_table = self._get_table(rel, "to_table")
+            if {self._get(rel, "from_table"), self._get(rel, "to_table")} != table_pair:
+                continue
+            fc = self._get(rel, "from_column_id")
+            tc = self._get(rel, "to_column_id")
+            if fc and tc:
+                col_paths.add(frozenset({fc, tc}))
 
-            if from_table == context.table_name and to_table:
-                # Outgoing relationship
-                paths_to_table[to_table].append(rel)
-            elif to_table == context.table_name and from_table:
-                # Incoming relationship
-                paths_to_table[from_table].append(rel)
+        # A user teach that picks the join path resolves the ambiguity.
+        from dataraum.entropy.detectors.loaders import load_preferred_join_overlays
 
-        # Analyze ambiguity
-        total_connections = len(paths_to_table)  # Number of distinct tables connected
-        ambiguous_tables = [t for t, paths in paths_to_table.items() if len(paths) > 1]
+        overlays = load_preferred_join_overlays(context.session) if context.session else {}
+        resolved = (
+            f"{from_table}->{to_table}" in overlays or f"{to_table}->{from_table}" in overlays
+        )
 
-        # Filter out tables with a declared preferred join (from DataFix records)
-        preferred_joins = _get_preferred_joins(context)
-        if preferred_joins and ambiguous_tables:
-            resolved = set()
-            for target in ambiguous_tables:
-                fwd = f"{context.table_name}->{target}"
-                rev = f"{target}->{context.table_name}"
-                if fwd in preferred_joins or rev in preferred_joins:
-                    resolved.add(target)
-            if resolved:
-                ambiguous_tables = [t for t in ambiguous_tables if t not in resolved]
-
-        # Determine score based on ambiguity, not connectivity
-        if total_connections == 0:
-            # No relationships - orphan
-            score = score_orphan
-            path_status = "orphan"
-        elif ambiguous_tables:
-            # Proportional: ratio of ambiguous tables to total connections
-            ambiguity_ratio = len(ambiguous_tables) / total_connections
-            # Scale between score_deterministic and score_ambiguous
-            score = score_deterministic + (score_ambiguous - score_deterministic) * ambiguity_ratio
+        if len(col_paths) > 1 and not resolved:
+            score = score_ambiguous
             path_status = "ambiguous"
         else:
-            # Each connected table has exactly one path - deterministic (star schema OK)
             score = score_deterministic
-            path_status = "deterministic"
+            path_status = "resolved" if resolved else "deterministic"
 
-        # Build evidence
         evidence = [
             {
                 "path_status": path_status,
-                "connected_tables": total_connections,
-                "ambiguous_tables": ambiguous_tables,
-                "relationships_per_table": {t: len(p) for t, p in paths_to_table.items()},
+                "from_table": from_table,
+                "to_table": to_table,
+                "distinct_join_paths": len(col_paths),
+                "resolved_by_overlay": resolved,
             }
         ]
 
@@ -184,12 +115,10 @@ class JoinPathDeterminismDetector(EntropyDetector):
             )
         ]
 
-    def _get_table(self, rel: Any, field: str) -> str | None:
-        """Get table name from relationship."""
-        if hasattr(rel, field):
-            value = getattr(rel, field)
-            return str(value) if value is not None else None
+    def _get(self, rel: Any, field: str) -> str | None:
+        """Get a string field from a relationship dict or object."""
         if isinstance(rel, dict):
             value = rel.get(field)
-            return str(value) if value is not None else None
-        return None
+        else:
+            value = getattr(rel, field, None)
+        return str(value) if value is not None else None

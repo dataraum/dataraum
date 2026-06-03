@@ -44,3 +44,30 @@ class EntropyObject:
     def dimension_path(self) -> str:
         """Return full dimension path (layer.dimension.sub_dimension)."""
         return f"{self.layer}.{self.dimension}.{self.sub_dimension}"
+
+
+# Relationship target identity (DAT-408). The readiness/head key for a relationship
+# is the directional column pair — column ids are fixed per session, so the key is
+# replay-stable; ``::`` separates the two UUIDs (a ``-`` would be ambiguous inside
+# them). One function so the detector (emit), the persist, and the reader (gate)
+# agree on the exact string.
+_REL_PREFIX = "relationship:"
+_REL_SEP = "::"
+
+
+def relationship_target_key(from_column_id: str, to_column_id: str) -> str:
+    """The stable ``relationship:{from_col}::{to_col}`` target key (DAT-408)."""
+    return f"{_REL_PREFIX}{from_column_id}{_REL_SEP}{to_column_id}"
+
+
+def parse_relationship_target(target: str) -> tuple[str, str] | None:
+    """Inverse of :func:`relationship_target_key` → ``(from_column_id, to_column_id)``.
+
+    Returns ``None`` for any non-relationship or malformed target.
+    """
+    if not target.startswith(_REL_PREFIX):
+        return None
+    parts = target[len(_REL_PREFIX) :].split(_REL_SEP)
+    if len(parts) != 2 or not all(parts):
+        return None
+    return parts[0], parts[1]

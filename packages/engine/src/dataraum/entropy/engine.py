@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import EntropyObjectRecord
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import EntropyObject, relationship_target_key
 from dataraum.entropy.snapshot import take_snapshot
 
 if TYPE_CHECKING:
@@ -137,6 +137,53 @@ def run_detector_post_step(
                         entropy_obj=obj,
                         table_id=resolved_table_id,
                         column_id=_extract_column_id(obj),
+                    )
+                )
+
+    elif detector.scope == "relationship":
+        # Relationship-scoped (DAT-408): one pass per distinct directional column
+        # pair among the session's tables. The object's ``target`` carries the true
+        # identity (relationship:{from}::{to}); ``table_id``/``column_id`` are
+        # anchored to the from-endpoint purely so the table-scoped readiness loader
+        # picks the object up — the readiness ROW itself keys off ``target``.
+        from dataraum.analysis.relationships.db_models import Relationship
+
+        pairs = list(
+            session.execute(
+                select(
+                    Relationship.from_column_id,
+                    Relationship.to_column_id,
+                    Relationship.from_table_id,
+                )
+                .where(
+                    Relationship.from_table_id.in_(table_ids)
+                    | Relationship.to_table_id.in_(table_ids)
+                )
+                .distinct()
+            ).tuples()
+        )
+        seen_pairs: set[tuple[str, str]] = set()
+        for from_col, to_col, from_table in pairs:
+            if (from_col, to_col) in seen_pairs:
+                continue
+            seen_pairs.add((from_col, to_col))
+            target = relationship_target_key(from_col, to_col)
+            snapshot = take_snapshot(
+                target=target,
+                session=session,
+                duckdb_conn=duckdb_conn,
+                dimensions=[detector.sub_dimension],
+                run_id=run_id,
+            )
+            for obj in snapshot.objects:
+                all_records.append(
+                    _make_record(
+                        source_id=source_by_table_id.get(from_table),
+                        session_id=session_id,
+                        run_id=run_id,
+                        entropy_obj=obj,
+                        table_id=from_table,
+                        column_id=from_col,
                     )
                 )
 

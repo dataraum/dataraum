@@ -89,7 +89,7 @@ export function toolChipSummary(
 		}
 		case "look_table": {
 			const r = output as LookTableResult | undefined;
-			if (!r) return "reading table readiness…";
+			if (!r || !Array.isArray(r.columns)) return "reading table readiness…";
 			const cols = plural(r.columns.length, "column");
 			return r.analyzed
 				? `${r.table_name} — ${cols}`
@@ -104,12 +104,16 @@ export function toolChipSummary(
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;
-			if (!s) return "connecting…";
+			// `output` can be a truthy-but-PARTIAL object while the result streams in
+			// (tables not populated yet) — treat a missing tables array as still
+			// connecting rather than crashing on `.length` (the multi-file drag-drop
+			// crash). The complete result always carries the array.
+			if (!s || !Array.isArray(s.tables)) return "connecting…";
 			return `${s.source} — ${plural(s.tables.length, "table")}`;
 		}
 		case "frame": {
 			const f = output as FrameResult | undefined;
-			if (!f) return "framing concepts…";
+			if (!f || !Array.isArray(f.concepts)) return "framing concepts…";
 			return `${f.vertical} — ${plural(f.concepts.length, "concept")}`;
 		}
 		case "select": {

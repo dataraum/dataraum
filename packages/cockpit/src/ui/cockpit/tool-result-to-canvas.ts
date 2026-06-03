@@ -51,13 +51,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The per-column explanation; a missing result leaves the canvas as-is.
 	why_column: (result) =>
 		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
-	// null/undefined → leave the canvas unchanged (a failed connect surfaces its
-	// error in the chat rail, not as an empty preview).
+	// Only project once the result is a COMPLETE schema (a `tables` array): a
+	// partial/streaming or errored connect output is truthy-but-tables-less, and
+	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file
+	// drag-drop crash). Not-yet-complete → leave the canvas unchanged (the last
+	// good preview stays; a failed connect surfaces its error in the chat rail).
 	connect: (result) =>
-		result ? { kind: "schema-preview", schema: result as ConnectSchema } : null,
-	// Declared concepts render as the ConceptFrame widget; missing → unchanged.
+		Array.isArray((result as { tables?: unknown } | null)?.tables)
+			? { kind: "schema-preview", schema: result as ConnectSchema }
+			: null,
+	// Declared concepts render as the ConceptFrame widget; only once the result
+	// carries a `concepts` array (same partial-output guard as connect).
 	frame: (result) =>
-		result ? { kind: "concept-frame", frame: result as FrameResult } : null,
+		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
+			? { kind: "concept-frame", frame: result as FrameResult }
+			: null,
 	// The persisted Source descriptor renders as SelectedSource; a missing result
 	// (e.g. a rejected duplicate-basename select) leaves the canvas unchanged.
 	select: (result) =>

@@ -116,6 +116,14 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("connect", null)).toBeNull();
 	});
 
+	it("returns null for a PARTIAL connect result (no tables array — no SchemaPreview crash)", () => {
+		// A truthy-but-partial/streaming or errored connect output has no `tables`
+		// array; projecting it crashed SchemaPreview on `schema.tables.length` (the
+		// multi-file drag-drop crash). Leave the canvas unchanged until complete.
+		expect(toolResultToCanvas("connect", { source: "people.csv" })).toBeNull();
+		expect(toolResultToCanvas("connect", {})).toBeNull();
+	});
+
 	it("maps frame to a concept-frame canvas (DAT-382)", () => {
 		const frame = {
 			vertical: "_adhoc",
@@ -137,6 +145,10 @@ describe("toolResultToCanvas", () => {
 
 	it("returns null for a missing frame result (canvas unchanged)", () => {
 		expect(toolResultToCanvas("frame", null)).toBeNull();
+	});
+
+	it("returns null for a PARTIAL frame result (no concepts array)", () => {
+		expect(toolResultToCanvas("frame", { vertical: "finance" })).toBeNull();
 	});
 
 	it("maps run_sql to a result-grid from the CALL INPUT (sql + params)", () => {

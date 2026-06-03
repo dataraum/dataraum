@@ -161,18 +161,19 @@ class SemanticPerColumnPhase(BasePhase):
                 "No vertical configured. Set 'vertical' in config/phases/semantic.yaml."
             )
 
-        # Cold-start fail-loud (DAT-382): an _adhoc workspace's ontology comes
-        # only from the cockpit frame stage's concept overlay rows. Grounding
-        # against zero concepts is a silent no-op, so refuse it with a clear
-        # error pointing at the missing upstream step.
-        if ontology == "_adhoc":
-            adhoc_ontology = OntologyLoader().load("_adhoc")
-            if adhoc_ontology is None or not adhoc_ontology.concepts:
-                return PhaseResult.failed(
-                    "No _adhoc concepts found — grounding an _adhoc workspace requires the "
-                    "frame stage to declare concepts first (cockpit `frame` writes them as "
-                    "`concept` overlay rows). Run frame before add_source."
-                )
+        # Cold-start fail-loud (DAT-382, generalized for framed verticals): a
+        # vertical whose concepts come only from the cockpit frame stage's
+        # overlay rows — `_adhoc` or any framed vertical — grounds against zero
+        # concepts (a silent no-op) if frame never ran. Curated builtins like
+        # finance ship concepts on disk and pass. Load the configured vertical
+        # and refuse when it resolves to no concepts, naming the missing step.
+        resolved = OntologyLoader().load(ontology)
+        if resolved is None or not resolved.concepts:
+            return PhaseResult.failed(
+                f"No concepts found for vertical '{ontology}' — grounding requires the "
+                "frame stage to declare concepts first (cockpit `frame` writes them as "
+                "`concept` overlay rows). Run frame before add_source."
+            )
 
         grounding = ground_columns(
             session=ctx.session,

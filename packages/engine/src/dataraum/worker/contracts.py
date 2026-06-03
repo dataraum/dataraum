@@ -144,6 +144,12 @@ class SessionIdentity(BaseModel):
 
     workspace_id: str
     session_id: str
+    # Snapshot version axis (DAT-408): minted once by ``BeginSessionWorkflow.run``
+    # (``workflow.uuid4``) and threaded into every session activity so a run's
+    # metadata rows share one ``run_id`` — the begin_session analogue of
+    # ``SourceIdentity.run_id``. The cockpit's call leaves it None; the workflow
+    # stamps it before the first activity.
+    run_id: str | None = None
 
 
 class PhaseOutcome(BaseModel):

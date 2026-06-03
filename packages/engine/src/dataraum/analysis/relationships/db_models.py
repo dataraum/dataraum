@@ -47,8 +47,13 @@ class Relationship(Base):
 
     __tablename__ = "relationships"
     __table_args__ = (
-        # Allow same column pair with different detection methods
+        # Session-grain identity (DAT-408): relationships live per session (the
+        # table set is fixed per session), so the unique key is scoped to
+        # ``session_id``. Without it, two sessions sharing a table collide on the
+        # same column pair. Same pair may still recur with different detection
+        # methods (candidate / llm / manual).
         UniqueConstraint(
+            "session_id",
             "from_column_id",
             "to_column_id",
             "detection_method",

@@ -20,6 +20,7 @@ def _readiness_row(session: Session, table_id: str, source_id: str) -> None:
     session.add(
         EntropyReadinessRecord(
             session_id=baseline_session_id(),
+            target=f"table:{table_id}",
             source_id=source_id,
             table_id=table_id,
             column_id=None,

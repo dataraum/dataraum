@@ -81,6 +81,7 @@ def persist_readiness(
         rows.append(
             EntropyReadinessRecord(
                 session_id=session_id,
+                target=target,
                 source_id=source_by_table[table_id],
                 table_id=table_id,
                 column_id=column_id,

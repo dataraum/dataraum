@@ -333,9 +333,10 @@ export const selectTool = toolDefinition({
 			.nullish()
 			.describe(
 				"The vertical add_source grounds against. Pass a builtin from " +
-					"`list_verticals` (e.g. finance) to ADOPT it — no frame needed, it " +
-					"ships its concepts. Pass the SAME `vertical_name` you gave `frame` for " +
-					"a newly framed vertical. Omit only for an unnamed cold-start (_adhoc).",
+					"`list_verticals` with a non-zero concept_count (e.g. finance) to " +
+					"ADOPT it — no frame needed, it ships its concepts. Pass the SAME " +
+					"`vertical_name` you gave `frame` for a newly framed vertical. Omit " +
+					"only for an unnamed cold-start (_adhoc).",
 			),
 		session_id: z.string().nullish(),
 	}),

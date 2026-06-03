@@ -45,7 +45,9 @@ const VERTICAL_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
  * key (it keys `verticals/<name>` config resolution). */
 function resolveVertical(name?: string | null): string {
 	const trimmed = name?.trim();
-	if (!trimmed) return DEFAULT_VERTICAL;
+	// Blank OR an explicit `_adhoc` → the unnamed default (consistent with
+	// select's resolveVertical; `_adhoc`'s leading underscore fails the pattern).
+	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
 	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
 		throw new Error(
 			`Invalid vertical name '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +

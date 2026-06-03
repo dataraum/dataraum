@@ -181,8 +181,19 @@ export async function triggerAddSource(
 }
 
 /** Request-body schema for `POST /api/add-source` — the API route validates the
- * trigger input against this before firing the workflow. */
+ * trigger input against this before firing the workflow. The API is the trust
+ * boundary: a direct call bypasses `select`/`frame` validation, and the vertical
+ * flows into `OntologyLoader.load(vertical)` → `verticals/<v>/ontology.yaml` path
+ * construction (engine) + a config-tree fs read (`verticalConceptCount`), so it
+ * MUST be a safe segment here — a path-traversal `../…` is rejected. Allows the
+ * `_adhoc` default (leading underscore) plus the engine-valid name shape. */
 export const TriggerAddSourceInputSchema = z.object({
 	source_id: z.string().min(1),
-	vertical: z.string().optional(),
+	vertical: z
+		.string()
+		.refine((v) => v === "_adhoc" || /^[a-z][a-z0-9_]{1,48}$/.test(v), {
+			message:
+				"Invalid vertical (lowercase, starts with a letter, 2–49 chars of [a-z0-9_]) or '_adhoc'.",
+		})
+		.optional(),
 });

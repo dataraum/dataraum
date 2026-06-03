@@ -81,7 +81,11 @@ vi.mock("@temporalio/common", () => ({
 	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
 
-import { NoConceptsError, triggerAddSource } from "./trigger-add-source";
+import {
+	NoConceptsError,
+	TriggerAddSourceInputSchema,
+	triggerAddSource,
+} from "./trigger-add-source";
 
 beforeEach(() => {
 	h.config = {
@@ -186,5 +190,25 @@ describe("triggerAddSource (DAT-352)", () => {
 		// The guard runs first — no orphan session row, no workflow start.
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("TriggerAddSourceInputSchema (API trust boundary)", () => {
+	it("accepts a valid framed name, a builtin, and the _adhoc default", () => {
+		for (const vertical of ["sales", "finance", "_adhoc", undefined]) {
+			expect(
+				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+					.success,
+			).toBe(true);
+		}
+	});
+
+	it("rejects a path-traversal / unsafe vertical before it reaches the engine", () => {
+		for (const vertical of ["../etc", "a/b", "Finance", "_nope", ""]) {
+			expect(
+				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+					.success,
+			).toBe(false);
+		}
 	});
 });

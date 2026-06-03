@@ -39,8 +39,10 @@ const Vertical = z.object({
 	// framed vertical (it has no curated description).
 	description: z.string().nullable(),
 	// Concepts available for the vertical: a builtin's curated ontology.yaml
-	// concepts plus any active concept overlay rows naming it (so `_adhoc` and
-	// framed verticals report their induced/taught concepts).
+	// concepts PLUS any active concept overlay rows naming it (so `_adhoc` and
+	// framed verticals report their induced/taught concepts). An UPPER BOUND: the
+	// engine's _apply_concept upserts by name, so a teach that overrides an
+	// on-disk concept is double-counted here (rare; a richness hint, not exact).
 	concept_count: z.number(),
 	// Whether the builtin ships the richer operating-model objects. Always false
 	// for framed verticals (concepts only).
@@ -101,7 +103,9 @@ async function readOntology(
 /** How many concepts a SINGLE vertical resolves to — its builtin ontology.yaml
  * concepts (zero for a framed/directory-less vertical) plus active concept
  * overlay rows naming it. The add_source pre-flight guard uses this to refuse a
- * vertical that would ground against nothing. */
+ * vertical that would ground against nothing. An UPPER BOUND (overlay overrides
+ * of on-disk concepts are double-counted) — safe for the guard's `=== 0` test,
+ * which over-count can never make falsely zero. */
 export async function verticalConceptCount(vertical: string): Promise<number> {
 	const onto = await readOntology(
 		join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),

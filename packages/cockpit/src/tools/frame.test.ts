@@ -130,6 +130,15 @@ describe("frame (DAT-382)", () => {
 		).rejects.toThrow(/Invalid vertical name/);
 	});
 
+	it("treats an explicit '_adhoc' vertical_name as the default (no throw)", async () => {
+		const result = await frame({
+			schema: SCHEMA,
+			vertical_name: "_adhoc",
+			concepts: [{ name: "x" }],
+		});
+		expect(result.vertical).toBe("_adhoc");
+	});
+
 	it("declares a user-edited concept set verbatim, skipping induction", async () => {
 		const result = await frame({
 			schema: SCHEMA,

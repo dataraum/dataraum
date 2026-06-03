@@ -11,6 +11,14 @@
 // Returns the workflow id + run id immediately — the caller polls / queries
 // Temporal for progress. End-to-end "replay actually produces clean output"
 // coverage lives in the integration smoke that drives the running stack.
+//
+// HARD PRECONDITION (DAT-407 FK), same as triggerAddSource: the re-run's typing
+// phase writes per-session rows (type_candidates, session_tables) with a NOT-NULL
+// FK to investigation_sessions.session_id. A full replay (DAT-413) re-runs typing,
+// so it MUST seed that parent row first — otherwise the run dies deep in the
+// per-table fan-out with a ForeignKeyViolation. The initial add_source seeds via
+// the "Add source" trigger; a replay mints (or reuses) its own session id, so it
+// seeds here too (onConflictDoNothing makes reusing an existing session a no-op).
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
@@ -19,6 +27,8 @@ import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { z } from "zod";
 
 import { config } from "../config";
+import { metadataDb } from "../db/metadata/client";
+import { investigationSessions } from "../db/metadata/schema";
 import type {
 	AddSourceInput,
 	AddSourceResult,
@@ -43,6 +53,7 @@ export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
 	source_id: string;
+	session_id: string;
 }
 
 /**
@@ -67,10 +78,30 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
+	const sessionId = input.session_id ?? randomUUID();
+	const vertical = input.vertical ?? "_adhoc";
+
+	// Seed the investigation_sessions parent row the re-run's per-table fan-out FKs
+	// against, BEFORE starting the workflow (see the HARD PRECONDITION note above).
+	// onConflictDoNothing: a caller-supplied existing session id (e.g. the drive
+	// smoke reusing the initial run's session) is a no-op, a fresh random one is
+	// seeded. Mirrors triggerAddSource's seed through the same metadata write seam.
+	await metadataDb
+		.insert(investigationSessions)
+		.values({
+			sessionId,
+			intent: "replay",
+			status: "active",
+			startedAt: new Date(),
+			stepCount: 0,
+			vertical,
+		})
+		.onConflictDoNothing({ target: investigationSessions.sessionId });
+
 	const identity: SourceIdentity = {
 		workspace_id: config.dataraumWorkspaceId,
 		source_id: input.source_id,
-		session_id: input.session_id ?? randomUUID(),
+		session_id: sessionId,
 		vertical: input.vertical,
 	};
 	const payload: AddSourceInput = { identity };
@@ -99,6 +130,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
 			source_id: input.source_id,
+			session_id: sessionId,
 		};
 	} finally {
 		await connection.close();
@@ -137,6 +169,7 @@ export const replayTool = toolDefinition({
 		workflow_id: z.string(),
 		run_id: z.string(),
 		source_id: z.string(),
+		session_id: z.string(),
 	}),
 	needsApproval: true,
 }).server((input) => replay(input));

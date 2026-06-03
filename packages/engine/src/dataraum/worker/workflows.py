@@ -362,16 +362,23 @@ class BeginSessionWorkflow:
     ``begin_session_select`` pre-flights the selection + links it to the session
     (``session_tables``), then ``relationships`` (structural candidates) →
     ``semantic_per_table`` (LLM classification + confirms a subset) run over the
-    whole selection. NO fan-out (the work is cross-table) and NO terminal detect
-    (relationship-granularity readiness is DAT-408 / 2.0b).
+    whole selection, then the terminal ``session_detect`` (relationship-granularity
+    readiness) → ``session_promote_to_latest`` (flip the readiness heads). NO
+    fan-out — the work is cross-table.
 
-    A teach re-run is a full re-run of the spine (DAT-413): there is no partial
-    replay scope, so ``begin_session_select`` and both chain phases always run.
+    The run mints a ``run_id`` (DAT-408) threaded through every activity; a teach
+    re-run is a full re-run under a fresh ``run_id`` (candidates re-derive,
+    llm/manual survive, readiness is non-destructive + promoted to the new run).
     """
 
     @workflow.run
     async def run(self, payload: BeginSessionInput) -> BeginSessionResult:
-        identity = payload.identity
+        # Mint the run's ``run_id`` once (DAT-408), mirroring AddSourceWorkflow, and
+        # thread it through every activity so all of this run's metadata shares it
+        # and the terminal promote can flip the relationship-readiness heads.
+        # ``workflow.uuid4`` is the deterministic, replay-safe source.
+        run_id = str(workflow.uuid4())
+        identity = payload.identity.model_copy(update={"run_id": run_id})
         # The selection is the execution scope, threaded to every activity. It is
         # also what ``begin_session_select`` persists to ``session_tables``.
         scoped = SessionScopedInput(identity=identity, table_ids=payload.tables)
@@ -395,5 +402,23 @@ class BeginSessionWorkflow:
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
             )
+
+        # Terminal relationship detect (DAT-408): runs the relationship detectors
+        # over the session's tables, persisting relationship-granularity readiness
+        # stamped with ``run_id`` — then promote flips the heads to this run.
+        await workflow.execute_activity(
+            "session_detect",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+        await workflow.execute_activity(
+            "session_promote_to_latest",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
 
         return BeginSessionResult(session_id=identity.session_id, table_ids=payload.tables)

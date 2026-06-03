@@ -27,9 +27,11 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
+    _SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
     promote_run,
+    promote_session_run,
     raw_table_ids,
     run_detectors,
     run_phase,
@@ -40,6 +42,7 @@ from dataraum.worker.contracts import (
     ImportResult,
     PhaseOutcome,
     ProcessTableInput,
+    SessionIdentity,
     SessionScopedInput,
     SourceIdentity,
     TableScopedInput,
@@ -186,6 +189,40 @@ class PhaseActivities:
             self._manager, "semantic_per_table", payload.identity, payload.table_ids
         )
         return self._outcome_or_raise(run, "semantic_per_table")
+
+    @activity.defn(name="session_detect")
+    def run_session_detect(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Terminal relationship-detector pass for begin_session (DAT-408).
+
+        Source-free analogue of ``detect``: runs the relationship detectors
+        (``_SESSION_DETECTOR_PHASES``) over the session's tables, persisting
+        relationship-granularity entropy objects + readiness rows stamped with the
+        run's ``run_id``.
+        """
+        count = run_detectors(
+            self._manager,
+            session_id=identity.session_id,
+            run_id=identity.run_id,
+            detector_phases=_SESSION_DETECTOR_PHASES,
+        )
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"{count} relationship detector records for session {identity.session_id}",
+        )
+
+    @activity.defn(name="session_promote_to_latest")
+    def run_session_promote_to_latest(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Terminal promote for begin_session — flip the relationship-readiness heads.
+
+        Runs last in ``beginSessionWorkflow``, after ``session_detect``: points each
+        ``(relationship:{from}::{to}, "detect")`` head at this ``run_id`` so the
+        readiness reader resolves it as current (DAT-408).
+        """
+        count = promote_session_run(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"promoted {count} relationship head(s) for session {identity.session_id}",
+        )
 
     def _run_or_raise(
         self,

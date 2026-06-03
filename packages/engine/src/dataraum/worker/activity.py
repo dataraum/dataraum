@@ -26,6 +26,7 @@ from sqlalchemy import select
 
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
+from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
 from dataraum.investigation.db_models import InvestigationSession
@@ -38,6 +39,8 @@ from dataraum.storage import MetadataSnapshotHead, Source, Table
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
     from dataraum.core.connections import ConnectionManager
 
 logger = get_logger(__name__)
@@ -94,6 +97,13 @@ _PROMOTE_STAGES = (
     "semantic_per_column",
     "detect",
 )
+
+# The begin_session chain phases whose declared detectors the terminal session
+# ``detect`` runs (DAT-408): ``semantic_per_table`` declares the relationship
+# detectors (join_path_determinism + relationship_entropy). Distinct from the
+# source-scoped ``_DETECTOR_PHASES`` so add_source never runs the relationship
+# detectors and begin_session never runs the column ones.
+_SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
 
 
 @dataclass
@@ -366,6 +376,7 @@ def run_session_phase(
             session_factory=manager.session_scope,
             manager=manager,
             session_id=identity.session_id,
+            run_id=identity.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -502,31 +513,83 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
             # begin_session's own promote.
             target = f"table:{table_id}"
             for stage in _PROMOTE_STAGES:
-                head = session.execute(
-                    select(MetadataSnapshotHead).where(
-                        MetadataSnapshotHead.target == target,
-                        MetadataSnapshotHead.stage == stage,
-                    )
-                ).scalar_one_or_none()
-                if head is None:
-                    session.add(
-                        MetadataSnapshotHead(
-                            target=target,
-                            stage=stage,
-                            run_id=run_id,
-                            promoted_at=now,
-                            version=0,
-                        )
-                    )
-                else:
-                    head.run_id = run_id
-                    head.promoted_at = now
-                    head.version = head.version + 1
+                _upsert_head(session, target, stage, run_id, now)
                 promoted += 1
 
     logger.info(
         "promote_to_latest_done",
         source_id=identity.source_id,
+        session_id=identity.session_id,
+        run_id=run_id,
+        heads_promoted=promoted,
+    )
+    return promoted
+
+
+def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: datetime) -> None:
+    """Point the ``(target, stage)`` snapshot head at ``run_id`` (insert or re-point)."""
+    head = session.execute(
+        select(MetadataSnapshotHead).where(
+            MetadataSnapshotHead.target == target,
+            MetadataSnapshotHead.stage == stage,
+        )
+    ).scalar_one_or_none()
+    if head is None:
+        session.add(
+            MetadataSnapshotHead(
+                target=target, stage=stage, run_id=run_id, promoted_at=now, version=0
+            )
+        )
+    else:
+        head.run_id = run_id
+        head.promoted_at = now
+        head.version = head.version + 1
+
+
+def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+    """Flip the relationship-readiness heads to this begin_session run (DAT-408).
+
+    begin_session's terminal promote: after the session ``detect`` writes
+    relationship readiness rows stamped with ``run_id``, point each
+    ``(relationship:{from}::{to}, "detect")`` head at this run so
+    ``load_relationship_readiness`` resolves it as current. Mirrors
+    :func:`promote_run` but over the run's relationship targets (relationships are
+    session-grain; only the run-versioned readiness needs a head). Workspace guard
+    mirrors the other session helpers (DAT-364).
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: session promote targets '{identity.workspace_id}' "
+            f"but this worker is bound to '{active_workspace_id}'."
+        )
+    run_id = identity.run_id
+    if run_id is None:
+        raise RuntimeError(
+            "promote_session_run requires a stamped identity.run_id — "
+            "BeginSessionWorkflow mints it before the first activity (DAT-408)."
+        )
+
+    promoted = 0
+    with manager.session_scope() as session:
+        targets = list(
+            session.execute(
+                select(EntropyReadinessRecord.target)
+                .where(
+                    EntropyReadinessRecord.session_id == identity.session_id,
+                    EntropyReadinessRecord.run_id == run_id,
+                    EntropyReadinessRecord.target.like("relationship:%"),
+                )
+                .distinct()
+            ).scalars()
+        )
+        now = datetime.now(UTC)
+        for target in targets:
+            _upsert_head(session, target, "detect", run_id, now)
+            promoted += 1
+
+    logger.info(
+        "session_promote_done",
         session_id=identity.session_id,
         run_id=run_id,
         heads_promoted=promoted,

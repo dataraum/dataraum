@@ -372,7 +372,9 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     # Single terminal detect step (DAT-394): one source-wide pass after the
     # fan-out. Offline (no LLM), so only the structural detectors persist rows;
     # that is enough to prove the terminal step runs and writes per-table records.
-    assert run_detectors(worker_manager, identity) > 0, "terminal detect produced no records"
+    assert (
+        run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
+    ), "terminal detect produced no records"
 
 
 def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
@@ -397,7 +399,7 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     typed_ids = {_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids}
 
     # Terminal detect: writes entropy_objects AND persists readiness in one pass.
-    assert run_detectors(worker_manager, identity) > 0
+    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
 
     with worker_manager.session_scope() as session:
         rows = list(
@@ -425,7 +427,7 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     # Re-run the terminal detect (the replay path always re-runs it): the
     # delete-before-insert scoped to the session's tables (DAT-410) must
     # overwrite, not duplicate. (Single-source run: session tables = source tables.)
-    assert run_detectors(worker_manager, identity) > 0
+    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
     with worker_manager.session_scope() as session:
         second_count = len(
             list(
@@ -475,7 +477,7 @@ def test_persisted_readiness_is_single_source_of_truth(
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     typed_ids = sorted({_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids})
-    assert run_detectors(worker_manager, identity) > 0
+    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
     # Promote this run so the head names it — the query-time read is head-resolved.
     assert promote_run(worker_manager, identity) > 0
 
@@ -552,7 +554,9 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     assert len(typed_ids) == len(raw_ids), "each raw table maps to a distinct typed table"
 
     # One terminal source-wide detect pass after the fan-out (DAT-394).
-    assert run_detectors(worker_manager, identity) > 0, "terminal detect produced no records"
+    assert (
+        run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
+    ), "terminal detect produced no records"
 
     # Every detector record belongs to one of this source's typed tables (no
     # orphan), and each typed table carries the full table-local detector set —
@@ -615,5 +619,5 @@ def test_semantic_per_column_reduce_runs_live(
     # Terminal detect step (DAT-394) runs all wired detectors source-wide after the
     # reduce — including semantic_per_column's (business_meaning, unit_entropy, …).
     # With real annotations present it should persist records.
-    records = run_detectors(worker_manager, identity)
+    records = run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id)
     assert records > 0, "terminal detect produced no detector records"

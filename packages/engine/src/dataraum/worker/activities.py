@@ -128,7 +128,7 @@ class PhaseActivities:
         ``detect_source`` split — nothing consumes entropy mid-run, so one terminal
         pass is correct and simpler. (DAT-394 phase 2 persists readiness here too.)
         """
-        count = run_detectors(self._manager, identity)
+        count = run_detectors(self._manager, session_id=identity.session_id, run_id=identity.run_id)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"{count} detector records for source {identity.source_id}",

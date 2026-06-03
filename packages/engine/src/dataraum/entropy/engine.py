@@ -24,35 +24,32 @@ logger = get_logger(__name__)
 
 def run_detector_post_step(
     session: Session,
-    source_id: str,
     detector_id: str,
     duckdb_conn: Any = None,
     *,
     session_id: str,
-    table_ids: list[str] | None = None,
+    table_ids: list[str],
     run_id: str | None = None,
 ) -> int:
-    """Run a single detector as a phase post-step.
+    """Run a single detector as a phase post-step — source-free (DAT-408).
 
-    Scoped delete-before-insert: deletes existing records for this
-    (source_id, detector_id) pair, then runs the detector against the typed
-    tables in scope and persists new records.
-
-    When ``table_ids`` is given (the per-table stage step, DAT-370), both the
-    delete and the table scan are restricted to those tables — so parallel
-    child workflows running this detector on different tables never collide on
-    each other's ``(source_id, detector_id)`` rows. ``None`` = source-wide.
+    Scoped delete-before-insert by ``(detector_id, table_ids)``: deletes this
+    detector's stale records for the tables in scope, then runs the detector
+    against those typed tables and persists new records. The scope is the table
+    set, never a single ``source_id`` — a begin_session run spans sources, and an
+    add_source run's tables are exactly its source's tables, so the table-scoped
+    delete is byte-identical there. Per-record ``source_id`` is derived from the
+    table being measured (provenance only, not a scope key).
 
     Args:
         session: SQLAlchemy session (caller manages commit).
-        source_id: Source ID for record provenance.
         detector_id: ID of the detector to run.
         duckdb_conn: DuckDB connection for detectors that query data directly.
         session_id: Per-run FK for the persisted records.
-        table_ids: Optional typed-table scope; ``None`` runs over all typed tables.
-        run_id: Snapshot version axis (DAT-413); stamped on each record. ``None``
-            outside the workflow path (begin_session / tests) — additive, the head
-            pointer is not consulted yet.
+        table_ids: The typed-table scope — the run's table set (delete + scan).
+        run_id: Snapshot version axis (DAT-413); stamped on each record. Scopes the
+            delete to this run when set so a re-run clears only its OWN prior rows
+            (non-destructive); ``None`` (tests) keeps the broad per-table delete.
 
     Returns:
         Number of records created.
@@ -67,29 +64,25 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Scoped delete: remove stale records for this detector (and table scope) only.
+    # Scoped delete: remove this detector's stale records for the tables in scope.
     # Scoped to ``run_id`` when set (the workflow path, DAT-413) so a re-run clears
-    # only its OWN prior rows and leaves earlier runs intact (non-destructive); the
-    # ``None`` path (begin_session/tests) keeps the prior broad delete.
+    # only its OWN prior rows and leaves earlier runs intact (non-destructive).
     delete_stmt = delete(EntropyObjectRecord).where(
-        EntropyObjectRecord.source_id == source_id,
         EntropyObjectRecord.detector_id == detector_id,
+        EntropyObjectRecord.table_id.in_(table_ids),
     )
     if run_id is not None:
         delete_stmt = delete_stmt.where(EntropyObjectRecord.run_id == run_id)
-    if table_ids is not None:
-        delete_stmt = delete_stmt.where(EntropyObjectRecord.table_id.in_(table_ids))
     session.execute(delete_stmt)
 
-    # Get typed tables (restricted to the scope when given)
-    typed_stmt = select(Table).where(Table.source_id == source_id, Table.layer == "typed")
-    if table_ids is not None:
-        typed_stmt = typed_stmt.where(Table.table_id.in_(table_ids))
+    # Typed tables in scope — the run's table set (source-free).
+    typed_stmt = select(Table).where(Table.table_id.in_(table_ids), Table.layer == "typed")
     typed_tables = list(session.execute(typed_stmt).scalars().all())
     if not typed_tables:
         return 0
 
     table_id_by_name = {t.table_name: t.table_id for t in typed_tables}
+    source_by_table_id = {t.table_id: t.source_id for t in typed_tables}
     all_records: list[EntropyObjectRecord] = []
 
     if detector.scope == "column":
@@ -112,7 +105,7 @@ def run_detector_post_step(
                 for obj in snapshot.objects:
                     all_records.append(
                         _make_record(
-                            source_id=source_id,
+                            source_id=table.source_id,
                             session_id=session_id,
                             run_id=run_id,
                             entropy_obj=obj,
@@ -133,15 +126,16 @@ def run_detector_post_step(
                 run_id=run_id,
             )
             for obj in snapshot.objects:
+                resolved_table_id = _resolve_table_id_from_target(
+                    obj.target, table_id_by_name, table.table_id
+                )
                 all_records.append(
                     _make_record(
-                        source_id=source_id,
+                        source_id=source_by_table_id.get(resolved_table_id),
                         session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
-                        table_id=_resolve_table_id_from_target(
-                            obj.target, table_id_by_name, table.table_id
-                        ),
+                        table_id=resolved_table_id,
                         column_id=_extract_column_id(obj),
                     )
                 )
@@ -171,7 +165,7 @@ def run_detector_post_step(
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
-                        source_id=source_id,
+                        source_id=source_by_table_id.get(ev.fact_table_id),
                         session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
@@ -214,7 +208,7 @@ def persist_records(
 
 
 def _make_record(
-    source_id: str,
+    source_id: str | None,
     entropy_obj: EntropyObject,
     table_id: str | None,
     column_id: str | None,

@@ -327,6 +327,7 @@ def resolve_types(
     min_confidence: float,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
 
@@ -396,6 +397,7 @@ def resolve_types(
                 decision_id=str(uuid4()),
                 session_id=session_id,
                 column=raw_col,
+                run_id=run_id,
                 decided_type=spec.data_type.value,
                 decision_source=spec.decision_source,
                 decided_at=datetime.now(UTC),
@@ -530,6 +532,7 @@ def resolve_types(
                     decision_id=str(uuid4()),
                     session_id=session_id,
                     column_id=target_col_id,
+                    run_id=run_id,
                     decided_type=td.decided_type,
                     decision_source=td.decision_source,
                     decided_at=td.decided_at,
@@ -545,6 +548,7 @@ def resolve_types(
                     candidate_id=str(uuid4()),
                     session_id=session_id,
                     column_id=target_col_id,
+                    run_id=run_id,
                     detected_at=tc.detected_at,
                     data_type=tc.data_type,
                     confidence=tc.confidence,

@@ -192,6 +192,7 @@ def profile_temporal(
     *,
     config: dict[str, Any] | None = None,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[TemporalProfileResult]:
     """Profile temporal columns in a table.
 
@@ -288,6 +289,7 @@ def profile_temporal(
                         profile_id=profile.metric_id,
                         session_id=session_id,
                         column_id=profile.column_id,
+                        run_id=run_id,
                         profiled_at=profiled_at,
                         min_timestamp=profile.min_timestamp,
                         max_timestamp=profile.max_timestamp,

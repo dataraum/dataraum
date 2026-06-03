@@ -50,6 +50,7 @@ def init_database(engine: Engine) -> None:
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
     from dataraum.storage import overlay_models as _overlay  # noqa: F401
+    from dataraum.storage import snapshot_head as _snapshot_head  # noqa: F401
 
     import_all_phase_models()
 
@@ -76,6 +77,7 @@ def reset_database(engine: Engine) -> None:
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
     from dataraum.storage import overlay_models as _overlay  # noqa: F401
+    from dataraum.storage import snapshot_head as _snapshot_head  # noqa: F401
 
     import_all_phase_models()
 

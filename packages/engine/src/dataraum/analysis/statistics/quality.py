@@ -392,6 +392,7 @@ def assess_statistical_quality(
     exclude_outlier_columns: set[str] | None = None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.
 
@@ -492,6 +493,7 @@ def assess_statistical_quality(
                         metric_id=str(uuid4()),
                         session_id=session_id,
                         column_id=column_id,
+                        run_id=run_id,
                         computed_at=computed_at,
                         benford_compliant=benford_analysis.is_compliant
                         if benford_analysis

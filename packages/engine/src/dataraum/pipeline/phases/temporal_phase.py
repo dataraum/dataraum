@@ -154,6 +154,7 @@ class TemporalPhase(BasePhase):
                 session=ctx.session,
                 config=ctx.config if "processing" in ctx.config else None,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not profile_result.success:

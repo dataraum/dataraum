@@ -58,6 +58,13 @@ class PhaseContext:
     # Populated by the scheduler from manager.session_id; tests pass directly.
     session_id: str | None = None
 
+    # Snapshot version axis (DAT-413). Minted once per workflow execution
+    # (AddSourceWorkflow, via workflow.uuid4) and threaded on the identity into
+    # every activity, so all of a run's metadata rows share one run_id and a later
+    # promote step can flip the per-(table, stage) head. Distinct from session_id
+    # (the analytical-session FK). None for begin_session phases in Slice A.
+    run_id: str | None = None
+
     def require_session_id(self) -> str:
         """Return ``session_id`` or raise — phases that persist must call this."""
         if self.session_id:

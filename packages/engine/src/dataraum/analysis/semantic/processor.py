@@ -148,6 +148,7 @@ def persist_column_annotations(
     annotated_by: str,
     session_id: str,
     ontology_def: Any = None,
+    run_id: str | None = None,
 ) -> int:
     """Persist per-column annotations as ``SemanticAnnotation`` rows (DAT-362).
 
@@ -181,6 +182,7 @@ def persist_column_annotations(
                 AnnotationModel(
                     session_id=session_id,
                     column_id=column_id,
+                    run_id=run_id,
                     semantic_role=col.semantic_role,
                     entity_type=col.entity_type,
                     business_name=col.business_term,
@@ -208,6 +210,7 @@ def ground_columns(
     table_ids: list[str],
     ontology: str,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[int]:
     """Annotate columns against ``ontology`` and persist ``SemanticAnnotation`` rows.
 
@@ -265,6 +268,7 @@ def ground_columns(
         annotated_by=model_name,
         session_id=session_id,
         ontology_def=ontology_def,
+        run_id=run_id,
     )
     return Result.ok(count)
 

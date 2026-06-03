@@ -329,11 +329,19 @@ class AddSourceWorkflow:
         replay = payload.replay
         _validate_replay(replay)
 
+        # Mint the snapshot version axis once per execution (DAT-413) and stamp
+        # it onto the identity threaded into every activity, so all of this run's
+        # metadata rows share one run_id. ``workflow.uuid4`` is the deterministic,
+        # replay-safe UUID (NEVER ``uuid.uuid4``). The child workflow inherits the
+        # stamped identity via ``ProcessTableInput(identity=identity)``.
+        run_id = str(workflow.uuid4())
+        identity = payload.identity.model_copy(update={"run_id": run_id})
+
         if _runs_under("import", replay, _PARENT_PHASE_ORDER):
-            await _maybe_replay_cleanup("import", replay, payload.identity, [])
+            await _maybe_replay_cleanup("import", replay, identity, [])
             imported = await workflow.execute_activity(
                 "import",
-                payload.identity,
+                identity,
                 result_type=ImportResult,
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
@@ -343,7 +351,7 @@ class AddSourceWorkflow:
             # is data-dependent in the same shape as the initial run.
             imported = await workflow.execute_activity(
                 "lookup_raw_table_ids",
-                payload.identity,
+                identity,
                 result_type=ImportResult,
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
@@ -382,13 +390,13 @@ class AddSourceWorkflow:
             workflow.execute_child_workflow(
                 ProcessTableWorkflow.run,
                 ProcessTableInput(
-                    identity=payload.identity,
+                    identity=identity,
                     raw_table_id=raw_id,
                     replay=child_replay,
                 ),
                 id=process_table_workflow_id(
-                    payload.identity.workspace_id,
-                    payload.identity.source_id,
+                    identity.workspace_id,
+                    identity.source_id,
                     raw_id,
                 ),
             )
@@ -417,10 +425,10 @@ class AddSourceWorkflow:
         # on ``replay.from_phase == "semantic_per_column"`` — it only fires for
         # the concept_property entry case.
         self._progress.phase = "semantic_per_column"
-        await _maybe_replay_cleanup("semantic_per_column", replay, payload.identity, [])
+        await _maybe_replay_cleanup("semantic_per_column", replay, identity, [])
         await workflow.execute_activity(
             "semantic_per_column",
-            payload.identity,
+            identity,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -431,7 +439,7 @@ class AddSourceWorkflow:
         self._progress.phase = "detect"
         await workflow.execute_activity(
             "detect",
-            payload.identity,
+            identity,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

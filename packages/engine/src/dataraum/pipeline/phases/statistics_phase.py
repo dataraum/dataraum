@@ -149,6 +149,7 @@ class StatisticsPhase(BasePhase):
                 session=ctx.session,
                 config=ctx.config,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not stats_result.success:

@@ -42,6 +42,9 @@ class ColumnEligibilityRecord(Base):
     source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False
     )
+    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
+    # additive, behavior-preserving; the head pointer is not consulted yet.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Denormalized column metadata (survives column deletion)
     column_name: Mapped[str] = mapped_column(String, nullable=False)

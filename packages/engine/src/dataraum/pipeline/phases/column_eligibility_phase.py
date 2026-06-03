@@ -161,6 +161,7 @@ class ColumnEligibilityPhase(BasePhase):
                 column_id=column.column_id,
                 table_id=table.table_id,
                 source_id=ctx.source_id,
+                run_id=ctx.run_id,
                 column_name=column.column_name,
                 table_name=table.table_name,
                 resolved_type=column.resolved_type,

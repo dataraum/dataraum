@@ -168,6 +168,7 @@ class StatisticalQualityPhase(BasePhase):
                 session=ctx.session,
                 exclude_outlier_columns=exclude_outlier_columns,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not quality_result.success:

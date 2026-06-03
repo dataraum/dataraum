@@ -291,6 +291,7 @@ class TypingPhase(BasePhase):
                     decision_id=str(uuid4()),
                     session_id=ctx.require_session_id(),
                     column_id=typed_col_id,
+                    run_id=ctx.run_id,
                     decided_type=resolved,
                     decision_source="automatic",
                     decided_at=datetime.now(UTC),
@@ -399,6 +400,7 @@ class TypingPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not inference_result.success:
@@ -421,6 +423,7 @@ class TypingPhase(BasePhase):
                 session=ctx.session,
                 min_confidence=min_confidence,
                 session_id=ctx.require_session_id(),
+                run_id=ctx.run_id,
             )
 
             if not resolution_result.success:

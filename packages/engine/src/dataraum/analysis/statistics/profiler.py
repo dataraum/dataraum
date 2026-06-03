@@ -287,6 +287,7 @@ def profile_statistics(
     config: dict[str, Any] | None = None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.
 
@@ -384,6 +385,7 @@ def profile_statistics(
                         profile_id=str(uuid4()),
                         session_id=session_id,
                         column_id=profile.column_id,
+                        run_id=run_id,
                         profiled_at=profiled_at,
                         layer="typed",
                         total_count=profile.total_count,

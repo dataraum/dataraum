@@ -30,6 +30,7 @@ def run_detector_post_step(
     *,
     session_id: str,
     table_ids: list[str] | None = None,
+    run_id: str | None = None,
 ) -> int:
     """Run a single detector as a phase post-step.
 
@@ -49,6 +50,9 @@ def run_detector_post_step(
         duckdb_conn: DuckDB connection for detectors that query data directly.
         session_id: Per-run FK for the persisted records.
         table_ids: Optional typed-table scope; ``None`` runs over all typed tables.
+        run_id: Snapshot version axis (DAT-413); stamped on each record. ``None``
+            outside the workflow path (begin_session / tests) — additive, the head
+            pointer is not consulted yet.
 
     Returns:
         Number of records created.
@@ -104,6 +108,7 @@ def run_detector_post_step(
                         _make_record(
                             source_id=source_id,
                             session_id=session_id,
+                            run_id=run_id,
                             entropy_obj=obj,
                             table_id=table.table_id,
                             column_id=col.column_id,
@@ -125,6 +130,7 @@ def run_detector_post_step(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        run_id=run_id,
                         entropy_obj=obj,
                         table_id=_resolve_table_id_from_target(
                             obj.target, table_id_by_name, table.table_id
@@ -159,6 +165,7 @@ def run_detector_post_step(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        run_id=run_id,
                         entropy_obj=obj,
                         table_id=ev.fact_table_id,
                         column_id=_extract_column_id(obj),
@@ -205,6 +212,7 @@ def _make_record(
     column_id: str | None,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
@@ -212,6 +220,7 @@ def _make_record(
         source_id=source_id,
         table_id=table_id,
         column_id=column_id,
+        run_id=run_id,
         target=entropy_obj.target,
         layer=entropy_obj.layer,
         dimension=entropy_obj.dimension,

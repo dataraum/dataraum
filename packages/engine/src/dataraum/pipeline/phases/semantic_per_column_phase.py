@@ -182,6 +182,7 @@ class SemanticPerColumnPhase(BasePhase):
             table_ids=table_ids,
             ontology=ontology,
             session_id=ctx.require_session_id(),
+            run_id=ctx.run_id,
         )
         if not grounding.success:
             return PhaseResult.failed(grounding.error or "Column annotation failed")

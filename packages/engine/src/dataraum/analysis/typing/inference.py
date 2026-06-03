@@ -54,6 +54,7 @@ def infer_type_candidates(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[list[TypeCandidateModel]]:
     """Infer type candidates for all VARCHAR columns in a table.
 
@@ -123,6 +124,7 @@ def infer_type_candidates(
                     candidate_id=str(uuid4()),
                     session_id=session_id,
                     column_id=column.column_id,
+                    run_id=run_id,
                     detected_at=datetime.now(UTC),
                     data_type=candidate.data_type.value,
                     confidence=candidate.confidence,

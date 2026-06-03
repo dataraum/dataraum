@@ -73,6 +73,11 @@ class SourceIdentity(BaseModel):
     source_id: str
     session_id: str
     vertical: str | None = None
+    # Snapshot version axis (DAT-413): minted once by ``AddSourceWorkflow.run``
+    # (``workflow.uuid4``) and threaded into every activity so a run's metadata
+    # rows share one ``run_id``. The cockpit's initial-run call leaves it None;
+    # the workflow stamps it before the first activity.
+    run_id: str | None = None
 
 
 class SessionIdentity(BaseModel):

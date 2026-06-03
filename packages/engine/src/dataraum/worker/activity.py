@@ -154,6 +154,7 @@ def run_phase(
             session_factory=manager.session_scope,
             manager=manager,
             session_id=identity.session_id,
+            run_id=identity.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -501,7 +502,8 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
         for detector_id in detector_ids:
             # Scoped to the session's tables. The single terminal pass runs once,
             # sequentially after the fan-out — no concurrent writers to collide on
-            # the per-(detector, table) delete-before-insert.
+            # the per-(detector, table) delete-before-insert. ``run_id`` stamps the
+            # snapshot version axis (DAT-413) on every entropy object written.
             total += run_detector_post_step(
                 session,
                 identity.source_id,
@@ -509,12 +511,15 @@ def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
                 cursor,
                 session_id=identity.session_id,
                 table_ids=table_ids,
+                run_id=identity.run_id,
             )
         # Persist readiness from the freshly-written entropy objects, in the same
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        readiness_rows = persist_readiness(session, identity.session_id, table_ids)
+        readiness_rows = persist_readiness(
+            session, identity.session_id, table_ids, run_id=identity.run_id
+        )
         logger.info(
             "terminal_detect_done",
             source_id=identity.source_id,

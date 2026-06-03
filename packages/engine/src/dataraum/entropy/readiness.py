@@ -24,7 +24,13 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 
-def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -> int:
+def persist_readiness(
+    session: Session,
+    session_id: str,
+    table_ids: list[str],
+    *,
+    run_id: str | None = None,
+) -> int:
     """Compute + persist per-column readiness for the session's typed tables.
 
     Delete-before-insert scoped to ``table_ids`` — the session's tables (DAT-410),
@@ -34,7 +40,9 @@ def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -
     typed tables, so the result is identical to the prior source-scoped behaviour.
     The caller owns the transaction (commit at its ``session_scope`` exit). Each
     row's ``source_id`` is derived per-table so a multi-source session's rows stay
-    well-formed. Returns the rows written.
+    well-formed. ``run_id`` is the snapshot version axis (DAT-413), stamped on each
+    row (``None`` outside the workflow path); the head pointer is not consulted yet.
+    Returns the rows written.
     """
     if not table_ids:
         return 0
@@ -72,6 +80,7 @@ def persist_readiness(session: Session, session_id: str, table_ids: list[str]) -
                 source_id=source_by_table[table_id],
                 table_id=table_id,
                 column_id=column_id,
+                run_id=run_id,
                 band=col.readiness,
                 worst_intent_risk=round(col.worst_intent_risk, 4),
                 intents=_intents_payload(col),

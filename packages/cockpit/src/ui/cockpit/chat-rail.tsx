@@ -171,7 +171,7 @@ export function ChatRail() {
 	// drilled column's explanation streaming feels responsive.
 	useEffect(() => {
 		registerChatSender((text) => {
-			setCanvasState({ kind: "loading" });
+			setCanvasState({ kind: "loading", label: "Explaining the column…" });
 			void sendMessage(text);
 		});
 		return () => registerChatSender(null);
@@ -270,7 +270,10 @@ export function ChatRail() {
 	// canvasFromMessages bridge — no new sniff path, no canvas wiring here.
 	const onUploaded = (s3Paths: string[]) => {
 		if (isLoading || s3Paths.length === 0) return;
-		setCanvasState({ kind: "loading" });
+		setCanvasState({
+			kind: "loading",
+			label: s3Paths.length === 1 ? "Reading the file…" : "Reading the files…",
+		});
 		if (s3Paths.length === 1) {
 			void sendMessage(
 				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,

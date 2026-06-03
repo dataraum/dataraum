@@ -22,6 +22,7 @@ import { configOverlay } from "../db/metadata/schema";
 import {
 	TEACH_TYPES,
 	type TeachInput,
+	TeachPayloadSchema,
 	type TeachType,
 	TeachValidationError,
 	validateTeach,
@@ -97,10 +98,12 @@ export const teachTool = toolDefinition({
 	description:
 		"Record a correction or declaration about the data (a type pattern, null value, concept, etc.). Writes a config_overlay row; requires user approval. Follow with `replay` to apply it to the source.",
 	inputSchema: z.object({
-		type: z.enum(TEACH_TYPES as readonly [TeachType, ...TeachType[]]),
-		payload: z
-			.record(z.string(), z.unknown())
-			.describe("Per-type payload, validated against the type's schema."),
+		type: z
+			.enum(TEACH_TYPES as readonly [TeachType, ...TeachType[]])
+			.describe(
+				"The kind of correction/declaration to record; it determines which payload fields are required (see payload).",
+			),
+		payload: TeachPayloadSchema,
 		session_id: z.string().nullish(),
 	}),
 	// Success OR a structured validation error: the per-type `validateTeach`

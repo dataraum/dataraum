@@ -8,8 +8,8 @@ import {
 } from "./tool-chip-summary";
 
 describe("isCanvasTool", () => {
-	it("marks the 8 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(8);
+	it("marks the 9 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(9);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -19,22 +19,32 @@ describe("isCanvasTool", () => {
 			"frame",
 			"select",
 			"run_sql",
+			"replay",
 		]) {
 			expect(isCanvasTool(name)).toBe(true);
 		}
 	});
 
-	it("marks probe / teach / replay display-only", () => {
-		for (const name of ["probe", "teach", "replay", "unknown"]) {
+	it("marks probe / teach display-only", () => {
+		for (const name of ["probe", "teach", "unknown"]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
 	});
 });
 
 describe("toolChipSummary — completed canvas tools (no JSON, readable)", () => {
-	it("list_sources counts sources (singular/plural)", () => {
-		expect(toolChipSummary("list_sources", {}, [{}])).toBe("1 source");
-		expect(toolChipSummary("list_sources", {}, [{}, {}])).toBe("2 sources");
+	it("list_sources breaks available inputs down by kind", () => {
+		expect(toolChipSummary("list_sources", {}, [{ kind: "file" }])).toBe(
+			"1 file",
+		);
+		expect(
+			toolChipSummary("list_sources", {}, [
+				{ kind: "database" },
+				{ kind: "database" },
+				{ kind: "file" },
+			]),
+		).toBe("2 databases, 1 file");
+		expect(toolChipSummary("list_sources", {}, [])).toBe("no available inputs");
 	});
 
 	it("list_tables counts tables and notes the source filter", () => {
@@ -136,7 +146,7 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 describe("toolChipSummary — streaming / pre-result states", () => {
 	it("renders a neutral running label before the result arrives", () => {
 		expect(toolChipSummary("list_sources", {}, undefined)).toBe(
-			"listing sources…",
+			"listing available inputs…",
 		);
 		expect(toolChipSummary("connect", {}, undefined)).toBe("connecting…");
 		expect(toolChipSummary("run_sql", {}, undefined)).toBe("running query…");

@@ -15,17 +15,16 @@ describe("toolResultToCanvas", () => {
 	it("maps list_sources to a source-list canvas", () => {
 		const state = toolResultToCanvas("list_sources", [
 			{
-				source_id: "s1",
-				name: "orders",
-				source_type: "file",
-				status: null,
+				kind: "file",
+				name: "orders.csv",
 				backend: null,
-				created_at: "2026-01-01T00:00:00.000Z",
+				uri: "s3://dataraum-lake/uploads/abc/orders.csv",
+				size_bytes: 1234,
 			},
 		]);
 		expect(state).toEqual({
 			kind: "source-list",
-			sources: [expect.objectContaining({ source_id: "s1" })],
+			sources: [expect.objectContaining({ name: "orders.csv", kind: "file" })],
 		});
 	});
 
@@ -190,6 +189,22 @@ describe("toolResultToCanvas", () => {
 
 	it("returns null for write/compute tools (canvas unchanged)", () => {
 		expect(toolResultToCanvas("teach", { overlay_id: "o1" })).toBeNull();
+	});
+
+	it("maps replay to the add-source-progress canvas (DAT-352)", () => {
+		expect(
+			toolResultToCanvas("replay", {
+				workflow_id: "wf-1",
+				run_id: "run-1",
+				source_id: "s1",
+				scope: {},
+			}),
+		).toEqual({
+			kind: "add-source-progress",
+			workflowId: "wf-1",
+			runId: "run-1",
+		});
+		// A rejected/failed replay (no ids) leaves the canvas unchanged.
 		expect(toolResultToCanvas("replay", {})).toBeNull();
 	});
 

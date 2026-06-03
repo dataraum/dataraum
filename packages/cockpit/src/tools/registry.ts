@@ -17,6 +17,7 @@ import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
 import { whyColumnTool } from "./why-column";
+import { workflowStatusTool } from "./workflow-status";
 
 export const tools = [
 	listSourcesTool,
@@ -30,4 +31,5 @@ export const tools = [
 	selectTool,
 	teachTool,
 	replayTool,
+	workflowStatusTool,
 ] as const;

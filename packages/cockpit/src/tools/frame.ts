@@ -26,16 +26,13 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { ConnectSchema } from "../duckdb/connect";
+import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getFrameInstructions } from "../prompts";
 import { teach } from "./teach";
 
 // The frame stage runs on the cold-start ontology — the engine resolves phase
 // config + ontology against this vertical when none is named.
 const FRAME_VERTICAL = "_adhoc";
-
-// Same model the orchestrator loop uses (DAT-353) — induction is a reasoning
-// task; keep one model for the cockpit agent tier.
-const MODEL = "claude-sonnet-4-6";
 
 // One induced/declared business concept. Mirrors the engine's `OntologyConcept`
 // (packages/engine/.../analysis/semantic/ontology.py) and the `concept` teach
@@ -114,6 +111,7 @@ export async function induceConcepts(
 ): Promise<ProposedConcept[]> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		maxTokens: MAX_OUTPUT_TOKENS,
 		systemPrompts: [getFrameInstructions()],
 		messages: [
 			{

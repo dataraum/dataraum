@@ -33,6 +33,7 @@ describe("tool registry (DAT-353)", () => {
 				"select",
 				"teach",
 				"replay",
+				"workflow_status",
 			]),
 		);
 	});
@@ -51,5 +52,6 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("workflow_status")?.needsApproval ?? false).toBe(false);
 	});
 });

@@ -13,6 +13,7 @@
 
 import {
 	ActionIcon,
+	Alert,
 	Box,
 	Button,
 	Card,
@@ -202,9 +203,24 @@ export function ChatRail() {
 		pinCanvas(callId, canvas);
 	};
 
-	// Surface a stream error on the canvas.
+	// Keep the conversation pinned to the latest as it streams: the composer sits
+	// at the foot of a height-bounded rail and the stream scrolls INTERNALLY (see
+	// the cockpit route's fixed height + the messages box's `minHeight: 0`), so on
+	// every message/token tick we snap the scroll to the bottom — newest in view,
+	// older slowly scrolling out the top — instead of growing the page.
+	const streamRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
-		if (error) setCanvasState({ kind: "error", message: error.message });
+		const el = streamRef.current;
+		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
+	}, [messages]);
+
+	// Surface a run/stream error (RUN_ERROR — e.g. a max_tokens cut-off) as a
+	// highlighted message in the chat rail (below), NOT as a canvas takeover.
+	// Here we only stop the canvas from spinning: a turn that errored set the
+	// canvas to "loading" on submit, so clear it back to empty rather than leave
+	// it spinning forever (the symptom that prompted this).
+	useEffect(() => {
+		if (error) setCanvasState({ kind: "empty" });
 	}, [error, setCanvasState]);
 
 	const onSubmit = (e: FormEvent) => {
@@ -241,7 +257,11 @@ export function ChatRail() {
 
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
-			<Box style={{ flex: 1, overflowY: "auto" }} data-testid="chat-messages">
+			<Box
+				ref={streamRef}
+				style={{ flex: 1, minHeight: 0, overflowY: "auto" }}
+				data-testid="chat-messages"
+			>
 				<Stack gap="xs" p="xs">
 					{messages.map((m) =>
 						m.parts.map((part, i) => {
@@ -274,6 +294,19 @@ export function ChatRail() {
 							}
 							return null;
 						}),
+					)}
+					{/* A run/stream error (RUN_ERROR — e.g. the model hit max_tokens, or
+					    the SSE was cut) surfaces inline at the foot of the conversation,
+					    highlighted, instead of silently spinning the canvas. */}
+					{error && (
+						<Alert
+							color="red"
+							variant="light"
+							title="Run error"
+							data-testid="chat-error"
+						>
+							{error.message}
+						</Alert>
 					)}
 				</Stack>
 			</Box>

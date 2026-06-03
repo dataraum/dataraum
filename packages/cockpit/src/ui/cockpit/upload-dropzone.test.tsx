@@ -3,8 +3,8 @@
 // Unit test for the upload entry-mode dropzone (DAT-386; multi-file DAT-391).
 // Mocks `fetch` for the /api/upload POST and asserts: a single pick hands a
 // one-element list to `onUploaded`; a valid multi-pick uploads each and hands
-// the ordered list; the client-side batch gate (cap 6, same-kind) blocks before
-// any upload; a route error surfaces and aborts the batch. The real PUT + sniff
+// the ordered list; the client-side batch gate (cap MAX_UPLOAD_FILES, same-kind)
+// blocks before any upload; a route error surfaces and aborts the batch. The PUT
 // are covered by the route unit test + connect.integration.
 
 import { MantineProvider } from "@mantine/core";
@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
+import { MAX_UPLOAD_FILES } from "#/upload/policy";
 
 function renderDropzone(onUploaded: (paths: string[]) => void) {
 	return render(
@@ -78,13 +79,15 @@ describe("UploadDropzone (DAT-386 / DAT-391)", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
-	it("blocks > 6 files at the client gate — no upload, no onUploaded", async () => {
+	it("blocks more than MAX_UPLOAD_FILES at the client gate — no upload, no onUploaded", async () => {
 		const fetchMock = stubUploadOk();
 		const onUploaded = vi.fn();
 		renderDropzone(onUploaded);
-		pick(Array.from({ length: 7 }, (_, i) => `f${i}.csv`));
+		pick(Array.from({ length: MAX_UPLOAD_FILES + 1 }, (_, i) => `f${i}.csv`));
 		await waitFor(() =>
-			expect(screen.getByTestId("upload-error").textContent).toMatch(/Up to 6/),
+			expect(screen.getByTestId("upload-error").textContent).toMatch(
+				new RegExp(`Up to ${MAX_UPLOAD_FILES}`),
+			),
 		);
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(onUploaded).not.toHaveBeenCalled();

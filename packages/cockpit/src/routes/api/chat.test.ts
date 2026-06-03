@@ -41,6 +41,7 @@ describe("chat route wiring (DAT-353)", () => {
 				"select",
 				"teach",
 				"replay",
+				"workflow_status",
 			]),
 		);
 	});

@@ -16,14 +16,41 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
+import { MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
 import { tools } from "../../tools/registry";
-
-const MODEL = "claude-sonnet-4-6";
 
 type ChatMessages = Awaited<
 	ReturnType<typeof chatParamsFromRequest>
 >["messages"];
+
+type BunRuntimeRequest = Request & {
+	runtime?: {
+		name?: string;
+		bun?: {
+			server?: {
+				timeout?: (request: Request, seconds: number) => void;
+			};
+		};
+	};
+};
+
+function disableBunIdleTimeoutForSse(request: Request) {
+	const runtime = (request as BunRuntimeRequest).runtime;
+	const server = runtime?.bun?.server;
+
+	if (
+		runtime?.name !== "bun" ||
+		!server ||
+		typeof server.timeout !== "function"
+	) {
+		return;
+	}
+
+	// SSE streams are often quiet between events. Bun closes idle requests after
+	// a short default timeout; disable it for this request so the stream can stay open.
+	server.timeout(request, 0);
+}
 
 /**
  * Assemble the chat() options for a turn. Pure + side-effect-free (no network,
@@ -37,6 +64,9 @@ type ChatMessages = Awaited<
 export function buildChatOptions(messages: ChatMessages) {
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		// Explicit output budget — the adapter defaults to 1024, which truncates
+		// real turns mid-tool-call / mid-narrative (see src/llm.ts).
+		maxTokens: MAX_OUTPUT_TOKENS,
 		systemPrompts: [
 			{
 				content: getOrchestratorInstructions(),
@@ -54,6 +84,7 @@ export const Route = createFileRoute("/api/chat")({
 			// chatParamsFromRequest throws a 400 Response on a malformed AG-UI body,
 			// which TanStack Start surfaces to the client automatically.
 			POST: async ({ request }: { request: Request }) => {
+				disableBunIdleTimeoutForSse(request);
 				const { messages } = await chatParamsFromRequest(request);
 				const stream = chat(buildChatOptions(messages));
 				return toServerSentEventsResponse(stream);

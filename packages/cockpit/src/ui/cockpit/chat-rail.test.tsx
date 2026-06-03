@@ -75,12 +75,11 @@ function sourcesCall(id: string, name = "orders") {
 				state: "complete",
 				output: [
 					{
-						source_id: "s1",
+						kind: "file",
 						name,
-						source_type: "file",
-						status: null,
 						backend: null,
-						created_at: "2026-01-01T00:00:00.000Z",
+						uri: `s3://dataraum-lake/uploads/abc/${name}`,
+						size_bytes: 123,
 					},
 				],
 			},
@@ -177,10 +176,13 @@ describe("ChatRail (DAT-353)", () => {
 		});
 	});
 
-	it("surfaces a stream error on the canvas", () => {
+	it("surfaces a run/stream error as a highlighted message in the chat (not a canvas takeover)", () => {
 		h.error = new Error("kaboom");
 		renderRail();
-		expect(screen.getByTestId("canvas-kind").textContent).toBe("error");
+		// The RUN_ERROR text lands inline in the chat rail, highlighted…
+		expect(screen.getByTestId("chat-error").textContent).toContain("kaboom");
+		// …and the canvas stops spinning rather than showing a generic error widget.
+		expect(screen.getByTestId("canvas-kind").textContent).toBe("empty");
 	});
 
 	it("mounts the upload entry-mode dropzone", () => {
@@ -241,8 +243,8 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		{
 			name: "list_sources",
 			state: "complete",
-			output: [{ source_id: "s1" }],
-			summary: "1 source",
+			output: [{ kind: "file", name: "orders.csv" }],
+			summary: "1 file",
 		},
 		{
 			name: "list_tables",
@@ -335,7 +337,6 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 	it.each([
 		"probe",
 		"teach",
-		"replay",
 	])("renders %s as a display-only chip (no rehydrate target)", (name) => {
 		h.messages = [
 			{

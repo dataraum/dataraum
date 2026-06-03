@@ -1,9 +1,10 @@
 """Parent-level progress query + replay-determinism for ``addSourceWorkflow`` (DAT-406).
 
 The parent workflow serves a read-only ``get_progress`` query returning a
-:class:`ProgressSnapshot` ``{phase, tables_total, tables_completed}`` — the
-cross-package shape the cockpit Client polls while the parent is blocked in the
-fan-out (mirrored TS-side in DAT-352). Two things have to hold:
+:class:`ProgressSnapshot` (``phase``, ``tables_total``/``tables_completed``, the
+per-table ``tables`` steps, and any ``failure``) — the cross-package shape the
+cockpit Client polls while the parent is blocked in the fan-out (mirrored TS-side
+in DAT-352). Two things have to hold:
 
 * **The snapshot advances.** ``phase`` walks ``import`` →
   ``processing_tables`` → ``semantic_per_column`` → ``detect`` → ``done`` and
@@ -167,6 +168,12 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     assert final.phase == "done"
     assert final.tables_total == len(_RAW_IDS)
     assert final.tables_completed == len(_RAW_IDS)
+
+    # The per-table steps name every fanned-out child and all land "done" on a
+    # clean run; a healthy run carries no failure.
+    assert {t.raw_table_id for t in final.tables} == set(_RAW_IDS)
+    assert all(t.status == "done" for t in final.tables)
+    assert final.failure is None
 
     # tables_completed is monotonic non-decreasing and never overshoots the total.
     completed = [s.tables_completed for s in observed]

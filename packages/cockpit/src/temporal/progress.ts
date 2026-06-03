@@ -11,10 +11,18 @@
 // TRIGGER returned. NON-mutating (query + describe) → safe to poll on an interval.
 
 import { Client, Connection } from "@temporalio/client";
+import { inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { PROGRESS_DONE_PHASE, type ProgressSnapshot } from "./types";
+import { metadataDb } from "../db/metadata/client";
+import { tables as tablesTable } from "../db/metadata/schema";
+import {
+	PROGRESS_DONE_PHASE,
+	type ProgressFailure,
+	type ProgressSnapshot,
+	type TableProgress,
+} from "./types";
 
 // The terminal describe() statuses — a run that reached one of these will not
 // advance `phase` further, so the poll stops even if phase !== "done" (a FAILED
@@ -34,16 +42,50 @@ export interface AddSourceProgressInput {
 	run_id: string;
 }
 
+/** One fanned-out table, its engine id resolved to a human table name. */
+export interface TableStep {
+	raw_table_id: string;
+	name: string;
+	status: "running" | "done" | "failed";
+}
+
 /** The progress snapshot plus the run's terminal-ness — what the widget polls. */
 export interface AddSourceProgress {
 	phase: string;
 	tables_total: number;
 	tables_completed: number;
+	// The named per-table steps behind the count (engine ids resolved to names).
+	tables: TableStep[];
+	// Why the run ended badly, or null while it's healthy.
+	failure: ProgressFailure | null;
 	// The workflow's describe() status name (RUNNING / COMPLETED / FAILED / …).
 	status: string;
 	// True once the run is closed OR the snapshot reports the terminal "done"
 	// phase — the signal the widget stops polling on.
 	done: boolean;
+}
+
+/**
+ * Resolve the snapshot's per-table `raw_table_id`s to human table names from the
+ * metadata `tables` table (the engine snapshot is id-only — names live in the DB
+ * the cockpit reads). A raw table not yet in metadata (a very early poll racing
+ * import's write) falls back to a short id, so the step is always labelled.
+ */
+async function resolveTableNames(
+	snapshotTables: TableProgress[],
+): Promise<TableStep[]> {
+	if (snapshotTables.length === 0) return [];
+	const ids = snapshotTables.map((t) => t.raw_table_id);
+	const rows = await metadataDb
+		.select({ tableId: tablesTable.tableId, tableName: tablesTable.tableName })
+		.from(tablesTable)
+		.where(inArray(tablesTable.tableId, ids));
+	const nameById = new Map(rows.map((r) => [r.tableId, r.tableName]));
+	return snapshotTables.map((t) => ({
+		raw_table_id: t.raw_table_id,
+		name: nameById.get(t.raw_table_id) ?? `table ${t.raw_table_id.slice(0, 8)}`,
+		status: t.status,
+	}));
 }
 
 /** The Temporal-unconfigured guard, identical to trigger-add-source.ts /
@@ -85,6 +127,8 @@ export async function getAddSourceProgress(
 			phase: snapshot.phase,
 			tables_total: snapshot.tables_total,
 			tables_completed: snapshot.tables_completed,
+			tables: await resolveTableNames(snapshot.tables ?? []),
+			failure: snapshot.failure ?? null,
 			status,
 			done: isProgressDone(snapshot.phase, status),
 		};

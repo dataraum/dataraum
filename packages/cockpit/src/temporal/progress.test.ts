@@ -13,12 +13,28 @@ const h = vi.hoisted(() => ({
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
-	snapshot: { phase: "import", tables_total: 0, tables_completed: 0 } as {
+	snapshot: {
+		phase: "import",
+		tables_total: 0,
+		tables_completed: 0,
+		tables: [],
+		failure: null,
+	} as {
 		phase: string;
 		tables_total: number;
 		tables_completed: number;
+		// Optional so the done/terminal-status tests can omit them and exercise
+		// the `?? []` / `?? null` defaults in getAddSourceProgress.
+		tables?: { raw_table_id: string; status: string }[];
+		failure?: {
+			message: string;
+			phase: string;
+			table_id: string | null;
+		} | null;
 	},
 	status: "RUNNING",
+	// Rows the mocked metadata `tables` read returns (raw_table_id → name).
+	tableNameRows: [] as { tableId: string; tableName: string }[],
 	getHandleArgs: null as unknown[] | null,
 	queryName: null as string | null,
 }));
@@ -31,6 +47,25 @@ vi.mock("#/config", () => ({
 	get config() {
 		return h.config;
 	},
+}));
+
+// Metadata client: the name resolver does select().from(tables).where(inArray)
+// → rows. Each call is referenced lazily (inside the returned objects) so the
+// factory doesn't touch the consts before they initialize.
+const whereMock = vi.fn(async () => h.tableNameRows);
+vi.mock("#/db/metadata/client", () => ({
+	metadataDb: {
+		select: vi.fn(() => ({ from: vi.fn(() => ({ where: whereMock })) })),
+	},
+}));
+vi.mock("#/db/metadata/schema", () => ({
+	tables: { tableId: "table_id", tableName: "table_name" },
+}));
+// Stub only `inArray` (the resolver's lone drizzle helper) so it doesn't choke
+// on the stubbed column object; the mocked `.where()` ignores the expression.
+vi.mock("drizzle-orm", async (importOriginal) => ({
+	...(await importOriginal<typeof import("drizzle-orm")>()),
+	inArray: vi.fn(() => "in-array-expr"),
 }));
 
 const queryMock = vi.fn(async (name: string) => {
@@ -55,14 +90,22 @@ import { getAddSourceProgress, isProgressDone } from "./progress";
 
 beforeEach(() => {
 	h.config = { temporalHost: "localhost:7233", temporalNamespace: "default" };
-	h.snapshot = { phase: "import", tables_total: 0, tables_completed: 0 };
+	h.snapshot = {
+		phase: "import",
+		tables_total: 0,
+		tables_completed: 0,
+		tables: [],
+		failure: null,
+	};
 	h.status = "RUNNING";
+	h.tableNameRows = [];
 	h.getHandleArgs = null;
 	h.queryName = null;
 	queryMock.mockClear();
 	describeMock.mockClear();
 	getHandleMock.mockClear();
 	closeMock.mockClear();
+	whereMock.mockClear();
 });
 
 describe("getAddSourceProgress (DAT-352)", () => {
@@ -83,10 +126,70 @@ describe("getAddSourceProgress (DAT-352)", () => {
 			phase: "processing_tables",
 			tables_total: 4,
 			tables_completed: 2,
+			tables: [],
+			failure: null,
 			status: "RUNNING",
 			done: false,
 		});
 		expect(closeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("resolves per-table ids to names and passes the failure through", async () => {
+		h.snapshot = {
+			phase: "processing_tables",
+			tables_total: 2,
+			tables_completed: 1,
+			tables: [
+				{ raw_table_id: "r1", status: "done" },
+				{ raw_table_id: "r2", status: "failed" },
+			],
+			failure: {
+				message: "typing failed: bad cast",
+				phase: "processing_tables",
+				table_id: "r2",
+			},
+		};
+		h.tableNameRows = [
+			{ tableId: "r1", tableName: "orders" },
+			{ tableId: "r2", tableName: "customers" },
+		];
+		const result = await getAddSourceProgress({
+			workflow_id: "w",
+			run_id: "r",
+		});
+		expect(result.tables).toEqual([
+			{ raw_table_id: "r1", name: "orders", status: "done" },
+			{ raw_table_id: "r2", name: "customers", status: "failed" },
+		]);
+		expect(result.failure).toEqual({
+			message: "typing failed: bad cast",
+			phase: "processing_tables",
+			table_id: "r2",
+		});
+	});
+
+	it("falls back to a short id when a raw table isn't in metadata yet", async () => {
+		// A very early poll can race import's `tables` write — label the step with
+		// a short id rather than dropping it.
+		h.snapshot = {
+			phase: "processing_tables",
+			tables_total: 1,
+			tables_completed: 0,
+			tables: [{ raw_table_id: "abcdef12-3456-7890", status: "running" }],
+			failure: null,
+		};
+		h.tableNameRows = [];
+		const result = await getAddSourceProgress({
+			workflow_id: "w",
+			run_id: "r",
+		});
+		expect(result.tables).toEqual([
+			{
+				raw_table_id: "abcdef12-3456-7890",
+				name: "table abcdef12",
+				status: "running",
+			},
+		]);
 	});
 
 	it("reports done when phase reaches the terminal 'done'", async () => {

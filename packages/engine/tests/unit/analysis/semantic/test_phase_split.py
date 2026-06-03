@@ -222,11 +222,11 @@ class TestSynthesizeAndStoreTables:
     def test_rerun_is_run_versioned_and_idempotent(self, session) -> None:
         """A re-run is non-destructive for entities (run-versioned) + idempotent for llm.
 
-        DAT-408: a session has MANY runs. `TableEntity` is versioned by `run_id`, so a
-        new run COEXISTS with earlier runs (non-destructive); a same-run retry is a
-        no-op (run-scoped delete-before-insert). The `llm` relationship is session-grain
-        — upserted on the `(session, from, to, method)` key, so it never duplicates and
-        a re-run refreshes it.
+        DAT-408: a session has MANY runs. Both `TableEntity` and the `llm` relationship
+        are versioned by `run_id`, so a new run COEXISTS with earlier runs
+        (non-destructive); a same-run retry is a no-op — the entity via a run-scoped
+        delete-before-insert, the relationship via an upsert on the
+        `(session, run_id, from, to, method)` key.
         """
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])

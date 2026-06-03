@@ -57,6 +57,9 @@ def persist_readiness(
         EntropyReadinessRecord.table_id.in_(table_ids),
         EntropyReadinessRecord.run_id == run_id,
     )
+    # ``relationship:%`` rows are produced only by begin_session's detect — add_source
+    # runs no relationship detectors — so this is a begin_session-only delete in
+    # practice; the run_id scope keeps it harmless on the shared add_source path.
     rel_del = delete(EntropyReadinessRecord).where(
         EntropyReadinessRecord.session_id == session_id,
         EntropyReadinessRecord.target.like("relationship:%"),

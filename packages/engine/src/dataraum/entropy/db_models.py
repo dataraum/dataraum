@@ -49,7 +49,7 @@ class EntropyObjectRecord(Base):
     )  # naming_clarity, type_fidelity, etc.
     target: Mapped[str] = mapped_column(
         String, nullable=False
-    )  # column:{t}.{c}, table:{t}, relationship:{t1}-{t2}
+    )  # column:{t}.{c}, table:{t}, relationship:{from_col}::{to_col}
 
     # Foreign keys to link to analyzed data. No ``source_id`` (DAT-408): a
     # measurement is about a table/column/relationship; its source is reachable via

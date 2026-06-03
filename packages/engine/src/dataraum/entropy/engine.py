@@ -156,9 +156,13 @@ def run_detector_post_step(
                 # This run's catalog (DAT-408): scoped to the session AND the current
                 # run_id — rows coexist across runs, so reads pick the current one.
                 # Durable manual/keeper rows are materialized into this run (DAT-409),
-                # so a single current-run read sees the whole catalog.
+                # so a single current-run read sees the whole catalog. BOTH endpoints
+                # must be in scope: an intra-selection relationship has both, and it
+                # keeps the from-endpoint anchor (object table_id) inside table_ids so
+                # the run_id-scoped delete reliably clears it on retry.
                 Relationship.session_id == session_id,
-                Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids),
+                Relationship.from_table_id.in_(table_ids),
+                Relationship.to_table_id.in_(table_ids),
             )
             .distinct()
         )

@@ -11,7 +11,6 @@ from sqlalchemy.pool import StaticPool
 from dataraum.entropy.detectors.loaders import (
     load_correlation,
     load_drift_summaries,
-    load_relationships,
     load_semantic,
     load_statistics,
     load_typing,
@@ -166,69 +165,6 @@ class TestLoadSemantic:
         result = load_semantic(session, "col1")
         assert result is not None
         assert result["unit_source_column"] == "currency"
-
-
-class TestLoadRelationships:
-    def test_returns_none_when_no_column(self):
-        session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
-        assert load_relationships(session, "col1", "tbl1") is None
-
-    def test_returns_none_when_no_rels(self):
-        session = MagicMock()
-        col = MagicMock()
-        # First call: Column lookup; Second call: Relationship query
-        session.execute.return_value.scalar_one_or_none.return_value = col
-        session.execute.return_value.scalars.return_value.all.return_value = []
-
-        # Need to differentiate calls — use side_effect
-        col_result = MagicMock()
-        col_result.scalar_one_or_none.return_value = col
-
-        rel_result = MagicMock()
-        rel_result.scalars.return_value.all.return_value = []
-
-        session.execute.side_effect = [col_result, rel_result]
-
-        assert load_relationships(session, "col1", "tbl1") is None
-
-    def test_returns_relationship_dicts(self):
-        session = MagicMock()
-        col = MagicMock()
-
-        rel = MagicMock()
-        rel.relationship_type = "foreign_key"
-        rel.confidence = 0.95
-        rel.detection_method = "llm"
-        rel.from_table_id = "tbl1"
-        rel.to_table_id = "tbl2"
-        rel.cardinality = "many_to_one"
-        rel.is_confirmed = True
-        rel.evidence = {"method": "llm"}
-
-        tbl1 = MagicMock()
-        tbl1.table_id = "tbl1"
-        tbl1.table_name = "orders"
-        tbl2 = MagicMock()
-        tbl2.table_id = "tbl2"
-        tbl2.table_name = "customers"
-
-        col_result = MagicMock()
-        col_result.scalar_one_or_none.return_value = col
-
-        rel_result = MagicMock()
-        rel_result.scalars.return_value.all.return_value = [rel]
-
-        table_result = MagicMock()
-        table_result.scalars.return_value.all.return_value = [tbl1, tbl2]
-
-        session.execute.side_effect = [col_result, rel_result, table_result]
-
-        result = load_relationships(session, "col1", "tbl1")
-        assert result is not None
-        assert len(result) == 1
-        assert result[0]["from_table"] == "orders"
-        assert result[0]["to_table"] == "customers"
 
 
 class TestLoadCorrelation:

@@ -176,54 +176,6 @@ def load_semantic(
     return semantic_dict
 
 
-def load_relationships(
-    session: Session, column_id: str, table_id: str
-) -> list[dict[str, Any]] | None:
-    """Load LLM-confirmed relationships involving a column.
-
-    Returns list of relationship dicts or None if no relationships found.
-    """
-    from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.storage import Column, Table
-
-    col = session.execute(select(Column).where(Column.column_id == column_id)).scalar_one_or_none()
-    if not col:
-        return None
-
-    rels_stmt = select(Relationship).where(
-        ((Relationship.from_column_id == column_id) | (Relationship.to_column_id == column_id))
-        & (Relationship.detection_method == "llm")
-    )
-    rels = session.execute(rels_stmt).scalars().all()
-    if not rels:
-        return None
-
-    # Resolve table names for relationship context
-    table_ids_needed = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
-    table_names_map: dict[str, str] = {}
-    if table_ids_needed:
-        tables = (
-            session.execute(select(Table).where(Table.table_id.in_(table_ids_needed)))
-            .scalars()
-            .all()
-        )
-        table_names_map = {t.table_id: t.table_name for t in tables}
-
-    return [
-        {
-            "relationship_type": rel.relationship_type,
-            "confidence": rel.confidence,
-            "detection_method": rel.detection_method,
-            "from_table": table_names_map.get(rel.from_table_id, "unknown"),
-            "to_table": table_names_map.get(rel.to_table_id, "unknown"),
-            "cardinality": rel.cardinality,
-            "is_confirmed": rel.is_confirmed,
-            "evidence": rel.evidence,
-        }
-        for rel in rels
-    ]
-
-
 def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, Any]:
     """Shape a ``Relationship`` row into the dict the relationship detectors read."""
     return {

@@ -167,6 +167,14 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 			"reading table readiness…",
 		);
 	});
+
+	it("treats a truthy NON-array list output as empty (no .filter crash)", () => {
+		// list_* outputs are arrays; a partial/errored truthy non-array reached
+		// `.filter`/`.length` → "e.filter is not a function" crashed the rail.
+		expect(toolChipSummary("list_sources", {}, {})).toBe("no available inputs");
+		expect(toolChipSummary("list_verticals", {}, {})).toBe("no verticals");
+		expect(toolChipSummary("list_tables", {}, {})).toBe("0 tables");
+	});
 });
 
 describe("teachChipSummary (display-only, readable at every state)", () => {

@@ -59,7 +59,12 @@ export function toolChipSummary(
 	switch (toolName) {
 		case "list_sources": {
 			if (!done) return "listing available inputs…";
-			const sources = (output as AvailableSource[]) ?? [];
+			// `Array.isArray` not `?? []`: a partial/streaming or errored output can be
+			// a truthy NON-array, which `?? []` wouldn't catch → `.filter` then throws
+			// "e.filter is not a function" and crashes the rail. Degrade to empty.
+			const sources = Array.isArray(output)
+				? (output as AvailableSource[])
+				: [];
 			if (sources.length === 0) return "no available inputs";
 			const dbs = sources.filter((s) => s.kind === "database").length;
 			const files = sources.filter((s) => s.kind === "file").length;
@@ -70,7 +75,7 @@ export function toolChipSummary(
 		}
 		case "list_verticals": {
 			if (!done) return "listing verticals…";
-			const verticals = (output as Vertical[]) ?? [];
+			const verticals = Array.isArray(output) ? (output as Vertical[]) : [];
 			if (verticals.length === 0) return "no verticals";
 			const builtin = verticals.filter((v) => v.kind === "builtin").length;
 			const framed = verticals.filter((v) => v.kind === "framed").length;
@@ -82,7 +87,7 @@ export function toolChipSummary(
 		case "list_tables": {
 			const src = (input as { source_id?: string } | undefined)?.source_id;
 			if (!done) return src ? `listing tables for ${src}…` : "listing tables…";
-			const tables = (output as InventoryTable[]) ?? [];
+			const tables = Array.isArray(output) ? (output as InventoryTable[]) : [];
 			return src
 				? `${plural(tables.length, "table")} in ${src}`
 				: plural(tables.length, "table");

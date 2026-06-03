@@ -220,8 +220,15 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("replay", {})).toBeNull();
 	});
 
-	it("tolerates a missing result array", () => {
-		expect(toolResultToCanvas("list_sources", undefined)).toEqual({
+	it("returns null for a missing or NON-array list result (no .filter/.reduce crash)", () => {
+		// A partial/streaming or errored output can be undefined or a truthy
+		// NON-array; projecting it crashed SourceList/Inventory on .filter/.reduce/
+		// .length ("e.filter is not a function"). Leave the canvas unchanged.
+		expect(toolResultToCanvas("list_sources", undefined)).toBeNull();
+		expect(toolResultToCanvas("list_sources", {})).toBeNull();
+		expect(toolResultToCanvas("list_tables", { error: "x" })).toBeNull();
+		// A genuine empty array still projects (correctly an empty source-list).
+		expect(toolResultToCanvas("list_sources", [])).toEqual({
 			kind: "source-list",
 			sources: [],
 		});

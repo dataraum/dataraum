@@ -34,14 +34,17 @@ type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
  * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
-	list_sources: (result) => ({
-		kind: "source-list",
-		sources: (result as AvailableSource[]) ?? [],
-	}),
-	list_tables: (result) => ({
-		kind: "workspace-inventory",
-		tables: (result as InventoryTable[]) ?? [],
-	}),
+	// Project only a real array — a partial/streaming or errored output can be a
+	// truthy NON-array, and the SourceList/Inventory widgets call .filter/.reduce/
+	// .length on it ("e.filter is not a function"). Non-array → leave unchanged.
+	list_sources: (result) =>
+		Array.isArray(result)
+			? { kind: "source-list", sources: result as AvailableSource[] }
+			: null,
+	list_tables: (result) =>
+		Array.isArray(result)
+			? { kind: "workspace-inventory", tables: result as InventoryTable[] }
+			: null,
 	// The per-table readiness grid; a missing result (e.g. an errored read)
 	// leaves the canvas unchanged.
 	look_table: (result) =>

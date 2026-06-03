@@ -87,7 +87,7 @@ function sourcesCall(id: string, name = "orders") {
 	};
 }
 
-// A single completed list_tables call → table-list canvas.
+// A single completed list_tables call → workspace-inventory canvas.
 function tablesCall(id: string) {
 	return {
 		id: `m-${id}`,
@@ -365,7 +365,9 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		h.messages = [sourcesCall("c-sources"), tablesCall("c-tables")];
 		renderRail();
 		// Live: the latest (list_tables) is projected.
-		expect(screen.getByTestId("canvas-kind").textContent).toBe("table-list");
+		expect(screen.getByTestId("canvas-kind").textContent).toBe(
+			"workspace-inventory",
+		);
 		expect(screen.getByTestId("pinned-call").textContent).toBe("live");
 
 		// Click the earlier list_sources chip → pin + project that call's result.
@@ -460,10 +462,12 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		);
 		// Still pinned to the old source-list.
 		expect(screen.getByTestId("canvas-kind").textContent).toBe("source-list");
-		// Return to live → snaps to the newest (table-list).
+		// Return to live → snaps to the newest (workspace-inventory).
 		fireEvent.click(screen.getByTestId("probe-return-to-live"));
 		expect(screen.getByTestId("pinned-call").textContent).toBe("live");
-		expect(screen.getByTestId("canvas-kind").textContent).toBe("table-list");
+		expect(screen.getByTestId("canvas-kind").textContent).toBe(
+			"workspace-inventory",
+		);
 	});
 
 	it("renders a readable teach chip from arguments at approval time AND keeps Approve/Deny", () => {

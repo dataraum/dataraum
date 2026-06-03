@@ -28,17 +28,25 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("maps list_tables to a table-list canvas", () => {
+	it("maps list_tables to a workspace-inventory canvas", () => {
 		const state = toolResultToCanvas("list_tables", [
 			{
 				table_id: "t1",
-				source_id: "s1",
 				table_name: "orders",
-				layer: "raw",
+				layer: "typed",
 				row_count: 10,
+				column_count: 3,
+				source_id: "s1",
+				source_name: "orders.csv",
+				source_type: "file",
+				source_backend: null,
+				source_status: null,
+				analyzed: true,
+				worst_band: "ready",
+				readiness: { ready: 3, investigate: 0, blocked: 0, unanalyzed: 0 },
 			},
 		]);
-		expect(state?.kind).toBe("table-list");
+		expect(state?.kind).toBe("workspace-inventory");
 	});
 
 	it("maps look_table to a table-readiness canvas", () => {
@@ -254,7 +262,7 @@ describe("canvasFromMessages", () => {
 				},
 			]),
 		];
-		expect(canvasFromMessages(messages)?.kind).toBe("table-list");
+		expect(canvasFromMessages(messages)?.kind).toBe("workspace-inventory");
 	});
 
 	it("maps run_sql to a result-grid using the call arguments (not the result)", () => {
@@ -306,7 +314,7 @@ describe("canvasFromMessages", () => {
 				},
 			]),
 		];
-		expect(canvasFromMessages(messages)?.kind).toBe("table-list");
+		expect(canvasFromMessages(messages)?.kind).toBe("workspace-inventory");
 	});
 });
 
@@ -336,7 +344,7 @@ describe("canvasFromCallId (DAT-354 rehydration)", () => {
 		// The latest is list_tables (c2); addressing c1 by id rehydrates the
 		// earlier source-list.
 		expect(canvasFromCallId(twoCalls, "c1")?.kind).toBe("source-list");
-		expect(canvasFromCallId(twoCalls, "c2")?.kind).toBe("table-list");
+		expect(canvasFromCallId(twoCalls, "c2")?.kind).toBe("workspace-inventory");
 	});
 
 	it("reads run_sql's call arguments for the result-grid, like canvasFromMessages", () => {
@@ -375,7 +383,7 @@ describe("canvasFromCallId (DAT-354 rehydration)", () => {
 				},
 			]),
 		];
-		expect(canvasFromCallId(messages, "c1")?.kind).toBe("table-list");
+		expect(canvasFromCallId(messages, "c1")?.kind).toBe("workspace-inventory");
 	});
 
 	it("returns null for an unknown call id", () => {

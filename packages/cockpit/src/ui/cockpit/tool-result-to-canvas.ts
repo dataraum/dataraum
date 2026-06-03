@@ -15,7 +15,7 @@ import type { UIMessage } from "@tanstack/ai-react";
 import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
-import type { TableSummary } from "#/tools/list-tables";
+import type { InventoryTable } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { WhyColumnResult } from "#/tools/why-column";
@@ -39,8 +39,8 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		sources: (result as AvailableSource[]) ?? [],
 	}),
 	list_tables: (result) => ({
-		kind: "table-list",
-		tables: (result as TableSummary[]) ?? [],
+		kind: "workspace-inventory",
+		tables: (result as InventoryTable[]) ?? [],
 	}),
 	// The per-table readiness grid; a missing result (e.g. an errored read)
 	// leaves the canvas unchanged.

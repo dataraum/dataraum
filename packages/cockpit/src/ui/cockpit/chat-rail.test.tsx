@@ -359,6 +359,32 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		expect(screen.queryByTestId("tool-chip-c1")).toBeNull();
 	});
 
+	it("shows 'denied' (not a stuck loader) for a denied approval-gated tool", () => {
+		// Deny is terminal: the call never reaches "complete", so without the denied
+		// branch the card would spin its Loader forever (the Approve/Deny buttons
+		// vanish once `approved` is set). It must read "denied" and offer no buttons.
+		h.messages = [
+			{
+				id: "m1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-call",
+						id: "c1",
+						name: "select",
+						state: "approval-requested",
+						arguments: "{}",
+						approval: { id: "a1", needsApproval: true, approved: false },
+					},
+				],
+			},
+		];
+		renderRail();
+		expect(screen.getByTestId("tool-denied-c1").textContent).toBe("denied");
+		expect(screen.queryByTestId("tool-approve-c1")).toBeNull();
+		expect(screen.queryByTestId("tool-deny-c1")).toBeNull();
+	});
+
 	it("clicking a canvas-tool chip pins by call-id and projects that call's result", () => {
 		// Two completed calls: list_tables is latest (live projection), list_sources
 		// is the earlier one we want to rehydrate.

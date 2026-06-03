@@ -316,6 +316,35 @@ describe("canvasFromMessages", () => {
 		];
 		expect(canvasFromMessages(messages)?.kind).toBe("workspace-inventory");
 	});
+
+	it("does not let a trailing non-canvas tool shadow the last canvas result", () => {
+		// connect (maps to schema-preview) then list_verticals (no canvas projector).
+		// The canvas must STAY on the connect result, not collapse to null because a
+		// non-canvas tool completed last. This is the substrate of the denied-select
+		// stuck-spinner fix: that turn ends on a non-canvas list_verticals, yet the
+		// canvas must still reconcile to a real result instead of spinning forever.
+		const messages = [
+			msg([
+				{
+					type: "tool-call",
+					id: "c1",
+					name: "connect",
+					arguments: "{}",
+					state: "complete",
+					output: { tables: [{ name: "t", columns: [] }] },
+				},
+				{
+					type: "tool-call",
+					id: "c2",
+					name: "list_verticals",
+					arguments: "{}",
+					state: "complete",
+					output: [{ name: "finance" }],
+				},
+			]),
+		];
+		expect(canvasFromMessages(messages)?.kind).toBe("schema-preview");
+	});
 });
 
 describe("canvasFromCallId (DAT-354 rehydration)", () => {

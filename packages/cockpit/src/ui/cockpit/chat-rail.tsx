@@ -75,6 +75,10 @@ function ToolCallCard({
 		part.state === "approval-requested" &&
 		approvalId !== undefined &&
 		part.approval?.approved === undefined;
+	// A denied approval is terminal: the tool never runs, so the call never
+	// reaches "complete". Without this the card would spin its Loader forever
+	// (the buttons vanish once `approved` is defined) — show "denied" instead.
+	const denied = part.approval?.approved === false;
 
 	// A canvas-producing tool's chip rehydrates the focus canvas to THIS call's
 	// result on click (pins by call-id). Only once complete — an in-flight call
@@ -117,6 +121,10 @@ function ToolCallCard({
 							view
 						</Text>
 					) : null
+				) : denied ? (
+					<Text size="xs" c="dimmed" data-testid={`tool-denied-${part.id}`}>
+						denied
+					</Text>
 				) : (
 					<Loader size="xs" />
 				)}
@@ -146,8 +154,13 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const { setCanvasState, registerChatSender, pinCanvas, pinnedCallId } =
-		useCockpit();
+	const {
+		canvasState,
+		setCanvasState,
+		registerChatSender,
+		pinCanvas,
+		pinnedCallId,
+	} = useCockpit();
 	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
 		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
@@ -222,6 +235,24 @@ export function ChatRail() {
 	useEffect(() => {
 		if (error) setCanvasState({ kind: "empty" });
 	}, [error, setCanvasState]);
+
+	// A turn can finish WITHOUT producing a canvas result: the user denied an
+	// approval-gated tool (select/teach/replay), or only non-canvas tools ran
+	// (e.g. list_verticals). onSubmit set the canvas to "loading" optimistically,
+	// and the project-latest effect only ADVANCES on a new result (and dedupes an
+	// unchanged one), so the canvas would spin "Working…" forever. When a turn
+	// ENDS (isLoading true→false, not pinned) and the canvas is still that
+	// optimistic "loading", reconcile to the latest canvas result — or empty if
+	// none. Mirrors the error guard above (same stuck-spinner symptom, the
+	// non-error path). Gated on the true→false transition, not steady-state
+	// `!isLoading`, so it never clears the loading optimism before a turn has run.
+	const prevLoadingRef = useRef(false);
+	useEffect(() => {
+		const turnEnded = prevLoadingRef.current && !isLoading;
+		prevLoadingRef.current = isLoading;
+		if (!turnEnded || pinnedCallId || canvasState.kind !== "loading") return;
+		setCanvasState(canvasFromMessages(messages) ?? { kind: "empty" });
+	}, [isLoading, pinnedCallId, canvasState, messages, setCanvasState]);
 
 	const onSubmit = (e: FormEvent) => {
 		e.preventDefault();

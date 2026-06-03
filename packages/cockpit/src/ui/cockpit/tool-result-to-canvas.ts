@@ -125,15 +125,21 @@ export function toolResultToCanvas(
 
 /**
  * Adapt the useChat message list to the canvas. Walks every message part and
- * tracks the latest completed tool result, tolerating both shapes the SDK can
- * emit: an `output` on the `tool-call` part, or a correlated `tool-result` part
- * (content is JSON; fall back to the raw string if it isn't). Returns the mapped
- * CanvasState, or null when nothing maps (caller leaves the canvas unchanged).
+ * tracks the latest completed tool result that MAPS to a canvas, tolerating both
+ * shapes the SDK can emit: an `output` on the `tool-call` part, or a correlated
+ * `tool-result` part (content is JSON; fall back to the raw string if it isn't).
+ *
+ * "Maps to a canvas" is the key word: a non-canvas tool (list_verticals, teach,
+ * probe) completing LAST must NOT shadow the last real canvas result — otherwise
+ * `canvasFromMessages` returns null and the caller, which optimistically set the
+ * canvas to "loading" on submit, has nothing to reconcile to (the stuck-spinner
+ * bug after a denied select, whose turn ends on a non-canvas list_verticals).
+ * Returns the latest mappable CanvasState, or null when no part maps at all.
  */
 export function canvasFromMessages(
 	messages: ReadonlyArray<UIMessage>,
 ): CanvasState | null {
-	let latest: { name: string; output: unknown; input: unknown } | null = null;
+	let latestCanvas: CanvasState | null = null;
 	const callById = new Map<string, { name: string; input: unknown }>();
 
 	for (const message of messages) {
@@ -142,7 +148,8 @@ export function canvasFromMessages(
 				const input = parseToolArguments(part);
 				callById.set(part.id, { name: part.name, input });
 				if (part.output !== undefined) {
-					latest = { name: part.name, output: part.output, input };
+					const canvas = toolResultToCanvas(part.name, part.output, input);
+					if (canvas) latestCanvas = canvas;
 				}
 			} else if (part.type === "tool-result") {
 				const call = callById.get(part.toolCallId);
@@ -157,15 +164,14 @@ export function canvasFromMessages(
 							// content wasn't JSON — keep the raw string.
 						}
 					}
-					latest = { name: call.name, output, input: call.input };
+					const canvas = toolResultToCanvas(call.name, output, call.input);
+					if (canvas) latestCanvas = canvas;
 				}
 			}
 		}
 	}
 
-	return latest
-		? toolResultToCanvas(latest.name, latest.output, latest.input)
-		: null;
+	return latestCanvas;
 }
 
 /**

@@ -178,18 +178,18 @@ def test_two_runs_semantic_annotations_for_same_column_coexist(session_factory: 
 
 
 def test_head_run_id_returns_promoted_run(session_factory: Any) -> None:
-    """``head_run_id`` resolves the promoted run for one ``(table_id, stage)``."""
+    """``head_run_id`` resolves the promoted run for one ``(target, stage)``."""
     with session_factory() as session:
         session.add(
-            MetadataSnapshotHead(table_id="tbl-1", stage="detect", run_id="run-B", version=3)
+            MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B", version=3)
         )
         session.commit()
 
     with session_factory() as session:
-        assert head_run_id(session, "tbl-1", "detect") == "run-B"
+        assert head_run_id(session, "table:tbl-1", "detect") == "run-B"
         # No head for this grain → None (the no-data fallback signal).
-        assert head_run_id(session, "tbl-1", "statistics") is None
-        assert head_run_id(session, "tbl-2", "detect") is None
+        assert head_run_id(session, "table:tbl-1", "statistics") is None
+        assert head_run_id(session, "table:tbl-2", "detect") is None
 
 
 def _seed_table_and_column(session: Session, table_id: str, column_id: str) -> None:
@@ -209,7 +209,7 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
             [
                 EntropyReadinessRecord(
                     session_id="sess-1",
-                    source_id="src-1",
+                    target="column:orders.amount",
                     table_id="tbl-1",
                     column_id="col-1",
                     run_id="run-A",
@@ -217,13 +217,13 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
                 ),
                 EntropyReadinessRecord(
                     session_id="sess-1",
-                    source_id="src-1",
+                    target="column:orders.amount",
                     table_id="tbl-1",
                     column_id="col-1",
                     run_id="run-B",
                     band="ready",
                 ),
-                MetadataSnapshotHead(table_id="tbl-1", stage="detect", run_id="run-B"),
+                MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B"),
             ]
         )
         session.commit()
@@ -245,7 +245,7 @@ def test_load_persisted_readiness_no_promoted_run_is_empty(session_factory: Any)
         session.add(
             EntropyReadinessRecord(
                 session_id="sess-1",
-                source_id="src-1",
+                target="column:orders.amount",
                 table_id="tbl-1",
                 column_id="col-1",
                 run_id="run-A",
@@ -276,7 +276,7 @@ def test_readiness_run_scoped_delete_leaves_prior_run_intact(session_factory: An
         session.add(
             EntropyReadinessRecord(
                 session_id="sess-1",
-                source_id="src-1",
+                target="column:orders.amount",
                 table_id="tbl-1",
                 column_id="col-1",
                 run_id="run-A",

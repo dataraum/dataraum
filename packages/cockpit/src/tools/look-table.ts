@@ -156,7 +156,9 @@ export async function lookTable(
 		.from(metadataSnapshotHead)
 		.where(
 			and(
-				eq(metadataSnapshotHead.tableId, input.table_id),
+				// Head key generalized to a target string (DAT-408): column readiness
+				// is table-grain, so the key is `table:{id}`.
+				eq(metadataSnapshotHead.target, `table:${input.table_id}`),
 				eq(metadataSnapshotHead.stage, "detect"),
 			),
 		)

@@ -34,15 +34,18 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
-from dataraum.storage import MetadataSnapshotHead, Source, Table
+from dataraum.storage import MetadataSnapshotHead, Source, Table, session_head_target
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
     from dataraum.core.connections import ConnectionManager
 
 logger = get_logger(__name__)
 
 __all__ = [
+    "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
     "declared_detector_ids",
@@ -94,6 +97,15 @@ _PROMOTE_STAGES = (
     "semantic_per_column",
     "detect",
 )
+
+# The begin_session chain phases whose declared detectors the terminal session
+# ``detect`` runs (DAT-408): ``semantic_per_table`` declares the relationship
+# detectors (join_path_determinism + relationship_entropy). Distinct from the
+# source-scoped ``_DETECTOR_PHASES`` so add_source never runs the relationship
+# detectors and begin_session never runs the column ones.
+# Public (imported by ``activities.py`` + tests) — unlike ``_DETECTOR_PHASES`` /
+# ``_PROMOTE_STAGES``, which are used only within this module.
+SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
 
 
 @dataclass
@@ -366,6 +378,7 @@ def run_session_phase(
             session_factory=manager.session_scope,
             manager=manager,
             session_id=identity.session_id,
+            run_id=identity.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -388,58 +401,57 @@ def run_session_phase(
     )
 
 
-def run_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
+def run_detectors(
+    manager: ConnectionManager,
+    *,
+    session_id: str,
+    run_id: str | None,
+    detector_phases: tuple[str, ...] = _DETECTOR_PHASES,
+) -> int:
     """Run every wired detector once over the run-session's tables — the terminal ``detect`` step.
 
-    The single stage-level detector pass (DAT-394): runs the union of the detectors
-    the executed chain phases declare (``_DETECTOR_PHASES``) over the tables the run's
+    Source-free (DAT-408): the single stage-level detector pass (DAT-394) runs the
+    union of the detectors ``detector_phases`` declare over the tables the run's
     session composes (``session_tables``, DAT-407/410) — for ``add_source`` that is
     exactly the source's freshly-typed tables, so the scope is identical to the prior
-    source-wide pass. It runs once, sequentially, after the per-table fan-out and the
-    ``semantic_per_column`` reduce — so the delete-before-insert is safe (no
-    concurrency) and every detector's inputs are present.
+    source-wide pass; begin_session passes its own phase set + a multi-source table
+    set. It runs once, sequentially, after the per-table fan-out and the reduce — so
+    the delete-before-insert is safe (no concurrency) and every detector's inputs are
+    present. ``run_id`` stamps the snapshot version axis (DAT-413).
     """
-    detector_ids = declared_detector_ids(_DETECTOR_PHASES)
+    detector_ids = declared_detector_ids(detector_phases)
     if not detector_ids:
         return 0
 
     total = 0
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        table_ids = tables_for_session(session, identity.session_id)
+        table_ids = tables_for_session(session, session_id)
         if not table_ids:
             # add_source links its typed tables in ``typing`` (same transaction as
             # the Table row), so an empty set here means the session has no tables —
             # nothing to detect. Log it: a populated source with no links is a bug.
-            logger.warning(
-                "detect_no_session_tables",
-                source_id=identity.source_id,
-                session_id=identity.session_id,
-            )
+            logger.warning("detect_no_session_tables", session_id=session_id)
             return 0
         for detector_id in detector_ids:
             # Scoped to the session's tables. The single terminal pass runs once,
             # sequentially after the fan-out — no concurrent writers to collide on
-            # the per-(detector, table) delete-before-insert. ``run_id`` stamps the
-            # snapshot version axis (DAT-413) on every entropy object written.
+            # the per-(detector, table) delete-before-insert.
             total += run_detector_post_step(
                 session,
-                identity.source_id,
                 detector_id,
                 cursor,
-                session_id=identity.session_id,
+                session_id=session_id,
                 table_ids=table_ids,
-                run_id=identity.run_id,
+                run_id=run_id,
             )
         # Persist readiness from the freshly-written entropy objects, in the same
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
-        readiness_rows = persist_readiness(
-            session, identity.session_id, table_ids, run_id=identity.run_id
-        )
+        readiness_rows = persist_readiness(session, session_id, table_ids, run_id=run_id)
         logger.info(
             "terminal_detect_done",
-            source_id=identity.source_id,
+            session_id=session_id,
             detector_records=total,
             readiness_rows=readiness_rows,
         )
@@ -498,27 +510,12 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
             return 0
         now = datetime.now(UTC)
         for table_id in table_ids:
+            # add_source's per-table stages key the head by the generic
+            # ``table:{id}`` target (DAT-408); relationship targets are promoted by
+            # begin_session's own promote.
+            target = f"table:{table_id}"
             for stage in _PROMOTE_STAGES:
-                head = session.execute(
-                    select(MetadataSnapshotHead).where(
-                        MetadataSnapshotHead.table_id == table_id,
-                        MetadataSnapshotHead.stage == stage,
-                    )
-                ).scalar_one_or_none()
-                if head is None:
-                    session.add(
-                        MetadataSnapshotHead(
-                            table_id=table_id,
-                            stage=stage,
-                            run_id=run_id,
-                            promoted_at=now,
-                            version=0,
-                        )
-                    )
-                else:
-                    head.run_id = run_id
-                    head.promoted_at = now
-                    head.version = head.version + 1
+                _upsert_head(session, target, stage, run_id, now)
                 promoted += 1
 
     logger.info(
@@ -529,6 +526,58 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
         heads_promoted=promoted,
     )
     return promoted
+
+
+def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: datetime) -> None:
+    """Point the ``(target, stage)`` snapshot head at ``run_id`` (insert or re-point)."""
+    head = session.execute(
+        select(MetadataSnapshotHead).where(
+            MetadataSnapshotHead.target == target,
+            MetadataSnapshotHead.stage == stage,
+        )
+    ).scalar_one_or_none()
+    if head is None:
+        session.add(
+            MetadataSnapshotHead(
+                target=target, stage=stage, run_id=run_id, promoted_at=now, version=0
+            )
+        )
+    else:
+        head.run_id = run_id
+        head.promoted_at = now
+        head.version = head.version + 1
+
+
+def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+    """Seal this begin_session run as the session's current run (DAT-408).
+
+    begin_session's terminal promote: after ``session_detect`` writes this run's
+    relationship catalog + readiness (all stamped ``run_id``), point the single
+    per-session head ``(session:{id}, "detect")`` at this run. Readers
+    (``load_relationship_readiness``, the cockpit) resolve the session's current run
+    through it. Per-session (not per-target) because the run is atomic — every run
+    measures the whole catalog. Workspace guard mirrors the other session helpers.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: session promote targets '{identity.workspace_id}' "
+            f"but this worker is bound to '{active_workspace_id}'."
+        )
+    run_id = identity.run_id
+    if run_id is None:
+        raise RuntimeError(
+            "promote_session_run requires a stamped identity.run_id — "
+            "BeginSessionWorkflow mints it before the first activity (DAT-408)."
+        )
+
+    with manager.session_scope() as session:
+        _upsert_head(
+            session, session_head_target(identity.session_id), "detect", run_id, datetime.now(UTC)
+        )
+
+    logger.info("session_promote_done", session_id=identity.session_id, run_id=run_id)
+    return 1
 
 
 def _build_phase_config(

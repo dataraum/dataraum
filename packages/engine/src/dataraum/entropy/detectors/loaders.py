@@ -176,52 +176,117 @@ def load_semantic(
     return semantic_dict
 
 
-def load_relationships(
-    session: Session, column_id: str, table_id: str
-) -> list[dict[str, Any]] | None:
-    """Load LLM-confirmed relationships involving a column.
+def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, Any]:
+    """Shape a ``Relationship`` row into the dict the relationship detectors read."""
+    return {
+        "relationship_type": rel.relationship_type,
+        "confidence": rel.confidence,
+        "detection_method": rel.detection_method,
+        "from_table": table_names.get(rel.from_table_id, "unknown"),
+        "to_table": table_names.get(rel.to_table_id, "unknown"),
+        "from_column_id": rel.from_column_id,
+        "to_column_id": rel.to_column_id,
+        "cardinality": rel.cardinality,
+        "evidence": rel.evidence,
+    }
 
-    Returns list of relationship dicts or None if no relationships found.
+
+def load_relationship_for_pair(
+    session: Session,
+    from_column_id: str,
+    to_column_id: str,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    """The representative relationship for one directional column pair (DAT-408).
+
+    Several method-rows (candidate / llm / manual / keeper) may share a pair; the
+    representative is the highest-precedence one (manual > keeper > llm > candidate)
+    — that is the relationship the readiness measures. ``session_id`` + ``run_id``
+    scope to this run's catalog (rows coexist across runs/sessions).
     """
     from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.storage import Column, Table
+    from dataraum.storage import Table
 
-    col = session.execute(select(Column).where(Column.column_id == column_id)).scalar_one_or_none()
-    if not col:
-        return None
-
-    rels_stmt = select(Relationship).where(
-        ((Relationship.from_column_id == column_id) | (Relationship.to_column_id == column_id))
-        & (Relationship.detection_method == "llm")
+    stmt = select(Relationship).where(
+        Relationship.from_column_id == from_column_id,
+        Relationship.to_column_id == to_column_id,
     )
-    rels = session.execute(rels_stmt).scalars().all()
+    if session_id is not None:
+        stmt = stmt.where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
     if not rels:
         return None
-
-    # Resolve table names for relationship context
-    table_ids_needed = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
-    table_names_map: dict[str, str] = {}
-    if table_ids_needed:
-        tables = (
-            session.execute(select(Table).where(Table.table_id.in_(table_ids_needed)))
-            .scalars()
-            .all()
+    precedence = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
+    rel = max(rels, key=lambda r: precedence.get(r.detection_method or "", 0))
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(
+                Table.table_id.in_([rel.from_table_id, rel.to_table_id])
+            )
         )
-        table_names_map = {t.table_id: t.table_name for t in tables}
+        .tuples()
+        .all()
+    )
+    return _relationship_to_dict(rel, table_names)
 
-    return [
-        {
-            "relationship_type": rel.relationship_type,
-            "confidence": rel.confidence,
-            "detection_method": rel.detection_method,
-            "from_table": table_names_map.get(rel.from_table_id, "unknown"),
-            "to_table": table_names_map.get(rel.to_table_id, "unknown"),
-            "cardinality": rel.cardinality,
-            "is_confirmed": rel.is_confirmed,
-            "evidence": rel.evidence,
-        }
-        for rel in rels
-    ]
+
+def load_session_relationships(
+    session: Session, session_id: str, run_id: str | None = None
+) -> list[dict[str, Any]]:
+    """This run's relationships for a session (DAT-408) — join-path ambiguity needs the set.
+
+    Scoped to ``run_id`` (the current run's catalog) so coexisting prior-run rows
+    don't double-count; ``None`` (tests) reads the session unscoped.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    stmt = select(Relationship).where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
+    if not rels:
+        return []
+    table_ids = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+        )
+        .tuples()
+        .all()
+    )
+    return [_relationship_to_dict(rel, table_names) for rel in rels]
+
+
+def load_preferred_join_overlays(session: Session) -> dict[str, dict[str, Any]]:
+    """Active ``ConfigOverlay(type='relationship')`` rows keyed ``{table}->{target}``.
+
+    Multi-source (DAT-372/DAT-408): a session spans sources, so this is NOT filtered
+    by a single ``source_id`` — both ``join_path_determinism`` and
+    ``relationship_entropy`` read it so they agree on what the user has confirmed.
+    ``superseded_at IS NULL`` filters undone teaches out.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "relationship",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        payload = row.payload or {}
+        table = payload.get("table", "")
+        target_table = payload.get("target_table", "")
+        if table and target_table:
+            out[f"{table}->{target_table}"] = payload
+    return out
 
 
 def load_correlation(session: Session, column_id: str, column_name: str) -> dict[str, Any] | None:

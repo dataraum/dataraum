@@ -16,7 +16,6 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
 from dataraum.analysis.semantic.agent import SemanticAgent
-from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.semantic.processor import synthesize_and_store_tables
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
@@ -65,27 +64,15 @@ class SemanticPerTablePhase(BasePhase):
         return list(ctx.session.execute(stmt).scalars())
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if THIS session already classified every one of its tables."""
-        typed_tables = self._typed_tables(ctx)
-        if not typed_tables:
-            return "No typed tables found"
+        """Skip only on genuine preconditions — never because the session already ran.
 
-        # Scoped to this session's own classifications (rows carry session_id):
-        # another session's entities over a shared table must not make this
-        # session skip classification (DAT-401).
-        table_ids = [t.table_id for t in typed_tables]
-        entity_table_ids = set(
-            ctx.session.execute(
-                select(TableEntity.table_id).where(
-                    TableEntity.session_id == ctx.require_session_id(),
-                    TableEntity.table_id.in_(table_ids),
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if all(tid in entity_table_ids for tid in table_ids):
-            return "All tables already classified"
+        DAT-408: a versioned begin_session re-run MUST re-classify (so the run's
+        metadata + downstream relationship readiness reflect the latest teach); the
+        old "all tables already classified" idempotency branch is gone — it would
+        make a replay a silent no-op.
+        """
+        if not self._typed_tables(ctx):
+            return "No typed tables found"
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
@@ -121,6 +108,7 @@ class SemanticPerTablePhase(BasePhase):
             session=ctx.session,
             table_ids=table_ids,
             detection_method="candidate",
+            run_id=ctx.run_id,
         )
 
         result = synthesize_and_store_tables(
@@ -131,6 +119,7 @@ class SemanticPerTablePhase(BasePhase):
             relationship_candidates=relationship_candidates,
             duckdb_conn=ctx.duckdb_conn,
             session_id=ctx.require_session_id(),
+            run_id=ctx.run_id,
         )
         if not result.success:
             return PhaseResult.failed(result.error or "Table synthesis failed")

@@ -86,21 +86,28 @@ class TestTypeFidelityDetector:
 
 
 class TestJoinPathDeterminismDetector:
-    """Tests for JoinPathDeterminismDetector."""
+    """Tests for JoinPathDeterminismDetector — relationship-scoped (DAT-408)."""
 
     @pytest.fixture
     def detector(self) -> JoinPathDeterminismDetector:
         """Create detector instance."""
         return JoinPathDeterminismDetector()
 
-    def test_single_path(self, detector: JoinPathDeterminismDetector):
-        """Test low entropy for single join path."""
+    def test_single_path_deterministic(self, detector: JoinPathDeterminismDetector):
+        """One distinct column-pair path between the two tables -> deterministic."""
         context = DetectorContext(
-            table_name="orders",
-            column_name="customer_id",
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk",
+            to_column_id="c_pk",
             analysis_results={
                 "relationships": [
-                    {"from_table": "orders", "to_table": "customers"},
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk",
+                        "to_column_id": "c_pk",
+                    },
                 ]
             },
         )
@@ -110,33 +117,29 @@ class TestJoinPathDeterminismDetector:
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.1, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "deterministic"
+        assert results[0].evidence[0]["distinct_join_paths"] == 1
 
-    def test_no_paths_orphan(self, detector: JoinPathDeterminismDetector):
-        """Test high entropy for orphan table with no paths."""
+    def test_two_paths_same_tables_ambiguous(self, detector: JoinPathDeterminismDetector):
+        """Two distinct column-pairs between the SAME two tables -> ambiguous."""
         context = DetectorContext(
-            table_name="isolated",
-            column_name="id",
-            analysis_results={"relationships": []},
-        )
-
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(0.9, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "orphan"
-
-    def test_star_schema_deterministic(self, detector: JoinPathDeterminismDetector):
-        """Test LOW entropy for star schema (multiple paths to DIFFERENT tables)."""
-        # Fact table connecting to multiple dimension tables = deterministic, not ambiguous
-        context = DetectorContext(
-            table_name="transactions",
-            column_name="id",
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk1",
+            to_column_id="c_pk",
             analysis_results={
                 "relationships": [
-                    {"from_table": "transactions", "to_table": "orders"},
-                    {"from_table": "transactions", "to_table": "customers"},
-                    {"from_table": "transactions", "to_table": "products"},
-                    {"from_table": "payments", "to_table": "transactions"},
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk1",
+                        "to_column_id": "c_pk",
+                    },
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk2",
+                        "to_column_id": "c_pk",
+                    },
                 ]
             },
         )
@@ -144,238 +147,133 @@ class TestJoinPathDeterminismDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Star schema = low entropy (each target table has one path)
+        assert results[0].score == pytest.approx(0.7, abs=0.01)
+        assert results[0].evidence[0]["path_status"] == "ambiguous"
+        assert results[0].evidence[0]["distinct_join_paths"] == 2
+
+    def test_paths_to_other_tables_dont_add_ambiguity(self, detector: JoinPathDeterminismDetector):
+        """A relationship to a DIFFERENT table is not ambiguity for this pair (star schema)."""
+        context = DetectorContext(
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk",
+            to_column_id="c_pk",
+            analysis_results={
+                "relationships": [
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "from_column_id": "c_fk",
+                        "to_column_id": "c_pk",
+                    },
+                    {
+                        "from_table": "orders",
+                        "to_table": "products",
+                        "from_column_id": "c_pfk",
+                        "to_column_id": "c_ppk",
+                    },
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
         assert results[0].score == pytest.approx(0.1, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "deterministic"
-        assert results[0].evidence[0]["connected_tables"] == 4
 
-    def test_ambiguous_multiple_paths_same_table(self, detector: JoinPathDeterminismDetector):
-        """Test HIGH entropy for multiple paths to SAME table (ambiguous)."""
-        # Two different ways to join orders -> customers = ambiguous
-        context = DetectorContext(
-            table_name="orders",
-            column_name="id",
-            analysis_results={
-                "relationships": [
-                    {"from_table": "orders", "to_table": "customers"},  # via customer_id
-                    {"from_table": "orders", "to_table": "customers"},  # via billing_customer_id
-                ]
-            },
-        )
-
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(0.7, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "ambiguous"
-        assert "customers" in results[0].evidence[0]["ambiguous_tables"]
-
-    def test_mixed_deterministic_and_ambiguous(self, detector: JoinPathDeterminismDetector):
-        """Test proportional entropy when some tables have multiple paths."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="id",
-            analysis_results={
-                "relationships": [
-                    {"from_table": "orders", "to_table": "customers"},
-                    {"from_table": "orders", "to_table": "customers"},  # Ambiguous!
-                    {"from_table": "orders", "to_table": "products"},  # Single path OK
-                ]
-            },
-        )
-
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        # 1 ambiguous out of 2 tables → 0.1 + 0.6 * 0.5 = 0.4
-        assert results[0].score == pytest.approx(0.4, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "ambiguous"
-
-    def test_proportional_ambiguity_scoring(self, detector: JoinPathDeterminismDetector):
-        """Test proportional scoring based on ambiguity ratio."""
-        # 1 ambiguous out of 5 tables → 0.1 + 0.6 * 0.2 = 0.22
-        context = DetectorContext(
-            table_name="fact",
-            column_name="id",
-            analysis_results={
-                "relationships": [
-                    {"from_table": "fact", "to_table": "dim_a"},
-                    {"from_table": "fact", "to_table": "dim_a"},  # Ambiguous
-                    {"from_table": "fact", "to_table": "dim_b"},
-                    {"from_table": "fact", "to_table": "dim_c"},
-                    {"from_table": "fact", "to_table": "dim_d"},
-                    {"from_table": "fact", "to_table": "dim_e"},
-                ]
-            },
-        )
-        results = detector.detect(context)
-        assert results[0].score == pytest.approx(0.22, abs=0.01)
-
-    def test_proportional_high_ambiguity(self, detector: JoinPathDeterminismDetector):
-        """Test proportional scoring with high ambiguity."""
-        # 3 ambiguous out of 5 tables → 0.1 + 0.6 * 0.6 = 0.46
-        context = DetectorContext(
-            table_name="fact",
-            column_name="id",
-            analysis_results={
-                "relationships": [
-                    {"from_table": "fact", "to_table": "dim_a"},
-                    {"from_table": "fact", "to_table": "dim_a"},  # Ambiguous
-                    {"from_table": "fact", "to_table": "dim_b"},
-                    {"from_table": "fact", "to_table": "dim_b"},  # Ambiguous
-                    {"from_table": "fact", "to_table": "dim_c"},
-                    {"from_table": "fact", "to_table": "dim_c"},  # Ambiguous
-                    {"from_table": "fact", "to_table": "dim_d"},
-                    {"from_table": "fact", "to_table": "dim_e"},
-                ]
-            },
-        )
-        results = detector.detect(context)
-        assert results[0].score == pytest.approx(0.46, abs=0.01)
-
-    def test_full_ambiguity_equals_max(self, detector: JoinPathDeterminismDetector):
-        """Test all tables ambiguous produces maximum ambiguity score."""
-        # All tables ambiguous → 0.1 + 0.6 * 1.0 = 0.7
-        context = DetectorContext(
-            table_name="fact",
-            column_name="id",
-            analysis_results={
-                "relationships": [
-                    {"from_table": "fact", "to_table": "dim_a"},
-                    {"from_table": "fact", "to_table": "dim_a"},
-                    {"from_table": "fact", "to_table": "dim_b"},
-                    {"from_table": "fact", "to_table": "dim_b"},
-                ]
-            },
-        )
-        results = detector.detect(context)
-        assert results[0].score == pytest.approx(0.7, abs=0.01)
+    def test_missing_endpoints_no_result(self, detector: JoinPathDeterminismDetector):
+        """No focal endpoints -> nothing to measure."""
+        context = DetectorContext(analysis_results={"relationships": []})
+        assert detector.detect(context) == []
 
     def test_detector_properties(self, detector: JoinPathDeterminismDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "join_path_determinism"
         assert detector.layer == "structural"
         assert detector.dimension == "relations"
+        assert detector.scope == "relationship"
         assert detector.required_analyses == ["relationships"]
 
 
 class TestRelationshipEntropyDetector:
-    """Tests for RelationshipEntropyDetector orphan fallback formula."""
+    """Tests for RelationshipEntropyDetector — relationship-scoped (DAT-408)."""
 
     @pytest.fixture
     def detector(self) -> RelationshipEntropyDetector:
         """Create detector instance."""
         return RelationshipEntropyDetector()
 
-    def test_ri_from_left_referential_integrity(self, detector: RelationshipEntropyDetector):
-        """Test RI entropy computed from left_referential_integrity percentage."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="customer_id",
+    def _context(self, evidence: dict) -> DetectorContext:
+        """A relationship-scoped context for the focal pair (no session -> overlay
+        confirmation is False)."""
+        return DetectorContext(
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk",
+            to_column_id="c_pk",
             analysis_results={
-                "relationships": [
-                    {
-                        "from_table": "orders",
-                        "to_table": "customers",
-                        "relationship_type": "foreign_key",
-                        "is_confirmed": True,
-                        "confidence": 0.9,
-                        "cardinality": "many-to-one",
-                        "evidence": {
-                            "left_referential_integrity": 95.0,
-                            "orphan_count": 50,
-                            "left_total_count": 1000,
-                            "cardinality_verified": True,
-                        },
-                    }
-                ]
+                "relationship": {
+                    "from_table": "orders",
+                    "to_table": "customers",
+                    "relationship_type": "foreign_key",
+                    "confidence": 0.9,
+                    "cardinality": "many-to-one",
+                    "evidence": evidence,
+                }
             },
         )
 
+    def test_ri_from_left_referential_integrity(self, detector: RelationshipEntropyDetector):
+        """RI entropy computed from left_referential_integrity percentage."""
+        context = self._context(
+            {
+                "left_referential_integrity": 95.0,
+                "orphan_count": 50,
+                "left_total_count": 1000,
+                "cardinality_verified": True,
+            }
+        )
         results = detector.detect(context)
-
         assert len(results) == 1
-        # RI entropy from left_referential_integrity: sqrt(1.0 - 95/100) = sqrt(0.05) ≈ 0.224
-        ri_entropy = results[0].evidence[0]["ri_entropy"]
-        assert ri_entropy == pytest.approx(0.224, abs=0.01)
+        # sqrt(1.0 - 95/100) = sqrt(0.05) ~= 0.224
+        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.224, abs=0.01)
 
     def test_orphan_with_total_uses_ratio(self, detector: RelationshipEntropyDetector):
-        """Test orphan count with total_count uses ratio-based formula."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="customer_id",
-            analysis_results={
-                "relationships": [
-                    {
-                        "from_table": "orders",
-                        "to_table": "customers",
-                        "relationship_type": "foreign_key",
-                        "is_confirmed": True,
-                        "confidence": 0.9,
-                        "cardinality": "many-to-one",
-                        "evidence": {
-                            # No left_referential_integrity — triggers fallback
-                            "orphan_count": 50,
-                            "left_total_count": 1000,
-                            "cardinality_verified": True,
-                        },
-                    }
-                ]
-            },
+        """Orphan count with total_count uses the ratio formula."""
+        context = self._context(
+            {
+                "orphan_count": 50,
+                "left_total_count": 1000,
+                "cardinality_verified": True,
+            }
         )
-
         results = detector.detect(context)
-
         assert len(results) == 1
-        # Ratio-based: sqrt(50/1000) = sqrt(0.05) ≈ 0.224
-        ri_entropy = results[0].evidence[0]["ri_entropy"]
-        assert ri_entropy == pytest.approx(0.224, abs=0.01)
+        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.224, abs=0.01)
 
     def test_orphan_without_total_uses_count_formula(self, detector: RelationshipEntropyDetector):
-        """Test orphan count without total falls back to count-based formula."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="customer_id",
-            analysis_results={
-                "relationships": [
-                    {
-                        "from_table": "orders",
-                        "to_table": "customers",
-                        "relationship_type": "foreign_key",
-                        "is_confirmed": True,
-                        "confidence": 0.9,
-                        "cardinality": "many-to-one",
-                        "evidence": {
-                            # No left_referential_integrity and no total_count
-                            "orphan_count": 50,
-                            "cardinality_verified": True,
-                        },
-                    }
-                ]
-            },
-        )
-
+        """Orphan count without total falls back to the count formula."""
+        context = self._context({"orphan_count": 50, "cardinality_verified": True})
         results = detector.detect(context)
-
         assert len(results) == 1
-        # Count-based fallback: sqrt(0.3 + 50/1000) = sqrt(0.35) ≈ 0.592
-        ri_entropy = results[0].evidence[0]["ri_entropy"]
-        assert ri_entropy == pytest.approx(0.592, abs=0.01)
+        # sqrt(0.3 + 50/1000) = sqrt(0.35) ~= 0.592
+        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.592, abs=0.01)
 
-    def test_no_relationships_empty(self, detector: RelationshipEntropyDetector):
-        """Test empty result when no relationships exist."""
+    def test_no_relationship_empty(self, detector: RelationshipEntropyDetector):
+        """No focal relationship in context -> empty result."""
         context = DetectorContext(
-            table_name="orders",
-            column_name="customer_id",
-            analysis_results={"relationships": []},
+            from_table_name="orders",
+            to_table_name="customers",
+            from_column_id="c_fk",
+            to_column_id="c_pk",
+            analysis_results={},
         )
-
-        results = detector.detect(context)
-        assert results == []
+        assert detector.detect(context) == []
 
     def test_detector_properties(self, detector: RelationshipEntropyDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "relationship_entropy"
         assert detector.layer == "structural"
         assert detector.dimension == "relations"
+        assert detector.scope == "relationship"
         assert detector.required_analyses == ["relationships"]

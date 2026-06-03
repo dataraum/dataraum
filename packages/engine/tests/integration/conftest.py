@@ -135,13 +135,22 @@ class PipelineTestHarness:
             detector_ids = self._get_detector_ids(phase_name)
             if detector_ids:
                 with self.session_factory() as detector_session:
+                    # Source-free detect (DAT-408): scope by the source's typed
+                    # table set, not source_id.
+                    table_ids = list(
+                        detector_session.execute(
+                            select(Table.table_id).where(
+                                Table.source_id == self.source_id, Table.layer == "typed"
+                            )
+                        ).scalars()
+                    )
                     for detector_id in detector_ids:
                         run_detector_post_step(
                             detector_session,
-                            self.source_id,
                             detector_id,
                             self.duckdb_conn,
                             session_id=baseline_session_id(),
+                            table_ids=table_ids,
                         )
                     detector_session.commit()
 

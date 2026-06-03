@@ -285,3 +285,118 @@ def test_run_session_phase_fails_when_session_not_seeded(
         worker_manager, "relationships", _session_identity(str(uuid4())), [t1, t2]
     )
     assert run.status == PhaseStatus.FAILED.value
+
+
+# ---------------------------------------------------------------------------
+# begin_session on the snapshot substrate (DAT-408): terminal detect + promote,
+# head-resolved relationship readiness, non-destructive re-run. Offline (no LLM)
+# — relationships are seeded directly, exercising the substrate path.
+# ---------------------------------------------------------------------------
+
+
+def _seed_column(manager: ConnectionManager, table_id: str, col_name: str) -> str:
+    from dataraum.storage import Column
+
+    col_id = str(uuid4())
+    with manager.session_scope() as session:
+        session.add(
+            Column(column_id=col_id, table_id=table_id, column_name=col_name, column_position=0)
+        )
+    return col_id
+
+
+def _seed_relationship(
+    manager: ConnectionManager,
+    session_id: str,
+    from_table: str,
+    from_col: str,
+    to_table: str,
+    to_col: str,
+    method: str,
+    run_id: str,
+) -> None:
+    with manager.session_scope() as session:
+        session.add(
+            Relationship(
+                session_id=session_id,
+                run_id=run_id,
+                from_table_id=from_table,
+                from_column_id=from_col,
+                to_table_id=to_table,
+                to_column_id=to_col,
+                relationship_type="foreign_key",
+                confidence=0.9,
+                detection_method=method,
+                evidence={"left_referential_integrity": 95.0, "cardinality_verified": True},
+            )
+        )
+
+
+def _session_identity_run(session_id: str, run_id: str) -> SessionIdentity:
+    return SessionIdentity(workspace_id="test", session_id=session_id, run_id=run_id)
+
+
+def test_begin_session_detect_promote_read_and_nondestructive_rerun(
+    worker_manager: ConnectionManager,
+) -> None:
+    """detect -> promote -> head-resolved read; a re-run is non-destructive (DAT-408)."""
+    from dataraum.entropy.db_models import EntropyReadinessRecord
+    from dataraum.entropy.models import relationship_target_key
+    from dataraum.entropy.views.readiness_context import load_relationship_readiness
+    from dataraum.worker.activity import (
+        SESSION_DETECTOR_PHASES,
+        promote_session_run,
+        run_detectors,
+    )
+
+    session_id = str(uuid4())
+    _seed_session(worker_manager, session_id)
+    src = str(uuid4())
+    t1 = _seed_typed_table(worker_manager, src, "src", "orders")
+    t2 = _seed_typed_table(worker_manager, src, "src", "customers")
+    c1 = _seed_column(worker_manager, t1, "customer_id")
+    c2 = _seed_column(worker_manager, t2, "id")
+    begin_session_select(worker_manager, _session_identity(session_id), [t1, t2])
+    target = relationship_target_key(c1, c2)
+
+    # Run A: the catalog is materialized per run (DAT-408) — stamp the relationship
+    # with this run's run_id, then terminal detect (relationship readiness) + promote.
+    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-A")
+    n = run_detectors(
+        worker_manager,
+        session_id=session_id,
+        run_id="run-A",
+        detector_phases=SESSION_DETECTOR_PHASES,
+    )
+    assert n > 0, "relationship detect produced no records"
+    promote_session_run(worker_manager, _session_identity_run(session_id, "run-A"))
+
+    with worker_manager.session_scope() as session:
+        out = load_relationship_readiness(session, session_id)
+    assert {r.target for r in out} == {target}
+    assert all(r.run_id == "run-A" for r in out)
+
+    # Run B: re-materialize the catalog under a fresh run_id (re-run), detect,
+    # promote — the seal advances, the prior run's rows survive.
+    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-B")
+    run_detectors(
+        worker_manager,
+        session_id=session_id,
+        run_id="run-B",
+        detector_phases=SESSION_DETECTOR_PHASES,
+    )
+    promote_session_run(worker_manager, _session_identity_run(session_id, "run-B"))
+
+    with worker_manager.session_scope() as session:
+        out = load_relationship_readiness(session, session_id)
+        all_runs = {
+            r.run_id
+            for r in session.execute(
+                select(EntropyReadinessRecord).where(
+                    EntropyReadinessRecord.session_id == session_id,
+                    EntropyReadinessRecord.target == target,
+                )
+            ).scalars()
+        }
+    assert {r.run_id for r in out} == {"run-B"}, "reader surfaces only the promoted run"
+    assert all_runs == {"run-A", "run-B"}, "prior run's readiness survives (non-destructive)"

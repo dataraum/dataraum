@@ -183,9 +183,14 @@ class TestPerTableShouldSkip:
             is None
         )
 
-    def test_skips_when_all_tables_classified(
+    def test_re_runs_when_already_classified(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
+        """DAT-408: a versioned begin_session re-run re-classifies — no idempotency skip.
+
+        The old "all tables already classified → skip" branch is gone; it would make
+        a replay a silent no-op. Even fully classified, the phase runs.
+        """
         src = _source(session)
         t1 = _typed_table(session, src.source_id, "t1", ["a"])
         session.add(
@@ -198,9 +203,10 @@ class TestPerTableShouldSkip:
             )
         )
         session.flush()
-        assert SemanticPerTablePhase().should_skip(
-            _session_ctx(session, duckdb_conn, [t1.table_id])
-        ) == ("All tables already classified")
+        assert (
+            SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [t1.table_id]))
+            is None
+        )
 
     def test_scopes_across_sources_and_ignores_excluded(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

@@ -359,20 +359,24 @@ def assemble_readiness_context(
     for obj in objects:
         by_target.setdefault(obj.target, []).append(obj)
 
-    # Step 3: Separate column targets from table targets
-    column_targets: dict[str, list[EntropyObject]] = {}
-    table_targets: dict[str, list[EntropyObject]] = {}
+    # Step 3: Targets that roll up the network — column AND relationship
+    # granularity (DAT-408) — vs the rest (table:/view:), which stay raw
+    # DirectSignals. The rollup (``_build_column_result``) is target-agnostic, so
+    # a relationship's objects roll up the same intents as a column's.
+    rollup_targets: dict[str, list[EntropyObject]] = {}
+    other_targets: dict[str, list[EntropyObject]] = {}
     for target, target_objects in by_target.items():
-        if target.startswith("column:"):
-            column_targets[target] = target_objects
+        if target.startswith("column:") or target.startswith("relationship:"):
+            rollup_targets[target] = target_objects
         else:
-            table_targets[target] = target_objects
+            other_targets[target] = target_objects
 
-    # Step 4: Per-column network inference
+    # Step 4: Per-target network inference. ``columns`` is keyed by target string
+    # and may hold ``relationship:`` targets alongside ``column:`` ones (DAT-408).
     columns: dict[str, ColumnReadinessResult] = {}
     all_direct_signals: list[DirectSignal] = []
 
-    for target, target_objects in column_targets.items():
+    for target, target_objects in rollup_targets.items():
         col_result, col_signals = _build_column_result(
             target,
             target_objects,
@@ -384,8 +388,8 @@ def assemble_readiness_context(
         if col_result is not None:
             columns[target] = col_result
 
-    # Step 5: Table targets -> all objects become DirectSignal
-    for _target, target_objects in table_targets.items():
+    # Step 5: Other targets (table:/view:) -> all objects become DirectSignal
+    for _target, target_objects in other_targets.items():
         for obj in target_objects:
             all_direct_signals.append(_object_to_direct_signal(obj))
 
@@ -535,10 +539,11 @@ def load_persisted_readiness(
         return EntropyForReadiness()
 
     # Resolve each table's promoted detect run; keep only tables that have one.
+    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-408).
     head_by_table = {
         table_id: run_id
         for table_id in table_ids
-        if (run_id := head_run_id(session, table_id, "detect")) is not None
+        if (run_id := head_run_id(session, f"table:{table_id}", "detect")) is not None
     }
     if not head_by_table:
         return EntropyForReadiness()
@@ -587,6 +592,57 @@ def load_persisted_readiness(
         columns_ready=columns_ready,
         overall_readiness=overall_readiness,
     )
+
+
+def load_relationship_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
+    """Current, gated relationship readiness for a session (DAT-408).
+
+    Resolves the session's **current run** via the per-session head
+    (``session:{id}``, "detect") — begin_session seals per session, not per target
+    — then returns that run's ``relationship:`` readiness, **gated** on a live,
+    non-suppressed ``Relationship`` *in the same run*. A dropped (overlay-rejected)
+    relationship keeps its rows for audit but isn't surfaced, so there is no ghost
+    readiness. Returns ``[]`` until the session has a promoted run.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
+    from dataraum.entropy.models import parse_relationship_target
+    from dataraum.storage import session_head_target
+
+    current_run = head_run_id(session, session_head_target(session_id), "detect")
+    if current_run is None:
+        return []
+
+    rows = list(
+        session.execute(
+            select(EntropyReadinessRecord).where(
+                EntropyReadinessRecord.session_id == session_id,
+                EntropyReadinessRecord.run_id == current_run,
+                EntropyReadinessRecord.target.like("relationship:%"),
+            )
+        ).scalars()
+    )
+    if not rows:
+        return []
+
+    # The current run's live directional column pairs, minus user-dropped ones.
+    live_pairs = set(
+        session.execute(
+            select(Relationship.from_column_id, Relationship.to_column_id).where(
+                Relationship.session_id == session_id,
+                Relationship.run_id == current_run,
+            )
+        ).tuples()
+    )
+    live_pairs -= load_suppressed_relationship_pairs(session)
+
+    gated: list[EntropyReadinessRecord] = []
+    for rec in rows:
+        pair = parse_relationship_target(rec.target)
+        if pair is None or pair not in live_pairs:
+            continue
+        gated.append(rec)
+    return gated
 
 
 def _target_by_ids(session: Session, table_ids: list[str]) -> dict[tuple[str, str], str]:

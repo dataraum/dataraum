@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import duckdb
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import (
@@ -21,6 +21,7 @@ from dataraum.analysis.relationships.models import (
     RelationshipCandidate,
     RelationshipDetectionResult,
 )
+from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -37,6 +38,7 @@ def detect_relationships(
     min_confidence: float = 0.3,
     sample_percent: float = 10.0,
     evaluate: bool = True,
+    run_id: str | None = None,
 ) -> Result[RelationshipDetectionResult]:
     """Detect relationships between tables and store as candidates.
 
@@ -108,7 +110,7 @@ def detect_relationships(
             candidates = evaluate_candidates(candidates, table_paths, duckdb_conn)
 
         # Store candidates in database
-        _store_candidates(session, session_id, table_ids, candidates)
+        _store_candidates(session, session_id, table_ids, candidates, run_id=run_id)
 
         # Count high confidence candidates
         high_conf_count = sum(
@@ -135,15 +137,36 @@ def _store_candidates(
     session_id: str,
     table_ids: list[str],
     candidates: list[RelationshipCandidate],
+    *,
+    run_id: str | None = None,
 ) -> None:
-    """Store relationship candidates in the database.
+    """Store this run's relationship candidates (DAT-408 run-versioned).
 
-    Each join candidate is stored as a separate relationship with
-    detection_method='candidate' to distinguish from confirmed relationships.
+    ``candidate`` rows are ephemeral structural detections, re-derived every run
+    and stamped with ``run_id``. They coexist with prior runs (non-destructive) —
+    the delete below is **run_id-scoped**, so it only clears THIS run's own prior
+    candidates on a Temporal retry, never another run's. Reads scope to the current
+    run, so coexistence is invisible to consumers.
     """
     # Load mappings
     column_map = load_column_mappings(session, table_ids)
     table_map = load_table_mappings(session, table_ids)
+
+    # Retry-only clear (DAT-408): ALWAYS scoped to this exact run (``run_id ==``,
+    # which is ``IS NULL`` for the un-versioned test path) so a re-executed run
+    # replaces only its OWN partial candidate writes — never another run's. There is
+    # no unscoped branch: a delete with no run_id would wipe every run's candidates,
+    # the destructive behaviour the run-versioning exists to remove.
+    session.execute(
+        delete(RelationshipDB).where(
+            RelationshipDB.session_id == session_id,
+            RelationshipDB.detection_method == "candidate",
+            RelationshipDB.run_id == run_id,
+        )
+    )
+
+    # A user-dropped relationship must not be re-created on re-run (DAT-408).
+    suppressed = load_suppressed_relationship_pairs(session)
 
     for candidate in candidates:
         table1_id = table_map.get(candidate.table1)
@@ -158,6 +181,10 @@ def _store_candidates(
             col2_id = column_map.get((candidate.table2, jc.column2))
 
             if not col1_id or not col2_id:
+                continue
+
+            if (col1_id, col2_id) in suppressed:
+                # User dropped this relationship — honor the suppression overlay.
                 continue
 
             # Build evidence with value overlap and column characteristics
@@ -190,6 +217,7 @@ def _store_candidates(
             db_rel = RelationshipDB(
                 relationship_id=str(uuid4()),
                 session_id=session_id,
+                run_id=run_id,
                 from_table_id=table1_id,
                 from_column_id=col1_id,
                 to_table_id=table2_id,

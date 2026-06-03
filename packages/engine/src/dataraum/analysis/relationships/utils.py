@@ -6,16 +6,95 @@ Helper functions for loading and formatting relationship data.
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.storage import Column, Table
+
+
+def load_defined_relationships(
+    session: Session,
+    table_ids: list[str],
+    *,
+    run_id: str | None = None,
+    both_tables: bool = True,
+    eager_columns: bool = False,
+    min_confidence: float | None = None,
+) -> list[Relationship]:
+    """The session's **defined** relationships for ``table_ids`` (DAT-408).
+
+    "Defined" = ``detection_method != 'candidate'`` — the durable catalog (llm +
+    materialized manual/keeper), NOT the ephemeral per-run structural candidates.
+    One definition so every downstream consumer (enriched_views, cycles,
+    validation, graphs, …) agrees on what "the relationships" are and on
+    run-scoping; they only vary the flags:
+
+    - ``run_id``: scope to the current run's catalog (DAT-408). ``None`` reads all
+      runs — only safe for callers that don't yet thread a run_id (dormant stages
+      reactivated by their own slices must pass it).
+    - ``both_tables``: require BOTH endpoints in ``table_ids`` (intra-selection
+      joins) vs either endpoint.
+    - ``eager_columns``: eager-load from/to columns + their tables.
+    - ``min_confidence``: optional confidence floor.
+    """
+    stmt = select(Relationship).where(Relationship.detection_method != "candidate")
+    if eager_columns:
+        stmt = stmt.options(
+            selectinload(Relationship.from_column).selectinload(Column.table),
+            selectinload(Relationship.to_column).selectinload(Column.table),
+        )
+    if both_tables:
+        stmt = stmt.where(
+            Relationship.from_table_id.in_(table_ids),
+            Relationship.to_table_id.in_(table_ids),
+        )
+    else:
+        stmt = stmt.where(
+            Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids)
+        )
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    if min_confidence is not None:
+        stmt = stmt.where(Relationship.confidence >= min_confidence)
+    return list(session.execute(stmt).scalars())
+
+
+def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:
+    """Directional column pairs the user has dropped (DAT-408).
+
+    A drop is a ``ConfigOverlay(type='relationship')`` whose payload carries
+    ``action == "reject"`` plus the directional ``from_column_id`` / ``to_column_id``
+    (confirm and reject are two states of the one relationship overlay type). A
+    re-run must not re-create a suppressed relationship, and its readiness must not
+    surface. ``superseded_at IS NULL`` filters undone drops out.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "relationship",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+    out: set[tuple[str, str]] = set()
+    for row in rows:
+        payload = row.payload or {}
+        if payload.get("action") != "reject":
+            continue
+        from_col = payload.get("from_column_id")
+        to_col = payload.get("to_column_id")
+        if from_col and to_col:
+            out.add((from_col, to_col))
+    return out
 
 
 def load_relationship_candidates_for_semantic(
     session: Session,
     table_ids: list[str] | None = None,
     detection_method: str = "candidate",
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load relationship candidates from DB formatted for semantic agent.
 
@@ -50,8 +129,12 @@ def load_relationship_candidates_for_semantic(
             }
         ]
     """
-    # Build query
+    # Build query — scoped to the current run's catalog (DAT-408) when ``run_id`` is
+    # given, so coexisting prior-run rows aren't fed to the LLM twice.
     stmt = select(Relationship).where(Relationship.detection_method == detection_method)
+
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
 
     if table_ids:
         stmt = stmt.where(

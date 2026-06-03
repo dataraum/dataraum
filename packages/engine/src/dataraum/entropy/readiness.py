@@ -38,50 +38,61 @@ def persist_readiness(
     when the new rollup is empty, and a per-table replay clears only that table's
     rows (not the whole source's). For ``add_source`` the set is one source's
     typed tables, so the result is identical to the prior source-scoped behaviour.
-    The caller owns the transaction (commit at its ``session_scope`` exit). Each
-    row's ``source_id`` is derived per-table so a multi-source session's rows stay
-    well-formed. ``run_id`` is the snapshot version axis (DAT-413), stamped on each
-    row (``None`` outside the workflow path); the head pointer is not consulted yet.
-    Returns the rows written.
+    The caller owns the transaction (commit at its ``session_scope`` exit). Rows
+    carry no ``source_id`` (DAT-408) — source is reachable via ``table_id``.
+    ``run_id`` is the snapshot version axis (DAT-413), stamped on each row (``None``
+    outside the workflow path); the head pointer is not consulted yet. Returns the
+    rows written.
     """
     if not table_ids:
         return 0
 
-    # Replay-safe refresh: clear these tables' prior readiness rows first. Scoped to
-    # ``run_id`` when set (the workflow path, DAT-413) so a re-run clears only its OWN
-    # prior rows and earlier runs survive (non-destructive); the ``None`` path
-    # (begin_session/tests) keeps the prior table-scoped delete.
-    del_stmt = delete(EntropyReadinessRecord).where(EntropyReadinessRecord.table_id.in_(table_ids))
-    if run_id is not None:
-        del_stmt = del_stmt.where(EntropyReadinessRecord.run_id == run_id)
-    session.execute(del_stmt)
+    # Replay-safe refresh: clear THIS run's prior readiness rows first. ALWAYS
+    # scoped to the run (``run_id ==``, i.e. ``IS NULL`` for the un-versioned test
+    # path) — never an unscoped delete, which would wipe every run's readiness.
+    # Two scopes (DAT-408): column rows carry ``table_id`` so they delete by the
+    # table set; relationship rows carry no ``table_id`` (the identity is in
+    # ``target``), so they delete by ``(session_id, relationship:%)``.
+    col_del = delete(EntropyReadinessRecord).where(
+        EntropyReadinessRecord.table_id.in_(table_ids),
+        EntropyReadinessRecord.run_id == run_id,
+    )
+    # ``relationship:%`` rows are produced only by begin_session's detect — add_source
+    # runs no relationship detectors — so this is a begin_session-only delete in
+    # practice; the run_id scope keeps it harmless on the shared add_source path.
+    rel_del = delete(EntropyReadinessRecord).where(
+        EntropyReadinessRecord.session_id == session_id,
+        EntropyReadinessRecord.target.like("relationship:%"),
+        EntropyReadinessRecord.run_id == run_id,
+    )
+    session.execute(col_del)
+    session.execute(rel_del)
 
     ctx = build_for_readiness(session, table_ids)
     if not ctx.columns:
         return 0
 
     target_to_ids = _column_id_map(session, table_ids)
-    source_by_table: dict[str, str] = dict(
-        session.execute(
-            select(Table.table_id, Table.source_id).where(Table.table_id.in_(table_ids))
-        )
-        .tuples()
-        .all()
-    )
 
     rows: list[EntropyReadinessRecord] = []
     for target, col in ctx.columns.items():
-        ids = target_to_ids.get(target)
-        if ids is None:
-            # A column target the rollup produced but we can't map back to a
-            # Column row (e.g. a renamed/dropped column) — skip, don't guess.
-            logger.debug("readiness_target_unresolved", target=target)
-            continue
-        table_id, column_id = ids
+        if target.startswith("relationship:"):
+            # Relationship readiness: the identity is the target; a relationship
+            # spans two columns so it carries no single column FK.
+            table_id: str | None = None
+            column_id: str | None = None
+        else:
+            ids = target_to_ids.get(target)
+            if ids is None:
+                # A column target the rollup produced but we can't map back to a
+                # Column row (e.g. a renamed/dropped column) — skip, don't guess.
+                logger.debug("readiness_target_unresolved", target=target)
+                continue
+            table_id, column_id = ids
         rows.append(
             EntropyReadinessRecord(
                 session_id=session_id,
-                source_id=source_by_table[table_id],
+                target=target,
                 table_id=table_id,
                 column_id=column_id,
                 run_id=run_id,

@@ -12,10 +12,9 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from dataraum.analysis.relationships import detect_relationships
-from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -63,32 +62,19 @@ class RelationshipsPhase(BasePhase):
         return list(ctx.session.execute(stmt).scalars())
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if THIS session already detected relationships over its tables."""
-        typed_tables = self._typed_tables(ctx)
+        """Skip only on genuine preconditions — never because the session already ran.
 
+        DAT-408: a versioned begin_session re-run MUST re-derive (candidates refresh,
+        readiness re-promotes), so the old "already detected N candidates" idempotency
+        branch is gone — it would make a replay a silent no-op (nothing re-derived,
+        head never advances). The detection itself is idempotent (delete-before-insert
+        on candidates; ``llm``/``manual`` durable).
+        """
+        typed_tables = self._typed_tables(ctx)
         if not typed_tables:
             return "No typed tables found"
-
         if len(typed_tables) < 2:
             return "Need at least 2 tables to detect relationships"
-
-        # Scoped to this session's own candidates (rows carry session_id): a
-        # different session's candidates over a shared table must not make this
-        # session skip detection (DAT-401).
-        table_ids = [t.table_id for t in typed_tables]
-        existing_count = (
-            ctx.session.execute(
-                select(func.count(Relationship.relationship_id)).where(
-                    Relationship.session_id == ctx.require_session_id(),
-                    Relationship.from_table_id.in_(table_ids),
-                    Relationship.detection_method == "candidate",
-                )
-            )
-        ).scalar() or 0
-
-        if existing_count > 0:
-            return f"Already detected {existing_count} relationship candidates"
-
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
@@ -124,6 +110,7 @@ class RelationshipsPhase(BasePhase):
             min_confidence=min_confidence,
             sample_percent=sample_percent,
             evaluate=True,
+            run_id=ctx.run_id,
         )
 
         if not detection_result.success:

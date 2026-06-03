@@ -17,11 +17,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
-from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
     format_graph_structure_for_context,
 )
+from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -135,13 +135,13 @@ def build_cycle_detection_context(
         for ent, table_name in entities
     ]
 
-    # 3. Relationships (LLM-confirmed only)
-    rel_stmt = select(Relationship).where(
-        Relationship.from_table_id.in_(table_ids),
-        Relationship.to_table_id.in_(table_ids),
-        Relationship.detection_method == "llm",
-    )
-    relationships = session.execute(rel_stmt).scalars().all()
+    # 3. The defined relationships (not candidate) within the selection.
+    # TODO(DAT-408 follow-on): this is an agent-tier context builder — to scope to the
+    # session's current run, resolve it via the per-session head
+    # (head_run_id(session_head_target(session_id), "detect")) and pass run_id. The
+    # caller (cycles agent) has session_id; not threaded yet, so this reads the
+    # catalog across runs.
+    relationships = load_defined_relationships(session, table_ids)
 
     rel_list = []
     for rel in relationships:

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import EntropyObject, relationship_target_key
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -37,6 +37,18 @@ class DetectorContext:
     column_id: str | None = None
     column_name: str = ""
     view_name: str = ""
+
+    # Relationship-scoped targets (DAT-408): the focal directional column pair +
+    # its endpoints. ``session_id`` lets a relationship detector load the whole
+    # session's relationships (e.g. join-path ambiguity needs the full set).
+    session_id: str | None = None
+    relationship_id: str | None = None
+    from_table_id: str | None = None
+    from_table_name: str = ""
+    from_column_id: str | None = None
+    to_table_id: str | None = None
+    to_table_name: str = ""
+    to_column_id: str | None = None
 
     # Snapshot version axis (DAT-413). Set on the detect path so a detector's
     # ``load_data`` reads THIS run's upstream metadata; ``None`` outside the
@@ -59,7 +71,9 @@ class DetectorContext:
     @property
     def target_ref(self) -> str:
         """Get the target reference string."""
-        if self.view_name:
+        if self.from_column_id and self.to_column_id:
+            return relationship_target_key(self.from_column_id, self.to_column_id)
+        elif self.view_name:
             return f"view:{self.view_name}"
         elif self.column_name:
             return f"column:{self.table_name}.{self.column_name}"

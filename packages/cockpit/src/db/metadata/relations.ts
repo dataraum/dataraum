@@ -110,8 +110,6 @@ export const relations = defineRelations(schema, (r) => ({
 				alias:
 					"investigationSessions_sessionId_sources_sourceId_via_detectedBusinessCycles",
 			}),
-		entropyObjectss: r.many.entropyObjects(),
-		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
 		investigationSessionssViaQueryExecutions: r.many.investigationSessions({
 			alias:
@@ -131,7 +129,6 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		entropyObjectss: r.many.entropyObjects(),
 		entropyReadinesss: r.many.entropyReadiness(),
-		metadataSnapshotHeads: r.many.metadataSnapshotHead(),
 		relationshipssFromTableId: r.many.relationships({
 			alias: "relationships_fromTableId_tables_tableId",
 		}),
@@ -278,10 +275,6 @@ export const relations = defineRelations(schema, (r) => ({
 			from: r.entropyObjects.sessionId,
 			to: r.investigationSessions.sessionId,
 		}),
-		sources: r.one.sources({
-			from: r.entropyObjects.sourceId,
-			to: r.sources.sourceId,
-		}),
 		tables: r.one.tables({
 			from: r.entropyObjects.tableId,
 			to: r.tables.tableId,
@@ -295,10 +288,6 @@ export const relations = defineRelations(schema, (r) => ({
 		investigationSessions: r.one.investigationSessions({
 			from: r.entropyReadiness.sessionId,
 			to: r.investigationSessions.sessionId,
-		}),
-		sources: r.one.sources({
-			from: r.entropyReadiness.sourceId,
-			to: r.sources.sourceId,
 		}),
 		tables: r.one.tables({
 			from: r.entropyReadiness.tableId,
@@ -327,12 +316,6 @@ export const relations = defineRelations(schema, (r) => ({
 		investigationSessions: r.one.investigationSessions({
 			from: r.investigationSteps.sessionId,
 			to: r.investigationSessions.sessionId,
-		}),
-	},
-	metadataSnapshotHead: {
-		tables: r.one.tables({
-			from: r.metadataSnapshotHead.tableId,
-			to: r.tables.tableId,
 		}),
 	},
 	relationships: {

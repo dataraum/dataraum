@@ -305,7 +305,6 @@ export const entropyObjects = metadataSchema.table(
 		dimension: varchar().notNull(),
 		subDimension: varchar("sub_dimension").notNull(),
 		target: varchar().notNull(),
-		sourceId: varchar("source_id").references(() => sources.sourceId),
 		tableId: varchar("table_id").references(() => tables.tableId, {
 			onDelete: "cascade",
 		}),
@@ -330,11 +329,6 @@ export const entropyObjects = metadataSchema.table(
 			table.dimension.asc().nullsLast(),
 		),
 		index("idx_entropy_score").using("btree", table.score.asc().nullsLast()),
-		index("idx_entropy_source_detector").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-			table.detectorId.asc().nullsLast(),
-		),
 		index("idx_entropy_table").using("btree", table.tableId.asc().nullsLast()),
 		index("idx_entropy_target").using("btree", table.target.asc().nullsLast()),
 		index("ix_entropy_objects_session_id").using(
@@ -351,9 +345,7 @@ export const entropyReadiness = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId),
+		target: varchar().notNull(),
 		tableId: varchar("table_id").references(() => tables.tableId, {
 			onDelete: "cascade",
 		}),
@@ -372,13 +364,13 @@ export const entropyReadiness = metadataSchema.table(
 			"btree",
 			table.columnId.asc().nullsLast(),
 		),
-		index("idx_readiness_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
 		index("idx_readiness_table").using(
 			"btree",
 			table.tableId.asc().nullsLast(),
+		),
+		index("idx_readiness_target").using(
+			"btree",
+			table.target.asc().nullsLast(),
 		),
 		index("ix_entropy_readiness_session_id").using(
 			"btree",
@@ -482,16 +474,14 @@ export const metadataSnapshotHead = metadataSchema.table(
 	"metadata_snapshot_head",
 	{
 		headId: varchar("head_id").primaryKey(),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
+		target: varchar().notNull(),
 		stage: varchar().notNull(),
 		runId: varchar("run_id").notNull(),
 		promotedAt: timestamp("promoted_at").notNull(),
 		version: integer().notNull(),
 	},
 	(table) => [
-		unique("uq_snapshot_head_table_stage").on(table.tableId, table.stage),
+		unique("uq_snapshot_head_target_stage").on(table.target, table.stage),
 	],
 );
 
@@ -534,6 +524,7 @@ export const relationships = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		fromTableId: varchar("from_table_id")
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
@@ -583,11 +574,17 @@ export const relationships = metadataSchema.table(
 			table.toTableId.asc().nullsLast(),
 			table.toColumnId.asc().nullsLast(),
 		),
+		index("ix_relationships_run_id").using(
+			"btree",
+			table.runId.asc().nullsLast(),
+		),
 		index("ix_relationships_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
 		unique("uq_relationship_columns_method").on(
+			table.sessionId,
+			table.runId,
 			table.fromColumnId,
 			table.toColumnId,
 			table.detectionMethod,

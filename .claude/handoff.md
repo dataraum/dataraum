@@ -4,6 +4,73 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-03: DAT-408 — relationship-granularity readiness + begin_session on the substrate
+
+Slice 2.0b + the begin_session-substrate core of DAT-415. Relationship readiness is now
+first-class (per directional column pair), produced by the two relationship detectors
+**reshaped to a new `relationship` detector scope**, persisted + promoted on the
+versioned snapshot substrate at begin_session's terminal `detect`.
+
+### dataraum-eval
+- **Detector behavior CHANGED (recalibrate recall/precision vs ground truth):**
+  - **`join_path_determinism`** — was column-scoped + proportional (orphan / star-schema /
+    ambiguity-ratio over a column's relationships). Now **relationship-scoped**: for the
+    focal directional pair it scores `score_ambiguous` iff there is **>1 distinct
+    column-pair join path between the two tables** (and no preferred-join overlay), else
+    `score_deterministic`. The `orphan` (0.9) and proportional bands are **gone**. One
+    object per relationship, target `relationship:{from_col}::{to_col}`.
+  - **`relationship_entropy`** — was column-scoped (one object per relationship a column
+    touched). Now **relationship-scoped**: one object per directional pair (representative
+    row `manual > llm > candidate`). RI/cardinality/semantic math unchanged, BUT
+    confirmation now comes from **`ConfigOverlay(type='relationship')`** (multi-source),
+    **not** `Relationship.is_confirmed` (DAT-372). So "confirmed" fires only when the user
+    has actually teach-confirmed via an overlay — expect more relationships scoring
+    "unconfirmed" until teaches exist. `join_path_determinism` reads the SAME overlays, so
+    the two agree on "confirmed."
+- **New readiness rows**: `entropy_readiness` now contains `relationship:` target rows
+  (band/intents/drivers), `column_id`/`table_id`/`source_id` NULL — identity is in the new
+  **`target`** column. The rollup (`assemble_readiness_context`) routes `relationship:`
+  targets through the same network rollup as columns (so `join_path_determinism` →
+  `query_intent` etc. drive the band; `relationship_quality` is a DirectSignal unless a
+  network node exists for it — check `network.yaml` if relationship bands look flat).
+- **New reader**: `load_relationship_readiness(session, session_id)` — head-resolved (per
+  `(relationship:{...}, "detect")`) and **gated on a live, non-suppressed `Relationship`**
+  (dropped/vanished relationships keep prior-run rows for audit but don't surface).
+- **Relationship catalog is RUN-VERSIONED** (the add_source contract — affects replay):
+  every `Relationship` carries a `run_id`, rows **coexist across runs** (non-destructive),
+  and **deletes are run_id-scoped, retry-only** (a re-run never touches a prior run's rows).
+  `detection_method` taxonomy: **`candidate`** = ephemeral per-run structural; the **defined**
+  set = `not candidate` (`llm` this-run + `manual`/`keeper` materialized from overlays). The
+  unique key is `(session_id, run_id, from_col, to_col, method)`. **All catalog reads scope to
+  the current run** — durable `manual`/`keeper` are re-materialized into each run from
+  `ConfigOverlay`, so a single current-run read sees the whole catalog. The overlay **writers**
+  (confirm/reject/add + the silent-accept→`keeper` lift-up + materialize-from-overlay) are
+  **DAT-409**, not here — so this slice's re-runs reproduce `candidate`/`llm` only.
+  **Dormant defined-relationship consumers** (`enriched_views`/`cycles`/`validation`/`graphs`)
+  still read `method=='llm'` unscoped — they are in no live workflow; their slices (DAT-402/3/4)
+  must adopt the run-scoped `not candidate` read when reactivated.
+- **begin_session is versioned + sealed PER SESSION**: `BeginSessionWorkflow` mints a `run_id`,
+  ends with `session_detect` → `session_promote_to_latest`, which sets one head
+  `(session:{id}, "detect")` → the current run (atomic whole-session re-run, no per-target head).
+  Re-runs are non-destructive; readers resolve the session's current run via that head.
+  `should_skip`'s "already detected/classified → skip" idempotency branch was removed on
+  `relationships` + `semantic_per_table` (it would make a replay a no-op); preconditions kept.
+- **Schema** (fresh DB / re-pull): `EntropyReadinessRecord.target` (NOT NULL);
+  **`source_id` DROPPED from `entropy_objects` + `entropy_readiness`** (write-only; source via
+  `table_id`) + their two indexes; `MetadataSnapshotHead.table_id` → **`target`** string
+  (`table:{id}` add_source, `relationship:{a}::{b}` readiness, `session:{id}` the begin_session
+  seal); **`Relationship.run_id`** + unique key `(session_id, run_id, from_col, to_col, method)`;
+  `SessionIdentity.run_id`. If an eval path filtered entropy/readiness/relationships by
+  `source_id`, switch to `session_id`; relationship reads should scope to the current `run_id`.
+
+### dataraum-testdata
+- Hints: ground truth for **relationship-level** quality would help calibrate the reshaped
+  detectors — multi-FK fixtures with (a) a single clean join path, (b) two distinct
+  column-pair paths between the same two tables (ambiguous), and (c) a confirmed vs
+  unconfirmed relationship (to exercise the overlay-confirmation path).
+
+### Status: pending
+
 ## 2026-06-03: DAT-413 — versioned metadata substrate + non-destructive replay (Slice A)
 
 ### dataraum-eval

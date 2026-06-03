@@ -313,11 +313,13 @@ def _seed_relationship(
     to_table: str,
     to_col: str,
     method: str,
+    run_id: str,
 ) -> None:
     with manager.session_scope() as session:
         session.add(
             Relationship(
                 session_id=session_id,
+                run_id=run_id,
                 from_table_id=from_table,
                 from_column_id=from_col,
                 to_table_id=to_table,
@@ -355,10 +357,11 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
     c1 = _seed_column(worker_manager, t1, "customer_id")
     c2 = _seed_column(worker_manager, t2, "id")
     begin_session_select(worker_manager, _session_identity(session_id), [t1, t2])
-    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm")
     target = relationship_target_key(c1, c2)
 
-    # Run A: terminal detect (relationship readiness) + promote.
+    # Run A: the catalog is materialized per run (DAT-408) — stamp the relationship
+    # with this run's run_id, then terminal detect (relationship readiness) + promote.
+    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-A")
     n = run_detectors(
         worker_manager,
         session_id=session_id,
@@ -373,7 +376,9 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
     assert {r.target for r in out} == {target}
     assert all(r.run_id == "run-A" for r in out)
 
-    # Run B: re-run under a fresh run_id — head advances, prior run survives.
+    # Run B: re-materialize the catalog under a fresh run_id (re-run), detect,
+    # promote — the seal advances, the prior run's rows survive.
+    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-B")
     run_detectors(
         worker_manager,
         session_id=session_id,

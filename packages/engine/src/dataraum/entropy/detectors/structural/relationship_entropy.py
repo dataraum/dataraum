@@ -57,7 +57,11 @@ class RelationshipEntropyDetector(EntropyDetector):
         from dataraum.entropy.detectors.loaders import load_relationship_for_pair
 
         rel = load_relationship_for_pair(
-            context.session, context.from_column_id, context.to_column_id
+            context.session,
+            context.from_column_id,
+            context.to_column_id,
+            session_id=context.session_id,
+            run_id=context.run_id,
         )
         if rel is not None:
             context.analysis_results["relationship"] = rel

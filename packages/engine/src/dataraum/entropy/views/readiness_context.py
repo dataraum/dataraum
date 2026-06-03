@@ -597,20 +597,27 @@ def load_persisted_readiness(
 def load_relationship_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
     """Current, gated relationship readiness for a session (DAT-408).
 
-    Resolves each ``relationship:`` readiness row via the per-(target, "detect")
-    head — never a blind read that would mix runs — and **gates** on a live,
-    non-suppressed ``Relationship``: a dropped (overlay-rejected) relationship and
-    a vanished candidate keep their prior-run rows for audit but are not surfaced,
-    so there is no ghost readiness. Returns the promoted, gated records.
+    Resolves the session's **current run** via the per-session head
+    (``session:{id}``, "detect") — begin_session seals per session, not per target
+    — then returns that run's ``relationship:`` readiness, **gated** on a live,
+    non-suppressed ``Relationship`` *in the same run*. A dropped (overlay-rejected)
+    relationship keeps its rows for audit but isn't surfaced, so there is no ghost
+    readiness. Returns ``[]`` until the session has a promoted run.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
     from dataraum.entropy.models import parse_relationship_target
+    from dataraum.storage import session_head_target
+
+    current_run = head_run_id(session, session_head_target(session_id), "detect")
+    if current_run is None:
+        return []
 
     rows = list(
         session.execute(
             select(EntropyReadinessRecord).where(
                 EntropyReadinessRecord.session_id == session_id,
+                EntropyReadinessRecord.run_id == current_run,
                 EntropyReadinessRecord.target.like("relationship:%"),
             )
         ).scalars()
@@ -618,11 +625,12 @@ def load_relationship_readiness(session: Session, session_id: str) -> list[Entro
     if not rows:
         return []
 
-    # Live directional column pairs in this session, minus user-dropped ones.
+    # The current run's live directional column pairs, minus user-dropped ones.
     live_pairs = set(
         session.execute(
             select(Relationship.from_column_id, Relationship.to_column_id).where(
-                Relationship.session_id == session_id
+                Relationship.session_id == session_id,
+                Relationship.run_id == current_run,
             )
         ).tuples()
     )
@@ -630,9 +638,6 @@ def load_relationship_readiness(session: Session, session_id: str) -> list[Entro
 
     gated: list[EntropyReadinessRecord] = []
     for rec in rows:
-        # Head resolution: only the promoted run for this target is current.
-        if head_run_id(session, rec.target, "detect") != rec.run_id:
-            continue
         pair = parse_relationship_target(rec.target)
         if pair is None or pair not in live_pairs:
             continue

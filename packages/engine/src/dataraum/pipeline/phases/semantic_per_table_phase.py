@@ -108,6 +108,7 @@ class SemanticPerTablePhase(BasePhase):
             session=ctx.session,
             table_ids=table_ids,
             detection_method="candidate",
+            run_id=ctx.run_id,
         )
 
         result = synthesize_and_store_tables(

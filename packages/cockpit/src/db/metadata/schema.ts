@@ -524,6 +524,7 @@ export const relationships = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		fromTableId: varchar("from_table_id")
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
@@ -573,12 +574,17 @@ export const relationships = metadataSchema.table(
 			table.toTableId.asc().nullsLast(),
 			table.toColumnId.asc().nullsLast(),
 		),
+		index("ix_relationships_run_id").using(
+			"btree",
+			table.runId.asc().nullsLast(),
+		),
 		index("ix_relationships_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
 		unique("uq_relationship_columns_method").on(
 			table.sessionId,
+			table.runId,
 			table.fromColumnId,
 			table.toColumnId,
 			table.detectionMethod,

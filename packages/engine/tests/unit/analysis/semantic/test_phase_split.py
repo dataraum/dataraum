@@ -258,10 +258,16 @@ class TestSynthesizeAndStoreTables:
 
         run("run-B")  # A second run in the SAME session.
         ent_runs = {e.run_id for e in session.execute(select(TableEntity)).scalars()}
-        assert counts() == (2, 1), (
-            "run-B's entity coexists with run-A's (non-destructive); llm stays single"
-        )
-        assert ent_runs == {"run-A", "run-B"}, "earlier run's entity survives the re-run"
+        rel_runs = {
+            r.run_id
+            for r in session.execute(
+                select(RelationshipDB).where(RelationshipDB.detection_method == "llm")
+            ).scalars()
+        }
+        # Both entity AND llm are run-versioned (DAT-408): run-B's rows coexist with
+        # run-A's, non-destructive. The seal/head names which run is current.
+        assert counts() == (2, 2), "run-B's rows coexist with run-A's (non-destructive)"
+        assert ent_runs == {"run-A", "run-B"} and rel_runs == {"run-A", "run-B"}
 
     def test_propagates_agent_failure(self, session) -> None:
         agent = MagicMock()

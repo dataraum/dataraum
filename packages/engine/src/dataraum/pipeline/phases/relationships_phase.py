@@ -110,6 +110,7 @@ class RelationshipsPhase(BasePhase):
             min_confidence=min_confidence,
             sample_percent=sample_percent,
             evaluate=True,
+            run_id=ctx.run_id,
         )
 
         if not detection_result.success:

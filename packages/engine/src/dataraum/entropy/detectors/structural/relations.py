@@ -41,7 +41,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
         from dataraum.entropy.detectors.loaders import load_session_relationships
 
         context.analysis_results["relationships"] = load_session_relationships(
-            context.session, context.session_id
+            context.session, context.session_id, run_id=context.run_id
         )
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:

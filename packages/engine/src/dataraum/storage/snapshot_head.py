@@ -56,6 +56,17 @@ class MetadataSnapshotHead(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
+def session_head_target(session_id: str) -> str:
+    """The snapshot-head key sealing a begin_session run (DAT-408).
+
+    begin_session re-runs the whole session atomically (no per-table partial
+    replay), so it seals at **session grain** — one head per session, not per
+    target. The head names the session's current (promoted) run; everything
+    begin_session produces for the session reads at that run_id.
+    """
+    return f"session:{session_id}"
+
+
 def head_run_id(session: Session, target: str, stage: str) -> str | None:
     """The promoted (current) ``run_id`` for one ``(target, stage)`` grain (DAT-408).
 

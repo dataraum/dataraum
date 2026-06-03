@@ -26,7 +26,6 @@ from sqlalchemy import select
 
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
-from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
 from dataraum.investigation.db_models import InvestigationSession
@@ -35,7 +34,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
-from dataraum.storage import MetadataSnapshotHead, Source, Table
+from dataraum.storage import MetadataSnapshotHead, Source, Table, session_head_target
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
@@ -547,15 +546,14 @@ def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: da
 
 
 def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
-    """Flip the relationship-readiness heads to this begin_session run (DAT-408).
+    """Seal this begin_session run as the session's current run (DAT-408).
 
-    begin_session's terminal promote: after the session ``detect`` writes
-    relationship readiness rows stamped with ``run_id``, point each
-    ``(relationship:{from}::{to}, "detect")`` head at this run so
-    ``load_relationship_readiness`` resolves it as current. Mirrors
-    :func:`promote_run` but over the run's relationship targets (relationships are
-    session-grain; only the run-versioned readiness needs a head). Workspace guard
-    mirrors the other session helpers (DAT-364).
+    begin_session's terminal promote: after ``session_detect`` writes this run's
+    relationship catalog + readiness (all stamped ``run_id``), point the single
+    per-session head ``(session:{id}, "detect")`` at this run. Readers
+    (``load_relationship_readiness``, the cockpit) resolve the session's current run
+    through it. Per-session (not per-target) because the run is atomic — every run
+    measures the whole catalog. Workspace guard mirrors the other session helpers.
     """
     active_workspace_id = get_active_workspace_id()
     if identity.workspace_id != active_workspace_id:
@@ -570,31 +568,13 @@ def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -
             "BeginSessionWorkflow mints it before the first activity (DAT-408)."
         )
 
-    promoted = 0
     with manager.session_scope() as session:
-        targets = list(
-            session.execute(
-                select(EntropyReadinessRecord.target)
-                .where(
-                    EntropyReadinessRecord.session_id == identity.session_id,
-                    EntropyReadinessRecord.run_id == run_id,
-                    EntropyReadinessRecord.target.like("relationship:%"),
-                )
-                .distinct()
-            ).scalars()
+        _upsert_head(
+            session, session_head_target(identity.session_id), "detect", run_id, datetime.now(UTC)
         )
-        now = datetime.now(UTC)
-        for target in targets:
-            _upsert_head(session, target, "detect", run_id, now)
-            promoted += 1
 
-    logger.info(
-        "session_promote_done",
-        session_id=identity.session_id,
-        run_id=run_id,
-        heads_promoted=promoted,
-    )
-    return promoted
+    logger.info("session_promote_done", session_id=identity.session_id, run_id=run_id)
+    return 1
 
 
 def _build_phase_config(

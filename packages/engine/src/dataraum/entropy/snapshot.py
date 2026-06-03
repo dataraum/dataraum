@@ -134,16 +134,17 @@ def _resolve_relationship_target(
     session: Session,
     target: str,
     session_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a ``relationship:{from_col}::{to_col}`` target to context fields.
 
     Readiness is per directional column pair; several method-rows (candidate / llm
-    / manual) may share the pair, so the representative is the highest-precedence
-    one. ``session_id`` scopes the lookup — relationships are session-grain, so two
-    sessions sharing a column pair must not cross-resolve (the picked row's session
-    becomes the detector context's). Returns the focal endpoints + ``session_id``
-    (a relationship detector may need the whole session's relationships), or
-    ``None`` if no row matches.
+    / manual / keeper) may share the pair, so the representative is the
+    highest-precedence one. ``session_id`` + ``run_id`` scope the lookup to this
+    run's catalog (DAT-408) — rows coexist across runs and sessions, so without
+    both the picked row could come from another run/session. Returns the focal
+    endpoints + ``session_id`` (a relationship detector may need the run's full
+    relationship set), or ``None`` if no row matches.
     """
     parsed = parse_relationship_target(target)
     if parsed is None:
@@ -159,6 +160,8 @@ def _resolve_relationship_target(
     )
     if session_id is not None:
         stmt = stmt.where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
     rels = list(session.execute(stmt).scalars())
     if not rels:
         return None
@@ -291,7 +294,7 @@ def take_snapshot(
     is_relationship_target = target.startswith("relationship:")
 
     if is_relationship_target:
-        resolved_rel = _resolve_relationship_target(session, target, session_id)
+        resolved_rel = _resolve_relationship_target(session, target, session_id, run_id)
         if resolved_rel is None:
             logger.warning(f"Cannot resolve relationship target for snapshot: {target}")
             return Snapshot(scores={}, detectors_run=[])

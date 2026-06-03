@@ -240,28 +240,34 @@ def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, An
 
 
 def load_relationship_for_pair(
-    session: Session, from_column_id: str, to_column_id: str
+    session: Session,
+    from_column_id: str,
+    to_column_id: str,
+    session_id: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """The representative relationship for one directional column pair (DAT-408).
 
-    Several method-rows (candidate / llm / manual) may share a pair; the
-    representative is the highest-precedence one (manual > llm > candidate) — that
-    is the relationship the readiness measures.
+    Several method-rows (candidate / llm / manual / keeper) may share a pair; the
+    representative is the highest-precedence one (manual > keeper > llm > candidate)
+    — that is the relationship the readiness measures. ``session_id`` + ``run_id``
+    scope to this run's catalog (rows coexist across runs/sessions).
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
-    rels = list(
-        session.execute(
-            select(Relationship).where(
-                Relationship.from_column_id == from_column_id,
-                Relationship.to_column_id == to_column_id,
-            )
-        ).scalars()
+    stmt = select(Relationship).where(
+        Relationship.from_column_id == from_column_id,
+        Relationship.to_column_id == to_column_id,
     )
+    if session_id is not None:
+        stmt = stmt.where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
     if not rels:
         return None
-    precedence = {"manual": 3, "llm": 2, "candidate": 1}
+    precedence = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
     rel = max(rels, key=lambda r: precedence.get(r.detection_method or "", 0))
     table_names = dict(
         session.execute(
@@ -275,14 +281,21 @@ def load_relationship_for_pair(
     return _relationship_to_dict(rel, table_names)
 
 
-def load_session_relationships(session: Session, session_id: str) -> list[dict[str, Any]]:
-    """All relationships in a session (DAT-408) — join-path ambiguity needs the set."""
+def load_session_relationships(
+    session: Session, session_id: str, run_id: str | None = None
+) -> list[dict[str, Any]]:
+    """This run's relationships for a session (DAT-408) — join-path ambiguity needs the set.
+
+    Scoped to ``run_id`` (the current run's catalog) so coexisting prior-run rows
+    don't double-count; ``None`` (tests) reads the session unscoped.
+    """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
-    rels = list(
-        session.execute(select(Relationship).where(Relationship.session_id == session_id)).scalars()
-    )
+    stmt = select(Relationship).where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
     if not rels:
         return []
     table_ids = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}

@@ -17,7 +17,7 @@ from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.models import relationship_target_key
 from dataraum.entropy.views.readiness_context import load_relationship_readiness
 from dataraum.storage import Column, ConfigOverlay, Source, Table
-from dataraum.storage.snapshot_head import MetadataSnapshotHead
+from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 from tests.conftest import baseline_session_id
 
 
@@ -30,10 +30,11 @@ def _seed_tables_columns(session: Session) -> None:
     session.flush()
 
 
-def _rel(session: Session, frm: str, to: str, method: str) -> None:
+def _rel(session: Session, frm: str, to: str, method: str, run_id: str | None = None) -> None:
     session.add(
         Relationship(
             session_id=baseline_session_id(),
+            run_id=run_id,
             from_table_id="t1",
             from_column_id=frm,
             to_table_id="t2",
@@ -122,18 +123,26 @@ def _readiness_row(session: Session, target: str, run_id: str) -> None:
     )
 
 
-def test_relationship_readiness_head_resolved_and_gated(session: Session) -> None:
-    """Reader returns the promoted run only, and only for live, non-suppressed pairs."""
+def _seal(session: Session, run_id: str) -> None:
+    """Seal the session at ``run_id`` via the per-session head (DAT-408)."""
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()), stage="detect", run_id=run_id
+        )
+    )
+
+
+def test_relationship_readiness_promoted_run_only_and_gated(session: Session) -> None:
+    """Reader returns the sealed run's readiness, gated on that run's live pairs."""
     _seed_tables_columns(session)
-    _rel(session, "ca", "cb", "llm")  # the only LIVE relationship
+    _rel(session, "ca", "cb", "llm", run_id="run-B")  # live in the promoted run
     live_target = relationship_target_key("ca", "cb")
     ghost_target = relationship_target_key("ca", "zz")  # no Relationship row
 
-    _readiness_row(session, live_target, "run-A")  # not head → excluded
-    _readiness_row(session, live_target, "run-B")  # head → surfaces
-    _readiness_row(session, ghost_target, "run-B")  # no live rel → excluded
-    session.add(MetadataSnapshotHead(target=live_target, stage="detect", run_id="run-B"))
-    session.add(MetadataSnapshotHead(target=ghost_target, stage="detect", run_id="run-B"))
+    _readiness_row(session, live_target, "run-A")  # not the sealed run → excluded
+    _readiness_row(session, live_target, "run-B")  # sealed run → surfaces
+    _readiness_row(session, ghost_target, "run-B")  # no live rel this run → excluded
+    _seal(session, "run-B")
     session.flush()
 
     out = load_relationship_readiness(session, baseline_session_id())
@@ -143,10 +152,10 @@ def test_relationship_readiness_head_resolved_and_gated(session: Session) -> Non
 def test_relationship_readiness_excludes_suppressed(session: Session) -> None:
     """A user-dropped (rejected) relationship's readiness is not surfaced."""
     _seed_tables_columns(session)
-    _rel(session, "ca", "cb", "llm")
+    _rel(session, "ca", "cb", "llm", run_id="run-B")
     target = relationship_target_key("ca", "cb")
     _readiness_row(session, target, "run-B")
-    session.add(MetadataSnapshotHead(target=target, stage="detect", run_id="run-B"))
+    _seal(session, "run-B")
     session.add(
         ConfigOverlay(
             type="relationship",

@@ -391,6 +391,7 @@ def synthesize_and_store_tables(
         rel_rows.append(
             {
                 "session_id": session_id,
+                "run_id": run_id,
                 "from_table_id": from_table_id,
                 "from_column_id": from_col_id,
                 "to_table_id": to_table_id,
@@ -403,16 +404,23 @@ def synthesize_and_store_tables(
             }
         )
 
-    # Idempotent + durable (DAT-408): upsert on the session-grain unique key so a
-    # begin_session re-run REFRESHES an existing ``llm`` relationship's metrics
-    # (and a Temporal at-least-once retry is a no-op) instead of hitting the
-    # widened unique constraint. A later pass not re-finding a row leaves it —
-    # "silent acceptance"; only a user drop (ConfigOverlay reject) removes it.
+    # Run-versioned + idempotent (DAT-408): this run's llm relationships are stamped
+    # with ``run_id`` and coexist with prior runs; the upsert keys on the run-grain
+    # unique constraint so a Temporal at-least-once retry (same run_id) refreshes
+    # rather than duplicates. Silent acceptance — keeping an llm a later run didn't
+    # re-find — is handled by materializing a ``keeper`` from a teach overlay
+    # (DAT-409), not by mutating across runs here.
     upsert(
         session,
         RelationshipModel,
         rel_rows,
-        index_elements=["session_id", "from_column_id", "to_column_id", "detection_method"],
+        index_elements=[
+            "session_id",
+            "run_id",
+            "from_column_id",
+            "to_column_id",
+            "detection_method",
+        ],
     )
 
     return Result.ok(enrichment)

@@ -47,6 +47,7 @@ def load_relationship_candidates_for_semantic(
     session: Session,
     table_ids: list[str] | None = None,
     detection_method: str = "candidate",
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load relationship candidates from DB formatted for semantic agent.
 
@@ -81,8 +82,12 @@ def load_relationship_candidates_for_semantic(
             }
         ]
     """
-    # Build query
+    # Build query — scoped to the current run's catalog (DAT-408) when ``run_id`` is
+    # given, so coexisting prior-run rows aren't fed to the LLM twice.
     stmt = select(Relationship).where(Relationship.detection_method == detection_method)
+
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
 
     if table_ids:
         stmt = stmt.where(

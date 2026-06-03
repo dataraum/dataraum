@@ -145,23 +145,25 @@ def run_detector_post_step(
         # picks the object up — the readiness ROW itself keys off ``target``.
         from dataraum.analysis.relationships.db_models import Relationship
 
-        pairs = list(
-            session.execute(
-                select(
-                    Relationship.from_column_id,
-                    Relationship.to_column_id,
-                    Relationship.from_table_id,
-                )
-                .where(
-                    # Session-grain: only THIS session's relationships (two sessions
-                    # can share the same tables/column pairs).
-                    Relationship.session_id == session_id,
-                    Relationship.from_table_id.in_(table_ids)
-                    | Relationship.to_table_id.in_(table_ids),
-                )
-                .distinct()
-            ).tuples()
+        pairs_stmt = (
+            select(
+                Relationship.from_column_id,
+                Relationship.to_column_id,
+                Relationship.from_table_id,
+            )
+            .where(
+                # This run's catalog (DAT-408): scoped to the session AND the current
+                # run_id — rows coexist across runs, so reads pick the current one.
+                # Durable manual/keeper rows are materialized into this run (DAT-409),
+                # so a single current-run read sees the whole catalog.
+                Relationship.session_id == session_id,
+                Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids),
+            )
+            .distinct()
         )
+        if run_id is not None:
+            pairs_stmt = pairs_stmt.where(Relationship.run_id == run_id)
+        pairs = list(session.execute(pairs_stmt).tuples())
         seen_pairs: set[tuple[str, str]] = set()
         for from_col, to_col, from_table in pairs:
             if (from_col, to_col) in seen_pairs:

@@ -35,25 +35,29 @@ class Relationship(Base):
     detected through value overlap analysis, cardinality analysis,
     or semantic similarity.
 
-    detection_method values:
-    - 'candidate': Raw candidate from statistical join detection (Phase 6)
-    - 'llm': Confirmed/refined by LLM semantic analysis (Phase 8)
-    - 'manual': Manually specified by user
+    detection_method values (the ``candidate`` / ``not candidate`` split, DAT-408):
+    - 'candidate': ephemeral structural candidate, re-derived every run.
+    - 'llm': this run's LLM-confirmed relationship.
+    - 'manual': user-authored, materialized each run from a teach overlay (DAT-409).
+    - 'keeper': silently-accepted llm (a promoted run found it, a later run didn't,
+      the user never rejected it) — materialized from a ``keep`` overlay (DAT-409).
+    The "defined" catalog the downstream stages read is ``detection_method != 'candidate'``.
 
-    Multiple records can exist for the same column pair with different
-    detection methods, providing full traceability of how relationships
-    were discovered and confirmed.
+    Run-versioned (DAT-408): every row carries the producing ``run_id`` and rows
+    coexist across runs (non-destructive; deletes are run_id-scoped, retry-only).
+    The durable methods (manual/keeper) are re-materialized into each run from
+    overlays, so a single read scoped to the current run sees the whole catalog.
     """
 
     __tablename__ = "relationships"
     __table_args__ = (
-        # Session-grain identity (DAT-408): relationships live per session (the
-        # table set is fixed per session), so the unique key is scoped to
-        # ``session_id``. Without it, two sessions sharing a table collide on the
-        # same column pair. Same pair may still recur with different detection
-        # methods (candidate / llm / manual).
+        # Run-grain identity (DAT-408): the catalog is versioned by ``run_id`` like
+        # all other metadata, so the unique key includes it — two runs' rows for the
+        # same pair+method coexist. ``session_id`` stays in the key (a run belongs to
+        # one session) so two sessions never collide on a shared column pair.
         UniqueConstraint(
             "session_id",
+            "run_id",
             "from_column_id",
             "to_column_id",
             "detection_method",
@@ -67,6 +71,9 @@ class Relationship(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    # Snapshot version axis (DAT-408): the run that produced/materialized this row.
+    # Nullable for non-workflow/test callers; the workflow path always stamps it.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     # Source side
     from_table_id: Mapped[str] = mapped_column(

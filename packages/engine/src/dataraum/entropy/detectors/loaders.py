@@ -268,7 +268,9 @@ def load_relationship_for_pair(
             select(Table.table_id, Table.table_name).where(
                 Table.table_id.in_([rel.from_table_id, rel.to_table_id])
             )
-        ).tuples()
+        )
+        .tuples()
+        .all()
     )
     return _relationship_to_dict(rel, table_names)
 
@@ -287,7 +289,9 @@ def load_session_relationships(session: Session, session_id: str) -> list[dict[s
     table_names = dict(
         session.execute(
             select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
-        ).tuples()
+        )
+        .tuples()
+        .all()
     )
     return [_relationship_to_dict(rel, table_names) for rel in rels]
 

@@ -166,7 +166,9 @@ def _resolve_relationship_target(
             select(Table.table_id, Table.table_name).where(
                 Table.table_id.in_([rel.from_table_id, rel.to_table_id])
             )
-        ).tuples()
+        )
+        .tuples()
+        .all()
     )
     return {
         "relationship_id": rel.relationship_id,

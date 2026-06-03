@@ -4,6 +4,61 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-03: DAT-408 — relationship-granularity readiness + begin_session on the substrate
+
+Slice 2.0b + the begin_session-substrate core of DAT-415. Relationship readiness is now
+first-class (per directional column pair), produced by the two relationship detectors
+**reshaped to a new `relationship` detector scope**, persisted + promoted on the
+versioned snapshot substrate at begin_session's terminal `detect`.
+
+### dataraum-eval
+- **Detector behavior CHANGED (recalibrate recall/precision vs ground truth):**
+  - **`join_path_determinism`** — was column-scoped + proportional (orphan / star-schema /
+    ambiguity-ratio over a column's relationships). Now **relationship-scoped**: for the
+    focal directional pair it scores `score_ambiguous` iff there is **>1 distinct
+    column-pair join path between the two tables** (and no preferred-join overlay), else
+    `score_deterministic`. The `orphan` (0.9) and proportional bands are **gone**. One
+    object per relationship, target `relationship:{from_col}::{to_col}`.
+  - **`relationship_entropy`** — was column-scoped (one object per relationship a column
+    touched). Now **relationship-scoped**: one object per directional pair (representative
+    row `manual > llm > candidate`). RI/cardinality/semantic math unchanged, BUT
+    confirmation now comes from **`ConfigOverlay(type='relationship')`** (multi-source),
+    **not** `Relationship.is_confirmed` (DAT-372). So "confirmed" fires only when the user
+    has actually teach-confirmed via an overlay — expect more relationships scoring
+    "unconfirmed" until teaches exist. `join_path_determinism` reads the SAME overlays, so
+    the two agree on "confirmed."
+- **New readiness rows**: `entropy_readiness` now contains `relationship:` target rows
+  (band/intents/drivers), `column_id`/`table_id`/`source_id` NULL — identity is in the new
+  **`target`** column. The rollup (`assemble_readiness_context`) routes `relationship:`
+  targets through the same network rollup as columns (so `join_path_determinism` →
+  `query_intent` etc. drive the band; `relationship_quality` is a DirectSignal unless a
+  network node exists for it — check `network.yaml` if relationship bands look flat).
+- **New reader**: `load_relationship_readiness(session, session_id)` — head-resolved (per
+  `(relationship:{...}, "detect")`) and **gated on a live, non-suppressed `Relationship`**
+  (dropped/vanished relationships keep prior-run rows for audit but don't surface).
+- **Relationship catalog durability** (affects replay): `candidate` rows **re-derive each
+  begin_session run** (delete-before-insert by `(session, method='candidate')`); `llm` /
+  `manual` are **durable** (only a user drop removes them — "silent acceptance"). A drop is
+  `ConfigOverlay(type='relationship', payload={action:'reject', from_column_id, to_column_id})`,
+  honored on re-derive (skip) + read (gate).
+- **begin_session is now versioned**: `BeginSessionWorkflow` mints a `run_id`, ends with
+  `session_detect` → `session_promote_to_latest`. A begin_session re-run is non-destructive
+  (prior run's relationship readiness survives; head advances). `should_skip`'s
+  "already detected/classified → skip" idempotency branch was removed on `relationships` +
+  `semantic_per_table` (it would make a replay a silent no-op); genuine preconditions kept.
+- **Schema** (fresh DB / re-pull): `EntropyReadinessRecord.target` (NOT NULL) +
+  `source_id` now nullable; `MetadataSnapshotHead.table_id` → **`target`** string
+  (add_source uses `table:{id}`); `Relationship` unique key widened to
+  `(session_id, from_col, to_col, method)`; `SessionIdentity.run_id` (input field).
+
+### dataraum-testdata
+- Hints: ground truth for **relationship-level** quality would help calibrate the reshaped
+  detectors — multi-FK fixtures with (a) a single clean join path, (b) two distinct
+  column-pair paths between the same two tables (ambiguous), and (c) a confirmed vs
+  unconfirmed relationship (to exercise the overlay-confirmation path).
+
+### Status: pending
+
 ## 2026-06-03: DAT-413 — versioned metadata substrate + non-destructive replay (Slice A)
 
 ### dataraum-eval

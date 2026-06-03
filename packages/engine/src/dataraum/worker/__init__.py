@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataraum.worker.activity import (
     begin_session_select,
+    promote_run,
     raw_table_ids,
     run_detectors,
     run_phase,
@@ -63,6 +64,7 @@ __all__ = [
     "TypingResult",
     "begin_session_select",
     "bootstrap_worker_substrate",
+    "promote_run",
     "raw_table_ids",
     "run_detectors",
     "run_phase",

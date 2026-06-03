@@ -102,6 +102,15 @@ async def _detect(_identity: SourceIdentity) -> PhaseOutcome:
     return PhaseOutcome(status="completed")
 
 
+@activity.defn(name="promote_to_latest")
+async def _promote_to_latest(_identity: SourceIdentity) -> PhaseOutcome:
+    # Terminal head-flip step (DAT-413). A trivial stub here — the parent runs it
+    # last, after detect; the orchestration/progress bookkeeping is what's under
+    # test, not the snapshot-head write itself (that is exercised in the
+    # ConnectionManager-backed phase-activity tests).
+    return PhaseOutcome(status="completed")
+
+
 _MOCK_ACTIVITIES = [
     _import,
     _typing,
@@ -111,6 +120,7 @@ _MOCK_ACTIVITIES = [
     _temporal,
     _semantic_per_column,
     _detect,
+    _promote_to_latest,
 ]
 
 _IDENTITY = SourceIdentity(workspace_id="test", source_id="src-dat406", session_id="sess-dat406")
@@ -180,8 +190,9 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     assert completed == sorted(completed), f"tables_completed regressed: {completed}"
     assert all(s.tables_completed <= s.tables_total or s.tables_total == 0 for s in observed)
 
-    # Phase only ever moves forward through the declared order.
-    order = ["import", "processing_tables", "semantic_per_column", "detect", "done"]
+    # Phase only ever moves forward through the declared order. ``promote`` is the
+    # terminal head-flip step (DAT-413) the parent runs after detect, before done.
+    order = ["import", "processing_tables", "semantic_per_column", "detect", "promote", "done"]
     seen_indices = [order.index(s.phase) for s in observed]
     assert seen_indices == sorted(seen_indices), f"phase regressed: {[s.phase for s in observed]}"
 

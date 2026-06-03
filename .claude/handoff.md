@@ -36,24 +36,32 @@ versioned snapshot substrate at begin_session's terminal `detect`.
 - **New reader**: `load_relationship_readiness(session, session_id)` — head-resolved (per
   `(relationship:{...}, "detect")`) and **gated on a live, non-suppressed `Relationship`**
   (dropped/vanished relationships keep prior-run rows for audit but don't surface).
-- **Relationship catalog durability** (affects replay): `candidate` rows **re-derive each
-  begin_session run** (delete-before-insert by `(session, method='candidate')`); `llm` /
-  `manual` are **durable** (only a user drop removes them — "silent acceptance"). A drop is
-  `ConfigOverlay(type='relationship', payload={action:'reject', from_column_id, to_column_id})`,
-  honored on re-derive (skip) + read (gate).
-- **begin_session is now versioned**: `BeginSessionWorkflow` mints a `run_id`, ends with
-  `session_detect` → `session_promote_to_latest`. A begin_session re-run is non-destructive
-  (prior run's relationship readiness survives; head advances). `should_skip`'s
-  "already detected/classified → skip" idempotency branch was removed on `relationships` +
-  `semantic_per_table` (it would make a replay a silent no-op); genuine preconditions kept.
+- **Relationship catalog is RUN-VERSIONED** (the add_source contract — affects replay):
+  every `Relationship` carries a `run_id`, rows **coexist across runs** (non-destructive),
+  and **deletes are run_id-scoped, retry-only** (a re-run never touches a prior run's rows).
+  `detection_method` taxonomy: **`candidate`** = ephemeral per-run structural; the **defined**
+  set = `not candidate` (`llm` this-run + `manual`/`keeper` materialized from overlays). The
+  unique key is `(session_id, run_id, from_col, to_col, method)`. **All catalog reads scope to
+  the current run** — durable `manual`/`keeper` are re-materialized into each run from
+  `ConfigOverlay`, so a single current-run read sees the whole catalog. The overlay **writers**
+  (confirm/reject/add + the silent-accept→`keeper` lift-up + materialize-from-overlay) are
+  **DAT-409**, not here — so this slice's re-runs reproduce `candidate`/`llm` only.
+  **Dormant defined-relationship consumers** (`enriched_views`/`cycles`/`validation`/`graphs`)
+  still read `method=='llm'` unscoped — they are in no live workflow; their slices (DAT-402/3/4)
+  must adopt the run-scoped `not candidate` read when reactivated.
+- **begin_session is versioned + sealed PER SESSION**: `BeginSessionWorkflow` mints a `run_id`,
+  ends with `session_detect` → `session_promote_to_latest`, which sets one head
+  `(session:{id}, "detect")` → the current run (atomic whole-session re-run, no per-target head).
+  Re-runs are non-destructive; readers resolve the session's current run via that head.
+  `should_skip`'s "already detected/classified → skip" idempotency branch was removed on
+  `relationships` + `semantic_per_table` (it would make a replay a no-op); preconditions kept.
 - **Schema** (fresh DB / re-pull): `EntropyReadinessRecord.target` (NOT NULL);
-  **`source_id` DROPPED from `entropy_objects` + `entropy_readiness`** (it was
-  write-only — nothing ever read it; source is reachable via `table_id`) along with
-  the `idx_entropy_source_detector` + `idx_readiness_source` indexes;
-  `MetadataSnapshotHead.table_id` → **`target`** string (add_source uses
-  `table:{id}`); `Relationship` unique key widened to `(session_id, from_col,
-  to_col, method)`; `SessionIdentity.run_id` (input field). If an eval path filtered
-  entropy/readiness by `source_id`, switch to `session_id` or `table_id`.
+  **`source_id` DROPPED from `entropy_objects` + `entropy_readiness`** (write-only; source via
+  `table_id`) + their two indexes; `MetadataSnapshotHead.table_id` → **`target`** string
+  (`table:{id}` add_source, `relationship:{a}::{b}` readiness, `session:{id}` the begin_session
+  seal); **`Relationship.run_id`** + unique key `(session_id, run_id, from_col, to_col, method)`;
+  `SessionIdentity.run_id`. If an eval path filtered entropy/readiness/relationships by
+  `source_id`, switch to `session_id`; relationship reads should scope to the current `run_id`.
 
 ### dataraum-testdata
 - Hints: ground truth for **relationship-level** quality would help calibrate the reshaped

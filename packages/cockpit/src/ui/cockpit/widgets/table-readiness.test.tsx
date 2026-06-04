@@ -68,6 +68,9 @@ const analyzed: LookTableResult = {
 			top_drivers: [],
 		},
 	],
+	// The begin_session whole-table band (DAT-415) — null here: this widget renders
+	// the add_source per-column grid; surfacing the table-grain band is a follow-up.
+	table_readiness: null,
 };
 
 describe("TableReadinessWidget (DAT-350)", () => {

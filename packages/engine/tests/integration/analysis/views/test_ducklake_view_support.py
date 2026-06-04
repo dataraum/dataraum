@@ -15,7 +15,9 @@ import duckdb
 
 
 def test_ducklake_supports_enriched_views(duckdb_conn: duckdb.DuckDBPyConnection) -> None:
-    duckdb_conn.execute('CREATE OR REPLACE TABLE lake.typed."probe_fact" AS SELECT 1 AS id, 100 AS amount')
+    duckdb_conn.execute(
+        'CREATE OR REPLACE TABLE lake.typed."probe_fact" AS SELECT 1 AS id, 100 AS amount'
+    )
     duckdb_conn.execute(
         'CREATE OR REPLACE VIEW lake.typed."probe_enriched" AS '
         'SELECT * FROM lake.typed."probe_fact"'

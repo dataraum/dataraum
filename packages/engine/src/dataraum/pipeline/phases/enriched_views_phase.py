@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -44,9 +44,6 @@ from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.server.storage import LAKE_CATALOG_ALIAS
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -299,7 +296,11 @@ class EnrichedViewsPhase(BasePhase):
             # The view definition is latest-only substrate (one row per fact,
             # DAT-415): reconcile-in-place, stamping the run that materialized it.
             # The recipe (above) carries the version history; readers resolve the
-            # current view here without run-scoping.
+            # current view here without run-scoping. Keyed on fact_table_id alone
+            # (no session filter) — the physical view is shared in lake.typed, so
+            # the metadata is last-writer-wins per fact, which under single-user
+            # sequential begin_session is exactly one writer. (Concurrent sessions
+            # enriching the same fact is a multi-session concern, not this slice.)
             view_record = ctx.session.execute(
                 select(EnrichedView).where(EnrichedView.fact_table_id == fact_table.table_id)
             ).scalar_one_or_none()

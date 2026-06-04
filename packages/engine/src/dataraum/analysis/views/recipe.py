@@ -37,8 +37,16 @@ logger = get_logger(__name__)
 
 
 def _bare_name(target_fqn: str) -> str:
-    """``lake.typed."enriched_x"`` → ``enriched_x`` (the last quoted segment)."""
-    return target_fqn.split('"')[-2]
+    """``lake.typed."enriched_x"`` → ``enriched_x`` (the last quoted segment).
+
+    Every enriched recipe ``target_fqn`` is composed via ``_lake_fqn`` and so
+    always quotes the bare segment; a target without quotes is a corrupt recipe
+    row — fail loud rather than silently mis-derive a name during a reset.
+    """
+    parts = target_fqn.split('"')
+    if len(parts) < 3:
+        raise ValueError(f"enriched recipe target_fqn is not a quoted FQN: {target_fqn!r}")
+    return parts[-2]
 
 
 def _enriched_fqn(bare: str) -> str:

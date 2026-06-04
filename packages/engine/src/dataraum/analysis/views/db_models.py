@@ -27,12 +27,13 @@ class EnrichedView(Base):
     """Record of an enriched DuckDB view.
 
     Tracks views created by joining fact tables with their confirmed
-    dimension tables. The view *definition* is run-versioned (``run_id``,
-    DAT-415): a begin_session run stamps its rows and prior runs' rows coexist,
-    so a reset/diff can resolve a target run. The view's ``CREATE VIEW`` DDL is
-    NOT stored here — it lives in the versioned
-    :class:`~dataraum.analysis.typing.db_models.MaterializationRecipe`
-    (``layer="enriched"``), the single rebuild source (DAT-414 substrate).
+    dimension tables. **Latest-only** (DAT-415): one row per ``fact_table_id``,
+    reconciled in place each run — ``run_id`` is a provenance stamp (the run that
+    last materialized it), NOT a version axis. The version history + reset live in
+    the :class:`~dataraum.analysis.typing.db_models.MaterializationRecipe`
+    (``layer="enriched"``) — the view's ``CREATE VIEW`` DDL is stored there
+    (sqlglot-gated, the single rebuild source), never here. ``view_sql`` was
+    removed (it was write-only).
     """
 
     __tablename__ = "enriched_views"

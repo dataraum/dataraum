@@ -102,8 +102,10 @@ export const Route = createFileRoute("/api/chat")({
 				// runtime that surfaces disconnect there (before stream cancel) still
 				// stops the loop.
 				const abortController = new AbortController();
-				request.signal?.addEventListener("abort", () =>
-					abortController.abort(),
+				request.signal?.addEventListener(
+					"abort",
+					() => abortController.abort(),
+					{ once: true },
 				);
 				const stream = chat(buildChatOptions(messages, abortController));
 				return toServerSentEventsResponse(stream, { abortController });

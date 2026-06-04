@@ -273,9 +273,9 @@ export function ResultGridWidget({
 }: {
 	state: Extract<CanvasState, { kind: "result-grid" }>;
 }) {
-	// ChatRail re-dispatches a fresh canvasState object on every message tick;
-	// serialize sql+params so a new `key` is produced only when the QUERY actually
-	// changes, not on per-tick object churn.
+	// The provider derives a fresh canvas object on every message tick; serialize
+	// sql+params so a new `key` is produced only when the QUERY actually changes,
+	// not on per-tick object churn.
 	const baseKey = useMemo(
 		() => JSON.stringify([state.sql, state.params ?? null]),
 		[state.sql, state.params],

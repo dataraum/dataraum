@@ -21,7 +21,7 @@ import {
 import { useState } from "react";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { useCockpit } from "#/ui/cockpit/cockpit-state";
+import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 
 // Band → Mantine color. An absent band (table not analyzed) renders as a muted
 // dash, not a color, so "unknown" never reads as "ready".
@@ -158,7 +158,9 @@ export function WorkspaceInventoryWidget({
 	state: Extract<CanvasState, { kind: "workspace-inventory" }>;
 }) {
 	const { tables } = state;
-	const { sendMessage } = useCockpit();
+	// Action-only: the stable actions context, so the inventory grid does NOT
+	// re-render while a turn streams.
+	const { sendMessage } = useCockpitActions();
 	const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
 	if (tables.length === 0) {

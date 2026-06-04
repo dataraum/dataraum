@@ -24,7 +24,7 @@ import { theme } from "#/ui/theme";
 // the click test can observe the dispatched request.
 const sendMessage = vi.fn();
 vi.mock("#/ui/cockpit/cockpit-state", () => ({
-	useCockpit: () => ({ sendMessage }),
+	useCockpitActions: () => ({ sendMessage }),
 }));
 
 function renderWidget(readiness: LookTableResult) {

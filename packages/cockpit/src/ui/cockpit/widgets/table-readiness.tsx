@@ -9,7 +9,7 @@
 
 import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { useCockpit } from "#/ui/cockpit/cockpit-state";
+import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 
 // The three intents, in the order the engine's network models them — fixed so
 // the grid columns are stable even if a row's `intents` array is ordered
@@ -59,7 +59,9 @@ export function TableReadinessWidget({
 	state: Extract<CanvasState, { kind: "table-readiness" }>;
 }) {
 	const { readiness } = state;
-	const { sendMessage } = useCockpit();
+	// Action-only: reads the stable actions context, so the readiness grid does
+	// NOT re-render while a turn streams.
+	const { sendMessage } = useCockpitActions();
 
 	// Click-through to the per-column explanation (DAT-352): route the click
 	// through the agent loop (sendMessage) so `why_column` runs once per click.

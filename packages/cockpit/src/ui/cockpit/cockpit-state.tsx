@@ -43,16 +43,32 @@ export interface SendOptions {
 	label?: string;
 }
 
-interface CockpitContextValue {
-	// View state.
-	activeStage: Stage;
-	setActiveStage: (stage: Stage) => void;
+// The context is SPLIT in two so that consumers reading only stable callbacks
+// don't re-render on every streaming token. React context subscription ignores
+// memo() boundaries: a single merged value (which changes every token, because
+// `messages` does) would re-render EVERY useCockpit() consumer per token — even
+// a widget that just needs `sendMessage`. So reactive state and stable actions
+// live in separate contexts; action-only widgets read `useCockpitActions()`.
 
-	// Agent chat (lifted from ChatRail). The SDK owns the agentic tool-loop +
-	// SSE transport; we expose just what the UI renders / drives.
+/** Reactive view + chat state — changes as the conversation streams. */
+interface CockpitState {
+	activeStage: Stage;
+	// Agent chat (lifted from ChatRail). The SDK owns the agentic tool-loop + SSE
+	// transport; we expose just what the UI renders.
 	messages: ReadonlyArray<UIMessage>;
 	isLoading: boolean;
 	error: Error | undefined;
+	// The DERIVED focus canvas.
+	canvas: CanvasState;
+	/** Non-null while the canvas shows a PAST tool result (a clicked chip),
+	 * addressed by tool-call id. Drives the "viewing history" banner. */
+	pinnedCallId: string | null;
+}
+
+/** Stable action handles — referentially constant for the provider's lifetime,
+ * so a consumer that reads ONLY these never re-renders from context. */
+interface CockpitActions {
+	setActiveStage: (stage: Stage) => void;
 	/** Send a turn into the agent loop. Clears any imperative canvas override and
 	 * sets the loading caption. Callable from any widget (no bridge). */
 	sendMessage: (text: string, opts?: SendOptions) => void;
@@ -63,12 +79,6 @@ interface CockpitContextValue {
 		id: string;
 		approved: boolean;
 	}) => Promise<void>;
-
-	// The DERIVED focus canvas + its two override axes.
-	canvas: CanvasState;
-	/** Non-null while the canvas shows a PAST tool result (a clicked chip),
-	 * addressed by tool-call id. Drives the "viewing history" banner. */
-	pinnedCallId: string | null;
 	/** Pin the canvas to a past tool-call's result (re-derived from messages). */
 	pinCanvas: (callId: string) => void;
 	/** Clear the pin → the canvas snaps back to the live latest. */
@@ -79,7 +89,8 @@ interface CockpitContextValue {
 	showCanvas: (canvas: CanvasState) => void;
 }
 
-const CockpitContext = createContext<CockpitContextValue | null>(null);
+const CockpitStateContext = createContext<CockpitState | null>(null);
+const CockpitActionsContext = createContext<CockpitActions | null>(null);
 
 /** Return the previous reference when `value` is deep-equal (by JSON), so a
  * derived object that recomputes every render but rarely CHANGES doesn't churn
@@ -157,33 +168,30 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 				: { kind: "empty" }),
 	);
 
-	const value = useMemo<CockpitContextValue>(
+	// Reactive state — recreated each streaming tick (messages/canvas change).
+	const state = useMemo<CockpitState>(
+		() => ({ activeStage, messages, isLoading, error, canvas, pinnedCallId }),
+		[activeStage, messages, isLoading, error, canvas, pinnedCallId],
+	);
+
+	// Stable actions — every dep is a stable callback (useChat's are useCallback'd
+	// over a memoized client; ours are useCallback([])), so this value is created
+	// ONCE. Action-only consumers reading it never re-render from context.
+	const actions = useMemo<CockpitActions>(
 		() => ({
-			activeStage,
 			setActiveStage,
-			messages,
-			isLoading,
-			error,
 			sendMessage: sendTurn,
 			stop,
 			addToolApprovalResponse,
-			canvas,
-			pinnedCallId,
 			pinCanvas,
 			returnToLive,
 			showCanvas,
 		}),
 		[
-			activeStage,
 			setActiveStage,
-			messages,
-			isLoading,
-			error,
 			sendTurn,
 			stop,
 			addToolApprovalResponse,
-			canvas,
-			pinnedCallId,
 			pinCanvas,
 			returnToLive,
 			showCanvas,
@@ -191,14 +199,37 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	);
 
 	return (
-		<CockpitContext.Provider value={value}>{children}</CockpitContext.Provider>
+		<CockpitActionsContext.Provider value={actions}>
+			<CockpitStateContext.Provider value={state}>
+				{children}
+			</CockpitStateContext.Provider>
+		</CockpitActionsContext.Provider>
 	);
 }
 
-export function useCockpit(): CockpitContextValue {
-	const value = useContext(CockpitContext);
+/** Reactive view + chat state. A consumer re-renders on every streaming tick —
+ * use only when you render that streaming state. */
+export function useCockpitState(): CockpitState {
+	const value = useContext(CockpitStateContext);
 	if (value === null) {
-		throw new Error("useCockpit must be used within a CockpitProvider");
+		throw new Error("useCockpitState must be used within a CockpitProvider");
 	}
 	return value;
+}
+
+/** Stable action handles. Reading ONLY this never re-renders from context — the
+ * right hook for widgets that just dispatch (sendMessage / showCanvas / …). */
+export function useCockpitActions(): CockpitActions {
+	const value = useContext(CockpitActionsContext);
+	if (value === null) {
+		throw new Error("useCockpitActions must be used within a CockpitProvider");
+	}
+	return value;
+}
+
+/** Convenience: state + actions merged. Subscribes to BOTH contexts, so it
+ * re-renders every streaming tick — use only when a component needs both
+ * reactive state AND actions (ChatRail, CockpitView). */
+export function useCockpit(): CockpitState & CockpitActions {
+	return { ...useCockpitState(), ...useCockpitActions() };
 }

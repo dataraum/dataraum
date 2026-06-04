@@ -26,7 +26,7 @@ import { theme } from "#/ui/theme";
 // dispatched request.
 const sendMessage = vi.fn();
 vi.mock("#/ui/cockpit/cockpit-state", () => ({
-	useCockpit: () => ({ sendMessage }),
+	useCockpitActions: () => ({ sendMessage }),
 }));
 
 function renderWidget(tables: InventoryTable[]) {

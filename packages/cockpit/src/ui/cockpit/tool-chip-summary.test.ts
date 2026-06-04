@@ -137,6 +137,20 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		).toBe("people.csv — 1 table");
 	});
 
+	it("connect shows a file source's filename, not the full s3:// URI", () => {
+		expect(
+			toolChipSummary(
+				"connect",
+				{},
+				{
+					sourceKind: "file",
+					source: "s3://dataraum-lake/uploads/da833c2e/trial_balance.csv",
+					tables: [{}],
+				},
+			),
+		).toBe("trial_balance.csv — 1 table");
+	});
+
 	it("frame names the vertical + concept count", () => {
 		expect(
 			toolChipSummary(

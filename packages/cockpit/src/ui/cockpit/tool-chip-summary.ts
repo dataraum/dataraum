@@ -19,6 +19,7 @@
 
 import type { ConnectSchema } from "#/duckdb/connect";
 import { displayTableName } from "#/lib/display-names";
+import { fileName } from "#/lib/file-uri";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -160,7 +161,10 @@ export function toolChipSummary(
 			// connecting rather than crashing on `.length` (the multi-file drag-drop
 			// crash). The complete result always carries the array.
 			if (!s || !Array.isArray(s.tables)) return "connecting…";
-			return `${s.source} — ${plural(s.tables.length, "table")}`;
+			// A file source's `source` is the full `s3://…/<id>/<name>` URI — show the
+			// filename, not the bucket/prefix plumbing (a database source is a name).
+			const src = s.sourceKind === "file" ? fileName(s.source) : s.source;
+			return `${src} — ${plural(s.tables.length, "table")}`;
 		}
 		case "frame": {
 			const f = output as FrameResult | undefined;

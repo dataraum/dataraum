@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.utils import (
-    _relationship_overlay_pairs,
     load_suppressed_relationship_pairs,
+    relationship_overlay_pairs,
 )
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column
@@ -77,7 +77,7 @@ def materialize_relationship_overlays(
 
     count = 0
     for action, method in _ACTION_METHOD.items():
-        for from_col, to_col in _relationship_overlay_pairs(session, action):
+        for from_col, to_col in relationship_overlay_pairs(session, action):
             pair = (from_col, to_col)
             if pair in suppressed or pair in existing:
                 continue
@@ -118,7 +118,95 @@ def materialize_relationship_overlays(
 
 def _column_table_map(session: Session, table_ids: list[str]) -> dict[str, str]:
     """``column_id -> table_id`` for every column in ``table_ids``."""
+    # `.tuples().all()` materializes the rows — `dict()` on a bare Result takes the
+    # mapping path (Result has .keys()) and raises "not subscriptable".
     rows = session.execute(
         select(Column.column_id, Column.table_id).where(Column.table_id.in_(table_ids))
     ).tuples()
-    return dict(rows)
+    return dict(rows.all())
+
+
+def write_relationship_keepers(
+    session: Session,
+    session_id: str,
+    *,
+    current_run_id: str | None,
+) -> int:
+    """Lift silently-accepted relationships into ``keep`` overlays (DAT-409 C3).
+
+    The silent-accept rule: an ``llm`` relationship the **promoted prior run** found,
+    that the **current run did not reproduce** and the user did **not reject**, was
+    accepted by the user's silence. Make that explicit — write a
+    ``ConfigOverlay(action='keep', …)`` so the next run materializes it as a durable
+    ``keeper`` (the invisible "silence = acceptance" becomes an auditable record).
+
+    Runs as a pre-promote step: the per-session head still points at the *prior*
+    promoted run (``session_promote_to_latest`` flips it after this), which is the
+    "promoted prior run" the rule compares against. Returns the number of keep
+    overlays written. First run (no promoted prior) → no-op.
+
+    The lifted relationship is absent from the run that detected its absence; the
+    ``keep`` overlay materializes it as ``keeper`` from the NEXT run onward (the
+    accepted one-run gap, by spec).
+    """
+    from dataraum.storage import ConfigOverlay
+    from dataraum.storage.snapshot_head import head_run_id, session_head_target
+
+    prior_run = head_run_id(session, session_head_target(session_id), "detect")
+    if prior_run is None or prior_run == current_run_id:
+        return 0
+
+    prior_llm = _run_pairs(session, session_id, prior_run, method="llm")
+    reproduced = _run_pairs(session, session_id, current_run_id)
+    rejected = load_suppressed_relationship_pairs(session)
+    already_kept = set(relationship_overlay_pairs(session, "keep"))
+
+    count = 0
+    for pair in prior_llm:
+        if pair in reproduced or pair in rejected or pair in already_kept:
+            continue
+        session.add(
+            ConfigOverlay(
+                type="relationship",
+                payload={
+                    "action": "keep",
+                    "from_column_id": pair[0],
+                    "to_column_id": pair[1],
+                },
+            )
+        )
+        already_kept.add(pair)
+        count += 1
+
+    logger.info(
+        "relationship_keepers_written",
+        session_id=session_id,
+        prior_run=prior_run,
+        current_run=current_run_id,
+        count=count,
+    )
+    return count
+
+
+def _run_pairs(
+    session: Session,
+    session_id: str,
+    run_id: str | None,
+    *,
+    method: str | None = None,
+) -> set[tuple[str, str]]:
+    """Directional ``(from_col, to_col)`` pairs of a run's catalog.
+
+    ``method`` filters to one detection method; ``None`` = the whole defined catalog
+    (``!= candidate``) — i.e. what the run actually reproduced.
+    """
+    stmt = select(Relationship.from_column_id, Relationship.to_column_id).where(
+        Relationship.session_id == session_id,
+        Relationship.run_id == run_id,
+    )
+    stmt = stmt.where(
+        Relationship.detection_method == method
+        if method is not None
+        else Relationship.detection_method != "candidate"
+    )
+    return set(session.execute(stmt).tuples())

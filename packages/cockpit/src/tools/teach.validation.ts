@@ -242,7 +242,8 @@ export const TeachPayloadSchema = z
 			"null_value: {category, value}; " +
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
-			"relationship: {action: confirm|reject|add, from_column_id, to_column_id}. " +
+			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
+			"(keep is engine-internal, not a user action). " +
 			"(validation/cycle/metric/explanation take a free-form object — recorded, not yet applied.)",
 	);
 

@@ -362,13 +362,15 @@ class BeginSessionWorkflow:
     ``begin_session_select`` pre-flights the selection + links it to the session
     (``session_tables``), then ``relationships`` (structural candidates) →
     ``semantic_per_table`` (LLM classification + confirms a subset) run over the
-    whole selection, then the terminal ``session_detect`` (relationship-granularity
-    readiness) → ``session_promote_to_latest`` (flip the readiness heads). NO
+    whole selection, then ``session_materialize_overlays`` (fold the user's durable
+    add/keep relationship teaches into this run, DAT-409) → ``session_detect``
+    (relationship-granularity readiness) → ``session_write_keepers`` (silent-accept
+    lift-up, DAT-409) → ``session_promote_to_latest`` (flip the readiness heads). NO
     fan-out — the work is cross-table.
 
     The run mints a ``run_id`` (DAT-408) threaded through every activity; a teach
     re-run is a full re-run under a fresh ``run_id`` (candidates re-derive,
-    llm/manual survive, readiness is non-destructive + promoted to the new run).
+    llm/manual/keeper survive, readiness is non-destructive + promoted to the new run).
     """
 
     @workflow.run
@@ -425,6 +427,18 @@ class BeginSessionWorkflow:
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
+
+        # Silent-accept keepers (DAT-409): BEFORE promote, while the head still names
+        # the prior run — lift each promoted llm this run didn't reproduce (and the
+        # user didn't reject) into a keep overlay for the next run to materialize.
+        await workflow.execute_activity(
+            "session_write_keepers",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
         await workflow.execute_activity(
             "session_promote_to_latest",
             identity,

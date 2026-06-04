@@ -38,6 +38,7 @@ from dataraum.worker.activity import (
     run_phase,
     run_session_phase,
     typed_table_id_for_raw,
+    write_session_keepers,
 )
 from dataraum.worker.contracts import (
     ImportResult,
@@ -223,6 +224,20 @@ class PhaseActivities:
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"{count} relationship detector records for session {identity.session_id}",
+        )
+
+    @activity.defn(name="session_write_keepers")
+    def run_session_write_keepers(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Silent-accept writer (DAT-409 C3) — runs after detect, before promote.
+
+        While the head still names the prior run, lift each promoted ``llm`` the
+        current run didn't reproduce (and the user didn't reject) into a ``keep``
+        overlay, so it re-materializes as ``keeper`` next run.
+        """
+        count = write_session_keepers(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"wrote {count} silent-accept keeper(s) for session {identity.session_id}",
         )
 
     @activity.defn(name="session_promote_to_latest")

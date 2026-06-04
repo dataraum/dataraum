@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.detector import _store_candidates
-from dataraum.analysis.relationships.materialize import materialize_relationship_overlays
+from dataraum.analysis.relationships.materialize import (
+    materialize_relationship_overlays,
+    write_relationship_keepers,
+)
 from dataraum.analysis.relationships.utils import (
     load_confirmed_relationship_pairs,
     load_defined_relationships,
@@ -334,3 +337,114 @@ def test_materialize_skips_endpoint_outside_selection(session: Session) -> None:
 
     assert count == 0
     assert _materialized(session) == []
+
+
+# --- Silent-accept keeper writer (DAT-409 C3) ------------------------------------
+
+
+def _seed_prior_promoted_run(session: Session, run_id: str) -> None:
+    """A prior begin_session run sealed (head points at it) with one llm relationship."""
+    _rel(session, "ca", "cb", "llm", run_id=run_id)
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()), stage="detect", run_id=run_id
+        )
+    )
+    session.flush()
+
+
+def _keep_overlays(session: Session) -> list[dict]:
+    return [
+        o.payload
+        for o in session.query(ConfigOverlay).filter(ConfigOverlay.type == "relationship").all()
+        if (o.payload or {}).get("action") == "keep"
+    ]
+
+
+def test_keeper_lifts_unreproduced_prior_llm(session: Session) -> None:
+    """A promoted llm the current run didn't reproduce becomes a keep overlay."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    # Current run r1 reproduced nothing for this pair.
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 1
+    assert _keep_overlays(session) == [
+        {"action": "keep", "from_column_id": "ca", "to_column_id": "cb"}
+    ]
+
+
+def test_keeper_skips_reproduced_pair(session: Session) -> None:
+    """A pair the current run DID reproduce is not lifted (it's still live)."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _rel(session, "ca", "cb", "llm", run_id="r1")  # reproduced this run
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_skips_rejected_pair(session: Session) -> None:
+    """A user reject suppresses the silent-accept — the drop is honored, not resurrected."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _overlay(session, "reject", "ca", "cb")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_skips_when_already_kept(session: Session) -> None:
+    """An existing keep overlay isn't duplicated on a later unreproduced run."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert len(_keep_overlays(session)) == 1
+
+
+def test_keeper_noop_on_first_run(session: Session) -> None:
+    """No promoted prior run (no head) → nothing to compare, no keepers."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_noop_when_head_already_names_current_run(session: Session) -> None:
+    """Defensive: if the head already names the current run (e.g. a retry after
+    promote), there is no prior run to compare against — no keepers."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()), stage="detect", run_id="r1"
+        )
+    )
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []

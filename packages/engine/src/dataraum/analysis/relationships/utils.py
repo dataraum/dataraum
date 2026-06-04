@@ -59,7 +59,7 @@ def load_defined_relationships(
     return list(session.execute(stmt).scalars())
 
 
-def _relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str, str]]:
+def relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str, str]]:
     """Active ``ConfigOverlay(type='relationship')`` column pairs for one ``action``.
 
     The one relationship-overlay payload shape (DAT-409) is
@@ -97,7 +97,7 @@ def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]
     A re-run must not re-create a suppressed relationship, and its readiness must not
     surface. Directional: rejecting ``(a, b)`` does not reject ``(b, a)``.
     """
-    return set(_relationship_overlay_pairs(session, "reject"))
+    return set(relationship_overlay_pairs(session, "reject"))
 
 
 def load_confirmed_relationship_pairs(session: Session) -> set[frozenset[str]]:
@@ -108,7 +108,7 @@ def load_confirmed_relationship_pairs(session: Session) -> set[frozenset[str]]:
     Undirected — confirmation of ``{a, b}`` holds whichever way a detector names the
     endpoints — so callers test ``frozenset({from_col, to_col}) in confirmed``.
     """
-    return {frozenset(pair) for pair in _relationship_overlay_pairs(session, "confirm")}
+    return {frozenset(pair) for pair in relationship_overlay_pairs(session, "confirm")}
 
 
 def load_relationship_candidates_for_semantic(

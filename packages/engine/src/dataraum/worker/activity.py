@@ -49,12 +49,15 @@ __all__ = [
     "PhaseRun",
     "begin_session_select",
     "declared_detector_ids",
+    "materialize_session_overlays",
     "promote_run",
+    "promote_session_run",
     "raw_table_ids",
     "run_detectors",
     "run_phase",
     "run_session_phase",
     "typed_table_id_for_raw",
+    "write_session_keepers",
 ]
 
 # The executed-chain phases that declare entropy detectors (DAT-394). The single
@@ -478,6 +481,24 @@ def materialize_session_overlays(manager: ConnectionManager, identity: SessionId
             session, identity.session_id, run_id=identity.run_id, table_ids=table_ids
         )
     logger.info("session_materialize_done", session_id=identity.session_id, count=count)
+    return count
+
+
+def write_session_keepers(manager: ConnectionManager, identity: SessionIdentity) -> int:
+    """Lift silently-accepted relationships into keep overlays (DAT-409 C3).
+
+    Pre-promote step: while the per-session head still points at the prior run,
+    compare it to this run and write a ``keep`` overlay for each promoted ``llm``
+    the current run didn't reproduce and the user didn't reject. They materialize as
+    ``keeper`` from the next run onward.
+    """
+    from dataraum.analysis.relationships.materialize import write_relationship_keepers
+
+    with manager.session_scope() as session:
+        count = write_relationship_keepers(
+            session, identity.session_id, current_run_id=identity.run_id
+        )
+    logger.info("session_keepers_done", session_id=identity.session_id, count=count)
     return count
 
 

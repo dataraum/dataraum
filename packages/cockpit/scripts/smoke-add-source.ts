@@ -1,6 +1,7 @@
-// Integration driver (DAT-344; per-table fan-out DAT-370; teach+replay DAT-343):
-// prove the Client → Python workflow path end-to-end against a running compose
-// stack (temporal + engine-worker + postgres).
+// add_source integration smoke (DAT-344; per-table fan-out DAT-370; teach+replay
+// DAT-343): prove the Client → Python workflow path end-to-end against a running
+// compose stack (temporal + engine-worker + postgres). A dev/test harness — NOT
+// app code (lives in scripts/, not src/); run manually against a live stack.
 //
 // In production the addSourceWorkflow's caller seeds the Source +
 // InvestigationSession. Here this script does it directly, then drives:
@@ -24,23 +25,23 @@
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
 //   TEMPORAL_TASK_QUEUE=dataraum-pipeline \
 //   S3_BUCKET=dataraum-lake \
-//   SOURCE_PATH=s3://dataraum-lake/orders.csv \
-//   bun run src/temporal/drive-add-source.ts
+//   SOURCE_PATH=s3://dataraum-lake/invoices.csv,s3://dataraum-lake/payments.csv \
+//   bun run scripts/smoke-add-source.ts
 
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { metadataDb } from "../db/metadata/client";
+import { metadataDb } from "#/db/metadata/client";
 import {
 	configOverlay,
 	investigationSessions,
 	sources,
-} from "../db/metadata/schema";
-import { replay } from "../tools/replay";
-import { teach } from "../tools/teach";
-import type { AddSourceInput, AddSourceResult } from "./types";
-import { addSourceWorkflowId } from "./workflow-id";
+} from "#/db/metadata/schema";
+import { replay } from "#/tools/replay";
+import { teach } from "#/tools/teach";
+import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
+import { addSourceWorkflowId } from "#/temporal/workflow-id";
 
 const env = z
 	.object({
@@ -50,14 +51,17 @@ const env = z
 		DATARAUM_WORKSPACE_ID: z.string().min(1),
 		// Object-store bucket holding both the lake and uploaded source files.
 		S3_BUCKET: z.string().min(1).default("dataraum-lake"),
-		// Source URI the engine-worker reads over httpfs (DAT-389). An opaque
-		// s3:// URI — no sources mount. Defaults to the fixture the lane smoke
-		// seeds into the bucket root; uploads land under s3://<bucket>/uploads/.
-		SOURCE_PATH: z.string().optional(),
+		// One or more source URIs the engine-worker reads over httpfs (DAT-389) —
+		// opaque s3:// URIs, no sources mount. COMMA-SEPARATED for a multi-table
+		// source (the add_source fan-out types each file into its own table).
+		// REQUIRED: the driver names its data explicitly — no hidden fixture default.
+		SOURCE_PATH: z.string().min(1),
 	})
 	.parse(process.env);
 
-const sourcePath = env.SOURCE_PATH ?? `s3://${env.S3_BUCKET}/orders.csv`;
+const fileUris = env.SOURCE_PATH.split(",")
+	.map((u) => u.trim())
+	.filter(Boolean);
 
 async function seed(sourceId: string, sessionId: string): Promise<void> {
 	// Seed through the SAME Drizzle metadata client the cockpit's write seams use
@@ -65,7 +69,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 	// client targets the active workspace's `ws_<id>` schema via pgSchema, so no
 	// raw connection / search_path juggling. Source.name is UNIQUE — keep it
 	// unique per run so the driver is repeatable.
-	const name = `orders_${sourceId.slice(0, 8)}`;
+	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
 	await metadataDb
 		.insert(sources)
@@ -73,7 +77,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			sourceId,
 			name,
 			sourceType: "csv",
-			connectionConfig: { file_uris: [sourcePath] },
+			connectionConfig: { file_uris: fileUris },
 			status: "configured",
 			createdAt: now,
 			updatedAt: now,

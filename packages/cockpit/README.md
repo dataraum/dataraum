@@ -41,14 +41,16 @@ The engine exposes three verbs (`/measure`, `/query`, `/probe`) plus `/health` o
 
 ## Develop
 
+The dev server runs **outside Docker** (for hot reload) against the compose backend (Postgres + SeaweedFS on `localhost`). Bring the backend up first, then start the host dev server:
+
 ```bash
-cp .env.example .env
-# fill in COCKPIT_DATABASE_URL + METADATA_DATABASE_URL + DATARAUM_WORKSPACE_ID
+docker compose -f ../infra/docker-compose.yml up -d --wait postgres seaweedfs   # backend deps
+cp .env.example .env        # host-dev defaults (localhost URLs); fill ANTHROPIC_API_KEY
 bun install
-bun run dev
+bun --bun run dev           # → http://localhost:3000  (the --bun flag is required)
 ```
 
-Dev server runs on http://localhost:3000.
+`.env.example` carries **every** var `src/config.ts` validates at boot (DB URLs, S3 creds, lake path, workspace id, …) with host-dev `localhost` defaults — only `ANTHROPIC_API_KEY` needs filling. `.env` is gitignored. A missing/empty required var fails loud at boot, naming the field.
 
 If the engine adds or changes SQLAlchemy models, refresh the metadata client:
 
@@ -59,7 +61,7 @@ DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> bun run db:pull:metadata
 ## Scripts
 
 ```bash
-bun run dev               # vite dev server
+bun --bun run dev         # vite dev server (host dev; --bun flag required)
 bun run build             # production build
 bun run preview           # serve the production build locally
 bun run test              # vitest

@@ -60,8 +60,17 @@ function disableBunIdleTimeoutForSse(request: Request) {
  * The orchestrator instructions are sent as a cached system block: they are
  * byte-stable across turns, so `cache_control: ephemeral` turns them into a
  * prompt-cache hit. Per-turn context belongs in `messages`, never here.
+ *
+ * `abortController` (when given) is threaded into the agentic loop so a cancelled
+ * stream — the client calling useChat's `stop()`, or simply disconnecting —
+ * aborts the in-flight Anthropic call instead of letting the loop run (and bill)
+ * to completion. The SAME controller is passed to `toServerSentEventsResponse`,
+ * whose stream `cancel()` fires `abortController.abort()`.
  */
-export function buildChatOptions(messages: ChatMessages) {
+export function buildChatOptions(
+	messages: ChatMessages,
+	abortController?: AbortController,
+) {
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		// Explicit output budget — the adapter defaults to 1024, which truncates
@@ -75,6 +84,7 @@ export function buildChatOptions(messages: ChatMessages) {
 		],
 		messages,
 		tools: [...tools],
+		abortController,
 	};
 }
 
@@ -86,8 +96,19 @@ export const Route = createFileRoute("/api/chat")({
 			POST: async ({ request }: { request: Request }) => {
 				disableBunIdleTimeoutForSse(request);
 				const { messages } = await chatParamsFromRequest(request);
-				const stream = chat(buildChatOptions(messages));
-				return toServerSentEventsResponse(stream);
+				// One controller threads cancellation end to end: the SSE stream's
+				// cancel() (client stop()/disconnect) aborts it, which aborts the
+				// chat() loop + its Anthropic call. Also link request.signal so a
+				// runtime that surfaces disconnect there (before stream cancel) still
+				// stops the loop.
+				const abortController = new AbortController();
+				request.signal?.addEventListener(
+					"abort",
+					() => abortController.abort(),
+					{ once: true },
+				);
+				const stream = chat(buildChatOptions(messages, abortController));
+				return toServerSentEventsResponse(stream, { abortController });
 			},
 		},
 	},

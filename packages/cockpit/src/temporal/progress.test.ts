@@ -37,6 +37,8 @@ const h = vi.hoisted(() => ({
 	tableNameRows: [] as { tableId: string; tableName: string }[],
 	getHandleArgs: null as unknown[] | null,
 	queryName: null as string | null,
+	// When set, the mocked get_progress query rejects with this (the fallback path).
+	queryError: null as Error | null,
 }));
 
 // A live getter, not a snapshot: the tests reassign `h.config`, so the module's
@@ -70,6 +72,7 @@ vi.mock("drizzle-orm", async (importOriginal) => ({
 
 const queryMock = vi.fn(async (name: string) => {
 	h.queryName = name;
+	if (h.queryError) throw h.queryError;
 	return h.snapshot;
 });
 const describeMock = vi.fn(async () => ({ status: { name: h.status } }));
@@ -101,6 +104,7 @@ beforeEach(() => {
 	h.tableNameRows = [];
 	h.getHandleArgs = null;
 	h.queryName = null;
+	h.queryError = null;
 	queryMock.mockClear();
 	describeMock.mockClear();
 	getHandleMock.mockClear();
@@ -218,6 +222,51 @@ describe("getAddSourceProgress (DAT-352)", () => {
 		expect(result.done).toBe(true);
 		expect(result.status).toBe("FAILED");
 		expect(result.phase).toBe("processing_tables");
+	});
+
+	it("falls back to describe()-only when the workflow has no get_progress query (begin_session)", async () => {
+		// beginSessionWorkflow registers no get_progress — the query raises
+		// WorkflowQueryFailedError; the poll degrades to status + done, no phase detail.
+		const err = new Error("query not registered: get_progress");
+		err.name = "WorkflowQueryFailedError";
+		h.queryError = err;
+		h.status = "RUNNING";
+
+		const result = await getAddSourceProgress({
+			workflow_id: "beginsession-ws-sess",
+			run_id: "run-1",
+		});
+		expect(result).toEqual({
+			phase: "running",
+			tables_total: 0,
+			tables_completed: 0,
+			tables: [],
+			failure: null,
+			status: "RUNNING",
+			done: false,
+		});
+	});
+
+	it("fallback reports done with the terminal 'done' phase on a COMPLETED run", async () => {
+		const err = new Error("query not registered: get_progress");
+		err.name = "WorkflowQueryFailedError";
+		h.queryError = err;
+		h.status = "COMPLETED";
+
+		const result = await getAddSourceProgress({
+			workflow_id: "w",
+			run_id: "r",
+		});
+		expect(result.phase).toBe("done");
+		expect(result.done).toBe(true);
+		expect(result.status).toBe("COMPLETED");
+	});
+
+	it("rethrows a non-query-handler query failure (a real error is not swallowed)", async () => {
+		h.queryError = new Error("connection reset"); // name !== WorkflowQueryFailedError
+		await expect(
+			getAddSourceProgress({ workflow_id: "w", run_id: "r" }),
+		).rejects.toThrow(/connection reset/);
 	});
 
 	it("throws when Temporal is unconfigured (like replay.ts)", async () => {

@@ -6,11 +6,13 @@
 // replay) declare `needsApproval` and are gated by the user in the UI before
 // they run.
 
+import { beginSessionTool } from "./begin-session";
 import { connectTool } from "./connect";
 import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
 import { listVerticalsTool } from "./list-verticals";
+import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { probeTool } from "./probe";
 import { replayTool } from "./replay";
@@ -18,6 +20,7 @@ import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
 import { whyColumnTool } from "./why-column";
+import { whyRelationshipTool } from "./why-relationship";
 import { workflowStatusTool } from "./workflow-status";
 
 export const tools = [
@@ -26,12 +29,15 @@ export const tools = [
 	listVerticalsTool,
 	lookTableTool,
 	whyColumnTool,
+	lookRelationshipsTool,
+	whyRelationshipTool,
 	runSqlTool,
 	probeTool,
 	connectTool,
 	frameTool,
 	selectTool,
 	teachTool,
+	beginSessionTool,
 	replayTool,
 	workflowStatusTool,
 ] as const;

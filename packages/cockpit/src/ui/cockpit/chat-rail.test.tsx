@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
 	isLoading: false,
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
+	stop: vi.fn(),
 	addToolApprovalResponse: vi.fn(),
 }));
 
@@ -29,16 +30,17 @@ vi.mock("@tanstack/ai-react", () => ({
 		isLoading: h.isLoading,
 		error: h.error,
 		sendMessage: h.sendMessage,
+		stop: h.stop,
 		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));
 
 function CanvasProbe() {
-	const { canvasState, pinnedCallId, returnToLive } = useCockpit();
+	const { canvas, pinnedCallId, returnToLive } = useCockpit();
 	return (
 		<div>
-			<div data-testid="canvas-kind">{canvasState.kind}</div>
+			<div data-testid="canvas-kind">{canvas.kind}</div>
 			<div data-testid="pinned-call">{pinnedCallId ?? "live"}</div>
 			<button
 				type="button"
@@ -118,6 +120,7 @@ describe("ChatRail (DAT-353)", () => {
 		h.isLoading = false;
 		h.error = undefined;
 		h.sendMessage.mockClear();
+		h.stop.mockClear();
 		h.addToolApprovalResponse.mockClear();
 	});
 	afterEach(() => cleanup());
@@ -129,6 +132,16 @@ describe("ChatRail (DAT-353)", () => {
 		});
 		fireEvent.click(screen.getByTestId("chat-send"));
 		expect(h.sendMessage).toHaveBeenCalledWith("hello agent");
+	});
+
+	it("swaps Send for a Stop button while a turn streams, and aborts on click", () => {
+		h.isLoading = true;
+		renderRail();
+		// While streaming the action is Stop (Send is gone), and clicking it aborts
+		// the turn — which cancels the SSE stream → the server stops the LLM call.
+		expect(screen.queryByTestId("chat-send")).toBeNull();
+		fireEvent.click(screen.getByTestId("chat-stop"));
+		expect(h.stop).toHaveBeenCalledOnce();
 	});
 
 	it("renders assistant text parts", () => {
@@ -211,12 +224,12 @@ describe("ChatRail (DAT-353)", () => {
 
 		await waitFor(() => expect(h.sendMessage).toHaveBeenCalled());
 		// The connect-driving message references the staged s3:// path so the
-		// agent runs the existing connect tool against it.
+		// agent runs the existing connect tool against it. (The "loading" caption
+		// while the turn is in flight derives from isLoading — covered in the
+		// provider's derivation test, not here where isLoading is mocked false.)
 		expect(h.sendMessage.mock.calls[0][0]).toContain(
 			"s3://dataraum-lake/uploads/u/people.csv",
 		);
-		// Canvas flips to loading while the connect round-trips.
-		expect(screen.getByTestId("canvas-kind").textContent).toBe("loading");
 
 		vi.unstubAllGlobals();
 	});
@@ -228,6 +241,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		h.isLoading = false;
 		h.error = undefined;
 		h.sendMessage.mockClear();
+		h.stop.mockClear();
 		h.addToolApprovalResponse.mockClear();
 	});
 	afterEach(() => cleanup());

@@ -2,6 +2,18 @@
 
 TanStack Start web UI for the DataRaum engine — one of three packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (with `engine` + `infra`).
 
+<!-- intent-skills:start -->
+## Skill Loading
+
+Before substantial work:
+- Skill check: run `bunx @tanstack/intent@latest list`, or use skills already listed in context.
+- Skill guidance: if one local skill clearly matches the task, run `bunx @tanstack/intent@latest load <package>#<skill>` and follow the returned `SKILL.md`.
+- Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
+- Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
+<!-- intent-skills:end -->
+
+> TanStack guidance is official **[TanStack Intent](https://tanstack.com/intent/latest)** skills, version-pinned to our installed packages (`@tanstack/ai`, `react-start`, `router-core`, …) and discovered via the CLI above — not vendored into `.claude/skills/`. Run `bunx @tanstack/intent@latest list` from this package dir.
+
 ## Layout
 
 ```
@@ -21,11 +33,14 @@ src/
 Run the dev server **outside docker** for hot reload (the cockpit container is for prod-like smoke only):
 
 ```bash
-docker compose -f packages/infra/docker-compose.yml up -d --wait control-plane postgres  # once, from root
-bun install && bun run dev          # → http://localhost:3000, proxies /api/* to the engine on :8000
-bun run check                       # biome lint + format
-bun run test                        # vitest
+docker compose -f packages/infra/docker-compose.yml up -d --wait postgres seaweedfs  # backend deps, from root
+cp .env.example .env                 # host-dev defaults; fill ANTHROPIC_API_KEY (gitignored)
+bun install && bun --bun run dev     # → http://localhost:3000  (the --bun flag is required)
+bun run check                        # biome lint + format
+bun run test                         # vitest
 ```
+
+`/api/chat` is a TanStack Start **server route** that streams from the Anthropic SDK directly — NOT a proxy to the engine (the engine is a Temporal worker with no HTTP). The cockpit reads engine metadata straight from Postgres via Drizzle.
 
 ## Stack
 
@@ -55,7 +70,7 @@ If you notice yourself thinking "this works" about a surface you only tried with
 
 ## Driving the UI from a session
 
-Playwright MCP is registered per-project in `~/.claude.json` (stdio, `npx @playwright/mcp@latest`) — browser tools are available automatically when the dev server is up on `:3000`. Bring up engine + `bun run dev`, then point the agent at a page; edits land hot via Vite.
+Playwright MCP is registered per-project in `~/.claude.json` (stdio, `npx @playwright/mcp@latest`) — browser tools are available automatically when the dev server is up on `:3000`. Bring up the backend deps + `bun --bun run dev`, then point the agent at a page; edits land hot via Vite.
 
 ## Sibling packages
 

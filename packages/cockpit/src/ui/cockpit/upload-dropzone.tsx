@@ -11,7 +11,7 @@
 // uncapped. Native drag/drop + a `multiple` file <input> (no @mantine/dropzone
 // dep) — the input is what Playwright's browser_file_upload targets in the smoke.
 
-import { Box, Button, Group, Stack, Text } from "@mantine/core";
+import { Box, Stack, Text } from "@mantine/core";
 import { Upload } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
 import { tokens } from "#/ui/theme";
@@ -126,8 +126,24 @@ export function UploadDropzone({
 	// Inert while an upload is in flight (progress) or the agent turn is running.
 	const blocked = busy || disabled;
 
+	const primary = busy
+		? `Uploading ${total} file${total === 1 ? "" : "s"}…`
+		: disabled
+			? "Agent is working — upload when it's done"
+			: "Drop your files here";
+
+	// One picker entry-point shared by the click + keyboard handlers. The zone is
+	// the sole affordance (no button), so it must be keyboard-reachable: the real
+	// <input> is display:none / out of the tab order, so a role="button" + Enter or
+	// Space open the OS file picker for keyboard-only users.
+	const openPicker = () => {
+		if (!blocked) inputRef.current?.click();
+	};
+
 	return (
 		<Stack gap="xs" p="xs" data-testid="upload-dropzone">
+			{/* The whole zone is the affordance — it's clickable AND a drop target, so
+			    no separate "Choose files" button is needed (one signifier, not two). */}
 			<Box
 				onDragOver={(e) => {
 					e.preventDefault();
@@ -135,30 +151,45 @@ export function UploadDropzone({
 				}}
 				onDragLeave={() => setDragOver(false)}
 				onDrop={onDrop}
-				onClick={() => {
-					if (!blocked) inputRef.current?.click();
+				onClick={openPicker}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						openPicker();
+					}
 				}}
+				role="button"
+				tabIndex={blocked ? -1 : 0}
+				aria-disabled={blocked || undefined}
+				aria-label="Upload files — drop here, or activate to choose from your computer"
 				data-testid="upload-dropzone-target"
 				style={{
+					display: "flex",
+					alignItems: "center",
+					justifyContent: "center",
+					minHeight: "11rem",
 					borderWidth: 1,
 					borderStyle: "dashed",
 					borderColor: dragOver ? tokens.colors.text : tokens.colors.border,
-					borderRadius: tokens.radii.sm,
-					padding: tokens.spacing.sm,
+					borderRadius: tokens.radii.md,
+					padding: tokens.spacing.xl,
 					cursor: busy ? "progress" : disabled ? "not-allowed" : "pointer",
 					backgroundColor: dragOver ? tokens.colors.surface : undefined,
+					transition: "border-color 120ms ease, background-color 120ms ease",
 				}}
 			>
-				<Group gap="xs" justify="center" wrap="nowrap">
-					<Upload size={16} />
-					<Text size="xs" c="dimmed">
-						{busy
-							? `Uploading ${total} file${total === 1 ? "" : "s"}…`
-							: disabled
-								? "Agent is working — upload when it's done"
-								: `Drop CSV/Parquet/JSON files (up to ${MAX_UPLOAD_FILES}), or click to pick`}
+				<Stack gap="xs" align="center">
+					<Upload size={28} aria-hidden />
+					<Text size="sm" c="dimmed" ta="center">
+						{primary}
 					</Text>
-				</Group>
+					{!busy && !disabled && (
+						<Text size="xs" c="dimmed" ta="center">
+							or click to choose — CSV, Parquet or JSON, up to{" "}
+							{MAX_UPLOAD_FILES}
+						</Text>
+					)}
+				</Stack>
 			</Box>
 			<input
 				ref={inputRef}
@@ -180,15 +211,6 @@ export function UploadDropzone({
 					{error}
 				</Text>
 			)}
-			<Button
-				size="compact-xs"
-				variant="subtle"
-				onClick={() => inputRef.current?.click()}
-				disabled={blocked}
-				data-testid="upload-pick"
-			>
-				Choose files
-			</Button>
 		</Stack>
 	);
 }

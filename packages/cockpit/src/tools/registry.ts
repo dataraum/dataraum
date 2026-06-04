@@ -19,6 +19,7 @@ import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
+import { uploadTool } from "./upload";
 import { whyColumnTool } from "./why-column";
 import { whyRelationshipTool } from "./why-relationship";
 import { workflowStatusTool } from "./workflow-status";
@@ -27,6 +28,7 @@ export const tools = [
 	listSourcesTool,
 	listTablesTool,
 	listVerticalsTool,
+	uploadTool,
 	lookTableTool,
 	whyColumnTool,
 	lookRelationshipsTool,

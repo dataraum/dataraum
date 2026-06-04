@@ -43,6 +43,37 @@ function truncate(s: string, max = 60): string {
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+// Human-facing chip TITLE per tool — what the user reads, never the raw verb
+// (`list_tables`, `run_sql`, `why_column`). The summary line under it carries the
+// specifics; this is just the plain-language "what is happening".
+const TOOL_LABELS: Record<string, string> = {
+	list_sources: "Available data",
+	list_verticals: "Domains",
+	list_tables: "Workspace tables",
+	look_table: "Table readiness",
+	why_column: "Column detail",
+	connect: "Reading source",
+	frame: "Concepts",
+	select: "Registering source",
+	run_sql: "Query",
+	probe: "Data check",
+	teach: "Teaching",
+	replay: "Re-running",
+	upload: "File upload",
+};
+
+/**
+ * The plain-language title for a tool call. Falls back to a humanized form of the
+ * tool name (underscores → spaces, sentence case) so an unmapped future tool
+ * still never shows a raw snake_case verb.
+ */
+export function toolLabel(toolName: string): string {
+	const mapped = TOOL_LABELS[toolName];
+	if (mapped) return mapped;
+	const spaced = toolName.replace(/_/g, " ").trim();
+	return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : "Working";
+}
+
 /**
  * A compact, no-JSON summary of one tool call. `input` is the parsed call
  * arguments (may be undefined before they stream in); `output` is the result
@@ -148,8 +179,12 @@ export function toolChipSummary(
 			if (out?.run_id) return `replay — run ${out.run_id}`;
 			return args?.source_id ? `replay ${args.source_id}` : "replay…";
 		}
+		case "upload":
+			return "drop files to import";
 		default:
-			return toolName;
+			// Never surface a raw snake_case verb as the summary — humanize unmapped
+			// tools the same way the title does (look_relationships → "Look relationships").
+			return toolLabel(toolName);
 	}
 }
 

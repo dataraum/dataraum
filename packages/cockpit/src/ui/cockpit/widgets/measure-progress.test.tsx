@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 
 // Unit tests for the MeasureProgress widget (DAT-352). Mocks `useQuery` at the
 // TanStack Query boundary (the test controls the polled snapshot) and the

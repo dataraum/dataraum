@@ -1,8 +1,8 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Render tests for the WorkspaceInventoryWidget (DAT-349). A plain Mantine table
 // (workspace metadata — bounded, not a result set), so rows render under
-// happy-dom. We assert the per-table rows + provenance + readiness badge, the
+// jsdom. We assert the per-table rows + provenance + readiness badge, the
 // empty state, the in-widget SourceCard drill-in (local — no agent round-trip),
 // and the two click-throughs that DO route through the chat loop (table-name →
 // look_table, Refresh → list_tables). The live DB read is smoke-covered.
@@ -98,14 +98,53 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("inventory-row-t_items")).toBeTruthy();
 		expect(screen.getByTestId("inventory-row-t_users")).toBeTruthy();
 
-		// The analyzed table shows its worst band; the un-analyzed one shows a dash,
-		// never a band, so "not measured" doesn't read as "ready".
+		// The analyzed table shows its worst band (title-cased); the un-analyzed one
+		// shows a dash, never a band, so "not measured" doesn't read as "ready".
 		const ordersRow = within(screen.getByTestId("inventory-row-t_orders"));
-		expect(ordersRow.getByText("blocked")).toBeTruthy();
+		expect(ordersRow.getByText("Blocked")).toBeTruthy();
 		expect(ordersRow.getByText(/sales\.csv/)).toBeTruthy();
 		const usersRow = within(screen.getByTestId("inventory-row-t_users"));
-		expect(usersRow.queryByText("ready")).toBeNull();
-		expect(usersRow.queryByText("blocked")).toBeNull();
+		expect(usersRow.queryByText(/ready/i)).toBeNull();
+		expect(usersRow.queryByText(/blocked/i)).toBeNull();
+	});
+
+	it("collapses raw/typed/quarantine layers into one row and surfaces quarantine as a modal-opening red count", () => {
+		renderWidget([
+			table({
+				table_id: "raw1",
+				table_name: "sales.csv__orders",
+				layer: "raw",
+				row_count: 1000,
+				worst_band: null,
+			}),
+			table({
+				table_id: "typed1",
+				table_name: "sales.csv__orders",
+				layer: "typed",
+				row_count: 998,
+				worst_band: "investigate",
+			}),
+			table({
+				table_id: "q1",
+				table_name: "sales.csv__orders",
+				layer: "quarantine",
+				row_count: 2,
+				worst_band: null,
+			}),
+		]);
+		// One row — the typed representative; the raw/quarantine layers don't get
+		// their own rows.
+		expect(screen.getByTestId("inventory-row-typed1")).toBeTruthy();
+		expect(screen.queryByTestId("inventory-row-raw1")).toBeNull();
+		expect(screen.queryByTestId("inventory-row-q1")).toBeNull();
+		// The name is de-prefixed (no `sales.csv__`).
+		const row = within(screen.getByTestId("inventory-row-typed1"));
+		expect(row.getByText("orders")).toBeTruthy();
+		// The quarantine count opens the detail modal.
+		fireEvent.click(screen.getByTestId("inventory-quarantine-typed1"));
+		expect(screen.getByTestId("modal-quarantine-count").textContent).toContain(
+			"2",
+		);
 	});
 
 	it("renders the empty state when there are no tables", () => {

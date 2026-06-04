@@ -7,18 +7,20 @@ routing, and ⌘K belong to C0 (`src/ui/{app-shell,sections,theme}.ts[x]`).
 ## Layout
 
 ```
-CockpitView                  three-region grid, independent scroll, scoped hotkeys
-├── ChatRail                 messages + collapsible tool-call cards + input (left)
-└── work region (right)
-    ├── StageNavigator       horizontal strip of the 7 JOURNEY stages
+CockpitView                  cold start → CockpitLanding; once a conversation
+│                            exists → the working split (one transition, then holds)
+├── CockpitLanding           centered welcome + hero Composer + starter prompts
+└── working split
+    ├── ChatRail             messages + collapsible tool-call cards (left)
+    │   └── Composer         shared input (also the landing's hero composer)
     └── FocusCanvas          renders the active CanvasState via the widget registry
 ```
 
 State lives in `cockpit-state.tsx`, which also OWNS the agent chat (`useChat`).
 The focus canvas is **derived** from the message stream during render — not
 stored — so there are no effects mirroring it (see "Chat transport" below). The
-context is split in two: a reactive **state** context (`activeStage`, `messages`,
-`canvas`, …) and a stable **actions** context (`sendMessage`, `showCanvas`, …).
+context is split in two: a reactive **state** context (`messages`, `canvas`, …)
+and a stable **actions** context (`sendMessage`, `showCanvas`, …).
 Components that only dispatch read `useCockpitActions()` and never re-render
 while a turn streams; components that render streaming state read `useCockpit()`.
 

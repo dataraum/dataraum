@@ -1,30 +1,30 @@
-// Three-region cockpit view (DAT-347, C1).
+// Cockpit view (DAT-347, C1; reshaped in the redesign).
 //
-// The inner agentic surface that fills the C0 shell's cockpit route. Two top-
-// level regions side by side:
-//   - the chat rail (left), and
-//   - a stacked region (right) of the stage navigator over the focus canvas.
-// Each region scrolls independently. Cockpit-scoped hotkeys focus the chat
-// input (mod+/) and the canvas (mod+.) without colliding with the shell's ⌘K.
+// Cold start → the calm centered landing. Once a conversation exists → the
+// working split: the chat rail (left) beside the focus canvas (right), each
+// scrolling independently. The swap happens exactly ONCE (first turn), then the
+// layout holds — no per-turn reflow (the explicit "not nervous" requirement).
+// Cockpit-scoped hotkeys focus the chat input (mod+/) and the canvas (mod+.).
 // All sizes/colors read from theme tokens — no hardcoded px/hex.
 
 import { Box, Button, Group, Stack, Text } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 import { useRef } from "react";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
+import { CockpitLanding } from "#/ui/cockpit/cockpit-landing";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { FocusCanvas } from "#/ui/cockpit/focus-canvas";
-import { StageNavigator } from "#/ui/cockpit/stage-navigator";
 import { tokens } from "#/ui/theme";
 
 export function CockpitView() {
-	const { canvas, pinnedCallId, returnToLive } = useCockpit();
+	const { canvas, pinnedCallId, returnToLive, messages } = useCockpit();
 	const chatRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLDivElement>(null);
 
 	// Cockpit-scoped focus hotkeys. mod+slash → chat input; mod+period → canvas.
-	// Scoped to this view (registered while mounted) so they don't leak into
-	// other sections; ⌘K stays the shell's command palette.
+	// Registered while mounted so they don't leak into other sections; ⌘K stays
+	// the shell's command palette. The chat input shares its data-testid across
+	// the landing + rail composers, so mod+/ works in both modes.
 	useHotkeys([
 		[
 			"mod+/",
@@ -35,6 +35,16 @@ export function CockpitView() {
 		],
 		["mod+.", () => canvasRef.current?.focus()],
 	]);
+
+	// Cold start: no conversation yet → the centered landing instead of an empty
+	// split. mod+/ still finds the (hero) composer inside it.
+	if (messages.length === 0) {
+		return (
+			<Box ref={chatRef} h="100%" data-testid="cockpit-view">
+				<CockpitLanding />
+			</Box>
+		);
+	}
 
 	return (
 		<Group
@@ -48,11 +58,16 @@ export function CockpitView() {
 				ref={chatRef}
 				data-testid="region-chat"
 				style={{
-					width: "30%",
+					// The chat is a STABLE column: it tracks the window proportionally but
+					// is clamped 20–26rem so it never sprawls on a wide monitor nor
+					// collapses below readable on a small one. The canvas (flex:1) absorbs
+					// all the slack, so resizing the window grows the canvas, not the chat.
+					// No divider border here — the raised canvas card edge is the only,
+					// quiet separation between the two areas.
+					width: "28%",
 					minWidth: "20rem",
-					borderRightWidth: 1,
-					borderRightStyle: "solid",
-					borderRightColor: tokens.colors.border,
+					maxWidth: "26rem",
+					flexShrink: 0,
 					overflow: "hidden",
 				}}
 			>
@@ -63,7 +78,6 @@ export function CockpitView() {
 				style={{ flex: 1, overflow: "hidden" }}
 				data-testid="region-work"
 			>
-				<StageNavigator />
 				{/* Rehydration banner (DAT-354): shown only while the canvas is pinned
 				    to a past tool result, so the user knows they're viewing history and
 				    can snap back to the latest live result. */}

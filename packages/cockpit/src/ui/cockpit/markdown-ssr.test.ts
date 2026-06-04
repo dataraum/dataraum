@@ -5,7 +5,7 @@
 // module-level setup must not call DOM/window APIs unguarded — a module-level
 // `DOMPurify.addHook(...)` once did, and DOMPurify's no-DOM stub has no addHook,
 // so importing the module crashed the SSR render (HTTP 200 but a broken cockpit;
-// caught only by a real browser smoke, not by the jsdom/happy-dom unit tests
+// caught only by a real browser smoke, not by the jsdom unit tests
 // which always have a window). This test imports it with NO DOM and asserts the
 // import resolves.
 

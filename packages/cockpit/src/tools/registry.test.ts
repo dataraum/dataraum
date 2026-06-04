@@ -38,6 +38,7 @@ describe("tool registry (DAT-353)", () => {
 				"begin_session",
 				"replay",
 				"workflow_status",
+				"upload",
 			]),
 		);
 	});

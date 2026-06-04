@@ -50,7 +50,11 @@ export type CanvasState =
 			kind: "result-grid";
 			sql: string;
 			params?: (string | number | boolean | null)[];
-	  };
+	  }
+	// A file-upload area (redesign) — projected by the `upload` UI tool so the user
+	// can drop local files; NOT a permanent chat fixture. Carries nothing; the
+	// widget owns the dropzone + drives connect on upload.
+	| { kind: "upload-area" };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];

@@ -98,10 +98,15 @@ export function CockpitShell({
 				padding="md"
 			>
 				<AppShell.Header>
-					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
+					{/* pr tighter than pl: the ⌘K hugs the corner (matching the divider's
+					    full-bleed right edge) instead of floating a gap short of it, while
+					    the wordmark keeps breathing room on the left. */}
+					<Group h="100%" pl="md" pr="xs" justify="space-between" wrap="nowrap">
 						<UnstyledButton data-testid="workspace-switcher">
+							{/* Brand wordmark — never the raw workspace UUID. A real workspace
+							    name lands with the workspaces registry (DAT-339 slice 1). */}
 							<Text size="sm" fw={600} c="text">
-								{routeWsId ? `Workspace ${routeWsId}` : "DataRaum"}
+								DataRaum
 							</Text>
 						</UnstyledButton>
 						<Tooltip label="Command palette">

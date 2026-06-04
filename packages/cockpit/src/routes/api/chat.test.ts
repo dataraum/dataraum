@@ -46,6 +46,7 @@ describe("chat route wiring (DAT-353)", () => {
 				"begin_session",
 				"replay",
 				"workflow_status",
+				"upload",
 			]),
 		);
 	});

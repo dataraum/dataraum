@@ -1,7 +1,7 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Render tests for the TableReadinessWidget (DAT-350). A plain Mantine table (no
-// virtualization), so rows render under happy-dom — we assert the band badges,
+// virtualization), so rows render under jsdom — we assert the band badges,
 // per-intent columns, the not-analyzed + pending-teach notes, and the empty
 // state. The live DB read is smoke-covered.
 

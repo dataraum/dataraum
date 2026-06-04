@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 
 // Render tests for the PURE ResultGridView (DAT-385 P2). Pre-seed a ColumnStore
 // (exactly what the live stream folds into) and assert the layout-INDEPENDENT
@@ -7,7 +7,7 @@
 //
 // We deliberately do NOT assert the body cell values here: the body is windowed
 // by @tanstack/react-virtual, which needs a real viewport height that no
-// headless DOM (happy-dom/jsdom) provides — faking layout via ResizeObserver +
+// headless DOM (jsdom) provides — faking layout via ResizeObserver +
 // getBoundingClientRect stubs would be testing the polyfill, not the grid. The
 // rendered rows are verified by the browser smoke instead; the columnar accessor
 // path is exercised by the ColumnStore unit tests (ndjson-stream.test.ts).

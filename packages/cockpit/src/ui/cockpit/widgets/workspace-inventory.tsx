@@ -1,19 +1,21 @@
-// Workspace-inventory widget (DAT-349) — the `list_tables` result as the
-// workspace's table inventory: one row per table with its provenance, shape, and
-// a per-table readiness badge (the worst band across its columns, rolled up by
-// the tool). Clicking a source badge opens an in-widget SourceCard rail (local
-// state, no agent round-trip); clicking a table name routes a look_table request
-// through the chat loop (the existing TableProfile, DAT-350); Refresh re-lists.
+// Workspace-inventory widget (DAT-349; de-noised in the redesign) — the
+// `list_tables` result as ONE row per logical table (the engine's raw / typed /
+// quarantine physical layers collapsed; the analyzed `typed` layer is shown).
+// Clicking a table name routes a look_table request through the chat loop;
+// clicking a source badge opens an in-widget SourceCard rail (local, no agent
+// round-trip); a red quarantine count opens a detail modal; Refresh re-lists.
 //
-// The bands are the engine's PERSISTED, calibrated values — this widget only
-// colors them, it never recomputes readiness. Reads theme tokens only; the row
-// type is a type-only import (erased — no server code in the client bundle).
+// Bands are the engine's PERSISTED, calibrated values — this widget only colors
+// and title-cases them, it never recomputes readiness. Reads theme tokens only;
+// the row type is a type-only import (erased — no server code in the client
+// bundle).
 
 import {
 	Anchor,
 	Badge,
 	Button,
 	Group,
+	Modal,
 	Stack,
 	Table,
 	Text,
@@ -22,6 +24,11 @@ import { useState } from "react";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
+import {
+	groupLogicalTables,
+	humanizeBand,
+	type LogicalTable,
+} from "#/ui/cockpit/widgets/inventory-grouping";
 
 // Band → Mantine color. An absent band (table not analyzed) renders as a muted
 // dash, not a color, so "unknown" never reads as "ready".
@@ -40,8 +47,13 @@ function BandBadge({ band }: { band: string | null }) {
 		);
 	}
 	return (
-		<Badge color={BAND_COLOR[band] ?? "gray"} variant="light" size="sm">
-			{band}
+		<Badge
+			color={BAND_COLOR[band] ?? "gray"}
+			variant="light"
+			size="sm"
+			tt="none"
+		>
+			{humanizeBand(band)}
 		</Badge>
 	);
 }
@@ -53,7 +65,7 @@ function BandBadge({ band }: { band: string | null }) {
 // single source's table list alike.
 const MAX_VISIBLE_ROWS = 100;
 
-/** The per-source drill-in rail: source metadata + its tables' rolled-up bands.
+/** The per-source drill-in rail: source metadata + its logical tables' bands.
  * Built entirely from the inventory rows already in hand (no extra fetch). */
 function SourceCard({
 	tables,
@@ -63,17 +75,22 @@ function SourceCard({
 	onClose: () => void;
 }) {
 	const head = tables[0];
-	const visibleTables = tables.slice(0, MAX_VISIBLE_ROWS);
-	const overflow = tables.length - visibleTables.length;
-	const totals = tables.reduce(
-		(acc, t) => ({
-			ready: acc.ready + t.readiness.ready,
-			investigate: acc.investigate + t.readiness.investigate,
-			blocked: acc.blocked + t.readiness.blocked,
-			unanalyzed: acc.unanalyzed + t.readiness.unanalyzed,
+	const logical = groupLogicalTables(tables);
+	const visibleTables = logical.slice(0, MAX_VISIBLE_ROWS);
+	const overflow = logical.length - visibleTables.length;
+	// Totals over the analyzed representatives only — summing every physical layer
+	// would double-count the raw/quarantine scaffolding.
+	const totals = logical.reduce(
+		(acc, lt) => ({
+			ready: acc.ready + lt.representative.readiness.ready,
+			investigate: acc.investigate + lt.representative.readiness.investigate,
+			blocked: acc.blocked + lt.representative.readiness.blocked,
+			unanalyzed: acc.unanalyzed + lt.representative.readiness.unanalyzed,
 		}),
 		{ ready: 0, investigate: 0, blocked: 0, unanalyzed: 0 },
 	);
+
+	if (!head) return null;
 
 	return (
 		<Stack
@@ -97,22 +114,22 @@ function SourceCard({
 				</Anchor>
 			</Group>
 			<Group gap="xs">
-				<Badge variant="outline" color="gray">
+				<Badge variant="outline" color="gray" tt="lowercase">
 					{head.source_type}
 				</Badge>
 				{head.source_backend && (
-					<Badge variant="outline" color="gray">
+					<Badge variant="outline" color="gray" tt="lowercase">
 						{head.source_backend}
 					</Badge>
 				)}
 				{head.source_status && (
-					<Badge variant="outline" color="gray">
+					<Badge variant="outline" color="gray" tt="lowercase">
 						{head.source_status}
 					</Badge>
 				)}
 			</Group>
 			<Text size="xs" c="dimmed">
-				{tables.length} table{tables.length === 1 ? "" : "s"}
+				{logical.length} table{logical.length === 1 ? "" : "s"}
 			</Text>
 			<Group gap={8}>
 				<Text span size="xs" c="green">
@@ -129,17 +146,12 @@ function SourceCard({
 				</Text>
 			</Group>
 			<Stack gap={4}>
-				{visibleTables.map((t) => (
-					<Group
-						key={t.table_id}
-						justify="space-between"
-						gap="xs"
-						wrap="nowrap"
-					>
+				{visibleTables.map((lt) => (
+					<Group key={lt.key} justify="space-between" gap="xs" wrap="nowrap">
 						<Text span size="xs" truncate>
-							{t.table_name}
+							{lt.displayName}
 						</Text>
-						<BandBadge band={t.worst_band} />
+						<BandBadge band={lt.representative.worst_band} />
 					</Group>
 				))}
 				{overflow > 0 && (
@@ -149,6 +161,78 @@ function SourceCard({
 				)}
 			</Stack>
 		</Stack>
+	);
+}
+
+/** The detail modal — the layers we collapse + the readiness rollup, on demand
+ * (the "third dimension"). Quarantine is highlighted; the per-row drill-in into
+ * the actual quarantined rows is a later evolution. */
+function TableDetailModal({
+	table,
+	onClose,
+}: {
+	table: LogicalTable | null;
+	onClose: () => void;
+}) {
+	return (
+		<Modal
+			opened={table !== null}
+			onClose={onClose}
+			title={table ? table.displayName : ""}
+			data-testid="inventory-detail-modal"
+		>
+			{table && (
+				<Stack gap="sm">
+					<Group gap="xs">
+						<Badge variant="outline" color="gray" tt="lowercase">
+							{table.sourceName}
+						</Badge>
+						<Badge variant="outline" color="gray" tt="lowercase">
+							{table.sourceType}
+						</Badge>
+					</Group>
+
+					{table.quarantineRows > 0 && (
+						<Text c="red" fw={600} data-testid="modal-quarantine-count">
+							{table.quarantineRows.toLocaleString()} quarantined row
+							{table.quarantineRows === 1 ? "" : "s"} held back during typing.
+						</Text>
+					)}
+
+					<Stack gap={4}>
+						<Text size="sm" fw={600}>
+							Layers
+						</Text>
+						{table.layers.map((l) => (
+							<Group key={l.table_id} justify="space-between" gap="xs">
+								<Text span size="xs" tt="capitalize">
+									{l.layer}
+								</Text>
+								<Text span size="xs" c="dimmed">
+									{(l.row_count ?? 0).toLocaleString()} rows · {l.column_count}{" "}
+									cols
+								</Text>
+							</Group>
+						))}
+					</Stack>
+
+					<Group gap={8}>
+						<Text span size="xs" c="green">
+							{table.representative.readiness.ready} ready
+						</Text>
+						<Text span size="xs" c="yellow.8">
+							{table.representative.readiness.investigate} investigate
+						</Text>
+						<Text span size="xs" c="red">
+							{table.representative.readiness.blocked} blocked
+						</Text>
+						<Text span size="xs" c="dimmed">
+							{table.representative.readiness.unanalyzed} unanalyzed
+						</Text>
+					</Group>
+				</Stack>
+			)}
+		</Modal>
 	);
 }
 
@@ -162,6 +246,7 @@ export function WorkspaceInventoryWidget({
 	// re-render while a turn streams.
 	const { sendMessage } = useCockpitActions();
 	const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+	const [detail, setDetail] = useState<LogicalTable | null>(null);
 
 	if (tables.length === 0) {
 		return (
@@ -186,12 +271,13 @@ export function WorkspaceInventoryWidget({
 				`using the look_table tool.`,
 		);
 
+	const logical = groupLogicalTables(tables);
+	const visible = logical.slice(0, MAX_VISIBLE_ROWS);
+	const overflow = logical.length - visible.length;
+
 	const selected = selectedSourceId
 		? tables.filter((t) => t.source_id === selectedSourceId)
 		: [];
-
-	const visible = tables.slice(0, MAX_VISIBLE_ROWS);
-	const overflow = tables.length - visible.length;
 
 	return (
 		<Group
@@ -214,7 +300,7 @@ export function WorkspaceInventoryWidget({
 						Refresh
 					</Button>
 				</Group>
-				<Table.ScrollContainer minWidth={520}>
+				<Table.ScrollContainer minWidth={560}>
 					<Table striped highlightOnHover>
 						<Table.Thead>
 							<Table.Tr>
@@ -223,56 +309,75 @@ export function WorkspaceInventoryWidget({
 								<Table.Th>Rows</Table.Th>
 								<Table.Th>Cols</Table.Th>
 								<Table.Th>Readiness</Table.Th>
+								<Table.Th>Quarantined</Table.Th>
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
-							{visible.map((t) => (
-								<Table.Tr
-									key={t.table_id}
-									data-testid={`inventory-row-${t.table_id}`}
-								>
-									<Table.Td>
-										<Anchor
-											component="button"
-											type="button"
-											size="sm"
-											onClick={() => inspectTable(t.table_id, t.table_name)}
-											data-testid={`inventory-table-${t.table_id}`}
-										>
-											{t.table_name}
-										</Anchor>
-										<Text span c="dimmed" size="xs">
-											{" "}
-											· {t.layer}
-										</Text>
-									</Table.Td>
-									<Table.Td>
-										<Badge
-											variant={
-												selectedSourceId === t.source_id ? "filled" : "light"
-											}
-											color="gray"
-											style={{ cursor: "pointer" }}
-											onClick={() =>
-												setSelectedSourceId((prev) =>
-													prev === t.source_id ? null : t.source_id,
-												)
-											}
-											data-testid={`inventory-source-badge-${t.source_id}`}
-										>
-											{t.source_name} · {t.source_type}
-										</Badge>
-									</Table.Td>
-									<Table.Td>{t.row_count ?? "—"}</Table.Td>
-									<Table.Td>{t.column_count}</Table.Td>
-									<Table.Td>
-										<BandBadge band={t.worst_band} />
-									</Table.Td>
-								</Table.Tr>
-							))}
+							{visible.map((lt) => {
+								const t = lt.representative;
+								return (
+									<Table.Tr
+										key={lt.key}
+										data-testid={`inventory-row-${t.table_id}`}
+									>
+										<Table.Td>
+											<Anchor
+												component="button"
+												type="button"
+												size="sm"
+												onClick={() => inspectTable(t.table_id, lt.displayName)}
+												data-testid={`inventory-table-${t.table_id}`}
+											>
+												{lt.displayName}
+											</Anchor>
+										</Table.Td>
+										<Table.Td>
+											<Badge
+												variant={
+													selectedSourceId === lt.sourceId ? "filled" : "light"
+												}
+												color="gray"
+												style={{ cursor: "pointer" }}
+												onClick={() =>
+													setSelectedSourceId((prev) =>
+														prev === lt.sourceId ? null : lt.sourceId,
+													)
+												}
+												tt="lowercase"
+												data-testid={`inventory-source-badge-${lt.sourceId}`}
+											>
+												{lt.sourceName} · {lt.sourceType}
+											</Badge>
+										</Table.Td>
+										<Table.Td>{t.row_count ?? "—"}</Table.Td>
+										<Table.Td>{t.column_count}</Table.Td>
+										<Table.Td>
+											<BandBadge band={t.worst_band} />
+										</Table.Td>
+										<Table.Td>
+											{lt.quarantineRows > 0 ? (
+												<Badge
+													color="red"
+													variant="light"
+													size="sm"
+													style={{ cursor: "pointer" }}
+													onClick={() => setDetail(lt)}
+													data-testid={`inventory-quarantine-${t.table_id}`}
+												>
+													{lt.quarantineRows.toLocaleString()}
+												</Badge>
+											) : (
+												<Text span c="dimmed" size="xs">
+													—
+												</Text>
+											)}
+										</Table.Td>
+									</Table.Tr>
+								);
+							})}
 							{overflow > 0 && (
 								<Table.Tr data-testid="inventory-overflow">
-									<Table.Td colSpan={5}>
+									<Table.Td colSpan={6}>
 										<Text c="dimmed" size="xs">
 											…and {overflow} more — ask the agent to filter by source.
 										</Text>
@@ -290,6 +395,8 @@ export function WorkspaceInventoryWidget({
 					onClose={() => setSelectedSourceId(null)}
 				/>
 			)}
+
+			<TableDetailModal table={detail} onClose={() => setDetail(null)} />
 		</Group>
 	);
 }

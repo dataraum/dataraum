@@ -179,6 +179,12 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("run_sql", {}, undefined)).toBeNull();
 	});
 
+	it("maps upload to the upload-area canvas (the UI tool just opens it)", () => {
+		expect(toolResultToCanvas("upload", { ready: true })).toEqual({
+			kind: "upload-area",
+		});
+	});
+
 	it("maps select to a selected-source canvas (DAT-398)", () => {
 		const selection = {
 			source_id: "s1",

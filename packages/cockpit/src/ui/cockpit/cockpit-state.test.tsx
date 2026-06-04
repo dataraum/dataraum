@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // The provider now OWNS the chat (useChat) and DERIVES the canvas from the
 // message stream. We mock useChat at the SDK boundary to feed messages / loading
@@ -64,17 +64,10 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 	});
 	afterEach(() => cleanup());
 
-	it("defaults to add_source / empty canvas / live (no pin)", () => {
+	it("defaults to an empty canvas / live (no pin)", () => {
 		const { result } = renderHook(() => useCockpit(), { wrapper });
-		expect(result.current.activeStage).toBe("add_source");
 		expect(result.current.canvas).toEqual({ kind: "empty" });
 		expect(result.current.pinnedCallId).toBeNull();
-	});
-
-	it("setActiveStage updates the active stage", () => {
-		const { result } = renderHook(() => useCockpit(), { wrapper });
-		act(() => result.current.setActiveStage("connect"));
-		expect(result.current.activeStage).toBe("connect");
 	});
 
 	it("throws when useCockpit is read outside a provider", () => {

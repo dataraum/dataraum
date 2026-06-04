@@ -107,6 +107,9 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 			? { kind: "result-grid", sql: args.sql, params }
 			: { kind: "result-grid", sql: args.sql };
 	},
+	// The `upload` UI tool carries no data — it just opens the upload area so the
+	// user can drop local files.
+	upload: () => ({ kind: "upload-area" }),
 };
 
 /**

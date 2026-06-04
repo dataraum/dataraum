@@ -18,6 +18,8 @@
 // is the part's `output` (undefined until the call completes).
 
 import type { ConnectSchema } from "#/duckdb/connect";
+import { displayTableName } from "#/lib/display-names";
+import { fileName } from "#/lib/file-uri";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -62,12 +64,25 @@ const TOOL_LABELS: Record<string, string> = {
 	upload: "File upload",
 };
 
+// Past-tense / settled titles for the few tools whose default label reads as an
+// in-progress verb. Once the call completes the chip flips to these so a finished
+// card never says "Registering source" — the rest of TOOL_LABELS are already
+// nouns ("Workspace tables", "Query") that read fine in both states.
+const TOOL_LABELS_DONE: Record<string, string> = {
+	connect: "Source schema",
+	select: "Registered source",
+	teach: "Taught",
+	replay: "Re-ran",
+};
+
 /**
- * The plain-language title for a tool call. Falls back to a humanized form of the
+ * The plain-language title for a tool call. When `done`, a progressive verb flips
+ * to its settled form (TOOL_LABELS_DONE). Falls back to a humanized form of the
  * tool name (underscores → spaces, sentence case) so an unmapped future tool
  * still never shows a raw snake_case verb.
  */
-export function toolLabel(toolName: string): string {
+export function toolLabel(toolName: string, done = false): string {
+	if (done && TOOL_LABELS_DONE[toolName]) return TOOL_LABELS_DONE[toolName];
 	const mapped = TOOL_LABELS[toolName];
 	if (mapped) return mapped;
 	const spaced = toolName.replace(/_/g, " ").trim();
@@ -127,16 +142,17 @@ export function toolChipSummary(
 			const r = output as LookTableResult | undefined;
 			if (!r || !Array.isArray(r.columns)) return "reading table readiness…";
 			const cols = plural(r.columns.length, "column");
+			const table = displayTableName(r.table_name);
 			return r.analyzed
-				? `${r.table_name} — ${cols}`
-				: `${r.table_name} — ${cols}, not yet analyzed`;
+				? `${table} — ${cols}`
+				: `${table} — ${cols}, not yet analyzed`;
 		}
 		case "why_column": {
 			const r = output as WhyColumnResult | undefined;
 			if (!r) return "explaining column…";
 			if (!r.found) return "column not found";
 			const band = r.band ?? "not analyzed";
-			return `${r.column_name} (${r.table_name}) — ${band}`;
+			return `${r.column_name} (${displayTableName(r.table_name)}) — ${band}`;
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;
@@ -145,7 +161,10 @@ export function toolChipSummary(
 			// connecting rather than crashing on `.length` (the multi-file drag-drop
 			// crash). The complete result always carries the array.
 			if (!s || !Array.isArray(s.tables)) return "connecting…";
-			return `${s.source} — ${plural(s.tables.length, "table")}`;
+			// A file source's `source` is the full `s3://…/<id>/<name>` URI — show the
+			// filename, not the bucket/prefix plumbing (a database source is a name).
+			const src = s.sourceKind === "file" ? fileName(s.source) : s.source;
+			return `${src} — ${plural(s.tables.length, "table")}`;
 		}
 		case "frame": {
 			const f = output as FrameResult | undefined;
@@ -184,6 +203,9 @@ export function toolChipSummary(
 		default:
 			// Never surface a raw snake_case verb as the summary — humanize unmapped
 			// tools the same way the title does (look_relationships → "Look relationships").
+			// NOTE: when relationship tools (look_relationships / why_relationship) get
+			// explicit cases, run their `from_table_name`/`to_table_name` through
+			// `displayTableName` — their output carries the raw `<source>__table` form.
 			return toolLabel(toolName);
 	}
 }

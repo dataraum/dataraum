@@ -121,24 +121,38 @@ describe("listVerticals (DAT-411)", () => {
 		]);
 	});
 
-	it("counts a builtin's concepts as ontology + overlay (so _adhoc reports its induced concepts)", async () => {
-		h.dirEntries = [dir("_adhoc")];
-		// _adhoc ships an empty ontology — its concepts come from the overlay.
+	it("counts a builtin's concepts as ontology + overlay", async () => {
+		h.dirEntries = [dir("finance")];
+		h.files["/cfg/verticals/finance/ontology.yaml"] = JSON.stringify({
+			description: "Finance",
+			concepts: [{ name: "revenue" }, { name: "cogs" }],
+		});
+		// Overlay rows naming the vertical add on top of its on-disk concepts.
+		h.overlayRows = [{ vertical: "finance", n: 3 }];
+
+		const [finance] = await listVerticals();
+		expect(finance).toMatchObject({
+			name: "finance",
+			kind: "builtin",
+			concept_count: 5, // 2 ontology + 3 overlay
+		});
+	});
+
+	it("hides underscore-prefixed seeds (_adhoc) from the listing — builtin scan and framed fallback alike", async () => {
+		h.dirEntries = [dir("finance"), dir("_adhoc")];
+		h.files["/cfg/verticals/finance/ontology.yaml"] = JSON.stringify({
+			description: "Finance",
+			concepts: [{ name: "revenue" }],
+		});
 		h.files["/cfg/verticals/_adhoc/ontology.yaml"] = JSON.stringify({
 			concepts: [],
 		});
+		// _adhoc carries overlay concepts too — assert it's filtered from BOTH the
+		// builtin scan and the framed fallback (never re-added as "framed").
 		h.overlayRows = [{ vertical: "_adhoc", n: 5 }];
 
-		const [adhoc] = await listVerticals();
-		expect(adhoc).toMatchObject({
-			name: "_adhoc",
-			kind: "builtin",
-			description: null,
-			concept_count: 5,
-			has_cycles: false,
-			has_validations: false,
-			has_metrics: false,
-		});
+		const result = await listVerticals();
+		expect(result.map((v) => v.name)).toEqual(["finance"]);
 	});
 
 	it("includes framed verticals (overlay names with no directory), sorted builtins-first", async () => {
@@ -151,7 +165,7 @@ describe("listVerticals (DAT-411)", () => {
 			concepts: [],
 		});
 		// "sales" is framed (in the overlay, no directory); _adhoc is a builtin
-		// that also has overlay concepts.
+		// that also has overlay concepts — it stays hidden in both roles.
 		h.overlayRows = [
 			{ vertical: "sales", n: 4 },
 			{ vertical: "_adhoc", n: 2 },
@@ -159,7 +173,6 @@ describe("listVerticals (DAT-411)", () => {
 
 		const result = await listVerticals();
 		expect(result.map((v) => [v.name, v.kind, v.concept_count])).toEqual([
-			["_adhoc", "builtin", 2],
 			["finance", "builtin", 1],
 			["sales", "framed", 4],
 		]);

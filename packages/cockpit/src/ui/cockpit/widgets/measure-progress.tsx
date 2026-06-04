@@ -24,6 +24,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
+import { displayTableName } from "#/lib/display-names";
 import type { AddSourceProgress, TableStep } from "#/temporal/progress";
 import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -51,6 +52,17 @@ function phaseIndex(phase: string): number {
 function phaseLabel(phase: string): string {
 	return PHASES.find((p) => p.key === phase)?.label ?? phase;
 }
+
+// Live caption for the phases that carry NO per-table signal: `import` (before the
+// fan-out exists) and `semantic_per_column` / `detect` (each ONE source-level
+// reduce activity, workflows.py). For these the table tally is frozen/empty, so the
+// caption keeps the surface alive ("still working, here's on what") instead of dead
+// air. `processing_tables` is intentionally absent — it has its own tally bar.
+const PHASE_CAPTION: Record<string, string> = {
+	import: "Importing rows…",
+	semantic_per_column: "Analyzing column semantics across all tables…",
+	detect: "Scoring readiness across all columns…",
+};
 
 /** The leading status glyph for one fanned-out table row. */
 function TableStatusIcon({ status }: { status: TableStep["status"] }) {
@@ -197,6 +209,17 @@ export function MeasureProgressWidget({
 				</Stack>
 			)}
 
+			{/* The reduce phases (semantic / detect) have no per-table signal — show
+			    an indeterminate caption so the surface isn't dead air while they run. */}
+			{!data.done && !showTally && PHASE_CAPTION[data.phase] && (
+				<Group gap="xs" wrap="nowrap" data-testid="measure-progress-caption">
+					<Loader size="xs" />
+					<Text size="xs" c="dimmed">
+						{PHASE_CAPTION[data.phase]}
+					</Text>
+				</Group>
+			)}
+
 			{/* The named steps behind the count — which tables are running / done /
 			    failed. Scrolls past a handful so a wide source can't blow out the
 			    canvas. */}
@@ -218,7 +241,7 @@ export function MeasureProgressWidget({
 									truncate
 									data-testid={`measure-table-${t.raw_table_id}`}
 								>
-									{t.name}
+									{displayTableName(t.name)}
 								</Text>
 							</Group>
 						))}
@@ -228,7 +251,11 @@ export function MeasureProgressWidget({
 
 			{succeeded && (
 				<Alert color="green" data-testid="measure-progress-done">
-					Add source complete — readiness is ready to inspect.
+					{data.tables.length > 0
+						? `Done — ${data.tables.length} table${
+								data.tables.length === 1 ? "" : "s"
+							} imported and analyzed. Ask about any table to see its readiness.`
+						: "Done — the source is imported and analyzed."}
 				</Alert>
 			)}
 
@@ -251,10 +278,12 @@ function failureMessage(data: AddSourceProgress): string {
 		return `The add source run ended in ${data.status.toLowerCase()} at the ${data.phase} phase.`;
 	}
 	if (f.table_id) {
+		// Same name-display rule as the live list — strip the `<source>__` prefix so
+		// a FAILED run reads `trial_balance`, not `finance_data__trial_balance`.
 		const name =
 			data.tables.find((t) => t.raw_table_id === f.table_id)?.name ??
 			`table ${f.table_id.slice(0, 8)}`;
-		return `Add source failed on ${name}: ${f.message}`;
+		return `Add source failed on ${displayTableName(name)}: ${f.message}`;
 	}
 	return `Add source failed during ${phaseLabel(f.phase)}: ${f.message}`;
 }

@@ -68,10 +68,10 @@ export function SelectedSourceWidget({
 		setTriggering(true);
 		setTriggerError(null);
 		try {
-			// One selected source today → a 1-element run set (DAT-422). Per-file
-			// content-keyed sources (N) land with the select content-keying follow-on.
+			// A run ingests the SET of sources `select` minted (DAT-422): one
+			// content-keyed source per uploaded file, or the single db source.
 			const result = await triggerAddSourceRequest(
-				[selection.source_id],
+				selection.source_ids,
 				selection.vertical,
 			);
 			// Imperative canvas swap: the progress widget is seeded by THIS REST

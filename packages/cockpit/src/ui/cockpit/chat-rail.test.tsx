@@ -269,7 +269,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		{
 			name: "select",
 			state: "complete",
-			output: { source_id: "s1", name: "orders", source_type: "file" },
+			output: { source_ids: ["s1"], name: "orders", source_type: "file" },
 			summary: "orders (file)",
 		},
 		{
@@ -387,7 +387,11 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 						name: "select",
 						state: "complete",
 						arguments: "{}",
-						output: { source_id: "s1", name: "fx_rates", source_type: "csv" },
+						output: {
+							source_ids: ["s1"],
+							name: "fx_rates",
+							source_type: "csv",
+						},
 					},
 				],
 			},

@@ -1,14 +1,15 @@
-// Unit tests for the select tool (DAT-398) — the cockpit's first writer of the
-// engine `ws_<id>.sources` table.
+// Unit tests for the select tool (DAT-398, DAT-422) — the cockpit's first writer
+// of the engine `ws_<id>.sources` table.
 //
 // Two mocked seams: `#/config` (s3Bucket) and the Drizzle metadata client. The
-// metadata stub records the exact row passed to `.values(...)` and the conflict
-// `set`, and returns the row from `.returning(...)`, so we assert the persisted
-// shape per sourceKind WITHOUT a live Postgres. The prefix-enumeration driver is
-// injected (a stub `enumerate`) so the multi-file path is exercised without a
-// bucket. Importing select.ts transitively pulls config + the metadata client
-// (and `../duckdb/connect` for ConnectSchema), so both are mocked at the `#/`
-// alias — same approach as frame.test.ts / teach.tool.test.ts.
+// metadata stub records EVERY row passed to `.values(...)` (a file selection
+// mints one content-keyed source per file, so there can be N) and the conflict
+// `set`, and returns the just-inserted row's id from `.returning(...)`, so we
+// assert the persisted shape per sourceKind WITHOUT a live Postgres. The
+// prefix-enumeration driver is injected (a stub `enumerate`) so the multi-file
+// path is exercised without a bucket. Importing select.ts transitively pulls
+// config + the metadata client (and `../duckdb/connect` for ConnectSchema), so
+// both are mocked at the `#/` alias — same approach as frame.test.ts.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,28 +17,21 @@ import type { ConnectSchema } from "#/duckdb/connect";
 
 vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 
-// Capture the inserted row + the conflict-update set; `.returning()` echoes the
-// row back so select() can project its result from it.
-let insertedRow: Record<string, unknown> | null = null;
-let conflictConfig: Record<string, unknown> | null = null;
+// Capture EVERY inserted row + each conflict-update set; `.returning()` echoes
+// the most-recently inserted row's id (each values→onConflict→returning chain is
+// per-source and awaited in order, so `.at(-1)` is that source's row).
+let insertedRows: Record<string, unknown>[] = [];
+let conflictConfigs: Record<string, unknown>[] = [];
 const returningMock = vi.fn(async () => {
-	const r = insertedRow ?? {};
-	return [
-		{
-			sourceId: r.sourceId,
-			name: r.name,
-			sourceType: r.sourceType,
-			backend: r.backend ?? null,
-			stage: r.stage,
-		},
-	];
+	const r = insertedRows.at(-1) ?? {};
+	return [{ sourceId: r.sourceId }];
 });
 const onConflictMock = vi.fn((cfg: Record<string, unknown>) => {
-	conflictConfig = cfg;
+	conflictConfigs.push(cfg);
 	return { returning: returningMock };
 });
 const valuesMock = vi.fn((row: Record<string, unknown>) => {
-	insertedRow = row;
+	insertedRows.push(row);
 	return { onConflictDoUpdate: onConflictMock };
 });
 vi.mock("#/db/metadata/client", () => ({
@@ -47,14 +41,19 @@ vi.mock("#/db/metadata/client", () => ({
 // The generated Drizzle schema imports the live client transitively in some
 // suites; stub `sources` to a marker so `.insert(sources)` is callable.
 vi.mock("#/db/metadata/schema", () => ({
-	sources: { name: "sources.name" },
+	sources: { name: "sources.name", sourceId: "sources.sourceId" },
 }));
 
 import { select } from "./select";
 
+// A staged upload URI is `s3://<bucket>/uploads/<digest>/<file>` — the digest
+// segment is what `select` content-keys the source on.
+const A = "s3://dataraum-lake/uploads/aaa111/orders.csv";
+const B = "s3://dataraum-lake/uploads/bbb222/customers.csv";
+
 const FILE_SCHEMA: ConnectSchema = {
 	sourceKind: "file",
-	source: "s3://dataraum-lake/uploads/abc/orders.csv",
+	source: A,
 	tables: [{ name: "orders.csv", rowCountEstimate: 3, columns: [] }],
 };
 
@@ -68,145 +67,116 @@ const DB_SCHEMA: ConnectSchema = {
 };
 
 beforeEach(() => {
-	insertedRow = null;
-	conflictConfig = null;
+	insertedRows = [];
+	conflictConfigs = [];
 	valuesMock.mockClear();
 	onConflictMock.mockClear();
 	returningMock.mockClear();
 });
 
-describe("select (DAT-398) — file source", () => {
-	it("persists a single connect URI under file_uris with a suffix-derived source_type", async () => {
-		const result = await select({
-			source_name: "orders",
-			schema: FILE_SCHEMA,
-		});
+describe("select (DAT-422) — file source is content-keyed", () => {
+	it("mints ONE content-keyed source per uploaded file", async () => {
+		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, B] });
 
-		expect(insertedRow?.name).toBe("orders");
-		expect(insertedRow?.sourceType).toBe("csv"); // NOT the literal "file"
-		expect(insertedRow?.backend).toBeNull();
-		expect(insertedRow?.stage).toBe("add_source");
-		expect(insertedRow?.connectionConfig).toEqual({
-			file_uris: ["s3://dataraum-lake/uploads/abc/orders.csv"],
-		});
+		// Two files → two source rows, each named src_<digest> with its own single
+		// file_uri (never the literal "file" source_type).
+		expect(insertedRows).toHaveLength(2);
+		const byName = Object.fromEntries(
+			insertedRows.map((r) => [r.name, r]),
+		) as Record<string, Record<string, unknown>>;
+		expect(Object.keys(byName).sort()).toEqual(["src_aaa111", "src_bbb222"]);
+		expect(byName.src_aaa111.connectionConfig).toEqual({ file_uris: [A] });
+		expect(byName.src_aaa111.sourceType).toBe("csv");
+		expect(byName.src_bbb222.connectionConfig).toEqual({ file_uris: [B] });
 		// file_uris and tables never cross-contaminate.
-		expect(insertedRow?.connectionConfig).not.toHaveProperty("tables");
+		expect(byName.src_aaa111.connectionConfig).not.toHaveProperty("tables");
 
-		expect(result.source_type).toBe("csv");
-		expect(result.stage).toBe("add_source");
-		expect(result.file_uris).toEqual([
-			"s3://dataraum-lake/uploads/abc/orders.csv",
-		]);
+		// The selection descriptor carries the SET of source ids a run ingests.
+		expect(result.source_ids).toHaveLength(2);
+		expect(new Set(result.source_ids).size).toBe(2);
+		expect(result.file_uris).toEqual([A, B]);
 		expect(result.recipe_tables).toBeNull();
-		// No vertical chosen → the unnamed cold-start default.
+		expect(result.backend).toBeNull();
+		expect(result.stage).toBe("add_source");
 		expect(result.vertical).toBe("_adhoc");
 	});
 
-	it("echoes the chosen vertical (adopted builtin or framed) in the result", async () => {
-		const adopted = await select({
-			source_name: "ledger",
-			schema: FILE_SCHEMA,
-			vertical: "finance",
-		});
-		expect(adopted.vertical).toBe("finance");
+	it("registers the single connected file as one content-keyed source", async () => {
+		const result = await select({ schema: FILE_SCHEMA });
+		expect(insertedRows).toHaveLength(1);
+		expect(insertedRows[0].name).toBe("src_aaa111");
+		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
+		expect(result.source_ids).toHaveLength(1);
+		// A single-file selection labels the card with the filename.
+		expect(result.name).toBe("orders.csv");
+		expect(result.source_type).toBe("csv");
+	});
 
-		const framed = await select({
-			source_name: "deals",
+	it("labels a multi-file selection by count", async () => {
+		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, B] });
+		expect(result.name).toBe("2 files");
+	});
+
+	it("dedups a repeated URI to ONE UPSERT (same content key)", async () => {
+		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, A] });
+		expect(insertedRows).toHaveLength(1);
+		expect(result.source_ids).toHaveLength(1);
+		expect(result.file_uris).toEqual([A]);
+	});
+
+	it("fails loud on a non-upload URI BEFORE persisting (not content-addressed)", async () => {
+		await expect(
+			select({
+				schema: FILE_SCHEMA,
+				file_uris: ["s3://dataraum-lake/data/2024/sales.csv"],
+			}),
+		).rejects.toThrow(/must be a staged upload/);
+		expect(valuesMock).not.toHaveBeenCalled();
+	});
+
+	it("enumerates a prefix into content-keyed sources via the injected driver", async () => {
+		const enumerate = vi.fn().mockResolvedValue([A, B]);
+		const result = await select(
+			{ schema: FILE_SCHEMA, prefix: "uploads/" },
+			enumerate,
+		);
+		expect(enumerate).toHaveBeenCalledWith("dataraum-lake", "uploads/");
+		expect(insertedRows).toHaveLength(2);
+		expect(result.source_ids).toHaveLength(2);
+	});
+
+	it("file_uris takes precedence over prefix when both are passed", async () => {
+		const enumerate = vi.fn().mockResolvedValue([B]);
+		await select(
+			{ schema: FILE_SCHEMA, file_uris: [A], prefix: "uploads/" },
+			enumerate,
+		);
+		expect(enumerate).not.toHaveBeenCalled();
+		expect(insertedRows).toHaveLength(1);
+		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
+	});
+
+	it("ignores source_name for a file source (content-keyed instead)", async () => {
+		// An invalid name that the db path would reject is harmless here.
+		const result = await select({
 			schema: FILE_SCHEMA,
-			vertical: "sales",
+			source_name: "Not A Valid Name!",
 		});
+		expect(insertedRows[0].name).toBe("src_aaa111");
+		expect(result.source_ids).toHaveLength(1);
+	});
+
+	it("echoes the chosen vertical (adopted builtin or framed) in the result", async () => {
+		const adopted = await select({ schema: FILE_SCHEMA, vertical: "finance" });
+		expect(adopted.vertical).toBe("finance");
+		const framed = await select({ schema: FILE_SCHEMA, vertical: "sales" });
 		expect(framed.vertical).toBe("sales");
 	});
 
 	it("rejects an unsafe vertical", async () => {
 		await expect(
-			select({ source_name: "orders", schema: FILE_SCHEMA, vertical: "../x" }),
+			select({ schema: FILE_SCHEMA, vertical: "../x" }),
 		).rejects.toThrow(/Invalid vertical/);
-	});
-
-	it("enumerates a prefix into a multi-URI file_uris list via the injected driver", async () => {
-		const enumerate = vi
-			.fn()
-			.mockResolvedValue([
-				"s3://dataraum-lake/sel/a.csv",
-				"s3://dataraum-lake/sel/b.csv",
-			]);
-
-		const result = await select(
-			{ source_name: "monthly", schema: FILE_SCHEMA, prefix: "sel/" },
-			enumerate,
-		);
-
-		expect(enumerate).toHaveBeenCalledWith("dataraum-lake", "sel/");
-		expect(insertedRow?.connectionConfig).toEqual({
-			file_uris: [
-				"s3://dataraum-lake/sel/a.csv",
-				"s3://dataraum-lake/sel/b.csv",
-			],
-		});
-		expect(result.file_uris).toHaveLength(2);
-	});
-
-	it("registers an explicit file_uris list directly (DAT-391), sorted, without enumerating", async () => {
-		const enumerate = vi.fn(); // must NOT be called — client already holds the URIs
-		const result = await select(
-			{
-				source_name: "uploaded",
-				schema: FILE_SCHEMA,
-				file_uris: [
-					"s3://dataraum-lake/uploads/u2/b.csv",
-					"s3://dataraum-lake/uploads/u1/a.csv",
-				],
-			},
-			enumerate,
-		);
-
-		expect(enumerate).not.toHaveBeenCalled();
-		expect(insertedRow?.connectionConfig).toEqual({
-			file_uris: [
-				"s3://dataraum-lake/uploads/u1/a.csv",
-				"s3://dataraum-lake/uploads/u2/b.csv",
-			],
-		});
-		expect(result.source_type).toBe("csv");
-		expect(result.file_uris).toHaveLength(2);
-	});
-
-	it("file_uris takes precedence over prefix when both are passed", async () => {
-		const enumerate = vi
-			.fn()
-			.mockResolvedValue(["s3://dataraum-lake/sel/z.csv"]);
-		await select(
-			{
-				source_name: "wins",
-				schema: FILE_SCHEMA,
-				file_uris: ["s3://dataraum-lake/uploads/u/a.csv"],
-				prefix: "sel/",
-			},
-			enumerate,
-		);
-		expect(enumerate).not.toHaveBeenCalled();
-		expect(insertedRow?.connectionConfig).toEqual({
-			file_uris: ["s3://dataraum-lake/uploads/u/a.csv"],
-		});
-	});
-
-	it("rejects a duplicate-basename selection BEFORE persisting (engine fails loud)", async () => {
-		const enumerate = vi
-			.fn()
-			.mockResolvedValue([
-				"s3://dataraum-lake/sel/a/data.csv",
-				"s3://dataraum-lake/sel/b/data.csv",
-			]);
-
-		await expect(
-			select(
-				{ source_name: "dupes", schema: FILE_SCHEMA, prefix: "sel/" },
-				enumerate,
-			),
-		).rejects.toThrow(/collide on the same raw table/);
-		// Nothing was written.
-		expect(valuesMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -218,19 +188,22 @@ describe("select (DAT-398) — database source", () => {
 			backend: "mssql",
 		});
 
-		expect(insertedRow?.sourceType).toBe("db_recipe");
+		expect(insertedRows).toHaveLength(1);
+		expect(insertedRows[0].sourceType).toBe("db_recipe");
 		// The backend COLUMN is set (import fails loud without it).
-		expect(insertedRow?.backend).toBe("mssql");
-		expect(insertedRow?.stage).toBe("add_source");
-		expect(insertedRow?.connectionConfig).toEqual({
+		expect(insertedRows[0].backend).toBe("mssql");
+		expect(insertedRows[0].stage).toBe("add_source");
+		expect(insertedRows[0].connectionConfig).toEqual({
 			tables: [
 				{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
 				{ name: "customers", sql: 'SELECT * FROM "Customers"' },
 			],
 		});
 		// tables and file_uris never cross-contaminate.
-		expect(insertedRow?.connectionConfig).not.toHaveProperty("file_uris");
+		expect(insertedRows[0].connectionConfig).not.toHaveProperty("file_uris");
 
+		expect(result.source_ids).toHaveLength(1);
+		expect(result.name).toBe("warehouse");
 		expect(result.source_type).toBe("db_recipe");
 		expect(result.backend).toBe("mssql");
 		expect(result.recipe_tables).toHaveLength(2);
@@ -244,7 +217,7 @@ describe("select (DAT-398) — database source", () => {
 			backend: "postgres",
 			table_names: ["Customers"],
 		});
-		expect(insertedRow?.connectionConfig).toEqual({
+		expect(insertedRows[0].connectionConfig).toEqual({
 			tables: [{ name: "customers", sql: 'SELECT * FROM "Customers"' }],
 		});
 	});
@@ -262,26 +235,27 @@ describe("select (DAT-398) — database source", () => {
 		).rejects.toThrow(/supported backend/);
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
-});
 
-describe("select (DAT-398) — name + upsert", () => {
-	it("rejects an invalid source name before any write", async () => {
+	it("requires a valid source_name (db-only) before any write", async () => {
 		await expect(
-			select({ source_name: "Orders!", schema: FILE_SCHEMA }),
-		).rejects.toThrow(/Invalid source name/);
+			select({ schema: DB_SCHEMA, backend: "mssql" }),
+		).rejects.toThrow(/requires a valid source_name/);
+		await expect(
+			select({ source_name: "Orders!", schema: DB_SCHEMA, backend: "mssql" }),
+		).rejects.toThrow(/requires a valid source_name/);
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
+});
 
+describe("select — upsert", () => {
 	it("UPSERTs on the unique name, re-pointing config/type/backend/stage", async () => {
-		await select({ source_name: "orders", schema: FILE_SCHEMA });
+		await select({ schema: FILE_SCHEMA });
 		expect(onConflictMock).toHaveBeenCalledTimes(1);
-		expect(conflictConfig?.target).toBe("sources.name");
-		const set = conflictConfig?.set as Record<string, unknown>;
+		expect(conflictConfigs[0]?.target).toBe("sources.name");
+		const set = conflictConfigs[0]?.set as Record<string, unknown>;
 		expect(set.sourceType).toBe("csv");
 		expect(set.stage).toBe("add_source");
-		expect(set.connectionConfig).toEqual({
-			file_uris: ["s3://dataraum-lake/uploads/abc/orders.csv"],
-		});
+		expect(set.connectionConfig).toEqual({ file_uris: [A] });
 		// created_at is NOT in the conflict set (only set on insert).
 		expect(set).not.toHaveProperty("createdAt");
 	});

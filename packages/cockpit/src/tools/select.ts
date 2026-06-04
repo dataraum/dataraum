@@ -1,32 +1,37 @@
-// select tool (DAT-398) — the agent-tier step that turns a connected source +
-// the user's subset choice into a real `sources` row, advancing the onboarding
-// cursor to `add_source`.
+// select tool (DAT-398, DAT-422) — the agent-tier step that turns a connected
+// source + the user's subset choice into real `sources` rows, advancing the
+// onboarding cursor to `add_source`.
 //
 // This is the FIRST cockpit writer of the engine-owned `ws_<id>.sources` table.
 // Nothing upstream creates the Source row: `connect` is read-only and `frame`
 // writes concept overlays, not a Source. The engine import phase explicitly
 // assumes "the workflow caller — the cockpit — wrote it before triggering
 // addSourceWorkflow" (import_phase.py). So `select` OWNS the INSERT: it writes
-// the Source at `stage='add_source'` (the cursor the journey readiness reads),
+// the source(s) at `stage='add_source'` (the cursor the journey readiness reads),
 // via the SAME metadata-client cross-schema write seam `teach`/`frame` use — the
-// documented policy break (the metadata client is otherwise read-only; the
-// engine owns the schema, and these onboarding writes flow through this one
-// seam).
+// documented policy break (the metadata client is otherwise read-only; the engine
+// owns the schema, and these onboarding writes flow through this one seam).
 //
-// It does NOT trigger `addSourceWorkflow` — that is the future `add_source` tool
-// (engine ingest, DAT-389). `select` only persists + advances the cursor.
+// It does NOT trigger `addSourceWorkflow` — that is the `add_source` trigger
+// (temporal/trigger-add-source.ts). `select` only persists + advances the cursor.
 //
 // Dispatch is on `ConnectSchema.sourceKind`:
-//   - file:     persist `connection_config.file_uris` (the single connect URI,
-//               or a prefix enumerated to N concrete URIs via
-//               `enumeratePrefixUris`) + a suffix-derived `source_type`.
-//               Duplicate basenames are REJECTED before persisting (the engine
-//               fails loud on colliding `<source>__<stem>` raw tables).
-//   - database: persist `source_type='db_recipe'`, the `backend` COLUMN, and
-//               `connection_config.tables` synthesized from the picked tables.
+//   - file:     each uploaded file is its OWN content-keyed source (DAT-422 — the
+//               model is one file = one content-keyed source). For every staged
+//               upload URI (`uploads/<digest>/<file>`) `select` UPSERTs a source
+//               named `src_<digest>` with `connection_config.file_uris=[that one
+//               URI]` + a suffix-derived `source_type`. Identical bytes (same
+//               digest) UPSERT one row (re-upload dedup); two distinct files never
+//               collide on a raw table even with matching basenames (the digests
+//               differ), so no basename rejection is needed. A run then ingests
+//               the SET of these source ids (`source_ids`).
+//   - database: ONE source — `source_type='db_recipe'`, the `backend` COLUMN, and
+//               `connection_config.tables` synthesized from the picked tables. The
+//               user-chosen `source_name` is required here (files are content-keyed,
+//               so it is ignored for them).
 //
-// `needsApproval: true` — it mutates workspace state (creates/updates a Source
-// row), so the SDK pauses for the user exactly like `teach`/`frame`/`replay`.
+// `needsApproval: true` — it mutates workspace state (creates/updates source
+// rows), so the SDK pauses for the user exactly like `teach`/`frame`/`replay`.
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
@@ -40,17 +45,12 @@ import { SUPPORTED_BACKENDS } from "../duckdb/probe";
 import { enumeratePrefixUris } from "../select/enumerate";
 import {
 	connectTablesToRecipeTables,
-	duplicateBasenames,
-	sourceTypeForUris,
+	contentKeyedSourceName,
+	SOURCE_NAME_PATTERN,
+	sourceTypeForUri,
 } from "../select/mappers";
 
-// The engine's source-name rule (`sources/manager.py` `_NAME_PATTERN`): lowercase,
-// starts with a letter, 2–49 chars of `[a-z0-9_]`. The persisted name must match
-// it (the engine credential lookup `DATARAUM_<NAME>_URL` and raw-table prefix
-// `<name>__` both key off it) and is UNIQUE (`uq_sources_name`).
-const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
-
-// The onboarding stage `select` leaves the Source at. The cockpit drives a
+// The onboarding stage `select` leaves the source(s) at. The cockpit drives a
 // source `connect → frame → select → add_source` BEFORE the workflow triggers;
 // `select` writes the row already at `add_source`, the next interactive stage.
 const STAGE_AFTER_SELECT = "add_source";
@@ -85,8 +85,17 @@ function resolveVertical(name?: string | null): string {
 
 /** The persisted Source descriptor `select` returns (and the canvas renders). */
 export const SelectResult = z.object({
-	source_id: z.string(),
+	// Every source `select` minted/UPSERTed for this selection — the SET an
+	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
+	// source per uploaded file), 1 for a database selection. The add_source
+	// trigger posts exactly these ids.
+	source_ids: z.array(z.string()),
+	// A human display label for the selection — NOT a source name (file sources
+	// are content-keyed, so there is no single user-chosen name): the database
+	// source name, or the filename / "N files" for a file selection.
 	name: z.string(),
+	// `db_recipe` for a database source; the file kind for a file selection —
+	// `csv`/`parquet`/`json`, or `csv+parquet` for a (future) mixed batch.
 	source_type: z.string(),
 	backend: z.string().nullable(),
 	stage: z.string(),
@@ -103,16 +112,20 @@ export const SelectResult = z.object({
 export type SelectResult = z.infer<typeof SelectResult>;
 
 export interface SelectInput {
-	source_name: string;
+	// Database source only: the unique source name (lowercase, starts with a
+	// letter). File sources are content-keyed (`src_<digest>`), so this is ignored
+	// for them.
+	source_name?: string | null;
 	schema: ConnectSchema;
-	// File source: an explicit list of `s3://` URIs to register as ONE multi-file
-	// source (DAT-391: several files uploaded together). Takes precedence over
-	// `prefix` — the client already holds the staged URIs, so no S3 re-listing.
+	// File source: an explicit list of `s3://` URIs to register — one content-keyed
+	// source per file (DAT-422: several files uploaded together). Takes precedence
+	// over `prefix` — the client already holds the staged URIs, so no S3 re-listing.
 	// Ignored for a database source.
 	file_uris?: string[] | null;
-	// File source: optional `s3://<bucket>/<prefix>` to enumerate into a multi-URI
-	// `file_uris` list. Omitted → the single connect URI (`schema.source`) is the
-	// one file persisted. Ignored for a database source.
+	// File source: optional `s3://<bucket>/<prefix>` to enumerate into concrete
+	// URIs. Omitted → the single connect URI (`schema.source`) is the one file
+	// registered. Ignored for a database source. (Each enumerated URI must be a
+	// staged upload — a non-content-addressed bucket object is a loud failure.)
 	prefix?: string | null;
 	// Database source: the picked subset of `schema.tables[].name` (display
 	// names). Omitted/empty → every table in the schema is selected.
@@ -127,11 +140,11 @@ export interface SelectInput {
 	session_id?: string | null;
 }
 
-/** Build the file-source `connection_config.file_uris` list for a connect
- * schema. Precedence: an explicit `fileUris` list (DAT-391 — files uploaded
- * together; the client already holds them) → a `prefix` enumerated to its
- * concrete URIs → the single connect URI. `enumerate` is injected so the unit
- * test exercises the prefix mapping without a live bucket. */
+/** Build the file-source URI list for a connect schema. Precedence: an explicit
+ * `fileUris` list (DAT-391 — files uploaded together; the client already holds
+ * them) → a `prefix` enumerated to its concrete URIs → the single connect URI.
+ * `enumerate` is injected so the unit test exercises the prefix mapping without a
+ * live bucket. */
 async function resolveFileUris(
 	schema: ConnectSchema,
 	opts: { fileUris?: string[] | null; prefix?: string | null },
@@ -149,33 +162,69 @@ async function resolveFileUris(
 }
 
 /**
- * Persist (UPSERT) a `sources` row for the selected subset and advance its
- * onboarding cursor to `add_source`. Returns the persisted descriptor.
+ * UPSERT one `sources` row (on the UNIQUE name) and return its source_id.
  *
- * The write keys on the UNIQUE `name`: a fresh source INSERTs; re-selecting the
- * same name re-writes its `connection_config` / `source_type` / `backend` /
- * `stage` (an idempotent re-select, not a duplicate-name error). `enumerate` is
- * injected for testability; the default is the real `enumeratePrefixUris`.
+ * A fresh name INSERTs a new source_id; re-selecting the same name re-points its
+ * `connection_config` / `source_type` / `backend` / `stage` (an idempotent
+ * re-select, not a duplicate-name error). `created_at` is only set on insert; the
+ * update touches `updated_at`. Workspace scope is implicit in the ws_<id> schema
+ * the client targets (no workspace_id column post-DAT-343).
+ */
+async function upsertSource(values: {
+	name: string;
+	sourceType: string;
+	backend: string | null;
+	connectionConfig: Record<string, unknown>;
+	now: Date;
+}): Promise<string> {
+	const [row] = await metadataDb
+		.insert(sources)
+		.values({
+			sourceId: randomUUID(),
+			name: values.name,
+			sourceType: values.sourceType,
+			connectionConfig: values.connectionConfig,
+			status: INITIAL_STATUS,
+			stage: STAGE_AFTER_SELECT,
+			backend: values.backend,
+			createdAt: values.now,
+			updatedAt: values.now,
+		})
+		.onConflictDoUpdate({
+			target: sources.name,
+			set: {
+				sourceType: values.sourceType,
+				connectionConfig: values.connectionConfig,
+				status: INITIAL_STATUS,
+				stage: STAGE_AFTER_SELECT,
+				backend: values.backend,
+				updatedAt: values.now,
+			},
+		})
+		.returning({ sourceId: sources.sourceId });
+	return row.sourceId;
+}
+
+/** The display basename (filename leaf) of an `s3://` URI. */
+function basename(uri: string): string {
+	return uri.split("/").filter(Boolean).at(-1) ?? uri;
+}
+
+/**
+ * Persist (UPSERT) the `sources` row(s) for the selected subset and advance the
+ * onboarding cursor to `add_source`. Returns the selection descriptor (the SET of
+ * source ids the add_source trigger will run over).
+ *
+ * `enumerate` is injected for testability; the default is the real
+ * `enumeratePrefixUris`.
  */
 export async function select(
 	input: SelectInput,
 	enumerate: typeof enumeratePrefixUris = enumeratePrefixUris,
 ): Promise<SelectResult> {
-	const name = input.source_name;
-	if (!SOURCE_NAME_PATTERN.test(name)) {
-		throw new Error(
-			`Invalid source name '${name}'. Must match ${SOURCE_NAME_PATTERN.source} ` +
-				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]).",
-		);
-	}
 	const vertical = resolveVertical(input.vertical);
 	const schema = ConnectSchema.parse(input.schema);
-
-	let sourceType: string;
-	let backend: string | null;
-	let connectionConfig: Record<string, unknown>;
-	let fileUris: string[] | null = null;
-	let recipeTables: { name: string; sql: string }[] | null = null;
+	const now = new Date();
 
 	if (schema.sourceKind === "file") {
 		const uris = await resolveFileUris(
@@ -183,137 +232,140 @@ export async function select(
 			{ fileUris: input.file_uris, prefix: input.prefix },
 			enumerate,
 		);
-		const dupes = duplicateBasenames(uris);
-		if (dupes.length > 0) {
-			throw new Error(
-				`Selected files collide on the same raw table(s): ${dupes.join(", ")}. ` +
-					"Each file must have a distinct basename — rename or drop the duplicates " +
-					"before importing.",
+		// One content-keyed source per file (DAT-422). Dedup by content key so a
+		// repeated URI UPSERTs once; `contentKeyedSourceName` fails loud on a
+		// non-upload URI (content identity requires the upload digest).
+		const byName = new Map<string, { uri: string; sourceType: string }>();
+		for (const uri of uris) {
+			const name = contentKeyedSourceName(uri);
+			if (!byName.has(name)) {
+				byName.set(name, { uri, sourceType: sourceTypeForUri(uri) });
+			}
+		}
+
+		const persisted = [...byName.entries()];
+		const sourceIds: string[] = [];
+		for (const [name, { uri, sourceType }] of persisted) {
+			sourceIds.push(
+				await upsertSource({
+					name,
+					sourceType,
+					backend: null,
+					// DISTINCT key from the db_recipe `tables` key — never folded together.
+					connectionConfig: { file_uris: [uri] },
+					now,
+				}),
 			);
 		}
-		sourceType = sourceTypeForUris(uris);
-		backend = null;
-		fileUris = uris;
-		// DISTINCT key from the db_recipe `tables` key — never folded together.
-		connectionConfig = { file_uris: uris };
-	} else {
-		if (!input.backend || !SUPPORTED_BACKENDS.includes(input.backend)) {
-			throw new Error(
-				`Database select requires a supported backend (got '${input.backend ?? ""}'; ` +
-					`supported: ${SUPPORTED_BACKENDS.join(", ")}). The engine import fails ` +
-					"loud on a db_recipe source with no backend.",
-			);
-		}
-		const picked =
-			input.table_names && input.table_names.length > 0
-				? schema.tables.filter((t) => input.table_names?.includes(t.name))
-				: schema.tables;
-		if (picked.length === 0) {
-			throw new Error(
-				`None of the requested tables (${(input.table_names ?? []).join(", ")}) ` +
-					"are in the connected schema.",
-			);
-		}
-		recipeTables = connectTablesToRecipeTables(picked);
-		sourceType = "db_recipe";
-		backend = input.backend;
-		// DISTINCT key from the file `file_uris` key — never folded together.
-		connectionConfig = { tables: recipeTables };
+
+		const fileUris = persisted.map(([, p]) => p.uri);
+		const distinctTypes = [
+			...new Set(persisted.map(([, p]) => p.sourceType)),
+		].sort();
+		return {
+			source_ids: sourceIds,
+			name:
+				fileUris.length === 1
+					? basename(fileUris[0])
+					: `${fileUris.length} files`,
+			source_type: distinctTypes.join("+"),
+			backend: null,
+			stage: STAGE_AFTER_SELECT,
+			vertical,
+			file_uris: fileUris,
+			recipe_tables: null,
+		};
 	}
 
-	const now = new Date();
-	const sourceId = randomUUID();
-
-	// Policy break (documented, like teach/frame): the metadata client is
-	// otherwise read-only; `sources` (here) + `config_overlay` (teach/frame) are
-	// the onboarding tables the cockpit writes. Workspace scope is implicit in the
-	// ws_<id> schema the client targets (no workspace_id column post-DAT-343).
-	//
-	// UPSERT on the UNIQUE name: a fresh select INSERTs a new source_id; a repeat
-	// select of the same name re-points its config/type/backend/stage. `created_at`
-	// is only set on insert; the update touches `updated_at`.
-	const [row] = await metadataDb
-		.insert(sources)
-		.values({
-			sourceId,
-			name,
-			sourceType,
-			connectionConfig,
-			status: INITIAL_STATUS,
-			stage: STAGE_AFTER_SELECT,
-			backend,
-			createdAt: now,
-			updatedAt: now,
-		})
-		.onConflictDoUpdate({
-			target: sources.name,
-			set: {
-				sourceType,
-				connectionConfig,
-				status: INITIAL_STATUS,
-				stage: STAGE_AFTER_SELECT,
-				backend,
-				updatedAt: now,
-			},
-		})
-		.returning({
-			sourceId: sources.sourceId,
-			name: sources.name,
-			sourceType: sources.sourceType,
-			backend: sources.backend,
-			stage: sources.stage,
-		});
+	// database — ONE source, named by the user (files are content-keyed instead).
+	const name = input.source_name;
+	if (!name || !SOURCE_NAME_PATTERN.test(name)) {
+		throw new Error(
+			`Database select requires a valid source_name (got '${name ?? ""}'). ` +
+				`Must match ${SOURCE_NAME_PATTERN.source} (lowercase, start with a ` +
+				"letter, 2–49 chars of [a-z0-9_]).",
+		);
+	}
+	if (!input.backend || !SUPPORTED_BACKENDS.includes(input.backend)) {
+		throw new Error(
+			`Database select requires a supported backend (got '${input.backend ?? ""}'; ` +
+				`supported: ${SUPPORTED_BACKENDS.join(", ")}). The engine import fails ` +
+				"loud on a db_recipe source with no backend.",
+		);
+	}
+	const picked =
+		input.table_names && input.table_names.length > 0
+			? schema.tables.filter((t) => input.table_names?.includes(t.name))
+			: schema.tables;
+	if (picked.length === 0) {
+		throw new Error(
+			`None of the requested tables (${(input.table_names ?? []).join(", ")}) ` +
+				"are in the connected schema.",
+		);
+	}
+	const recipeTables = connectTablesToRecipeTables(picked);
+	const sourceId = await upsertSource({
+		name,
+		sourceType: "db_recipe",
+		backend: input.backend,
+		// DISTINCT key from the file `file_uris` key — never folded together.
+		connectionConfig: { tables: recipeTables },
+		now,
+	});
 
 	return {
-		source_id: row.sourceId,
-		name: row.name,
-		source_type: row.sourceType,
-		backend: row.backend ?? null,
-		stage: row.stage ?? STAGE_AFTER_SELECT,
+		source_ids: [sourceId],
+		name,
+		source_type: "db_recipe",
+		backend: input.backend,
+		stage: STAGE_AFTER_SELECT,
 		vertical,
-		file_uris: fileUris,
+		file_uris: null,
 		recipe_tables: recipeTables,
 	};
 }
 
 /**
  * The `select` tool for the agent loop. `needsApproval: true` — it creates/
- * updates a Source row (workspace state), so the SDK pauses for user
- * confirmation before `.server` runs. Run it after `connect` (and `frame` on a
- * cold-start workspace) and before `add_source`.
+ * updates source rows (workspace state), so the SDK pauses for user confirmation
+ * before `.server` runs. Run it after `connect` (and `frame` on a cold-start
+ * workspace) and before `add_source`.
  */
 export const selectTool = toolDefinition({
 	name: "select",
 	description:
-		"Register the data the user chose to import as a workspace source and advance " +
-		"it to the add_source stage. Pass the `connect` result as `schema` plus a valid " +
-		"`source_name` (lowercase, starts with a letter). For a file source: optionally " +
-		"pass `prefix` (an s3:// folder) to import every loadable object under it, " +
-		"otherwise the single connected file is used. For a database source: pass " +
-		"`backend` and optionally `table_names` (a subset of the schema's tables; all " +
-		"tables if omitted). Requires user approval — it writes to the workspace. Does " +
-		"NOT start the import; that is the add_source step.",
+		"Register the data the user chose to import as workspace source(s) and advance " +
+		"to the add_source stage. Pass the `connect` result as `schema`. For a FILE " +
+		"source: each uploaded file becomes its own content-keyed source automatically — " +
+		"pass `file_uris` (the staged s3:// upload URIs) or `prefix` (an s3:// folder), " +
+		"or omit both for the single connected file; no `source_name` is needed. For a " +
+		"DATABASE source: pass `source_name` (lowercase, starts with a letter), `backend`, " +
+		"and optionally `table_names` (a subset of the schema's tables; all if omitted). " +
+		"Requires user approval — it writes to the workspace. Does NOT start the import; " +
+		"that is the add_source step.",
 	inputSchema: z.object({
 		source_name: z
 			.string()
+			.nullish()
 			.describe(
-				"Unique source name (lowercase, starts with a letter, [a-z0-9_], 2–49 chars).",
+				"Database source only: a unique source name (lowercase, starts with a " +
+					"letter, [a-z0-9_], 2–49 chars). Ignored for file sources (content-keyed).",
 			),
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		file_uris: z
 			.array(z.string())
 			.nullish()
 			.describe(
-				"File source only: an explicit list of `s3://` URIs to register as ONE " +
-					"multi-file source — e.g. several files uploaded together. Takes " +
-					"precedence over `prefix`; omit for a single connected file or a prefix.",
+				"File source only: the staged `s3://` upload URIs to register — one " +
+					"content-keyed source per file. Takes precedence over `prefix`; omit " +
+					"for a single connected file or a prefix.",
 			),
 		prefix: z
 			.string()
 			.nullish()
 			.describe(
-				"File source only: an `s3://<bucket>/<prefix>` folder to enumerate into a " +
-					"multi-file selection. Omit to register just the single connected file.",
+				"File source only: an `s3://<bucket>/<prefix>` folder to enumerate into " +
+					"file URIs. Omit to register just the single connected file.",
 			),
 		table_names: z
 			.array(z.string())

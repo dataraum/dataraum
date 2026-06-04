@@ -21,6 +21,23 @@ describe("toolLabel", () => {
 		expect(toolLabel("some_new_tool")).toBe("Some new tool");
 		expect(toolLabel("")).toBe("Working");
 	});
+
+	it("flips a progressive verb to its settled form once the call is done", () => {
+		// In-progress title (done=false) stays present-tense…
+		expect(toolLabel("select")).toBe("Registering source");
+		expect(toolLabel("connect")).toBe("Reading source");
+		// …and flips to a settled form when the call completes.
+		expect(toolLabel("select", true)).toBe("Registered source");
+		expect(toolLabel("connect", true)).toBe("Source schema");
+		expect(toolLabel("teach", true)).toBe("Taught");
+		expect(toolLabel("replay", true)).toBe("Re-ran");
+	});
+
+	it("leaves already-settled noun titles unchanged when done", () => {
+		// Tools whose label is already a noun read fine in both states — no flip.
+		expect(toolLabel("list_tables", true)).toBe("Workspace tables");
+		expect(toolLabel("run_sql", true)).toBe("Query");
+	});
 });
 
 describe("isCanvasTool", () => {

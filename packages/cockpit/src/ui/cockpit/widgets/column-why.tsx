@@ -159,11 +159,18 @@ export function ColumnWhyWidget({
 										<Table.Td>
 											<Stack gap={0}>
 												<Text span size="xs">
-													{humanizeIdentifier(dimLeaf) || e.dimension_path}
+													{humanizeIdentifier(dimLeaf) ||
+														e.dimension_path ||
+														"—"}
 												</Text>
-												<Text span size="xs" c="dimmed" ff="monospace">
-													{e.dimension_path}
-												</Text>
+												{/* Raw dotted path as a technical subtitle — skip it
+												    entirely when empty so the cell doesn't show a blank
+												    monospace line. */}
+												{e.dimension_path && (
+													<Text span size="xs" c="dimmed" ff="monospace">
+														{e.dimension_path}
+													</Text>
+												)}
 											</Stack>
 										</Table.Td>
 										<Table.Td>
@@ -178,8 +185,13 @@ export function ColumnWhyWidget({
 													block
 													style={{
 														fontSize: 11,
+														maxWidth: 360,
 														maxHeight: 200,
 														overflow: "auto",
+														// Wrap so a long blob (or a plain-string detail
+														// that isn't JSON) doesn't force the table wider.
+														whiteSpace: "pre-wrap",
+														wordBreak: "break-word",
 													}}
 												>
 													{prettyJson(e.detail)}

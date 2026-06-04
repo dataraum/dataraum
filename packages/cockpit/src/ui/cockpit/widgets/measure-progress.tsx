@@ -53,11 +53,11 @@ function phaseLabel(phase: string): string {
 	return PHASES.find((p) => p.key === phase)?.label ?? phase;
 }
 
-// Live caption for the phases that DON'T fan out per table — `semantic_per_column`
-// and `detect` each run as ONE source-level reduce activity (workflows.py), so the
-// table tally is frozen and there's no per-row signal. The caption keeps the
-// surface alive ("still working, here's on what") instead of dead air. Phases that
-// have their own signal (processing_tables → tally) are intentionally absent.
+// Live caption for the phases that carry NO per-table signal: `import` (before the
+// fan-out exists) and `semantic_per_column` / `detect` (each ONE source-level
+// reduce activity, workflows.py). For these the table tally is frozen/empty, so the
+// caption keeps the surface alive ("still working, here's on what") instead of dead
+// air. `processing_tables` is intentionally absent — it has its own tally bar.
 const PHASE_CAPTION: Record<string, string> = {
 	import: "Importing rows…",
 	semantic_per_column: "Analyzing column semantics across all tables…",
@@ -278,10 +278,12 @@ function failureMessage(data: AddSourceProgress): string {
 		return `The add source run ended in ${data.status.toLowerCase()} at the ${data.phase} phase.`;
 	}
 	if (f.table_id) {
+		// Same name-display rule as the live list — strip the `<source>__` prefix so
+		// a FAILED run reads `trial_balance`, not `finance_data__trial_balance`.
 		const name =
 			data.tables.find((t) => t.raw_table_id === f.table_id)?.name ??
 			`table ${f.table_id.slice(0, 8)}`;
-		return `Add source failed on ${name}: ${f.message}`;
+		return `Add source failed on ${displayTableName(name)}: ${f.message}`;
 	}
 	return `Add source failed during ${phaseLabel(f.phase)}: ${f.message}`;
 }

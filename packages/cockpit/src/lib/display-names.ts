@@ -7,8 +7,11 @@
 /**
  * Drop the engine's `<source>__` physical-table prefix for display, e.g.
  * `finance_data__trial_balance` → `trial_balance`. When the source name is known
- * we strip exactly that prefix; otherwise we fall back to dropping everything up
- * to and including the first `__` (the source segment never contains `__`).
+ * we try to strip exactly that prefix; otherwise (or if it doesn't match — the
+ * stored prefix is the *sanitized* source name, so a raw name with spaces/caps
+ * won't match) we fall back to dropping everything up to and including the first
+ * `__`. The engine sanitizes both segments and collapses underscore runs, so a
+ * physical name has exactly one `__` separator and the fallback is always safe.
  */
 export function displayTableName(
 	tableName: string,

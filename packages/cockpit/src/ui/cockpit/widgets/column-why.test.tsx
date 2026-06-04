@@ -85,6 +85,26 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 		).toContain("undeclared_ratio");
 	});
 
+	it("falls back to a dash for an evidence row with an empty dimension path (no blank cell)", () => {
+		renderWidget({
+			...analyzed,
+			evidence: [
+				{
+					dimension_path: "",
+					detector_id: "mystery_detector",
+					score: 0.5,
+					detail: "",
+				},
+			],
+			signal_count: 1,
+		});
+		// Empty dimension → a dash, not a hollow cell; the detector still humanizes.
+		expect(
+			screen.getByTestId("canvas-column-why-evidence").textContent,
+		).toContain("—");
+		expect(screen.getByText("Mystery detector")).toBeTruthy();
+	});
+
 	it("shows the not-analyzed note when the column is found but has no readiness row", () => {
 		renderWidget({
 			...analyzed,

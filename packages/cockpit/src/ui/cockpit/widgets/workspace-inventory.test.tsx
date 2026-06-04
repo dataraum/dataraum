@@ -24,9 +24,9 @@ import { theme } from "#/ui/theme";
 // The widget reads the chat-loop hook from the cockpit context. Mock it so the
 // render tests don't need a CockpitProvider and the click tests can observe the
 // dispatched request.
-const sendChatMessage = vi.fn();
+const sendMessage = vi.fn();
 vi.mock("#/ui/cockpit/cockpit-state", () => ({
-	useCockpit: () => ({ sendChatMessage }),
+	useCockpit: () => ({ sendMessage }),
 }));
 
 function renderWidget(tables: InventoryTable[]) {
@@ -88,7 +88,7 @@ const inventory: InventoryTable[] = [
 describe("WorkspaceInventoryWidget (DAT-349)", () => {
 	afterEach(() => {
 		cleanup();
-		sendChatMessage.mockClear();
+		sendMessage.mockClear();
 	});
 
 	it("renders a row per table with provenance + a readiness band", () => {
@@ -116,8 +116,8 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 	it("table-name click routes a look_table request through the chat loop", () => {
 		renderWidget(inventory);
 		fireEvent.click(screen.getByTestId("inventory-table-t_orders"));
-		expect(sendChatMessage).toHaveBeenCalledTimes(1);
-		const text = sendChatMessage.mock.calls[0][0] as string;
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+		const text = sendMessage.mock.calls[0][0] as string;
 		expect(text).toContain("t_orders");
 		expect(text).toContain("orders");
 		expect(text).toContain("look_table");
@@ -126,8 +126,8 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 	it("Refresh re-lists the inventory through the chat loop", () => {
 		renderWidget(inventory);
 		fireEvent.click(screen.getByTestId("inventory-refresh"));
-		expect(sendChatMessage).toHaveBeenCalledTimes(1);
-		expect(sendChatMessage.mock.calls[0][0]).toContain("list_tables");
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+		expect(sendMessage.mock.calls[0][0]).toContain("list_tables");
 	});
 
 	it("clicking a source badge opens the SourceCard with that source's tables — no agent round-trip", () => {
@@ -146,7 +146,7 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(card.getByText("items")).toBeTruthy();
 		expect(card.queryByText("users")).toBeNull();
 		// Local navigation — it must NOT spend an agent turn.
-		expect(sendChatMessage).not.toHaveBeenCalled();
+		expect(sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("closing the SourceCard returns to the bare inventory", () => {

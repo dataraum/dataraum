@@ -16,6 +16,7 @@ vi.mock("@tanstack/ai-react", () => ({
 		isLoading: false,
 		error: undefined,
 		sendMessage: async () => {},
+		stop: () => {},
 		addToolApprovalResponse: async () => {},
 	}),
 	fetchServerSentEvents: () => ({}),
@@ -79,7 +80,7 @@ describe("CockpitView history banner (DAT-354)", () => {
 	function PinOnMount() {
 		const { pinCanvas } = useCockpit();
 		useEffect(() => {
-			pinCanvas("c1", { kind: "source-list", sources: [] });
+			pinCanvas("c1");
 		}, [pinCanvas]);
 		return null;
 	}

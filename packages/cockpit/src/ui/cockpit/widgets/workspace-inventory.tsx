@@ -158,7 +158,7 @@ export function WorkspaceInventoryWidget({
 	state: Extract<CanvasState, { kind: "workspace-inventory" }>;
 }) {
 	const { tables } = state;
-	const { sendChatMessage } = useCockpit();
+	const { sendMessage } = useCockpit();
 	const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
 
 	if (tables.length === 0) {
@@ -173,13 +173,13 @@ export function WorkspaceInventoryWidget({
 	// Re-list after onboarding (AC4): route through the chat loop so the agent
 	// re-runs list_tables and the fresh inventory projects back onto the canvas.
 	const refresh = () =>
-		sendChatMessage("List the workspace tables using the list_tables tool.");
+		sendMessage("List the workspace tables using the list_tables tool.");
 
 	// Click-through to the per-table readiness grid (DAT-350): route through the
-	// agent loop (sendChatMessage) so look_table runs once per click, carrying the
+	// agent loop (sendMessage) so look_table runs once per click, carrying the
 	// row's table_id — it does NOT call lookTable directly.
 	const inspectTable = (tableId: string, tableName: string) =>
-		sendChatMessage(
+		sendMessage(
 			`Show the readiness for table "${tableName}" (table_id ${tableId}) ` +
 				`using the look_table tool.`,
 		);

@@ -59,17 +59,19 @@ export function TableReadinessWidget({
 	state: Extract<CanvasState, { kind: "table-readiness" }>;
 }) {
 	const { readiness } = state;
-	const { sendChatMessage } = useCockpit();
+	const { sendMessage } = useCockpit();
 
 	// Click-through to the per-column explanation (DAT-352): route the click
-	// through the agent loop (sendChatMessage) so `why_column` runs once per
-	// click. why_column takes the row's column_id; its paid Anthropic synthesis
-	// is gated inside whyColumn (skipped for an un-analyzed column), so this just
-	// asks for the explanation by id — it does NOT call whyColumn directly.
+	// through the agent loop (sendMessage) so `why_column` runs once per click.
+	// why_column takes the row's column_id; its paid Anthropic synthesis is gated
+	// inside whyColumn (skipped for an un-analyzed column), so this just asks for
+	// the explanation by id — it does NOT call whyColumn directly. The label
+	// captions the loading canvas until the explanation streams back.
 	const explainColumn = (columnId: string, columnName: string) => {
-		sendChatMessage(
+		sendMessage(
 			`Explain the readiness for column "${columnName}" (column_id ${columnId}) ` +
 				`using the why_column tool.`,
+			{ label: "Explaining the column…" },
 		);
 	};
 

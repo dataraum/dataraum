@@ -18,7 +18,7 @@ import { StageNavigator } from "#/ui/cockpit/stage-navigator";
 import { tokens } from "#/ui/theme";
 
 export function CockpitView() {
-	const { canvasState, pinnedCallId, returnToLive } = useCockpit();
+	const { canvas, pinnedCallId, returnToLive } = useCockpit();
 	const chatRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -111,7 +111,7 @@ export function CockpitView() {
 						padding: tokens.spacing.md,
 					}}
 				>
-					<FocusCanvas state={canvasState} />
+					<FocusCanvas state={canvas} />
 				</Box>
 			</Stack>
 		</Group>

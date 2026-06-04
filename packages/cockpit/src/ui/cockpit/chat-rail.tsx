@@ -1,14 +1,15 @@
-// Chat rail (DAT-347 C1, rebuilt on the TanStack AI SDK for DAT-353).
+// Chat rail (DAT-347 C1; rebuilt on TanStack AI for DAT-353; chat lifted to the
+// provider in the chat→canvas derive refactor).
 //
-// useChat owns the conversation + the agentic tool-loop + SSE transport; this
-// component only renders messages and drives the canvas. As messages arrive:
-//   - text parts        → rendered as user / assistant bubbles
-//   - tool-call parts    → a collapsible card; when the SDK pauses for approval
-//                          (needsApproval tools: teach / replay) the card shows
-//                          Approve / Deny → addToolApprovalResponse
-//   - the latest tool result → projected to the focus canvas via the bridge
-//                          (list_sources / list_tables render as widgets;
-//                          write/compute results stay in the rail)
+// This component is now PURE RENDER: it reads the conversation from useCockpit()
+// (the provider owns useChat) and renders it. There is no canvas state to sync —
+// the provider DERIVES the canvas from the message stream, so the effect chain
+// that used to mirror it (project-latest, error→empty, turn-ended reconcile) is
+// gone. As messages arrive:
+//   - text parts     → user / assistant bubbles
+//   - tool-call parts → a collapsible card; the SDK pauses approval-gated tools
+//                       (teach / replay) → Approve / Deny → addToolApprovalResponse
+//   - a completed canvas-tool chip → click pins the canvas to that result
 // Streaming is driven ONLY by user submit (never on mount → SSR-safe).
 
 import {
@@ -23,15 +24,10 @@ import {
 	Text,
 	Textarea,
 } from "@mantine/core";
-import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
-import { SendHorizontal } from "lucide-react";
+import { SendHorizontal, Square } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { isCanvasTool, toolChipSummary } from "#/ui/cockpit/tool-chip-summary";
-import {
-	canvasFromCallId,
-	canvasFromMessages,
-} from "#/ui/cockpit/tool-result-to-canvas";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 import { tokens } from "#/ui/theme";
 
@@ -155,146 +151,69 @@ function ToolCallCard({
 
 export function ChatRail() {
 	const {
-		canvasState,
-		setCanvasState,
-		registerChatSender,
+		messages,
+		sendMessage,
+		stop,
+		isLoading,
+		error,
+		addToolApprovalResponse,
 		pinCanvas,
-		pinnedCallId,
 	} = useCockpit();
-	const { messages, sendMessage, isLoading, error, addToolApprovalResponse } =
-		useChat({ connection: fetchServerSentEvents("/api/chat") });
 	const [input, setInput] = useState("");
 
-	// Publish `sendMessage` to the cockpit context so canvas widgets (which have
-	// no chat handle) can drive a turn — the column→why click-through (DAT-352)
-	// dispatches a why_column request this way. The canvas flips to loading so the
-	// drilled column's explanation streaming feels responsive.
-	useEffect(() => {
-		registerChatSender((text) => {
-			setCanvasState({ kind: "loading", label: "Explaining the column…" });
-			void sendMessage(text);
-		});
-		return () => registerChatSender(null);
-	}, [registerChatSender, sendMessage, setCanvasState]);
-
-	// Project the latest tool result onto the focus canvas as messages arrive.
-	// canvasFromMessages returns a FRESH object every token tick, but the
-	// projection usually hasn't changed (same tool result). Dedupe by value so we
-	// don't churn the canvas on every token — re-setting an equal result-grid
-	// made it re-issue its stream.
-	//
-	// Pinned mode (DAT-354): when the user has clicked an earlier result chip
-	// (`pinnedCallId` set) the canvas is showing HISTORY, so we suppress the
-	// always-project-latest behavior — a freshly-streamed result must NOT clobber
-	// the pinned view. CRITICAL: while pinned we also reset the dedupe ref to
-	// null. On return-to-live (`pinnedCallId` → null) the effect re-fires (the
-	// pin is in the deps) and re-projects the latest UNCONDITIONALLY — even when
-	// the newest result equals the pre-pin projected value, which a stale ref
-	// would otherwise suppress, leaving return-to-live showing nothing. The pin
-	// is a primitive string, so adding it to the deps keeps them stable.
-	const lastProjectedRef = useRef<string | null>(null);
-	useEffect(() => {
-		if (pinnedCallId) {
-			lastProjectedRef.current = null;
-			return;
-		}
-		const next = canvasFromMessages(messages);
-		if (!next) return;
-		const key = JSON.stringify(next);
-		if (key === lastProjectedRef.current) return;
-		lastProjectedRef.current = key;
-		setCanvasState(next);
-	}, [messages, setCanvasState, pinnedCallId]);
-
-	// A result-chip click pins the canvas to that call's result. We resolve the
-	// canvas from the call id (reusing the same toolResultToCanvas mapper) and
-	// pin in one dispatch. A call that maps to no canvas member (display-only
-	// tool, or a not-yet-complete call) yields null → no-op.
-	const onRehydrate = (callId: string) => {
-		const canvas = canvasFromCallId(messages, callId);
-		if (!canvas) return;
-		pinCanvas(callId, canvas);
-	};
+	// A completed canvas-tool chip click pins the canvas to that call's result.
+	// The provider re-derives the canvas from the call id (canvasFromCallId), so
+	// we only pass the id. onRehydrate is only wired for canvas tools (clickable),
+	// so a non-canvas pin can't happen here.
+	const onRehydrate = (callId: string) => pinCanvas(callId);
 
 	// Keep the conversation pinned to the latest as it streams: the composer sits
 	// at the foot of a height-bounded rail and the stream scrolls INTERNALLY (see
 	// the cockpit route's fixed height + the messages box's `minHeight: 0`), so on
-	// every message/token tick we snap the scroll to the bottom — newest in view,
-	// older slowly scrolling out the top — instead of growing the page.
+	// every message/token tick we snap the scroll to the bottom.
 	const streamRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const el = streamRef.current;
 		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
 	}, [messages]);
 
-	// Surface a run/stream error (RUN_ERROR — e.g. a max_tokens cut-off) as a
-	// highlighted message in the chat rail (below), NOT as a canvas takeover.
-	// Here we only stop the canvas from spinning: a turn that errored set the
-	// canvas to "loading" on submit, so clear it back to empty rather than leave
-	// it spinning forever (the symptom that prompted this).
-	useEffect(() => {
-		if (error) setCanvasState({ kind: "empty" });
-	}, [error, setCanvasState]);
-
-	// A turn can finish WITHOUT producing a canvas result: the user denied an
-	// approval-gated tool (select/teach/replay), or only non-canvas tools ran
-	// (e.g. list_verticals). onSubmit set the canvas to "loading" optimistically,
-	// and the project-latest effect only ADVANCES on a new result (and dedupes an
-	// unchanged one), so the canvas would spin "Working…" forever. When a turn
-	// ENDS (isLoading true→false, not pinned) and the canvas is still that
-	// optimistic "loading", reconcile to the latest canvas result — or empty if
-	// none. Mirrors the error guard above (same stuck-spinner symptom, the
-	// non-error path). Gated on the true→false transition, not steady-state
-	// `!isLoading`, so it never clears the loading optimism before a turn has run.
-	const prevLoadingRef = useRef(false);
-	useEffect(() => {
-		const turnEnded = prevLoadingRef.current && !isLoading;
-		prevLoadingRef.current = isLoading;
-		if (!turnEnded || pinnedCallId || canvasState.kind !== "loading") return;
-		setCanvasState(canvasFromMessages(messages) ?? { kind: "empty" });
-	}, [isLoading, pinnedCallId, canvasState, messages, setCanvasState]);
-
 	const onSubmit = (e: FormEvent) => {
 		e.preventDefault();
 		const text = input.trim();
 		if (!text || isLoading) return;
 		setInput("");
-		setCanvasState({ kind: "loading" });
-		void sendMessage(text);
+		sendMessage(text);
 	};
 
 	// Upload entry-mode (DAT-386; multi-file DAT-391): staged `s3://` path(s) drive
 	// the EXISTING connect tool through the agent loop — one connect per file for a
 	// schema preview — and, for a batch, a single select registering them as ONE
 	// `file_uris` source. The tool results project onto the canvas via the same
-	// canvasFromMessages bridge — no new sniff path, no canvas wiring here.
+	// derivation in the provider — no new sniff path, no canvas wiring here.
 	const onUploaded = (s3Paths: string[]) => {
 		if (isLoading || s3Paths.length === 0) return;
-		setCanvasState({
-			kind: "loading",
-			label: s3Paths.length === 1 ? "Reading the file…" : "Reading the files…",
-		});
 		if (s3Paths.length === 1) {
-			void sendMessage(
+			sendMessage(
 				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,
+				{ label: "Reading the file…" },
 			);
 			return;
 		}
 		const list = s3Paths.map((p) => `- ${p}`).join("\n");
-		void sendMessage(
+		sendMessage(
 			`I uploaded ${s3Paths.length} files to import together as ONE source:\n${list}\n\n` +
 				`Connect to each file (source_kind=file) so I can preview its schema, then ` +
 				`register them as a single source with the select tool — pass all ${s3Paths.length} ` +
 				`as file_uris.`,
+			{ label: "Reading the files…" },
 		);
 	};
 
 	// An approval-gated tool-call part is carried in BOTH the approval-request turn
 	// and the post-approval turn that completes it — same part id, two messages —
 	// so a naive per-message render shows the chip TWICE ("select shows twice after
-	// approve"). The two live in different inner arrays, so the shared React key
-	// doesn't collide/warn. Render each tool-call id ONCE, at its LAST occurrence
-	// (the most-complete state). Maps tool-call id → "msgIdx:partIdx".
+	// approve"). Render each tool-call id ONCE, at its LAST occurrence (the most-
+	// complete state). Maps tool-call id → "msgIdx:partIdx".
 	const lastToolCallAt = new Map<string, string>();
 	messages.forEach((m, mi) => {
 		m.parts.forEach((part, i) => {
@@ -348,7 +267,7 @@ export function ChatRail() {
 					)}
 					{/* A run/stream error (RUN_ERROR — e.g. the model hit max_tokens, or
 					    the SSE was cut) surfaces inline at the foot of the conversation,
-					    highlighted, instead of silently spinning the canvas. */}
+					    highlighted. The canvas is unaffected — it derives from results. */}
 					{error && (
 						<Alert
 							color="red"
@@ -379,17 +298,34 @@ export function ChatRail() {
 							}
 						}}
 					/>
-					<ActionIcon
-						type="submit"
-						variant="filled"
-						size="lg"
-						aria-label="Send message"
-						data-testid="chat-send"
-						disabled={isLoading || input.trim().length === 0}
-						style={{ borderRadius: tokens.radii.sm }}
-					>
-						<SendHorizontal size={18} />
-					</ActionIcon>
+					{isLoading ? (
+						// While a turn streams, the action becomes Stop: it aborts the SSE
+						// stream, which aborts the server's Anthropic call (see /api/chat).
+						<ActionIcon
+							type="button"
+							variant="light"
+							color="red"
+							size="lg"
+							aria-label="Stop generating"
+							data-testid="chat-stop"
+							onClick={stop}
+							style={{ borderRadius: tokens.radii.sm }}
+						>
+							<Square size={16} />
+						</ActionIcon>
+					) : (
+						<ActionIcon
+							type="submit"
+							variant="filled"
+							size="lg"
+							aria-label="Send message"
+							data-testid="chat-send"
+							disabled={input.trim().length === 0}
+							style={{ borderRadius: tokens.radii.sm }}
+						>
+							<SendHorizontal size={18} />
+						</ActionIcon>
+					)}
 				</Group>
 			</form>
 		</Stack>

@@ -18,6 +18,7 @@
 // is the part's `output` (undefined until the call completes).
 
 import type { ConnectSchema } from "#/duckdb/connect";
+import { displayTableName } from "#/lib/display-names";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -62,12 +63,25 @@ const TOOL_LABELS: Record<string, string> = {
 	upload: "File upload",
 };
 
+// Past-tense / settled titles for the few tools whose default label reads as an
+// in-progress verb. Once the call completes the chip flips to these so a finished
+// card never says "Registering source" — the rest of TOOL_LABELS are already
+// nouns ("Workspace tables", "Query") that read fine in both states.
+const TOOL_LABELS_DONE: Record<string, string> = {
+	connect: "Source schema",
+	select: "Registered source",
+	teach: "Taught",
+	replay: "Re-ran",
+};
+
 /**
- * The plain-language title for a tool call. Falls back to a humanized form of the
+ * The plain-language title for a tool call. When `done`, a progressive verb flips
+ * to its settled form (TOOL_LABELS_DONE). Falls back to a humanized form of the
  * tool name (underscores → spaces, sentence case) so an unmapped future tool
  * still never shows a raw snake_case verb.
  */
-export function toolLabel(toolName: string): string {
+export function toolLabel(toolName: string, done = false): string {
+	if (done && TOOL_LABELS_DONE[toolName]) return TOOL_LABELS_DONE[toolName];
 	const mapped = TOOL_LABELS[toolName];
 	if (mapped) return mapped;
 	const spaced = toolName.replace(/_/g, " ").trim();
@@ -127,16 +141,17 @@ export function toolChipSummary(
 			const r = output as LookTableResult | undefined;
 			if (!r || !Array.isArray(r.columns)) return "reading table readiness…";
 			const cols = plural(r.columns.length, "column");
+			const table = displayTableName(r.table_name);
 			return r.analyzed
-				? `${r.table_name} — ${cols}`
-				: `${r.table_name} — ${cols}, not yet analyzed`;
+				? `${table} — ${cols}`
+				: `${table} — ${cols}, not yet analyzed`;
 		}
 		case "why_column": {
 			const r = output as WhyColumnResult | undefined;
 			if (!r) return "explaining column…";
 			if (!r.found) return "column not found";
 			const band = r.band ?? "not analyzed";
-			return `${r.column_name} (${r.table_name}) — ${band}`;
+			return `${r.column_name} (${displayTableName(r.table_name)}) — ${band}`;
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;

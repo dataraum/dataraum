@@ -7,6 +7,7 @@
 // (typed) as the representative, surfacing the quarantine layer only as a count.
 // Pure (no React/DB) so the grouping is unit-testable.
 
+import { displayTableName } from "#/lib/display-names";
 import type { InventoryTable } from "#/tools/list-tables";
 
 export interface LogicalTable {
@@ -26,16 +27,13 @@ export interface LogicalTable {
 	layers: InventoryTable[];
 }
 
-/** Strip the `${sourceName}__` prefix the engine prepends to physical tables. */
+/** Strip the `${sourceName}__` prefix the engine prepends to physical tables.
+ * Thin alias over the shared `displayTableName` (kept for the call sites here). */
 export function logicalTableName(
 	tableName: string,
 	sourceName: string,
 ): string {
-	const prefix = `${sourceName}__`;
-	if (tableName.startsWith(prefix)) return tableName.slice(prefix.length);
-	// Generic fallback: drop everything up to and including the first `__`.
-	const i = tableName.indexOf("__");
-	return i >= 0 ? tableName.slice(i + 2) : tableName;
+	return displayTableName(tableName, sourceName);
 }
 
 const BAND_LABELS: Record<string, string> = {

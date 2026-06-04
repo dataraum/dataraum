@@ -73,9 +73,16 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 		expect(screen.getByTestId("canvas-column-why-signals").textContent).toMatch(
 			/Based on 1 signal\b/,
 		);
-		// The evidence table carries the dimension + detector.
+		// The evidence table carries the humanized dimension + detector, with the
+		// raw dotted path kept beneath as a technical subtitle.
 		expect(screen.getByTestId("canvas-column-why-evidence")).toBeTruthy();
-		expect(screen.getByText("unit_entropy")).toBeTruthy();
+		expect(screen.getByText("Unit entropy")).toBeTruthy();
+		expect(screen.getByText("Unit declaration")).toBeTruthy();
+		expect(screen.getByText("semantic.units.unit_declaration")).toBeTruthy();
+		// The JSON detail blob is pretty-printed (technical, but readable).
+		expect(
+			screen.getByTestId("canvas-column-why-evidence").textContent,
+		).toContain("undeclared_ratio");
 	});
 
 	it("shows the not-analyzed note when the column is found but has no readiness row", () => {

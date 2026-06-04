@@ -5,7 +5,12 @@
 //
 // Reads theme/tokens only; the row type is a type-only import (erased).
 
-import { Alert, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { Alert, Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
+import {
+	displayTableName,
+	humanizeIdentifier,
+	prettyJson,
+} from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 const INTENT_LABEL: Record<string, string> = {
@@ -75,7 +80,7 @@ export function ColumnWhyWidget({
 				<Text size="sm" fw={600}>
 					{why.column_name}{" "}
 					<Text span c="dimmed">
-						· {why.table_name}
+						· {displayTableName(why.table_name)}
 					</Text>
 				</Text>
 				<BandBadge band={why.band} />
@@ -143,32 +148,51 @@ export function ColumnWhyWidget({
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
-							{why.evidence.map((e) => (
-								<Table.Tr key={`${e.dimension_path}-${e.detector_id}`}>
-									<Table.Td>
-										<Text span size="xs">
-											{e.dimension_path}
-										</Text>
-									</Table.Td>
-									<Table.Td>
-										<Text span size="xs" c="dimmed">
-											{e.detector_id}
-										</Text>
-									</Table.Td>
-									<Table.Td>{e.score.toFixed(2)}</Table.Td>
-									<Table.Td>
-										<Text
-											span
-											size="xs"
-											c="dimmed"
-											ff="monospace"
-											style={{ wordBreak: "break-word" }}
-										>
-											{e.detail || "—"}
-										</Text>
-									</Table.Td>
-								</Table.Tr>
-							))}
+							{why.evidence.map((e) => {
+								// Lead with the readable dimension (the last path segment,
+								// humanized) and keep the full dotted path as a dimmed,
+								// technical subtitle — "Naming clarity" over the raw
+								// `semantic.business_meaning.naming_clarity`.
+								const dimLeaf = e.dimension_path.split(".").at(-1) ?? "";
+								return (
+									<Table.Tr key={`${e.dimension_path}-${e.detector_id}`}>
+										<Table.Td>
+											<Stack gap={0}>
+												<Text span size="xs">
+													{humanizeIdentifier(dimLeaf) || e.dimension_path}
+												</Text>
+												<Text span size="xs" c="dimmed" ff="monospace">
+													{e.dimension_path}
+												</Text>
+											</Stack>
+										</Table.Td>
+										<Table.Td>
+											<Text span size="xs" c="dimmed">
+												{humanizeIdentifier(e.detector_id) || e.detector_id}
+											</Text>
+										</Table.Td>
+										<Table.Td>{e.score.toFixed(2)}</Table.Td>
+										<Table.Td>
+											{e.detail ? (
+												<Code
+													block
+													style={{
+														fontSize: 11,
+														maxHeight: 200,
+														overflow: "auto",
+													}}
+												>
+													{prettyJson(e.detail)}
+												</Code>
+											) : (
+												<Text span size="xs" c="dimmed">
+													—
+												</Text>
+											)}
+										</Table.Td>
+									</Table.Tr>
+								);
+							})}
 						</Table.Tbody>
 					</Table>
 				</Table.ScrollContainer>

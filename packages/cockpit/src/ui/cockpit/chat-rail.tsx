@@ -123,7 +123,7 @@ function ToolCallCard({
 			>
 				<Box style={{ minWidth: 0 }}>
 					<Text size="sm" fw={600}>
-						{toolLabel(part.name)}
+						{toolLabel(part.name, done)}
 					</Text>
 					<Text
 						size="xs"

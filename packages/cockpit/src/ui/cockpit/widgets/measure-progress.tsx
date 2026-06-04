@@ -24,6 +24,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
+import { displayTableName } from "#/lib/display-names";
 import type { AddSourceProgress, TableStep } from "#/temporal/progress";
 import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -51,6 +52,17 @@ function phaseIndex(phase: string): number {
 function phaseLabel(phase: string): string {
 	return PHASES.find((p) => p.key === phase)?.label ?? phase;
 }
+
+// Live caption for the phases that DON'T fan out per table — `semantic_per_column`
+// and `detect` each run as ONE source-level reduce activity (workflows.py), so the
+// table tally is frozen and there's no per-row signal. The caption keeps the
+// surface alive ("still working, here's on what") instead of dead air. Phases that
+// have their own signal (processing_tables → tally) are intentionally absent.
+const PHASE_CAPTION: Record<string, string> = {
+	import: "Importing rows…",
+	semantic_per_column: "Analyzing column semantics across all tables…",
+	detect: "Scoring readiness across all columns…",
+};
 
 /** The leading status glyph for one fanned-out table row. */
 function TableStatusIcon({ status }: { status: TableStep["status"] }) {
@@ -197,6 +209,17 @@ export function MeasureProgressWidget({
 				</Stack>
 			)}
 
+			{/* The reduce phases (semantic / detect) have no per-table signal — show
+			    an indeterminate caption so the surface isn't dead air while they run. */}
+			{!data.done && !showTally && PHASE_CAPTION[data.phase] && (
+				<Group gap="xs" wrap="nowrap" data-testid="measure-progress-caption">
+					<Loader size="xs" />
+					<Text size="xs" c="dimmed">
+						{PHASE_CAPTION[data.phase]}
+					</Text>
+				</Group>
+			)}
+
 			{/* The named steps behind the count — which tables are running / done /
 			    failed. Scrolls past a handful so a wide source can't blow out the
 			    canvas. */}
@@ -218,7 +241,7 @@ export function MeasureProgressWidget({
 									truncate
 									data-testid={`measure-table-${t.raw_table_id}`}
 								>
-									{t.name}
+									{displayTableName(t.name)}
 								</Text>
 							</Group>
 						))}
@@ -228,7 +251,11 @@ export function MeasureProgressWidget({
 
 			{succeeded && (
 				<Alert color="green" data-testid="measure-progress-done">
-					Add source complete — readiness is ready to inspect.
+					{data.tables.length > 0
+						? `Done — ${data.tables.length} table${
+								data.tables.length === 1 ? "" : "s"
+							} imported and analyzed. Ask about any table to see its readiness.`
+						: "Done — the source is imported and analyzed."}
 				</Alert>
 			)}
 

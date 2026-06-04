@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-04: DAT-414 — versioned typed/quarantine materialization DDL
+
+Phase 2 of the versioned-metadata epic (DAT-412), Slice A typed/quarantine only.
+
+- **No behavior change to calibrate.** The typed/quarantine `CREATE OR REPLACE TABLE … AS
+  SELECT` that typing executes is **byte-identical** to before — the only additions are
+  (a) persisting that DDL string as a new `MaterializationRecipe` row stamped with the
+  run's `run_id`, and (b) a new `rebuild_from_recipe` / `reset_to_run` API that
+  re-executes a stored DDL. Detector inputs, decided types, quarantine contents, and
+  readiness are all unchanged. Recall/precision suites should be unaffected.
+- **New table:** `materialization_recipes` (grain `(table_id, layer, run_id)`, columns
+  `target_fqn`, `ddl`, `depends_on`). Auto-created via `create_all`; nullable `run_id`
+  mirrors `type_decisions`. No eval read of it is required.
+- **One non-determinism note** if eval ever round-trips a quarantine table: the quarantine
+  DDL stamps `_quarantined_at` via `CURRENT_TIMESTAMP`, so re-executing the *same* recipe
+  produces a fresh audit timestamp — the **data** rows round-trip identically, the clock
+  advances. Compare quarantine on data columns, not `_quarantined_at`.
+- **Calibrate:** nothing new required. If the existing add_source detector-recall suite is
+  re-run after bumping the engine submodule, expect no movement from this ticket.
+
 ## 2026-06-04: DAT-409 — relationship teach write-loop + overlay-contract unification
 
 Slice 2.0c. The relationship-overlay write path (teach → materialize → keeper) plus a

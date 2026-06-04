@@ -127,10 +127,12 @@ class TypingPhase(BasePhase):
         raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
         typed_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{bare}"'
 
-        # Create typed table as direct copy (types already correct)
-        ctx.duckdb_conn.execute(
-            f"CREATE OR REPLACE TABLE {typed_target} AS SELECT * FROM {raw_target}"
-        )
+        # Emit → store → execute (DAT-414): the strongly-typed copy is a plain
+        # ``CREATE OR REPLACE … AS SELECT *``. Capture the DDL string so it is
+        # versioned like the untyped path's recipes (stored below, once the typed
+        # Table id is reconciled); the executed SQL is unchanged.
+        typed_sql = f"CREATE OR REPLACE TABLE {typed_target} AS SELECT * FROM {raw_target}"
+        ctx.duckdb_conn.execute(typed_sql)
 
         # Get row count
         row_count_result = ctx.duckdb_conn.execute(
@@ -150,6 +152,23 @@ class TypingPhase(BasePhase):
         ctx.session.flush()
         typed_table = reconcile_typed_table(ctx.session, table, "typed", bare, row_count)
         ctx.session.flush()
+
+        # Persist the versioned materialization recipe (DAT-414) for the
+        # strongly-typed copy. Only a ``typed`` artifact exists here (no cast can
+        # fail → no quarantine table). Keyed on the stable typed Table id, stamped
+        # with the run, reading the raw layer.
+        from dataraum.analysis.typing.recipe import store_recipe
+
+        store_recipe(
+            ctx.session,
+            session_id=ctx.require_session_id(),
+            table_id=typed_table.table_id,
+            layer="typed",
+            run_id=ctx.run_id,
+            target_fqn=typed_target,
+            ddl=typed_sql,
+            depends_on=[raw_target],
+        )
 
         desired = [
             (

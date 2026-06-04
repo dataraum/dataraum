@@ -26,6 +26,14 @@ export const relations = defineRelations(schema, (r) => ({
 		entropyReadinesss: r.many.entropyReadiness(),
 		fixLedgers: r.many.fixLedger(),
 		investigationStepss: r.many.investigationSteps(),
+		tablessViaMaterializationRecipes: r.many.tables({
+			from: r.investigationSessions.sessionId.through(
+				r.materializationRecipes.sessionId,
+			),
+			to: r.tables.tableId.through(r.materializationRecipes.tableId),
+			alias:
+				"investigationSessions_sessionId_tables_tableId_via_materializationRecipes",
+		}),
 		sourcessViaQueryExecutions: r.many.sources({
 			from: r.investigationSessions.sessionId.through(
 				r.queryExecutions.sessionId,
@@ -129,6 +137,11 @@ export const relations = defineRelations(schema, (r) => ({
 		}),
 		entropyObjectss: r.many.entropyObjects(),
 		entropyReadinesss: r.many.entropyReadiness(),
+		investigationSessionssViaMaterializationRecipes:
+			r.many.investigationSessions({
+				alias:
+					"investigationSessions_sessionId_tables_tableId_via_materializationRecipes",
+			}),
 		relationshipssFromTableId: r.many.relationships({
 			alias: "relationships_fromTableId_tables_tableId",
 		}),

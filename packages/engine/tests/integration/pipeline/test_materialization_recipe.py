@@ -32,6 +32,8 @@ from dataraum.analysis.typing.recipe import (
     rebuild_from_recipe,
     reset_to_run,
 )
+from dataraum.pipeline.base import PhaseContext
+from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.storage import Source, Table
@@ -231,18 +233,24 @@ class TestResetToPriorRun:
     def test_reset_flips_head_and_rematerializes(self, simple_csv, duckdb_conn, session) -> None:
         raw_id = _seed_source(duckdb_conn, session, simple_csv)
 
-        # Run A produces the typed artifact + stores its recipe.
+        # Run A produces the typed + quarantine artifacts + stores their recipes.
         typed_id = _resolve(raw_id, duckdb_conn, session, "run-A")
+        quarantine_id = _quarantine_table_id(session, raw_id)
         typed_fqn = _recipes(session, typed_id, "run-A")["typed"].target_fqn
+        quarantine_fqn = _recipes(session, quarantine_id, "run-A")["quarantine"].target_fqn
         rows_run_a = _rows(duckdb_conn, typed_fqn)
         types_run_a = _column_types(duckdb_conn, typed_fqn)
-        assert rows_run_a  # sanity: the artifact has data
+        quarantine_rows_run_a = _rows(duckdb_conn, quarantine_fqn)
+        assert rows_run_a  # sanity: the typed artifact has data
+        assert quarantine_rows_run_a  # the cast-failing "oops" row landed in quarantine
 
-        # Diverge the PHYSICAL table from run A — as if a later run (or a manual
-        # edit) replaced it. The lake is latest-only, so "reset" must restore run
-        # A's artifact purely from its stored DDL.
+        # Diverge BOTH physical tables from run A — as if a later run (or a manual
+        # edit) replaced them. The lake is latest-only, so "reset" must restore run
+        # A's PAIR purely from the stored DDL — typed AND quarantine together.
         duckdb_conn.execute(f"DELETE FROM {typed_fqn}")
+        duckdb_conn.execute(f"DELETE FROM {quarantine_fqn}")
         assert _rows(duckdb_conn, typed_fqn) == []
+        assert _rows(duckdb_conn, quarantine_fqn) == []
         # Point the head elsewhere so we can prove reset flips it back.
         from dataraum.analysis.typing.recipe import _point_head
 
@@ -250,16 +258,17 @@ class TestResetToPriorRun:
         session.flush()
         assert current_typing_run(session, typed_id) == "run-Z"
 
-        # Reset to run A — re-executes run A's stored DDL + flips the typing head.
-        # Crucially: NO infer/resolve call here, so this is NOT a re-derivation —
-        # the versioned recipe is the only source of truth for the rebuild.
+        # Reset to run A — re-executes run A's stored DDL (typed + quarantine) and
+        # flips the typing head. Crucially: NO infer/resolve call here, so this is
+        # NOT a re-derivation — the versioned recipe is the only source of truth.
         rebuilt = reset_to_run(session, duckdb_conn, table_id=typed_id, run_id="run-A")
         assert typed_fqn in rebuilt
+        assert quarantine_fqn in rebuilt  # the pair resets together, not just typed
 
-        # The physical artifact is restored to run A (rows + types) and the typing
-        # head now names run A.
+        # Both physical artifacts are restored to run A and the typing head names it.
         assert _rows(duckdb_conn, typed_fqn) == rows_run_a
         assert _column_types(duckdb_conn, typed_fqn) == types_run_a
+        assert _rows(duckdb_conn, quarantine_fqn) == quarantine_rows_run_a
         assert current_typing_run(session, typed_id) == "run-A"
 
     def test_two_real_runs_coexist_then_reset(self, simple_csv, duckdb_conn, session) -> None:
@@ -289,3 +298,40 @@ class TestResetToPriorRun:
         reset_to_run(session, duckdb_conn, table_id=typed_id, run_id="run-A")
         assert _rows(duckdb_conn, typed_fqn) == rows_run_a
         assert current_typing_run(session, typed_id) == "run-A"
+
+
+class TestStronglyTypedRecipe:
+    """AC#1 (strongly-typed path) — the parquet/DB copy also stores a recipe."""
+
+    def test_strongly_typed_promote_stores_recipe(self, simple_csv, duckdb_conn, session) -> None:
+        """``_promote_strongly_typed`` versions its ``CREATE TABLE`` like the untyped path.
+
+        The strongly-typed branch (parquet / typed DB sources) is a plain
+        ``SELECT *`` copy with no quarantine. Parquet/DB loaders register real
+        ``raw_type``s; the CSV loader stages VARCHAR, so flip one column to a
+        non-VARCHAR type to model a strongly-typed source, then drive the branch
+        directly and assert the recipe is persisted + run-stamped.
+        """
+        raw_id = _seed_source(duckdb_conn, session, simple_csv)
+        raw_table = session.get(Table, raw_id)
+        assert raw_table is not None
+        raw_table.columns[0].raw_type = "BIGINT"
+        session.flush()
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            source_id=raw_table.source_id,
+            table_ids=[raw_id],
+            session_id=baseline_session_id(),
+            run_id="run-strong",
+        )
+        typed_id, _ = TypingPhase()._promote_strongly_typed(raw_table, ctx)
+
+        recipes = _recipes(session, typed_id, "run-strong")
+        assert "typed" in recipes
+        assert recipes["typed"].run_id == "run-strong"
+        assert recipes["typed"].ddl.startswith("CREATE OR REPLACE TABLE")
+        assert "AS SELECT" in recipes["typed"].ddl
+        # A strongly-typed copy can't fail a cast → no quarantine artifact/recipe.
+        assert "quarantine" not in recipes

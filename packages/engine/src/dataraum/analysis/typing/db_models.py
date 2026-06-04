@@ -143,7 +143,9 @@ class MaterializationRecipe(Base):
     string typing executes to build a physical DuckDB table — versioned as
     metadata. The DuckDB lake itself stays latest-only; only the DDL string is
     versioned, stamped with the run that emitted it. Re-executing a stored row
-    rebuilds the physical artifact identically, and a reset-to-prior-run replays
+    reproduces the artifact's data — the recipe versions the *transformation*,
+    not the data, so DDL-written audit columns (the quarantine ``_quarantined_at``
+    ``CURRENT_TIMESTAMP``) re-stamp on rebuild — and a reset-to-prior-run replays
     the prior run's stored DDL **without** re-deriving the typing phase.
 
     Grain ``(table_id, layer, run_id)``: one recipe per produced layer

@@ -24,6 +24,10 @@ const src = fileURLToPath(new URL("./src", import.meta.url));
 
 const INTEGRATION_GLOB = "**/*.integration.test.*";
 
+// jsdom polyfills (matchMedia / document.fonts / ResizeObserver) for the DOM
+// tests; a no-op under the node environment. Loaded by both projects.
+const setupFiles = ["./src/test-setup.ts"];
+
 // Shared across both projects: the lean React-only plugin set + tsconfig path
 // aliases (#/* and @/* → src/*), so alias resolution doesn't depend on the
 // excluded dev/build plugins.
@@ -44,6 +48,7 @@ export default defineConfig({
 				...shared,
 				test: {
 					name: "unit",
+					setupFiles,
 					exclude: [...configDefaults.exclude, INTEGRATION_GLOB],
 				},
 			},
@@ -51,6 +56,7 @@ export default defineConfig({
 				...shared,
 				test: {
 					name: "integration",
+					setupFiles,
 					include: [INTEGRATION_GLOB],
 				},
 			},

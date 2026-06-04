@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Unit test for the upload entry-mode dropzone (DAT-386; multi-file DAT-391).
 // Mocks `fetch` for the /api/upload POST and asserts: a single pick hands a

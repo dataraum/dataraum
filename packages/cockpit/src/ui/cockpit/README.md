@@ -7,10 +7,12 @@ routing, and ⌘K belong to C0 (`src/ui/{app-shell,sections,theme}.ts[x]`).
 ## Layout
 
 ```
-CockpitView                  three-region grid, independent scroll, scoped hotkeys
-├── ChatRail                 messages + collapsible tool-call cards + input (left)
-└── work region (right)
-    ├── StageNavigator       horizontal strip of the 7 JOURNEY stages
+CockpitView                  cold start → CockpitLanding; once a conversation
+│                            exists → the working split (one transition, then holds)
+├── CockpitLanding           centered welcome + hero Composer + starter prompts
+└── working split
+    ├── ChatRail             messages + collapsible tool-call cards (left)
+    │   └── Composer         shared input (also the landing's hero composer)
     └── FocusCanvas          renders the active CanvasState via the widget registry
 ```
 

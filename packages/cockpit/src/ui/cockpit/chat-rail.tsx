@@ -13,7 +13,6 @@
 // Streaming is driven ONLY by user submit (never on mount → SSR-safe).
 
 import {
-	ActionIcon,
 	Alert,
 	Box,
 	Button,
@@ -22,15 +21,13 @@ import {
 	Loader,
 	Stack,
 	Text,
-	Textarea,
 } from "@mantine/core";
-import { SendHorizontal, Square } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
+import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
 import { isCanvasTool, toolChipSummary } from "#/ui/cockpit/tool-chip-summary";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
-import { tokens } from "#/ui/theme";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
 // sees them untyped). Narrowed off `part.type === "tool-call"`. `arguments` is
@@ -176,13 +173,11 @@ export function ChatRail() {
 	const {
 		messages,
 		sendMessage,
-		stop,
 		isLoading,
 		error,
 		addToolApprovalResponse,
 		pinCanvas,
 	} = useCockpit();
-	const [input, setInput] = useState("");
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -199,14 +194,6 @@ export function ChatRail() {
 		const el = streamRef.current;
 		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
 	}, [messages]);
-
-	const onSubmit = (e: FormEvent) => {
-		e.preventDefault();
-		const text = input.trim();
-		if (!text || isLoading) return;
-		setInput("");
-		sendMessage(text);
-	};
 
 	// Upload entry-mode (DAT-386; multi-file DAT-391): staged `s3://` path(s) drive
 	// the EXISTING connect tool through the agent loop — one connect per file for a
@@ -321,53 +308,7 @@ export function ChatRail() {
 				</Stack>
 			</Box>
 			<UploadDropzone onUploaded={onUploaded} disabled={isLoading} />
-			<form onSubmit={onSubmit} data-testid="chat-form">
-				<Group gap="xs" wrap="nowrap" p="xs">
-					<Textarea
-						value={input}
-						onChange={(e) => setInput(e.currentTarget.value)}
-						placeholder="Ask the agent…"
-						rows={2}
-						style={{ flex: 1 }}
-						data-testid="chat-input"
-						disabled={isLoading}
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault();
-								onSubmit(e);
-							}
-						}}
-					/>
-					{isLoading ? (
-						// While a turn streams, the action becomes Stop: it aborts the SSE
-						// stream, which aborts the server's Anthropic call (see /api/chat).
-						<ActionIcon
-							type="button"
-							variant="light"
-							color="red"
-							size="lg"
-							aria-label="Stop generating"
-							data-testid="chat-stop"
-							onClick={stop}
-							style={{ borderRadius: tokens.radii.sm }}
-						>
-							<Square size={16} />
-						</ActionIcon>
-					) : (
-						<ActionIcon
-							type="submit"
-							variant="filled"
-							size="lg"
-							aria-label="Send message"
-							data-testid="chat-send"
-							disabled={input.trim().length === 0}
-							style={{ borderRadius: tokens.radii.sm }}
-						>
-							<SendHorizontal size={18} />
-						</ActionIcon>
-					)}
-				</Group>
-			</form>
+			<Composer variant="rail" />
 		</Stack>
 	);
 }

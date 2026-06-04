@@ -1,8 +1,8 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Render tests for the WorkspaceInventoryWidget (DAT-349). A plain Mantine table
 // (workspace metadata — bounded, not a result set), so rows render under
-// happy-dom. We assert the per-table rows + provenance + readiness badge, the
+// jsdom. We assert the per-table rows + provenance + readiness badge, the
 // empty state, the in-widget SourceCard drill-in (local — no agent round-trip),
 // and the two click-throughs that DO route through the chat loop (table-name →
 // look_table, Refresh → list_tables). The live DB read is smoke-covered.

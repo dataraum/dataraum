@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Shell smoke: the AppShell renders all six section rail items, a workspace
 // section route resolves under the shell, and — even on a global route with no

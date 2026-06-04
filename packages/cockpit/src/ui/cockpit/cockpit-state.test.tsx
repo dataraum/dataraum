@@ -1,4 +1,4 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // The provider now OWNS the chat (useChat) and DERIVES the canvas from the
 // message stream. We mock useChat at the SDK boundary to feed messages / loading

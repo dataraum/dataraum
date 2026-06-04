@@ -1,7 +1,7 @@
-// @vitest-environment happy-dom
+// @vitest-environment jsdom
 //
 // Render tests for the ColumnWhyWidget (DAT-351). Plain Mantine layout (no
-// virtualization) → rows render under happy-dom. Asserts the narrative, the
+// virtualization) → rows render under jsdom. Asserts the narrative, the
 // per-intent drivers, the "based on N signals" caption, the evidence table, and
 // the not-analyzed state. The live read + LLM synthesis are smoke-covered.
 

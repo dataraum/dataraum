@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
-// jsdom, not the repo-default happy-dom: DOMPurify is the browser sanitizer and
-// strips correctly in real browsers + jsdom, but happy-dom's DOM is incomplete
-// enough that DOMPurify silently bails on some payloads (it re-serializes
-// without stripping). The XSS-guard test below is meaningless under happy-dom.
+// jsdom is the cockpit's DOM test env: DOMPurify is the browser sanitizer and
+// strips correctly under jsdom (and real browsers). This file was the reason we
+// dropped happy-dom — its DOM was incomplete enough that DOMPurify silently
+// bailed on some payloads (re-serializing without stripping), making the
+// XSS-guard tests below meaningless.
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";

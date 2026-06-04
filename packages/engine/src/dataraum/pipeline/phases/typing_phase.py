@@ -214,26 +214,20 @@ class TypingPhase(BasePhase):
         return typed_table.table_id, type_decisions
 
     def _resolve_target_table_ids(self, ctx: PhaseContext) -> list[str]:
-        """Resolve which raw table_ids to type for this run — source-agnostic (DAT-422).
+        """Resolve which raw table_ids to type — the per-table fan-out unit (DAT-422).
 
-        Prefer the explicit per-table scope: the per-table fan-out (DAT-370) hands
-        each child its one raw table id, and that id is the run's unit of work
-        regardless of which (per-object, DAT-422) source it belongs to — so a run
-        whose raw tables span multiple per-object sources types each correctly.
-        Filtered to the ``raw`` layer; ids that aren't raw tables are dropped. Only
-        when no ids are passed (a legacy single-source caller, e.g. a teach replay
-        that scopes the whole source) fall back to "all raw tables of the bound
-        ``ctx.source_id``".
+        The per-table fan-out (DAT-370) hands each child its one raw table id, and
+        that id is the run's unit of work regardless of which (per-object, DAT-422)
+        source it belongs to — so a run whose raw tables span multiple per-object
+        sources types each correctly. Filtered to the ``raw`` layer; ids that aren't
+        raw tables are dropped. Source-free (DAT-422): typing never scopes by
+        ``source_id`` (the source-free children leave it ``None``); the fan-out
+        always hands real raw ids, so an empty ``table_ids`` resolves to nothing.
         """
-        if ctx.table_ids:
-            stmt = select(Table.table_id).where(
-                Table.table_id.in_(ctx.table_ids),
-                Table.layer == "raw",
-            )
-            return [row[0] for row in ctx.session.execute(stmt)]
-
+        if not ctx.table_ids:
+            return []
         stmt = select(Table.table_id).where(
-            Table.source_id == ctx.source_id,
+            Table.table_id.in_(ctx.table_ids),
             Table.layer == "raw",
         )
         return [row[0] for row in ctx.session.execute(stmt)]

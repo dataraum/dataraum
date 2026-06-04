@@ -141,7 +141,12 @@ class ColumnEligibilityPhase(BasePhase):
                     "session_id": ctx.require_session_id(),
                     "column_id": column.column_id,
                     "table_id": table.table_id,
-                    "source_id": ctx.source_id,
+                    # The column's source is its table's source — derived from the
+                    # table, not the run-level ``ctx.source_id`` (DAT-422: the
+                    # source-free fan-out children leave that None, and a run can
+                    # span multiple per-object sources, so there is no single run
+                    # source to record).
+                    "source_id": table.source_id,
                     "run_id": ctx.run_id,
                     "column_name": column.column_name,
                     "table_name": table.table_name,

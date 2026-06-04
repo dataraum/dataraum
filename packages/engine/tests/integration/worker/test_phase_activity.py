@@ -513,6 +513,39 @@ def test_persisted_readiness_is_single_source_of_truth(
             assert evidence_summaries[key].readiness == live_summary.readiness, key
 
 
+def test_source_free_children_run_the_full_per_table_chain(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """The fan-out children run SOURCE-FREE (DAT-422) — typing + every analytics
+    phase resolve their table by ``table_ids`` alone, never ``source_id``.
+
+    AddSourceWorkflow scopes ``import`` to each source but threads a source-free
+    identity (``source_id=None``) into the per-table children + the reduce. This
+    drives that exact shape: ``import`` with the source-bearing identity, then the
+    whole ProcessTableWorkflow body (typing → statistics → … → temporal) under a
+    source-free identity. It guards the regression where the table-local phases
+    scoped via ``Table.source_id == require_source_id()`` and raised on the
+    source-free child — a break the source-bearing test identities masked.
+    """
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+
+    # import is the one per-source activity — it needs the source.
+    import_status = run_phase(worker_manager, "import", _identity(source_id, session_id), []).status
+    assert import_status == "completed"
+    raw_ids = raw_table_ids(worker_manager, source_id)
+    assert raw_ids, "import produced no raw tables"
+
+    # Past import the run is source-free: the children carry source_id=None. Running
+    # the full per-table chain under it proves typing + every analytics phase resolve
+    # their table without a source (the blocker DAT-422 introduced + fixed).
+    child_identity = SourceIdentity(workspace_id="test", source_id=None, session_id=session_id)
+    for raw_id in raw_ids:
+        assert _process_one_table(worker_manager, child_identity, raw_id)
+
+
 def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     worker_manager: ConnectionManager, small_finance_path: Path
 ) -> None:

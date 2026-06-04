@@ -92,19 +92,22 @@ def _ctx(
 
 
 class TestResolveTargetTableIds:
-    def test_empty_filter_returns_all_raw_tables(
+    def test_empty_filter_resolves_nothing(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
+        """Source-free (DAT-422): typing runs per-table under the fan-out, so an
+        empty ``table_ids`` has no unit to type → ``[]``. The old "all raw tables of
+        the bound ``ctx.source_id``" fallback is gone — typing never scopes by source.
+        """
         src = _make_source(session)
-        t1 = _make_table(session, src.source_id, "t1")
-        t2 = _make_table(session, src.source_id, "t2")
-        t3 = _make_table(session, src.source_id, "t3")
+        _make_table(session, src.source_id, "t1")
+        _make_table(session, src.source_id, "t2")
 
         resolved = TypingPhase()._resolve_target_table_ids(
             _ctx(session, duckdb_conn, src.source_id)
         )
 
-        assert set(resolved) == {t1.table_id, t2.table_id, t3.table_id}
+        assert resolved == []
 
     def test_filter_narrows_to_requested_subset(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -182,34 +185,6 @@ class TestShouldSkip:
         src = _make_source(session)
         reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
         assert reason == "No raw tables to process"
-
-    def test_already_typed_re_runs_when_unfiltered(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """A fully-typed table no longer skips — it re-types under a new run (DAT-413).
-
-        The output-existence skip ("all tables already typed → skip") is gone:
-        a re-run mints a fresh ``run_id`` and must always re-derive typing under
-        it. With a raw table present, ``should_skip`` returns ``None`` even though
-        the typed counterpart (with a prior run's ``TypeDecision``) already exists.
-        """
-        src = _make_source(session)
-        _make_table(session, src.source_id, "t1")
-        _make_typed_table(session, src.source_id, "t1")
-
-        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
-        assert reason is None
-
-    def test_one_untyped_runs_when_unfiltered(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        src = _make_source(session)
-        _make_table(session, src.source_id, "t1")
-        _make_typed_table(session, src.source_id, "t1")
-        _make_table(session, src.source_id, "t2")  # raw, no typed → must run
-
-        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
-        assert reason is None
 
     def test_targeted_untyped_runs_even_when_siblings_typed(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

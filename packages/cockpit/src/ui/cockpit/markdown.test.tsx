@@ -41,4 +41,26 @@ describe("MarkdownMessage", () => {
 		// Benign text still renders.
 		expect(el.textContent).toContain("ok");
 	});
+
+	it("strips a javascript: link href", () => {
+		render(<MarkdownMessage content={"[click](javascript:alert(1))"} />);
+		const link = screen.getByTestId("markdown-message").querySelector("a");
+		expect(link?.getAttribute("href") ?? "").not.toContain("javascript:");
+	});
+
+	it("opens links in a new tab with reverse-tabnabbing protection", () => {
+		render(<MarkdownMessage content={"[docs](https://example.com)"} />);
+		const link = screen.getByTestId("markdown-message").querySelector("a");
+		expect(link?.getAttribute("target")).toBe("_blank");
+		expect(link?.getAttribute("rel")).toContain("noopener");
+	});
+
+	it("does not throw on an unregistered code fence (falls back to plaintext)", () => {
+		expect(() =>
+			render(<MarkdownMessage content={"```rust\nfn main() {}\n```"} />),
+		).not.toThrow();
+		expect(screen.getByTestId("markdown-message").textContent).toContain(
+			"fn main",
+		);
+	});
 });

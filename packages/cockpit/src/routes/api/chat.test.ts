@@ -35,6 +35,8 @@ describe("chat route wiring (DAT-353)", () => {
 				"list_verticals",
 				"look_table",
 				"why_column",
+				"look_relationships",
+				"why_relationship",
 				"run_sql",
 				"probe",
 				"connect",

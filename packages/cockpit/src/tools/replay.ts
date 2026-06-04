@@ -117,7 +117,9 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// cold-start `_adhoc`. Omitting it must NOT silently re-run against `_adhoc` —
 	// that grounds the semantic pass against an empty ontology and fails the run.
 	const vertical =
-		input.vertical ?? (await resolveSourceVertical(input.source_id)) ?? "_adhoc";
+		input.vertical ??
+		(await resolveSourceVertical(input.source_id)) ??
+		"_adhoc";
 
 	// Seed the investigation_sessions parent row the re-run's per-table fan-out FKs
 	// against, BEFORE starting the workflow (see the HARD PRECONDITION note above).

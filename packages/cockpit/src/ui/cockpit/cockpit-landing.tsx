@@ -15,6 +15,9 @@ const STARTERS = [
 	"List the tables in this workspace",
 	"What can you help me with?",
 	"Show me what data is available",
+	// Routes through the agent → the `upload` tool opens the upload area. A discreet
+	// entry; uploading is a corner, not the main path (most data is connected).
+	"Upload files from my computer",
 ];
 
 export function CockpitLanding() {

@@ -24,8 +24,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 9 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(9);
+	it("marks the 10 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(10);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -36,6 +36,7 @@ describe("isCanvasTool", () => {
 			"select",
 			"run_sql",
 			"replay",
+			"upload",
 		]) {
 			expect(isCanvasTool(name)).toBe(true);
 		}

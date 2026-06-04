@@ -17,6 +17,7 @@ import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SelectedSourceWidget } from "#/ui/cockpit/widgets/selected-source";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
+import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
 
 export const canvasRegistry = new WidgetRegistry()
@@ -34,4 +35,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
 	.register({ kind: "column-why", component: ColumnWhyWidget })
-	.register({ kind: "add-source-progress", component: MeasureProgressWidget });
+	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
+	.register({ kind: "upload-area", component: UploadAreaWidget });

@@ -59,6 +59,7 @@ const TOOL_LABELS: Record<string, string> = {
 	probe: "Data check",
 	teach: "Teaching",
 	replay: "Re-running",
+	upload: "File upload",
 };
 
 /**
@@ -178,6 +179,8 @@ export function toolChipSummary(
 			if (out?.run_id) return `replay — run ${out.run_id}`;
 			return args?.source_id ? `replay ${args.source_id}` : "replay…";
 		}
+		case "upload":
+			return "drop files to import";
 		default:
 			return toolName;
 	}

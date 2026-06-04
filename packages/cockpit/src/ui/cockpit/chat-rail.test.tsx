@@ -1,13 +1,7 @@
 // @vitest-environment jsdom
 
 import { MantineProvider } from "@mantine/core";
-import {
-	cleanup,
-	fireEvent,
-	render,
-	screen,
-	waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
@@ -196,42 +190,6 @@ describe("ChatRail (DAT-353)", () => {
 		expect(screen.getByTestId("chat-error").textContent).toContain("kaboom");
 		// …and the canvas stops spinning rather than showing a generic error widget.
 		expect(screen.getByTestId("canvas-kind").textContent).toBe("empty");
-	});
-
-	it("mounts the upload entry-mode dropzone", () => {
-		renderRail();
-		expect(screen.getByTestId("upload-dropzone")).toBeTruthy();
-	});
-
-	it("drives connect over the staged s3:// handle after an upload", async () => {
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValue(
-				new Response(
-					JSON.stringify({ path: "s3://dataraum-lake/uploads/u/people.csv" }),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-			);
-		vi.stubGlobal("fetch", fetchMock);
-
-		renderRail();
-		const input = screen.getByTestId("upload-input") as HTMLInputElement;
-		fireEvent.change(input, {
-			target: {
-				files: [new File(["id\n1\n"], "people.csv", { type: "text/csv" })],
-			},
-		});
-
-		await waitFor(() => expect(h.sendMessage).toHaveBeenCalled());
-		// The connect-driving message references the staged s3:// path so the
-		// agent runs the existing connect tool against it. (The "loading" caption
-		// while the turn is in flight derives from isLoading — covered in the
-		// provider's derivation test, not here where isLoading is mocked false.)
-		expect(h.sendMessage.mock.calls[0][0]).toContain(
-			"s3://dataraum-lake/uploads/u/people.csv",
-		);
-
-		vi.unstubAllGlobals();
 	});
 });
 

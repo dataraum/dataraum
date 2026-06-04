@@ -31,7 +31,6 @@ import {
 	toolChipSummary,
 	toolLabel,
 } from "#/ui/cockpit/tool-chip-summary";
-import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
 // sees them untyped). Narrowed off `part.type === "tool-call"`. `arguments` is
@@ -174,14 +173,7 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const {
-		messages,
-		sendMessage,
-		isLoading,
-		error,
-		addToolApprovalResponse,
-		pinCanvas,
-	} = useCockpit();
+	const { messages, error, addToolApprovalResponse, pinCanvas } = useCockpit();
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -198,30 +190,6 @@ export function ChatRail() {
 		const el = streamRef.current;
 		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
 	}, [messages]);
-
-	// Upload entry-mode (DAT-386; multi-file DAT-391): staged `s3://` path(s) drive
-	// the EXISTING connect tool through the agent loop — one connect per file for a
-	// schema preview — and, for a batch, a single select registering them as ONE
-	// `file_uris` source. The tool results project onto the canvas via the same
-	// derivation in the provider — no new sniff path, no canvas wiring here.
-	const onUploaded = (s3Paths: string[]) => {
-		if (isLoading || s3Paths.length === 0) return;
-		if (s3Paths.length === 1) {
-			sendMessage(
-				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,
-				{ label: "Reading the file…" },
-			);
-			return;
-		}
-		const list = s3Paths.map((p) => `- ${p}`).join("\n");
-		sendMessage(
-			`I uploaded ${s3Paths.length} files to import together as ONE source:\n${list}\n\n` +
-				`Connect to each file (source_kind=file) so I can preview its schema, then ` +
-				`register them as a single source with the select tool — pass all ${s3Paths.length} ` +
-				`as file_uris.`,
-			{ label: "Reading the files…" },
-		);
-	};
 
 	// An approval-gated tool-call part is carried in BOTH the approval-request turn
 	// and the post-approval turn that completes it — same part id, two messages —
@@ -327,7 +295,6 @@ export function ChatRail() {
 					)}
 				</Stack>
 			</Box>
-			<UploadDropzone onUploaded={onUploaded} disabled={isLoading} />
 			<Composer variant="rail" />
 		</Stack>
 	);

@@ -53,4 +53,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 	it("the shared canvas registry has the add-source-progress widget (DAT-352)", () => {
 		expect(canvasRegistry.has("add-source-progress")).toBe(true);
 	});
+
+	it("the shared canvas registry has the upload-area widget (redesign)", () => {
+		expect(canvasRegistry.has("upload-area")).toBe(true);
+	});
 });

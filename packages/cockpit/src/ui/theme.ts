@@ -78,9 +78,15 @@ export const tokens = {
 			'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
 		fontFamilyMonospace:
 			'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+		// A real scale, not just sm/md/lg. xs = meta/caption, md = body; xl/2xl give
+		// section headings and the landing display genuine hierarchy (Refactoring UI:
+		// size is one of the four hierarchy levers — give it room to work).
+		fontSizeXs: "0.75rem",
 		fontSizeSm: "0.8125rem",
 		fontSizeMd: "0.9375rem",
 		fontSizeLg: "1.125rem",
+		fontSizeXl: "1.5rem",
+		fontSize2xl: "2rem",
 	},
 	// Shell chrome dimensions (pixels — AppShell wants scalars).
 	shell: {
@@ -98,6 +104,20 @@ export const theme = createTheme({
 	},
 	fontFamily: tokens.typography.fontFamily,
 	fontFamilyMonospace: tokens.typography.fontFamilyMonospace,
+	// Off-black body text (#1f2933). Mantine's default text color resolves from
+	// `black` in light mode; pure #000 on white is harsh and "cheap"-looking
+	// (Refactoring UI). One change here recolors every default Text/Title.
+	black: tokens.colors.text,
+	// Heading hierarchy: distinct sizes + a single weight so a Title reads as a
+	// heading by size+weight, not by shouting. h1 = section/landing display.
+	headings: {
+		fontWeight: "600",
+		sizes: {
+			h1: { fontSize: tokens.typography.fontSize2xl, lineHeight: "1.2" },
+			h2: { fontSize: tokens.typography.fontSizeXl, lineHeight: "1.3" },
+			h3: { fontSize: tokens.typography.fontSizeLg, lineHeight: "1.4" },
+		},
+	},
 	defaultRadius: "md",
 	radius: {
 		xs: tokens.radii.xs,
@@ -113,8 +133,10 @@ export const theme = createTheme({
 		xl: tokens.spacing.xl,
 	},
 	fontSizes: {
+		xs: tokens.typography.fontSizeXs,
 		sm: tokens.typography.fontSizeSm,
 		md: tokens.typography.fontSizeMd,
 		lg: tokens.typography.fontSizeLg,
+		xl: tokens.typography.fontSizeXl,
 	},
 });

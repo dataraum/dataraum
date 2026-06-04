@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.detector import _store_candidates
+from dataraum.analysis.relationships.materialize import (
+    materialize_relationship_overlays,
+    write_relationship_keepers,
+)
 from dataraum.analysis.relationships.utils import (
+    load_confirmed_relationship_pairs,
     load_defined_relationships,
     load_suppressed_relationship_pairs,
 )
@@ -120,11 +125,37 @@ def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
     session.add(
         ConfigOverlay(
             type="relationship",
-            payload={"action": "confirm", "table": "orders", "target_table": "customers"},
+            payload={"action": "confirm", "from_column_id": "cc", "to_column_id": "cd"},
         )
     )
     session.flush()
     assert load_suppressed_relationship_pairs(session) == {("ca", "cb")}
+
+
+def test_confirmed_pairs_read_from_confirm_overlay(session: Session) -> None:
+    """``load_confirmed_relationship_pairs`` returns active confirm pairs, undirected.
+
+    One relationship-overlay shape (DAT-409): confirm/reject differ only by ``action``
+    and both key on the column pair. Confirmation is undirected (frozenset), so a
+    detector matches it whichever way it names the endpoints; reject rows are excluded.
+    """
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "confirm", "from_column_id": "ca", "to_column_id": "cb"},
+        )
+    )
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "reject", "from_column_id": "cc", "to_column_id": "cd"},
+        )
+    )
+    session.flush()
+    confirmed = load_confirmed_relationship_pairs(session)
+    assert confirmed == {frozenset({"ca", "cb"})}
+    # Undirected: matches whichever way the detector names the endpoints.
+    assert frozenset({"cb", "ca"}) in confirmed
 
 
 def _readiness_row(session: Session, target: str, run_id: str) -> None:
@@ -183,3 +214,237 @@ def test_relationship_readiness_excludes_suppressed(session: Session) -> None:
     session.flush()
 
     assert load_relationship_readiness(session, baseline_session_id()) == []
+
+
+# --- Materialize-from-overlay (DAT-409 C2) ---------------------------------------
+
+
+def _overlay(session: Session, action: str, frm: str, to: str) -> None:
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": action, "from_column_id": frm, "to_column_id": to},
+        )
+    )
+
+
+def _materialized(session: Session) -> list[Relationship]:
+    return (
+        session.query(Relationship)
+        .filter(Relationship.detection_method.in_(("manual", "keeper")))
+        .all()
+    )
+
+
+def test_materialize_add_overlay_creates_manual(session: Session) -> None:
+    """An `add` overlay materializes a durable `manual` row stamped with the run."""
+    _seed_tables_columns(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 1
+    rows = _materialized(session)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.detection_method == "manual"
+    assert row.run_id == "r1"
+    assert (row.from_table_id, row.to_table_id) == ("t1", "t2")
+    assert row.is_confirmed is True
+
+
+def test_materialize_keep_overlay_creates_keeper(session: Session) -> None:
+    """A `keep` overlay (silent-accept) materializes as `keeper`, not `manual`."""
+    _seed_tables_columns(session)
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    rows = _materialized(session)
+    assert [r.detection_method for r in rows] == ["keeper"]
+
+
+def test_materialize_skips_pair_already_llm_this_run(session: Session) -> None:
+    """No duplicate: an overlay for a pair the run already produced as llm is skipped."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 0
+    # The pair stays a single llm row — never duplicated as keeper.
+    pairs = session.query(Relationship).filter(Relationship.run_id == "r1").all()
+    assert [p.detection_method for p in pairs] == ["llm"]
+
+
+def test_materialize_skips_a_rejected_pair(session: Session) -> None:
+    """A reject overlay wins over a stale add/keep for the same pair."""
+    _seed_tables_columns(session)
+    _overlay(session, "add", "ca", "cb")
+    _overlay(session, "reject", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 0
+    assert _materialized(session) == []
+
+
+def test_materialize_is_idempotent_per_run(session: Session) -> None:
+    """Re-running the same run_id clears its own durable rows first — no accumulation."""
+    _seed_tables_columns(session)
+    _overlay(session, "add", "ca", "cb")
+    session.flush()
+
+    for _ in range(2):
+        materialize_relationship_overlays(
+            session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+        )
+        session.flush()
+
+    assert len(_materialized(session)) == 1
+
+
+def test_materialize_skips_endpoint_outside_selection(session: Session) -> None:
+    """An overlay referencing a column outside the session's tables is skipped."""
+    _seed_tables_columns(session)
+    # cx lives on a table NOT in the materialize scope.
+    session.add(Table(table_id="t3", source_id="s1", table_name="other", layer="typed"))
+    session.add(Column(column_id="cx", table_id="t3", column_name="x", column_position=0))
+    _overlay(session, "add", "ca", "cx")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 0
+    assert _materialized(session) == []
+
+
+# --- Silent-accept keeper writer (DAT-409 C3) ------------------------------------
+
+
+def _seed_prior_promoted_run(session: Session, run_id: str) -> None:
+    """A prior begin_session run sealed (head points at it) with one llm relationship."""
+    _rel(session, "ca", "cb", "llm", run_id=run_id)
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()), stage="detect", run_id=run_id
+        )
+    )
+    session.flush()
+
+
+def _keep_overlays(session: Session) -> list[dict]:
+    return [
+        o.payload
+        for o in session.query(ConfigOverlay).filter(ConfigOverlay.type == "relationship").all()
+        if (o.payload or {}).get("action") == "keep"
+    ]
+
+
+def test_keeper_lifts_unreproduced_prior_llm(session: Session) -> None:
+    """A promoted llm the current run didn't reproduce becomes a keep overlay."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    # Current run r1 reproduced nothing for this pair.
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 1
+    assert _keep_overlays(session) == [
+        {"action": "keep", "from_column_id": "ca", "to_column_id": "cb"}
+    ]
+
+
+def test_keeper_skips_reproduced_pair(session: Session) -> None:
+    """A pair the current run DID reproduce is not lifted (it's still live)."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _rel(session, "ca", "cb", "llm", run_id="r1")  # reproduced this run
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_skips_rejected_pair(session: Session) -> None:
+    """A user reject suppresses the silent-accept — the drop is honored, not resurrected."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _overlay(session, "reject", "ca", "cb")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_skips_when_already_kept(session: Session) -> None:
+    """An existing keep overlay isn't duplicated on a later unreproduced run."""
+    _seed_tables_columns(session)
+    _seed_prior_promoted_run(session, "r0")
+    _overlay(session, "keep", "ca", "cb")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert len(_keep_overlays(session)) == 1
+
+
+def test_keeper_noop_on_first_run(session: Session) -> None:
+    """No promoted prior run (no head) → nothing to compare, no keepers."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []
+
+
+def test_keeper_noop_when_head_already_names_current_run(session: Session) -> None:
+    """Defensive: if the head already names the current run (e.g. a retry after
+    promote), there is no prior run to compare against — no keepers."""
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()), stage="detect", run_id="r1"
+        )
+    )
+    session.flush()
+
+    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    session.flush()
+
+    assert count == 0
+    assert _keep_overlays(session) == []

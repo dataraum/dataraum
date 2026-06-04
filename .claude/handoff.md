@@ -4,6 +4,32 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-04: DAT-409 — relationship teach write-loop + overlay-contract unification
+
+Slice 2.0c. The relationship-overlay write path (teach → materialize → keeper) plus a
+clean-up of the overlay contract DAT-408 left half-migrated.
+
+- **Two relationship-calibration changes to re-validate (DAT-405):**
+  1. `join_path_determinism` "resolved" is now **per-column-pair, not per-table-pair**. A
+     `confirm` resolves ambiguity only for the exact focal column path it names; other
+     paths between the same two tables stay ambiguous. (Was: any confirmed join between
+     the two tables marked every focal pair resolved.) Re-check join_path on multi-path
+     schemas.
+  2. `relationship_entropy` confirmation now reads `load_confirmed_relationship_pairs`
+     (`action='confirm'`, column-pair key) instead of the deleted table-name
+     `load_preferred_join_overlays`. Same source overlay, stricter key.
+- **New cross-run persistence (keeper):** `write_relationship_keepers` lifts a promoted
+  `llm` the current run didn't reproduce (and the user didn't reject) into a `keep`
+  ConfigOverlay; it materializes as `detection_method='keeper'` from the **next** run on.
+  The lifted relationship is **absent from the run that detected its absence** (one-run
+  gap, by spec) — eval comparing run N's catalog should expect the keeper only in N+1.
+- **Single overlay payload shape:** `ConfigOverlay(type='relationship')` is now uniformly
+  `{action, from_column_id, to_column_id}`, `action ∈ {confirm, reject, add, keep}`
+  (`keep` engine-written). The old `{table, target_table}` confirm shape is gone.
+- **Calibrate:** exercise a teach→re-run cycle (confirm/reject/add) and a two-run
+  silent-accept (drop an llm between runs → assert `keeper` in the later run).
+- **Status:** pending
+
 ## 2026-06-03: DAT-408 — relationship-granularity readiness + begin_session on the substrate
 
 Slice 2.0b + the begin_session-substrate core of DAT-415. Relationship readiness is now

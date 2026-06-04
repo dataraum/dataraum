@@ -59,14 +59,15 @@ def load_defined_relationships(
     return list(session.execute(stmt).scalars())
 
 
-def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:
-    """Directional column pairs the user has dropped (DAT-408).
+def relationship_overlay_pairs(session: Session, action: str) -> list[tuple[str, str]]:
+    """Active ``ConfigOverlay(type='relationship')`` column pairs for one ``action``.
 
-    A drop is a ``ConfigOverlay(type='relationship')`` whose payload carries
-    ``action == "reject"`` plus the directional ``from_column_id`` / ``to_column_id``
-    (confirm and reject are two states of the one relationship overlay type). A
-    re-run must not re-create a suppressed relationship, and its readiness must not
-    surface. ``superseded_at IS NULL`` filters undone drops out.
+    The one relationship-overlay payload shape (DAT-409) is
+    ``{action, from_column_id, to_column_id}`` — ``confirm`` / ``reject`` / ``add`` /
+    ``keep`` are all states of the single type, keyed on the directional column pair
+    (NOT table names — a relationship is between columns). Every engine reader of
+    these overlays goes through this one parser so they agree on the shape.
+    ``superseded_at IS NULL`` filters undone teaches out.
     """
     from dataraum.storage import ConfigOverlay
 
@@ -78,16 +79,36 @@ def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]
             )
         ).scalars()
     )
-    out: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
     for row in rows:
         payload = row.payload or {}
-        if payload.get("action") != "reject":
+        if payload.get("action") != action:
             continue
         from_col = payload.get("from_column_id")
         to_col = payload.get("to_column_id")
         if from_col and to_col:
-            out.add((from_col, to_col))
+            out.append((from_col, to_col))
     return out
+
+
+def load_suppressed_relationship_pairs(session: Session) -> set[tuple[str, str]]:
+    """Directional column pairs the user has dropped (``action == "reject"``).
+
+    A re-run must not re-create a suppressed relationship, and its readiness must not
+    surface. Directional: rejecting ``(a, b)`` does not reject ``(b, a)``.
+    """
+    return set(relationship_overlay_pairs(session, "reject"))
+
+
+def load_confirmed_relationship_pairs(session: Session) -> set[frozenset[str]]:
+    """Undirected column pairs the user has confirmed (``action == "confirm"``, DAT-409).
+
+    Read by ``relationship_entropy`` (confirmation lifts semantic clarity, DAT-372)
+    and ``join_path_determinism`` (a confirmed path resolves join ambiguity).
+    Undirected — confirmation of ``{a, b}`` holds whichever way a detector names the
+    endpoints — so callers test ``frozenset({from_col, to_col}) in confirmed``.
+    """
+    return {frozenset(pair) for pair in relationship_overlay_pairs(session, "confirm")}
 
 
 def load_relationship_candidates_for_semantic(

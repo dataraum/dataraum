@@ -27,7 +27,8 @@ class EntropyObject:
     layer: str = ""  # structural, semantic, value, computational
     dimension: str = ""  # schema, types, relations, business_meaning, units, etc.
     sub_dimension: str = ""  # naming_clarity, type_fidelity, etc.
-    target: str = ""  # column:{table}.{column}, table:{table_name}, relationship:{t1}-{t2}
+    # Scope key: column:{t}.{c} / table:{t} / relationship:{from_col}::{to_col}.
+    target: str = ""
 
     # Measurement
     score: float = 0.0  # 0.0 = deterministic, 1.0 = maximum uncertainty

@@ -96,6 +96,39 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		expect(amountRow.getAllByText("investigate")).toHaveLength(2);
 	});
 
+	it("renders the whole-table band summary when table_readiness is present (DAT-415)", () => {
+		renderWidget({
+			...analyzed,
+			table_readiness: {
+				band: "investigate",
+				worst_intent_risk: 0.42,
+				intents: [
+					{ intent: "query_intent", band: "ready", risk: 0.1 },
+					{ intent: "reporting_intent", band: "investigate", risk: 0.42 },
+				],
+				top_drivers: [
+					{ label: "Dimension Coverage", state: "high", impact_delta: 0.3 },
+				],
+			},
+		});
+		const overall = within(
+			screen.getByTestId("canvas-table-readiness-overall"),
+		);
+		expect(
+			overall.getByText("Whole-table readiness (this session)"),
+		).toBeTruthy();
+		expect(overall.getByText("Dimension Coverage")).toBeTruthy();
+		// Overall band + the populated per-intent badges (query=ready,
+		// reporting=investigate) — "investigate" twice (overall + reporting).
+		expect(overall.getAllByText("investigate")).toHaveLength(2);
+		expect(overall.getAllByText("ready")).toHaveLength(1);
+	});
+
+	it("omits the whole-table summary for a plain add_source view (no session)", () => {
+		renderWidget(analyzed); // table_readiness: null
+		expect(screen.queryByTestId("canvas-table-readiness-overall")).toBeNull();
+	});
+
 	it("shows the not-analyzed note when no column has a band", () => {
 		renderWidget({
 			...analyzed,

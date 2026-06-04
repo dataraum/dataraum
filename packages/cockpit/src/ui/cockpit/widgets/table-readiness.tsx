@@ -9,6 +9,7 @@
 
 import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
 import { displayTableName } from "#/lib/display-names";
+import type { TableReadiness } from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 
@@ -54,6 +55,47 @@ function BandBadge({ band }: { band: string | null | undefined }) {
 	);
 }
 
+// The begin_session whole-table band (DAT-415): the `dimension_coverage` rollup
+// for the table, sealed at the session head — distinct from, and shown above, the
+// add_source per-column grid below. Only rendered when look_table was called with
+// a session_id (else `table_readiness` is null and this is skipped). Per-intent
+// badges appear only when the rollup populated them (a clean table carries an
+// empty intents list — show just the overall band rather than a row of dashes).
+function TableBandSummary({ band }: { band: TableReadiness }) {
+	const bandByIntent = new Map(band.intents.map((i) => [i.intent, i.band]));
+	return (
+		<Group
+			gap="sm"
+			align="center"
+			wrap="wrap"
+			data-testid="canvas-table-readiness-overall"
+		>
+			<Text size="sm" fw={500}>
+				Whole-table readiness (this session)
+			</Text>
+			<BandBadge band={band.band} />
+			{band.intents.length > 0 &&
+				INTENTS.map((intent) => (
+					<Group key={intent} gap={4} align="center">
+						<Text span size="xs" c="dimmed">
+							{INTENT_LABEL[intent]}
+						</Text>
+						<BandBadge band={bandByIntent.get(intent)} />
+					</Group>
+				))}
+			{band.top_drivers.length > 0 && (
+				<Group gap={4} wrap="wrap">
+					{band.top_drivers.map((d) => (
+						<Text key={d.label} span size="xs" c="dimmed">
+							{d.label}
+						</Text>
+					))}
+				</Group>
+			)}
+		</Group>
+	);
+}
+
 export function TableReadinessWidget({
 	state,
 }: {
@@ -96,6 +138,10 @@ export function TableReadinessWidget({
 			<Text size="sm" fw={600}>
 				{tableLabel} — readiness
 			</Text>
+
+			{readiness.table_readiness && (
+				<TableBandSummary band={readiness.table_readiness} />
+			)}
 
 			{!readiness.analyzed && (
 				<Alert color="gray" data-testid="canvas-table-readiness-unanalyzed">

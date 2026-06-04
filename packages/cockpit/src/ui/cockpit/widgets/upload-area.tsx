@@ -8,6 +8,7 @@ import { Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions, useCockpitState } from "#/ui/cockpit/cockpit-state";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
+import { uploadBubbleText, uploadRefsBlock } from "#/ui/cockpit/upload-handoff";
 
 export function UploadAreaWidget(_props: {
 	state: Extract<CanvasState, { kind: "upload-area" }>;
@@ -19,26 +20,25 @@ export function UploadAreaWidget(_props: {
 	// reading isLoading here costs no extra per-token renders in practice.
 	const { isLoading } = useCockpitState();
 
-	// Staged `s3://` path(s) drive the connect tool through the agent loop — one
-	// connect per file for a preview, then a single select registering a batch as
-	// ONE `file_uris` source. The tool results project back onto the canvas via the
+	// The upload turn carries TWO text parts (DAT-423): a CLEAN bubble (filenames
+	// only) the rail renders, and a model-only REFS block (the ordered objects +
+	// their `s3://` uris) the rail skips. So the agent gets the exact ordered batch
+	// structurally — drives connect → vertical → select as before — with NO path in
+	// any chat bubble. The tool results project back onto the canvas via the
 	// provider's derivation — no canvas wiring here.
 	const onUploaded = (s3Paths: string[]) => {
 		if (s3Paths.length === 0) return;
-		if (s3Paths.length === 1) {
-			sendMessage(
-				`Connect to the uploaded file at ${s3Paths[0]} (source_kind=file) and show me its schema.`,
-				{ label: "Reading the file…" },
-			);
-			return;
-		}
-		const list = s3Paths.map((p) => `- ${p}`).join("\n");
 		sendMessage(
-			`I uploaded ${s3Paths.length} files to import together as ONE source:\n${list}\n\n` +
-				`Connect to each file (source_kind=file) so I can preview its schema, then ` +
-				`register them as a single source with the select tool — pass all ${s3Paths.length} ` +
-				`as file_uris.`,
-			{ label: "Reading the files…" },
+			{
+				content: [
+					{ type: "text", content: uploadBubbleText(s3Paths) },
+					{ type: "text", content: uploadRefsBlock(s3Paths) },
+				],
+			},
+			{
+				label:
+					s3Paths.length === 1 ? "Reading the file…" : "Reading the files…",
+			},
 		);
 	};
 

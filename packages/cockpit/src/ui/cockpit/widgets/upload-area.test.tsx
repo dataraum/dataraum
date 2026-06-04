@@ -40,7 +40,7 @@ describe("UploadAreaWidget", () => {
 		expect(screen.getByTestId("upload-dropzone")).toBeTruthy();
 	});
 
-	it("drives connect over the staged s3:// handle after an upload", async () => {
+	it("hands a clean bubble + a model-only refs part — no s3:// in the bubble (DAT-423)", async () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValue(
@@ -60,11 +60,16 @@ describe("UploadAreaWidget", () => {
 		});
 
 		await waitFor(() => expect(sendMessage).toHaveBeenCalled());
-		// The connect-driving message references the staged s3:// path so the agent
-		// runs the existing connect tool against it.
-		expect(sendMessage.mock.calls[0][0]).toContain(
-			"s3://dataraum-lake/uploads/u/people.csv",
-		);
+		// The upload turn is multimodal: a CLEAN text part (rendered, no path) plus a
+		// model-only refs part (carries the s3:// uri; the rail skips it).
+		const content = sendMessage.mock.calls[0][0] as {
+			content: Array<{ type: string; content: string }>;
+		};
+		const [bubble, refs] = content.content;
+		expect(bubble.content).toContain("people.csv");
+		expect(bubble.content).not.toContain("s3://");
+		expect(refs.content).toContain("s3://dataraum-lake/uploads/u/people.csv");
+		expect(refs.content.startsWith("[[dataraum:uploaded-objects]]")).toBe(true);
 
 		vi.unstubAllGlobals();
 	});

@@ -51,4 +51,15 @@ describe("chat route wiring (DAT-353)", () => {
 		const messages = [{ role: "user" as const, content: "hi" }];
 		expect(buildChatOptions(messages).messages).toBe(messages);
 	});
+
+	it("threads the abort controller into the loop so a cancelled stream stops it", () => {
+		const ac = new AbortController();
+		expect(
+			buildChatOptions([{ role: "user", content: "hi" }], ac).abortController,
+		).toBe(ac);
+		// Optional: omitting it is still valid (the param is optional).
+		expect(
+			buildChatOptions([{ role: "user", content: "hi" }]).abortController,
+		).toBeUndefined();
+	});
 });

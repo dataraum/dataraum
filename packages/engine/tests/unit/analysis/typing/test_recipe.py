@@ -5,7 +5,7 @@ real-DuckDB round-trip/reset integration tests:
 
 - ``store_recipe`` upserts on ``(table_id, layer, run_id)`` — a same-run re-store
   overwrites (Temporal at-least-once idempotency); a new run COEXISTS.
-- ``_order_by_dependency`` runs a recipe AFTER the recipes it reads from, keyed
+- ``order_recipes_by_dependency`` runs a recipe AFTER the recipes it reads from, keyed
   on the fully-qualified target (layer-aware), and tolerates deps that are not
   themselves recipes (e.g. the raw table).
 """
@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from dataraum.analysis.typing.db_models import MaterializationRecipe
-from dataraum.analysis.typing.recipe import _order_by_dependency, store_recipe
+from dataraum.analysis.typing.recipe import order_recipes_by_dependency, store_recipe
 from dataraum.storage import init_database
 
 
@@ -140,20 +140,20 @@ class TestOrderByDependency:
     def test_dependency_runs_before_dependent(self):
         base = _recipe('lake.raw."x"')  # produced by an upstream recipe in-set
         dependent = _recipe('lake.typed."x"', depends_on=['lake.raw."x"'])
-        ordered = _order_by_dependency([dependent, base])
+        ordered = order_recipes_by_dependency([dependent, base])
         assert ordered.index(base) < ordered.index(dependent)
 
     def test_unknown_dependency_is_tolerated(self):
         """A dep that is not itself a recipe (e.g. the raw table) is 'already present'."""
         only = _recipe('lake.typed."x"', depends_on=['lake.raw."x"'])
-        ordered = _order_by_dependency([only])
+        ordered = order_recipes_by_dependency([only])
         assert ordered == [only]
 
     def test_same_bare_different_layer_does_not_self_depend(self):
         """typed + quarantine share the bare name; FQN keying keeps them independent."""
         typed = _recipe('lake.typed."x"', depends_on=['lake.raw."x"'])
         quarantine = _recipe('lake.quarantine."x"', depends_on=['lake.raw."x"'])
-        ordered = _order_by_dependency([typed, quarantine])
+        ordered = order_recipes_by_dependency([typed, quarantine])
         # Both placed exactly once, neither depends on the other.
         assert set(ordered) == {typed, quarantine}
         assert len(ordered) == 2

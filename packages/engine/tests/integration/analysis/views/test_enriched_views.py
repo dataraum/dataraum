@@ -293,8 +293,9 @@ class TestEnrichedViewsPhaseDuckLake:
         from tests.conftest import baseline_session_id
 
         fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        rec = {"current": canned}
         monkeypatch.setattr(
-            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: rec["current"]
         )
 
         def run(run_id: str) -> None:
@@ -309,6 +310,25 @@ class TestEnrichedViewsPhaseDuckLake:
             assert result.status == PhaseStatus.COMPLETED, result.error
             session.flush()
 
+        def enriched_views():
+            return (
+                session.execute(select(EnrichedView).where(EnrichedView.fact_table_id == fact_id))
+                .scalars()
+                .all()
+            )
+
+        def enriched_recipes():
+            return (
+                session.execute(
+                    select(MaterializationRecipe).where(
+                        MaterializationRecipe.table_id == fact_id,
+                        MaterializationRecipe.layer == "enriched",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
         # --- Run 1: the view materializes + is versioned -------------------
         run("run-1")
 
@@ -319,16 +339,12 @@ class TestEnrichedViewsPhaseDuckLake:
         ).fetchall()
         assert rows == [(1, "Alice", "US"), (2, "Bob", "UK"), (3, "Alice", "US")]
 
-        views = (
-            session.execute(select(EnrichedView).where(EnrichedView.fact_table_id == fact_id))
-            .scalars()
-            .all()
-        )
+        views = enriched_views()
         assert len(views) == 1
         assert views[0].run_id == "run-1"
         assert views[0].is_grain_verified is True
         assert views[0].view_table_id is not None
-        assert not hasattr(views[0], "view_sql") or "view_sql" not in EnrichedView.__table__.columns
+        assert "view_sql" not in EnrichedView.__table__.columns
 
         recipe = session.execute(
             select(MaterializationRecipe).where(
@@ -349,45 +365,133 @@ class TestEnrichedViewsPhaseDuckLake:
 
         # --- Run 1 retry: same run_id is idempotent (no duplicate rows) ----
         run("run-1")
-        views = (
-            session.execute(select(EnrichedView).where(EnrichedView.fact_table_id == fact_id))
-            .scalars()
-            .all()
-        )
-        assert len(views) == 1, "a same-run retry must not duplicate the view definition"
-        recipes = (
-            session.execute(
-                select(MaterializationRecipe).where(
-                    MaterializationRecipe.table_id == fact_id,
-                    MaterializationRecipe.layer == "enriched",
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(recipes) == 1
+        assert len(enriched_views()) == 1, "a same-run retry must not duplicate the view definition"
+        assert {r.run_id for r in enriched_recipes()} == {"run-1"}
 
-        # --- Run 2: a new run coexists; substrate stays latest-only --------
+        # --- Run 2 (identical SQL): definition is latest-only, recipe gated -
         run("run-2")
-        views = (
-            session.execute(select(EnrichedView).where(EnrichedView.fact_table_id == fact_id))
-            .scalars()
-            .all()
+        views = enriched_views()
+        assert len(views) == 1, "EnrichedView is latest-only — one row per fact"
+        assert views[0].run_id == "run-2", "the latest run stamps the (reconciled) definition"
+        assert {r.run_id for r in enriched_recipes()} == {"run-1"}, (
+            "unchanged canonical SQL adds no new recipe version (sqlglot-gated)"
         )
-        assert {v.run_id for v in views} == {"run-1", "run-2"}
-        recipes = (
-            session.execute(
-                select(MaterializationRecipe).where(
-                    MaterializationRecipe.table_id == fact_id,
-                    MaterializationRecipe.layer == "enriched",
+
+        # --- Run 3 (changed joins): a new recipe version is stamped --------
+        from dataraum.analysis.views.builder import DimensionJoin
+        from dataraum.analysis.views.enrichment_models import (
+            EnrichmentAnalysisResult,
+            EnrichmentRecommendation,
+        )
+
+        rec["current"] = EnrichmentAnalysisResult(
+            recommendations=[
+                EnrichmentRecommendation(
+                    fact_table_id=fact_id,
+                    fact_table_name="orders",
+                    dimension_joins=[
+                        DimensionJoin(
+                            dim_table_name="customers",
+                            dim_duckdb_path="(rewritten)",
+                            fact_fk_column="customer_id",
+                            dim_pk_column="id",
+                            include_columns=["name"],  # dropped "country" → DDL changes
+                            relationship_id="rel-1",
+                        )
+                    ],
+                    dimension_type="reference",
+                    confidence=0.9,
+                    reasoning="narrower enrichment",
+                    enrichment_columns=["name"],
                 )
-            )
-            .scalars()
-            .all()
+            ],
+            summary="stub",
+            model_name="stub-model",
         )
-        assert {r.run_id for r in recipes} == {"run-1", "run-2"}
-        # The enriched lake Table is reconciled latest-only — not duplicated per run.
-        enriched_tables = (
-            session.execute(select(Table).where(Table.layer == "enriched")).scalars().all()
+        run("run-3")
+        views = enriched_views()
+        assert len(views) == 1 and views[0].run_id == "run-3"
+        assert {r.run_id for r in enriched_recipes()} == {"run-1", "run-3"}, (
+            "a changed view definition stamps a new recipe version"
         )
-        assert len(enriched_tables) == 1
+        # Substrate stays latest-only across every run.
+        assert (
+            len(session.execute(select(Table).where(Table.layer == "enriched")).scalars().all())
+            == 1
+        )
+
+    def test_rebuild_rematerializes_current_and_drops_strays(self, session, duckdb_conn):
+        """rebuild_enriched_views re-execs the latest recipe per fact + drops strays.
+
+        Two recipes for one fact (an older ``enriched_legacy``, a newer
+        ``enriched_csv__orders``) model a view whose name changed between runs.
+        A reset rebuilds the current target and drops the session's stale view —
+        proving the transactional, dependency-ordered re-materialization + the
+        session-scoped drop-views-not-in-run.
+        """
+        from datetime import UTC, datetime, timedelta
+        from uuid import uuid4
+
+        from dataraum.analysis.typing.db_models import MaterializationRecipe
+        from dataraum.analysis.views.recipe import rebuild_enriched_views
+        from dataraum.storage import Source, Table
+        from tests.conftest import baseline_session_id
+
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__orders" AS '
+            "SELECT * FROM (VALUES (1, 100.0), (2, 200.0), (3, 150.0)) AS t(order_id, amount)"
+        )
+        source = Source(source_id=str(uuid4()), name="csv", source_type="csv")
+        session.add(source)
+        session.flush()
+        fact = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="orders",
+            layer="typed",
+            duckdb_path="csv__orders",
+            row_count=3,
+        )
+        session.add(fact)
+        session.flush()
+
+        fact_fqn = 'lake.typed."csv__orders"'
+        legacy_fqn = 'lake.typed."enriched_legacy"'
+        current_fqn = 'lake.typed."enriched_csv__orders"'
+        base = datetime(2026, 6, 4, tzinfo=UTC)
+        session.add_all(
+            [
+                MaterializationRecipe(
+                    session_id=baseline_session_id(),
+                    table_id=fact.table_id,
+                    layer="enriched",
+                    run_id="r0",
+                    target_fqn=legacy_fqn,
+                    ddl=f"CREATE OR REPLACE VIEW {legacy_fqn} AS SELECT * FROM {fact_fqn}",
+                    depends_on=[fact_fqn],
+                    created_at=base,
+                ),
+                MaterializationRecipe(
+                    session_id=baseline_session_id(),
+                    table_id=fact.table_id,
+                    layer="enriched",
+                    run_id="r1",
+                    target_fqn=current_fqn,
+                    ddl=f"CREATE OR REPLACE VIEW {current_fqn} AS SELECT * FROM {fact_fqn}",
+                    depends_on=[fact_fqn],
+                    created_at=base + timedelta(hours=1),
+                ),
+            ]
+        )
+        session.flush()
+
+        # The stale view physically exists; the current one does not (a lost rebuild).
+        duckdb_conn.execute(f"CREATE OR REPLACE VIEW {legacy_fqn} AS SELECT * FROM {fact_fqn}")
+
+        rebuilt = rebuild_enriched_views(session, duckdb_conn, session_id=baseline_session_id())
+
+        assert rebuilt == [current_fqn], "only the latest recipe per fact is re-materialized"
+        assert duckdb_conn.execute(f"SELECT COUNT(*) FROM {current_fqn}").fetchone()[0] == 3
+        remaining = {row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()}
+        assert "enriched_csv__orders" in remaining
+        assert "enriched_legacy" not in remaining, "the session's stray view is dropped"

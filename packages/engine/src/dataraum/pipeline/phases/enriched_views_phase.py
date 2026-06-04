@@ -29,6 +29,7 @@ from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
+from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
 from dataraum.analysis.views.db_models import EnrichedView
@@ -36,6 +37,7 @@ from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
 from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
+from dataraum.core.sql_normalize import sql_equivalent
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -172,24 +174,6 @@ class EnrichedViewsPhase(BasePhase):
                 summary="skipped (LLM unavailable)",
             )
 
-        # Retry-only cleanup (DAT-415): a Temporal at-least-once retry re-enters
-        # with the SAME run_id; drop this run's prior EnrichedView rows for the
-        # in-scope facts so the re-run re-inserts cleanly. Prior runs' rows (a
-        # different run_id) coexist — the definition is run-versioned. A NULL
-        # run_id (non-run callers/tests) matches the IS NULL branch.
-        fact_table_ids = [fe.table_id for fe in fact_entities]
-        run_filter = (
-            EnrichedView.run_id.is_(None)
-            if ctx.run_id is None
-            else EnrichedView.run_id == ctx.run_id
-        )
-        ctx.session.execute(
-            delete(EnrichedView).where(
-                EnrichedView.fact_table_id.in_(fact_table_ids),
-                run_filter,
-            )
-        )
-
         views_created = 0
         views_dropped = 0
 
@@ -282,44 +266,64 @@ class EnrichedViewsPhase(BasePhase):
             )
 
             # Version the view DDL on the DAT-414 recipe substrate (emit → store →
-            # execute; the view was executed above). Keyed on the stable fact id +
-            # ``layer="enriched"`` (collision-free vs typing's typed/quarantine
-            # recipes), stamped with the run. ``depends_on`` is the typed
-            # fact/dimension FQNs the view reads — the recipe topo-sort uses it to
-            # rebuild views after their inputs (DAT-415 view chains).
-            store_recipe(
-                ctx.session,
-                session_id=ctx.require_session_id(),
-                table_id=fact_table.table_id,
-                layer="enriched",
-                run_id=ctx.run_id,
-                target_fqn=view_fqn,
-                ddl=view_sql,
-                depends_on=[fact_fqn, *(j.dim_duckdb_path for j in fqn_joins)],
-            )
+            # execute; the view was executed above), sqlglot-gated (DAT-415):
+            # only stamp a NEW run-versioned recipe when the canonical SQL differs
+            # from the fact's latest stored enriched recipe — an unchanged re-run
+            # (temp-0 LLM → same joins) adds no redundant version, and a
+            # same-run retry sees its own just-stored recipe as equivalent and
+            # no-ops. Keyed on the stable fact id + ``layer="enriched"``
+            # (collision-free vs typing's typed/quarantine recipes); ``depends_on``
+            # is the typed fact/dim FQNs the recipe topo-sort rebuilds after.
+            dim_fqns = [j.dim_duckdb_path for j in fqn_joins]
+            latest_recipe = ctx.session.execute(
+                select(MaterializationRecipe)
+                .where(
+                    MaterializationRecipe.table_id == fact_table.table_id,
+                    MaterializationRecipe.layer == "enriched",
+                )
+                .order_by(MaterializationRecipe.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest_recipe is None or not sql_equivalent(latest_recipe.ddl, view_sql):
+                store_recipe(
+                    ctx.session,
+                    session_id=ctx.require_session_id(),
+                    table_id=fact_table.table_id,
+                    layer="enriched",
+                    run_id=ctx.run_id,
+                    target_fqn=view_fqn,
+                    ddl=view_sql,
+                    depends_on=[fact_fqn, *dim_fqns],
+                )
 
-            # Insert the run-versioned view definition. Prior runs' rows coexist
-            # (this run's were cleared above), so readers resolve a run via the
-            # promoted session head (DAT-408).
-            view_record = EnrichedView(
-                session_id=ctx.require_session_id(),
-                fact_table_id=fact_table.table_id,
-                run_id=ctx.run_id,
-                view_name=view_name,
-                relationship_ids=[j.relationship_id for j in dimension_joins],
-                dimension_table_ids=list(
-                    {
-                        tables_by_name[j.dim_table_name].table_id
-                        for j in dimension_joins
-                        if j.dim_table_name in tables_by_name
-                    }
-                ),
-                dimension_columns=dim_columns,
-                is_grain_verified=is_grain_verified,
-                evidence=evidence if evidence else None,
-                view_table_id=view_table.table_id if view_table else None,
+            # The view definition is latest-only substrate (one row per fact,
+            # DAT-415): reconcile-in-place, stamping the run that materialized it.
+            # The recipe (above) carries the version history; readers resolve the
+            # current view here without run-scoping.
+            view_record = ctx.session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_table.table_id)
+            ).scalar_one_or_none()
+            if view_record is None:
+                view_record = EnrichedView(
+                    session_id=ctx.require_session_id(),
+                    fact_table_id=fact_table.table_id,
+                )
+                ctx.session.add(view_record)
+            view_record.session_id = ctx.require_session_id()
+            view_record.run_id = ctx.run_id
+            view_record.view_name = view_name
+            view_record.relationship_ids = [j.relationship_id for j in dimension_joins]
+            view_record.dimension_table_ids = list(
+                {
+                    tables_by_name[j.dim_table_name].table_id
+                    for j in dimension_joins
+                    if j.dim_table_name in tables_by_name
+                }
             )
-            ctx.session.add(view_record)
+            view_record.dimension_columns = dim_columns
+            view_record.is_grain_verified = is_grain_verified
+            view_record.evidence = evidence if evidence else None
+            view_record.view_table_id = view_table.table_id if view_table else None
 
             views_created += 1
 

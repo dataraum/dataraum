@@ -240,6 +240,141 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		);
 	});
 
+	it("shows a live caption during the no-tally reduce phases (semantic / detect)", () => {
+		h.queryResult = {
+			data: {
+				phase: "semantic_per_column",
+				tables_total: 3,
+				tables_completed: 3,
+				tables: [],
+				failure: null,
+				status: "RUNNING",
+				done: false,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		expect(
+			screen.getByTestId("measure-progress-caption").textContent,
+		).toContain("Analyzing column semantics");
+		// A reduce phase has no fan-out tally.
+		expect(screen.queryByTestId("measure-progress-tally")).toBeNull();
+	});
+
+	it("does NOT show the reduce caption during the per-table fan-out (the tally owns it)", () => {
+		h.queryResult = {
+			data: {
+				phase: "processing_tables",
+				tables_total: 4,
+				tables_completed: 2,
+				tables: [],
+				failure: null,
+				status: "RUNNING",
+				done: false,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		expect(screen.queryByTestId("measure-progress-caption")).toBeNull();
+	});
+
+	it("the done alert names how many tables were imported and analyzed", () => {
+		h.queryResult = {
+			data: {
+				phase: "done",
+				tables_total: 3,
+				tables_completed: 3,
+				tables: [
+					{
+						raw_table_id: "r1",
+						name: "finance_data__payments",
+						status: "done",
+					},
+					{
+						raw_table_id: "r2",
+						name: "finance_data__invoices",
+						status: "done",
+					},
+					{
+						raw_table_id: "r3",
+						name: "finance_data__fx_rates",
+						status: "done",
+					},
+				],
+				failure: null,
+				status: "COMPLETED",
+				done: true,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		expect(screen.getByTestId("measure-progress-done").textContent).toContain(
+			"3 tables imported and analyzed",
+		);
+	});
+
+	it("falls back to a generic done line when the snapshot carried no table list", () => {
+		h.queryResult = {
+			data: {
+				phase: "done",
+				tables_total: 0,
+				tables_completed: 0,
+				tables: [],
+				failure: null,
+				status: "COMPLETED",
+				done: true,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		expect(screen.getByTestId("measure-progress-done").textContent).toContain(
+			"the source is imported and analyzed",
+		);
+	});
+
+	it("strips the `<source>__` prefix from table names in the list AND the failure message", () => {
+		h.queryResult = {
+			data: {
+				phase: "processing_tables",
+				tables_total: 2,
+				tables_completed: 1,
+				tables: [
+					{
+						raw_table_id: "r1",
+						name: "finance_data__trial_balance",
+						status: "done",
+					},
+					{
+						raw_table_id: "r2",
+						name: "finance_data__journal_lines",
+						status: "failed",
+					},
+				],
+				failure: {
+					message: "typing failed: bad cast",
+					phase: "processing_tables",
+					table_id: "r2",
+				},
+				status: "FAILED",
+				done: true,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		const list = screen.getByTestId("measure-progress-tables");
+		expect(list.textContent).toContain("trial_balance");
+		expect(list.textContent).not.toContain("finance_data__trial_balance");
+		// The failure path strips the prefix too — the bug the review caught.
+		const alert = screen.getByTestId("measure-progress-failed");
+		expect(alert.textContent).toContain("journal_lines");
+		expect(alert.textContent).not.toContain("finance_data__journal_lines");
+	});
+
 	it("surfaces a query error", () => {
 		h.queryResult = {
 			data: undefined,

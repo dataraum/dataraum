@@ -231,28 +231,49 @@ describe("validateTeach", () => {
 	});
 
 	describe("relationship", () => {
-		it("accepts source_id+table+target_table (flat shape, not nested under 'parameters')", () => {
-			// Engine consumer: entropy/detectors/structural/relations.py reads
-			// payload.{source_id, table, target_table}. Verifies we ship the
-			// flat shape it expects (legacy 'parameters' nesting is gone).
+		it("accepts {action, from_column_id, to_column_id} (DAT-409 directional pair)", () => {
+			// Engine consumer: load_suppressed_relationship_pairs +
+			// materialize-from-overlay (relationships) key on EXACTLY
+			// payload.{action, from_column_id, to_column_id}.
 			const out = validateTeach({
 				type: "relationship",
 				payload: {
-					source_id: "src-1",
-					table: "orders",
-					target_table: "customers",
-					from_column: "customer_id",
+					action: "reject",
+					from_column_id: "col-from",
+					to_column_id: "col-to",
 				},
 			});
-			expect(out.source_id).toBe("src-1");
-			expect(out.from_column).toBe("customer_id");
+			expect(out.action).toBe("reject");
+			expect(out.from_column_id).toBe("col-from");
+			expect(out.to_column_id).toBe("col-to");
 		});
 
-		it("rejects missing source_id", () => {
+		it.each([
+			"confirm",
+			"reject",
+			"add",
+		] as const)("accepts the %s action", (action) => {
+			const out = validateTeach({
+				type: "relationship",
+				payload: { action, from_column_id: "a", to_column_id: "b" },
+			});
+			expect(out.action).toBe(action);
+		});
+
+		it("rejects an unknown action (keep is engine-internal, not a user teach)", () => {
 			expect(() =>
 				validateTeach({
 					type: "relationship",
-					payload: { table: "orders", target_table: "customers" },
+					payload: { action: "keep", from_column_id: "a", to_column_id: "b" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects a missing column id", () => {
+			expect(() =>
+				validateTeach({
+					type: "relationship",
+					payload: { action: "reject", from_column_id: "a" },
 				}),
 			).toThrow(TeachValidationError);
 		});

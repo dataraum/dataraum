@@ -173,25 +173,34 @@ const GenericPayload = z
 		"Free-form object — used by the not-yet-applied teach types (validation, cycle, metric, explanation).",
 	);
 
-// `relationship` is consumed today by join_path_determinism via
-// _get_preferred_joins (entropy/detectors/structural/relations.py). Its
-// payload shape is fixed even though the detector isn't in the slice-1
-// workflow chain — call it out separately so a teach against this type
-// doesn't write something the detector silently ignores.
+// `relationship` overlays are directional column-pair teaches (DAT-409). The
+// engine keys on EXACTLY {action, from_column_id, to_column_id}: `reject` is
+// honored on re-derive + read (load_suppressed_relationship_pairs), `confirm`
+// feeds the relationship detectors' confirmation gate (DAT-372), and `add`
+// materializes a durable `manual` relationship each begin_session run (DAT-409).
+// (`keep` — the silent-accept method — is written by the engine, never a user
+// teach, so it is not an action here.) Identify the relationship by the column
+// ids surfaced from `look_relationships`, not table names.
+const RELATIONSHIP_ACTIONS = ["confirm", "reject", "add"] as const;
 const RelationshipPayload = z
 	.object({
-		source_id: z
+		action: z
+			.enum(RELATIONSHIP_ACTIONS)
+			.describe(
+				"confirm = keep this detected relationship; reject = drop it (suppressed on re-derive); add = assert a relationship the system didn't detect (materialized as a durable 'manual' relationship).",
+			),
+		from_column_id: z
 			.string()
 			.min(1)
-			.describe("The source the relationship belongs to."),
-		table: z
+			.describe(
+				"The 'from' (foreign-key) side column id (from look_relationships).",
+			),
+		to_column_id: z
 			.string()
 			.min(1)
-			.describe("The table holding the foreign key (the 'from' side)."),
-		target_table: z
-			.string()
-			.min(1)
-			.describe("The referenced table (the 'to' side)."),
+			.describe(
+				"The 'to' (referenced) side column id (from look_relationships).",
+			),
 	})
 	.passthrough();
 
@@ -233,7 +242,7 @@ export const TeachPayloadSchema = z
 			"null_value: {category, value}; " +
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
-			"relationship: {source_id, table, target_table}. " +
+			"relationship: {action: confirm|reject|add, from_column_id, to_column_id}. " +
 			"(validation/cycle/metric/explanation take a free-form object — recorded, not yet applied.)",
 	);
 

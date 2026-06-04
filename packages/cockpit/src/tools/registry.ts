@@ -6,6 +6,7 @@
 // replay) declare `needsApproval` and are gated by the user in the UI before
 // they run.
 
+import { beginSessionTool } from "./begin-session";
 import { connectTool } from "./connect";
 import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
@@ -36,6 +37,7 @@ export const tools = [
 	frameTool,
 	selectTool,
 	teachTool,
+	beginSessionTool,
 	replayTool,
 	workflowStatusTool,
 ] as const;

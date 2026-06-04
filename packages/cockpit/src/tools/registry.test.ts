@@ -35,6 +35,7 @@ describe("tool registry (DAT-353)", () => {
 				"frame",
 				"select",
 				"teach",
+				"begin_session",
 				"replay",
 				"workflow_status",
 			]),
@@ -46,6 +47,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("frame")?.needsApproval).toBe(true);
 		expect(byName.get("select")?.needsApproval).toBe(true);
 		expect(byName.get("teach")?.needsApproval).toBe(true);
+		expect(byName.get("begin_session")?.needsApproval).toBe(true);
 		expect(byName.get("replay")?.needsApproval).toBe(true);
 		// Reads must NOT require approval — they run unattended in the loop.
 		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);

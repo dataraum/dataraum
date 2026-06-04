@@ -30,15 +30,23 @@ export function uploadBubbleText(uris: string[]): string {
 	return `Uploaded ${names.length} files: ${names.join(", ")}.`;
 }
 
-/** The model-only refs block: the ordered objects + their `s3://` uris, so the
- * agent can connect/select them without any path reaching the bubble. The rail
- * skips this part; the model reads it as the user turn's context. */
+/**
+ * The model-only refs block: the ordered objects + their `s3://` uris, so the
+ * agent can connect/select them without any path reaching the bubble.
+ *
+ * The chat rail skips this part via `isUploadRefsPart` BEFORE rendering — any new
+ * surface that renders user message parts (transcript export, copy-to-clipboard,
+ * a debug panel) MUST apply the same skip, or the uri leaks.
+ *
+ * It carries the OBJECTS only. The standing "connect by uri → vertical → select,
+ * narrate by filename, never echo the uri" instruction lives once in the
+ * orchestrator prompt (`prompts/orchestrator.ts`, the `upload` tool entry) — not
+ * duplicated here, so the two can't drift.
+ */
 export function uploadRefsBlock(uris: string[]): string {
 	const lines = uris.map((u, i) => `${i + 1}. ${fileName(u)} — ${u}`);
 	return (
-		`${UPLOAD_REFS_MARKER} The user just uploaded these objects, in order. ` +
-		"Onboard them: connect to each (source_kind=file) by its uri to preview the " +
-		"schema, match a vertical, then register with select. Refer to them by " +
-		`filename in your replies — never echo the uri.\n${lines.join("\n")}`
+		`${UPLOAD_REFS_MARKER} The user just uploaded these objects, in order ` +
+		`(filename — uri):\n${lines.join("\n")}`
 	);
 }

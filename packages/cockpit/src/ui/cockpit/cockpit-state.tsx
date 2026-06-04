@@ -137,6 +137,11 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 			// A new turn supersedes any imperative override and re-captions loading.
 			setOverride(null);
 			setPendingLabel(opts?.label);
+			// This call is the compile-time guard that `TurnContent` stays assignable
+			// to the SDK's `sendMessage` param: if a future SDK bump narrows it, this
+			// line stops type-checking. (We can't assert against the SDK's
+			// `MultimodalContent` directly — @tanstack/ai-react doesn't export it,
+			// which is why `TurnContent` mirrors the shape locally.)
 			void sendMessage(content);
 		},
 		[sendMessage],

@@ -30,7 +30,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { Stage } from "#/journey/stages";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import {
 	canvasFromCallId,
@@ -52,7 +51,6 @@ export interface SendOptions {
 
 /** Reactive view + chat state — changes as the conversation streams. */
 interface CockpitState {
-	activeStage: Stage;
 	// Agent chat (lifted from ChatRail). The SDK owns the agentic tool-loop + SSE
 	// transport; we expose just what the UI renders.
 	messages: ReadonlyArray<UIMessage>;
@@ -68,7 +66,6 @@ interface CockpitState {
 /** Stable action handles — referentially constant for the provider's lifetime,
  * so a consumer that reads ONLY these never re-renders from context. */
 interface CockpitActions {
-	setActiveStage: (stage: Stage) => void;
 	/** Send a turn into the agent loop. Clears any imperative canvas override and
 	 * sets the loading caption. Callable from any widget (no bridge). */
 	sendMessage: (text: string, opts?: SendOptions) => void;
@@ -119,17 +116,11 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 		addToolApprovalResponse,
 	} = useChat({ connection });
 
-	const [activeStage, setActiveStageState] = useState<Stage>("add_source");
 	const [pinnedCallId, setPinnedCallId] = useState<string | null>(null);
 	// The one imperative canvas override + the pending loading caption.
 	const [override, setOverride] = useState<CanvasState | null>(null);
 	const [pendingLabel, setPendingLabel] = useState<string | undefined>(
 		undefined,
-	);
-
-	const setActiveStage = useCallback(
-		(stage: Stage) => setActiveStageState(stage),
-		[],
 	);
 
 	const sendTurn = useCallback(
@@ -170,8 +161,8 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 
 	// Reactive state — recreated each streaming tick (messages/canvas change).
 	const state = useMemo<CockpitState>(
-		() => ({ activeStage, messages, isLoading, error, canvas, pinnedCallId }),
-		[activeStage, messages, isLoading, error, canvas, pinnedCallId],
+		() => ({ messages, isLoading, error, canvas, pinnedCallId }),
+		[messages, isLoading, error, canvas, pinnedCallId],
 	);
 
 	// Stable actions — every dep is a stable callback (useChat's are useCallback'd
@@ -179,7 +170,6 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	// ONCE. Action-only consumers reading it never re-render from context.
 	const actions = useMemo<CockpitActions>(
 		() => ({
-			setActiveStage,
 			sendMessage: sendTurn,
 			stop,
 			addToolApprovalResponse,
@@ -188,7 +178,6 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 			showCanvas,
 		}),
 		[
-			setActiveStage,
 			sendTurn,
 			stop,
 			addToolApprovalResponse,

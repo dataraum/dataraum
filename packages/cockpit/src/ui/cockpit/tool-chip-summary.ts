@@ -182,7 +182,9 @@ export function toolChipSummary(
 		case "upload":
 			return "drop files to import";
 		default:
-			return toolName;
+			// Never surface a raw snake_case verb as the summary — humanize unmapped
+			// tools the same way the title does (look_relationships → "Look relationships").
+			return toolLabel(toolName);
 	}
 }
 

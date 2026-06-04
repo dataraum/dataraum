@@ -132,6 +132,14 @@ export function UploadDropzone({
 			? "Agent is working — upload when it's done"
 			: "Drop your files here";
 
+	// One picker entry-point shared by the click + keyboard handlers. The zone is
+	// the sole affordance (no button), so it must be keyboard-reachable: the real
+	// <input> is display:none / out of the tab order, so a role="button" + Enter or
+	// Space open the OS file picker for keyboard-only users.
+	const openPicker = () => {
+		if (!blocked) inputRef.current?.click();
+	};
+
 	return (
 		<Stack gap="xs" p="xs" data-testid="upload-dropzone">
 			{/* The whole zone is the affordance — it's clickable AND a drop target, so
@@ -143,9 +151,17 @@ export function UploadDropzone({
 				}}
 				onDragLeave={() => setDragOver(false)}
 				onDrop={onDrop}
-				onClick={() => {
-					if (!blocked) inputRef.current?.click();
+				onClick={openPicker}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						openPicker();
+					}
 				}}
+				role="button"
+				tabIndex={blocked ? -1 : 0}
+				aria-disabled={blocked || undefined}
+				aria-label="Upload files — drop here, or activate to choose from your computer"
 				data-testid="upload-dropzone-target"
 				style={{
 					display: "flex",

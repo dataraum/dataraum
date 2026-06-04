@@ -52,6 +52,24 @@ describe("UploadDropzone (DAT-386 / DAT-391)", () => {
 	beforeEach(() => vi.restoreAllMocks());
 	afterEach(() => cleanup());
 
+	it("the drop zone is a keyboard-operable button — Enter opens the file picker", () => {
+		// The zone is the SOLE affordance (no "Choose files" button) and the real
+		// <input> is display:none, so the zone must be reachable + operable by
+		// keyboard or upload is impossible without a mouse. Asserts the click path a
+		// keyboard user actually takes, not just a fireEvent on the hidden input.
+		renderDropzone(vi.fn());
+		const zone = screen.getByTestId("upload-dropzone-target");
+		expect(zone.getAttribute("role")).toBe("button");
+		expect(zone.getAttribute("tabindex")).toBe("0");
+
+		const input = screen.getByTestId("upload-input") as HTMLInputElement;
+		const clickSpy = vi.spyOn(input, "click").mockImplementation(() => {});
+		fireEvent.keyDown(zone, { key: "Enter" });
+		fireEvent.keyDown(zone, { key: " " });
+		expect(clickSpy).toHaveBeenCalledTimes(2);
+		clickSpy.mockRestore();
+	});
+
 	it("uploads a single picked file and hands a one-element list to onUploaded", async () => {
 		stubUploadOk();
 		const onUploaded = vi.fn();

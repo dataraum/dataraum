@@ -19,8 +19,8 @@ CockpitView                  cold start → CockpitLanding; once a conversation
 State lives in `cockpit-state.tsx`, which also OWNS the agent chat (`useChat`).
 The focus canvas is **derived** from the message stream during render — not
 stored — so there are no effects mirroring it (see "Chat transport" below). The
-context is split in two: a reactive **state** context (`activeStage`, `messages`,
-`canvas`, …) and a stable **actions** context (`sendMessage`, `showCanvas`, …).
+context is split in two: a reactive **state** context (`messages`, `canvas`, …)
+and a stable **actions** context (`sendMessage`, `showCanvas`, …).
 Components that only dispatch read `useCockpitActions()` and never re-render
 while a turn streams; components that render streaming state read `useCockpit()`.
 

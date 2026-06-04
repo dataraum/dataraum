@@ -1,19 +1,23 @@
 // Upload-area widget (redesign) — the focus-canvas surface the `upload` tool
 // opens. Owns the dropzone and drives the EXISTING connect flow on upload (one
 // connect per file for a schema preview; a batch registers as ONE `file_uris`
-// source). Reads only the stable actions context, so it doesn't re-render while a
-// turn streams. This is where uploads live now — they're no longer a permanent
+// source). This is where uploads live now — they're no longer a permanent
 // fixture in the chat rail.
 
 import { Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
+import { useCockpitActions, useCockpitState } from "#/ui/cockpit/cockpit-state";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 
 export function UploadAreaWidget(_props: {
 	state: Extract<CanvasState, { kind: "upload-area" }>;
 }) {
 	const { sendMessage } = useCockpitActions();
+	// Gate the dropzone while a turn is in flight: an upload that completes during
+	// a running loop would dispatch its connect message INTO a busy useChat and get
+	// dropped. The widget unmounts once the canvas swaps to the connect result, so
+	// reading isLoading here costs no extra per-token renders in practice.
+	const { isLoading } = useCockpitState();
 
 	// Staged `s3://` path(s) drive the connect tool through the agent loop — one
 	// connect per file for a preview, then a single select registering a batch as
@@ -47,7 +51,7 @@ export function UploadAreaWidget(_props: {
 				Drop files from your computer to import them. Most workspaces pull from
 				connected systems — this is for quick local files.
 			</Text>
-			<UploadDropzone onUploaded={onUploaded} />
+			<UploadDropzone onUploaded={onUploaded} disabled={isLoading} />
 		</Stack>
 	);
 }

@@ -17,6 +17,7 @@ import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 const sendMessage = vi.fn();
 vi.mock("#/ui/cockpit/cockpit-state", () => ({
 	useCockpitActions: () => ({ sendMessage }),
+	useCockpitState: () => ({ isLoading: false }),
 }));
 
 function renderWidget() {

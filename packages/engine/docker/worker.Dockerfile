@@ -49,12 +49,19 @@ USER dataraum
 # apply_s3_secret AND sources/backends.extract_backend) so neither the cold
 # start nor a db-recipe extraction hits the network — also makes air-gapped
 # deploys work. httpfs is required to read/write the lake's parquet over s3://
-# (DAT-388); postgres/mysql/sqlite + community mssql are the db-recipe
-# backends. ``SET extension_directory`` makes the cache land at the known
-# image path rather than the (missing) home directory of the system user.
-RUN /app/.venv/bin/python -c "import duckdb; \
+# (DAT-388); postgres/mysql/sqlite + community mssql are the db-recipe backends
+# (`postgres` is the extension DuckLake's ``ATTACH 'ducklake:postgres:...'``
+# auto-loads to reach the Postgres catalog). ``SET extension_directory`` makes
+# the cache land at the known image path rather than the (missing) home
+# directory of the system user. Behind a corporate proxy DuckDB ignores
+# HTTP_PROXY, so a runtime INSTALL would stall — ``SET http_proxy`` from the
+# build-arg/env proxy lets the pre-bake reach extensions.duckdb.org (no-op when
+# unset / building with direct egress).
+RUN /app/.venv/bin/python -c "import os, duckdb; \
     c = duckdb.connect(); \
     c.execute(\"SET extension_directory = '/opt/dataraum/duckdb-extensions'\"); \
+    _p = (os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy') or '').replace('http://', '').replace('https://', '').rstrip('/'); \
+    c.execute(\"SET http_proxy = '\" + _p + \"'\") if _p else None; \
     [ (c.execute('INSTALL ' + e), c.execute('LOAD ' + e)) \
       for e in ['ducklake', 'httpfs', 'postgres', 'mysql', 'sqlite'] ]; \
     c.execute('INSTALL mssql FROM community'); \

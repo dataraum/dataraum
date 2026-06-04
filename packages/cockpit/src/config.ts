@@ -11,7 +11,9 @@
 // the shared `.env` (no Python<->TS schema-sync tool — see DAT-363).
 
 import "@tanstack/react-start/server-only";
-
+// Side-effect: installs the outbound-proxy fetch shim before any LLM call.
+// Server-only, like the rest of this module. See outbound-proxy.ts for why.
+import "./outbound-proxy";
 import { z } from "zod";
 
 const ConfigSchema = z.object({

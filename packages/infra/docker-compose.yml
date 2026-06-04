@@ -137,7 +137,10 @@ services:
       # Probe the FILER (:8888), NOT the S3 root (:8333): the S3 endpoint returns
       # 403 even when healthy, which would hang `up --wait`. The filer is the
       # readiness signal the S3 gateway + bucket ops actually depend on.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8888/ || exit 1"]
+      # Clear proxy env for the probe: it only ever hits localhost, but a
+      # build/runtime HTTP_PROXY would route it through the proxy (busybox wget
+      # honors HTTP_PROXY but ignores NO_PROXY) and return 403.
+      test: ["CMD-SHELL", "HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy= wget -q -O /dev/null http://localhost:8888/ || exit 1"]
       interval: 5s
       timeout: 3s
       start_period: 15s

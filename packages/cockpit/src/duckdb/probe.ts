@@ -16,6 +16,7 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { config } from "../config";
 import { resolveCredential } from "./credentials";
 import { clampRowLimit } from "./limit";
+import { applyDuckdbProxy } from "./proxy";
 import type { QueryResult } from "./query-result";
 import { readerToResult } from "./query-result";
 import { escapeSqlLiteral } from "./sql-escape";
@@ -138,6 +139,9 @@ export async function openProbeConnection(input: {
 				`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
 			);
 		}
+		// Behind a corporate proxy DuckDB ignores HTTP_PROXY; SET http_proxy from
+		// OUTBOUND_PROXY before INSTALL. No-op when unset / air-gapped pre-baked image.
+		await applyDuckdbProxy(conn);
 		if (!config.ducklakeSkipInstall) {
 			if (COMMUNITY_EXTENSIONS.has(extension)) {
 				await conn.run(`INSTALL ${extension} FROM community`);

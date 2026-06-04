@@ -26,6 +26,7 @@
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
+import { applyDuckdbProxy } from "./proxy";
 import { applyS3Secret } from "./s3-secret";
 import { buildDucklakeAttachSql, escapeSqlLiteral } from "./sql-escape";
 
@@ -68,6 +69,10 @@ export async function attachLakeReadOnly(
 			`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
 		);
 	}
+	// Behind a corporate proxy DuckDB can't reach extensions.duckdb.org on its
+	// own (it ignores HTTP_PROXY); SET http_proxy from OUTBOUND_PROXY before any
+	// INSTALL. No-op when unset / air-gapped pre-baked image.
+	await applyDuckdbProxy(conn);
 	if (!config.ducklakeSkipInstall) {
 		try {
 			await conn.run("INSTALL ducklake");

@@ -9,6 +9,7 @@
 import type { DuckDBConnection } from "@duckdb/node-api";
 
 import { config } from "../config";
+import { applyDuckdbProxy } from "./proxy";
 import { escapeSqlLiteral } from "./sql-escape";
 
 // Name of the DuckDB S3 secret. Matches the engine's `S3_SECRET_NAME` so both
@@ -68,6 +69,9 @@ export async function applyS3Secret(conn: DuckDBConnection): Promise<void> {
 			`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
 		);
 	}
+	// Behind a corporate proxy DuckDB ignores HTTP_PROXY; SET http_proxy from
+	// OUTBOUND_PROXY before INSTALL. No-op when unset / air-gapped pre-baked image.
+	await applyDuckdbProxy(conn);
 	if (!config.ducklakeSkipInstall) {
 		try {
 			await conn.run("INSTALL httpfs");

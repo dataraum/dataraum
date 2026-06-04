@@ -21,9 +21,9 @@ export interface SourceIdentity {
 
 export interface AddSourceInput {
 	identity: SourceIdentity;
-	// The sources this run imports, in order (DAT-422). `import` runs once per
-	// source; the per-table fan-out + the session-scoped reduce/detect run over the
-	// union. Empty falls back to `[identity.source_id]` (the pre-DAT-422 trigger).
+	// The sources this run imports, in order (DAT-422) — at least one. `import` runs
+	// once per source; the per-table fan-out + the session-scoped reduce/detect run
+	// over the union.
 	source_ids: string[];
 }
 

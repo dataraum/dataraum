@@ -219,15 +219,13 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ---- Replay: a full source re-run (DAT-413) ----------------------
-		// Reuse the seeded InvestigationSession — per-session rows the replay
-		// re-creates (TypeCandidate, etc.) FK to investigation_sessions, and
-		// the replay tool would otherwise mint a random session_id with no
-		// matching row. Slice 1 has no session lifecycle; one session per
-		// driver run is fine. There is no scope/from_phase: replay re-runs the
-		// whole source, and the engine mints a fresh run_id internally.
+		// ---- Replay: re-run the SESSION's sources (DAT-422) --------------
+		// Replay takes the session we just built (the named unit), resolves its
+		// sources, and re-runs add_source over them as a NEW session — the engine
+		// mints a fresh run_id internally. There is no scope/from_phase; a replay is
+		// a full, non-destructive re-run. The new session's tables FK against the row
+		// the replay seeds, so the per-table fan-out can't die at that FK.
 		const replayResult = await replay({
-			source_id: sourceId,
 			session_id: sessionId,
 			vertical: "_adhoc",
 		});

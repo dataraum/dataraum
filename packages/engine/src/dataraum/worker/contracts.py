@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 @dataclass
@@ -266,17 +266,15 @@ class AddSourceInput(BaseModel):
     upload, or one connection source for a database. ``import`` runs once per
     source in ``source_ids`` (a source is a dir of files / a DB recipe — its raw
     tables are discovered at run), and the per-table fan-out + the session-scoped
-    reduce/detect run over the union.
-
-    Backward-compatible: an empty ``source_ids`` falls back to the single
-    ``identity.source_id`` (today's single-source trigger), so a 1-element run is
-    the current behavior.
+    reduce/detect run over the union. The ``identity`` is source-free — its
+    ``source_id`` is set per-``import`` by the workflow from this set, never
+    carried in by the caller.
     """
 
     identity: SourceIdentity
-    # The sources this run imports, in order. Empty ⇒ fall back to
-    # ``[identity.source_id]`` (the pre-DAT-422 single-source trigger).
-    source_ids: list[str] = Field(default_factory=list)
+    # The sources this run imports, in order — at least one. The cockpit Client
+    # enforces a non-empty set (Zod ``min(1)``).
+    source_ids: list[str]
 
 
 class AddSourceResult(BaseModel):

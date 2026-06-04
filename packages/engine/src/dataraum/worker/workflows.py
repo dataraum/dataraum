@@ -226,18 +226,17 @@ class AddSourceWorkflow:
 
         # A run ingests a SET of objects from 1–N sources (DAT-422). ``import``
         # is the one per-source activity — it loads a source's files into
-        # ``lake.raw.*`` — so it runs once per source, each scoped to that source's
-        # id (``base`` carries the workspace/session/run; only ``source_id`` varies).
-        # ``source_ids`` is the cockpit's per-file content-source set; an empty set
-        # falls back to the single ``identity.source_id`` (the pre-DAT-422 trigger).
-        # Sequential, not fanned out: imports write to the shared lake, so serial
-        # keeps them off each other's optimistic-commit path and stays determinism-
-        # simple. On a teach re-run each import reuses its already-loaded raw tables
-        # (``ImportPhase.should_skip`` bails on re-load); the re-run re-derives the
-        # downstream metadata under the fresh run_id, coexisting with prior runs.
-        source_ids = payload.source_ids or ([base.source_id] if base.source_id else [])
+        # ``lake.raw.*`` — so it runs once per source in ``payload.source_ids``,
+        # each scoped to that source's id (``base`` carries the workspace/session/
+        # run; only ``source_id`` varies). The cockpit's per-file content-source set
+        # is non-empty by construction (Zod ``min(1)``). Sequential, not fanned out:
+        # imports write to the shared lake, so serial keeps them off each other's
+        # optimistic-commit path and stays determinism-simple. On a teach re-run each
+        # import reuses its already-loaded raw tables (``ImportPhase.should_skip``
+        # bails on re-load); the re-run re-derives the downstream metadata under the
+        # fresh run_id, coexisting with prior runs.
         target_raw_ids: list[str] = []
-        for source_id in source_ids:
+        for source_id in payload.source_ids:
             imported = await workflow.execute_activity(
                 "import",
                 base.model_copy(update={"source_id": source_id}),

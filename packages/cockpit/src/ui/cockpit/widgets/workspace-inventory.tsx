@@ -114,16 +114,16 @@ function SourceCard({
 				</Anchor>
 			</Group>
 			<Group gap="xs">
-				<Badge variant="outline" color="gray">
+				<Badge variant="outline" color="gray" tt="lowercase">
 					{head.source_type}
 				</Badge>
 				{head.source_backend && (
-					<Badge variant="outline" color="gray">
+					<Badge variant="outline" color="gray" tt="lowercase">
 						{head.source_backend}
 					</Badge>
 				)}
 				{head.source_status && (
-					<Badge variant="outline" color="gray">
+					<Badge variant="outline" color="gray" tt="lowercase">
 						{head.source_status}
 					</Badge>
 				)}
@@ -184,10 +184,10 @@ function TableDetailModal({
 			{table && (
 				<Stack gap="sm">
 					<Group gap="xs">
-						<Badge variant="outline" color="gray">
+						<Badge variant="outline" color="gray" tt="lowercase">
 							{table.sourceName}
 						</Badge>
-						<Badge variant="outline" color="gray">
+						<Badge variant="outline" color="gray" tt="lowercase">
 							{table.sourceType}
 						</Badge>
 					</Group>
@@ -343,6 +343,7 @@ export function WorkspaceInventoryWidget({
 														prev === lt.sourceId ? null : lt.sourceId,
 													)
 												}
+												tt="lowercase"
 												data-testid={`inventory-source-badge-${lt.sourceId}`}
 											>
 												{lt.sourceName} · {lt.sourceType}

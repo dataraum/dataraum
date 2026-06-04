@@ -5,7 +5,23 @@ import {
 	isCanvasTool,
 	teachChipSummary,
 	toolChipSummary,
+	toolLabel,
 } from "./tool-chip-summary";
+
+describe("toolLabel", () => {
+	it("maps known tools to plain-language titles (never the raw verb)", () => {
+		expect(toolLabel("list_tables")).toBe("Workspace tables");
+		expect(toolLabel("run_sql")).toBe("Query");
+		expect(toolLabel("why_column")).toBe("Column detail");
+		expect(toolLabel("look_table")).toBe("Table readiness");
+	});
+
+	it("humanizes an unmapped tool instead of leaking snake_case", () => {
+		// No raw underscores / lowercase verb reaches the user for a future tool.
+		expect(toolLabel("some_new_tool")).toBe("Some new tool");
+		expect(toolLabel("")).toBe("Working");
+	});
+});
 
 describe("isCanvasTool", () => {
 	it("marks the 9 canvas-producing tools clickable", () => {

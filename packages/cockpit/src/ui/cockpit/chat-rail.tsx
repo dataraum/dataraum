@@ -26,7 +26,11 @@ import { useEffect, useRef } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
-import { isCanvasTool, toolChipSummary } from "#/ui/cockpit/tool-chip-summary";
+import {
+	isCanvasTool,
+	toolChipSummary,
+	toolLabel,
+} from "#/ui/cockpit/tool-chip-summary";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
@@ -120,7 +124,7 @@ function ToolCallCard({
 			>
 				<Box style={{ minWidth: 0 }}>
 					<Text size="sm" fw={600}>
-						{part.name}
+						{toolLabel(part.name)}
 					</Text>
 					<Text
 						size="xs"
@@ -299,10 +303,26 @@ export function ChatRail() {
 						<Alert
 							color="red"
 							variant="light"
-							title="Run error"
+							title="Something went wrong"
 							data-testid="chat-error"
 						>
-							{error.message}
+							<Stack gap="xs">
+								<Text size="sm">
+									The assistant couldn't finish that — please try again.
+								</Text>
+								{/* Raw provider/transport error tucked away — never dump JSON
+								    (401 x-api-key, request_id, …) at the user; keep it for debugging. */}
+								<details>
+									<summary style={{ cursor: "pointer" }}>
+										<Text span size="xs" c="dimmed">
+											Technical details
+										</Text>
+									</summary>
+									<Text size="xs" c="dimmed" style={{ whiteSpace: "pre-wrap" }}>
+										{error.message}
+									</Text>
+								</details>
+							</Stack>
 						</Alert>
 					)}
 				</Stack>

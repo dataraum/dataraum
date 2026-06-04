@@ -81,8 +81,11 @@ describe("CockpitShell (DAT-380)", () => {
 
 		// The active section's content renders inside the shell <Outlet/>.
 		expect(await screen.findByTestId("section-content")).toBeTruthy();
-		// The top-bar workspace switcher reflects the active workspace.
+		// The top bar shows the brand wordmark, never the raw workspace id.
 		expect(screen.getByTestId("workspace-switcher").textContent).toContain(
+			"DataRaum",
+		);
+		expect(screen.getByTestId("workspace-switcher").textContent).not.toContain(
 			"test-ws",
 		);
 	});

@@ -365,8 +365,12 @@ class TestPerColumnAssembly:
         deltas = [d.impact_delta for d in intent.drivers]
         assert deltas == sorted(deltas, reverse=True)
 
-    def test_table_target_becomes_direct_signal(self, small_network):
-        """Table-level objects always become direct signals."""
+    def test_table_target_rolls_up(self, small_network):
+        """A table: target rolls up the network like a column (DAT-415).
+
+        Table-grain readiness (the fact table's dimension_coverage) rolls into a
+        banded result keyed by the ``table:`` target, not a raw DirectSignal.
+        """
         objects = [
             make_entropy_object(
                 layer="structural",
@@ -377,9 +381,9 @@ class TestPerColumnAssembly:
             ),
         ]
         result = assemble_readiness_context(objects, small_network)
-        assert result.total_columns == 0
-        assert len(result.direct_signals) == 1
-        assert result.direct_signals[0].target == "table:sales"
+        assert result.total_columns == 1
+        assert "table:sales" in result.columns
+        assert all(ds.target != "table:sales" for ds in result.direct_signals)
 
     def test_node_evidence_carries_raw_data(self, small_network):
         """ColumnNodeEvidence has score, evidence from source object."""

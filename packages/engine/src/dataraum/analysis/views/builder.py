@@ -23,33 +23,38 @@ class DimensionJoin:
 
 
 def build_enriched_view_sql(
-    fact_table_name: str,
-    fact_duckdb_path: str,
+    view_fqn: str,
+    fact_fqn: str,
     dimension_joins: list[DimensionJoin],
-) -> tuple[str, str, list[str]]:
-    """Build SQL for an enriched view joining fact + dimension tables.
+) -> tuple[str, list[str]]:
+    """Build the ``CREATE OR REPLACE VIEW`` SQL for an enriched view.
 
-    Creates a DuckDB CREATE OR REPLACE VIEW statement that LEFT JOINs
-    the fact table with qualifying dimension tables.
+    Every table identity is a fully-qualified DuckDB name
+    (``catalog.schema."name"``) **composed by the caller** — the view target and
+    each source — so the view is collision-free across sources (the bare
+    ``enriched_{table}`` name would clash for two sources that each have an
+    ``orders`` fact). The caller derives ``view_fqn`` from the fact's
+    collision-safe ``duckdb_path`` (``enriched_{source}__{table}``), so a
+    ``CREATE OR REPLACE`` only ever replaces *this* view on a re-run.
 
     Column naming:
-    - Fact columns: f.* (all columns from fact table)
-    - Dimension columns: {dim_table}__{column} (excluding PK/FK columns)
+    - Fact columns: ``f.*`` (all columns from the fact table)
+    - Dimension columns: ``{fact_fk_column}__{column}`` (FK-prefixed so repeated
+      joins of the same dimension table stay distinct)
 
     Args:
-        fact_table_name: Name of the fact table
-        fact_duckdb_path: DuckDB path to the fact table
-        dimension_joins: List of dimension joins to include
+        view_fqn: Fully-qualified create target, e.g. ``lake.typed."enriched_csv__orders"``.
+        fact_fqn: Fully-qualified fact-table source.
+        dimension_joins: Joins to include; each ``dim_duckdb_path`` is the
+            dimension's FQN.
 
     Returns:
-        Tuple of (view_name, create_view_sql, dimension_column_names)
+        Tuple of ``(create_view_sql, dimension_column_names)``.
     """
-    view_name = f"enriched_{fact_table_name}"
-
     if not dimension_joins:
-        # No joins — view is just the fact table
-        sql = f'CREATE OR REPLACE VIEW "{view_name}" AS SELECT * FROM "{fact_duckdb_path}"'
-        return view_name, sql, []
+        # No joins — view is just the fact table.
+        sql = f"CREATE OR REPLACE VIEW {view_fqn} AS SELECT * FROM {fact_fqn}"
+        return sql, []
 
     # Build SELECT clause
     select_parts = ["f.*"]
@@ -86,20 +91,20 @@ def build_enriched_view_sql(
     join_clauses = []
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
         join_clauses.append(
-            f'LEFT JOIN "{join.dim_duckdb_path}" AS {alias} '
+            f"LEFT JOIN {join.dim_duckdb_path} AS {alias} "
             f'ON f."{join.fact_fk_column}" = {alias}."{join.dim_pk_column}"'
         )
 
     joins_sql = "\n".join(join_clauses)
 
     sql = (
-        f'CREATE OR REPLACE VIEW "{view_name}" AS\n'
+        f"CREATE OR REPLACE VIEW {view_fqn} AS\n"
         f"SELECT\n    {select_clause}\n"
-        f'FROM "{fact_duckdb_path}" AS f\n'
+        f"FROM {fact_fqn} AS f\n"
         f"{joins_sql}"
     )
 
-    return view_name, sql, dimension_column_names
+    return sql, dimension_column_names
 
 
 def _table_alias(table_name: str) -> str:

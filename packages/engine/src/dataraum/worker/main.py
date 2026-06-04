@@ -95,6 +95,7 @@ async def run_worker() -> None:
                     phase_activities.run_begin_session_select,
                     phase_activities.run_relationships,
                     phase_activities.run_semantic_per_table,
+                    phase_activities.run_enriched_views,
                     # DAT-408/409 begin_session: materialize durable overlays →
                     # terminal detect → silent-accept keepers → promote.
                     phase_activities.run_session_materialize_overlays,
@@ -140,6 +141,7 @@ async def run_worker() -> None:
                     "begin_session_select",
                     "relationships",
                     "semantic_per_table",
+                    "enriched_views",
                     "session_materialize_overlays",
                     "session_detect",
                     "session_write_keepers",

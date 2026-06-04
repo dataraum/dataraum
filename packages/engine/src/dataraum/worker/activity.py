@@ -102,13 +102,14 @@ _PROMOTE_STAGES = (
 )
 
 # The begin_session chain phases whose declared detectors the terminal session
-# ``detect`` runs (DAT-408): ``semantic_per_table`` declares the relationship
-# detectors (join_path_determinism + relationship_entropy). Distinct from the
-# source-scoped ``_DETECTOR_PHASES`` so add_source never runs the relationship
-# detectors and begin_session never runs the column ones.
-# Public (imported by ``activities.py`` + tests) — unlike ``_DETECTOR_PHASES`` /
-# ``_PROMOTE_STAGES``, which are used only within this module.
-SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
+# ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
+# (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
+# declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
+# DAT-415). Distinct from the source-scoped ``_DETECTOR_PHASES`` so add_source
+# never runs the relationship/coverage detectors and begin_session never runs the
+# column ones. Public (imported by ``activities.py`` + tests) — unlike
+# ``_DETECTOR_PHASES`` / ``_PROMOTE_STAGES``, used only within this module.
+SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table", "enriched_views")
 
 
 @dataclass

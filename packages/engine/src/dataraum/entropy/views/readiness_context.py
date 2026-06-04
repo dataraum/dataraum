@@ -359,14 +359,20 @@ def assemble_readiness_context(
     for obj in objects:
         by_target.setdefault(obj.target, []).append(obj)
 
-    # Step 3: Targets that roll up the network — column AND relationship
-    # granularity (DAT-408) — vs the rest (table:/view:), which stay raw
+    # Step 3: Targets that roll up the network — column, relationship (DAT-408)
+    # AND table (DAT-415) granularity — vs the rest (view:), which stay raw
     # DirectSignals. The rollup (``_build_column_result``) is target-agnostic, so
-    # a relationship's objects roll up the same intents as a column's.
+    # a relationship's or a table's objects roll up the same intents as a
+    # column's. ``table:`` carries the fact table's dimension_coverage, which maps
+    # to the ``dimension_coverage`` network node → query/reporting intent bands.
     rollup_targets: dict[str, list[EntropyObject]] = {}
     other_targets: dict[str, list[EntropyObject]] = {}
     for target, target_objects in by_target.items():
-        if target.startswith("column:") or target.startswith("relationship:"):
+        if (
+            target.startswith("column:")
+            or target.startswith("relationship:")
+            or target.startswith("table:")
+        ):
             rollup_targets[target] = target_objects
         else:
             other_targets[target] = target_objects
@@ -643,6 +649,35 @@ def load_relationship_readiness(session: Session, session_id: str) -> list[Entro
             continue
         gated.append(rec)
     return gated
+
+
+def load_table_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
+    """Current table-grain readiness for a begin_session (DAT-415).
+
+    Resolves the session's **current run** via the per-session head
+    (``session:{id}``, "detect") — begin_session seals per session, not per table,
+    and its terminal promote flips only that head — then returns that run's
+    ``table:`` readiness rows (one per fact table whose enriched view the
+    ``dimension_coverage`` detector measured). Returns ``[]`` until the session has
+    a promoted run. Unlike relationships, tables are never user-suppressed, so
+    there is no liveness gate. The cockpit reads these via Drizzle; this is the
+    engine-side reader (tests, agent context).
+    """
+    from dataraum.storage import session_head_target
+
+    current_run = head_run_id(session, session_head_target(session_id), "detect")
+    if current_run is None:
+        return []
+
+    return list(
+        session.execute(
+            select(EntropyReadinessRecord).where(
+                EntropyReadinessRecord.session_id == session_id,
+                EntropyReadinessRecord.run_id == current_run,
+                EntropyReadinessRecord.target.like("table:%"),
+            )
+        ).scalars()
+    )
 
 
 def _target_by_ids(session: Session, table_ids: list[str]) -> dict[tuple[str, str], str]:

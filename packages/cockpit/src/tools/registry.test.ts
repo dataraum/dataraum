@@ -27,6 +27,7 @@ describe("tool registry (DAT-353)", () => {
 				"list_verticals",
 				"look_table",
 				"why_column",
+				"why_table",
 				"look_relationships",
 				"why_relationship",
 				"run_sql",
@@ -56,6 +57,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("list_verticals")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("look_table")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("why_column")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("why_table")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("look_relationships")?.needsApproval ?? false).toBe(
 			false,
 		);

@@ -359,9 +359,12 @@ class SlicingViewPhase(BasePhase):
         fact_col_names = [col.column_name for col in fact_columns]
 
         if enriched_view and (fact_col_names or slice_dim_cols):
-            # Project from enriched view: fact cols + slice dim cols only
+            # Project from enriched view: fact cols + slice dim cols only.
+            # Read the view's stored name rather than reconstructing it — the
+            # enriched view is now collision-named off the fact's duckdb_path
+            # (``enriched_{source}__{table}``, DAT-415), not ``enriched_{table_name}``.
             select_parts = [f'"{c}"' for c in fact_col_names] + [f'"{c}"' for c in slice_dim_cols]
-            source = f'"enriched_{fact_table.table_name}"'
+            source = f'"{enriched_view.view_name}"'
             sql = (
                 f'CREATE OR REPLACE VIEW "{view_name}" AS\n'
                 f"SELECT {', '.join(select_parts)}\n"

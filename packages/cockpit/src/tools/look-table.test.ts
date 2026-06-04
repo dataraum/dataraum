@@ -12,7 +12,12 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { projectColumnReadiness, type ReadinessRow } from "./look-table";
+import {
+	projectColumnReadiness,
+	projectTableBand,
+	type ReadinessRow,
+	type TableBandRow,
+} from "./look-table";
 
 function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
 	return {
@@ -108,5 +113,77 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		// The scalar band still comes through — it's a real column, just with a
 		// blob we couldn't parse.
 		expect(out.band).toBe("investigate");
+	});
+});
+
+function tableRow(overrides: Partial<TableBandRow> = {}): TableBandRow {
+	return {
+		band: "investigate",
+		worstIntentRisk: 0.42,
+		intents: [
+			{ intent: "query", band: "ready", risk: 0.1, drivers: [] },
+			{
+				intent: "reporting",
+				band: "investigate",
+				risk: 0.42,
+				drivers: [
+					{
+						node: "dimension_coverage",
+						dimension_path: "semantic.coverage.dimension_coverage",
+						label: "Dimension Coverage",
+						state: "high",
+						impact_delta: 0.3,
+					},
+				],
+			},
+		],
+		topDrivers: [
+			{
+				node: "dimension_coverage",
+				dimension_path: "semantic.coverage.dimension_coverage",
+				label: "Dimension Coverage",
+				state: "high",
+				impact_delta: 0.3,
+			},
+		],
+		...overrides,
+	};
+}
+
+describe("projectTableBand (DAT-415)", () => {
+	it("projects the table-grain band + per-intent bands (no drivers) + top drivers", () => {
+		const out = projectTableBand(tableRow());
+		expect(out.band).toBe("investigate");
+		expect(out.worst_intent_risk).toBe(0.42);
+		// The overview carries band + risk per intent only — drivers are why_table's.
+		expect(out.intents).toEqual([
+			{ intent: "query", band: "ready", risk: 0.1 },
+			{ intent: "reporting", band: "investigate", risk: 0.42 },
+		]);
+		expect(out.top_drivers).toEqual([
+			{ label: "Dimension Coverage", state: "high", impact_delta: 0.3 },
+		]);
+	});
+
+	it("caps top drivers at 3", () => {
+		const many = Array.from({ length: 6 }, (_, i) => ({
+			node: `n${i}`,
+			dimension_path: `p.${i}`,
+			label: `L${i}`,
+			state: "high",
+			impact_delta: 0.5 - i * 0.01,
+		}));
+		const out = projectTableBand(tableRow({ topDrivers: many }));
+		expect(out.top_drivers).toHaveLength(3);
+		expect(out.top_drivers.map((d) => d.label)).toEqual(["L0", "L1", "L2"]);
+	});
+
+	it("degrades a malformed JSONB blob to empty rather than throwing", () => {
+		const out = projectTableBand(
+			tableRow({ intents: "garbage", topDrivers: { not: "an array" } }),
+		);
+		expect(out.intents).toEqual([]);
+		expect(out.top_drivers).toEqual([]);
+		expect(out.band).toBe("investigate"); // scalar still comes through
 	});
 });

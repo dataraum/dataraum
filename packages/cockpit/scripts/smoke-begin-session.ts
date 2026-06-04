@@ -30,7 +30,9 @@ import { metadataDb } from "#/db/metadata/client";
 import { investigationSessions, sources } from "#/db/metadata/schema";
 import { beginSession } from "#/tools/begin-session";
 import { lookRelationships } from "#/tools/look-relationships";
+import { lookTable } from "#/tools/look-table";
 import { whyRelationship } from "#/tools/why-relationship";
+import { whyTable } from "#/tools/why-table";
 import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
 import { addSourceWorkflowId } from "#/temporal/workflow-id";
 
@@ -160,6 +162,39 @@ async function main(): Promise<void> {
 				`signals=${why.signal_count}` +
 				`\n  analysis: ${why.analysis.slice(0, 400)}${why.analysis.length > 400 ? "…" : ""}`,
 		);
+
+		// ---- look_table (session-head table-grain band) + why_table (DAT-415) -----
+		// Each typed table gets a begin_session whole-table readiness band (the
+		// dimension_coverage rollup), sealed at the session head; look_table surfaces
+		// it when passed the session_id, why_table explains it.
+		console.log("\nlook_table(table_readiness) per typed table:");
+		let analyzedTableId: string | null = null;
+		for (const tableId of tableIds) {
+			const lt = await lookTable({ table_id: tableId, session_id: begun.session_id });
+			const band = lt.table_readiness?.band ?? "—";
+			console.log(`  ${lt.table_name}: table_readiness.band=${band}`);
+			if (lt.table_readiness && analyzedTableId === null) analyzedTableId = tableId;
+		}
+		if (analyzedTableId === null) {
+			throw new Error(
+				"look_table returned no table_readiness for any session table — the " +
+					"table-grain rollup didn't seal at the session head (DAT-415).",
+			);
+		}
+
+		const wt = await whyTable({
+			session_id: begun.session_id,
+			table_id: analyzedTableId,
+		});
+		console.log(
+			`\nwhy_table(${wt.table_name}):` +
+				`\n  found=${wt.found} analyzed=${wt.analyzed} band=${wt.band} ` +
+				`signals=${wt.signal_count}` +
+				`\n  analysis: ${wt.analysis.slice(0, 400)}${wt.analysis.length > 400 ? "…" : ""}`,
+		);
+		if (!wt.found) {
+			throw new Error("why_table did not find the table-grain readiness row.");
+		}
 
 		console.log("\n✅ begin_session smoke passed");
 	} finally {

@@ -470,6 +470,40 @@ export const investigationSteps = metadataSchema.table(
 	],
 );
 
+export const materializationRecipes = metadataSchema.table(
+	"materialization_recipes",
+	{
+		recipeId: varchar("recipe_id").primaryKey(),
+		sessionId: varchar("session_id")
+			.notNull()
+			.references(() => investigationSessions.sessionId),
+		tableId: varchar("table_id")
+			.notNull()
+			.references(() => tables.tableId, { onDelete: "cascade" }),
+		layer: varchar().notNull(),
+		runId: varchar("run_id"),
+		targetFqn: varchar("target_fqn").notNull(),
+		ddl: varchar().notNull(),
+		dependsOn: json("depends_on"),
+		createdAt: timestamp("created_at").notNull(),
+	},
+	(table) => [
+		index("idx_materialization_recipes_table").using(
+			"btree",
+			table.tableId.asc().nullsLast(),
+		),
+		index("ix_materialization_recipes_session_id").using(
+			"btree",
+			table.sessionId.asc().nullsLast(),
+		),
+		unique("uq_materialization_recipe_table_layer_run").on(
+			table.tableId,
+			table.layer,
+			table.runId,
+		),
+	],
+);
+
 export const metadataSnapshotHead = metadataSchema.table(
 	"metadata_snapshot_head",
 	{

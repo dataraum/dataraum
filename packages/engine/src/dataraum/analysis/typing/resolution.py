@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, selectinload
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.analysis.typing.models import ColumnCastResult, TypeResolutionResult
 from dataraum.analysis.typing.patterns import Pattern, load_pattern_config
+from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, DataType, Result
 from dataraum.storage import Column, Table
@@ -407,12 +408,14 @@ def resolve_types(
             )
             session.add(type_decision)
 
-    # Generate and execute SQL
+    # Emit → store → execute (DAT-414): build the materialization DDL strings
+    # first, persist them as versioned recipes stamped with ``run_id`` (so a
+    # reset-to-prior-run can replay them without re-typing), then execute. The
+    # executed SQL is byte-identical to before — only the persist step is new.
+    typed_sql = _generate_typed_table_sql(raw_target, typed_target, specs)
+    quarantine_sql = _generate_quarantine_sql(raw_target, quarantine_target, specs)
     try:
-        typed_sql = _generate_typed_table_sql(raw_target, typed_target, specs)
         duckdb_conn.execute(typed_sql)
-
-        quarantine_sql = _generate_quarantine_sql(raw_target, quarantine_target, specs)
         duckdb_conn.execute(quarantine_sql)
     except Exception as e:
         logger.error("type_resolution_sql_error", table=table.table_name, error=str(e))
@@ -439,6 +442,32 @@ def resolve_types(
         session, table, "quarantine", bare, quarantine_rows
     )
     session.flush()
+
+    # Persist the versioned materialization recipes (DAT-414): one per produced
+    # layer, keyed on the *typed* Table id (stable across re-types) and stamped
+    # with this run. Both DDLs read the raw layer, so ``depends_on`` names the raw
+    # FQN (layer-qualified, so the dependency-order rebuild never confuses it with
+    # the same-bare-named typed/quarantine artifacts).
+    store_recipe(
+        session,
+        session_id=session_id,
+        table_id=typed_table_record.table_id,
+        layer="typed",
+        run_id=run_id,
+        target_fqn=typed_target,
+        ddl=typed_sql,
+        depends_on=[raw_target],
+    )
+    store_recipe(
+        session,
+        session_id=session_id,
+        table_id=quarantine_table_record.table_id,
+        layer="quarantine",
+        run_id=run_id,
+        target_fqn=quarantine_target,
+        ddl=quarantine_sql,
+        depends_on=[raw_target],
+    )
 
     # Reconcile typed columns — UPDATE in place / insert new / delete dropped,
     # so existing typed Column ids survive a re-type.

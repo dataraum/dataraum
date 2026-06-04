@@ -23,6 +23,22 @@ class TestGraphLoaderBasics:
         with pytest.raises(ValueError, match="vertical is required"):
             GraphLoader()
 
+    def test_loader_init_framed_vertical_no_dir_does_not_raise(self) -> None:
+        """A framed vertical (cockpit `frame` overlay-only, no on-disk dir) must
+        NOT crash the constructor — it legitimately ships no metric graphs.
+
+        Regression: the `add_source` semantic phase grounds a framed vertical's
+        columns (concepts resolved via the overlay-aware OntologyLoader) and then
+        asks GraphLoader for metric standard-fields. The old fail-loud
+        `VerticalConfig` crashed the whole phase with
+        `FileNotFoundError: .../verticals/<framed> does not exist`. The path now
+        resolves and `load_all` degrades to an empty graph set.
+        """
+        loader = GraphLoader(vertical="a_framed_vertical_with_no_on_disk_dir")
+        assert loader.graphs_dir.name == "a_framed_vertical_with_no_on_disk_dir"
+        assert loader.load_all() == {}
+        assert not loader.get_all_abstract_fields()
+
     def test_loader_init_custom_path(self, tmp_path: Path) -> None:
         """Loader accepts custom path."""
         loader = GraphLoader(graphs_dir=tmp_path)

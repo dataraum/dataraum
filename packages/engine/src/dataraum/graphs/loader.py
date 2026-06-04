@@ -62,9 +62,18 @@ class GraphLoader:
         if graphs_dir is None:
             if vertical is None:
                 raise ValueError("vertical is required when graphs_dir is not provided")
-            from dataraum.core.vertical import VerticalConfig
+            from dataraum.core.config import get_config_dir
 
-            graphs_dir = VerticalConfig(vertical).base_dir
+            # Resolve the vertical's dir WITHOUT VerticalConfig's fail-loud
+            # existence check. A framed vertical (declared via the cockpit `frame`
+            # stage — its concepts live in config_overlay, with no on-disk
+            # directory) legitimately ships no metric graphs. `load_all` already
+            # returns {} for a missing dir, so resolving the path here and letting
+            # load_all handle absence is what lets grounding run for a framed
+            # vertical instead of crashing in the constructor (the `add_source`
+            # semantic phase grounds against framed concepts via the overlay-aware
+            # OntologyLoader, then asks GraphLoader for metric standard-fields).
+            graphs_dir = get_config_dir("verticals") / vertical
         self.graphs_dir = graphs_dir
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []

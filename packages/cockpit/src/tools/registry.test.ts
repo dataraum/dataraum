@@ -27,12 +27,15 @@ describe("tool registry (DAT-353)", () => {
 				"list_verticals",
 				"look_table",
 				"why_column",
+				"look_relationships",
+				"why_relationship",
 				"run_sql",
 				"probe",
 				"connect",
 				"frame",
 				"select",
 				"teach",
+				"begin_session",
 				"replay",
 				"workflow_status",
 			]),
@@ -44,6 +47,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("frame")?.needsApproval).toBe(true);
 		expect(byName.get("select")?.needsApproval).toBe(true);
 		expect(byName.get("teach")?.needsApproval).toBe(true);
+		expect(byName.get("begin_session")?.needsApproval).toBe(true);
 		expect(byName.get("replay")?.needsApproval).toBe(true);
 		// Reads must NOT require approval — they run unattended in the loop.
 		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);
@@ -51,6 +55,10 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("list_verticals")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("look_table")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("why_column")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("look_relationships")?.needsApproval ?? false).toBe(
+			false,
+		);
+		expect(byName.get("why_relationship")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);

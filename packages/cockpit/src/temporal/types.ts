@@ -19,6 +19,29 @@ export interface AddSourceInput {
 	identity: SourceIdentity;
 }
 
+// begin_session (DAT-409) — the analytical pass over a SELECTED set of typed
+// tables (cross-source by nature). Mirrors `worker.contracts.{SessionIdentity,
+// BeginSessionInput,BeginSessionResult}`. NB unlike SourceIdentity there is no
+// `vertical` here — begin_session is source-free and reads the vertical off the
+// InvestigationSession row (the cockpit seeds it there before starting).
+export interface SessionIdentity {
+	workspace_id: string;
+	session_id: string;
+	// Minted by the workflow on its first activity; the client leaves it unset.
+	run_id?: string | null;
+}
+
+export interface BeginSessionInput {
+	identity: SessionIdentity;
+	// The user's explicit selection — an array of typed table ids.
+	tables: string[];
+}
+
+export interface BeginSessionResult {
+	session_id: string;
+	table_ids: string[];
+}
+
 // One raw→typed mapping, produced by a ProcessTableWorkflow child.
 export interface ProcessTableResult {
 	raw_table_id: string;

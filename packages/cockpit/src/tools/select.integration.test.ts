@@ -19,7 +19,7 @@
 // It does NOT trigger addSourceWorkflow (out of scope; that is the future
 // add_source tool, and the full forward run makes real LLM calls). Proving the
 // engine ACCEPTS the cockpit-written row end-to-end through addSourceWorkflow is
-// the compose smoke's job (temporal/drive-add-source.ts), which already seeds an
+// the compose smoke's job (scripts/smoke-add-source.ts), which already seeds an
 // identically-shaped file_uris row.
 //
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the

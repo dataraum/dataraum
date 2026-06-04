@@ -56,7 +56,7 @@ const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 const STAGE_AFTER_SELECT = "add_source";
 
 // Initial source status. Mirrors the seed in the integration driver
-// (`temporal/drive-add-source.ts`): a source the cockpit has registered but not
+// (`scripts/smoke-add-source.ts`): a source the cockpit has registered but not
 // yet imported reads `configured`.
 const INITIAL_STATUS = "configured";
 

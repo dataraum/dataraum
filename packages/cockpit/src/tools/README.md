@@ -99,4 +99,4 @@ one array entry. Revisit if the directory grows past ~20 tools.
 - **Integration** (`bun run test:integration`, compose stack up): `teach`'s
   write/undo round-trip runs against a real Postgres (`*.integration.test.ts`),
   self-skipping when `METADATA_DATABASE_URL` is unset. The forward replay path
-  is covered by the compose smoke (`reference/.../drive-add-source.ts`).
+  is covered by the compose smoke (`scripts/smoke-add-source.ts`).

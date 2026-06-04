@@ -107,9 +107,16 @@ export function isProgressDone(phase: string, status: string): boolean {
 }
 
 /**
- * Query one addSourceWorkflow run for its progress snapshot + status. Pins the
- * precise (workflowId, runId) so a replay iteration sharing the workflow id is
+ * Query one workflow run for its progress snapshot + status. Pins the precise
+ * (workflowId, runId) so a replay/re-run iteration sharing the workflow id is
  * never confused for the run being watched.
+ *
+ * Works for any cockpit-triggered workflow. `addSourceWorkflow` registers a
+ * `get_progress` @workflow.query (rich phase + per-table fan-out detail);
+ * `beginSessionWorkflow` is sequential (no fan-out) and registers none, so its
+ * query raises `WorkflowQueryFailedError` — caught here to fall back to a
+ * `describe()`-only status (no phase detail, but the authoritative run status +
+ * `done`). Any OTHER query error is a real failure and rethrows.
  */
 export async function getAddSourceProgress(
 	input: AddSourceProgressInput,
@@ -120,9 +127,36 @@ export async function getAddSourceProgress(
 	try {
 		const client = new Client({ connection, namespace });
 		const handle = client.workflow.getHandle(input.workflow_id, input.run_id);
-		const snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
 		const description = await handle.describe();
 		const status = description.status.name;
+
+		let snapshot: ProgressSnapshot | null = null;
+		try {
+			snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
+		} catch (err) {
+			// A workflow with no get_progress handler (begin_session) raises
+			// WorkflowQueryFailedError — degrade to describe()-only. Match on the
+			// error name to avoid coupling to the SDK's class export.
+			if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {
+				throw err;
+			}
+		}
+
+		if (!snapshot) {
+			// describe()-only: no phase detail, but a real status + done signal. A
+			// COMPLETED run reads as the terminal "done" phase the agent watches for.
+			return {
+				phase:
+					status === "COMPLETED" ? PROGRESS_DONE_PHASE : status.toLowerCase(),
+				tables_total: 0,
+				tables_completed: 0,
+				tables: [],
+				failure: null,
+				status,
+				done: TERMINAL_STATUSES.has(status),
+			};
+		}
+
 		return {
 			phase: snapshot.phase,
 			tables_total: snapshot.tables_total,

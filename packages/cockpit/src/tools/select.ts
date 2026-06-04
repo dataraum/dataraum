@@ -87,9 +87,9 @@ function resolveVertical(name?: string | null): string {
 export const SelectResult = z.object({
 	// Every source `select` minted/UPSERTed for this selection — the SET an
 	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
-	// source per uploaded file), 1 for a database selection. The add_source
-	// trigger posts exactly these ids.
-	source_ids: z.array(z.string()),
+	// source per uploaded file), 1 for a database selection; always ≥1 (a select
+	// that registered nothing is a loud failure), matching the trigger contract.
+	source_ids: z.array(z.string()).min(1),
 	// A human display label for the selection — NOT a source name (file sources
 	// are content-keyed, so there is no single user-chosen name): the database
 	// source name, or the filename / "N files" for a file selection.

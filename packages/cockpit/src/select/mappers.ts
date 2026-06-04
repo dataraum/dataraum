@@ -121,6 +121,8 @@ export function contentKeyedSourceName(uri: string): string {
 				"source is not content-addressed (a future connector).",
 		);
 	}
+	// SHA-1 hex (what digestBytes produces) is already lowercase; toLowerCase() is
+	// defensive so a non-canonical digest segment still yields an engine-valid name.
 	const name = `${CONTENT_SOURCE_PREFIX}${segments[1].toLowerCase()}`;
 	if (!SOURCE_NAME_PATTERN.test(name)) {
 		throw new Error(

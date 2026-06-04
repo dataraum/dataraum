@@ -180,7 +180,7 @@ def _process_one_table(
     typing = run_phase(manager, "typing", identity, [raw_table_id])
     assert typing.status == "completed", f"typing failed: {typing.error}"
 
-    typed_id = typed_table_id_for_raw(manager, identity.source_id, raw_table_id)
+    typed_id = typed_table_id_for_raw(manager, raw_table_id)
     assert typed_id is not None, f"no typed table for raw {raw_table_id}"
     assert typed_id != raw_table_id, "typed id must differ from the raw id"
 
@@ -224,7 +224,7 @@ def test_import_then_typing_share_one_manager(
     typing_result = run_phase(worker_manager, "typing", identity, [raw_ids[0]])
     assert typing_result.status == "completed", typing_result.error
     assert _lake_tables(worker_manager, "typed"), "no tables in lake.typed after typing"
-    assert typed_table_id_for_raw(worker_manager, source_id, raw_ids[0]) is not None
+    assert typed_table_id_for_raw(worker_manager, raw_ids[0]) is not None
 
     assert worker_manager._duckdb_conn is duckdb_conn_after_import, (  # noqa: SLF001
         "worker DuckDB connection was reopened between phases — the anchor "
@@ -611,7 +611,7 @@ def test_semantic_per_column_reduce_runs_live(
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     for raw_id in raw_table_ids(worker_manager, source_id):
         assert run_phase(worker_manager, "typing", identity, [raw_id]).status == "completed"
-        typed_id = typed_table_id_for_raw(worker_manager, source_id, raw_id)
+        typed_id = typed_table_id_for_raw(worker_manager, raw_id)
         assert run_phase(worker_manager, "statistics", identity, [typed_id]).status == "completed"
 
     result = run_phase(worker_manager, "semantic_per_column", identity, [])

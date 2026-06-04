@@ -135,15 +135,18 @@ class ProcessTableWorkflow:
 
 @workflow.defn(name="addSourceWorkflow")
 class AddSourceWorkflow:
-    """Import one source, fan out a child workflow per raw table, then reduce.
+    """Import a SET of sources, fan out a child workflow per raw table, then reduce.
 
-    ``import`` enumerates the source's raw tables, the workflow fans out one
-    :class:`ProcessTableWorkflow` per raw id and consumes them with
+    A run ingests 1–N sources (DAT-422): ``import`` runs once per source in the
+    input set, enumerating each source's raw tables into one union. The workflow
+    fans out one :class:`ProcessTableWorkflow` per raw id and consumes them with
     :func:`workflow.as_completed` (the deterministic SDK counterpart to
     ``asyncio.as_completed``) so progress can advance as each child resolves,
-    then ``semantic_per_column`` runs once as the source-level reduce (followed
-    by the terminal ``detect`` step that runs all detectors source-wide, and the
-    terminal ``promote_to_latest`` step that flips the snapshot head).
+    then ``semantic_per_column`` runs once as the session-scoped reduce (followed
+    by the terminal ``detect`` step that runs all detectors over the run's session
+    tables, and the terminal ``promote_to_latest`` step that flips the snapshot
+    head). Past ``import`` the spine is source-free — it scopes by the session's
+    table set, so a run whose tables span per-object sources reduces as one set.
 
     A teach re-run is now a full re-run (DAT-413): there is no partial replay
     scope. Every execution mints a fresh ``run_id`` and re-derives the pipeline —
@@ -219,20 +222,37 @@ class AddSourceWorkflow:
         # replay-safe UUID (NEVER ``uuid.uuid4``). The child workflow inherits the
         # stamped identity via ``ProcessTableInput(identity=identity)``.
         run_id = str(workflow.uuid4())
-        identity = payload.identity.model_copy(update={"run_id": run_id})
+        base = payload.identity.model_copy(update={"run_id": run_id})
 
-        # Import always runs and enumerates the source's raw tables — the fan-out
-        # source. On a teach re-run it reuses the already-loaded raw tables
-        # (``ImportPhase.should_skip`` still bails on re-load); the re-run re-derives
-        # the downstream metadata under the fresh run_id, coexisting with prior runs.
-        imported = await workflow.execute_activity(
-            "import",
-            identity,
-            result_type=ImportResult,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
-        )
-        target_raw_ids = imported.raw_table_ids
+        # A run ingests a SET of objects from 1–N sources (DAT-422). ``import``
+        # is the one per-source activity — it loads a source's files into
+        # ``lake.raw.*`` — so it runs once per source, each scoped to that source's
+        # id (``base`` carries the workspace/session/run; only ``source_id`` varies).
+        # ``source_ids`` is the cockpit's per-file content-source set; an empty set
+        # falls back to the single ``identity.source_id`` (the pre-DAT-422 trigger).
+        # Sequential, not fanned out: imports write to the shared lake, so serial
+        # keeps them off each other's optimistic-commit path and stays determinism-
+        # simple. On a teach re-run each import reuses its already-loaded raw tables
+        # (``ImportPhase.should_skip`` bails on re-load); the re-run re-derives the
+        # downstream metadata under the fresh run_id, coexisting with prior runs.
+        source_ids = payload.source_ids or ([base.source_id] if base.source_id else [])
+        target_raw_ids: list[str] = []
+        for source_id in source_ids:
+            imported = await workflow.execute_activity(
+                "import",
+                base.model_copy(update={"source_id": source_id}),
+                result_type=ImportResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+            target_raw_ids.extend(imported.raw_table_ids)
+
+        # Past ``import`` the run is source-free (DAT-422): the per-table fan-out
+        # and the session-scoped reduce/detect/promote scope by the session's table
+        # set (``session_tables``), never a source — so the identity threaded onward
+        # drops ``source_id``. ``typing`` links each typed table to the session, so
+        # the reduce/detect see the union across every imported source.
+        identity = base.model_copy(update={"source_id": None})
 
         # The fan-out width is now known (import recorded ``raw_table_ids`` in
         # history → deterministic on replay). Set the progress denominator + seed
@@ -248,8 +268,9 @@ class AddSourceWorkflow:
         # Deterministic, collision-free child ids keep replay stable. The same
         # id is reused across teach iterations with WorkflowIdReusePolicy.ALLOW_DUPLICATE
         # on the parent — Temporal UI groups iterations naturally. The id encodes
-        # workspace_id (DAT-364) so two workspaces sharing a source_id never
-        # collide; see process_table_workflow_id for the convention.
+        # workspace_id (DAT-364) + the run's session_id (DAT-422) so two workspaces
+        # never collide and per-object sources in one run share the parent prefix;
+        # see process_table_workflow_id for the convention.
         async def _process(raw_id: str) -> ProcessTableResult:
             # Wrap the child so a failure is attributed to THIS table before it
             # propagates — ``as_completed`` yields in completion order, not input
@@ -265,7 +286,7 @@ class AddSourceWorkflow:
                     ),
                     id=process_table_workflow_id(
                         identity.workspace_id,
-                        identity.source_id,
+                        identity.session_id,
                         raw_id,
                     ),
                 )
@@ -330,7 +351,7 @@ class AddSourceWorkflow:
         )
 
         self._progress.phase = "done"
-        return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)
+        return AddSourceResult(raw_table_ids=target_raw_ids, tables=tables)
 
 
 # --- begin_session (DAT-401) -------------------------------------------------

@@ -147,7 +147,7 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     an offline Replayer to prove the ``as_completed`` swap + the progress
     mutations are determinism-safe — both DAT-406 guarantees in one live run.
     """
-    workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.source_id)
+    workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.session_id)
 
     async with _worker(temporal_client):
         handle = await temporal_client.start_workflow(

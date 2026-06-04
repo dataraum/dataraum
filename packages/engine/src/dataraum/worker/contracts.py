@@ -292,7 +292,7 @@ class AddSourceResult(BaseModel):
 # Slice 1 runs single-workspace, so the segment is constant today — but threading
 # it through now means slice 2+ multi-workspace routing (DAT-357) is a no-op
 # rename instead of an audit of every ``start_workflow``/``getHandle`` call site,
-# and two workspaces can never collide on a shared ``source_id``. The ``ws_<id>``
+# and two workspaces can never collide on a shared ``session_id``. The ``ws_<id>``
 # isolation guard in :mod:`dataraum.worker.activity` is the data-side cornerstone;
 # this is its workflow-ID counterpart. See the ``durable-execution-lean`` memory.
 #
@@ -307,15 +307,17 @@ class AddSourceResult(BaseModel):
 # side mirrors this convention in ``packages/cockpit/src/temporal/workflow-id.ts``.
 
 
-def add_source_workflow_id(workspace_id: str, source_id: str) -> str:
-    """Workflow ID for the parent ``addSourceWorkflow`` of one source.
+def add_source_workflow_id(workspace_id: str, session_id: str) -> str:
+    """Workflow ID for the parent ``addSourceWorkflow`` of one run.
 
-    Reused across teach replays of the same source (with
-    ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
-    under one ID. Mirrored cockpit-side; the cockpit is the caller that starts
-    the parent, so this Python helper exists for tests + the child-ID builder.
+    A run ingests a SET of objects from 1–N sources (DAT-422), so it is keyed by
+    its ``session_id`` — the run's table-set anchor — NOT a source, mirroring
+    :func:`begin_session_workflow_id`. Reused across teach replays of the same run
+    (with ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
+    under one ID. Mirrored cockpit-side; the cockpit is the caller that starts the
+    parent, so this Python helper exists for tests + the child-ID builder.
     """
-    return f"addsource-{workspace_id}-{source_id}"
+    return f"addsource-{workspace_id}-{session_id}"
 
 
 def begin_session_workflow_id(workspace_id: str, session_id: str) -> str:
@@ -330,14 +332,15 @@ def begin_session_workflow_id(workspace_id: str, session_id: str) -> str:
     return f"beginsession-{workspace_id}-{session_id}"
 
 
-def process_table_workflow_id(workspace_id: str, source_id: str, raw_table_id: str) -> str:
-    """Child ``processTableWorkflow`` ID for one raw table under a source.
+def process_table_workflow_id(workspace_id: str, session_id: str, raw_table_id: str) -> str:
+    """Child ``processTableWorkflow`` ID for one raw table under a run.
 
     Deterministic + collision-free so replay stays stable: the same raw table
     re-runs under the same child ID across teach iterations. Prefixed with the
-    parent's ``addsource-{workspace_id}-{source_id}`` so children are greppable
+    parent's ``addsource-{workspace_id}-{session_id}`` so children are greppable
     under their parent in the Temporal UI (the prefix is a naming convention, not
-    a Temporal-native hierarchy), and two workspaces sharing a ``source_id`` get
-    distinct child IDs.
+    a Temporal-native hierarchy), and two workspaces sharing a ``raw_table_id`` get
+    distinct child IDs. ``raw_table_id`` is unique per run, so two per-object
+    sources in the same run never collide on a child ID.
     """
-    return f"{add_source_workflow_id(workspace_id, source_id)}-table-{raw_table_id}"
+    return f"{add_source_workflow_id(workspace_id, session_id)}-table-{raw_table_id}"

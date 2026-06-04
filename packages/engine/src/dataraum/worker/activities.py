@@ -68,12 +68,22 @@ class PhaseActivities:
 
     @activity.defn(name="import")
     def run_import(self, identity: SourceIdentity) -> ImportResult:
-        """Import activity — loads the source into ``lake.raw.*``, returns raw ids.
+        """Import activity — loads ONE source into ``lake.raw.*``, returns its raw ids.
 
-        The discovered raw ids are the parent workflow's fan-out source, so they
-        are read authoritatively from the substrate after the phase — correct
-        even when import is skipped because the source was already imported.
+        ``import`` is the one per-source activity (DAT-422): the parent runs it once
+        per source in the run's set, each call scoped to a single ``source_id``. So a
+        ``None`` source_id is a caller bug — fail loud rather than load nothing. The
+        discovered raw ids are the parent workflow's fan-out source, read
+        authoritatively from the substrate after the phase — correct even when import
+        is skipped because the source was already imported.
         """
+        if identity.source_id is None:
+            raise ApplicationError(
+                "import requires identity.source_id — the workflow scopes each import "
+                "to one source (DAT-422).",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
         self._run_or_raise("import", identity, [])
         return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
 
@@ -81,9 +91,7 @@ class PhaseActivities:
     def run_typing(self, payload: ProcessTableInput) -> TypingResult:
         """Typing activity — type-resolves one raw table, returns its typed id."""
         self._run_or_raise("typing", payload.identity, [payload.raw_table_id])
-        typed_id = typed_table_id_for_raw(
-            self._manager, payload.identity.source_id, payload.raw_table_id
-        )
+        typed_id = typed_table_id_for_raw(self._manager, payload.raw_table_id)
         if typed_id is None:
             raise ApplicationError(
                 f"typing produced no typed table for raw table '{payload.raw_table_id}'",
@@ -138,7 +146,7 @@ class PhaseActivities:
         count = run_detectors(self._manager, session_id=identity.session_id, run_id=identity.run_id)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} detector records for source {identity.source_id}",
+            summary=f"{count} detector records for session {identity.session_id}",
         )
 
     @activity.defn(name="promote_to_latest")
@@ -154,7 +162,7 @@ class PhaseActivities:
         count = promote_run(self._manager, identity)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"promoted {count} snapshot head(s) for source {identity.source_id}",
+            summary=f"promoted {count} snapshot head(s) for session {identity.session_id}",
         )
 
     # --- begin_session activities (DAT-401) — source-free, session-scoped ----

@@ -230,7 +230,7 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
     typed: list[str] = []
     for raw_id in raw_table_ids(manager, source_id):
         assert run_phase(manager, "typing", identity, [raw_id]).status == "completed"
-        typed_id = typed_table_id_for_raw(manager, source_id, raw_id)
+        typed_id = typed_table_id_for_raw(manager, raw_id)
         assert typed_id is not None
         typed.append(typed_id)
     assert len(typed) > 1, "need >1 typed table to detect relationships"

@@ -1,9 +1,16 @@
 """Dimension coverage entropy detector.
 
-Measures NULL rate per dimension column on enriched views.
+Measures NULL rate per dimension column on a fact table's enriched view.
 A column with 80% NULLs provides unreliable slicing — this detector
-quantifies that uncertainty so contracts and the Bayesian network
-can factor it in.
+quantifies that uncertainty so contracts and the readiness rollup can
+factor it in.
+
+Table-scoped (DAT-415): the signal is emitted at ``table:{fact}`` granularity —
+the enriched view IS the fact table's enrichment, so its coverage rolls into the
+fact table's readiness (one band per table, not a separate ``view:`` target the
+network never rolled up). A typed table with no enriched view (a dimension table,
+or a fact whose enrichment was declined) loads no view → ``can_run`` is False →
+the detector is skipped for it.
 
 Source: EnrichedView + StatisticalProfile (persisted during enriched_views phase)
 Score = sqrt-boosted mean NULL rate across dimension columns
@@ -28,10 +35,12 @@ logger = get_logger(__name__)
 
 
 class DimensionCoverageDetector(EntropyDetector):
-    """Detector for dimension column coverage on enriched views.
+    """Detector for dimension column coverage on a fact table's enriched view.
 
     Measures how well dimension columns (added via LEFT JOIN) are populated.
-    High NULL rates in dimension columns mean unreliable slicing/grouping.
+    High NULL rates in dimension columns mean unreliable slicing/grouping. The
+    signal is scoped to the fact ``table:`` (DAT-415) so it rolls into that
+    table's readiness band.
 
     Source: EnrichedView metadata + StatisticalProfile records
     Score = mean NULL rate across all dimension columns.
@@ -41,19 +50,19 @@ class DimensionCoverageDetector(EntropyDetector):
     layer = Layer.SEMANTIC
     dimension = Dimension.COVERAGE
     sub_dimension = SubDimension.DIMENSION_COVERAGE
-    scope = "view"
+    scope = "table"
     required_analyses = [AnalysisKey.ENRICHED_VIEW]
-    description = "Measures NULL rate per dimension column on enriched views"
+    description = "Measures NULL rate per dimension column on a fact table's enriched view"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load EnrichedView metadata for the target view."""
-        if context.session is None or not context.view_name:
+        """Load the fact table's enriched view (None for non-fact tables → skipped)."""
+        if context.session is None or not context.table_id:
             return
 
         from dataraum.analysis.views.db_models import EnrichedView
 
         view = context.session.execute(
-            select(EnrichedView).where(EnrichedView.view_name == context.view_name)
+            select(EnrichedView).where(EnrichedView.fact_table_id == context.table_id)
         ).scalar_one_or_none()
 
         if view is not None:
@@ -94,7 +103,7 @@ class DimensionCoverageDetector(EntropyDetector):
             null_rate = null_rate_by_name.get(col)
             if null_rate is None:
                 # Fallback: query DuckDB directly (profile missing)
-                null_rate = self._query_null_rate(context, col)
+                null_rate = self._query_null_rate(context, col, view.view_name)
             null_rates.append(null_rate)
             evidence.append(
                 {
@@ -149,11 +158,13 @@ class DimensionCoverageDetector(EntropyDetector):
         }
 
     @staticmethod
-    def _query_null_rate(context: DetectorContext, column: str) -> float:
+    def _query_null_rate(context: DetectorContext, column: str, view_name: str) -> float:
         """Fallback: query DuckDB for the NULL rate of a column.
 
-        Used when StatisticalProfile records are not available.
-        Returns 1.0 if the query fails (assume worst case).
+        Used when StatisticalProfile records are not available. ``view_name`` is
+        the enriched view's bare name (table-scoped detection no longer carries it
+        on the context); the cursor is USE-scoped to ``lake.typed`` so the bare
+        name resolves. Returns 1.0 if the query fails (assume worst case).
         """
         if context.duckdb_conn is None:
             return 1.0
@@ -161,13 +172,13 @@ class DimensionCoverageDetector(EntropyDetector):
         try:
             result = context.duckdb_conn.execute(
                 f'SELECT COUNT(*) FILTER (WHERE "{column}" IS NULL) * 1.0 '
-                f'/ NULLIF(COUNT(*), 0) FROM "{context.view_name}"'
+                f'/ NULLIF(COUNT(*), 0) FROM "{view_name}"'
             ).fetchone()
             return float(result[0]) if result and result[0] is not None else 0.0
         except Exception:
             logger.warning(
                 "dimension_coverage_query_failed",
-                view=context.view_name,
+                view=view_name,
                 column=column,
                 exc_info=True,
             )

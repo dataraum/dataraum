@@ -16,6 +16,7 @@ Post-creation: verifies row count matches fact table. Drops view if grain violat
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -32,11 +33,13 @@ from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_s
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
+from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.server.storage import LAKE_CATALOG_ALIAS
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -45,6 +48,15 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _MIN_CONFIDENCE = 0.7
+
+
+def _lake_fqn(layer: str, bare: str) -> str:
+    """Fully-qualified DuckDB name ``catalog.schema."bare"`` for a lake-layer artifact.
+
+    Enriched views resolve to the ``typed`` schema (``schema_for_layer`` default),
+    so the view, its fact, and its dimensions all qualify through one helper.
+    """
+    return f'{LAKE_CATALOG_ALIAS}.{schema_for_layer(layer)}."{bare}"'
 
 
 @analysis_phase
@@ -192,28 +204,34 @@ class EnrichedViewsPhase(BasePhase):
                     reason="no qualifying dimension joins",
                 )
 
+            # Collision-free identities: name the view off the fact's
+            # source-qualified duckdb_path (``enriched_{source}__{table}``), so two
+            # sources that each have an ``orders`` fact don't clash on
+            # ``enriched_orders``. Every source is fully-qualified, so CREATE OR
+            # REPLACE only ever replaces THIS view on a re-run, never a sibling.
+            view_name = f"enriched_{fact_table.duckdb_path}"
+            view_fqn = _lake_fqn("enriched", view_name)
+            fact_fqn = _lake_fqn("typed", fact_table.duckdb_path)
+            fqn_joins = [
+                replace(join, dim_duckdb_path=_lake_fqn("typed", dim.duckdb_path))
+                for join in dimension_joins
+                if (dim := tables_by_name.get(join.dim_table_name)) is not None and dim.duckdb_path
+            ]
+
             # Build view SQL
-            view_name, view_sql, dim_columns = build_enriched_view_sql(
-                fact_table_name=fact_table.table_name,
-                fact_duckdb_path=fact_table.duckdb_path,
-                dimension_joins=dimension_joins,
-            )
+            view_sql, dim_columns = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
 
             # Create view in DuckDB
             try:
                 ctx.duckdb_conn.execute(view_sql)
             except Exception as e:
-                logger.warning(
-                    "view_creation_failed",
-                    view_name=view_name,
-                    error=str(e),
-                )
+                logger.warning("view_creation_failed", view_name=view_name, error=str(e))
                 continue
 
             # Verify grain preservation
             is_grain_verified = self._verify_grain(
                 ctx.duckdb_conn,
-                view_name=view_name,
+                view_target=view_fqn,
                 expected_count=fact_table.row_count,
             )
 
@@ -225,7 +243,7 @@ class EnrichedViewsPhase(BasePhase):
                     expected_count=fact_table.row_count,
                 )
                 try:
-                    ctx.duckdb_conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+                    ctx.duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_fqn}")
                 except Exception:
                     pass
                 views_dropped += 1
@@ -255,6 +273,7 @@ class EnrichedViewsPhase(BasePhase):
                 ctx,
                 fact_table,
                 view_name,
+                view_fqn,
                 dim_columns,
             )
 
@@ -328,6 +347,7 @@ class EnrichedViewsPhase(BasePhase):
         ctx: PhaseContext,
         fact_table: Table,
         view_name: str,
+        view_fqn: str,
         dim_columns: list[str],
     ) -> Table | None:
         """Register enriched-layer Table + Column records for dimension columns and profile them.
@@ -335,7 +355,8 @@ class EnrichedViewsPhase(BasePhase):
         Args:
             ctx: Phase context.
             fact_table: The fact table this view is based on.
-            view_name: Name of the enriched DuckDB view.
+            view_name: Bare name of the enriched DuckDB view (stored as duckdb_path).
+            view_fqn: Fully-qualified view name, used to query the view (DESCRIBE / profile).
             dim_columns: List of dimension column names in the view.
 
         Returns:
@@ -356,7 +377,7 @@ class EnrichedViewsPhase(BasePhase):
             ctx.session.add(view_table)
 
             # Get DuckDB types for dimension columns
-            duckdb_cols = ctx.duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+            duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
             type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
             registered_columns: list[Column] = []
@@ -380,7 +401,7 @@ class EnrichedViewsPhase(BasePhase):
                 profile = _profile_column_stats_parallel(
                     duckdb_conn=ctx.duckdb_conn,
                     table_name=view_name,
-                    table_duckdb_path=view_name,
+                    table_duckdb_path=view_fqn,
                     column_id=col.column_id,
                     column_name=col.column_name,
                     resolved_type=col.resolved_type or "VARCHAR",
@@ -626,18 +647,19 @@ class EnrichedViewsPhase(BasePhase):
     @staticmethod
     def _verify_grain(
         duckdb_conn: Any,
-        view_name: str,
+        view_target: str,
         expected_count: int | None,
     ) -> bool:
         """Verify that the view preserves the fact table grain.
 
-        Returns True if COUNT(*) of view matches expected row count.
+        ``view_target`` is the fully-qualified view name. Returns True if
+        COUNT(*) of the view matches the expected fact row count.
         """
         if expected_count is None:
             return True  # Can't verify without expected count
 
         try:
-            result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{view_name}"').fetchone()
+            result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {view_target}").fetchone()
             actual_count = result[0] if result else 0
             return actual_count == expected_count
         except Exception:

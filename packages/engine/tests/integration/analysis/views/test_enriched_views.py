@@ -62,20 +62,17 @@ class TestEnrichedViewsIntegration:
             )
         ]
 
-        view_name, sql, dim_cols = build_enriched_view_sql(
-            fact_table_name="orders",
-            fact_duckdb_path="typed_orders",
-            dimension_joins=joins,
-        )
+        view = '"enriched_orders"'
+        sql, dim_cols = build_enriched_view_sql(view, "typed_orders", joins)
 
         duckdb_conn.execute(sql)
 
         # Verify grain preserved (3 fact rows)
-        result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{view_name}"').fetchone()
+        result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {view}").fetchone()
         assert result[0] == 3
 
         # Verify dimension columns present
-        result = duckdb_conn.execute(f'SELECT * FROM "{view_name}" ORDER BY order_id').fetchall()
+        result = duckdb_conn.execute(f"SELECT * FROM {view} ORDER BY order_id").fetchall()
         assert result[0][4] == "Alice"  # customers__name
         assert result[0][5] == "US"  # customers__country
         assert result[1][4] == "Bob"  # customers__name
@@ -113,11 +110,7 @@ class TestEnrichedViewsIntegration:
             )
         ]
 
-        _, sql, _ = build_enriched_view_sql(
-            fact_table_name="orders",
-            fact_duckdb_path="typed_orders",
-            dimension_joins=joins,
-        )
+        sql, _ = build_enriched_view_sql('"enriched_orders"', "typed_orders", joins)
 
         duckdb_conn.execute(sql)
 

@@ -124,12 +124,16 @@ class TestResolveTargetTableIds:
         assert t2.table_id not in resolved
         assert t3.table_id not in resolved
 
-    def test_filter_drops_ids_that_are_not_raw_tables_of_this_source(
+    def test_keeps_raw_tables_across_sources_drops_non_raw_layer(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
+        """DAT-422: the per-table scope is source-AGNOSTIC — a raw table from a
+        DIFFERENT source is kept (a run spans per-object sources), while the
+        raw-layer filter still drops a typed-layer id.
+        """
         src = _make_source(session)
         t1 = _make_table(session, src.source_id, "t1")
-        # A typed-layer table id and a foreign id must not survive the filter.
+        # A typed-layer id (wrong layer) and a raw table of ANOTHER source.
         typed = _make_table(session, src.source_id, "t1", layer="typed")
         other_src = _make_source(session)
         foreign = _make_table(session, other_src.source_id, "x")
@@ -143,20 +147,27 @@ class TestResolveTargetTableIds:
             )
         )
 
-        assert resolved == [t1.table_id]
+        # The foreign raw table IS included (source-agnostic); the typed-layer id
+        # is dropped by the raw-layer filter.
+        assert set(resolved) == {t1.table_id, foreign.table_id}
+        assert typed.table_id not in resolved
 
-    def test_falls_back_to_ctx_table_ids_when_no_source_raw_rows(
+    def test_unknown_or_non_raw_ids_are_dropped(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        # No raw rows registered under this source_id; caller carries ids.
+        """DAT-422: the resolver returns only real raw tables — caller ids that are
+        not raw tables (unknown uuids) are dropped. The old "trust caller ids
+        verbatim when the source has no raw rows" fallback is gone; the per-table
+        fan-out always hands real raw ids.
+        """
         src = _make_source(session)
-        carried = [str(uuid4()), str(uuid4())]
+        carried = [str(uuid4()), str(uuid4())]  # not real tables
 
         resolved = TypingPhase()._resolve_target_table_ids(
             _ctx(session, duckdb_conn, src.source_id, table_ids=carried)
         )
 
-        assert resolved == carried
+        assert resolved == []
 
 
 # ---------------------------------------------------------------------------

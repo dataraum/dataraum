@@ -67,22 +67,14 @@ class TypingPhase(BasePhase):
         delete-before-insert is scoped to ``ctx.run_id`` so the prior run's rows
         survive). The promoted head names which run is current.
 
-        When ``ctx.table_ids`` is set (per-table scope), only the requested raw
-        tables are considered.
+        When ``ctx.table_ids`` is set (the per-table fan-out scope) only those raw
+        tables are considered — source-agnostic (DAT-422), via the same resolver
+        ``_run`` uses.
         """
-        stmt = select(Table).where(
-            Table.source_id == ctx.source_id,
-            Table.layer == "raw",
-        )
-        raw_tables = list(ctx.session.execute(stmt).scalars())
-        if not raw_tables:
-            return "No raw tables to process"
-
-        if ctx.table_ids:
-            requested = set(ctx.table_ids)
-            raw_tables = [t for t in raw_tables if t.table_id in requested]
-            if not raw_tables:
+        if not self._resolve_target_table_ids(ctx):
+            if ctx.table_ids:
                 return "No raw tables match the requested table_ids filter"
+            return "No raw tables to process"
 
         return None
 
@@ -222,37 +214,29 @@ class TypingPhase(BasePhase):
         return typed_table.table_id, type_decisions
 
     def _resolve_target_table_ids(self, ctx: PhaseContext) -> list[str]:
-        """Resolve which raw table_ids to type for this run.
+        """Resolve which raw table_ids to type for this run — source-agnostic (DAT-422).
 
-        Resolution order:
-
-        1. Query the raw tables registered under ``ctx.source_id``.
-        2. If none are found, fall back to ``ctx.table_ids`` verbatim — some
-           callers carry the ids in context without a source-scoped raw row.
-        3. If raw tables exist *and* ``ctx.table_ids`` is set, intersect:
-           type only the requested subset. This is the per-table teach-replay
-           path — re-type one table without touching its siblings.
-
-        An empty ``ctx.table_ids`` means "all raw tables" (backward compatible).
-        Requested ids that are not raw tables of this source are dropped.
+        Prefer the explicit per-table scope: the per-table fan-out (DAT-370) hands
+        each child its one raw table id, and that id is the run's unit of work
+        regardless of which (per-object, DAT-422) source it belongs to — so a run
+        whose raw tables span multiple per-object sources types each correctly.
+        Filtered to the ``raw`` layer; ids that aren't raw tables are dropped. Only
+        when no ids are passed (a legacy single-source caller, e.g. a teach replay
+        that scopes the whole source) fall back to "all raw tables of the bound
+        ``ctx.source_id``".
         """
+        if ctx.table_ids:
+            stmt = select(Table.table_id).where(
+                Table.table_id.in_(ctx.table_ids),
+                Table.layer == "raw",
+            )
+            return [row[0] for row in ctx.session.execute(stmt)]
+
         stmt = select(Table.table_id).where(
             Table.source_id == ctx.source_id,
             Table.layer == "raw",
         )
-        raw_table_ids = [row[0] for row in ctx.session.execute(stmt)]
-
-        if not raw_table_ids:
-            # No source-scoped raw rows: preserve the pre-existing fallback of
-            # trusting caller-provided ids verbatim (unreachable from the
-            # scheduler today, which never sets table_ids without raw rows).
-            return list(ctx.table_ids)
-
-        if ctx.table_ids:
-            requested = set(ctx.table_ids)
-            return [tid for tid in raw_table_ids if tid in requested]
-
-        return raw_table_ids
+        return [row[0] for row in ctx.session.execute(stmt)]
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run type inference and resolution.

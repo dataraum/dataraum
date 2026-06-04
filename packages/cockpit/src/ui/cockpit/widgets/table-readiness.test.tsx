@@ -22,9 +22,9 @@ import { theme } from "#/ui/theme";
 // The widget reads the chat-loop hook from the cockpit context (DAT-352
 // click-through). Mock it so the render tests don't need a CockpitProvider and
 // the click test can observe the dispatched request.
-const sendChatMessage = vi.fn();
+const sendMessage = vi.fn();
 vi.mock("#/ui/cockpit/cockpit-state", () => ({
-	useCockpit: () => ({ sendChatMessage }),
+	useCockpitActions: () => ({ sendMessage }),
 }));
 
 function renderWidget(readiness: LookTableResult) {
@@ -73,7 +73,7 @@ const analyzed: LookTableResult = {
 describe("TableReadinessWidget (DAT-350)", () => {
 	afterEach(() => {
 		cleanup();
-		sendChatMessage.mockClear();
+		sendMessage.mockClear();
 	});
 
 	it("renders a row per column with band badges + the top driver label", () => {
@@ -127,14 +127,14 @@ describe("TableReadinessWidget (DAT-350)", () => {
 	});
 
 	// DAT-352: clicking a column routes a why_column request through the chat-loop
-	// hook (sendChatMessage), carrying the row's column_id — it does NOT call
+	// hook (sendMessage), carrying the row's column_id — it does NOT call
 	// whyColumn directly (the request runs once per click through the agent loop,
 	// where the paid Anthropic synthesis is gated).
 	it("click-through dispatches a why_column request for the row's column_id", () => {
 		renderWidget(analyzed);
 		fireEvent.click(screen.getByTestId("readiness-why-amount"));
-		expect(sendChatMessage).toHaveBeenCalledTimes(1);
-		const text = sendChatMessage.mock.calls[0][0] as string;
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+		const text = sendMessage.mock.calls[0][0] as string;
 		expect(text).toContain("c_amount");
 		expect(text).toContain("amount");
 		expect(text).toContain("why_column");

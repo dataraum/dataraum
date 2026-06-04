@@ -22,13 +22,14 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
+from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
@@ -82,43 +83,33 @@ class EnrichedViewsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if enriched views already exist for this source's fact tables."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        """Skip only when the session's selection has no fact table to enrich.
 
-        if not typed_tables:
-            return "No typed tables found"
+        Source-free (feedback-source-dies-at-addsource): begin_session scopes by
+        ``ctx.table_ids`` — the session's selected typed tables, which may span
+        sources — never ``source_id``. Structural early-out only (mirrors typing's
+        DAT-413 re-seam): there is NO "views already exist → skip" bail — a re-run
+        mints a fresh ``run_id`` and re-derives the view definitions under it, and
+        ``_run`` is idempotent on the ``run_id`` grain.
+        """
+        if not ctx.table_ids:
+            return "No tables in session selection"
 
-        table_ids = [t.table_id for t in typed_tables]
-
-        # Check for fact tables
-        fact_stmt = select(TableEntity).where(
-            TableEntity.table_id.in_(table_ids),
+        fact_stmt = select(TableEntity.table_id).where(
+            TableEntity.table_id.in_(ctx.table_ids),
             TableEntity.is_fact_table.is_(True),
         )
-        fact_entities = ctx.session.execute(fact_stmt).scalars().all()
-
-        if not fact_entities:
+        if ctx.session.execute(fact_stmt).first() is None:
             return "No fact tables identified"
-
-        # Skip if enriched views already exist for this source's fact tables.
-        # (Was a PhaseLog "completed" check, retired with the monitoring tables
-        # in DAT-369. Existence-based now: a prior run that produced zero views —
-        # the LLM declining all enrichment — would re-run, harmless for this
-        # dormant slice-2 phase; slice-2 gives it proper activity idempotency.)
-        fact_table_ids = [fe.table_id for fe in fact_entities]
-        existing = ctx.session.execute(
-            select(EnrichedView.view_id).where(EnrichedView.fact_table_id.in_(fact_table_ids))
-        ).first()
-        if existing:
-            return "Enriched views already built"
 
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Create enriched views for fact tables using LLM recommendations."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
+        """Create enriched views for the session's fact tables using LLM recommendations."""
+        # Source-free: scope to the session's selected typed tables (DAT-415).
+        if not ctx.table_ids:
+            return PhaseResult.failed("No tables in session selection")
+        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids), Table.layer == "typed")
         typed_tables = ctx.session.execute(stmt).scalars().all()
 
         if not typed_tables:
@@ -180,6 +171,24 @@ class EnrichedViewsPhase(BasePhase):
                 records_created=0,
                 summary="skipped (LLM unavailable)",
             )
+
+        # Retry-only cleanup (DAT-415): a Temporal at-least-once retry re-enters
+        # with the SAME run_id; drop this run's prior EnrichedView rows for the
+        # in-scope facts so the re-run re-inserts cleanly. Prior runs' rows (a
+        # different run_id) coexist — the definition is run-versioned. A NULL
+        # run_id (non-run callers/tests) matches the IS NULL branch.
+        fact_table_ids = [fe.table_id for fe in fact_entities]
+        run_filter = (
+            EnrichedView.run_id.is_(None)
+            if ctx.run_id is None
+            else EnrichedView.run_id == ctx.run_id
+        )
+        ctx.session.execute(
+            delete(EnrichedView).where(
+                EnrichedView.fact_table_id.in_(fact_table_ids),
+                run_filter,
+            )
+        )
 
         views_created = 0
         views_dropped = 0
@@ -262,13 +271,8 @@ class EnrichedViewsPhase(BasePhase):
                         }
                         break
 
-            # Check if view already exists - update or create
-            existing_view_stmt = select(EnrichedView).where(
-                EnrichedView.fact_table_id == fact_table.table_id
-            )
-            existing_view = ctx.session.execute(existing_view_stmt).scalar_one_or_none()
-
-            # Register and profile dimension columns
+            # Register and profile dimension columns (latest-only substrate:
+            # reconciled by view_name, prior columns/profiles replaced).
             view_table = self._register_and_profile_dim_columns(
                 ctx,
                 fact_table,
@@ -277,49 +281,45 @@ class EnrichedViewsPhase(BasePhase):
                 dim_columns,
             )
 
-            if existing_view:
-                # Update existing view record
-                existing_view.view_name = view_name
-                existing_view.view_sql = view_sql
-                existing_view.relationship_ids = [j.relationship_id for j in dimension_joins]
-                existing_view.dimension_table_ids = list(
+            # Version the view DDL on the DAT-414 recipe substrate (emit → store →
+            # execute; the view was executed above). Keyed on the stable fact id +
+            # ``layer="enriched"`` (collision-free vs typing's typed/quarantine
+            # recipes), stamped with the run. ``depends_on`` is the typed
+            # fact/dimension FQNs the view reads — the recipe topo-sort uses it to
+            # rebuild views after their inputs (DAT-415 view chains).
+            store_recipe(
+                ctx.session,
+                session_id=ctx.require_session_id(),
+                table_id=fact_table.table_id,
+                layer="enriched",
+                run_id=ctx.run_id,
+                target_fqn=view_fqn,
+                ddl=view_sql,
+                depends_on=[fact_fqn, *(j.dim_duckdb_path for j in fqn_joins)],
+            )
+
+            # Insert the run-versioned view definition. Prior runs' rows coexist
+            # (this run's were cleared above), so readers resolve a run via the
+            # promoted session head (DAT-408).
+            view_record = EnrichedView(
+                session_id=ctx.require_session_id(),
+                fact_table_id=fact_table.table_id,
+                run_id=ctx.run_id,
+                view_name=view_name,
+                relationship_ids=[j.relationship_id for j in dimension_joins],
+                dimension_table_ids=list(
                     {
                         tables_by_name[j.dim_table_name].table_id
                         for j in dimension_joins
                         if j.dim_table_name in tables_by_name
                     }
-                )
-                existing_view.dimension_columns = dim_columns
-                existing_view.is_grain_verified = is_grain_verified
-                existing_view.evidence = evidence if evidence else None
-                if view_table:
-                    existing_view.view_table_id = view_table.table_id
-                logger.info(
-                    "enriched_view_updated",
-                    view_name=view_name,
-                    fact_table=fact_table.table_name,
-                )
-            else:
-                # Create new view record
-                view_record = EnrichedView(
-                    session_id=ctx.require_session_id(),
-                    fact_table_id=fact_table.table_id,
-                    view_name=view_name,
-                    view_sql=view_sql,
-                    relationship_ids=[j.relationship_id for j in dimension_joins],
-                    dimension_table_ids=list(
-                        {
-                            tables_by_name[j.dim_table_name].table_id
-                            for j in dimension_joins
-                            if j.dim_table_name in tables_by_name
-                        }
-                    ),
-                    dimension_columns=dim_columns,
-                    is_grain_verified=is_grain_verified,
-                    evidence=evidence if evidence else None,
-                    view_table_id=view_table.table_id if view_table else None,
-                )
-                ctx.session.add(view_record)
+                ),
+                dimension_columns=dim_columns,
+                is_grain_verified=is_grain_verified,
+                evidence=evidence if evidence else None,
+                view_table_id=view_table.table_id if view_table else None,
+            )
+            ctx.session.add(view_record)
 
             views_created += 1
 
@@ -352,6 +352,13 @@ class EnrichedViewsPhase(BasePhase):
     ) -> Table | None:
         """Register enriched-layer Table + Column records for dimension columns and profile them.
 
+        Latest-only substrate (DAT-415): the enriched ``Table`` is reconciled on
+        its ``(source, view_name, "enriched")`` unique key — reused across runs,
+        with its prior ``Column``s (and cascaded ``StatisticalProfile``s) replaced
+        — rather than minting a fresh row each run. The view *definition* is what
+        is run-versioned (``EnrichedView`` + recipe DDL); the lake substrate stays
+        latest-only and is re-materialized from the versioned recipe on a reset.
+
         Args:
             ctx: Phase context.
             fact_table: The fact table this view is based on.
@@ -366,15 +373,31 @@ class EnrichedViewsPhase(BasePhase):
             return None
 
         try:
-            view_table = Table(
-                table_id=str(uuid4()),
-                source_id=fact_table.source_id,
-                table_name=view_name,
-                layer="enriched",
-                duckdb_path=view_name,
-                row_count=fact_table.row_count,
-            )
-            ctx.session.add(view_table)
+            view_table = ctx.session.execute(
+                select(Table).where(
+                    Table.source_id == fact_table.source_id,
+                    Table.table_name == view_name,
+                    Table.layer == "enriched",
+                )
+            ).scalar_one_or_none()
+            if view_table is None:
+                view_table = Table(
+                    table_id=str(uuid4()),
+                    source_id=fact_table.source_id,
+                    table_name=view_name,
+                    layer="enriched",
+                    duckdb_path=view_name,
+                    row_count=fact_table.row_count,
+                )
+                ctx.session.add(view_table)
+                ctx.session.flush()
+            else:
+                # Reuse the row, drop its prior columns (profiles cascade) so the
+                # latest run's dimension set replaces the last one's.
+                view_table.duckdb_path = view_name
+                view_table.row_count = fact_table.row_count
+                ctx.session.execute(delete(Column).where(Column.table_id == view_table.table_id))
+                ctx.session.flush()
 
             # Get DuckDB types for dimension columns
             duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()

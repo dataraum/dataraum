@@ -51,12 +51,18 @@ const marked = new Marked(
 // AFTER DOMPurify has stripped attacker-controlled attributes, so the model can't
 // override rel/target — and `javascript:`/other dangerous hrefs are already gone
 // (DOMPurify's default URI allowlist).
-DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-	if (node.tagName === "A") {
-		node.setAttribute("target", "_blank");
-		node.setAttribute("rel", "noopener noreferrer");
-	}
-});
+//
+// Client-only: without a DOM, DOMPurify's default export is a no-op stub with NO
+// `addHook` — calling it at module-eval time on the SSR server throws. This
+// component only sanitizes in the browser anyway (see the useMemo guard below).
+if (typeof window !== "undefined") {
+	DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+		if (node.tagName === "A") {
+			node.setAttribute("target", "_blank");
+			node.setAttribute("rel", "noopener noreferrer");
+		}
+	});
+}
 
 /**
  * Render assistant markdown safely. `content` is LLM output, so it is sanitized

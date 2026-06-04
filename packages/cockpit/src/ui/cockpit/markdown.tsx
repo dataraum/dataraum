@@ -47,22 +47,24 @@ const marked = new Marked(
 	{ gfm: true, breaks: true },
 );
 
-// Open links in a new tab with reverse-tabnabbing protection. The hook runs
-// AFTER DOMPurify has stripped attacker-controlled attributes, so the model can't
-// override rel/target — and `javascript:`/other dangerous hrefs are already gone
-// (DOMPurify's default URI allowlist).
-//
-// Client-only: without a DOM, DOMPurify's default export is a no-op stub with NO
-// `addHook` — calling it at module-eval time on the SSR server throws. This
-// component only sanitizes in the browser anyway (see the useMemo guard below).
-if (typeof window !== "undefined") {
-	DOMPurify.addHook("afterSanitizeAttributes", (node) => {
-		if (node.tagName === "A") {
-			node.setAttribute("target", "_blank");
-			node.setAttribute("rel", "noopener noreferrer");
-		}
-	});
-}
+// A SCOPED DOMPurify instance bound to the browser window — NOT the shared
+// default singleton — so our hook below can't leak onto any other module that
+// sanitizes. dompurify v3's default export IS the factory: calling it with a
+// window (`DOMPurify(window)`) returns a fresh instance (there is no named
+// `createDOMPurify` export). `null` on the server: this component is client-only,
+// and without a DOM DOMPurify is a no-op stub (no `addHook`/no real sanitize) —
+// referencing it at module-eval time on the SSR server would otherwise throw.
+const purifier = typeof window === "undefined" ? null : DOMPurify(window);
+
+// Open links in a new tab with reverse-tabnabbing protection. The hook runs AFTER
+// attributes are stripped, so the model can't override rel/target — and
+// `javascript:`/other dangerous hrefs are already gone (default URI allowlist).
+purifier?.addHook("afterSanitizeAttributes", (node) => {
+	if (node.tagName === "A") {
+		node.setAttribute("target", "_blank");
+		node.setAttribute("rel", "noopener noreferrer");
+	}
+});
 
 /**
  * Render assistant markdown safely. `content` is LLM output, so it is sanitized
@@ -75,11 +77,10 @@ export const MarkdownMessage = memo(function MarkdownMessage({
 	content: string;
 }) {
 	const html = useMemo(() => {
-		// DOMPurify is a no-op without a DOM — it returns the input UNCHANGED. This
-		// component is client-only (the chat never SSRs content), but guard so raw
-		// LLM HTML can never exit the server even if that ever changes.
-		if (typeof window === "undefined") return "";
-		return DOMPurify.sanitize(marked.parse(content, { async: false }));
+		// Client-only: no purifier on the server (no DOM). Returning "" guarantees
+		// raw LLM HTML can never exit the server even if the chat ever SSRs content.
+		if (!purifier) return "";
+		return purifier.sanitize(marked.parse(content, { async: false }));
 	}, [content]);
 
 	return (

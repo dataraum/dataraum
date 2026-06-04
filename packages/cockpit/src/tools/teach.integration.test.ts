@@ -3,7 +3,7 @@
 //
 // The Jira AC requires undo correctness: "Undo → superseded_at set → same
 // replay path → state matches pre-teach exactly." The forward path is
-// covered by the integration smoke (drive-add-source.ts), but the undo
+// covered by the integration smoke (scripts/smoke-add-source.ts), but the undo
 // half ends there. This test exercises the write/undo half against a real
 // Postgres — no Drizzle mocking — and asserts:
 //

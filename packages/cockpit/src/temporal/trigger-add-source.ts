@@ -36,7 +36,7 @@ import { addSourceWorkflowId } from "./workflow-id";
 // The intent label seeded onto the investigation_sessions row. Mirrors the
 // onboarding context — a cold-start "add source" pass, not a query session.
 const SEED_INTENT = "onboarding";
-// Session status the engine treats as live (mirrors drive-add-source.ts seed).
+// Session status the engine treats as live (mirrors scripts/smoke-add-source.ts seed).
 const SEED_STATUS = "active";
 
 /**

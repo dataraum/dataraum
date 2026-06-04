@@ -26,7 +26,7 @@ import {
 import { useState } from "react";
 import type { TriggerAddSourceResult } from "#/temporal/trigger-add-source";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { useCockpit } from "#/ui/cockpit/cockpit-state";
+import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 
 /** POST the trigger API route. Throws on a non-2xx so the caller shows the
  * error. The widget fetches rather than importing the server module — keeping
@@ -53,7 +53,7 @@ export function SelectedSourceWidget({
 	state: Extract<CanvasState, { kind: "selected-source" }>;
 }) {
 	const { selection } = state;
-	const { setCanvasState } = useCockpit();
+	const { showCanvas } = useCockpitActions();
 	const [triggering, setTriggering] = useState(false);
 	const [triggerError, setTriggerError] = useState<string | null>(null);
 	const fileUris = selection.file_uris ?? [];
@@ -71,7 +71,10 @@ export function SelectedSourceWidget({
 				selection.source_id,
 				selection.vertical,
 			);
-			setCanvasState({
+			// Imperative canvas swap: the progress widget is seeded by THIS REST
+			// trigger's run, not derivable from the chat stream. showCanvas holds it
+			// until the next user turn.
+			showCanvas({
 				kind: "add-source-progress",
 				workflowId: result.workflow_id,
 				runId: result.run_id,

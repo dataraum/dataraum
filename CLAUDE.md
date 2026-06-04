@@ -33,7 +33,9 @@ This codebase is mid-pivot (Python library → web-app cockpit). Retiring recent
 
 Workflow skills live at the workspace root (`.claude/skills/`): `/ideate` `/refine` `/implement` `/decompose` `/smoke` `/take` `/release-prep`.
 
-External, stack-specific skills (install once, auto-activate): `npx skills add temporalio/skill-temporal-developer`, `npx skills add DeckardGer/tanstack-agent-skills`.
+External, stack-specific skills:
+- **Temporal** — `npx skills add temporalio/skill-temporal-developer` (install once, auto-activates).
+- **TanStack** — official **[TanStack Intent](https://tanstack.com/intent/latest)** skills, version-pinned to the cockpit's installed packages and discovered via CLI (`bunx @tanstack/intent@latest list` / `load <pkg>#<skill>` from `packages/cockpit`). Wired through the `intent-skills` block in `packages/cockpit/CLAUDE.md` — not vendored into `.claude/skills/`. (Replaced the `DeckardGer/tanstack-agent-skills` workaround, which lacked `@tanstack/ai`.)
 
 ## Dev environment
 

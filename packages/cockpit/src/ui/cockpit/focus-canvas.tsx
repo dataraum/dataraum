@@ -6,10 +6,19 @@
 // widget rather than crashing the whole view. This is the registry's payoff:
 // partial landings stay safe.
 
+import { memo } from "react";
 import { canvasRegistry } from "#/ui/cockpit/canvas-registry";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
-export function FocusCanvas({ state }: { state: CanvasState }) {
+// Memoized: the provider hands a value-STABLE `state` (same reference while the
+// derived canvas is unchanged), so streaming text — which re-renders the parent
+// every token — does NOT re-render the canvas (and its possibly-heavy widget,
+// e.g. the result grid) when nothing it shows has changed.
+export const FocusCanvas = memo(function FocusCanvas({
+	state,
+}: {
+	state: CanvasState;
+}) {
 	const contract = canvasRegistry.resolve(state.kind);
 
 	if (contract) {
@@ -41,4 +50,4 @@ export function FocusCanvas({ state }: { state: CanvasState }) {
 
 	// Error widget itself is somehow unregistered — last-resort empty render.
 	return <div data-testid="focus-canvas" style={{ height: "100%" }} />;
-}
+});

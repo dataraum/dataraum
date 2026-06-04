@@ -23,3 +23,16 @@ export function addSourceWorkflowId(
 ): string {
 	return `addsource-${workspaceId}-${sourceId}`;
 }
+
+/**
+ * Workflow ID for the parent `beginSessionWorkflow` of one analytical session
+ * (DAT-409). Keyed by `session_id` (begin_session is source-free); reused across
+ * teach re-runs of the same session (with `ALLOW_DUPLICATE`) so Temporal groups
+ * the iterations under one ID.
+ */
+export function beginSessionWorkflowId(
+	workspaceId: string,
+	sessionId: string,
+): string {
+	return `beginsession-${workspaceId}-${sessionId}`;
+}

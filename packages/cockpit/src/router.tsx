@@ -20,6 +20,12 @@ export function getRouter() {
 		context: { queryClient },
 		scrollRestoration: true,
 		defaultPreload: "intent",
+		// 0 is DELIBERATE, not a leftover: TanStack Query owns data caching (via
+		// setupRouterSsrQueryIntegration below). If the router ALSO cached preloaded
+		// loader data, the two SWR layers would drift — so we disable the router's
+		// preload cache and let Query's per-query staleTime be the single authority.
+		// Intent-preload still warms Query's cache; it just doesn't add a second one.
+		// (Official router+query integration guidance — router-core data-loading skill.)
 		defaultPreloadStaleTime: 0,
 	});
 

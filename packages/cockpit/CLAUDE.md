@@ -2,6 +2,18 @@
 
 TanStack Start web UI for the DataRaum engine — one of three packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (with `engine` + `infra`).
 
+<!-- intent-skills:start -->
+## Skill Loading
+
+Before substantial work:
+- Skill check: run `bunx @tanstack/intent@latest list`, or use skills already listed in context.
+- Skill guidance: if one local skill clearly matches the task, run `bunx @tanstack/intent@latest load <package>#<skill>` and follow the returned `SKILL.md`.
+- Monorepos: when working across packages, run the skill check from the workspace root and prefer the local skill for the package being changed.
+- Multiple matches: prefer the most specific local skill for the package or concern you are changing; load additional skills only when the task spans multiple packages or concerns.
+<!-- intent-skills:end -->
+
+> TanStack guidance is official **[TanStack Intent](https://tanstack.com/intent/latest)** skills, version-pinned to our installed packages (`@tanstack/ai`, `react-start`, `router-core`, …) and discovered via the CLI above — not vendored into `.claude/skills/`. Run `bunx @tanstack/intent@latest list` from this package dir.
+
 ## Layout
 
 ```

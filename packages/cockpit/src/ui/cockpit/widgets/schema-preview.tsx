@@ -12,6 +12,7 @@ import {
 	Text,
 	TextInput,
 } from "@mantine/core";
+import { fileName } from "#/lib/file-uri";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 function formatSample(value: unknown): string {
@@ -26,6 +27,11 @@ export function SchemaPreviewWidget({
 	state: Extract<CanvasState, { kind: "schema-preview" }>;
 }) {
 	const { schema } = state;
+	// A file source's `source` is the full `s3://bucket/uploads/<id>/<name>` URI —
+	// the bucket/prefix plumbing isn't what the user reads, so show the filename.
+	// A database source's `source` is already a plain name; leave it as-is.
+	const sourceLabel =
+		schema.sourceKind === "file" ? fileName(schema.source) : schema.source;
 	if (schema.tables.length === 0) {
 		return (
 			<Text c="dimmed" size="sm" data-testid="canvas-schema-preview-empty">
@@ -37,7 +43,7 @@ export function SchemaPreviewWidget({
 		<Stack gap="md" data-testid="canvas-schema-preview">
 			<Group gap="xs">
 				<Badge variant="light">{schema.sourceKind}</Badge>
-				<Text fw={600}>{schema.source}</Text>
+				<Text fw={600}>{sourceLabel}</Text>
 			</Group>
 
 			{schema.tables.map((t) => (

@@ -16,35 +16,47 @@ Post-creation: verifies row count matches fact table. Drops view if grain violat
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
+from dataraum.analysis.typing.db_models import MaterializationRecipe
+from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.analysis.views.builder import DimensionJoin, build_enriched_view_sql
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
+from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
+from dataraum.core.sql_normalize import sql_equivalent
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.server.storage import LAKE_CATALOG_ALIAS
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
 _MIN_CONFIDENCE = 0.7
+
+
+def _lake_fqn(layer: str, bare: str) -> str:
+    """Fully-qualified DuckDB name ``catalog.schema."bare"`` for a lake-layer artifact.
+
+    Enriched views resolve to the ``typed`` schema (``schema_for_layer`` default),
+    so the view, its fact, and its dimensions all qualify through one helper.
+    """
+    return f'{LAKE_CATALOG_ALIAS}.{schema_for_layer(layer)}."{bare}"'
 
 
 @analysis_phase
@@ -70,43 +82,33 @@ class EnrichedViewsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if enriched views already exist for this source's fact tables."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        """Skip only when the session's selection has no fact table to enrich.
 
-        if not typed_tables:
-            return "No typed tables found"
+        Source-free (feedback-source-dies-at-addsource): begin_session scopes by
+        ``ctx.table_ids`` — the session's selected typed tables, which may span
+        sources — never ``source_id``. Structural early-out only (mirrors typing's
+        DAT-413 re-seam): there is NO "views already exist → skip" bail — a re-run
+        mints a fresh ``run_id`` and re-derives the view definitions under it, and
+        ``_run`` is idempotent on the ``run_id`` grain.
+        """
+        if not ctx.table_ids:
+            return "No tables in session selection"
 
-        table_ids = [t.table_id for t in typed_tables]
-
-        # Check for fact tables
-        fact_stmt = select(TableEntity).where(
-            TableEntity.table_id.in_(table_ids),
+        fact_stmt = select(TableEntity.table_id).where(
+            TableEntity.table_id.in_(ctx.table_ids),
             TableEntity.is_fact_table.is_(True),
         )
-        fact_entities = ctx.session.execute(fact_stmt).scalars().all()
-
-        if not fact_entities:
+        if ctx.session.execute(fact_stmt).first() is None:
             return "No fact tables identified"
-
-        # Skip if enriched views already exist for this source's fact tables.
-        # (Was a PhaseLog "completed" check, retired with the monitoring tables
-        # in DAT-369. Existence-based now: a prior run that produced zero views —
-        # the LLM declining all enrichment — would re-run, harmless for this
-        # dormant slice-2 phase; slice-2 gives it proper activity idempotency.)
-        fact_table_ids = [fe.table_id for fe in fact_entities]
-        existing = ctx.session.execute(
-            select(EnrichedView.view_id).where(EnrichedView.fact_table_id.in_(fact_table_ids))
-        ).first()
-        if existing:
-            return "Enriched views already built"
 
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Create enriched views for fact tables using LLM recommendations."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
+        """Create enriched views for the session's fact tables using LLM recommendations."""
+        # Source-free: scope to the session's selected typed tables (DAT-415).
+        if not ctx.table_ids:
+            return PhaseResult.failed("No tables in session selection")
+        stmt = select(Table).where(Table.table_id.in_(ctx.table_ids), Table.layer == "typed")
         typed_tables = ctx.session.execute(stmt).scalars().all()
 
         if not typed_tables:
@@ -192,28 +194,34 @@ class EnrichedViewsPhase(BasePhase):
                     reason="no qualifying dimension joins",
                 )
 
+            # Collision-free identities: name the view off the fact's
+            # source-qualified duckdb_path (``enriched_{source}__{table}``), so two
+            # sources that each have an ``orders`` fact don't clash on
+            # ``enriched_orders``. Every source is fully-qualified, so CREATE OR
+            # REPLACE only ever replaces THIS view on a re-run, never a sibling.
+            view_name = f"enriched_{fact_table.duckdb_path}"
+            view_fqn = _lake_fqn("enriched", view_name)
+            fact_fqn = _lake_fqn("typed", fact_table.duckdb_path)
+            fqn_joins = [
+                replace(join, dim_duckdb_path=_lake_fqn("typed", dim.duckdb_path))
+                for join in dimension_joins
+                if (dim := tables_by_name.get(join.dim_table_name)) is not None and dim.duckdb_path
+            ]
+
             # Build view SQL
-            view_name, view_sql, dim_columns = build_enriched_view_sql(
-                fact_table_name=fact_table.table_name,
-                fact_duckdb_path=fact_table.duckdb_path,
-                dimension_joins=dimension_joins,
-            )
+            view_sql, dim_columns = build_enriched_view_sql(view_fqn, fact_fqn, fqn_joins)
 
             # Create view in DuckDB
             try:
                 ctx.duckdb_conn.execute(view_sql)
             except Exception as e:
-                logger.warning(
-                    "view_creation_failed",
-                    view_name=view_name,
-                    error=str(e),
-                )
+                logger.warning("view_creation_failed", view_name=view_name, error=str(e))
                 continue
 
             # Verify grain preservation
             is_grain_verified = self._verify_grain(
                 ctx.duckdb_conn,
-                view_name=view_name,
+                view_target=view_fqn,
                 expected_count=fact_table.row_count,
             )
 
@@ -225,7 +233,7 @@ class EnrichedViewsPhase(BasePhase):
                     expected_count=fact_table.row_count,
                 )
                 try:
-                    ctx.duckdb_conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+                    ctx.duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_fqn}")
                 except Exception:
                     pass
                 views_dropped += 1
@@ -244,63 +252,79 @@ class EnrichedViewsPhase(BasePhase):
                         }
                         break
 
-            # Check if view already exists - update or create
-            existing_view_stmt = select(EnrichedView).where(
-                EnrichedView.fact_table_id == fact_table.table_id
-            )
-            existing_view = ctx.session.execute(existing_view_stmt).scalar_one_or_none()
-
-            # Register and profile dimension columns
+            # Register and profile dimension columns (latest-only substrate:
+            # reconciled by view_name, prior columns/profiles replaced).
             view_table = self._register_and_profile_dim_columns(
                 ctx,
                 fact_table,
                 view_name,
+                view_fqn,
                 dim_columns,
             )
 
-            if existing_view:
-                # Update existing view record
-                existing_view.view_name = view_name
-                existing_view.view_sql = view_sql
-                existing_view.relationship_ids = [j.relationship_id for j in dimension_joins]
-                existing_view.dimension_table_ids = list(
-                    {
-                        tables_by_name[j.dim_table_name].table_id
-                        for j in dimension_joins
-                        if j.dim_table_name in tables_by_name
-                    }
+            # Version the view DDL on the DAT-414 recipe substrate (emit → store →
+            # execute; the view was executed above), sqlglot-gated (DAT-415):
+            # only stamp a NEW run-versioned recipe when the canonical SQL differs
+            # from the fact's latest stored enriched recipe — an unchanged re-run
+            # (temp-0 LLM → same joins) adds no redundant version, and a
+            # same-run retry sees its own just-stored recipe as equivalent and
+            # no-ops. Keyed on the stable fact id + ``layer="enriched"``
+            # (collision-free vs typing's typed/quarantine recipes); ``depends_on``
+            # is the typed fact/dim FQNs the recipe topo-sort rebuilds after.
+            dim_fqns = [j.dim_duckdb_path for j in fqn_joins]
+            latest_recipe = ctx.session.execute(
+                select(MaterializationRecipe)
+                .where(
+                    MaterializationRecipe.table_id == fact_table.table_id,
+                    MaterializationRecipe.layer == "enriched",
                 )
-                existing_view.dimension_columns = dim_columns
-                existing_view.is_grain_verified = is_grain_verified
-                existing_view.evidence = evidence if evidence else None
-                if view_table:
-                    existing_view.view_table_id = view_table.table_id
-                logger.info(
-                    "enriched_view_updated",
-                    view_name=view_name,
-                    fact_table=fact_table.table_name,
+                .order_by(MaterializationRecipe.created_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if latest_recipe is None or not sql_equivalent(latest_recipe.ddl, view_sql):
+                store_recipe(
+                    ctx.session,
+                    session_id=ctx.require_session_id(),
+                    table_id=fact_table.table_id,
+                    layer="enriched",
+                    run_id=ctx.run_id,
+                    target_fqn=view_fqn,
+                    ddl=view_sql,
+                    depends_on=[fact_fqn, *dim_fqns],
                 )
-            else:
-                # Create new view record
+
+            # The view definition is latest-only substrate (one row per fact,
+            # DAT-415): reconcile-in-place, stamping the run that materialized it.
+            # The recipe (above) carries the version history; readers resolve the
+            # current view here without run-scoping. Keyed on fact_table_id alone
+            # (no session filter) — the physical view is shared in lake.typed, so
+            # the metadata is last-writer-wins per fact, which under single-user
+            # sequential begin_session is exactly one writer. (Concurrent sessions
+            # enriching the same fact is a multi-session concern, not this slice.)
+            view_record = ctx.session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_table.table_id)
+            ).scalar_one_or_none()
+            if view_record is None:
                 view_record = EnrichedView(
                     session_id=ctx.require_session_id(),
                     fact_table_id=fact_table.table_id,
-                    view_name=view_name,
-                    view_sql=view_sql,
-                    relationship_ids=[j.relationship_id for j in dimension_joins],
-                    dimension_table_ids=list(
-                        {
-                            tables_by_name[j.dim_table_name].table_id
-                            for j in dimension_joins
-                            if j.dim_table_name in tables_by_name
-                        }
-                    ),
-                    dimension_columns=dim_columns,
-                    is_grain_verified=is_grain_verified,
-                    evidence=evidence if evidence else None,
-                    view_table_id=view_table.table_id if view_table else None,
                 )
                 ctx.session.add(view_record)
+            view_record.session_id = ctx.require_session_id()
+            view_record.run_id = ctx.run_id
+            view_record.view_name = view_name
+            view_record.relationship_ids = [j.relationship_id for j in dimension_joins]
+            view_record.dimension_table_ids = list(
+                {
+                    tables_by_name[j.dim_table_name].table_id
+                    for j in dimension_joins
+                    if j.dim_table_name in tables_by_name
+                }
+            )
+            view_record.dimension_columns = dim_columns
+            view_record.is_grain_verified = is_grain_verified
+            view_record.evidence = evidence if evidence else None
+            view_record.view_table_id = view_table.table_id if view_table else None
 
             views_created += 1
 
@@ -328,14 +352,23 @@ class EnrichedViewsPhase(BasePhase):
         ctx: PhaseContext,
         fact_table: Table,
         view_name: str,
+        view_fqn: str,
         dim_columns: list[str],
     ) -> Table | None:
         """Register enriched-layer Table + Column records for dimension columns and profile them.
 
+        Latest-only substrate (DAT-415): the enriched ``Table`` is reconciled on
+        its ``(source, view_name, "enriched")`` unique key — reused across runs,
+        with its prior ``Column``s (and cascaded ``StatisticalProfile``s) replaced
+        — rather than minting a fresh row each run. The view *definition* is what
+        is run-versioned (``EnrichedView`` + recipe DDL); the lake substrate stays
+        latest-only and is re-materialized from the versioned recipe on a reset.
+
         Args:
             ctx: Phase context.
             fact_table: The fact table this view is based on.
-            view_name: Name of the enriched DuckDB view.
+            view_name: Bare name of the enriched DuckDB view (stored as duckdb_path).
+            view_fqn: Fully-qualified view name, used to query the view (DESCRIBE / profile).
             dim_columns: List of dimension column names in the view.
 
         Returns:
@@ -345,18 +378,34 @@ class EnrichedViewsPhase(BasePhase):
             return None
 
         try:
-            view_table = Table(
-                table_id=str(uuid4()),
-                source_id=fact_table.source_id,
-                table_name=view_name,
-                layer="enriched",
-                duckdb_path=view_name,
-                row_count=fact_table.row_count,
-            )
-            ctx.session.add(view_table)
+            view_table = ctx.session.execute(
+                select(Table).where(
+                    Table.source_id == fact_table.source_id,
+                    Table.table_name == view_name,
+                    Table.layer == "enriched",
+                )
+            ).scalar_one_or_none()
+            if view_table is None:
+                view_table = Table(
+                    table_id=str(uuid4()),
+                    source_id=fact_table.source_id,
+                    table_name=view_name,
+                    layer="enriched",
+                    duckdb_path=view_name,
+                    row_count=fact_table.row_count,
+                )
+                ctx.session.add(view_table)
+                ctx.session.flush()
+            else:
+                # Reuse the row, drop its prior columns (profiles cascade) so the
+                # latest run's dimension set replaces the last one's.
+                view_table.duckdb_path = view_name
+                view_table.row_count = fact_table.row_count
+                ctx.session.execute(delete(Column).where(Column.table_id == view_table.table_id))
+                ctx.session.flush()
 
             # Get DuckDB types for dimension columns
-            duckdb_cols = ctx.duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+            duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
             type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
             registered_columns: list[Column] = []
@@ -380,7 +429,7 @@ class EnrichedViewsPhase(BasePhase):
                 profile = _profile_column_stats_parallel(
                     duckdb_conn=ctx.duckdb_conn,
                     table_name=view_name,
-                    table_duckdb_path=view_name,
+                    table_duckdb_path=view_fqn,
                     column_id=col.column_id,
                     column_name=col.column_name,
                     resolved_type=col.resolved_type or "VARCHAR",
@@ -626,18 +675,19 @@ class EnrichedViewsPhase(BasePhase):
     @staticmethod
     def _verify_grain(
         duckdb_conn: Any,
-        view_name: str,
+        view_target: str,
         expected_count: int | None,
     ) -> bool:
         """Verify that the view preserves the fact table grain.
 
-        Returns True if COUNT(*) of view matches expected row count.
+        ``view_target`` is the fully-qualified view name. Returns True if
+        COUNT(*) of the view matches the expected fact row count.
         """
         if expected_count is None:
             return True  # Can't verify without expected count
 
         try:
-            result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{view_name}"').fetchone()
+            result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {view_target}").fetchone()
             actual_count = result[0] if result else 0
             return actual_count == expected_count
         except Exception:

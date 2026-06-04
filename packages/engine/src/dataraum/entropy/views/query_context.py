@@ -220,6 +220,13 @@ def network_to_column_summaries(
     """
     summaries: dict[str, ColumnSummary] = {}
     for target, col_result in readiness_ctx.columns.items():
+        # ``readiness_ctx.columns`` is keyed by target and now holds non-column
+        # grains too — ``relationship:`` (DAT-408) and ``table:`` (DAT-415) roll up
+        # the same network. The contract gate is per-column, so skip those: a
+        # ``table:orders`` target would otherwise surface as a junk column named
+        # ``table:orders`` and pollute the contract's dimension averages.
+        if not target.startswith("column:"):
+            continue
         col_key = target.removeprefix("column:")
         parts = col_key.split(".", 1)
         table_name = parts[0] if len(parts) > 1 else ""

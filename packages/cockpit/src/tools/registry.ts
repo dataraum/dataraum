@@ -22,6 +22,7 @@ import { teachTool } from "./teach";
 import { uploadTool } from "./upload";
 import { whyColumnTool } from "./why-column";
 import { whyRelationshipTool } from "./why-relationship";
+import { whyTableTool } from "./why-table";
 import { workflowStatusTool } from "./workflow-status";
 
 export const tools = [
@@ -31,6 +32,7 @@ export const tools = [
 	uploadTool,
 	lookTableTool,
 	whyColumnTool,
+	whyTableTool,
 	lookRelationshipsTool,
 	whyRelationshipTool,
 	runSqlTool,

@@ -104,3 +104,63 @@ def test_empty_table_set_is_a_noop(session: Session) -> None:
 
     assert persist_readiness(session, baseline_session_id(), []) == 0
     assert session.query(EntropyReadinessRecord).filter_by(table_id="tbl_c").count() == 1
+
+
+def test_table_grain_readiness_round_trip(session: Session) -> None:
+    """A table-scoped dimension_coverage object rolls up to a banded ``table:`` row (DAT-415).
+
+    Proves the P4 round-trip: a ``table:`` entropy object rolls up the network
+    (dimension_coverage → query/reporting intents), persists with the table FK and
+    NO column FK, and ``load_table_readiness`` reads it back via the session head.
+    """
+    from datetime import UTC, datetime
+
+    from dataraum.entropy.db_models import EntropyObjectRecord
+    from dataraum.entropy.views.readiness_context import load_table_readiness
+    from dataraum.storage import MetadataSnapshotHead, session_head_target
+
+    session.add(Source(source_id="src_t", name="src_t", source_type="csv"))
+    session.add(Table(table_id="fact_t", source_id="src_t", table_name="orders", layer="typed"))
+    session.flush()
+    # A high coverage-gap measurement at table grain (semantic.coverage.dimension_coverage
+    # maps to the dimension_coverage network node → query/reporting intent risk).
+    session.add(
+        EntropyObjectRecord(
+            session_id=baseline_session_id(),
+            layer="semantic",
+            dimension="coverage",
+            sub_dimension="dimension_coverage",
+            target="table:orders",
+            table_id="fact_t",
+            column_id=None,
+            run_id="run-1",
+            score=0.8,
+            detector_id="dimension_coverage",
+        )
+    )
+    session.flush()
+
+    written = persist_readiness(session, baseline_session_id(), ["fact_t"], run_id="run-1")
+    session.flush()
+    assert written >= 1
+
+    rows = [r for r in session.query(EntropyReadinessRecord).all() if r.target == "table:orders"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.table_id, row.column_id, row.run_id) == ("fact_t", None, "run-1")
+    assert row.band in ("investigate", "blocked"), "a 0.8 coverage gap is not 'ready'"
+
+    # Reader resolves the current run via the session head (begin_session seals there).
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(baseline_session_id()),
+            stage="detect",
+            run_id="run-1",
+            promoted_at=datetime.now(UTC),
+            version=0,
+        )
+    )
+    session.flush()
+    assert [r.target for r in load_table_readiness(session, baseline_session_id())] == [
+        "table:orders"
+    ]

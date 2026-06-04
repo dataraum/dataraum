@@ -202,6 +202,22 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "semantic_per_table")
 
+    @activity.defn(name="enriched_views")
+    def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Enriched-views activity — grain-preserving fact×dimension views (DAT-415).
+
+        Source-free: builds one ``CREATE OR REPLACE VIEW`` per session fact table
+        over its LLM-confirmed dimension joins, versioning each view's DDL on the
+        materialization-recipe substrate (run-stamped) and registering the enriched
+        lake substrate latest-only. Runs after ``session_materialize_overlays`` so
+        the user's durable relationship teaches are folded in. Makes real Anthropic
+        calls (the enrichment agent); needs ``ANTHROPIC_API_KEY``.
+        """
+        run = run_session_phase(
+            self._manager, "enriched_views", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "enriched_views")
+
     @activity.defn(name="session_materialize_overlays")
     def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:
         """Materialize durable relationship overlays into this run (DAT-409).

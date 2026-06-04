@@ -23,6 +23,55 @@ use (DAT-410), populated by `typing` via `session_tables` (DAT-407).
 - **Calibrate:** nothing new required; re-run the add_source recall suite after bumping the
   engine submodule → expect no movement.
 
+## 2026-06-04: DAT-415 + DAT-402 — enriched_views revival + table-grain readiness + view-DDL versioning
+
+begin_session Slice 2.1 (DAT-402) bundled with view-DDL versioning (DAT-415, Phase 2 Slice B
+of the versioned-metadata epic). Revives the dormant `enriched_views` phase as a run-versioned
+begin_session step and gives begin_session its first **table-grain readiness** signal.
+
+### dataraum-eval
+- **Changed:** `pipeline/phases/enriched_views_phase.py` (source-free re-seam, run-versioned,
+  recipe-backed DDL), `analysis/views/{recipe.py (new), db_models.py, builder.py}`,
+  `entropy/detectors/semantic/dimension_coverage.py` (scope view→table),
+  `entropy/views/readiness_context.py` + `entropy/readiness.py` (table-grain rollup + persist),
+  `worker/{workflows.py, activities.py, activity.py, main.py}` (new `enriched_views` activity in
+  the begin_session spine + `SESSION_DETECTOR_PHASES`), `core/sql_normalize.py` (new),
+  `analysis/typing/recipe.py` (`order_recipes_by_dependency` made public).
+- **Affects:** the **begin_session** path only — add_source is untouched (no `table:`-scoped
+  detector runs on `_DETECTOR_PHASES`; `enriched_views` is not in it). begin_session now runs
+  `relationships → semantic_per_table → session_materialize_overlays → enriched_views →
+  session_detect → …`, and `session_detect` runs `dimension_coverage` (newly wired) in addition
+  to the relationship detectors.
+- **Calibrate (the real gate — DAT-405):** `dimension_coverage` recall/precision at **table
+  grain**. It builds a grain-preserving LEFT JOIN view per fact table over its LLM-confirmed
+  dimension relationships, then scores the mean NULL rate across the joined dimension columns
+  (sqrt-boosted). Ground truth = the finance `break_referential_integrity` injection on
+  `payments.invoice_id` (~20% orphans): the enriched view's joined `invoices.*` columns are NULL
+  for orphaned rows → `dimension_coverage ≈ sqrt(0.2) ≈ 0.45` on **`table:payments`** → a
+  non-`ready` band (rolls into `query_intent` 0.5 / `reporting_intent` 0.6). Validate that a clean
+  join (no orphans) scores ~0 and the 20%-orphan case lands `investigate`. This is a NEW readiness
+  surface — there was no `table:` band before.
+- **Notes:**
+  - **New readiness rows:** `entropy_readiness` now carries `target = "table:{table_name}"` rows
+    (table FK set, **column_id NULL**) alongside the existing `column:` / `relationship:` rows.
+    Resolve the current run via the per-session head (`session:{id}`, stage `detect`) — same as
+    relationship readiness, NOT the per-table head. Engine reader: `load_table_readiness(session,
+    session_id)`.
+  - **Schema changes (need a fresh ws schema):** `enriched_views.view_sql` is **dropped** and
+    `enriched_views.run_id` **added**; `materialization_recipes` now also stores `layer="enriched"`
+    rows. `create_all` is additive — it will NOT drop `view_sql`, so a stale workspace whose
+    `enriched_views.view_sql` is still `NOT NULL` will **fail inserts**. Re-pull a clean schema
+    (`docker compose down -v`) before driving begin_session. (The eval's vendored engine submodule
+    is pinned pre-DAT-408 and uninitialized — bump it to current `main` first; see the eval
+    teach→keeper foundation notes.)
+  - **View determinism:** the enrichment LLM runs at temperature 0 and view DDL is sqlglot-canonical
+    + collision-free-named (`enriched_{source}__{table}`), so a re-run with the same confirmed joins
+    produces a byte-identical recipe (no spurious new version). Eval can diff recipe DDL to detect a
+    genuine view change across runs.
+  - **No add_source recall movement expected** from this ticket — if the add_source detector-recall
+    suite moves, that's a regression, not this change.
+- **Status:** pending
+
 ## 2026-06-04: DAT-414 — versioned typed/quarantine materialization DDL
 
 Phase 2 of the versioned-metadata epic (DAT-412), Slice A typed/quarantine only.

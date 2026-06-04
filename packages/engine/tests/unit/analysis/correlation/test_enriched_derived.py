@@ -134,7 +134,6 @@ def _make_enriched_view(
         view_id=str(uuid4()),
         fact_table_id=fact_table.table_id,
         view_name=view_name,
-        view_sql=f"CREATE VIEW {view_name} AS ...",
         dimension_columns=dimension_columns,
         view_table_id=view_table.table_id if view_table else None,
     )

@@ -1,15 +1,19 @@
-// The relationship-readiness key grammar — the TS mirror of the engine's
-// `entropy/models.py` (`relationship_target_key` / `parse_relationship_target`)
-// and `storage/snapshot_head.py` (`session_head_target`). begin_session writes
-// relationship readiness/evidence under a `relationship:{from_col}::{to_col}`
-// target (DAT-408) and seals the run under a `session:{session_id}` head; the
-// readers here must build/parse those exact strings, so they live in one place
-// the same way the engine keeps one function per string.
+// The begin_session readiness key grammar — the TS mirror of the engine's
+// `entropy/models.py` (`relationship_target_key` / `parse_relationship_target`),
+// the `table:{name}` target the table-scoped detectors write (`engine.py` /
+// `readiness.py`, DAT-415), and `storage/snapshot_head.py`
+// (`session_head_target`). begin_session writes relationship readiness/evidence
+// under a `relationship:{from_col}::{to_col}` target (DAT-408) and table-grain
+// readiness under a `table:{table_name}` target (DAT-415), and seals the run
+// under a `session:{session_id}` head; the readers here must build/parse those
+// exact strings, so they live in one place the same way the engine keeps one
+// function per string.
 
 const REL_PREFIX = "relationship:";
 // `::` separates the two column UUIDs — a single `-` would be ambiguous inside a
 // UUID. Must match `_REL_SEP` in the engine.
 const REL_SEP = "::";
+const TABLE_PREFIX = "table:";
 
 /** The stable `relationship:{from_col}::{to_col}` readiness/evidence target. */
 export function relationshipTargetKey(
@@ -30,9 +34,17 @@ export function parseRelationshipTarget(
 	return { fromColumnId: parts[0], toColumnId: parts[1] };
 }
 
+/** The stable `table:{table_name}` table-grain readiness/evidence target (DAT-415).
+ * begin_session's `dimension_coverage` rolls up to this key; mirrors the engine's
+ * inline `f"table:{table.table_name}"` (`engine.py` / `readiness.py`). Keyed on the
+ * table NAME (not id), like the column target `column:{table}.{column}`. */
+export function tableTargetKey(tableName: string): string {
+	return `${TABLE_PREFIX}${tableName}`;
+}
+
 /** The snapshot-head key sealing a begin_session run (`session:{id}`). Relationship
- * readiness is sealed at session grain (one head per session run), NOT per-table
- * like column readiness — so its readers resolve the head by this key. */
+ * and table-grain readiness are sealed at session grain (one head per session run),
+ * NOT per-table like column readiness — so their readers resolve the head by this key. */
 export function sessionHeadTarget(sessionId: string): string {
 	return `session:${sessionId}`;
 }

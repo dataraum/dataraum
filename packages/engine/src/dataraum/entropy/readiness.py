@@ -73,6 +73,7 @@ def persist_readiness(
         return 0
 
     target_to_ids = _column_id_map(session, table_ids)
+    table_id_by_name = _table_id_by_name(session, table_ids)
 
     rows: list[EntropyReadinessRecord] = []
     for target, col in ctx.columns.items():
@@ -81,6 +82,15 @@ def persist_readiness(
             # spans two columns so it carries no single column FK.
             table_id: str | None = None
             column_id: str | None = None
+        elif target.startswith("table:"):
+            # Table-grain readiness (DAT-415): the fact table's dimension_coverage
+            # rolled up. Carries the table FK (so it deletes with the table set on
+            # replay) but no column FK — the identity is the table.
+            table_id = table_id_by_name.get(target.split(":", 1)[1])
+            column_id = None
+            if table_id is None:
+                logger.debug("readiness_table_target_unresolved", target=target)
+                continue
         else:
             ids = target_to_ids.get(target)
             if ids is None:
@@ -129,6 +139,20 @@ def _column_id_map(session: Session, table_ids: list[str]) -> dict[str, tuple[st
             continue
         out[f"column:{table_name}.{column_name}"] = (table_id, column_id)
     return out
+
+
+def _table_id_by_name(session: Session, table_ids: list[str]) -> dict[str, str]:
+    """Map ``table_name`` -> ``table_id`` for the session's tables.
+
+    Inverse of the ``table:{table_name}`` target the table-scoped detectors write
+    (``engine.py`` builds it as ``f"table:{table.table_name}"``).
+    """
+    return {
+        table_name: table_id
+        for table_id, table_name in session.execute(
+            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+        )
+    }
 
 
 def _intents_payload(col: ColumnReadinessResult) -> list[dict[str, object]]:

@@ -9,6 +9,7 @@ import {
 	parseRelationshipTarget,
 	relationshipTargetKey,
 	sessionHeadTarget,
+	tableTargetKey,
 } from "./relationship-target";
 
 describe("relationshipTargetKey / parseRelationshipTarget (DAT-409)", () => {
@@ -41,6 +42,16 @@ describe("relationshipTargetKey / parseRelationshipTarget (DAT-409)", () => {
 		// >2 parts (engine's `len(parts) != 2` branch) — unreachable with real
 		// UUIDs (no `::`), but the guard must reject it rather than drop the tail.
 		expect(parseRelationshipTarget("relationship:a::b::c")).toBeNull();
+	});
+});
+
+describe("tableTargetKey (DAT-415)", () => {
+	it("builds the table:{name} key keyed on the table NAME", () => {
+		expect(tableTargetKey("smoke__payments")).toBe("table:smoke__payments");
+	});
+
+	it("is the inverse target a relationship parser rejects (distinct grain)", () => {
+		expect(parseRelationshipTarget(tableTargetKey("orders"))).toBeNull();
 	});
 });
 

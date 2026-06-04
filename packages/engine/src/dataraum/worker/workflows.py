@@ -383,10 +383,12 @@ class BeginSessionWorkflow:
     (``session_tables``), then ``relationships`` (structural candidates) →
     ``semantic_per_table`` (LLM classification + confirms a subset) run over the
     whole selection, then ``session_materialize_overlays`` (fold the user's durable
-    add/keep relationship teaches into this run, DAT-409) → ``session_detect``
-    (relationship-granularity readiness) → ``session_write_keepers`` (silent-accept
-    lift-up, DAT-409) → ``session_promote_to_latest`` (flip the readiness heads). NO
-    fan-out — the work is cross-table.
+    add/keep relationship teaches into this run, DAT-409) → ``enriched_views``
+    (grain-preserving fact×dimension views over the defined catalog, DDL versioned
+    on the recipe substrate, DAT-415) → ``session_detect`` (relationship-granularity
+    readiness) → ``session_write_keepers`` (silent-accept lift-up, DAT-409) →
+    ``session_promote_to_latest`` (flip the readiness heads). NO fan-out — the work
+    is cross-table.
 
     The run mints a ``run_id`` (DAT-408) threaded through every activity; a teach
     re-run is a full re-run under a fresh ``run_id`` (candidates re-derive,
@@ -432,6 +434,19 @@ class BeginSessionWorkflow:
         await workflow.execute_activity(
             "session_materialize_overlays",
             identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Enriched views (DAT-415): build grain-preserving fact×dimension views over
+        # the now-complete defined relationship catalog (llm + the just-materialized
+        # manual/keeper teaches), versioning each view's DDL on the recipe substrate.
+        # Scoped (needs the selection's table_ids); runs before detect so the
+        # table-grain readiness it feeds (DAT-402) measures the enriched substrate.
+        await workflow.execute_activity(
+            "enriched_views",
+            scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

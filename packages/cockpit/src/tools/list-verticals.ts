@@ -129,6 +129,10 @@ async function builtinVerticals(
 	const out: Vertical[] = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
+		// Underscore-prefixed directories are internal seeds, not user-pickable
+		// verticals — `_adhoc` is the induction substrate, not a domain the agent
+		// should offer or count. Hide it from the listing everywhere.
+		if (entry.name.startsWith("_")) continue;
 		const dir = join(root, entry.name);
 		const onto = await readOntology(join(dir, "ontology.yaml"));
 		out.push({
@@ -153,7 +157,12 @@ export async function listVerticals(): Promise<Vertical[]> {
 	const builtinNames = new Set(builtins.map((v) => v.name));
 
 	const framed: Vertical[] = [...overlayCounts.entries()]
-		.filter(([vertical]) => vertical && !builtinNames.has(vertical))
+		// Same hide rule as builtins: `_adhoc` carries concept overlay rows, so
+		// without this it would reappear here as a "framed" vertical.
+		.filter(
+			([vertical]) =>
+				vertical && !vertical.startsWith("_") && !builtinNames.has(vertical),
+		)
 		.map(([vertical, n]) => ({
 			name: vertical,
 			kind: "framed" as const,

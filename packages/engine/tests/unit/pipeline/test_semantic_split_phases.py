@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.investigation.db_models import InvestigationSession
+from dataraum.investigation.queries import link_session_tables
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
@@ -38,6 +39,12 @@ def _typed_table(session: Session, source_id: str, name: str, cols: list[str]) -
             Column(table_id=t.table_id, column_name=c, column_position=pos, resolved_type="VARCHAR")
         )
     session.flush()
+    # Mirror the typing phase: a typed table is linked to the run's session
+    # (``session_tables``, DAT-407) in the same transaction. The add_source reduce
+    # now scopes by that session anchor, not by ``source_id`` (DAT-421), so the
+    # fixtures must link too or the phase sees no tables.
+    link_session_tables(session, baseline_session_id(), [t.table_id])
+    session.flush()
     return t
 
 
@@ -57,7 +64,15 @@ def _annotate(session: Session, table: Table, run_id: str | None = None) -> None
 
 
 def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: str) -> PhaseContext:
-    return PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id)
+    # semantic_per_column is session-scoped now (DAT-421): it derives its tables
+    # from the run's ``session_tables``, so the ctx must carry the session id the
+    # typed tables above are linked under (``baseline_session_id()``).
+    return PhaseContext(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        source_id=source_id,
+        session_id=baseline_session_id(),
+    )
 
 
 def _session_ctx(
@@ -113,6 +128,34 @@ class TestPerColumnShouldSkip:
         assert (
             SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
         )
+
+    def test_scopes_by_session_anchor_not_source(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-421: the reduce scopes by the run's SESSION tables, not ``source_id``.
+
+        A table linked to the run's session counts even when it belongs to a
+        different (per-object) source; a same-source typed table NOT linked to the
+        session does not. This source-agnostic scope is what lets one run span
+        multiple per-object sources — it mirrors the ``detect`` key (DAT-410).
+        """
+        src_a = _source(session)
+        src_b = Source(name="s2", source_type="csv")
+        session.add(src_b)
+        session.flush()
+        # Two tables under DIFFERENT sources, both linked to the run's session.
+        a = _typed_table(session, src_a.source_id, "a", ["x"])
+        b = _typed_table(session, src_b.source_id, "b", ["y"])
+        # A typed table under src_a NOT linked to the run's session.
+        orphan = Table(source_id=src_a.source_id, table_name="orphan", layer="typed", row_count=1)
+        session.add(orphan)
+        session.flush()
+
+        scoped = set(
+            SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn, src_a.source_id))
+        )
+        assert scoped == {a.table_id, b.table_id}  # across sources, session-anchored
+        assert orphan.table_id not in scoped  # same source, but not session-linked
 
 
 class TestPerColumnAdhocFailLoud:

@@ -211,10 +211,32 @@ export async function lookTable(
 		};
 	}
 
-	// Readiness is versioned by run_id now (DAT-413): a column has one readiness
-	// row PER run, so resolve the PROMOTED detect snapshot for this table via the
-	// head pointer and join only that run's rows. No promoted run (never detected)
-	// → the join matches nothing and every column reads back unanalyzed.
+	// Three independent reads once the table is known: the per-column grid (its own
+	// add_source `table:{id}` head), the table-grain band (the begin_session
+	// `session:{id}` head — a different head), and the workspace teach count. Fan
+	// them out — they share no input, so sequential awaits only add latency to the
+	// hot path. table_readiness stays null without a session_id (add_source view).
+	const [cols, tableReadiness, pending] = await Promise.all([
+		loadColumnGrid(input.table_id),
+		input.session_id ? loadTableBand(input.session_id, table.tableName) : null,
+		getPendingOverlays(),
+	]);
+
+	return {
+		table_id: table.tableId,
+		table_name: table.tableName,
+		analyzed: cols.some((c) => c.band !== null),
+		pending_teaches: pending.length,
+		columns: cols,
+		table_readiness: tableReadiness,
+	};
+}
+
+/** Resolve a table's per-column readiness grid (the add_source view). Readiness is
+ * versioned by run_id (DAT-413): a column has one row PER run, so resolve the
+ * PROMOTED detect snapshot via the `table:{id}` head and LEFT JOIN only that run's
+ * rows — no promoted run (never detected) ⇒ every column reads back unanalyzed. */
+async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 	const [head] = await metadataDb
 		.select({ runId: metadataSnapshotHead.runId })
 		.from(metadataSnapshotHead)
@@ -222,7 +244,7 @@ export async function lookTable(
 			and(
 				// Head key generalized to a target string (DAT-408): column readiness
 				// is table-grain, so the key is `table:{id}`.
-				eq(metadataSnapshotHead.target, `table:${input.table_id}`),
+				eq(metadataSnapshotHead.target, `table:${tableId}`),
 				eq(metadataSnapshotHead.stage, "detect"),
 			),
 		)
@@ -249,31 +271,10 @@ export async function lookTable(
 					)
 				: sql`false`,
 		)
-		.where(eq(columns.tableId, input.table_id))
+		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));
 
-	const cols = rows.map(projectColumnReadiness);
-	// Table-grain band (DAT-415): only when inspecting inside a begin_session. It
-	// is sealed at the SESSION head (`session:{id}`), a different head than the
-	// per-column rows above (those are the table's add_source detect run), so it's
-	// a separate resolve — null when no session_id or no table-grain row.
-	const tableReadiness = input.session_id
-		? await loadTableBand(input.session_id, table.tableName)
-		: null;
-	// Workspace-wide count, NOT table-scoped: getPendingOverlays returns every
-	// un-superseded teach in the workspace (the helper leaves relevance to the
-	// caller). Surfaced as a coarse "a replay may be due" nudge — the description
-	// says as much so the agent doesn't over-claim it's specific to this table.
-	const pending = await getPendingOverlays();
-
-	return {
-		table_id: table.tableId,
-		table_name: table.tableName,
-		analyzed: cols.some((c) => c.band !== null),
-		pending_teaches: pending.length,
-		columns: cols,
-		table_readiness: tableReadiness,
-	};
+	return rows.map(projectColumnReadiness);
 }
 
 /** Resolve a session's table-grain readiness band for one table (DAT-415).

@@ -197,12 +197,11 @@ export async function whyTable(input: WhyTableInput): Promise<WhyTableResult> {
 		.limit(1);
 	const tableName = table?.tableName ?? null;
 
-	const pending = await getPendingOverlays();
-
 	// A stale table id has no name → no target to read; return a not-found shell.
+	// No table ⇒ no pending teaches to attribute to it, so skip the workspace query.
 	if (tableName === null) {
 		return {
-			...projectWhyTable(input.table_id, null, null, [], pending.length),
+			...projectWhyTable(input.table_id, null, null, [], 0),
 			analysis: "",
 		};
 	}
@@ -265,6 +264,7 @@ export async function whyTable(input: WhyTableInput): Promise<WhyTableResult> {
 				.orderBy(asc(entropyObjects.dimension))
 		: [];
 
+	const pending = await getPendingOverlays();
 	const data = projectWhyTable(
 		input.table_id,
 		tableName,

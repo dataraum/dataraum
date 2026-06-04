@@ -16,6 +16,7 @@ from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
+from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
 if TYPE_CHECKING:
     import duckdb
@@ -27,6 +28,8 @@ def get_multi_table_schema_for_llm(
     session: Session,
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
+    *,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Get schemas for multiple tables with semantic annotations and relationships.
 
@@ -97,12 +100,12 @@ def get_multi_table_schema_for_llm(
     if not table_schemas:
         return {"error": "No tables with DuckDB paths found"}
 
-    # The defined relationships (not candidate) between these tables.
-    # TODO(DAT-408 follow-on): agent-tier read — to scope to the session's current
-    # run, resolve it via the per-session head (head_run_id(session_head_target(
-    # session_id), "detect")) and pass run_id. The validation agent has session_id;
-    # not threaded yet, so this reads the catalog across runs.
-    relationships = load_defined_relationships(session, table_ids)
+    # The defined relationships (not candidate) between these tables, scoped to the
+    # session's current (promoted) run via the per-session head (DAT-409). With no
+    # session_id the head is unresolved and the read falls back to the cross-run
+    # catalog.
+    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    relationships = load_defined_relationships(session, table_ids, run_id=run_id)
 
     # Format relationships
     formatted_rels = []

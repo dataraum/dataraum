@@ -280,6 +280,7 @@ def build_execution_context(
     *,
     slice_column: str | None = None,
     slice_value: str | None = None,
+    session_id: str | None = None,
 ) -> GraphExecutionContext:
     """Build execution context from all analysis modules.
 
@@ -382,14 +383,15 @@ def build_execution_context(
     for entity in session.execute(entity_stmt).scalars().all():
         table_entities[entity.table_id] = entity
 
-    # 9. The defined relationships (not candidate) within the selection.
-    # TODO(DAT-408 follow-on): agent-tier read — to scope to the session's current
-    # run, resolve it via the per-session head (head_run_id(session_head_target(
-    # session_id), "detect")) and pass run_id. The graph/query agents have session_id;
-    # not threaded yet, so this reads the catalog across runs.
+    # 9. The defined relationships (not candidate) within the selection, scoped to
+    # the session's current (promoted) run via the per-session head (DAT-409). With
+    # no session_id the head is unresolved and the read falls back to the cross-run
+    # catalog.
     from dataraum.analysis.relationships.utils import load_defined_relationships
+    from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
-    relationships_db = load_defined_relationships(session, table_ids)
+    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
 
     # Build relationship contexts
     relationships: list[RelationshipContext] = []

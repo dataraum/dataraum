@@ -92,7 +92,9 @@ class ValidationAgent(LLMFeature):
         results: list[ValidationResult] = []
 
         # Get multi-table schema with relationships and row counts
-        schema = get_multi_table_schema_for_llm(session, table_ids, duckdb_conn=duckdb_conn)
+        schema = get_multi_table_schema_for_llm(
+            session, table_ids, duckdb_conn=duckdb_conn, session_id=session_id
+        )
         if "error" in schema:
             return Result.fail(str(schema["error"]))
 

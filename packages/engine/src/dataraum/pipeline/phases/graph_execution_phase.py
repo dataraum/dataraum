@@ -173,6 +173,10 @@ class GraphExecutionPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,
             schema_mapping_id=ctx.source_id,
+            # require_session_id() falls back to manager.session_id (the scheduler
+            # path where the field is unset) — matches the snippet library below;
+            # ctx.session_id alone would silently read cross-run on that path.
+            session_id=ctx.require_session_id(),
         )
 
         # Create graph agent
@@ -385,6 +389,7 @@ def _execute_isolated(
             duckdb_conn=cursor,
             table_ids=table_ids,
             schema_mapping_id=source_id,
+            session_id=session_id,
         )
         return agent.execute(
             session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id

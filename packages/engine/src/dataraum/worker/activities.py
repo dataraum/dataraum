@@ -30,6 +30,7 @@ from dataraum.worker.activity import (
     SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
+    materialize_session_overlays,
     promote_run,
     promote_session_run,
     raw_table_ids,
@@ -189,6 +190,20 @@ class PhaseActivities:
             self._manager, "semantic_per_table", payload.identity, payload.table_ids
         )
         return self._outcome_or_raise(run, "semantic_per_table")
+
+    @activity.defn(name="session_materialize_overlays")
+    def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Materialize durable relationship overlays into this run (DAT-409).
+
+        Between ``semantic_per_table`` and ``session_detect``: writes the user's
+        ``add``/``keep`` relationship teaches as run-stamped ``manual``/``keeper``
+        rows so the durable catalog survives every run, then detect measures it.
+        """
+        count = materialize_session_overlays(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"materialized {count} durable relationship(s) for session {identity.session_id}",
+        )
 
     @activity.defn(name="session_detect")
     def run_session_detect(self, identity: SessionIdentity) -> PhaseOutcome:

@@ -403,6 +403,18 @@ class BeginSessionWorkflow:
                 retry_policy=_RETRY,
             )
 
+        # Materialize durable relationship teaches (DAT-409): after the llm pass, fold
+        # the user's add/keep overlays into this run as manual/keeper rows (skipping
+        # pairs already produced as llm) so the defined catalog detect measures next
+        # carries them.
+        await workflow.execute_activity(
+            "session_materialize_overlays",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
         # Terminal relationship detect (DAT-408): runs the relationship detectors
         # over the session's tables, persisting relationship-granularity readiness
         # stamped with ``run_id`` — then promote flips the heads to this run.

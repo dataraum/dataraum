@@ -458,6 +458,29 @@ def run_detectors(
     return total
 
 
+def materialize_session_overlays(manager: ConnectionManager, identity: SessionIdentity) -> int:
+    """Materialize the session's durable relationship overlays into this run (DAT-409).
+
+    Runs between ``semantic_per_table`` and ``session_detect``: writes the user's
+    ``add``/``keep`` relationship overlays as run-stamped ``manual``/``keeper``
+    ``Relationship`` rows so they re-appear every run (skipping pairs the run already
+    produced as ``llm``, and rejected pairs). ``session_detect`` then measures the
+    whole defined catalog. Source-free; tables resolve from ``session_tables``.
+    """
+    from dataraum.analysis.relationships.materialize import materialize_relationship_overlays
+
+    with manager.session_scope() as session:
+        table_ids = tables_for_session(session, identity.session_id)
+        if not table_ids:
+            logger.warning("materialize_no_session_tables", session_id=identity.session_id)
+            return 0
+        count = materialize_relationship_overlays(
+            session, identity.session_id, run_id=identity.run_id, table_ids=table_ids
+        )
+    logger.info("session_materialize_done", session_id=identity.session_id, count=count)
+    return count
+
+
 def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
     """Flip the snapshot head to this run for every ``(table_id, stage)`` — terminal step (DAT-413).
 

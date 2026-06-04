@@ -91,6 +91,7 @@ class BusinessCycleAgent(LLMFeature):
                 duckdb_conn,
                 table_ids,
                 vertical=vertical,
+                session_id=session_id,
             )
             context_str = format_context_for_prompt(context)
 

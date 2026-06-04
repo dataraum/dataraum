@@ -139,6 +139,7 @@ class QueryAgent(LLMFeature):
                 session=session,
                 table_ids=typed_table_ids,
                 duckdb_conn=duckdb_conn,
+                session_id=session_id,
             )
         except Exception as e:
             logger.error("context_build_failed", error=str(e))

@@ -89,6 +89,10 @@ class ExecutionContext:
         session: Any,  # Session
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
+        *,
+        slice_column: str | None = None,
+        slice_value: str | None = None,
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -100,7 +104,11 @@ class ExecutionContext:
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
             table_ids: List of table IDs to include in context
-            **kwargs: Additional ExecutionContext arguments
+            slice_column: Optional column to slice the context by.
+            slice_value: Optional value for the slice column.
+            session_id: Analytical session — scopes the relationship read to that
+                session's promoted run (DAT-409). Omitted ⇒ cross-run fallback.
+            **kwargs: Additional ExecutionContext dataclass fields.
 
         Returns:
             ExecutionContext with rich_context populated
@@ -111,8 +119,9 @@ class ExecutionContext:
             session=session,
             table_ids=table_ids,
             duckdb_conn=duckdb_conn,
-            slice_column=kwargs.pop("slice_column", None),
-            slice_value=kwargs.pop("slice_value", None),
+            slice_column=slice_column,
+            slice_value=slice_value,
+            session_id=session_id,
         )
 
         return cls(

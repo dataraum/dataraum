@@ -29,6 +29,7 @@ from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
+from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,7 @@ def build_cycle_detection_context(
     table_ids: list[str],
     *,
     vertical: str,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -135,13 +137,12 @@ def build_cycle_detection_context(
         for ent, table_name in entities
     ]
 
-    # 3. The defined relationships (not candidate) within the selection.
-    # TODO(DAT-408 follow-on): this is an agent-tier context builder — to scope to the
-    # session's current run, resolve it via the per-session head
-    # (head_run_id(session_head_target(session_id), "detect")) and pass run_id. The
-    # caller (cycles agent) has session_id; not threaded yet, so this reads the
-    # catalog across runs.
-    relationships = load_defined_relationships(session, table_ids)
+    # 3. The defined relationships (not candidate) within the selection, scoped to
+    # the session's current (promoted) run via the per-session head (DAT-409). With
+    # no session_id (legacy/un-sealed callers) the head is unresolved and the read
+    # falls back to the cross-run catalog.
+    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    relationships = load_defined_relationships(session, table_ids, run_id=run_id)
 
     rel_list = []
     for rel in relationships:

@@ -193,6 +193,65 @@ def test_get_multi_table_schema_for_llm(session, two_tables_with_relationship):
     assert rel["confidence"] == 0.95
 
 
+def test_get_multi_table_schema_for_llm_scopes_to_current_run(
+    session, two_tables_with_relationship
+):
+    """DAT-409: an agent-tier read scopes to the session's promoted run.
+
+    A multi-run session coexists two runs' relationship catalogs (DAT-408). When
+    ``session_id`` is passed, the builder resolves the per-session head and must
+    return ONLY the current (promoted) run's relationships — never the union that
+    leaks stale prior-run rows.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+
+    txn_table, acct_table = two_tables_with_relationship
+    table_ids = [txn_table.table_id, acct_table.table_id]
+    session_id = "sess-1"
+    session.add(InvestigationSession(session_id=session_id, intent="test"))
+    session.flush()
+
+    # Re-stamp the fixture's relationship onto the current run; add a stale prior-run
+    # row for the SAME column pair (distinguishable by confidence). The unique key
+    # (session_id, run_id, from, to, method) lets both coexist.
+    current = session.query(Relationship).one()
+    current.session_id = session_id
+    current.run_id = "run-current"
+    current.confidence = 0.95
+
+    stale = Relationship(
+        session_id=session_id,
+        run_id="run-stale",
+        from_table_id=current.from_table_id,
+        from_column_id=current.from_column_id,
+        to_table_id=current.to_table_id,
+        to_column_id=current.to_column_id,
+        relationship_type="foreign_key",
+        cardinality="many-to-one",
+        confidence=0.10,
+        detection_method="llm",
+    )
+    session.add(stale)
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(session_id), stage="detect", run_id="run-current"
+        )
+    )
+    session.commit()
+
+    # With session_id: only the promoted run's relationship surfaces.
+    scoped = get_multi_table_schema_for_llm(session, table_ids, session_id=session_id)
+    assert len(scoped["relationships"]) == 1
+    assert scoped["relationships"][0]["confidence"] == 0.95
+
+    # Without session_id: the read is unscoped and both runs leak through (the bug
+    # this fix closes for the agent tier).
+    unscoped = get_multi_table_schema_for_llm(session, table_ids)
+    assert len(unscoped["relationships"]) == 2
+
+
 def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns):
     """Test fetching multi-table schema with single table (no relationships)."""
     table = table_with_columns

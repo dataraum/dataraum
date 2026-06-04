@@ -173,6 +173,11 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("modal-quarantine-count").textContent).toContain(
 			"2",
 		);
+		// The modal is a third source-display surface — it must also show the group
+		// ("Uploads"), never the `src_<digest>` hash.
+		const modal = within(screen.getByTestId("inventory-detail-modal"));
+		expect(modal.getByText("Uploads")).toBeTruthy();
+		expect(modal.queryByText(/src_/)).toBeNull();
 	});
 
 	it("renders the empty state when there are no tables", () => {

@@ -429,6 +429,9 @@ export function WorkspaceInventoryWidget({
 			</Stack>
 
 			{selectedGroupId && selected.length > 0 && (
+				// `selected` is non-empty (guarded) and every row in it resolves to the
+				// SAME group (that's how it was filtered), so `selected[0]` safely
+				// yields the card's group label/kind.
 				<SourceCard
 					tables={selected}
 					group={sourceGroup(

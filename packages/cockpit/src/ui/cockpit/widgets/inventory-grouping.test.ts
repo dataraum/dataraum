@@ -18,7 +18,7 @@ function phys(over: Partial<InventoryTable> = {}): InventoryTable {
 		column_count: 5,
 		source_id: "s1",
 		source_name: "src",
-		source_type: "file",
+		source_type: "csv",
 		source_backend: null,
 		source_status: null,
 		analyzed: true,

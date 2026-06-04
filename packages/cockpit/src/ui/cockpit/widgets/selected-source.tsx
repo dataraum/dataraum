@@ -33,13 +33,13 @@ import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
  * error. The widget fetches rather than importing the server module — keeping
  * the Temporal/Postgres/config deps out of the client bundle. */
 async function triggerAddSourceRequest(
-	sourceId: string,
+	sourceIds: string[],
 	vertical: string,
 ): Promise<TriggerAddSourceResult> {
 	const res = await fetch("/api/add-source", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ source_id: sourceId, vertical }),
+		body: JSON.stringify({ source_ids: sourceIds, vertical }),
 	});
 	if (!res.ok) {
 		const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -68,8 +68,10 @@ export function SelectedSourceWidget({
 		setTriggering(true);
 		setTriggerError(null);
 		try {
+			// One selected source today → a 1-element run set (DAT-422). Per-file
+			// content-keyed sources (N) land with the select content-keying follow-on.
 			const result = await triggerAddSourceRequest(
-				selection.source_id,
+				[selection.source_id],
 				selection.vertical,
 			);
 			// Imperative canvas swap: the progress widget is seeded by THIS REST

@@ -84,18 +84,20 @@ async function ingest(client: Client): Promise<string[]> {
 		.onConflictDoNothing({ target: investigationSessions.sessionId });
 
 	const input: AddSourceInput = {
+		// Source-free identity + the run's source SET (DAT-422): one source here, so
+		// a 1-element set; the run is keyed by its session, not a source.
 		identity: {
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			source_id: sourceId,
 			session_id: sessionId,
 			vertical: VERTICAL,
 		},
+		source_ids: [sourceId],
 	};
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
 		args: [input],
 	});
 	const result = (await handle.result()) as AddSourceResult;

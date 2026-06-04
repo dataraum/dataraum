@@ -1,11 +1,12 @@
 // add_source TRIGGER endpoint (DAT-352) — the explicit "Add source" action.
 //
 // A thin I/O shell over `triggerAddSource` (temporal/trigger-add-source.ts):
-// parse + validate `{source_id, vertical?}`, seed the investigation_sessions row
-// + start addSourceWorkflow NON-blocking, return `{workflow_id, run_id,
-// source_id, session_id}`. The widget posts here over `fetch` rather than
-// importing the server module, keeping the Temporal/Postgres/config deps out of
-// the client bundle — same shape as `/api/run-sql`.
+// parse + validate `{source_ids, vertical?}` (DAT-422: a run is over a SET of
+// objects from 1–N sources), seed the investigation_sessions row + start
+// addSourceWorkflow NON-blocking, return `{workflow_id, run_id, source_ids,
+// session_id}`. The widget posts here over `fetch` rather than importing the
+// server module, keeping the Temporal/Postgres/config deps out of the client
+// bundle — same shape as `/api/run-sql`.
 
 import { createFileRoute } from "@tanstack/react-router";
 import {

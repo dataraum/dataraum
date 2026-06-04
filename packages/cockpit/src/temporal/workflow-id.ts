@@ -8,20 +8,22 @@
 // Every workflow ID encodes `workspace_id` as its first segment. Slice 1 runs
 // single-workspace so it's constant today, but threading it through now makes
 // slice 2+ multi-workspace routing a no-op and guarantees two workspaces sharing
-// a `source_id` never collide on a workflow ID. `workspace_id` is kept verbatim
+// a `session_id` never collide on a workflow ID. `workspace_id` is kept verbatim
 // (raw UUID with dashes) — Temporal IDs have no charset restriction, so we favour
 // grep-able IDs over the underscored `ws_<id>` schema form.
 
 /**
- * Workflow ID for the parent `addSourceWorkflow` of one source. Reused across
- * teach replays of the same source (with `ALLOW_DUPLICATE`) so Temporal groups
- * the iterations under one ID.
+ * Workflow ID for the parent `addSourceWorkflow` of one run. A run ingests a SET
+ * of objects from 1–N sources (DAT-422), so it is keyed by its `session_id` — the
+ * run's table-set anchor — NOT a source, mirroring `beginSessionWorkflowId`.
+ * Reused across teach replays of the same run (with `ALLOW_DUPLICATE`) so Temporal
+ * groups the iterations under one ID.
  */
 export function addSourceWorkflowId(
 	workspaceId: string,
-	sourceId: string,
+	sessionId: string,
 ): string {
-	return `addsource-${workspaceId}-${sourceId}`;
+	return `addsource-${workspaceId}-${sessionId}`;
 }
 
 /**

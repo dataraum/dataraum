@@ -131,11 +131,17 @@ describe("replay (DAT-413)", () => {
 		const result = await replay({ source_id: "src-1", vertical: "finance" });
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ identity: Record<string, unknown> }];
+		const args = opts.args as [
+			{ identity: Record<string, unknown>; source_ids: string[] },
+		];
 		// The whole bug: the seeded session and the run's session must be identical.
 		expect(args[0].identity.session_id).toBe(h.seededRow?.sessionId);
+		// The source rides in the run's source SET (DAT-422), not the identity.
+		expect(args[0].identity.source_id).toBeUndefined();
+		expect(args[0].source_ids).toEqual(["src-1"]);
 		expect(result.session_id).toBe(h.seededRow?.sessionId);
-		expect(opts.workflowId).toBe(`addsource-${WS}-src-1`);
+		// Workflow id is keyed by the run's session (DAT-422), not the source.
+		expect(opts.workflowId).toBe(`addsource-${WS}-${h.seededRow?.sessionId}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});

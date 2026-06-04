@@ -117,9 +117,10 @@ async function runInitial(
 	sessionId: string,
 ): Promise<{ result: AddSourceResult; runId: string }> {
 	const input: AddSourceInput = {
+		// Source-free identity + the run's source SET (DAT-422): one source here,
+		// so a 1-element set. The run is keyed by its session, not a source.
 		identity: {
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			source_id: sourceId,
 			session_id: sessionId,
 			// `_adhoc` is the empty / start-here vertical (DAT-371): cold-start
 			// induction generates concepts from the data and stores them as
@@ -128,6 +129,7 @@ async function runInitial(
 			// works against the read-only mounted config.
 			vertical: "_adhoc",
 		},
+		source_ids: [sourceId],
 	};
 	// `start` (not `execute`) so we can capture the run id — the replay
 	// assertion compares its fresh run_id against the initial one.
@@ -135,7 +137,7 @@ async function runInitial(
 		(input: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
 		args: [input],
 	});
 	const result = (await handle.result()) as AddSourceResult;
@@ -161,13 +163,12 @@ async function runInitial(
 
 async function awaitReplay(
 	client: Client,
-	sourceId: string,
+	workflowId: string,
 	runId: string,
 ): Promise<AddSourceResult> {
-	const handle = client.workflow.getHandle(
-		addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sourceId),
-		runId,
-	);
+	// The replay reuses the run's session, so its workflow id is the session-keyed
+	// one the replay returned (DAT-422) — get the handle by that exact id + run.
+	const handle = client.workflow.getHandle(workflowId, runId);
 	return (await handle.result()) as AddSourceResult;
 }
 
@@ -230,7 +231,11 @@ async function main(): Promise<void> {
 			session_id: sessionId,
 			vertical: "_adhoc",
 		});
-		const replayed = await awaitReplay(client, sourceId, replayResult.run_id);
+		const replayed = await awaitReplay(
+			client,
+			replayResult.workflow_id,
+			replayResult.run_id,
+		);
 
 		// A replay is a fresh execution, so it carries a NEW run_id (≠ the
 		// initial run). The engine mints the version run_id internally; here we

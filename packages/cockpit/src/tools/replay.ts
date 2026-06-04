@@ -2,11 +2,13 @@
 // teaches as a full add_source re-run under a fresh run_id.
 //
 // Pure compute kick: starts a fresh `addSourceWorkflow` execution with the same
-// workflow id as the initial run (`addsource-<workspace_id>-<source_id>`; see
-// workflow-id.ts, DAT-364), and uses ALLOW_DUPLICATE policy so Temporal UI
-// groups iterations per source. The engine mints a fresh `run_id` internally
-// (versioned metadata, append-only snapshots) — the cockpit does NOT choose a
-// scope or a from_phase; a replay is always a full, non-destructive re-run.
+// workflow id as the initial run (`addsource-<workspace_id>-<session_id>`; see
+// workflow-id.ts, DAT-364/DAT-422 — a run is keyed by its session, not a source),
+// and uses ALLOW_DUPLICATE policy so Temporal UI groups iterations of the same
+// run (reuse the initial run's `session_id` to group). The engine mints a fresh
+// `run_id` internally (versioned metadata, append-only snapshots) — the cockpit
+// does NOT choose a scope or a from_phase; a replay is always a full,
+// non-destructive re-run, here over a 1-element `source_ids` set (DAT-422).
 //
 // Returns the workflow id + run id immediately — the caller polls / queries
 // Temporal for progress. End-to-end "replay actually produces clean output"
@@ -95,10 +97,10 @@ export interface ReplayResult {
  * source re-run. Returns immediately with the workflow + run id; the caller
  * polls Temporal for progress and the final result.
  *
- * Workflow id is reused per source (`addsource-<workspace_id>-<source_id>`)
- * with `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the same
- * id in Temporal UI — natural grouping for "all iterations of this source's
- * teach history".
+ * Workflow id is keyed by the run's session (`addsource-<workspace_id>-<session_id>`,
+ * DAT-422) with `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the
+ * same id in Temporal UI — reuse the initial run's `session_id` (the default mints
+ * a fresh one) to group "all iterations of this run's teach history".
  */
 export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	if (
@@ -138,18 +140,20 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		})
 		.onConflictDoNothing({ target: investigationSessions.sessionId });
 
+	// Source-free identity (DAT-422): the source to re-process rides in `source_ids`
+	// (a 1-element set for a replay); the engine scopes `import` to it and the
+	// run-level reduce/detect are session-scoped. Keyed by `session_id`, not source.
 	const identity: SourceIdentity = {
 		workspace_id: config.dataraumWorkspaceId,
-		source_id: input.source_id,
 		session_id: sessionId,
 		vertical,
 	};
-	const payload: AddSourceInput = { identity };
+	const payload: AddSourceInput = {
+		identity,
+		source_ids: [input.source_id],
+	};
 
-	const workflowId = addSourceWorkflowId(
-		config.dataraumWorkspaceId,
-		input.source_id,
-	);
+	const workflowId = addSourceWorkflowId(config.dataraumWorkspaceId, sessionId);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {

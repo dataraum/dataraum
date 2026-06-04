@@ -31,21 +31,24 @@ const WorkflowStatus = z.object({
 export const workflowStatusTool = toolDefinition({
 	name: "workflow_status",
 	description:
-		"Check whether a background engine run (add_source or replay) has finished. " +
-		"Pass the workflow_id and run_id those operations returned. Returns the " +
-		"current phase, tables_completed / tables_total, the run status, and `done` " +
-		"(true once the run is closed). Use this to detect completion — do NOT poll " +
-		"list_tables as a proxy.",
+		"Check whether a background engine run (add_source, replay, or begin_session) " +
+		"has finished. Pass the workflow_id and run_id those operations returned. " +
+		"Returns the current phase, tables_completed / tables_total, the run status, " +
+		"and `done` (true once the run is closed). begin_session is sequential, so it " +
+		"reports status + done without per-phase detail. Use this to detect " +
+		"completion — do NOT poll list_tables as a proxy.",
 	inputSchema: z.object({
 		workflow_id: z
 			.string()
 			.min(1)
-			.describe("The workflow_id returned by add_source or replay."),
+			.describe(
+				"The workflow_id returned by add_source, replay, or begin_session.",
+			),
 		run_id: z
 			.string()
 			.min(1)
 			.describe(
-				"The run_id returned by add_source or replay (pins the exact run).",
+				"The run_id returned by add_source, replay, or begin_session (pins the exact run).",
 			),
 	}),
 	outputSchema: WorkflowStatus,

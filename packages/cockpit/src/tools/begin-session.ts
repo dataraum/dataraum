@@ -45,6 +45,11 @@ import { beginSessionWorkflowId } from "../temporal/workflow-id";
  * tables → session_tables → investigation_sessions and take the most-recent
  * NON-`_adhoc` vertical. Returns null when none of the tables has a framed
  * session yet (the caller then falls back to `_adhoc`).
+ *
+ * If the selection spans tables framed under DIFFERENT verticals, the
+ * most-recently-framed one wins (deterministic, not random) — "one frame per
+ * session" is the slice-2 invariant, so a mixed selection is unusual; the caller
+ * passes an explicit `vertical` to choose. The tool description says as much.
  */
 async function resolveSelectionVertical(
 	tableIds: string[],
@@ -193,13 +198,13 @@ export const beginSessionTool = toolDefinition({
 			.string()
 			.optional()
 			.describe(
-				"Optional session id; omit to start a fresh session, pass one to re-run it.",
+				"Optional session id; omit to start a fresh session, pass one to re-run it after teaching. NOTE: re-running keeps the session's original vertical — a different `vertical` here is ignored for an existing session.",
 			),
 		vertical: z
 			.string()
 			.optional()
 			.describe(
-				"Optional. Omit to run on the vertical the selected tables were framed on (resolved automatically); pass one only to override.",
+				"Optional. Omit to run on the vertical the selected tables were framed on (resolved automatically; if they span multiple verticals the most-recent wins, so pass one explicitly for a mixed selection). Pass one to override.",
 			),
 	}),
 	outputSchema: z.object({

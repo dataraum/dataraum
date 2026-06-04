@@ -33,11 +33,14 @@ src/
 Run the dev server **outside docker** for hot reload (the cockpit container is for prod-like smoke only):
 
 ```bash
-docker compose -f packages/infra/docker-compose.yml up -d --wait control-plane postgres  # once, from root
-bun install && bun run dev          # → http://localhost:3000, proxies /api/* to the engine on :8000
-bun run check                       # biome lint + format
-bun run test                        # vitest
+docker compose -f packages/infra/docker-compose.yml up -d --wait postgres seaweedfs  # backend deps, from root
+cp .env.example .env                 # host-dev defaults; fill ANTHROPIC_API_KEY (gitignored)
+bun install && bun --bun run dev     # → http://localhost:3000  (the --bun flag is required)
+bun run check                        # biome lint + format
+bun run test                         # vitest
 ```
+
+`/api/chat` is a TanStack Start **server route** that streams from the Anthropic SDK directly — NOT a proxy to the engine (the engine is a Temporal worker with no HTTP). The cockpit reads engine metadata straight from Postgres via Drizzle.
 
 ## Stack
 
@@ -67,7 +70,7 @@ If you notice yourself thinking "this works" about a surface you only tried with
 
 ## Driving the UI from a session
 
-Playwright MCP is registered per-project in `~/.claude.json` (stdio, `npx @playwright/mcp@latest`) — browser tools are available automatically when the dev server is up on `:3000`. Bring up engine + `bun run dev`, then point the agent at a page; edits land hot via Vite.
+Playwright MCP is registered per-project in `~/.claude.json` (stdio, `npx @playwright/mcp@latest`) — browser tools are available automatically when the dev server is up on `:3000`. Bring up the backend deps + `bun --bun run dev`, then point the agent at a page; edits land hot via Vite.
 
 ## Sibling packages
 

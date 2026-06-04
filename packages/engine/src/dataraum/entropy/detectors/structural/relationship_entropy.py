@@ -64,7 +64,11 @@ class RelationshipEntropyDetector(EntropyDetector):
             run_id=context.run_id,
         )
         if rel is not None:
-            context.analysis_results["relationship"] = rel
+            # Store under the declared RELATIONSHIPS key so can_run() (which gates on
+            # required_analyses) finds it — detect() reads the same key. Storing under
+            # a different key ("relationship") left can_run permanently False → the
+            # detector was silently skipped (zero recall). Found by DAT-405 calibration.
+            context.analysis_results[AnalysisKey.RELATIONSHIPS] = rel
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect relationship-quality entropy for the focal relationship (DAT-408).
@@ -93,7 +97,7 @@ class RelationshipEntropyDetector(EntropyDetector):
         # RI boost factor: sqrt amplifies small orphan rates
         ri_boost = detector_config.get("ri_boost", True)
 
-        rel = context.get_analysis("relationship", None)
+        rel = context.get_analysis(AnalysisKey.RELATIONSHIPS, None)
         if not rel:
             return []
 

@@ -58,11 +58,16 @@ export function CockpitView() {
 				ref={chatRef}
 				data-testid="region-chat"
 				style={{
-					width: "30%",
+					// The chat is a STABLE column: it tracks the window proportionally but
+					// is clamped 20–26rem so it never sprawls on a wide monitor nor
+					// collapses below readable on a small one. The canvas (flex:1) absorbs
+					// all the slack, so resizing the window grows the canvas, not the chat.
+					// No divider border here — the raised canvas card edge is the only,
+					// quiet separation between the two areas.
+					width: "28%",
 					minWidth: "20rem",
-					borderRightWidth: 1,
-					borderRightStyle: "solid",
-					borderRightColor: tokens.colors.border,
+					maxWidth: "26rem",
+					flexShrink: 0,
 					overflow: "hidden",
 				}}
 			>

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -109,17 +109,23 @@ class ProgressSnapshot:
 
 
 class SourceIdentity(BaseModel):
-    """The identity header the workflows carry into every activity.
+    """The run-identity header the workflows carry into every activity.
 
-    Pure data — IDs the runner uses to reconstruct source identity + phase
-    config from the workspace substrate. ``session_id`` is the per-run FK for
-    session-scoped rows (the workflow execution processing the source), NOT a
-    connection scope. ``workspace_id`` is the (future, DAT-364) routing key the
-    runner checks against the worker's bound workspace.
+    Pure data. ``session_id`` is the per-run FK for session-scoped rows AND the
+    run's table-set anchor (``session_tables``) — the relational scope key the
+    analysis phases use (DAT-421). ``workspace_id`` is the (future, DAT-364)
+    routing key the runner checks against the worker's bound workspace.
+
+    ``source_id`` is OPTIONAL (DAT-422): a run is over a SET of objects from 1–N
+    sources, not one source — the per-source ids ride in
+    ``AddSourceInput.source_ids`` and ``import`` resolves each. It stays here only
+    for the per-source ``import``/per-table activities that the workflow scopes to
+    one source at a time (the runner sets it per call); the run-level reduce/detect
+    phases are session-scoped and leave it ``None``.
     """
 
     workspace_id: str
-    source_id: str
+    source_id: str | None = None
     session_id: str
     vertical: str | None = None
     # Snapshot version axis (DAT-413): minted once by ``AddSourceWorkflow.run``
@@ -254,13 +260,23 @@ class BeginSessionResult(BaseModel):
 
 
 class AddSourceInput(BaseModel):
-    """Input to ``AddSourceWorkflow`` — the source identity header.
+    """Input to ``AddSourceWorkflow`` — the run-identity header + the source set.
 
-    The table set is unknown until ``import`` enumerates it (a source is a dir /
-    DB recipe), so the parent carries identity only and discovers tables at run.
+    A run ingests a SET of sources (DAT-422): N per-file content-sources for an
+    upload, or one connection source for a database. ``import`` runs once per
+    source in ``source_ids`` (a source is a dir of files / a DB recipe — its raw
+    tables are discovered at run), and the per-table fan-out + the session-scoped
+    reduce/detect run over the union.
+
+    Backward-compatible: an empty ``source_ids`` falls back to the single
+    ``identity.source_id`` (today's single-source trigger), so a 1-element run is
+    the current behavior.
     """
 
     identity: SourceIdentity
+    # The sources this run imports, in order. Empty ⇒ fall back to
+    # ``[identity.source_id]`` (the pre-DAT-422 single-source trigger).
+    source_ids: list[str] = Field(default_factory=list)
 
 
 class AddSourceResult(BaseModel):

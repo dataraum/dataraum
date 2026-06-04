@@ -24,6 +24,7 @@ import {
 	Text,
 } from "@mantine/core";
 import { useState } from "react";
+import { fileIdSegment, fileName } from "#/lib/file-uri";
 import type { TriggerAddSourceResult } from "#/temporal/trigger-add-source";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -136,18 +137,27 @@ export function SelectedSourceWidget({
 					<Text fw={500} size="sm">
 						{fileUris.length} file{fileUris.length === 1 ? "" : "s"} to import
 					</Text>
+					{/* Show the filename + upload id, not the full s3:// path — the path
+					    stays in the underlying data, but the bucket/prefix plumbing isn't
+					    what the user needs to read. */}
 					<Table.ScrollContainer minWidth={360}>
 						<Table striped highlightOnHover>
 							<Table.Thead>
 								<Table.Tr>
-									<Table.Th>Object URI</Table.Th>
+									<Table.Th>File</Table.Th>
+									<Table.Th>Upload id</Table.Th>
 								</Table.Tr>
 							</Table.Thead>
 							<Table.Tbody>
 								{fileUris.map((uri) => (
 									<Table.Tr key={uri} data-testid={`selected-file-${uri}`}>
 										<Table.Td>
-											<Code>{uri}</Code>
+											<Text size="sm">{fileName(uri)}</Text>
+										</Table.Td>
+										<Table.Td>
+											<Text size="xs" c="dimmed">
+												{fileIdSegment(uri) ?? "—"}
+											</Text>
 										</Table.Td>
 									</Table.Tr>
 								))}

@@ -27,6 +27,7 @@ import {
 import { SendHorizontal, Square } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
+import { MarkdownMessage } from "#/ui/cockpit/markdown";
 import { isCanvasTool, toolChipSummary } from "#/ui/cockpit/tool-chip-summary";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 import { tokens } from "#/ui/theme";
@@ -54,6 +55,28 @@ function parseArguments(raw: unknown): unknown {
 	} catch {
 		return undefined;
 	}
+}
+
+// Extended-thinking parts (Claude with thinking enabled). Collapsed by default —
+// reasoning is supporting context, not the answer. Dropped silently before this;
+// surfaced now so it's never lost if thinking is turned on server-side.
+function ThinkingBlock({ content }: { content: string }) {
+	return (
+		<details data-testid="thinking-block">
+			<summary style={{ cursor: "pointer" }}>
+				<Text span size="xs" c="dimmed">
+					Thinking
+				</Text>
+			</summary>
+			<Text
+				size="xs"
+				c="dimmed"
+				style={{ whiteSpace: "pre-wrap", fontStyle: "italic" }}
+			>
+				{content}
+			</Text>
+		</details>
+	);
 }
 
 function ToolCallCard({
@@ -232,18 +255,35 @@ export function ChatRail() {
 					{messages.map((m, mi) =>
 						m.parts.map((part, i) => {
 							if (part.type === "text") {
+								// User text is verbatim (they didn't write markdown); assistant
+								// text renders as sanitized markdown so snippets / SQL / lists
+								// stop showing as raw `**` and ``` fences.
+								if (m.role === "user") {
+									return (
+										<Text
+											// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts
+											key={`${m.id}-${i}`}
+											size="sm"
+											c="text"
+											fw={600}
+											style={{ whiteSpace: "pre-wrap" }}
+										>
+											{part.content}
+										</Text>
+									);
+								}
 								return (
-									<Text
-										// Parts within a message are append-only; index keys are stable.
+									<MarkdownMessage
 										// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts
 										key={`${m.id}-${i}`}
-										size="sm"
-										c={m.role === "user" ? "text" : "dimmed"}
-										fw={m.role === "user" ? 600 : 400}
-										style={{ whiteSpace: "pre-wrap" }}
-									>
-										{part.content}
-									</Text>
+										content={part.content}
+									/>
+								);
+							}
+							if (part.type === "thinking") {
+								return (
+									// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts
+									<ThinkingBlock key={`${m.id}-${i}`} content={part.content} />
 								);
 							}
 							if (part.type === "tool-call") {

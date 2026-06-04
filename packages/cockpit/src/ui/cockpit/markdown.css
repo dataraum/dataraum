@@ -1,0 +1,90 @@
+/* Prose styling for rendered assistant markdown (DAT-353 Slice 2). Scoped under
+ * .cockpit-md; uses Mantine CSS vars so it tracks the theme. The highlight.js
+ * theme (github.css) colors the tokens inside `pre code`; we neutralize its
+ * background so the code sits on our own block surface. */
+
+.cockpit-md {
+	font-size: var(--mantine-font-size-sm);
+	line-height: 1.55;
+	color: var(--mantine-color-dimmed);
+	overflow-wrap: anywhere;
+}
+
+.cockpit-md > :first-child {
+	margin-top: 0;
+}
+
+.cockpit-md > :last-child {
+	margin-bottom: 0;
+}
+
+.cockpit-md p {
+	margin: 0.4em 0;
+}
+
+.cockpit-md ul,
+.cockpit-md ol {
+	margin: 0.4em 0;
+	padding-left: 1.4em;
+}
+
+.cockpit-md li {
+	margin: 0.15em 0;
+}
+
+.cockpit-md a {
+	color: var(--mantine-color-blue-6);
+	text-decoration: underline;
+}
+
+.cockpit-md code {
+	font-family: var(--mantine-font-family-monospace);
+	font-size: 0.85em;
+	background: var(--mantine-color-gray-1);
+	padding: 0.1em 0.3em;
+	border-radius: 3px;
+}
+
+.cockpit-md pre {
+	margin: 0.5em 0;
+	padding: 0.6em 0.8em;
+	background: var(--mantine-color-gray-0);
+	border: 1px solid var(--mantine-color-gray-3);
+	border-radius: 6px;
+	overflow-x: auto;
+}
+
+.cockpit-md pre code {
+	background: none;
+	padding: 0;
+	font-size: 0.82em;
+}
+
+.cockpit-md h1,
+.cockpit-md h2,
+.cockpit-md h3,
+.cockpit-md h4 {
+	margin: 0.6em 0 0.3em;
+	font-size: 1em;
+	font-weight: 600;
+}
+
+.cockpit-md blockquote {
+	margin: 0.4em 0;
+	padding-left: 0.8em;
+	border-left: 3px solid var(--mantine-color-gray-3);
+	color: var(--mantine-color-gray-6);
+}
+
+.cockpit-md table {
+	border-collapse: collapse;
+	margin: 0.5em 0;
+	font-size: 0.85em;
+}
+
+.cockpit-md th,
+.cockpit-md td {
+	border: 1px solid var(--mantine-color-gray-3);
+	padding: 0.25em 0.5em;
+	text-align: left;
+}

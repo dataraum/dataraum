@@ -4,6 +4,25 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-04: DAT-421 — add_source `semantic_per_column` scopes by session, not source
+
+Epic DAT-420 (source model). The add_source source-level reduce was the last spine
+phase still selecting its tables by `Table.source_id == ctx.source_id`; it now uses the
+session anchor `tables_for_session(session_id)` — the same key `detect`/readiness already
+use (DAT-410), populated by `typing` via `session_tables` (DAT-407).
+
+- **Behavior-preserving for single-source calibration.** For an add_source run `typing`
+  links exactly that source's freshly-typed tables to the run's session, so the reduce's
+  table set is identical to the old source filter. The `[semantic]` producer feeds the
+  same columns to `business_meaning`, `unit_entropy`, `temporal`, `null_ratio`,
+  `type_fidelity`, `benford` — **no recall/precision movement expected** from this ticket.
+- **What changed for eval:** the scoping KEY is now session-id, not source-id. If a future
+  calibration exercises a multi-(per-object-)source run, the reduce selects the run's
+  session-linked tables across sources — intended, not a regression.
+- **No schema / contract / workflow change**, no new tables, no detector changes.
+- **Calibrate:** nothing new required; re-run the add_source recall suite after bumping the
+  engine submodule → expect no movement.
+
 ## 2026-06-04: DAT-414 — versioned typed/quarantine materialization DDL
 
 Phase 2 of the versioned-metadata epic (DAT-412), Slice A typed/quarantine only.

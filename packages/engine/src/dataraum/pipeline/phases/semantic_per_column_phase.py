@@ -63,6 +63,11 @@ class SemanticPerColumnPhase(BasePhase):
         add_source run (the session links exactly that source's freshly-typed
         tables), and source-agnostic for a run whose tables span multiple
         per-object sources.
+
+        Re-run safety: ``typing``'s ``reconcile_typed_table`` reuses the stable
+        typed ``Table.table_id`` (no new row on re-type), so ``link_session_tables``'
+        ``merge`` is a no-op for an already-linked table — the set never widens
+        across teach re-runs over the same ``session_id``.
         """
         return tables_for_session(ctx.session, ctx.require_session_id())
 

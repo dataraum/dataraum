@@ -114,12 +114,14 @@ class PhaseActivities:
 
     @activity.defn(name="semantic_per_column")
     def run_semantic_per_column(self, identity: SourceIdentity) -> PhaseOutcome:
-        """Semantic-per-column activity — the source-level LLM reduce (roles, concepts, terms).
+        """Semantic-per-column activity — the session-scoped LLM reduce (roles, concepts, terms).
 
-        Runs once over the whole source after the per-table fan-out (its ontology
-        induction is source-global). Needs a working ``ANTHROPIC_API_KEY`` + the
-        provider/prompt config resolvable from ``dataraum.core.config``; unlike the
-        analytics phases it makes real LLM calls.
+        Runs once after the per-table fan-out over the run's SESSION tables
+        (``tables_for_session``, DAT-421) — not "the whole source" — so a run whose
+        tables span multiple per-object sources is grounded as one set. Grounding
+        only (induction left the engine, DAT-382). Needs a working
+        ``ANTHROPIC_API_KEY`` + the provider/prompt config resolvable from
+        ``dataraum.core.config``; unlike the analytics phases it makes real LLM calls.
         """
         return self._run_or_raise("semantic_per_column", identity, [])
 

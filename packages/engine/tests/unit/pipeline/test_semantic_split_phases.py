@@ -157,6 +157,31 @@ class TestPerColumnShouldSkip:
         assert scoped == {a.table_id, b.table_id}  # across sources, session-anchored
         assert orphan.table_id not in scoped  # same source, but not session-linked
 
+    def test_single_source_equivalence_is_behavior_preserving(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-421: for a single-source run the session-scoped set is IDENTICAL to
+        the old ``Table.source_id``-filtered set — a direct proof of the
+        behavior-preservation claim.
+        """
+        src = _source(session)
+        t1 = _typed_table(session, src.source_id, "t1", ["a"])
+        t2 = _typed_table(session, src.source_id, "t2", ["b"])
+
+        scoped = set(
+            SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn, src.source_id))
+        )
+        # The pre-DAT-421 key: every typed table under this source.
+        old_key = {
+            tid
+            for (tid,) in session.execute(
+                select(Table.table_id).where(
+                    Table.layer == "typed", Table.source_id == src.source_id
+                )
+            )
+        }
+        assert scoped == old_key == {t1.table_id, t2.table_id}
+
 
 class TestPerColumnAdhocFailLoud:
     """Grounding-only ``_run`` fails loud on a cold-start ``_adhoc`` workspace

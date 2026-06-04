@@ -39,6 +39,7 @@ import {
 	sessionTables,
 	tables,
 } from "../db/metadata/schema";
+import { currentSessionId } from "../prompts/workspace-context";
 import type {
 	AddSourceInput,
 	AddSourceResult,
@@ -79,9 +80,11 @@ async function sessionVertical(sessionId: string): Promise<string | null> {
 }
 
 export interface ReplayInput {
-	// The session to replay. Replay resolves this session's sources and re-runs
-	// add_source over them as a NEW session, applying any pending teaches.
-	session_id: string;
+	// The session to replay. OPTIONAL: omitted, replay re-runs the CURRENT session
+	// (the most recent — the one the user has been teaching). Replay resolves the
+	// session's sources and re-runs add_source over them as a NEW session, applying
+	// any pending teaches.
+	session_id?: string;
 	// Vertical to ground the re-run against. Optional: omitted, replay re-runs on
 	// the session's OWN framed vertical (sessionVertical), falling back to `_adhoc`
 	// only if the session carries none. Pass an explicit vertical to override.
@@ -118,11 +121,20 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
+	// The session to replay: the one named, else the CURRENT session (most recent —
+	// the one the user is in / has been teaching). So a bare "replay" just works.
+	const sessionId = input.session_id ?? (await currentSessionId());
+	if (!sessionId) {
+		throw new Error(
+			"No session to replay — add a source or begin a session first.",
+		);
+	}
+
 	// Resolve what to replay FROM the session — the sources it was built on.
-	const sourceIds = await sourcesForSession(input.session_id);
+	const sourceIds = await sourcesForSession(sessionId);
 	if (sourceIds.length === 0) {
 		throw new Error(
-			`Session '${input.session_id}' has no sources to replay — it has no ` +
+			`Session '${sessionId}' has no sources to replay — it has no ` +
 				"linked tables yet (nothing was added to it).",
 		);
 	}
@@ -130,7 +142,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// cold-start `_adhoc`. Omitting it must NOT silently re-run against `_adhoc` —
 	// that grounds the semantic pass against an empty ontology and fails the run.
 	const vertical =
-		input.vertical ?? (await sessionVertical(input.session_id)) ?? "_adhoc";
+		input.vertical ?? (await sessionVertical(sessionId)) ?? "_adhoc";
 
 	// A replay generates a NEW session — a fresh analytical pass over the same
 	// sources. Seed its investigation_sessions row BEFORE starting the workflow
@@ -194,12 +206,13 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Requires user approval. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
+		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Requires user approval. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
 		session_id: z
 			.string()
+			.optional()
 			.describe(
-				"The session to replay (a session_id from a prior add_source / begin_session). Replay re-runs that session's sources as a new session.",
+				"Optional. The session to replay (a session_id, e.g. from the WORKSPACE CONTEXT block or a prior add_source / begin_session). Omit to replay the CURRENT (most recent) session.",
 			),
 		vertical: z
 			.string()

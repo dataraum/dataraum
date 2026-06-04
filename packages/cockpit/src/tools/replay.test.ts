@@ -27,6 +27,8 @@ const h = vi.hoisted(() => ({
 	sourceRows: [] as Array<{ sourceId: string | null }>,
 	// Rows the sessionVertical query returns (empty = session carries no vertical).
 	verticalRows: [] as Array<{ vertical: string | null }>,
+	// The current session currentSessionId() resolves (null = none — replay rejects).
+	currentSession: null as string | null,
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -96,6 +98,10 @@ vi.mock("@temporalio/client", () => ({
 vi.mock("@temporalio/common", () => ({
 	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
+// The current-session resolver replay falls back to when no session_id is given.
+vi.mock("#/prompts/workspace-context", () => ({
+	currentSessionId: async () => h.currentSession,
+}));
 
 import { replay } from "./replay";
 
@@ -110,6 +116,7 @@ beforeEach(() => {
 	h.seededRow = null;
 	h.sourceRows = [{ sourceId: "src-1" }];
 	h.verticalRows = [];
+	h.currentSession = null;
 	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
@@ -163,6 +170,26 @@ describe("replay (DAT-422)", () => {
 		await expect(replay({ session_id: "empty-sess" })).rejects.toThrow(
 			/has no sources to replay/,
 		);
+		expect(valuesMock).not.toHaveBeenCalled();
+		expect(startMock).not.toHaveBeenCalled();
+	});
+
+	it("defaults to the CURRENT session when no session_id is given (bare 'replay')", async () => {
+		// The agent omits the id — replay re-runs the session the user is in.
+		h.currentSession = "current-sess";
+		h.sourceRows = [{ sourceId: "src-1" }];
+		const result = await replay({});
+		// It resolved the current session's sources and started a run (no "no session").
+		expect(h.calls).toContain("resolveSources");
+		expect(h.calls).toContain("start");
+		expect(result.source_ids).toEqual(["src-1"]);
+		// It re-ran the current session into a FRESH one (replay is non-destructive).
+		expect(result.session_id).not.toBe("current-sess");
+	});
+
+	it("rejects when there is no current session to replay", async () => {
+		h.currentSession = null;
+		await expect(replay({})).rejects.toThrow(/No session to replay/);
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
 	});

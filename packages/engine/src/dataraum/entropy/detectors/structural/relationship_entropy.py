@@ -79,9 +79,9 @@ class RelationshipEntropyDetector(EntropyDetector):
         - card_entropy: from cardinality_verified flag
         - semantic_entropy: from confirmation + relationship_type.
 
-        DAT-372: confirmation is read from ``ConfigOverlay(type='relationship')``
-        (multi-source, via ``load_preferred_join_overlays``) — the dead
-        ``Relationship.is_confirmed`` branch is gone. ``join_path_determinism``
+        DAT-372/409: confirmation is read from ``ConfigOverlay(type='relationship')``
+        via ``load_confirmed_relationship_pairs`` (keyed on the focal column pair) —
+        the dead ``Relationship.is_confirmed`` branch is gone. ``join_path_determinism``
         reads the same overlays, so the two agree on "confirmed."
         """
         config = get_entropy_config()
@@ -183,16 +183,18 @@ class RelationshipEntropyDetector(EntropyDetector):
         ]
 
     def _is_confirmed_via_overlay(self, context: DetectorContext) -> bool:
-        """True iff an active relationship overlay matches this table pair (DAT-372)."""
-        if context.session is None:
-            return False
-        from dataraum.entropy.detectors.loaders import load_preferred_join_overlays
+        """True iff the focal column pair has an active confirm overlay (DAT-372/409).
 
-        overlays = load_preferred_join_overlays(context.session)
-        if not overlays:
+        Keyed on the directional column pair (the relationship's identity), not the
+        table-name pair — confirmation is per-relationship, and the overlay payload
+        carries ``{action, from_column_id, to_column_id}`` (DAT-409).
+        """
+        if context.session is None or not context.from_column_id or not context.to_column_id:
             return False
-        a, b = context.from_table_name, context.to_table_name
-        return f"{a}->{b}" in overlays or f"{b}->{a}" in overlays
+        from dataraum.analysis.relationships.utils import load_confirmed_relationship_pairs
+
+        confirmed = load_confirmed_relationship_pairs(context.session)
+        return frozenset({context.from_column_id, context.to_column_id}) in confirmed
 
     def _get_value(self, obj: Any, key: str, default: Any = None) -> Any:
         """Get value from object or dict."""

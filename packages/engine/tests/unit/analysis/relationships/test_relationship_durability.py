@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.detector import _store_candidates
 from dataraum.analysis.relationships.utils import (
+    load_confirmed_relationship_pairs,
     load_defined_relationships,
     load_suppressed_relationship_pairs,
 )
@@ -120,11 +121,37 @@ def test_suppressed_pairs_read_from_reject_overlay(session: Session) -> None:
     session.add(
         ConfigOverlay(
             type="relationship",
-            payload={"action": "confirm", "table": "orders", "target_table": "customers"},
+            payload={"action": "confirm", "from_column_id": "cc", "to_column_id": "cd"},
         )
     )
     session.flush()
     assert load_suppressed_relationship_pairs(session) == {("ca", "cb")}
+
+
+def test_confirmed_pairs_read_from_confirm_overlay(session: Session) -> None:
+    """``load_confirmed_relationship_pairs`` returns active confirm pairs, undirected.
+
+    One relationship-overlay shape (DAT-409): confirm/reject differ only by ``action``
+    and both key on the column pair. Confirmation is undirected (frozenset), so a
+    detector matches it whichever way it names the endpoints; reject rows are excluded.
+    """
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "confirm", "from_column_id": "ca", "to_column_id": "cb"},
+        )
+    )
+    session.add(
+        ConfigOverlay(
+            type="relationship",
+            payload={"action": "reject", "from_column_id": "cc", "to_column_id": "cd"},
+        )
+    )
+    session.flush()
+    confirmed = load_confirmed_relationship_pairs(session)
+    assert confirmed == {frozenset({"ca", "cb"})}
+    # Undirected: matches whichever way the detector names the endpoints.
+    assert frozenset({"cb", "ca"}) in confirmed
 
 
 def _readiness_row(session: Session, target: str, run_id: str) -> None:

@@ -82,12 +82,17 @@ class JoinPathDeterminismDetector(EntropyDetector):
             if fc and tc:
                 col_paths.add(frozenset({fc, tc}))
 
-        # A user teach that picks the join path resolves the ambiguity.
-        from dataraum.entropy.detectors.loaders import load_preferred_join_overlays
+        # A user teach confirming THIS join path resolves the ambiguity (DAT-409).
+        # Keyed on the focal column pair (the path's identity), not the table pair:
+        # confirming one path among several between the same two tables marks that
+        # path deterministic, leaving the unconfirmed alternatives ambiguous.
+        from dataraum.analysis.relationships.utils import load_confirmed_relationship_pairs
 
-        overlays = load_preferred_join_overlays(context.session) if context.session else {}
-        resolved = (
-            f"{from_table}->{to_table}" in overlays or f"{to_table}->{from_table}" in overlays
+        confirmed = load_confirmed_relationship_pairs(context.session) if context.session else set()
+        resolved = bool(
+            context.from_column_id
+            and context.to_column_id
+            and frozenset({context.from_column_id, context.to_column_id}) in confirmed
         )
 
         if len(col_paths) > 1 and not resolved:

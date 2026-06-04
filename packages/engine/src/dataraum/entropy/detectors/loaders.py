@@ -268,34 +268,6 @@ def load_session_relationships(
     return [_relationship_to_dict(rel, table_names) for rel in rels]
 
 
-def load_preferred_join_overlays(session: Session) -> dict[str, dict[str, Any]]:
-    """Active ``ConfigOverlay(type='relationship')`` rows keyed ``{table}->{target}``.
-
-    Multi-source (DAT-372/DAT-408): a session spans sources, so this is NOT filtered
-    by a single ``source_id`` — both ``join_path_determinism`` and
-    ``relationship_entropy`` read it so they agree on what the user has confirmed.
-    ``superseded_at IS NULL`` filters undone teaches out.
-    """
-    from dataraum.storage import ConfigOverlay
-
-    rows = list(
-        session.execute(
-            select(ConfigOverlay).where(
-                ConfigOverlay.type == "relationship",
-                ConfigOverlay.superseded_at.is_(None),
-            )
-        ).scalars()
-    )
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        payload = row.payload or {}
-        table = payload.get("table", "")
-        target_table = payload.get("target_table", "")
-        if table and target_table:
-            out[f"{table}->{target_table}"] = payload
-    return out
-
-
 def load_correlation(session: Session, column_id: str, column_name: str) -> dict[str, Any] | None:
     """Load derived column info for a column.
 

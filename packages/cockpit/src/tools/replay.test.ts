@@ -181,6 +181,9 @@ describe("replay (DAT-422)", () => {
 		const result = await replay({});
 		// It resolved the current session's sources and started a run (no "no session").
 		expect(h.calls).toContain("resolveSources");
+		// No vertical passed → it still resolves the session's OWN framed vertical
+		// (must not silently fall back to _adhoc, which fails the semantic pass).
+		expect(h.calls).toContain("resolveVertical");
 		expect(h.calls).toContain("start");
 		expect(result.source_ids).toEqual(["src-1"]);
 		// It re-ran the current session into a FRESH one (replay is non-destructive).

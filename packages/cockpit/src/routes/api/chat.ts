@@ -91,7 +91,7 @@ export function buildChatOptions(
 		},
 	];
 	// A second, UNCACHED block past the cache breakpoint (see above).
-	if (workspaceContext) {
+	if (workspaceContext != null) {
 		systemPrompts.push({ content: workspaceContext });
 	}
 	return {
@@ -116,8 +116,19 @@ export const Route = createFileRoute("/api/chat")({
 				const { messages } = await chatParamsFromRequest(request);
 				// The current sessions, so the agent knows where the user is (replay /
 				// teach / look_relationships resolve against the session without asking).
-				// A cheap DB read per turn — negligible beside the LLM call.
-				const workspaceContext = await buildWorkspaceContext();
+				// A cheap DB read per turn — negligible beside the LLM call. It is
+				// OPPORTUNISTIC enrichment: a DB hiccup must NOT take down chat, so a
+				// throw degrades to no block (the agent falls back to asking for an id —
+				// the pre-fix behavior), never a dead turn.
+				const workspaceContext = await buildWorkspaceContext().catch(
+					(err: unknown) => {
+						console.error(
+							"[chat] workspace-context read failed — continuing without it:",
+							err,
+						);
+						return null;
+					},
+				);
 				// One controller threads cancellation end to end: the SSE stream's
 				// cancel() (client stop()/disconnect) aborts it, which aborts the
 				// chat() loop + its Anthropic call. Also link request.signal so a

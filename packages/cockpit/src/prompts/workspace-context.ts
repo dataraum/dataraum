@@ -34,16 +34,37 @@ export interface SessionSummary {
 }
 
 /**
- * The most recent session id — the CURRENT session the user is in, until the
- * app-state active-session machine replaces this proxy. Null when the workspace
- * has no sessions yet. `replay` defaults to this so "replay" re-runs the session
- * the user has been teaching, without needing an id.
+ * The most recent session that actually HAS linked tables — the CURRENT session
+ * the user is in, until the app-state active-session machine replaces this proxy.
+ * Null when the workspace has no usable session yet.
+ *
+ * Why "with linked tables", not just "most recent": add_source / begin_session /
+ * replay all SEED the `investigation_sessions` row BEFORE the engine's async
+ * typing phase links its tables. So a freshly-started session has no tables for a
+ * window — and treating it as "current" would (a) make a bare "replay" right
+ * after replaying throw "no sources", and (b) let an in-flight run hijack
+ * "current" mid-conversation. Filtering to sessions-with-tables keeps "current"
+ * on the last USABLE session — and means "replay" re-runs the one you taught (the
+ * original, which has tables), not the in-flight replay seed. (Tiebreak by id so
+ * two sessions sharing a `started_at` millisecond resolve deterministically.)
+ *
+ * `replay` defaults to this so "replay" re-runs the taught session without an id.
  */
 export async function currentSessionId(): Promise<string | null> {
 	const [row] = await metadataDb
-		.select({ sessionId: investigationSessions.sessionId })
+		.selectDistinct({
+			sessionId: investigationSessions.sessionId,
+			startedAt: investigationSessions.startedAt,
+		})
 		.from(investigationSessions)
-		.orderBy(desc(investigationSessions.startedAt))
+		.innerJoin(
+			sessionTables,
+			eq(sessionTables.sessionId, investigationSessions.sessionId),
+		)
+		.orderBy(
+			desc(investigationSessions.startedAt),
+			desc(investigationSessions.sessionId),
+		)
 		.limit(1);
 	return row?.sessionId ?? null;
 }
@@ -75,15 +96,25 @@ export function formatWorkspaceContext(
 	);
 }
 
-/** Read the recent sessions + the tables each spans, most-recent first. */
+/** Read the recent sessions + the tables each spans, most-recent first. Only
+ * sessions WITH linked tables (see `currentSessionId` — a freshly-seeded, still
+ * in-flight session has none yet and isn't something the agent can act on). */
 export async function buildWorkspaceContext(): Promise<string | null> {
 	const recent = await metadataDb
-		.select({
+		.selectDistinct({
 			sessionId: investigationSessions.sessionId,
 			vertical: investigationSessions.vertical,
+			startedAt: investigationSessions.startedAt,
 		})
 		.from(investigationSessions)
-		.orderBy(desc(investigationSessions.startedAt))
+		.innerJoin(
+			sessionTables,
+			eq(sessionTables.sessionId, investigationSessions.sessionId),
+		)
+		.orderBy(
+			desc(investigationSessions.startedAt),
+			desc(investigationSessions.sessionId),
+		)
 		.limit(RECENT_LIMIT);
 	if (recent.length === 0) return null;
 

@@ -10,7 +10,6 @@ from dataraum.analysis.eligibility.evaluator import (
     evaluate_rules,
     extract_metrics,
     format_reason,
-    is_likely_key,
 )
 
 
@@ -48,7 +47,6 @@ def _make_config(
             ),
         ],
         default_status="ELIGIBLE",
-        key_patterns=["_id$", "^id$", "_key$"],
     )
 
 
@@ -153,25 +151,6 @@ class TestEvaluateRules:
         status, rule_id, _ = evaluate_rules(config, metrics, "col")
         assert status == "INELIGIBLE"
         assert rule_id == "all_null"
-
-
-class TestIsLikelyKey:
-    """Tests for is_likely_key."""
-
-    def test_matches_id_suffix(self):
-        assert is_likely_key("customer_id", ["_id$", "^id$", "_key$"])
-
-    def test_matches_exact_id(self):
-        assert is_likely_key("id", ["_id$", "^id$", "_key$"])
-
-    def test_matches_key_suffix(self):
-        assert is_likely_key("order_key", ["_id$", "^id$", "_key$"])
-
-    def test_no_match(self):
-        assert not is_likely_key("amount", ["_id$", "^id$", "_key$"])
-
-    def test_case_insensitive(self):
-        assert is_likely_key("Customer_ID", ["_id$", "^id$", "_key$"])
 
 
 class TestExtractMetrics:

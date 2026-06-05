@@ -5,7 +5,7 @@ Loads and validates the column eligibility configuration from YAML.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -36,7 +36,6 @@ class EligibilityConfig:
     thresholds: EligibilityThresholds
     rules: list[EligibilityRule]
     default_status: str
-    key_patterns: list[str] = field(default_factory=lambda: ["_id$", "^id$", "_key$"])
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EligibilityConfig:
@@ -66,7 +65,6 @@ class EligibilityConfig:
             thresholds=thresholds,
             rules=rules,
             default_status=data["default_status"],
-            key_patterns=data.get("key_patterns", ["_id$", "^id$", "_key$"]),
         )
 
 

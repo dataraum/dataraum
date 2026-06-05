@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
+from dataraum.pipeline.phases.column_eligibility_phase import ColumnEligibilityPhase
 from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
 from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
@@ -467,6 +468,7 @@ def integration_phases() -> dict[str, Phase]:
         ImportPhase(),
         TypingPhase(),
         StatisticsPhase(),
+        ColumnEligibilityPhase(),
         StatisticalQualityPhase(),
         RelationshipsPhase(),
         CorrelationsPhase(),

@@ -157,7 +157,7 @@ export async function synthesizeAnalysis(data: WhyTableData): Promise<string> {
 	const label = data.table_name ?? data.table_id;
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		maxTokens: MAX_OUTPUT_TOKENS,
+		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getWhyInstructions()],
 		messages: [
 			{

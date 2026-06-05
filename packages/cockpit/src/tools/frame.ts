@@ -138,7 +138,7 @@ export async function induceConcepts(
 ): Promise<ProposedConcept[]> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		maxTokens: MAX_OUTPUT_TOKENS,
+		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getFrameInstructions()],
 		messages: [
 			{

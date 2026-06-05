@@ -163,7 +163,7 @@ export function projectWhyData(
 export async function synthesizeAnalysis(data: WhyColumnData): Promise<string> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		maxTokens: MAX_OUTPUT_TOKENS,
+		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getWhyInstructions()],
 		messages: [
 			{

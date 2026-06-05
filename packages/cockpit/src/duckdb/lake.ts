@@ -27,7 +27,7 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
 import { applyS3Secret } from "./s3-secret";
-import { buildDucklakeAttachSql } from "./sql-escape";
+import { buildDucklakeAttachSql, escapeSqlLiteral } from "./sql-escape";
 
 // Alias the DuckLake catalog is ATTACHed under. Matches the engine's
 // `LAKE_CATALOG_ALIAS` so fully-qualified names (`lake.typed.orders`) resolve
@@ -53,15 +53,26 @@ async function openConnection(): Promise<DuckDBConnection> {
 		config.dataraumLakePath,
 	);
 
-	// The container image pre-installs the ducklake extension; LOAD is enough
-	// there. INSTALL is attempted first and tolerated-on-failure so a local dev
-	// run without the cached extension still works (it falls through to LOAD,
-	// which errors loudly if the extension is genuinely missing).
-	try {
-		await conn.run("INSTALL ducklake");
-	} catch {
-		// Extension already present (offline/air-gapped image) — LOAD will
-		// surface a real "not found" below if it truly isn't installed.
+	// The container image pre-bakes ducklake at DUCKDB_EXTENSION_DIRECTORY and
+	// sets DUCKLAKE_SKIP_INSTALL=1 (Dockerfile — mirror of the engine's
+	// bootstrap_lake), so a cold start never hits extensions.duckdb.org. Host
+	// dev has neither set: INSTALL is attempted tolerate-fail (it needs the
+	// network once) and LOAD errors loudly if the extension is genuinely
+	// missing.
+	if (config.duckdbExtensionDirectory) {
+		// Must precede INSTALL/LOAD so DuckDB looks the extension up at the
+		// image-baked path rather than ~/.duckdb.
+		await conn.run(
+			`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
+		);
+	}
+	if (!config.ducklakeSkipInstall) {
+		try {
+			await conn.run("INSTALL ducklake");
+		} catch {
+			// Extension already present (offline) — LOAD will surface a real
+			// "not found" below if it truly isn't installed.
+		}
 	}
 	await conn.run("LOAD ducklake");
 	// The lake DATA_PATH is an `s3://` URI; register httpfs + the S3 secret

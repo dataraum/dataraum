@@ -41,6 +41,33 @@ add_source recall suite.** Expected movement: date-typed coverage UP.
   should drop, not abort; (c) a DD.MM.YYYY column re-typed across two runs — second run must
   still parse (the replay-poison regression).
 
+## 2026-06-05: DAT-422 — add_source runs over a SET of sources (workflow input contract change)
+
+Epic DAT-420 (source model). **The `addSourceWorkflow` input changed shape — BREAKING for the
+eval add_source driver (DAT-425).** No detector, threshold, or table-naming change; harness
+adaptation only. (The DAT-421 entry below predates this — its "no contract change" claim is
+about the semantic scoping ticket, not the epic.)
+
+- **New input:** `AddSourceInput = { identity, source_ids }` (`worker/contracts.py`). The caller
+  passes the run's source set as `source_ids` (≥1) and leaves `identity.source_id` unset — the
+  workflow scopes each per-source `import` itself and runs source-free past import
+  (session-scoped fan-out/reduce/detect).
+- **Workflow id is session-keyed:** `addsource-{workspace_id}-{session_id}`
+  (`add_source_workflow_id`), not source-keyed. The caller MUST seed the
+  `investigation_sessions` row BEFORE starting — `typing` writes `session_tables` with a
+  NOT-NULL FK to it (the cockpit trigger does this; the eval driver must too).
+- **File datasets (the cockpit model):** one content-keyed source per file — name
+  `src_<digest>`, `connection_config.file_uris = [the one uri]`; identical bytes upsert one
+  source and import skips the re-load. A db_recipe connection stays ONE user-named source.
+  Minimal driver adaptation: keep seeding however the harness does and wrap the id(s) in
+  `source_ids` — but DAT-425's pinned shape is per-object content-sources.
+- **Result shape unchanged** (`AddSourceResult = { raw_table_ids, tables }`); table naming
+  unchanged (`<source_name>__<stem>` — an upload's tables read `src_<digest>__<stem>`, so
+  resolve tables via the run's `session_tables` or the returned ids, not a hand-built name).
+- **Calibrate:** nothing — re-run the add_source recall suite after bumping the engine
+  submodule; expect no movement (same detectors, same data).
+- **Status:** pending
+
 ## 2026-06-04: DAT-421 — add_source `semantic_per_column` scopes by session, not source
 
 Epic DAT-420 (source model). The add_source source-level reduce was the last spine

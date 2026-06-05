@@ -218,6 +218,65 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "enriched_views")
 
+    # --- value layer (DAT-403) — source-free, session-scoped, after enriched_views ---
+
+    @activity.defn(name="slicing")
+    def run_slicing(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Slicing activity — LLM-recommended slice dimensions per session fact table.
+
+        Source-free: scopes to the session's selected typed tables, persisting
+        ``SliceDefinition`` rows for the fact tables that carry an enriched view.
+        Makes real Anthropic calls (the slicing agent); needs ``ANTHROPIC_API_KEY``.
+        """
+        run = run_session_phase(self._manager, "slicing", payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "slicing")
+
+    @activity.defn(name="slicing_view")
+    def run_slicing_view(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Slicing-view activity — narrow each fact table to its slice-relevant columns.
+
+        Projects the enriched view down to the fact columns plus the slice
+        dimension columns, registering a ``slicing_view`` lake artifact per fact
+        table. No LLM call.
+        """
+        run = run_session_phase(self._manager, "slicing_view", payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "slicing_view")
+
+    @activity.defn(name="slice_analysis")
+    def run_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Slice-analysis activity — materialize the slice tables and profile them.
+
+        Executes each slice definition's SQL to create the per-value slice tables,
+        registers them, and runs statistics + quality on each. No LLM call.
+        """
+        run = run_session_phase(
+            self._manager, "slice_analysis", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "slice_analysis")
+
+    @activity.defn(name="temporal_slice_analysis")
+    def run_temporal_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Temporal-slice-analysis activity — drift/period metrics on the slice tables.
+
+        Runs JS-divergence drift detection and period completeness/anomaly analysis
+        per slice, and builds the ``ColumnSliceProfile`` records the
+        ``dimensional_entropy`` detector consumes. No LLM call.
+        """
+        run = run_session_phase(
+            self._manager, "temporal_slice_analysis", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "temporal_slice_analysis")
+
+    @activity.defn(name="correlations")
+    def run_correlations(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Correlations activity — detect derived columns over the enriched views.
+
+        Finds same-table and cross-table derived columns (sums, ratios, …),
+        persisting ``DerivedColumn`` formula metadata. No view, no LLM call.
+        """
+        run = run_session_phase(self._manager, "correlations", payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "correlations")
+
     @activity.defn(name="session_materialize_overlays")
     def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:
         """Materialize durable relationship overlays into this run (DAT-409).

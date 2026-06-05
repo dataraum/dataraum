@@ -75,11 +75,15 @@ class SlicingPhase(BasePhase):
         return None
 
     def _get_fact_tables(self, ctx: PhaseContext) -> list[Table]:
-        """Return only typed tables that have an enriched view (fact tables)."""
+        """Return only the session's typed tables that have an enriched view (fact tables).
+
+        Source-free (feedback-source-dies-at-addsource): scopes by the session's
+        selected typed tables (``ctx.table_ids`` via ``BasePhase._typed_tables``),
+        which may span sources — never ``source_id`` (None past add_source).
+        """
         from dataraum.analysis.views.db_models import EnrichedView
 
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = list(ctx.session.execute(stmt).scalars().all())
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return []

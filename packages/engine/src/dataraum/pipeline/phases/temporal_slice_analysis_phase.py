@@ -71,12 +71,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions or no temporal columns."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
-            return f"No typed tables found for source {ctx.source_id}"
+            return "No typed tables found"
 
         table_ids = [t.table_id for t in typed_tables]
 
@@ -108,10 +107,8 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run drift analysis on slices."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
@@ -166,10 +163,15 @@ class TemporalSliceAnalysisPhase(BasePhase):
         }
         grain = grain_map.get(time_grain, TimeGrain.MONTHLY)
 
-        # Pre-load slice tables once (shared across all slice definitions)
+        # Pre-load slice tables once (shared across all slice definitions). Slice
+        # tables are derived artifacts carrying their fact table's source_id;
+        # scope by the session's source set (DAT-403), not ``ctx.source_id``
+        # (None past add_source). The per-slice_def name-prefix match below
+        # narrows this set to each definition's own slices.
+        source_ids = {t.source_id for t in typed_tables}
         slice_tables_stmt = select(Table).where(
             Table.layer == "slice",
-            Table.source_id == ctx.source_id,
+            Table.source_id.in_(source_ids),
         )
         all_slice_tables = list((ctx.session.execute(slice_tables_stmt)).scalars().all())
 
@@ -286,11 +288,14 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 except Exception as e:
                     errors.append(f"Analysis error for {si.slice_table_name}: {e}")
 
-        # Build ColumnSliceProfile records for dimensional_entropy detector
+        # Build ColumnSliceProfile records for dimensional_entropy detector.
+        # Source-free (DAT-403): scope by the session's typed table ids, not a
+        # single source — ``build_slice_profiles`` derives slice/slicing_view
+        # tables from them.
         from dataraum.analysis.slicing.profiling import build_slice_profiles
 
         slice_profiles_count = build_slice_profiles(
-            ctx.session, ctx.require_source_id(), session_id=ctx.require_session_id()
+            ctx.session, table_ids, session_id=ctx.require_session_id()
         )
 
         outputs: dict[str, object] = {
@@ -352,11 +357,15 @@ class TemporalSliceAnalysisPhase(BasePhase):
             if col and col.resolved_type in temporal_types:
                 profiles_by_table.setdefault(col.table_id, []).append(tp)
 
-        # Load semantic time_column annotations
+        # Load semantic time_column annotations. Run-scoped to ``ctx.run_id``
+        # (DAT-408/413): ``TableEntity`` coexists across runs, so read only this
+        # run's time_column, not a prior run's stale annotation.
         entity_stmt = select(TableEntity).where(
             TableEntity.table_id.in_(table_ids),
             TableEntity.time_column.isnot(None),
         )
+        if ctx.run_id is not None:
+            entity_stmt = entity_stmt.where(TableEntity.run_id == ctx.run_id)
         semantic_time_by_table: dict[str, str] = {}
         for entity in (ctx.session.execute(entity_stmt)).scalars().all():
             if entity.time_column is not None:

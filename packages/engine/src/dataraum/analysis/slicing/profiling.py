@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 def build_slice_profiles(
     session: Session,
-    source_id: str,
+    table_ids: list[str],
     *,
     session_id: str,
 ) -> int:
@@ -34,27 +34,39 @@ def build_slice_profiles(
     slice tables and creates ColumnSliceProfile records that map back to
     the source (or slicing_view) columns.
 
+    Source-free (DAT-403): scopes by the session's selected typed ``table_ids``
+    (which may span sources) — never a single ``source_id``. The derived slice
+    and slicing_view tables carry their fact table's source_id, so they are
+    resolved through the session's source set rather than read directly off the
+    selection.
+
     Args:
         session: Database session.
-        source_id: Source ID to process.
+        table_ids: The session's selected typed table ids to process.
+        session_id: Investigation session id stamped on the profiles.
 
     Returns:
         Number of profiles created.
     """
     # Get typed tables
     typed_tables = list(
-        session.execute(select(Table).where(Table.layer == "typed", Table.source_id == source_id))
+        session.execute(select(Table).where(Table.layer == "typed", Table.table_id.in_(table_ids)))
         .scalars()
         .all()
     )
     if not typed_tables:
         return 0
 
-    table_ids = [t.table_id for t in typed_tables]
+    typed_table_ids = [t.table_id for t in typed_tables]
+    # Derived slice/slicing_view tables carry their fact table's source_id; scope
+    # them by the session's source set.
+    source_ids = {t.source_id for t in typed_tables}
 
     # Get slice definitions
     slice_defs = list(
-        session.execute(select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids)))
+        session.execute(
+            select(SliceDefinition).where(SliceDefinition.table_id.in_(typed_table_ids))
+        )
         .scalars()
         .all()
     )
@@ -65,7 +77,7 @@ def build_slice_profiles(
     slice_tables = {
         t.table_name: t
         for t in session.execute(
-            select(Table).where(Table.layer == "slice", Table.source_id == source_id)
+            select(Table).where(Table.layer == "slice", Table.source_id.in_(source_ids))
         )
         .scalars()
         .all()
@@ -97,10 +109,11 @@ def build_slice_profiles(
         for e in existing:
             session.delete(e)
 
-        # Resolve effective table (prefer slicing_view for enriched columns)
+        # Resolve effective table (prefer slicing_view for enriched columns).
+        # The slicing_view shares its fact table's source_id (DAT-403).
         sv_table = session.execute(
             select(Table).where(
-                Table.source_id == source_id,
+                Table.source_id == source_table.source_id,
                 Table.table_name == f"slicing_{source_table.table_name}",
                 Table.layer == "slicing_view",
             )
@@ -208,5 +221,7 @@ def build_slice_profiles(
                 )
                 total_created += 1
 
-    logger.info("slice_profiles_built", source_id=source_id, profiles_created=total_created)
+    logger.info(
+        "slice_profiles_built", table_count=len(typed_table_ids), profiles_created=total_created
+    )
     return total_created

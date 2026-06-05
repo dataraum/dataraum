@@ -21,12 +21,12 @@ class TestSliceAnalysisPhase:
     ):
         """Test skip when no typed tables exist."""
         phase = SliceAnalysisPhase()
-        source_id = str(uuid4())
 
+        # Source-free (DAT-403): an empty selection resolves to no typed tables.
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
         )
 
@@ -76,7 +76,7 @@ class TestSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table.table_id],
             config={},
         )
 
@@ -139,7 +139,7 @@ class TestSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
         )
 
@@ -212,7 +212,7 @@ class TestSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
         )
 
@@ -226,12 +226,11 @@ class TestSliceAnalysisPhase:
     ):
         """Test failure when run without typed tables."""
         phase = SliceAnalysisPhase()
-        source_id = str(uuid4())
 
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
         )
 
@@ -269,7 +268,7 @@ class TestSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table.table_id],
             config={},
         )
 

@@ -44,10 +44,8 @@ class SliceAnalysisPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or all slices already analyzed."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -67,10 +65,11 @@ class SliceAnalysisPhase(BasePhase):
         if total_slices == 0:
             return "No slice values defined"
 
-        # Check existing slice tables
-        existing_stmt = select(Table).where(
-            Table.layer == "slice", Table.source_id == ctx.source_id
-        )
+        # Existing slice tables are derived artifacts carrying their fact table's
+        # source_id; scope by the session's source set (the sources its typed
+        # tables belong to), not ``ctx.source_id`` (None past add_source).
+        source_ids = {t.source_id for t in typed_tables}
+        existing_stmt = select(Table).where(Table.layer == "slice", Table.source_id.in_(source_ids))
         existing_result = ctx.session.execute(existing_stmt)
         existing_slices = len(list(existing_result.scalars().all()))
 
@@ -81,10 +80,8 @@ class SliceAnalysisPhase(BasePhase):
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run slice analysis."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

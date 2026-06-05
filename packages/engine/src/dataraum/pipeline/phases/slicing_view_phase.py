@@ -56,15 +56,18 @@ class SlicingViewPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if slicing views already exist for all tables with slice definitions."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Fact tables that have slice definitions
+        # Fact tables that have slice definitions. Run-scoped to ``ctx.run_id``:
+        # ``TableEntity`` is run-versioned and coexists across runs (DAT-408/413),
+        # so an unscoped fact read would see every prior run's fact row for the
+        # same table — exactly the leak ``enriched_views`` guards against.
         sliced_fact_stmt = (
             select(SliceDefinition.table_id.distinct())
             .join(TableEntity, TableEntity.table_id == SliceDefinition.table_id)
@@ -73,6 +76,8 @@ class SlicingViewPhase(BasePhase):
                 TableEntity.is_fact_table.is_(True),
             )
         )
+        if ctx.run_id is not None:
+            sliced_fact_stmt = sliced_fact_stmt.where(TableEntity.run_id == ctx.run_id)
         sliced_fact_table_ids = set(ctx.session.execute(sliced_fact_stmt).scalars().all())
 
         if not sliced_fact_table_ids:
@@ -91,8 +96,8 @@ class SlicingViewPhase(BasePhase):
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Create slicing views for tables with slice definitions."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
@@ -116,11 +121,15 @@ class SlicingViewPhase(BasePhase):
         for sd in all_slice_defs:
             slice_defs_by_table.setdefault(sd.table_id, []).append(sd)
 
-        # Restrict to actual fact tables only — slicing views are not created for dimension tables
+        # Restrict to actual fact tables only — slicing views are not created for
+        # dimension tables. Run-scoped to ``ctx.run_id`` (DAT-408/413): read only
+        # this run's fact rows, never a prior run's coexisting classification.
         fact_entity_stmt = select(TableEntity.table_id).where(
             TableEntity.table_id.in_(list(slice_defs_by_table.keys())),
             TableEntity.is_fact_table.is_(True),
         )
+        if ctx.run_id is not None:
+            fact_entity_stmt = fact_entity_stmt.where(TableEntity.run_id == ctx.run_id)
         fact_table_id_set = set(ctx.session.execute(fact_entity_stmt).scalars().all())
 
         # Check which tables already have slicing views
@@ -282,19 +291,24 @@ class SlicingViewPhase(BasePhase):
             # Rewrite sql_templates so they reference the slicing view instead of
             # the typed table or enriched view the agent originally used.
             # The agent picks enriched view when available, typed path otherwise.
+            #
+            # Idempotent under run_id (DAT-403): a begin_session re-run mints a
+            # fresh run_id but ``SliceDefinition`` is not run-versioned, so the
+            # template a prior run already redirected to the slicing view must not
+            # be re-patched. Skip a template that already targets this view —
+            # ``FROM "{view_name}"`` — and rewrite only the un-redirected sources.
             from_targets = set()
             if fact_table.duckdb_path:
                 from_targets.add(fact_table.duckdb_path)
             if enriched_view and enriched_view.view_name:
                 from_targets.add(enriched_view.view_name)
 
+            view_from = f'FROM "{view_name}"'
             for sd in slice_defs:
-                if not sd.sql_template:
+                if not sd.sql_template or view_from in sd.sql_template:
                     continue
                 for target in from_targets:
-                    sd.sql_template = sd.sql_template.replace(
-                        f"FROM {target}", f'FROM "{view_name}"'
-                    )
+                    sd.sql_template = sd.sql_template.replace(f"FROM {target}", view_from)
 
             views_created += 1
 

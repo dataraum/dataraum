@@ -326,7 +326,7 @@ class TestDimensionalEntropyDetectorLoadSliceVariance:
 
         session.execute.side_effect = [cols_result, sv_result, profiles_result]
 
-        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1", "orders")
+        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1")
         assert result is None
 
     def test_returns_slice_variance_data(self):
@@ -365,7 +365,7 @@ class TestDimensionalEntropyDetectorLoadSliceVariance:
             slice_defs_result,
         ]
 
-        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1", "orders")
+        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1")
         assert result is not None
         assert "slice_variance" in result
         assert "amount" in result["slice_variance"]["columns"]

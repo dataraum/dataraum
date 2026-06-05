@@ -60,7 +60,9 @@ def store_recipe(
         session_id: Owning investigation session.
         table_id: The *typed* Table id whose physical artifact the DDL produces
             (stable across re-types, DAT-373).
-        layer: Produced lake layer — ``"typed"`` or ``"quarantine"``.
+        layer: Produced lake layer — ``"typed"`` / ``"quarantine"`` (typing) or the
+            view layers ``"enriched"`` / ``"slicing"`` (DAT-415). An open VARCHAR,
+            not an enum; the dependency-order rebuild is layer-aware via the FQNs.
         run_id: The run that emitted this DDL (DAT-413). ``None`` for non-run
             callers, matching the TypeDecision/TypeCandidate convention.
         target_fqn: Fully-qualified DuckDB target the DDL creates.

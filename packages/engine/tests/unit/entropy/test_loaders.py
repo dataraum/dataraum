@@ -194,7 +194,7 @@ class TestLoadDriftSummaries:
     def test_returns_none_when_no_column(self):
         session = MagicMock()
         session.execute.return_value.scalar_one_or_none.return_value = None
-        assert load_drift_summaries(session, "col1", "tbl1", "orders") is None
+        assert load_drift_summaries(session, "col1", "tbl1") is None
 
     def test_returns_none_when_no_slice_tables(self):
         session = MagicMock()
@@ -212,7 +212,7 @@ class TestLoadDriftSummaries:
 
         session.execute.side_effect = [col_result, slice_result, cols_result]
 
-        assert load_drift_summaries(session, "col1", "tbl1", "orders") is None
+        assert load_drift_summaries(session, "col1", "tbl1") is None
 
 
 @pytest.fixture

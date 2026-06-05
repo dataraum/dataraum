@@ -513,22 +513,24 @@ class TestAssembleFullNetwork:
             assert names == {"query_intent", "aggregation_intent", "reporting_intent"}
 
     def test_unmapped_dimensional_signal(self, full_network):
-        """semantic.dimensional.cross_column_patterns has no network node."""
+        """A dimensional signal with no network node surfaces as a direct signal.
+
+        (``cross_column_patterns`` is now wired as a node for dimensional_entropy,
+        DAT-403 — use a still-unmapped dimensional sub-signal to exercise the path.)
+        """
         objects = self._make_root_objects(score=0.3)
         objects.append(
             make_entropy_object(
                 layer="semantic",
                 dimension="dimensional",
-                sub_dimension="cross_column_patterns",
+                sub_dimension="column_interaction",
                 score=0.6,
                 target="table:sales",
             )
         )
         result = assemble_readiness_context(objects, full_network)
         assert result.total_direct_signals == 1
-        assert (
-            result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
-        )
+        assert result.direct_signals[0].dimension_path == "semantic.dimensional.column_interaction"
 
     def test_overall_readiness_blocked_when_high(self, full_network):
         """With very high scores, overall readiness should be blocked."""

@@ -4,6 +4,40 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-05: DAT-403 value layer revived + wired into begin_session
+
+The 5 dormant value-layer phases (`slicing` → `slicing_view` → `slice_analysis` →
+`temporal_slice_analysis` → `correlations`) are revived source-free and wired into
+`beginSessionWorkflow` after `enriched_views`, and their 4 detectors now run in the
+terminal session detect. **First time these detectors execute in a real run — they
+need recall calibration (DAT-405).** Branch `feat/dat-403-slices`.
+
+### dataraum-eval
+- **Newly executing detectors** (declared by the now-wired value phases, added to
+  `SESSION_DETECTOR_PHASES` in `worker/activity.py`): `slice_variance` (slice_analysis),
+  `temporal_drift` + `dimensional_entropy` (temporal_slice_analysis), `derived_value`
+  (correlations). They feed `column:`/`table:` readiness bands in begin_session.
+- **New network node** `cross_column_patterns` (`semantic.dimensional.cross_column_patterns`)
+  in `dataraum-config/entropy/network.yaml` so `dimensional_entropy` contributes to bands —
+  edges `→ query_intent 0.3`, `→ aggregation_intent 0.4`. **These strengths are initial
+  guesses; calibrate them.** The other three detectors reuse existing nodes
+  (`slice_stability`, `temporal_drift`, `formula_match`).
+- **Calibrate:** value-layer detector recall on a begin_session run — known slice variance,
+  temporal drift across periods, and derived-column (formula) injections must surface as
+  non-ready bands; clean data must stay ready (precision). This is the DAT-405 value-layer
+  gate. No response-shape change; the readiness record schema is unchanged.
+- **Substrate note (DAT-415):** slicing views are now run-versioned on the
+  `MaterializationRecipe` substrate (`layer="slicing"`), like enriched views — relevant only
+  if a strategy resets/rebuilds views (`rebuild_session_views`).
+
+### dataraum-testdata
+- Injection hints for value-layer recall: (a) a categorical slice dimension whose per-slice
+  null-rate / distinct-count varies sharply across slices (slice_variance); (b) a column whose
+  category distribution drifts month-over-month (temporal_drift); (c) a derived column with a
+  known formula that holds only ~part of the time, e.g. `total = qty * price` at match_rate
+  ~0.5 (derived_value); (d) two columns with a conditional dependency / mutual exclusivity
+  across slices (dimensional_entropy / cross_column_patterns). Keep directional.
+
 ## 2026-06-05: typing replay-poison + STRPTIME-throw + eligibility key-abort fixes
 
 Three add_source typing/eligibility bug fixes from a user report (German DD.MM.YYYY

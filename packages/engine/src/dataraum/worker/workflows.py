@@ -390,6 +390,18 @@ class AddSourceWorkflow:
 # setup. The body iterates this tuple to execute the chain sequentially.
 _SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
 
+# The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:
+# slice the fact tables (LLM), narrow each to a slicing view, materialize + profile
+# the slices, run drift/period analysis on them, then detect derived columns. All
+# scoped by the session's table set (``scoped``), source-free like the spine above.
+_SESSION_VALUE_PHASE_ORDER = (
+    "slicing",
+    "slicing_view",
+    "slice_analysis",
+    "temporal_slice_analysis",
+    "correlations",
+)
+
 
 @workflow.defn(name="beginSessionWorkflow")
 class BeginSessionWorkflow:
@@ -471,6 +483,20 @@ class BeginSessionWorkflow:
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
+
+        # Value layer (DAT-403): slicing → slicing_view → slice_analysis →
+        # temporal_slice_analysis → correlations, over the enriched substrate just
+        # built. Scoped by the session's table set; feeds the value-layer detectors
+        # the terminal ``session_detect`` measures. Each is idempotent on its
+        # CREATE-OR-REPLACE / reconcile, so a re-run under a fresh run_id re-derives.
+        for phase in _SESSION_VALUE_PHASE_ORDER:
+            await workflow.execute_activity(
+                phase,
+                scoped,
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
 
         # Terminal relationship detect (DAT-408): runs the relationship detectors
         # over the session's tables, persisting relationship-granularity readiness

@@ -19,8 +19,16 @@ Two invariants are pinned here:
 from __future__ import annotations
 
 from dataraum.pipeline.pipeline_config import load_phase_declarations
-from dataraum.worker.activity import _DETECTOR_PHASES, declared_detector_ids
-from dataraum.worker.workflows import _ANALYTICS_PHASES
+from dataraum.worker.activity import (
+    _DETECTOR_PHASES,
+    SESSION_DETECTOR_PHASES,
+    declared_detector_ids,
+)
+from dataraum.worker.workflows import (
+    _ANALYTICS_PHASES,
+    _SESSION_PHASE_ORDER,
+    _SESSION_VALUE_PHASE_ORDER,
+)
 
 # The analysis phases the workflows actually execute: import + the child's
 # typing/analytics chain + the parent's source-level reduce. Source of truth is
@@ -32,6 +40,20 @@ _CHAIN_PHASES = (
     "typing",
     *_ANALYTICS_PHASES,
     "semantic_per_column",
+)
+
+# The begin_session chain the beginSessionWorkflow executes, in order. Kept
+# independently from workflows.py so a detector-bearing session phase that isn't
+# wired into the terminal ``session_detect`` (SESSION_DETECTOR_PHASES) is caught —
+# the regression DAT-403's value layer would have been (detectors declared, phase
+# unwired). The interleaved non-phase steps (``session_materialize_overlays``,
+# ``session_write_keepers``, ``session_promote_to_latest``) declare no detectors and
+# are intentionally omitted — the orphan guard only needs the detector-bearing phases.
+_SESSION_CHAIN_PHASES = (
+    "begin_session_select",
+    *_SESSION_PHASE_ORDER,
+    "enriched_views",
+    *_SESSION_VALUE_PHASE_ORDER,
 )
 
 
@@ -51,6 +73,26 @@ def test_no_chain_phase_detector_is_orphaned() -> None:
         assert phase in detect_step_phases, (
             f"phase '{phase}' declares detectors {decl.detectors} but is not in "
             "the terminal detect step (_DETECTOR_PHASES) — they would never run"
+        )
+
+
+def test_no_session_chain_phase_detector_is_orphaned() -> None:
+    """Every detector a begin_session phase declares runs in the terminal session detect.
+
+    The begin_session analogue of the above: a value phase (slice_analysis,
+    temporal_slice_analysis, correlations) declaring a detector but absent from
+    ``SESSION_DETECTOR_PHASES`` would never measure it (DAT-403).
+    """
+    detect_step_phases = set(SESSION_DETECTOR_PHASES)
+    declarations = load_phase_declarations()
+
+    for phase in _SESSION_CHAIN_PHASES:
+        decl = declarations.get(phase)
+        if not decl or not decl.detectors:
+            continue
+        assert phase in detect_step_phases, (
+            f"begin_session phase '{phase}' declares detectors {decl.detectors} but is "
+            "not in SESSION_DETECTOR_PHASES — they would never run"
         )
 
 

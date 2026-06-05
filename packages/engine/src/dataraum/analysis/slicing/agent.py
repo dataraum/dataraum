@@ -8,7 +8,6 @@ Uses tool-based output for structured responses.
 from __future__ import annotations
 
 import json
-import re
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
@@ -19,6 +18,7 @@ from dataraum.analysis.slicing.models import (
     SlicingAnalysisOutput,
     SlicingAnalysisResult,
 )
+from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.core.models.base import DecisionSource, Result
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
@@ -200,8 +200,12 @@ class SlicingAgent(LLMFeature):
             # phases — KeyError here means upstream invariant was broken.
             enriched_view = table_info.get("enriched_duckdb_path")
             duckdb_table = enriched_view or table_info["duckdb_path"]
+            # Name slices off the fact's source-qualified duckdb_path (DAT-356),
+            # never the bare table_name — two same-named facts in different sources
+            # must not collide on a shared lake name.
+            source_key = table_info["duckdb_path"]
             sql_template = self._build_sql_template(
-                duckdb_table, column_name, distinct_values, source_table_name=table_name
+                duckdb_table, column_name, distinct_values, source_key=source_key
             )
 
             recommendation = SliceRecommendation(
@@ -220,21 +224,16 @@ class SlicingAgent(LLMFeature):
             recommendations.append(recommendation)
 
             # Generate individual slice SQL queries
-            safe_source = self._sanitize_for_table_name(table_name)
             for value in distinct_values:
-                safe_value = self._sanitize_for_table_name(str(value))
-                safe_column = self._sanitize_for_table_name(column_name)
-                slice_table_name = f"slice_{safe_source}_{safe_column}_{safe_value}"
+                slice_name = slice_table_name(source_key, column_name, value)
 
-                sql_query = self._build_slice_sql(
-                    duckdb_table, column_name, value, slice_table_name
-                )
+                sql_query = self._build_slice_sql(duckdb_table, column_name, value, slice_name)
 
                 slice_queries.append(
                     SliceSQL(
                         slice_name=f"{column_name}={value}",
                         slice_value=str(value),
-                        table_name=slice_table_name,
+                        table_name=slice_name,
                         sql_query=sql_query,
                     )
                 )
@@ -255,15 +254,16 @@ class SlicingAgent(LLMFeature):
         column_name: str,
         distinct_values: list[str],
         *,
-        source_table_name: str,
+        source_key: str,
     ) -> str:
         """Build SQL template for creating all slices.
 
         Args:
-            table_name: Source table/view name (e.g. enriched view).
+            table_name: Source table/view name to read FROM (e.g. enriched view).
             column_name: Column to slice on.
             distinct_values: List of values to create slices for.
-            source_table_name: Fact table name used for namespacing.
+            source_key: The fact's source-qualified ``duckdb_path``, used to name
+                the slice tables (DAT-356) — never the bare table name.
 
         Returns:
             SQL template string
@@ -272,11 +272,8 @@ class SlicingAgent(LLMFeature):
         lines.append(f"-- Source table: {table_name}")
         lines.append("")
 
-        safe_source = self._sanitize_for_table_name(source_table_name)
         for value in distinct_values:
-            safe_value = self._sanitize_for_table_name(str(value))
-            safe_column = self._sanitize_for_table_name(column_name)
-            slice_table = f"slice_{safe_source}_{safe_column}_{safe_value}"
+            slice_table = slice_table_name(source_key, column_name, value)
 
             # Use proper quoting for column names with spaces
             quoted_column = f'"{column_name}"'
@@ -317,28 +314,6 @@ class SlicingAgent(LLMFeature):
         return f"""CREATE OR REPLACE VIEW {target_table} AS
 SELECT * FROM {source_table}
 WHERE {quoted_column} = '{escaped_value}';"""
-
-    def _sanitize_for_table_name(self, value: str) -> str:
-        """Sanitize a value for use in a table name.
-
-        Args:
-            value: Raw value
-
-        Returns:
-            Sanitized string safe for table names
-        """
-        # Replace spaces and special chars with underscores
-        sanitized = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
-        # Remove consecutive underscores
-        sanitized = re.sub(r"_+", "_", sanitized)
-        # Remove leading/trailing underscores
-        sanitized = sanitized.strip("_")
-        # Lowercase
-        sanitized = sanitized.lower()
-        # Ensure not empty
-        if not sanitized:
-            sanitized = "unknown"
-        return sanitized
 
 
 __all__ = ["SlicingAgent"]

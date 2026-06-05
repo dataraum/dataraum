@@ -1,10 +1,10 @@
-// Unit tests for the select-stage pure mappers (DAT-398).
+// Unit tests for the select-stage pure mappers (DAT-398, DAT-422).
 //
-// These are pure functions (no driver, no DB, no bucket): the source_type
-// derivation, duplicate-basename rejection, recipe-name sanitization, and
-// schema-qualified SELECT synthesis. `mappers.ts` only TYPE-imports
-// `../duckdb/connect` (erased), so no config boot is needed — but we mock
-// `#/config` defensively, matching the suite's `#/`-alias mock convention.
+// These are pure functions (no driver, no DB, no bucket): the per-file
+// source_type derivation, the content-keyed source name, recipe-name
+// sanitization, and schema-qualified SELECT synthesis. `mappers.ts` only
+// TYPE-imports `../duckdb/connect` (erased), so no config boot is needed — but we
+// mock `#/config` defensively, matching the suite's `#/`-alias mock convention.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -13,14 +13,58 @@ vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 import type { ConnectSchema } from "#/duckdb/connect";
 import {
 	connectTablesToRecipeTables,
-	duplicateBasenames,
+	contentKeyedSourceName,
 	recipeSqlForDisplayName,
-	sanitizedStem,
 	sanitizeRecipeName,
 	sourceTypeForUri,
-	sourceTypeForUris,
-	uriStem,
 } from "./mappers";
+
+// A real 40-char sha-1 hex digest (the digest of the empty string) — the shape
+// upload/digest.ts produces; `src_` + 40 = 44 chars, a valid source name.
+const DIGEST = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+
+describe("contentKeyedSourceName", () => {
+	it("derives src_<digest> from a staged upload URI", () => {
+		expect(
+			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`),
+		).toBe(`src_${DIGEST}`);
+	});
+
+	it("keys on the digest only — the filename and extension don't change it", () => {
+		const a = contentKeyedSourceName(
+			`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`,
+		);
+		const b = contentKeyedSourceName(
+			`s3://dataraum-lake/uploads/${DIGEST}/orders.parquet`,
+		);
+		// Same digest → same source name (the upload dedup already collapses
+		// identical bytes to one key, so this is the re-select idempotency path).
+		expect(a).toBe(b);
+	});
+
+	it("produces an engine-valid source name (lowercase, letter-led, ≤49)", () => {
+		const name = contentKeyedSourceName(
+			`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`,
+		);
+		expect(name).toMatch(/^[a-z][a-z0-9_]{1,48}$/);
+		expect(name.length).toBeLessThanOrEqual(49);
+	});
+
+	it("fails loud on a non-upload URI (a bucket/prefix object is not content-addressed)", () => {
+		expect(() =>
+			contentKeyedSourceName("s3://dataraum-lake/data/2024/sales.csv"),
+		).toThrow(/must be a staged upload/);
+	});
+
+	it("fails loud on a nested or shallow key (not exactly uploads/<digest>/<file>)", () => {
+		expect(() =>
+			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}/a/b.csv`),
+		).toThrow(/must be a staged upload/);
+		expect(() =>
+			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}`),
+		).toThrow(/must be a staged upload/);
+	});
+});
 
 describe("sourceTypeForUri", () => {
 	it("derives the engine source_type from the URI suffix (not the literal 'file')", () => {
@@ -42,94 +86,6 @@ describe("sourceTypeForUri", () => {
 	it("throws on an unsupported or missing extension", () => {
 		expect(() => sourceTypeForUri("s3://b/notes.md")).toThrow(/source_type/);
 		expect(() => sourceTypeForUri("s3://b/readme")).toThrow(/source_type/);
-	});
-});
-
-describe("sourceTypeForUris", () => {
-	it("returns the single homogeneous type for a multi-file selection", () => {
-		expect(
-			sourceTypeForUris(["s3://b/a.csv", "s3://b/c/d.csv", "s3://b/e.tsv"]),
-		).toBe("csv");
-	});
-
-	it("rejects a mixed-type selection (one source row carries one source_type)", () => {
-		expect(() =>
-			sourceTypeForUris(["s3://b/a.csv", "s3://b/b.parquet"]),
-		).toThrow(/mixes incompatible source types/);
-	});
-
-	it("rejects an empty list", () => {
-		expect(() => sourceTypeForUris([])).toThrow(/empty/);
-	});
-});
-
-describe("uriStem", () => {
-	it("returns the extensionless basename of an s3 URI", () => {
-		expect(uriStem("s3://bucket/uploads/abc/orders.csv")).toBe("orders");
-		expect(uriStem("s3://bucket/data.parquet")).toBe("data");
-		expect(uriStem("s3://bucket/noext")).toBe("noext");
-	});
-});
-
-describe("duplicateBasenames", () => {
-	it("returns nothing when every file maps to a distinct raw table", () => {
-		expect(
-			duplicateBasenames(["s3://b/orders.csv", "s3://b/customers.csv"]),
-		).toEqual([]);
-	});
-
-	it("flags two files that collide on the same <source>__<stem> raw table", () => {
-		// Same stem across folders → both name <source>__data → engine fails loud.
-		expect(
-			duplicateBasenames(["s3://b/a/data.csv", "s3://b/b/data.csv"]),
-		).toEqual(["data"]);
-	});
-
-	it("flags files that differ only by extension (same stem)", () => {
-		expect(
-			duplicateBasenames(["s3://b/data.csv", "s3://b/data.parquet"]),
-		).toEqual(["data"]);
-	});
-
-	it("returns colliding stems sorted", () => {
-		expect(
-			duplicateBasenames([
-				"s3://b/zeta.csv",
-				"s3://b/x/zeta.csv",
-				"s3://b/alpha.csv",
-				"s3://b/y/alpha.csv",
-			]),
-		).toEqual(["alpha", "zeta"]);
-	});
-
-	it("flags stems that differ only by CASE (engine lowercases the raw table)", () => {
-		// Orders.csv + orders.csv both sanitize to `orders` → one raw table.
-		expect(
-			duplicateBasenames(["s3://b/Orders.csv", "s3://b/orders.csv"]),
-		).toEqual(["Orders", "orders"]);
-	});
-
-	it("flags stems that differ only by PUNCTUATION (engine collapses to `_`)", () => {
-		// q1-data + q1_data both sanitize to `q1_data` → one raw table.
-		expect(
-			duplicateBasenames(["s3://b/q1-data.csv", "s3://b/q1_data.csv"]),
-		).toEqual(["q1-data", "q1_data"]);
-	});
-
-	it("does NOT flag stems that only look similar but sanitize distinctly", () => {
-		expect(
-			duplicateBasenames(["s3://b/orders.csv", "s3://b/orders_2024.csv"]),
-		).toEqual([]);
-	});
-});
-
-describe("sanitizedStem", () => {
-	it("mirrors the engine sanitize_identifier collision domain", () => {
-		expect(sanitizedStem("Orders")).toBe("orders");
-		expect(sanitizedStem("q1-data")).toBe("q1_data");
-		expect(sanitizedStem("q1_data")).toBe("q1_data");
-		expect(sanitizedStem("  weird--name  ")).toBe("weird_name");
-		expect(sanitizedStem("2024_orders")).toBe("x_2024_orders");
 	});
 });
 

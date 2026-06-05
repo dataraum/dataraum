@@ -123,7 +123,7 @@ _MOCK_ACTIVITIES = [
     _promote_to_latest,
 ]
 
-_IDENTITY = SourceIdentity(workspace_id="test", source_id="src-dat406", session_id="sess-dat406")
+_IDENTITY = SourceIdentity(workspace_id="test", session_id="sess-dat406")
 
 
 def _worker(client: Client) -> Worker:
@@ -147,12 +147,12 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     an offline Replayer to prove the ``as_completed`` swap + the progress
     mutations are determinism-safe — both DAT-406 guarantees in one live run.
     """
-    workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.source_id)
+    workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.session_id)
 
     async with _worker(temporal_client):
         handle = await temporal_client.start_workflow(
             AddSourceWorkflow.run,
-            AddSourceInput(identity=_IDENTITY),
+            AddSourceInput(identity=_IDENTITY, source_ids=["src-dat406"]),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )

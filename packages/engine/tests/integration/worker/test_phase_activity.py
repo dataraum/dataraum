@@ -180,7 +180,7 @@ def _process_one_table(
     typing = run_phase(manager, "typing", identity, [raw_table_id])
     assert typing.status == "completed", f"typing failed: {typing.error}"
 
-    typed_id = typed_table_id_for_raw(manager, identity.source_id, raw_table_id)
+    typed_id = typed_table_id_for_raw(manager, raw_table_id)
     assert typed_id is not None, f"no typed table for raw {raw_table_id}"
     assert typed_id != raw_table_id, "typed id must differ from the raw id"
 
@@ -224,7 +224,7 @@ def test_import_then_typing_share_one_manager(
     typing_result = run_phase(worker_manager, "typing", identity, [raw_ids[0]])
     assert typing_result.status == "completed", typing_result.error
     assert _lake_tables(worker_manager, "typed"), "no tables in lake.typed after typing"
-    assert typed_table_id_for_raw(worker_manager, source_id, raw_ids[0]) is not None
+    assert typed_table_id_for_raw(worker_manager, raw_ids[0]) is not None
 
     assert worker_manager._duckdb_conn is duckdb_conn_after_import, (  # noqa: SLF001
         "worker DuckDB connection was reopened between phases — the anchor "
@@ -513,6 +513,39 @@ def test_persisted_readiness_is_single_source_of_truth(
             assert evidence_summaries[key].readiness == live_summary.readiness, key
 
 
+def test_source_free_children_run_the_full_per_table_chain(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """The fan-out children run SOURCE-FREE (DAT-422) — typing + every analytics
+    phase resolve their table by ``table_ids`` alone, never ``source_id``.
+
+    AddSourceWorkflow scopes ``import`` to each source but threads a source-free
+    identity (``source_id=None``) into the per-table children + the reduce. This
+    drives that exact shape: ``import`` with the source-bearing identity, then the
+    whole ProcessTableWorkflow body (typing → statistics → … → temporal) under a
+    source-free identity. It guards the regression where the table-local phases
+    scoped via ``Table.source_id == require_source_id()`` and raised on the
+    source-free child — a break the source-bearing test identities masked.
+    """
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    files = _enumerate_fixture_files(small_finance_path)
+    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+
+    # import is the one per-source activity — it needs the source.
+    import_status = run_phase(worker_manager, "import", _identity(source_id, session_id), []).status
+    assert import_status == "completed"
+    raw_ids = raw_table_ids(worker_manager, source_id)
+    assert raw_ids, "import produced no raw tables"
+
+    # Past import the run is source-free: the children carry source_id=None. Running
+    # the full per-table chain under it proves typing + every analytics phase resolve
+    # their table without a source (the blocker DAT-422 introduced + fixed).
+    child_identity = SourceIdentity(workspace_id="test", source_id=None, session_id=session_id)
+    for raw_id in raw_ids:
+        assert _process_one_table(worker_manager, child_identity, raw_id)
+
+
 def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     worker_manager: ConnectionManager, small_finance_path: Path
 ) -> None:
@@ -611,7 +644,7 @@ def test_semantic_per_column_reduce_runs_live(
     assert run_phase(worker_manager, "import", identity, []).status == "completed"
     for raw_id in raw_table_ids(worker_manager, source_id):
         assert run_phase(worker_manager, "typing", identity, [raw_id]).status == "completed"
-        typed_id = typed_table_id_for_raw(worker_manager, source_id, raw_id)
+        typed_id = typed_table_id_for_raw(worker_manager, raw_id)
         assert run_phase(worker_manager, "statistics", identity, [typed_id]).status == "completed"
 
     result = run_phase(worker_manager, "semantic_per_column", identity, [])

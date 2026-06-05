@@ -86,3 +86,48 @@ export function groupLogicalTables(tables: InventoryTable[]): LogicalTable[] {
 	}
 	return out;
 }
+
+// --- source presentation grouping (DAT-424) ----------------------------------
+//
+// An uploaded file is its OWN content-keyed source (DAT-422: one `src_<digest>`
+// source per file). Rendering each as a peer named "source" floods the inventory
+// with hash-named badges — the noise this phase removes. Instead, every upload
+// collapses under ONE "Uploads" umbrella (a presentation group, NOT a data row —
+// the re-pin dropped the umbrella source), shown by FILENAME (already the row's
+// `displayName`); a connection (db_recipe) stays its own named origin.
+
+/** Filter id of the single "Uploads" umbrella — every content-keyed upload
+ * source groups under it, so the digest source name is never shown. */
+export const UPLOADS_GROUP_ID = "uploads";
+const UPLOADS_GROUP_LABEL = "Uploads";
+
+export interface SourceGroup {
+	/** Selection/filter id: `UPLOADS_GROUP_ID` for uploads, else the connection's
+	 * source_id. */
+	id: string;
+	/** Human label: "Uploads" for an uploaded object, else the connection name. */
+	label: string;
+	kind: "uploads" | "connection";
+}
+
+/**
+ * The inventory presentation group for a source.
+ *
+ * Discriminator: `db_recipe` → a named connection origin; any other (file)
+ * source_type → an uploaded object that collapses under the "Uploads" umbrella.
+ * This is robust today because the engine sets `db_recipe` for DB sources
+ * regardless of name (so a connection can't masquerade as an upload), and
+ * post-DAT-422 every file source IS a content-keyed upload. A future bucket
+ * connector (DAT-390) that ingests files without uploading would need its own
+ * signal here.
+ */
+export function sourceGroup(
+	sourceName: string,
+	sourceType: string,
+	sourceId: string,
+): SourceGroup {
+	if (sourceType === "db_recipe") {
+		return { id: sourceId, label: sourceName, kind: "connection" };
+	}
+	return { id: UPLOADS_GROUP_ID, label: UPLOADS_GROUP_LABEL, kind: "uploads" };
+}

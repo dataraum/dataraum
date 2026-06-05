@@ -19,11 +19,12 @@ from sqlalchemy import func, select
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
+from dataraum.investigation.queries import tables_for_session
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 logger = get_logger(__name__)
 
@@ -51,10 +52,24 @@ class SemanticPerColumnPhase(BasePhase):
         return [db_models]
 
     def _typed_table_ids(self, ctx: PhaseContext) -> list[str]:
-        stmt = select(Table.table_id).where(
-            Table.layer == "typed", Table.source_id == ctx.source_id
-        )
-        return [row[0] for row in ctx.session.execute(stmt)]
+        """The typed tables this run reduces over — the run's SESSION tables.
+
+        The relational scope key is the session, not the source (DAT-421): the
+        run's tables are the ones ``typing`` linked to ``session_id`` via
+        ``session_tables`` (DAT-407), and the reduce/readiness layer already keys
+        on that anchor (``detect`` + readiness, DAT-410). This phase was the last
+        in the add_source spine still filtering ``Table.source_id == ctx.source_id``;
+        it now uses the same ``tables_for_session`` key. Behavior-preserving for an
+        add_source run (the session links exactly that source's freshly-typed
+        tables), and source-agnostic for a run whose tables span multiple
+        per-object sources.
+
+        Re-run safety: ``typing``'s ``reconcile_typed_table`` reuses the stable
+        typed ``Table.table_id`` (no new row on re-type), so ``link_session_tables``'
+        ``merge`` is a no-op for an already-linked table — the set never widens
+        across teach re-runs over the same ``session_id``.
+        """
+        return tables_for_session(ctx.session, ctx.require_session_id())
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip only when there are genuinely no typed columns to annotate.

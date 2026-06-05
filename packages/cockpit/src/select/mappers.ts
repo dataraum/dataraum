@@ -27,7 +27,19 @@
 //     as a (low) injection surface and escaped.
 
 import type { ConnectSchema } from "../duckdb/connect";
-import { ALLOWED_EXTENSIONS, fileExtension } from "../upload/policy";
+import {
+	ALLOWED_EXTENSIONS,
+	fileExtension,
+	UPLOAD_PREFIX,
+} from "../upload/policy";
+
+// The engine's source-name rule (`sources/manager.py` `_NAME_PATTERN`): lowercase,
+// starts with a letter, 2–49 chars of `[a-z0-9_]`. A persisted source name must
+// match it (the engine credential lookup `DATARAUM_<NAME>_URL` and the raw-table
+// prefix `<name>__` both key off it) and is UNIQUE (`uq_sources_name`). Lives here
+// in the pure-shape module so both the db-source name validation (`tools/select.ts`)
+// and the content-keyed file-source name derivation below agree on one pattern.
+export const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
 // --- source_type from a file URI suffix -------------------------------------
 
@@ -52,8 +64,9 @@ const EXTENSION_TO_SOURCE_TYPE: Record<string, "csv" | "parquet" | "json"> = {
  *
  * Throws on an unsupported / extensionless URI — a select that can't name the
  * source_type is a loud error, not a silently-mislabelled row the engine import
- * would reject. A multi-file source is homogeneous by this value (see
- * `sourceTypeForUris`).
+ * would reject. Each content-keyed file source carries one file, so this single
+ * value is its declared `source_type` (the loader still dispatches per-URI by
+ * suffix at import time).
  */
 export function sourceTypeForUri(uri: string): "csv" | "parquet" | "json" {
 	const ext = fileExtension(uri);
@@ -67,89 +80,58 @@ export function sourceTypeForUri(uri: string): "csv" | "parquet" | "json" {
 	return type;
 }
 
+// --- content-keyed file sources (DAT-422) ------------------------------------
+
+// Each uploaded FILE is its own source, keyed by its content digest (the model:
+// one file = one content-keyed source, DD/30900226 v2). A staged upload's object
+// key is the locked `uploads/<digest>/<filename>` shape (upload/policy.ts
+// buildUploadKey) whose directory segment IS the file's content digest, so the
+// source name is `src_<digest>`: identical bytes (same digest → same key → same
+// name) UPSERT one row (re-upload dedup), and two distinct files never collide on
+// a source — even when their basenames match — because the digests differ. The
+// name is engine-valid by construction (a 40-char sha-1 hex digest → `src_` + 40
+// = 44 chars, lowercase, letter-led).
+const CONTENT_SOURCE_PREFIX = "src_";
+
 /**
- * The single `source_type` for a file source's URI list.
+ * The content-keyed source NAME (`src_<digest>`) for a staged upload URI.
  *
- * Every URI must derive the same type — the engine stores ONE `source_type` per
- * Source row, so a mixed selection (a `.csv` next to a `.parquet`) is ambiguous
- * and rejected here rather than persisting a row whose `source_type` describes
- * only some of its files. (Loaders dispatch per-URI by suffix at import time, so
- * this column is the source's declared *kind*, not a per-file switch.)
+ * Parses the content digest from the locked `s3://<bucket>/uploads/<digest>/
+ * <filename>` upload shape (upload/policy.ts). A URI that is NOT upload-shaped —
+ * a bare bucket key, or a prefix-enumerated object that was never
+ * content-addressed — cannot be content-keyed and is a loud failure here: content
+ * identity requires the upload digest, and the bucket/prefix connector is a
+ * separate future concern (DAT-390), not a silently path-keyed source. The
+ * returned name is asserted against `SOURCE_NAME_PATTERN` so a malformed digest
+ * segment fails loud rather than persisting an unusable row.
  */
-export function sourceTypeForUris(uris: string[]): "csv" | "parquet" | "json" {
-	if (uris.length === 0) {
-		throw new Error("Cannot derive source_type from an empty URI list.");
-	}
-	const types = new Set(uris.map(sourceTypeForUri));
-	if (types.size > 1) {
+export function contentKeyedSourceName(uri: string): string {
+	const path = uri.replace(/^s3:\/\/[^/]+\//, "");
+	const segments = path.split("/").filter(Boolean);
+	// Exactly `uploads/<digest>/<filename>` — no shallower, no nested key.
+	if (
+		segments.length !== 3 ||
+		segments[0] !== UPLOAD_PREFIX ||
+		!segments[1] ||
+		!segments[2]
+	) {
 		throw new Error(
-			`File selection mixes incompatible source types (${[...types].sort().join(", ")}). ` +
-				"Select files of a single type per source.",
+			`Cannot content-key '${uri}' — a file source must be a staged upload ` +
+				`(s3://<bucket>/${UPLOAD_PREFIX}/<digest>/<filename>). A bucket/prefix ` +
+				"source is not content-addressed (a future connector).",
 		);
 	}
-	return [...types][0];
-}
-
-// --- duplicate-basename rejection (DAT-398 owns this; engine fails loud) ------
-
-/** The basename stem of an `s3://` URI (the leaf segment minus its extension).
- *
- * Mirrors the engine's `uri_stem` (core/uri.py): `s3://b/a/orders.csv` →
- * `orders`. Two URIs sharing this stem map to the SAME raw table
- * `<source>__<stem>`, which the engine refuses to load (import_phase.py:223).
- */
-export function uriStem(uri: string): string {
-	const path = uri.replace(/^s3:\/\/[^/]+\//, "");
-	const leaf = path.replace(/\/+$/, "").split("/").pop() ?? path;
-	const dot = leaf.lastIndexOf(".");
-	return dot > 0 ? leaf.slice(0, dot) : leaf;
-}
-
-/**
- * Mirror of the engine's `sanitize_identifier` (core/duckdb_naming.py) — the
- * actual collision domain for raw table names: lowercase, collapse runs of
- * non-identifier chars to `_`, strip edge underscores, prefix a leading digit
- * with `x_`. DISTINCT from `sanitizeRecipeName` (the recipe-name `t_` rule);
- * the FILE raw table `<source>__<stem>` collides on THIS, so the basename guard
- * must group on it.
- */
-export function sanitizedStem(stem: string): string {
-	const s = stem
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9_]+/g, "_")
-		.replace(/_+/g, "_")
-		.replace(/^_+|_+$/g, "");
-	return /^[0-9]/.test(s) ? `x_${s}` : s;
-}
-
-/**
- * Display basenames whose files would collide on the same engine raw table,
- * sorted. Empty when every file resolves to a distinct raw table.
- *
- * The select stage owns preventing this collision (DAT-378's fix deferred it
- * here): the engine names each file's raw table `<source>__sanitize(<stem>)`
- * and fails loud on the second `CREATE OR REPLACE` for a name already taken. We
- * group on the SANITIZED stem (`sanitizedStem`, the engine's collision domain),
- * NOT the raw stem — so files differing only by case or punctuation (`Orders`
- * vs `orders`, `q1-data` vs `q1_data`) are caught, not just same-stem/diff-ext —
- * and surface the offending display basenames BEFORE persisting so the user
- * fixes the selection, never the import.
- */
-export function duplicateBasenames(uris: string[]): string[] {
-	const byKey = new Map<string, string[]>();
-	for (const uri of uris) {
-		const stem = uriStem(uri);
-		const key = sanitizedStem(stem);
-		const group = byKey.get(key);
-		if (group) group.push(stem);
-		else byKey.set(key, [stem]);
+	// SHA-1 hex (what digestBytes produces) is already lowercase; toLowerCase() is
+	// defensive so a non-canonical digest segment still yields an engine-valid name.
+	const name = `${CONTENT_SOURCE_PREFIX}${segments[1].toLowerCase()}`;
+	if (!SOURCE_NAME_PATTERN.test(name)) {
+		throw new Error(
+			`Content key '${name}' for '${uri}' is not a valid source name ` +
+				"(lowercase, letter-led, 2–49 chars of [a-z0-9_]) — the upload digest " +
+				"segment is malformed.",
+		);
 	}
-	const clashing = new Set<string>();
-	for (const stems of byKey.values()) {
-		if (stems.length > 1) for (const s of stems) clashing.add(s);
-	}
-	return [...clashing].sort();
+	return name;
 }
 
 // --- recipe synthesis (db_recipe `connection_config.tables`) -----------------

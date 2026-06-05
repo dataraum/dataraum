@@ -19,10 +19,34 @@ describe("chat route wiring (DAT-353)", () => {
 	it("sends the orchestrator instructions as a cached system block", () => {
 		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
 		expect(opts.systemPrompts).toHaveLength(1);
-		expect(opts.systemPrompts[0].metadata.cache_control).toEqual({
+		const sys = opts.systemPrompts[0];
+		expect(sys?.metadata?.cache_control).toEqual({ type: "ephemeral" });
+		expect((sys?.content ?? "").length).toBeGreaterThan(0);
+	});
+
+	it("appends the workspace context as a SECOND, uncached system block (session-awareness)", () => {
+		const ctx = "WORKSPACE CONTEXT — session abc";
+		const opts = buildChatOptions(
+			[{ role: "user", content: "hi" }],
+			undefined,
+			ctx,
+		);
+		expect(opts.systemPrompts).toHaveLength(2);
+		// The orchestrator stays the cached FIRST block (the cache breakpoint)…
+		expect(opts.systemPrompts[0]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});
-		expect(opts.systemPrompts[0].content.length).toBeGreaterThan(0);
+		// …the session context is the SECOND block, past the breakpoint → no
+		// cache_control, so it's never cached (a fresh suffix each turn).
+		expect(opts.systemPrompts[1]?.content).toBe(ctx);
+		expect(opts.systemPrompts[1]?.metadata).toBeUndefined();
+	});
+
+	it("omits the second block when there is no current session", () => {
+		expect(
+			buildChatOptions([{ role: "user", content: "hi" }], undefined, null)
+				.systemPrompts,
+		).toHaveLength(1);
 	});
 
 	it("attaches the full tool registry to the loop", () => {

@@ -42,14 +42,17 @@ function renderWidget(tables: InventoryTable[]) {
 function table(overrides: Partial<InventoryTable> = {}): InventoryTable {
 	return {
 		table_id: "t_orders",
-		table_name: "orders",
+		// A content-keyed upload's raw table is `<src_digest>__<filename-stem>`.
+		table_name: "src_aaa__orders",
 		layer: "typed",
 		row_count: 1000,
 		column_count: 5,
-		source_id: "s_sales",
-		source_name: "sales.csv",
-		source_type: "file",
-		source_backend: "duckdb",
+		source_id: "src_aaa",
+		// The source NAME is the content digest (DAT-422) — never shown; the
+		// inventory surfaces the filename ("orders", the de-prefixed table name).
+		source_name: "src_aaa",
+		source_type: "csv",
+		source_backend: null,
 		source_status: "ready",
 		analyzed: true,
 		worst_band: "blocked",
@@ -58,27 +61,31 @@ function table(overrides: Partial<InventoryTable> = {}): InventoryTable {
 	};
 }
 
-// Two sources: sales (orders + items) and crm (users, not yet analyzed).
+// Two UPLOADED FILES — each its own content-keyed `src_<digest>` source — plus one
+// db_recipe CONNECTION. The two uploads must collapse under ONE "Uploads" group.
 const inventory: InventoryTable[] = [
-	table(),
+	table(), // src_aaa → orders
 	table({
 		table_id: "t_items",
-		table_name: "items",
+		table_name: "src_bbb__items",
+		source_id: "src_bbb",
+		source_name: "src_bbb",
 		row_count: 50,
 		column_count: 2,
+		source_status: null,
 		worst_band: "ready",
 		readiness: { ready: 2, investigate: 0, blocked: 0, unanalyzed: 0 },
 	}),
 	table({
 		table_id: "t_users",
-		table_name: "users",
-		row_count: 200,
-		column_count: 4,
+		table_name: "crm__users",
 		source_id: "s_crm",
 		source_name: "crm",
-		source_type: "database",
+		source_type: "db_recipe",
 		source_backend: "postgres",
 		source_status: null,
+		row_count: 200,
+		column_count: 4,
 		analyzed: false,
 		worst_band: null,
 		readiness: { ready: 0, investigate: 0, blocked: 0, unanalyzed: 4 },
@@ -102,31 +109,52 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		// shows a dash, never a band, so "not measured" doesn't read as "ready".
 		const ordersRow = within(screen.getByTestId("inventory-row-t_orders"));
 		expect(ordersRow.getByText("Blocked")).toBeTruthy();
-		expect(ordersRow.getByText(/sales\.csv/)).toBeTruthy();
+		// The uploaded file shows under the "Uploads" umbrella — never its src_<digest>.
+		expect(ordersRow.getByText("Uploads")).toBeTruthy();
+		expect(ordersRow.queryByText(/src_aaa/)).toBeNull();
 		const usersRow = within(screen.getByTestId("inventory-row-t_users"));
 		expect(usersRow.queryByText(/ready/i)).toBeNull();
 		expect(usersRow.queryByText(/blocked/i)).toBeNull();
+	});
+
+	it("collapses content-keyed uploads under ONE 'Uploads' badge — the digest is never shown (DAT-424)", () => {
+		renderWidget(inventory);
+		// Two uploaded files = two content-keyed sources → ONE shared "Uploads" badge
+		// (one per upload row), NOT two hash-named peer source badges.
+		const uploadBadges = screen.getAllByTestId(
+			"inventory-source-badge-uploads",
+		);
+		expect(uploadBadges).toHaveLength(2);
+		expect(uploadBadges[0].textContent).toBe("Uploads");
+		// The connection keeps its named origin.
+		expect(
+			screen.getByTestId("inventory-source-badge-s_crm").textContent,
+		).toContain("crm");
+		// No `src_<digest>` hash anywhere in the inventory (AC1).
+		expect(
+			screen.getByTestId("canvas-workspace-inventory").textContent,
+		).not.toContain("src_");
 	});
 
 	it("collapses raw/typed/quarantine layers into one row and surfaces quarantine as a modal-opening red count", () => {
 		renderWidget([
 			table({
 				table_id: "raw1",
-				table_name: "sales.csv__orders",
+				table_name: "src_aaa__orders",
 				layer: "raw",
 				row_count: 1000,
 				worst_band: null,
 			}),
 			table({
 				table_id: "typed1",
-				table_name: "sales.csv__orders",
+				table_name: "src_aaa__orders",
 				layer: "typed",
 				row_count: 998,
 				worst_band: "investigate",
 			}),
 			table({
 				table_id: "q1",
-				table_name: "sales.csv__orders",
+				table_name: "src_aaa__orders",
 				layer: "quarantine",
 				row_count: 2,
 				worst_band: null,
@@ -137,7 +165,7 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("inventory-row-typed1")).toBeTruthy();
 		expect(screen.queryByTestId("inventory-row-raw1")).toBeNull();
 		expect(screen.queryByTestId("inventory-row-q1")).toBeNull();
-		// The name is de-prefixed (no `sales.csv__`).
+		// The name is de-prefixed (no `src_aaa__`).
 		const row = within(screen.getByTestId("inventory-row-typed1"));
 		expect(row.getByText("orders")).toBeTruthy();
 		// The quarantine count opens the detail modal.
@@ -145,6 +173,11 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("modal-quarantine-count").textContent).toContain(
 			"2",
 		);
+		// The modal is a third source-display surface — it must also show the group
+		// ("Uploads"), never the `src_<digest>` hash.
+		const modal = within(screen.getByTestId("inventory-detail-modal"));
+		expect(modal.getByText("Uploads")).toBeTruthy();
+		expect(modal.queryByText(/src_/)).toBeNull();
 	});
 
 	it("renders the empty state when there are no tables", () => {
@@ -174,13 +207,13 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		// No card until a badge is clicked.
 		expect(screen.queryByTestId("inventory-source-card")).toBeNull();
 
-		// The sales badge appears on both its rows; click the first.
-		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_sales")[0]);
+		// The two uploads share ONE "Uploads" badge (one per upload row); click it.
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-uploads")[0]);
 
 		const card = within(screen.getByTestId("inventory-source-card"));
-		expect(card.getByText("sales.csv")).toBeTruthy();
-		expect(card.getByText("duckdb")).toBeTruthy();
-		// Both sales tables are listed; the crm table is NOT.
+		expect(card.getByText("Uploads")).toBeTruthy();
+		expect(card.getByText("uploaded files")).toBeTruthy();
+		// Both uploaded files are listed; the connection's table is NOT.
 		expect(card.getByText("orders")).toBeTruthy();
 		expect(card.getByText("items")).toBeTruthy();
 		expect(card.queryByText("users")).toBeNull();
@@ -198,14 +231,11 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 
 	it("switches the SourceCard to a different source on a new badge click", () => {
 		renderWidget(inventory);
-		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_sales")[0]);
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-uploads")[0]);
 		expect(
-			within(screen.getByTestId("inventory-source-card")).getByText(
-				"sales.csv",
-			),
+			within(screen.getByTestId("inventory-source-card")).getByText("Uploads"),
 		).toBeTruthy();
-		// Click the other source's badge — the card body switches (head re-derives
-		// from the newly-selected source's rows).
+		// Click the connection's badge — the card body switches to the named origin.
 		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_crm")[0]);
 		const card = within(screen.getByTestId("inventory-source-card"));
 		expect(card.getByText("crm")).toBeTruthy();
@@ -213,11 +243,11 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(card.queryByText("orders")).toBeNull();
 	});
 
-	it("SourceCard aggregates readiness totals across the source's tables", () => {
+	it("SourceCard aggregates readiness totals across the group's tables", () => {
 		renderWidget(inventory);
-		fireEvent.click(screen.getAllByTestId("inventory-source-badge-s_sales")[0]);
+		fireEvent.click(screen.getAllByTestId("inventory-source-badge-uploads")[0]);
 		const card = within(screen.getByTestId("inventory-source-card"));
-		// sales = orders {r3,i1,b1} + items {r2} → 5 ready, 1 investigate, 1 blocked.
+		// Uploads = orders {r3,i1,b1} + items {r2} → 5 ready, 1 investigate, 1 blocked.
 		expect(card.getByText("5 ready")).toBeTruthy();
 		expect(card.getByText("1 investigate")).toBeTruthy();
 		expect(card.getByText("1 blocked")).toBeTruthy();

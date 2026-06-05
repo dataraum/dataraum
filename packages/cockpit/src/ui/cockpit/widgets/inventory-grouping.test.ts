@@ -5,6 +5,8 @@ import {
 	groupLogicalTables,
 	humanizeBand,
 	logicalTableName,
+	sourceGroup,
+	UPLOADS_GROUP_ID,
 } from "#/ui/cockpit/widgets/inventory-grouping";
 
 function phys(over: Partial<InventoryTable> = {}): InventoryTable {
@@ -16,7 +18,7 @@ function phys(over: Partial<InventoryTable> = {}): InventoryTable {
 		column_count: 5,
 		source_id: "s1",
 		source_name: "src",
-		source_type: "file",
+		source_type: "csv",
 		source_backend: null,
 		source_status: null,
 		analyzed: true,
@@ -25,6 +27,37 @@ function phys(over: Partial<InventoryTable> = {}): InventoryTable {
 		...over,
 	};
 }
+
+describe("sourceGroup (DAT-424 — demote uploads)", () => {
+	const DIGEST_A = "src_204bc8e118543a6c35654c1f68c43539a2e226f2";
+	const DIGEST_B = "src_3cb4f3325aa757324f32b2dbe30b4ca5a55a8b50";
+
+	it("collapses every content-keyed upload under ONE 'Uploads' umbrella", () => {
+		const a = sourceGroup(DIGEST_A, "csv", DIGEST_A);
+		const b = sourceGroup(DIGEST_B, "parquet", DIGEST_B);
+		// Two distinct content-keyed sources → the SAME group (no per-file badge).
+		expect(a.id).toBe(UPLOADS_GROUP_ID);
+		expect(b.id).toBe(UPLOADS_GROUP_ID);
+		expect(a.kind).toBe("uploads");
+		expect(a.label).toBe("Uploads");
+		// The digest name is NEVER surfaced as the label.
+		expect(a.label).not.toContain("src_");
+	});
+
+	it("keeps a db_recipe connection as its own named origin", () => {
+		const g = sourceGroup("warehouse", "db_recipe", "s-warehouse");
+		expect(g.kind).toBe("connection");
+		expect(g.id).toBe("s-warehouse");
+		expect(g.label).toBe("warehouse");
+	});
+
+	it("treats a db_recipe source as a connection even if its name looks upload-y", () => {
+		// db sources are db_recipe regardless of name — they can't masquerade as uploads.
+		const g = sourceGroup("src_warehouse", "db_recipe", "s9");
+		expect(g.kind).toBe("connection");
+		expect(g.id).toBe("s9");
+	});
+});
 
 describe("logicalTableName", () => {
 	it("strips the source prefix", () => {

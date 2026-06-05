@@ -9,14 +9,22 @@
 
 export interface SourceIdentity {
 	workspace_id: string;
-	source_id: string;
-	// Per-run FK for session-scoped rows; pure data, not a connection scope.
+	// OPTIONAL (DAT-422): a run ingests a SET of objects from 1–N sources, not one
+	// source — the per-source ids ride in `AddSourceInput.source_ids`. Left unset by
+	// the trigger; the engine scopes each `import` to a source from that set and the
+	// run-level reduce/detect are session-scoped.
+	source_id?: string | null;
+	// Per-run FK for session-scoped rows + the run's table-set anchor.
 	session_id: string;
 	vertical?: string | null;
 }
 
 export interface AddSourceInput {
 	identity: SourceIdentity;
+	// The sources this run imports, in order (DAT-422) — at least one. `import` runs
+	// once per source; the per-table fan-out + the session-scoped reduce/detect run
+	// over the union.
+	source_ids: string[];
 }
 
 // begin_session (DAT-409) — the analytical pass over a SELECTED set of typed

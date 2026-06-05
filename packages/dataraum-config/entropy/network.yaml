@@ -135,7 +135,11 @@ edges:
   - [null_ratio, query_intent, 0.5]
   - [outlier_rate, query_intent, 0.4]
   - [naming_clarity, query_intent, 0.3]
-  - [temporal_drift, query_intent, 0.3]
+  # 0.3 → 0.45 (DAT-405 calibration): at 0.3 even a MAXIMAL drift score rolls to
+  # risk ≤ 0.3 (the clean-band floor) — query_intent could never leave "ready" on
+  # drift evidence alone. 0.45 puts the detection-v1 injected shift (score 0.93)
+  # at "investigate" while clean trial_balance period drift (≈0.53) stays "ready".
+  - [temporal_drift, query_intent, 0.45]
   # A broken time role (unparseable dates) makes time-filtering/ordering
   # unreliable — more severe than drift, hence the higher strength.
   - [time_role, query_intent, 0.5]
@@ -148,7 +152,12 @@ edges:
   - [time_role, aggregation_intent, 0.4]
   # -> reporting_intent (6+1 parents)
   - [naming_clarity, reporting_intent, 0.7]
-  - [relationship_quality, reporting_intent, 0.5]
+  # 0.5 → 0.75 (DAT-405 calibration): at relationship grain the ONLY observed
+  # parent is relationship_quality itself, so the edge alone must carry a real
+  # RI problem past the 0.3 band. The sqrt-boosted 20%-orphan fixture scores
+  # ≈0.45 → 0.75 puts it at "investigate" with margin; clean relationships
+  # score ≈0.1 (below the clean-band floor) and are unaffected.
+  - [relationship_quality, reporting_intent, 0.75]
   - [aggregation_safety, reporting_intent, 0.8]
   - [unit_declaration, reporting_intent, 0.6]
   - [time_role, reporting_intent, 0.4]

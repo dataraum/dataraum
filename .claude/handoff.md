@@ -30,6 +30,21 @@ post-DAT-403 calibration runs in dataraum-eval (findings list on DAT-405):
   per-column rows were written by the add_source run, so strict this-run reads
   silently broke `temporal_drift` (0 records ever — fail closed) and
   `slice_variance`'s role gate (1.000 on ID columns on clean data — fail open).
+- **temporal_drift gates on `temporal_behavior` (third commit)** — point-in-time
+  measures (period balances: clean trial_balance debit/credit_balance scored
+  0.45–0.54) drift by data-model design; the detector now skips them next to the
+  existing role gate. Additive measures (transaction amounts) keep drift
+  detection. Decision: DAT-405 hybrid (accept slice_variance's clean scores as
+  accurate heterogeneity; gate drift on periodic snapshots).
+- **network.yaml edge calibration (DAT-405, two edges)** —
+  `temporal_drift → query_intent` 0.3→0.45 (at 0.3 even a maximal drift score
+  rolled to ≤ the 0.3 clean-band floor — query_intent could never leave "ready"
+  on drift evidence); `relationship_quality → reporting_intent` 0.5→0.75 (at
+  relationship grain it is the only observed parent, and the sqrt-boosted
+  20%-orphan fixture scores ≈0.45 — 0.5 could never band past "ready").
+  Eval floor expectations now assert relationship problems at RELATIONSHIP grain
+  (per-endpoint), per the DAT-405 decision: the column's own band stays blind to
+  relationship problems by design.
 - **Systemic (not yet fixed): slice definitions are table-scoped + immortal**
   while enriched/slicing views are run-versioned and LLM-shaped. Third
   manifestation observed same day: `drift_analysis_failed` GROUP BY on a stale

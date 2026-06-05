@@ -574,6 +574,42 @@ class TestTemporalDriftDetector:
         results = detector.detect(context)
         assert len(results) == 0
 
+    def test_skip_point_in_time_measure(self, detector: TemporalDriftDetector):
+        """Periodic snapshot measures (period balances) drift by data-model
+        design — skipped (DAT-405; clean trial_balance balances scored 0.45+)."""
+        summary = _MockDriftSummary("debit_balance", 0.6, 0.5, 12, 8)
+        context = DetectorContext(
+            table_name="trial_balance",
+            column_name="debit_balance",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {
+                    "semantic_role": "measure",
+                    "temporal_behavior": "point_in_time",
+                },
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_additive_measure_keeps_drift_detection(self, detector: TemporalDriftDetector):
+        """Additive measures (transaction amounts) are still scored."""
+        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {
+                    "semantic_role": "measure",
+                    "temporal_behavior": "additive",
+                },
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(0.7, abs=0.01)
+
     def test_skip_foreign_key_column(self, detector: TemporalDriftDetector):
         """Drift detection is skipped for foreign key columns."""
         summary = _MockDriftSummary("vendor_id", 0.693, 0.5, 5, 5)

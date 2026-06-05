@@ -20,6 +20,7 @@ from dataraum.analysis.slicing.models import (
     SliceSQL,
     SlicingAnalysisResult,
 )
+from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -352,12 +353,14 @@ class SlicingPhase(BasePhase):
                 enriched_view = tdata.get("enriched_duckdb_path")
                 duckdb_table = enriched_view or tdata["duckdb_path"]
 
-                safe_source = agent._sanitize_for_table_name(target_table_name)
+                # Name the propagated slices off the target fact's source-qualified
+                # duckdb_path (DAT-356), consistent with the agent + the matchers.
+                target_source_key = tdata["duckdb_path"]
                 sql_template = agent._build_sql_template(
                     duckdb_table,
                     col_name,
                     rec.distinct_values,
-                    source_table_name=target_table_name,
+                    source_key=target_source_key,
                 )
 
                 new_rec = SliceRecommendation(
@@ -378,18 +381,14 @@ class SlicingPhase(BasePhase):
 
                 # Generate slice queries for the new table
                 for value in rec.distinct_values:
-                    safe_value = agent._sanitize_for_table_name(str(value))
-                    safe_column = agent._sanitize_for_table_name(col_name)
-                    slice_table_name = f"slice_{safe_source}_{safe_column}_{safe_value}"
+                    slice_name = slice_table_name(target_source_key, col_name, value)
 
-                    sql_query = agent._build_slice_sql(
-                        duckdb_table, col_name, value, slice_table_name
-                    )
+                    sql_query = agent._build_slice_sql(duckdb_table, col_name, value, slice_name)
                     new_queries.append(
                         SliceSQL(
                             slice_name=f"{col_name}={value}",
                             slice_value=str(value),
-                            table_name=slice_table_name,
+                            table_name=slice_name,
                             sql_query=sql_query,
                         )
                     )

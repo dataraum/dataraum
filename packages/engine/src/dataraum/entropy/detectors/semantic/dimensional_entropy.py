@@ -203,7 +203,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         if context.session is None or context.table_id is None:
             return
 
-        result = self._load_slice_variance(context.session, context.table_id, context.table_name)
+        result = self._load_slice_variance(context.session, context.table_id)
         if result is not None:
             context.analysis_results["slice_variance"] = result["slice_variance"]
             context.analysis_results["drift_summaries"] = result["drift_summaries"]
@@ -212,7 +212,6 @@ class DimensionalEntropyDetector(EntropyDetector):
     def _load_slice_variance(
         session: Session,
         table_id: str,
-        table_name: str,
     ) -> dict[str, Any] | None:
         """Load table-scoped slice variance data.
 
@@ -220,7 +219,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         or None if no slice profiles exist.
         """
         from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
-        from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
+        from dataraum.analysis.slicing.naming import slice_table_name, slicing_view_name
         from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
         from dataraum.storage import Column, Table
 
@@ -230,10 +229,15 @@ class DimensionalEntropyDetector(EntropyDetector):
         )
         table_column_ids = [c.column_id for c in table_columns]
 
+        # Slice + slicing-view names key off the fact's source-qualified duckdb_path
+        # (DAT-356), resolved from table_id — never the bare table_name.
+        source_table = session.get(Table, table_id)
+        source_key = (source_table.duckdb_path if source_table else None) or ""
+
         # Check for slicing_view table (FK-based scoping)
         sv_table = session.execute(
             select(Table).where(
-                Table.table_name == f"slicing_{table_name}",
+                Table.table_name == slicing_view_name(source_key),
                 Table.layer == "slicing_view",
             )
         ).scalar_one_or_none()
@@ -323,9 +327,9 @@ class DimensionalEntropyDetector(EntropyDetector):
         slice_table_names: list[str] = []
         for sd in slice_defs:
             sd_col_name = sd.column_name or col_name_by_id.get(sd.column_id)
-            if sd_col_name and sd.distinct_values:
+            if sd_col_name and sd.distinct_values and source_key:
                 for value in sd.distinct_values:
-                    slice_table_names.append(_get_slice_table_name(table_name, sd_col_name, value))
+                    slice_table_names.append(slice_table_name(source_key, sd_col_name, value))
 
         drift_summaries: list[Any] = []
         if slice_table_names:

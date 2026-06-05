@@ -4,7 +4,8 @@ Creates a DuckDB view per fact table that projects from the enriched view,
 keeping all fact table columns but only the dimension columns that correspond
 to SliceDefinitions for that table.
 
-The resulting view is named "slicing_{fact_table_name}" and contains:
+The resulting view is named "slicing_{fact_duckdb_path}" (source-qualified, DAT-356)
+and contains:
 - All columns from the fact table
 - Only the dimension columns (from joined tables) that are slice dimensions
 
@@ -22,6 +23,7 @@ from sqlalchemy import delete, select
 
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.naming import slicing_view_name
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.analysis.typing.recipe import store_recipe
 from dataraum.analysis.views.db_models import EnrichedView, SlicingView
@@ -206,7 +208,7 @@ class SlicingViewPhase(BasePhase):
                 fact_columns=fact_columns_by_table.get(fact_table_id, []),
             )
 
-            view_name = f"slicing_{fact_table.table_name}"
+            view_name = slicing_view_name(fact_table.duckdb_path or "")
             view_fqn = _lake_fqn("slicing_view", view_name)
 
             # Execute view creation in DuckDB
@@ -414,7 +416,7 @@ class SlicingViewPhase(BasePhase):
         Returns:
             Tuple of (view_sql, slice_dimension_columns, slice_definition_ids, source_fqn)
         """
-        view_name = f"slicing_{fact_table.table_name}"
+        view_name = slicing_view_name(fact_table.duckdb_path or "")
         view_fqn = _lake_fqn("slicing_view", view_name)
         slice_def_ids = [sd.slice_id for sd in slice_defs]
 

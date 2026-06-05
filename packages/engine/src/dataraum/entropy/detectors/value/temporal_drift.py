@@ -49,9 +49,7 @@ class TemporalDriftDetector(EntropyDetector):
             load_statistics,
         )
 
-        drift = load_drift_summaries(
-            context.session, context.column_id, context.table_id, context.table_name
-        )
+        drift = load_drift_summaries(context.session, context.column_id, context.table_id)
         if drift is not None:
             context.analysis_results["drift_summaries"] = drift
         sem = load_semantic(context.session, context.column_id, context.run_id)

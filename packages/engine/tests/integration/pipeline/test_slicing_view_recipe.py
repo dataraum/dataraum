@@ -165,9 +165,12 @@ class TestSlicingViewRecipeVersioning:
         result = SlicingViewPhase().run(ctx_a)
         assert result.status == PhaseStatus.COMPLETED, result.error
 
-        # The physical slicing view exists in lake.typed and preserves grain.
+        # The physical slicing view exists in lake.typed and preserves grain. Its
+        # name is source-qualified off the fact's duckdb_path (csv__orders, DAT-356).
         assert (
-            duckdb_conn.execute('SELECT COUNT(*) FROM lake.typed."slicing_orders"').fetchone()[0]
+            duckdb_conn.execute('SELECT COUNT(*) FROM lake.typed."slicing_csv_orders"').fetchone()[
+                0
+            ]
             == 3
         )
 
@@ -175,7 +178,7 @@ class TestSlicingViewRecipeVersioning:
         recipes = _slicing_recipes(session, fact_id)
         assert len(recipes) == 1
         assert recipes[0].run_id == "run-1"
-        assert recipes[0].target_fqn == 'lake.typed."slicing_orders"'
+        assert recipes[0].target_fqn == 'lake.typed."slicing_csv_orders"'
         assert recipes[0].depends_on == ['lake.typed."enriched_csv__orders"']
 
         # Exactly one SlicingView, stamped with this run.

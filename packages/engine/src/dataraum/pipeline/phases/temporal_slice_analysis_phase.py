@@ -7,7 +7,6 @@ Drift-only analysis on slices:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from datetime import date, datetime
 from types import ModuleType
@@ -17,6 +16,7 @@ from sqlalchemy import select
 
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.naming import slice_table_prefix
 from dataraum.analysis.slicing.slice_runner import SliceTableInfo
 from dataraum.analysis.temporal import TemporalColumnProfile
 from dataraum.analysis.temporal_slicing.analyzer import (
@@ -34,16 +34,6 @@ from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     pass
-
-
-def _sanitize_name(value: str) -> str:
-    """Sanitize a value for matching against slice table names.
-
-    Must match the convention in slice_runner._sanitize_name().
-    """
-    safe = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
-    safe = re.sub(r"_+", "_", safe).strip("_").lower()
-    return safe
 
 
 logger = get_logger(__name__)
@@ -214,9 +204,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
             source_table = ctx.session.get(Table, slice_def.table_id)
             if not source_table:
                 continue
-            sanitized_source = _sanitize_name(source_table.table_name)
-            sanitized_col_name = _sanitize_name(effective_col_name)
-            prefix = f"slice_{sanitized_source}_{sanitized_col_name}_"
+            # Source-qualified prefix (DAT-356): match the slice tables this fact's
+            # duckdb_path produced — the single naming source of truth.
+            prefix = slice_table_prefix(source_table.duckdb_path or "", effective_col_name)
             slice_infos = []
             for st in all_slice_tables:
                 if st.table_name.lower().startswith(prefix):

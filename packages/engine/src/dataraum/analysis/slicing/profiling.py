@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
+from dataraum.analysis.slicing.naming import slice_table_name, slicing_view_name
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
@@ -110,11 +111,12 @@ def build_slice_profiles(
             session.delete(e)
 
         # Resolve effective table (prefer slicing_view for enriched columns).
-        # The slicing_view shares its fact table's source_id (DAT-403).
+        # The slicing_view shares its fact table's source_id (DAT-403) and is named
+        # off its source-qualified duckdb_path (DAT-356).
         sv_table = session.execute(
             select(Table).where(
                 Table.source_id == source_table.source_id,
-                Table.table_name == f"slicing_{source_table.table_name}",
+                Table.table_name == slicing_view_name(source_table.duckdb_path or ""),
                 Table.layer == "slicing_view",
             )
         ).scalar_one_or_none()
@@ -156,18 +158,12 @@ def build_slice_profiles(
 
         # Process each slice value
         for slice_value in slice_def.distinct_values or []:
-            # Find slice table
-            import re
+            # Find the slice table by its source-qualified name (DAT-356).
+            slice_name = slice_table_name(
+                source_table.duckdb_path or "", effective_slice_col_name, slice_value
+            )
 
-            safe_source = re.sub(r"[^a-zA-Z0-9]", "_", source_table.table_name)
-            safe_source = re.sub(r"_+", "_", safe_source).strip("_").lower()
-            safe_col = re.sub(r"[^a-zA-Z0-9]", "_", effective_slice_col_name)
-            safe_col = re.sub(r"_+", "_", safe_col).strip("_").lower()
-            safe_val = re.sub(r"[^a-zA-Z0-9]", "_", str(slice_value))
-            safe_val = re.sub(r"_+", "_", safe_val).strip("_").lower() or "unknown"
-            slice_table_name = f"slice_{safe_source}_{safe_col}_{safe_val}"
-
-            slice_table = slice_tables.get(slice_table_name)
+            slice_table = slice_tables.get(slice_name)
             if not slice_table:
                 continue
 

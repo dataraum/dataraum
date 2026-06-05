@@ -181,7 +181,8 @@ class TestBuildSlicingViewSql:
         )
 
         assert '"enriched_orders"' in sql
-        assert "slicing_orders" in sql
+        # Source-qualified off the fact's duckdb_path (typed_orders), DAT-356.
+        assert "slicing_typed_orders" in sql
 
     def test_no_duplicate_dim_cols(self):
         """Same dimension column is not added twice even if two slice defs reference it."""

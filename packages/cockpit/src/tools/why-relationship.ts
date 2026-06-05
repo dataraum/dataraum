@@ -35,6 +35,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
 
@@ -57,7 +58,9 @@ const EvidenceSignal = z.object({
 const WhyRelationshipResult = z.object({
 	from_column_id: z.string(),
 	to_column_id: z.string(),
-	// Endpoint names for the narrative + widget; null when an id no longer resolves.
+	// Endpoint names for the narrative + widget — table names in DISPLAY form
+	// (`src_<digest>__` prefix stripped, DAT-431; round-trips key on the column
+	// ids); null when an id no longer resolves.
 	from_table_name: z.string().nullable(),
 	from_column_name: z.string().nullable(),
 	to_table_name: z.string().nullable(),
@@ -96,7 +99,8 @@ export interface WhyRelEvidenceRow {
 	evidence: unknown;
 }
 
-/** Endpoint names resolved for display. */
+/** Endpoint names as resolved from the DB — table names still in raw physical
+ * form (`src_<digest>__<stem>`); the projection strips them for display. */
 export interface RelEndpoints {
 	fromTableName: string | null;
 	fromColumnName: string | null;
@@ -145,9 +149,18 @@ export function projectWhyRelationship(
 	return {
 		from_column_id: fromColumnId,
 		to_column_id: toColumnId,
-		from_table_name: endpoints.fromTableName,
+		// The agent reads this result (and the synthesis prompt interpolates the
+		// labels) — strip the content-keyed `src_<digest>__` prefix here so no hash
+		// name reaches LLM context (DAT-431).
+		from_table_name:
+			endpoints.fromTableName === null
+				? null
+				: displayTableName(endpoints.fromTableName),
 		from_column_name: endpoints.fromColumnName,
-		to_table_name: endpoints.toTableName,
+		to_table_name:
+			endpoints.toTableName === null
+				? null
+				: displayTableName(endpoints.toTableName),
 		to_column_name: endpoints.toColumnName,
 		// Found = there's either a readiness row or at least one evidence signal for
 		// the pair in the promoted run.

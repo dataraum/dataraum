@@ -35,6 +35,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
 
@@ -56,7 +57,9 @@ const EvidenceSignal = z.object({
 
 const WhyTableResult = z.object({
 	table_id: z.string(),
-	// Display name; null when the table id no longer resolves (a dropped table).
+	// Display name (`src_<digest>__` prefix stripped, DAT-431 — this result feeds
+	// the agent + the synthesis prompt; the round-trip key is table_id); null when
+	// the table id no longer resolves (a dropped table).
 	table_name: z.string().nullable(),
 	// False when the table matched no table-grain readiness row AND no evidence in
 	// the promoted run — distinct from "found but not analyzed".
@@ -132,7 +135,10 @@ export function projectWhyTable(
 
 	return {
 		table_id: tableId,
-		table_name: tableName,
+		// Strip the content-keyed `src_<digest>__` prefix so no hash name reaches
+		// LLM context (DAT-431). The caller keeps the RAW name for the readiness
+		// target key (`table:{table_name}`); only the outward-facing field is display.
+		table_name: tableName === null ? null : displayTableName(tableName),
 		// Found = there's either a readiness row or at least one evidence signal for
 		// the table in the promoted run.
 		found: readiness !== null || evidence.length > 0,

@@ -20,7 +20,6 @@ function phys(over: Partial<InventoryTable> = {}): InventoryTable {
 		source_name: "src",
 		source_type: "csv",
 		source_backend: null,
-		source_status: null,
 		analyzed: true,
 		worst_band: "ready",
 		readiness: { ready: 5, investigate: 0, blocked: 0, unanalyzed: 0 },

@@ -101,11 +101,22 @@ def get_multi_table_schema_for_llm(
         return {"error": "No tables with DuckDB paths found"}
 
     # The defined relationships (not candidate) between these tables, scoped to the
-    # session's current (promoted) run via the per-session head (DAT-409). With no
-    # session_id the head is unresolved and the read falls back to the cross-run
-    # catalog.
+    # session's current (promoted) run via the per-session head (DAT-409).
+    # **Fail-closed (DAT-429, session isolation):** with no resolved run — no
+    # session_id, or the session hasn't promoted one yet — we MUST NOT fall back to
+    # a cross-run read (``run_id=None`` reads ALL runs), which would surface OTHER
+    # sessions' relationships into this schema. Leave relationships empty instead;
+    # the table schemas above are keyed by table_id and are unaffected.
     run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
-    relationships = load_defined_relationships(session, table_ids, run_id=run_id)
+    if session_id and run_id is None:
+        logger.warning(
+            "session_run_unresolved",
+            session_id=session_id,
+            detail="no promoted run for this session; relationship context is empty",
+        )
+    relationships = (
+        load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
+    )
 
     # Format relationships
     formatted_rels = []

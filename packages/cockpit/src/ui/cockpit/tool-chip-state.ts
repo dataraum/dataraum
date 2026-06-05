@@ -1,0 +1,170 @@
+// Tool-call chip state (DAT-436) — the terminal-state mapping the chat rail's
+// chips render from. Pure, no React.
+//
+// WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
+// state (verified against @tanstack/ai 0.26.1 by driving the real server chat()
+// loop + client StreamProcessor end-to-end):
+//
+//   - An ERRORED tool execution comes back as `state: "input-complete"` with
+//     `output: { error }` and a sibling `tool-result` part `state: "error"`
+//     (processor.js handleToolCallEndEvent/handleToolCallResultEvent map
+//     `output-error` → "input-complete"; message-updaters.js
+//     updateToolCallWithOutput defaults errored calls to "input-complete").
+//     `state === "complete"` therefore NEVER matches — the old done-condition
+//     spun the Loader forever (the live stuck workflow_status chips).
+//   - The client resolves the turn at the FIRST per-iteration RUN_FINISHED (the
+//     Anthropic adapter emits one per model call) and back-fills later results
+//     via a background drain. Anything that severs that drain — stop(), a new
+//     send, a network cut, RUN_ERROR/max_tokens — permanently parks the pending
+//     parts at "input-complete" with NO output. Those can never complete; once
+//     the conversation has moved on (a later user message exists) they are
+//     provably dead.
+//
+// So "done" is NOT `state === "complete"`: a chip is terminal when the part
+// reached "complete", when it carries ANY output (success or error), when its
+// approval was denied, or when the conversation moved past it. The mapping
+// below recognizes all of them; the rail renders `error` as an explicit red
+// state — an errored tool call must never spin forever.
+
+/** The untyped tool-call part shape the rail narrows off `type === "tool-call"`
+ * (tools register server-side, so useChat sees them untyped). `arguments` is
+ * the SDK's JSON-encoded call input. */
+export interface ToolCallPartLike {
+	type: "tool-call";
+	id: string;
+	name: string;
+	state: string;
+	approval?: { id: string; needsApproval: boolean; approved?: boolean };
+	arguments?: unknown;
+	output?: unknown;
+}
+
+/** What a chip renders: spinner, terminal success, denied approval, or an
+ * explicit error state (with the message for the tooltip/details). */
+export type ToolChipStatus =
+	| { kind: "running" }
+	| { kind: "complete" }
+	| { kind: "denied" }
+	| { kind: "error"; message: string };
+
+/** The `{ error: string }` shape the SDK writes onto an errored call's output
+ * (updateToolCallWithOutput: `output = { error: errorText }`). */
+function outputError(output: unknown): string | null {
+	if (
+		output !== null &&
+		typeof output === "object" &&
+		"error" in output &&
+		typeof (output as { error: unknown }).error === "string"
+	) {
+		return (output as { error: string }).error;
+	}
+	return null;
+}
+
+/**
+ * Map one tool-call part to its chip status.
+ *
+ * `resultError` — the correlated `tool-result` part's error, when one exists
+ * with `state: "error"` (see `toolResultErrorsById`). `conversationMovedOn` —
+ * a LATER user message exists, so an output-less part can never receive its
+ * result (the stream that owned it is gone; the SDK never re-attaches).
+ *
+ * Precedence: denied → error (result error / error-shaped output) → complete
+ * (the "complete" state OR any output — terminal even if a stream hiccup never
+ * flipped the state) → interrupted-orphan error → running.
+ */
+export function toolChipStatus(
+	part: ToolCallPartLike,
+	opts: { resultError?: string; conversationMovedOn?: boolean } = {},
+): ToolChipStatus {
+	// A denied approval is terminal: the tool never runs, so the call never
+	// completes — without this the chip would spin forever.
+	if (part.approval?.approved === false) return { kind: "denied" };
+
+	// Errored execution: the SDK parks the part at "input-complete" and carries
+	// the error in the output / the correlated tool-result part — there is no
+	// error STATE to test. Check before "complete" so an error-shaped output is
+	// never read as success.
+	const err = opts.resultError ?? outputError(part.output);
+	if (err !== null && err !== undefined) {
+		return { kind: "error", message: err };
+	}
+
+	// Success: the canonical terminal state, or any output at all (defensive —
+	// output without the state flip is still a delivered result).
+	if (part.state === "complete" || part.output !== undefined) {
+		return { kind: "complete" };
+	}
+
+	// Orphaned: no output, and the conversation moved past the turn that owned
+	// this call (stop() / a new send / a severed stream). It can never finish.
+	// EXCEPT a pending approval request — its Approve/Deny buttons stay live
+	// across turns, so it is awaiting the user, not dead.
+	if (opts.conversationMovedOn && part.state !== "approval-requested") {
+		return {
+			kind: "error",
+			message: "The call didn't finish — its run was interrupted.",
+		};
+	}
+
+	return { kind: "running" };
+}
+
+/** Message-list shape the helpers below need — structurally compatible with
+ * the SDK's UIMessage (only `role` + `parts` are read). */
+export interface MessageLike {
+	role: string;
+	parts: ReadonlyArray<{
+		type: string;
+		toolCallId?: string;
+		state?: string;
+		error?: string;
+		content?: unknown;
+	}>;
+}
+
+/**
+ * Collect every errored `tool-result` part's error text by toolCallId. The SDK
+ * emits these alongside the (state-less) error on the tool-call part itself;
+ * the rail prefers this text when present (it survives even when the call
+ * part's output was clobbered).
+ */
+export function toolResultErrorsById(
+	messages: ReadonlyArray<MessageLike>,
+): Map<string, string> {
+	const errors = new Map<string, string>();
+	for (const message of messages) {
+		for (const part of message.parts) {
+			if (
+				part.type === "tool-result" &&
+				part.state === "error" &&
+				typeof part.toolCallId === "string"
+			) {
+				errors.set(
+					part.toolCallId,
+					part.error ??
+						(typeof part.content === "string"
+							? part.content
+							: "Tool execution failed"),
+				);
+			}
+		}
+	}
+	return errors;
+}
+
+/**
+ * The index of the LAST user message — any tool-call part rendered from an
+ * earlier message belongs to a turn the conversation has moved past
+ * (`conversationMovedOn` in `toolChipStatus`). Approval round-trips do NOT
+ * add a user message, so a pending approval/continuation is never orphaned
+ * by this; a genuinely new user turn is.
+ */
+export function lastUserMessageIndex(
+	messages: ReadonlyArray<MessageLike>,
+): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "user") return i;
+	}
+	return -1;
+}

@@ -91,7 +91,7 @@ Be specific. Quote code. Show the problematic line and what it should look like.
 
 ## Severity Calibration
 
-- **Critical**: Data corruption, race condition, security issue, silent failure, broken MCP contract
+- **Critical**: Data corruption, race condition, security issue, silent failure, broken cross-package contract (Temporal workflow shapes, agent-tool schemas)
 - **Improvement**: Missing edge case handling, suboptimal UX, inconsistent patterns, missing types
 - **Nit**: Naming, formatting, comment quality
 
@@ -99,11 +99,19 @@ Be specific. Quote code. Show the problematic line and what it should look like.
 
 - This project uses `Result` types, not exceptions, for expected errors
 - Database access uses context managers (`session_scope()`, `duckdb_cursor()`)
-- Python 3.14t with free-threading — the GIL is OFF, treat all shared mutable state as unsafe
-- Pipeline has 19 active phases managed by a scheduler — state transitions matter
-- MCP server exposes 6 tools (4 core + 2 source management)
+- Python 3.14, standard GIL-on CPython — but the Temporal activity worker runs phases concurrently on a `ThreadPoolExecutor`, so shared worker state (e.g. the one `ConnectionManager`) is still concurrent; review it as such
+- The engine is a **Temporal activity worker** (no HTTP): workflows AND activities are Python, bundled in `worker/` — workflow code runs in the determinism sandbox, review for replay safety
+- The legacy MCP surface is dead (`reference/mcp/`, kept as copy-reference only) — flag any new dependence on it
 - VARCHAR-first staging pattern — type inference happens in profiling, not load
 - Tests use pytest-testmon; never suggest running the full suite without testmon
+
+## TanStack code (packages/cockpit) — MANDATORY
+
+Before judging ANY code that imports `@tanstack/*`:
+
+1. From `packages/cockpit` run `bunx @tanstack/intent@latest list`, then `bunx @tanstack/intent@latest load <pkg>#<skill>` for the packages the diff touches (`@tanstack/ai#ai-core` + relevant sub-skills for AI/agent code; router/start skills for routing code). Follow the returned SKILL.md.
+2. These are the OFFICIAL skills, version-pinned to the INSTALLED packages — the only authority for TanStack API claims. Never assert SDK behavior from training data; verify claims against the loaded skill AND the installed dist.
+3. Dependency convention: `@tanstack/*` deps are declared `latest` BY DESIGN and **nothing freezes** — bun.lock owns resolution. Never flag unpinned/floating deps, never propose version pins; contract tests + tsc are the update guards.
 
 ## Workflow Context
 
@@ -113,7 +121,7 @@ When your findings include issues that suggest the implementation approach was w
 
 When you find tests that only test mocks, dead code kept for tests, or assertions that can never fail — flag these as **Critical**, not Nits. These patterns erode the project's ability to catch real bugs and are a recurring problem.
 
-When you find MCP tool changes, note that the developer should run `/smoke` to UX-test the tools before handoff.
+When you find cockpit agent-tool changes (the TanStack AI tool surface), note that the developer should run `/smoke` to UX-test the tools before handoff.
 
 **Update your agent memory** as you discover code patterns, recurring issues, architectural conventions, concurrency patterns, and state machine designs in this codebase. This builds institutional knowledge across reviews. Write concise notes about what you found and where.
 

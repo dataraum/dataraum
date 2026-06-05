@@ -24,6 +24,7 @@ $ARGUMENTS is a Jira issue identifier, a description of the agreed approach, or 
    DO NOT change: [large/unrelated areas that must stay untouched — NOT a cage]
    ```
 4. For M+: get explicit user sign-off on the plan before writing code.
+5. **Cockpit/TanStack work — MANDATORY:** if the task touches code importing `@tanstack/*`, run the TanStack Intent skill check FIRST, from `packages/cockpit`: `bunx @tanstack/intent@latest list`, then `load <pkg>#<skill>` for the packages you'll touch (`@tanstack/ai#ai-core` + sub-skills for agent/AI code; router/start skills for routing). Follow the returned SKILL.md — it is official guidance version-pinned to the installed packages (see cockpit CLAUDE.md "Skill Loading"). Never write TanStack API usage from memory. Deps stay `latest` and nothing freezes (bun.lock owns resolution) — never add version pins.
 
 ### Scope is a fence against *unrelated* sprawl — not a cage
 

@@ -34,6 +34,14 @@ Before approving any code:
 - Approve code you haven't actually reviewed
 - Be satisfied with partial implementations
 
+## TanStack code (packages/cockpit) — MANDATORY
+
+Before judging ANY code that imports `@tanstack/*`:
+
+1. From `packages/cockpit` run `bunx @tanstack/intent@latest list`, then `bunx @tanstack/intent@latest load <pkg>#<skill>` for the packages the diff touches (`@tanstack/ai#ai-core` + relevant sub-skills for AI/agent code; router/start skills for routing code). Follow the returned SKILL.md.
+2. These are the OFFICIAL skills, version-pinned to the INSTALLED packages — the only authority for TanStack API claims. Never assert SDK behavior from training data; verify claims against the loaded skill AND the installed dist.
+3. Dependency convention: `@tanstack/*` deps are declared `latest` BY DESIGN and **nothing freezes** — bun.lock owns resolution. Never flag unpinned/floating deps, never propose version pins; contract tests + tsc are the update guards.
+
 ## Response Format
 
 When reviewing, structure your response as:

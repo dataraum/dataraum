@@ -13,6 +13,7 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 
+import { config } from "../config";
 import { resolveCredential } from "./credentials";
 import { clampRowLimit } from "./limit";
 import type { QueryResult } from "./query-result";
@@ -101,10 +102,21 @@ export async function probe(input: ProbeInput): Promise<QueryResult> {
 	const instance = await DuckDBInstance.create(":memory:");
 	const conn = await instance.connect();
 	try {
-		if (COMMUNITY_EXTENSIONS.has(extension)) {
-			await conn.run(`INSTALL ${extension} FROM community`);
-		} else {
-			await conn.run(`INSTALL ${extension}`);
+		// Same extension-cache contract as the lake reader (lake.ts): the image
+		// pre-bakes all four backend extensions and sets DUCKLAKE_SKIP_INSTALL=1,
+		// so a probe never hits extensions.duckdb.org at runtime. Host dev has
+		// neither var set and installs on demand into ~/.duckdb.
+		if (config.duckdbExtensionDirectory) {
+			await conn.run(
+				`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
+			);
+		}
+		if (!config.ducklakeSkipInstall) {
+			if (COMMUNITY_EXTENSIONS.has(extension)) {
+				await conn.run(`INSTALL ${extension} FROM community`);
+			} else {
+				await conn.run(`INSTALL ${extension}`);
+			}
 		}
 		await conn.run(`LOAD ${extension}`);
 

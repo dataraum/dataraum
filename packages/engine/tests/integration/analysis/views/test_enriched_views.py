@@ -499,7 +499,7 @@ class TestEnrichedViewsPhaseDuckLake:
         assert view.run_id == "run-2"
 
     def test_rebuild_rematerializes_current_and_drops_strays(self, session, duckdb_conn):
-        """rebuild_enriched_views re-execs the latest recipe per fact + drops strays.
+        """rebuild_session_views re-execs the latest recipe per fact + drops strays.
 
         Two recipes for one fact (an older ``enriched_legacy``, a newer
         ``enriched_csv__orders``) model a view whose name changed between runs.
@@ -511,7 +511,7 @@ class TestEnrichedViewsPhaseDuckLake:
         from uuid import uuid4
 
         from dataraum.analysis.typing.db_models import MaterializationRecipe
-        from dataraum.analysis.views.recipe import rebuild_enriched_views
+        from dataraum.analysis.views.recipe import rebuild_session_views
         from dataraum.storage import Source, Table
         from tests.conftest import baseline_session_id
 
@@ -566,13 +566,84 @@ class TestEnrichedViewsPhaseDuckLake:
         # The stale view physically exists; the current one does not (a lost rebuild).
         duckdb_conn.execute(f"CREATE OR REPLACE VIEW {legacy_fqn} AS SELECT * FROM {fact_fqn}")
 
-        rebuilt = rebuild_enriched_views(session, duckdb_conn, session_id=baseline_session_id())
+        rebuilt = rebuild_session_views(session, duckdb_conn, session_id=baseline_session_id())
 
         assert rebuilt == [current_fqn], "only the latest recipe per fact is re-materialized"
         assert duckdb_conn.execute(f"SELECT COUNT(*) FROM {current_fqn}").fetchone()[0] == 3
         remaining = {row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()}
         assert "enriched_csv__orders" in remaining
         assert "enriched_legacy" not in remaining, "the session's stray view is dropped"
+
+    def test_rebuild_orders_slicing_after_enriched(self, session, duckdb_conn):
+        """A multi-layer rebuild materializes the enriched view before the slicing view.
+
+        A slicing recipe's ``depends_on`` names the enriched view it projects from,
+        so ``order_recipes_by_dependency`` must rebuild enriched first — else the
+        slicing ``CREATE`` references a view that does not yet exist. Proven by a
+        slicing view that SELECTs from the enriched view: the rebuild succeeds and
+        the slicing view returns the fact's rows.
+        """
+        from datetime import UTC, datetime, timedelta
+        from uuid import uuid4
+
+        from dataraum.analysis.typing.db_models import MaterializationRecipe
+        from dataraum.analysis.views.recipe import rebuild_session_views
+        from dataraum.storage import Source, Table
+        from tests.conftest import baseline_session_id
+
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE lake.typed."csv__orders2" AS '
+            "SELECT * FROM (VALUES (1, 100.0), (2, 200.0)) AS t(order_id, amount)"
+        )
+        source = Source(source_id=str(uuid4()), name="csv2", source_type="csv")
+        session.add(source)
+        session.flush()
+        fact = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="orders2",
+            layer="typed",
+            duckdb_path="csv__orders2",
+            row_count=2,
+        )
+        session.add(fact)
+        session.flush()
+
+        fact_fqn = 'lake.typed."csv__orders2"'
+        enriched_fqn = 'lake.typed."enriched_csv__orders2"'
+        slicing_fqn = 'lake.typed."slicing_orders2"'
+        base = datetime(2026, 6, 5, tzinfo=UTC)
+        session.add_all(
+            [
+                MaterializationRecipe(
+                    session_id=baseline_session_id(),
+                    table_id=fact.table_id,
+                    layer="enriched",
+                    run_id="r1",
+                    target_fqn=enriched_fqn,
+                    ddl=f"CREATE OR REPLACE VIEW {enriched_fqn} AS SELECT * FROM {fact_fqn}",
+                    depends_on=[fact_fqn],
+                    created_at=base,
+                ),
+                MaterializationRecipe(
+                    session_id=baseline_session_id(),
+                    table_id=fact.table_id,
+                    layer="slicing",
+                    run_id="r1",
+                    target_fqn=slicing_fqn,
+                    ddl=f"CREATE OR REPLACE VIEW {slicing_fqn} AS SELECT * FROM {enriched_fqn}",
+                    depends_on=[enriched_fqn],
+                    created_at=base + timedelta(minutes=1),
+                ),
+            ]
+        )
+        session.flush()
+
+        rebuilt = rebuild_session_views(session, duckdb_conn, session_id=baseline_session_id())
+
+        # Enriched must precede slicing — the slicing CREATE reads the enriched view.
+        assert rebuilt.index(enriched_fqn) < rebuilt.index(slicing_fqn)
+        assert duckdb_conn.execute(f"SELECT COUNT(*) FROM {slicing_fqn}").fetchone()[0] == 2
 
 
 class TestVersionedGrainConstraints:
@@ -628,6 +699,37 @@ class TestVersionedGrainConstraints:
                 session_id=baseline_session_id(),
                 fact_table_id=fact_id,
                 view_name="enriched_csv__orders_dup",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+    def test_slicing_view_unique_per_fact(self, session):
+        """A second SlicingView for the same fact_table_id is rejected (DAT-415)."""
+        from uuid import uuid4
+
+        from sqlalchemy.exc import IntegrityError
+
+        from dataraum.analysis.views.db_models import SlicingView
+        from tests.conftest import baseline_session_id
+
+        fact_id = self._fact(session)
+        session.add(
+            SlicingView(
+                view_id=str(uuid4()),
+                session_id=baseline_session_id(),
+                fact_table_id=fact_id,
+                view_name="slicing_orders",
+            )
+        )
+        session.flush()
+        session.add(
+            SlicingView(
+                view_id=str(uuid4()),
+                session_id=baseline_session_id(),
+                fact_table_id=fact_id,
+                view_name="slicing_orders_dup",
             )
         )
         with pytest.raises(IntegrityError):

@@ -12,6 +12,16 @@
 #   docker compose run --rm --no-deps --entrypoint temporal temporal-admin-tools \
 #     worker list --namespace default --address temporal:7233   # → Status: Running
 #   open http://127.0.0.1:3000
+#
+# Egress posture: both app images pre-bake their DuckDB extensions
+# (DUCKLAKE_SKIP_INSTALL=1 in engine + cockpit Dockerfiles), so nothing here
+# touches extensions.duckdb.org at runtime. The remaining runtime egress is
+# (1) api.anthropic.com — HTTPS from engine (httpx) and cockpit (Bun fetch),
+# both of which honor standard HTTPS_PROXY/NO_PROXY env, injectable via a
+# compose override — and (2) raw TCP to user-configured source DBs
+# (connect/probe), which no HTTP proxy can carry. That asymmetry is why this
+# stack deliberately bundles NO egress proxy or network topology: deployers
+# bring their own network policy.
 
 services:
   postgres:

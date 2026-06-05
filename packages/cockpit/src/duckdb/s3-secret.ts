@@ -54,15 +54,27 @@ export function buildS3SecretSql(params: {
  * Load `httpfs` + register the object-store S3 secret on `conn`.
  *
  * Must run before ATTACHing a DuckLake catalog whose DATA_PATH is an `s3://`
- * URI. `INSTALL` is tolerate-fail (the image may already have httpfs); `LOAD`
- * errors loud if it is genuinely missing — mirrors `lake.ts`'s ducklake load.
+ * URI. Honors the image's pre-baked extension cache (DUCKDB_EXTENSION_DIRECTORY
+ * + DUCKLAKE_SKIP_INSTALL — mirror of the engine's `apply_s3_secret`): the
+ * `SET extension_directory` must happen HERE, not just in `lake.ts`, because a
+ * fresh in-memory connection (connect.ts's upload-sniff throwaway) otherwise
+ * defaults to ~/.duckdb and the LOAD misses the baked httpfs. In host dev
+ * (neither var set) `INSTALL` is tolerate-fail; `LOAD` errors loud if the
+ * extension is genuinely missing — mirrors `lake.ts`'s ducklake load.
  */
 export async function applyS3Secret(conn: DuckDBConnection): Promise<void> {
-	try {
-		await conn.run("INSTALL httpfs");
-	} catch {
-		// Extension already present (offline/air-gapped image) — LOAD surfaces a
-		// real "not found" below if it truly isn't installed.
+	if (config.duckdbExtensionDirectory) {
+		await conn.run(
+			`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
+		);
+	}
+	if (!config.ducklakeSkipInstall) {
+		try {
+			await conn.run("INSTALL httpfs");
+		} catch {
+			// Extension already present (offline) — LOAD surfaces a real
+			// "not found" below if it truly isn't installed.
+		}
 	}
 	await conn.run("LOAD httpfs");
 	await conn.run(

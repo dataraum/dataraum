@@ -20,6 +20,7 @@ from dataraum.analysis.slicing.models import (
     SliceSQL,
     SlicingAnalysisResult,
 )
+from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -75,11 +76,15 @@ class SlicingPhase(BasePhase):
         return None
 
     def _get_fact_tables(self, ctx: PhaseContext) -> list[Table]:
-        """Return only typed tables that have an enriched view (fact tables)."""
+        """Return only the session's typed tables that have an enriched view (fact tables).
+
+        Source-free (feedback-source-dies-at-addsource): scopes by the session's
+        selected typed tables (``ctx.table_ids`` via ``BasePhase._typed_tables``),
+        which may span sources — never ``source_id`` (None past add_source).
+        """
         from dataraum.analysis.views.db_models import EnrichedView
 
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = list(ctx.session.execute(stmt).scalars().all())
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return []
@@ -128,20 +133,31 @@ class SlicingPhase(BasePhase):
                 records_created=0,
             )
 
-        # Initialize LLM infrastructure
+        # Initialize LLM infrastructure. LLM intentionally unavailable (no config,
+        # feature disabled) is a documented operating mode — SKIP gracefully so a
+        # wired begin_session run proceeds, exactly like ``enriched_views``. A
+        # misconfiguration WITH the feature enabled (below) stays a loud failure.
         try:
             config = load_llm_config()
-        except FileNotFoundError as e:
-            return PhaseResult.failed(f"LLM config not found: {e}")
+        except FileNotFoundError:
+            return PhaseResult.success(
+                outputs={"slice_definitions": 0, "message": "LLM config not found, skipping"},
+                records_processed=0,
+                records_created=0,
+                summary="skipped (LLM config not found)",
+            )
 
         # Check if slicing analysis is enabled
         if not config.features.slicing_analysis or not config.features.slicing_analysis.enabled:
-            return PhaseResult.failed(
-                "Slicing analysis is disabled in config. "
-                "Enable it in config/llm.yaml or use --skip-llm to skip LLM phases."
+            return PhaseResult.success(
+                outputs={"slice_definitions": 0, "message": "slicing analysis disabled"},
+                records_processed=0,
+                records_created=0,
+                summary="skipped (slicing analysis disabled)",
             )
 
-        # Create provider
+        # Create provider. Missing provider config / creation failures ARE
+        # misconfigurations now that the feature is enabled — fail loudly.
         provider_config = config.providers.get(config.active_provider)
         if not provider_config:
             return PhaseResult.failed(f"Provider '{config.active_provider}' not configured")
@@ -337,12 +353,14 @@ class SlicingPhase(BasePhase):
                 enriched_view = tdata.get("enriched_duckdb_path")
                 duckdb_table = enriched_view or tdata["duckdb_path"]
 
-                safe_source = agent._sanitize_for_table_name(target_table_name)
+                # Name the propagated slices off the target fact's source-qualified
+                # duckdb_path (DAT-356), consistent with the agent + the matchers.
+                target_source_key = tdata["duckdb_path"]
                 sql_template = agent._build_sql_template(
                     duckdb_table,
                     col_name,
                     rec.distinct_values,
-                    source_table_name=target_table_name,
+                    source_key=target_source_key,
                 )
 
                 new_rec = SliceRecommendation(
@@ -363,18 +381,14 @@ class SlicingPhase(BasePhase):
 
                 # Generate slice queries for the new table
                 for value in rec.distinct_values:
-                    safe_value = agent._sanitize_for_table_name(str(value))
-                    safe_column = agent._sanitize_for_table_name(col_name)
-                    slice_table_name = f"slice_{safe_source}_{safe_column}_{safe_value}"
+                    slice_name = slice_table_name(target_source_key, col_name, value)
 
-                    sql_query = agent._build_slice_sql(
-                        duckdb_table, col_name, value, slice_table_name
-                    )
+                    sql_query = agent._build_slice_sql(duckdb_table, col_name, value, slice_name)
                     new_queries.append(
                         SliceSQL(
                             slice_name=f"{col_name}={value}",
                             slice_value=str(value),
-                            table_name=slice_table_name,
+                            table_name=slice_name,
                             sql_query=sql_query,
                         )
                     )

@@ -23,12 +23,12 @@ class TestCorrelationsPhase:
     ):
         """Test skip when no typed tables exist."""
         phase = CorrelationsPhase()
-        source_id = str(uuid4())
 
+        # Source-free (DAT-403): an empty selection resolves to no typed tables.
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
         )
 
@@ -41,12 +41,11 @@ class TestCorrelationsPhase:
     ):
         """Test failure when run without typed tables."""
         phase = CorrelationsPhase()
-        source_id = str(uuid4())
 
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
         )
 
@@ -84,7 +83,7 @@ class TestCorrelationsPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table.table_id],
             config={},
         )
 
@@ -149,7 +148,7 @@ class TestCorrelationsPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
         )
 
@@ -217,7 +216,7 @@ class TestCorrelationsPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
         )
 

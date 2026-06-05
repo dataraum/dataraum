@@ -20,6 +20,8 @@ const REQUIRED: Record<string, string> = {
 const OPTIONAL = [
 	"S3_REGION",
 	"S3_USE_SSL",
+	"DUCKDB_EXTENSION_DIRECTORY",
+	"DUCKLAKE_SKIP_INSTALL",
 	"TEMPORAL_HOST",
 	"TEMPORAL_NAMESPACE",
 	"TEMPORAL_TASK_QUEUE",
@@ -69,6 +71,28 @@ describe("cockpit config (DAT-363)", () => {
 		const { config } = await import("./config");
 
 		expect(config.s3UseSsl).toBe(false);
+	});
+
+	it("defaults the DuckDB extension cache to host-dev behavior when unset", async () => {
+		stubBaseline();
+		const { config } = await import("./config");
+
+		expect(config.duckdbExtensionDirectory).toBeUndefined();
+		expect(config.ducklakeSkipInstall).toBe(false);
+	});
+
+	it("parses the container's pre-baked extension cache contract", async () => {
+		// The image sets both (Dockerfile): DUCKLAKE_SKIP_INSTALL=1 is the same
+		// env contract as the engine's worker.Dockerfile.
+		stubBaseline();
+		vi.stubEnv("DUCKDB_EXTENSION_DIRECTORY", "/opt/dataraum/duckdb-extensions");
+		vi.stubEnv("DUCKLAKE_SKIP_INSTALL", "1");
+		const { config } = await import("./config");
+
+		expect(config.duckdbExtensionDirectory).toBe(
+			"/opt/dataraum/duckdb-extensions",
+		);
+		expect(config.ducklakeSkipInstall).toBe(true);
 	});
 
 	it("fails loud naming the field when a required var is missing", async () => {

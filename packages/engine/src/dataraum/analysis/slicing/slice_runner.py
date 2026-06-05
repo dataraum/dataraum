@@ -5,7 +5,6 @@ Functions to register slice tables in metadata and run analysis phases on slices
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -15,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.naming import slice_table_name, slicing_view_name
 from dataraum.analysis.statistics import assess_statistical_quality, profile_statistics
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -45,30 +45,6 @@ class SliceAnalysisResult:
     statistics_computed: int
     quality_assessed: int
     errors: list[str]
-
-
-def _sanitize_name(value: str) -> str:
-    """Sanitize a value for use in table names."""
-    safe = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
-    safe = re.sub(r"_+", "_", safe).strip("_").lower()
-    return safe
-
-
-def _get_slice_table_name(source_table_name: str, column_name: str, value: str) -> str:
-    """Generate slice table name from components.
-
-    Args:
-        source_table_name: Name of the source (fact) table.
-        column_name: Column being sliced on.
-        value: Distinct value for this slice.
-
-    Returns:
-        Namespaced slice table name: ``slice_{source}_{column}_{value}``.
-    """
-    safe_source = _sanitize_name(source_table_name)
-    safe_column = _sanitize_name(column_name)
-    safe_value = _sanitize_name(value)
-    return f"slice_{safe_source}_{safe_column}_{safe_value}"
 
 
 def register_slice_tables(
@@ -125,21 +101,21 @@ def register_slice_tables(
 
             # Process each slice value
             for value in slice_def.distinct_values or []:
-                slice_table_name = _get_slice_table_name(
-                    source_table.table_name,
+                slice_name = slice_table_name(
+                    source_table.duckdb_path or "",
                     effective_column_name,
                     value,
                 )
 
                 # Check if table exists in DuckDB
-                if slice_table_name not in slice_tables_in_duckdb:
+                if slice_name not in slice_tables_in_duckdb:
                     continue
 
                 # Check if already registered (include source_id in query for correct uniqueness).
                 # Earlier iterations flush before they fall through, so this query sees them.
                 existing_stmt = select(Table).where(
                     Table.source_id == source_table.source_id,
-                    Table.table_name == slice_table_name,
+                    Table.table_name == slice_name,
                     Table.layer == "slice",
                 )
                 existing_table = session.execute(existing_stmt).scalar_one_or_none()
@@ -147,13 +123,13 @@ def register_slice_tables(
                 if existing_table:
                     # Already registered
                     count_result = duckdb_conn.execute(
-                        f'SELECT COUNT(*) FROM "{slice_table_name}"'
+                        f'SELECT COUNT(*) FROM "{slice_name}"'
                     ).fetchone()
                     row_count = count_result[0] if count_result else 0
                     registered.append(
                         SliceTableInfo(
                             slice_table_id=existing_table.table_id,
-                            slice_table_name=slice_table_name,
+                            slice_table_name=slice_name,
                             source_table_id=source_table.table_id,
                             source_table_name=source_table.table_name,
                             slice_column_name=effective_column_name,
@@ -165,7 +141,7 @@ def register_slice_tables(
 
                 # Get row count from DuckDB
                 count_result = duckdb_conn.execute(
-                    f'SELECT COUNT(*) FROM "{slice_table_name}"'
+                    f'SELECT COUNT(*) FROM "{slice_name}"'
                 ).fetchone()
                 row_count = count_result[0] if count_result else 0
 
@@ -174,9 +150,9 @@ def register_slice_tables(
                 slice_table = Table(
                     table_id=str(uuid4()),
                     source_id=source_table.source_id,
-                    table_name=slice_table_name,
+                    table_name=slice_name,
                     layer="slice",
-                    duckdb_path=slice_table_name,
+                    duckdb_path=slice_name,
                     row_count=row_count,
                 )
                 session.add(slice_table)
@@ -188,7 +164,7 @@ def register_slice_tables(
                 # Fall back to DuckDB DESCRIBE if no slicing_view table is found.
                 sv_table_stmt = select(Table).where(
                     Table.source_id == source_table.source_id,
-                    Table.table_name == f"slicing_{source_table.table_name}",
+                    Table.table_name == slicing_view_name(source_table.duckdb_path or ""),
                     Table.layer == "slicing_view",
                 )
                 sv_table = session.execute(sv_table_stmt).scalar_one_or_none()
@@ -213,7 +189,7 @@ def register_slice_tables(
                         )
                 else:
                     # No slicing view registered — read schema directly from DuckDB.
-                    duckdb_cols = duckdb_conn.execute(f'DESCRIBE "{slice_table_name}"').fetchall()
+                    duckdb_cols = duckdb_conn.execute(f'DESCRIBE "{slice_name}"').fetchall()
                     for pos, row in enumerate(duckdb_cols):
                         session.add(
                             Column(
@@ -233,7 +209,7 @@ def register_slice_tables(
                 registered.append(
                     SliceTableInfo(
                         slice_table_id=slice_table.table_id,
-                        slice_table_name=slice_table_name,
+                        slice_table_name=slice_name,
                         source_table_id=source_table.table_id,
                         source_table_name=source_table.table_name,
                         slice_column_name=effective_column_name,

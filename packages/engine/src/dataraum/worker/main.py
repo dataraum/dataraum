@@ -99,6 +99,12 @@ async def run_worker() -> None:
                     phase_activities.run_relationships,
                     phase_activities.run_semantic_per_table,
                     phase_activities.run_enriched_views,
+                    # DAT-403 value layer — runs after enriched_views.
+                    phase_activities.run_slicing,
+                    phase_activities.run_slicing_view,
+                    phase_activities.run_slice_analysis,
+                    phase_activities.run_temporal_slice_analysis,
+                    phase_activities.run_correlations,
                     # DAT-408/409 begin_session: materialize durable overlays →
                     # terminal detect → silent-accept keepers → promote.
                     phase_activities.run_session_materialize_overlays,
@@ -146,6 +152,11 @@ async def run_worker() -> None:
                     "relationships",
                     "semantic_per_table",
                     "enriched_views",
+                    "slicing",
+                    "slicing_view",
+                    "slice_analysis",
+                    "temporal_slice_analysis",
+                    "correlations",
                     "session_materialize_overlays",
                     "session_detect",
                     "session_write_keepers",

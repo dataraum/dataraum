@@ -301,16 +301,15 @@ def load_drift_summaries(
     session: Session,
     column_id: str,
     table_id: str,
-    table_name: str,
 ) -> list[Any] | None:
     """Load temporal drift summaries for a column across slice tables.
 
     Returns list of ColumnDriftSummary ORM objects or None if none found.
     """
     from dataraum.analysis.slicing.db_models import SliceDefinition
-    from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
+    from dataraum.analysis.slicing.naming import slice_table_name
     from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
-    from dataraum.storage import Column
+    from dataraum.storage import Column, Table
 
     col = session.execute(select(Column).where(Column.column_id == column_id)).scalar_one_or_none()
     if not col:
@@ -328,22 +327,17 @@ def load_drift_summaries(
     all_cols = session.execute(select(Column).where(Column.table_id == table_id)).scalars().all()
     col_name_map = {c.column_id: c.column_name for c in all_cols}
 
-    # Resolve source table name for namespaced slice table names
-    source_table_name = table_name
-    if not source_table_name:
-        from dataraum.storage import Table
-
-        source_table = session.get(Table, table_id)
-        source_table_name = source_table.table_name if source_table else ""
+    # Slice tables are named off the fact's source-qualified duckdb_path (DAT-356),
+    # resolved from table_id — never the bare ``table_name``.
+    source_table = session.get(Table, table_id)
+    source_key = (source_table.duckdb_path if source_table else None) or ""
 
     slice_table_names: list[str] = []
     for sd in slice_defs:
         sd_col_name = sd.column_name or col_name_map.get(sd.column_id)
-        if sd_col_name and sd.distinct_values and source_table_name:
+        if sd_col_name and sd.distinct_values and source_key:
             for value in sd.distinct_values:
-                slice_table_names.append(
-                    _get_slice_table_name(source_table_name, sd_col_name, value)
-                )
+                slice_table_names.append(slice_table_name(source_key, sd_col_name, value))
 
     if not slice_table_names:
         return None

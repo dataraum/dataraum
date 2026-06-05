@@ -24,12 +24,12 @@ class TestTemporalSliceAnalysisPhase:
     ):
         """Test skip when no typed tables exist."""
         phase = TemporalSliceAnalysisPhase()
-        source_id = str(uuid4())
 
+        # Source-free (DAT-403): an empty selection resolves to no typed tables.
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
             session_id=baseline_session_id(),
         )
@@ -43,12 +43,11 @@ class TestTemporalSliceAnalysisPhase:
     ):
         """Test failure when run without typed tables."""
         phase = TemporalSliceAnalysisPhase()
-        source_id = str(uuid4())
 
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[],
             config={},
             session_id=baseline_session_id(),
         )
@@ -87,7 +86,7 @@ class TestTemporalSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table.table_id],
             config={},
             session_id=baseline_session_id(),
         )
@@ -148,7 +147,7 @@ class TestTemporalSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
             session_id=baseline_session_id(),
         )
@@ -236,7 +235,7 @@ class TestTemporalSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_id],
             config={},
             session_id=baseline_session_id(),
         )
@@ -423,7 +422,7 @@ class TestTemporalSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table_a_id, table_b_id],
             config={},
             session_id=baseline_session_id(),
         )
@@ -473,7 +472,7 @@ class TestTemporalSliceAnalysisPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            table_ids=[table.table_id],
             config={},
             session_id=baseline_session_id(),
         )

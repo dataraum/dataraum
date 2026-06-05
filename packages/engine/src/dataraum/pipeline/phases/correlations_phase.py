@@ -24,7 +24,6 @@ from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Table
 
 if TYPE_CHECKING:
     pass
@@ -50,10 +49,9 @@ class CorrelationsPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all tables already have derived column analysis."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403), which may
+        # span sources — never ``source_id`` (feedback-source-dies-at-addsource).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -74,10 +72,8 @@ class CorrelationsPhase(BasePhase):
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run derived column detection, dispatching to enriched view or typed table."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        # Source-free: the session's selected typed tables (DAT-403).
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

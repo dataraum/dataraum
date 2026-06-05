@@ -400,3 +400,73 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
         }
     assert {r.run_id for r in out} == {"run-B"}, "reader surfaces only the promoted run"
     assert all_runs == {"run-A", "run-B"}, "prior run's readiness survives (non-destructive)"
+
+
+def test_begin_session_detect_runs_value_detectors_to_column_bands(
+    worker_manager: ConnectionManager,
+) -> None:
+    """A value-layer detector reaches a column readiness band via session_detect (DAT-403).
+
+    Wiring proof for the revived value layer: ``derived_value`` (declared by the
+    ``correlations`` phase, now in ``SESSION_DETECTOR_PHASES``) must run in the
+    terminal session detect and roll its score up to a non-ready band on the derived
+    column. A poorly-matching ``DerivedColumn`` is the only value-layer input seeded,
+    so the other value detectors no-op cleanly — isolating the wired path.
+    """
+    from dataraum.analysis.correlation.db_models import DerivedColumn
+    from dataraum.entropy.db_models import EntropyObjectRecord, EntropyReadinessRecord
+    from dataraum.worker.activity import SESSION_DETECTOR_PHASES, run_detectors
+
+    session_id = str(uuid4())
+    _seed_session(worker_manager, session_id)
+    src = str(uuid4())
+    t1 = _seed_typed_table(worker_manager, src, "src", "orders")
+    qty = _seed_column(worker_manager, t1, "qty")
+    price = _seed_column(worker_manager, t1, "price")
+    total = _seed_column(worker_manager, t1, "total")
+    begin_session_select(worker_manager, _session_identity(session_id), [t1])
+
+    # A poorly-matching derived column → high derived_value entropy on ``total``.
+    with worker_manager.session_scope() as session:
+        session.add(
+            DerivedColumn(
+                session_id=session_id,
+                table_id=t1,
+                derived_column_id=total,
+                source_column_ids=[qty, price],
+                derivation_type="product",
+                formula="qty * price",
+                match_rate=0.3,
+                total_rows=100,
+                matching_rows=30,
+            )
+        )
+
+    n = run_detectors(
+        worker_manager,
+        session_id=session_id,
+        run_id="run-1",
+        detector_phases=SESSION_DETECTOR_PHASES,
+    )
+    assert n > 0
+
+    with worker_manager.session_scope() as session:
+        produced = list(
+            session.execute(
+                select(EntropyObjectRecord).where(
+                    EntropyObjectRecord.session_id == session_id,
+                    EntropyObjectRecord.detector_id == "derived_value",
+                )
+            ).scalars()
+        )
+        assert produced, "derived_value produced no entropy object in the session detect"
+
+        band = session.execute(
+            select(EntropyReadinessRecord).where(
+                EntropyReadinessRecord.session_id == session_id,
+                EntropyReadinessRecord.column_id == total,
+                EntropyReadinessRecord.run_id == "run-1",
+            )
+        ).scalar_one_or_none()
+    assert band is not None, "the derived column got no readiness band"
+    assert band.band != "ready", "a poorly-matching formula must not read as ready"

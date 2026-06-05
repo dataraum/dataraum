@@ -739,17 +739,22 @@ export const slicingViews = metadataSchema.table(
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
 		viewName: varchar("view_name").notNull(),
-		viewSql: text("view_sql").notNull(),
+		runId: varchar("run_id"),
 		sliceDefinitionIds: json("slice_definition_ids"),
 		sliceColumns: json("slice_columns"),
 		isGrainVerified: boolean("is_grain_verified").notNull(),
 		createdAt: timestamp("created_at").notNull(),
 	},
 	(table) => [
+		index("ix_slicing_views_run_id").using(
+			"btree",
+			table.runId.asc().nullsLast(),
+		),
 		index("ix_slicing_views_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_slicing_view_fact_table").on(table.factTableId),
 	],
 );
 

@@ -14,7 +14,10 @@
 // or the internals leak.
 
 /** Sentinel prefix marking a model-only refs part. Renderers skip any user text
- * part that starts with it; nothing a human types begins this way. */
+ * part that starts with it; nothing a human types begins this way.
+ * Replaced DAT-423's `[[dataraum:uploaded-objects]]` outright — chat is
+ * in-memory today, so no stored conversation carries the old marker; a future
+ * conversation-persistence layer only ever needs to recognize THIS one. */
 export const AGENT_REFS_MARKER = "[[dataraum:refs]]";
 
 /** True when a user text part is a structured refs block — a renderer must NOT

@@ -3,6 +3,7 @@
 import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { InventoryTable } from "#/tools/list-tables";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
 
@@ -83,6 +84,29 @@ function sourcesCall(id: string, name = "orders") {
 	};
 }
 
+// A full InventoryTable row (factory, as in workspace-inventory.test.tsx) — the
+// list_tables output is cast into `groupLogicalTables` by the chip summary and
+// projected onto the inventory widget, so the fixture must carry the complete
+// projection shape, not a hand-picked subset.
+function inventoryRow(overrides: Partial<InventoryTable> = {}): InventoryTable {
+	return {
+		table_id: "t1",
+		table_name: "orders",
+		physical_name: "src_aaa__orders",
+		layer: "typed",
+		row_count: 42,
+		column_count: 5,
+		source_id: "s1",
+		source_name: "orders.csv",
+		source_type: "csv",
+		source_backend: null,
+		analyzed: true,
+		worst_band: "ready",
+		readiness: { ready: 5, investigate: 0, blocked: 0, unanalyzed: 0 },
+		...overrides,
+	};
+}
+
 // A single completed list_tables call → workspace-inventory canvas.
 function tablesCall(id: string) {
 	return {
@@ -94,15 +118,7 @@ function tablesCall(id: string) {
 				id,
 				name: "list_tables",
 				state: "complete",
-				output: [
-					{
-						table_id: "t1",
-						source_id: "s1",
-						table_name: "orders",
-						layer: "typed",
-						row_count: 42,
-					},
-				],
+				output: [inventoryRow()],
 			},
 		],
 	};
@@ -247,18 +263,8 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 			// Two LOGICAL tables (distinct table_name) — the chip counts logical
 			// tables, collapsing physical layers (DAT-437).
 			output: [
-				{
-					table_id: "t1",
-					source_id: "s1",
-					table_name: "orders",
-					layer: "typed",
-				},
-				{
-					table_id: "t2",
-					source_id: "s1",
-					table_name: "items",
-					layer: "typed",
-				},
+				inventoryRow({ table_id: "t1", table_name: "orders" }),
+				inventoryRow({ table_id: "t2", table_name: "items" }),
 			],
 			summary: "2 tables",
 		},

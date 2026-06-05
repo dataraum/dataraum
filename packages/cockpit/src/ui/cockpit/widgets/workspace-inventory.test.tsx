@@ -199,9 +199,11 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(bubble?.content).toContain("orders");
 		expect(bubble?.content).toContain("look_table");
 		expect(bubble?.content).not.toContain("t_orders");
-		// The refs part: marked model-only, carries the id.
+		// The refs part: marked model-only, carries the id in the unambiguous
+		// key=value imperative form.
 		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("t_orders");
+		expect(refs?.content).toContain("table_id=t_orders");
+		expect(refs?.content).toContain("Internal only");
 	});
 
 	it("Refresh re-lists the inventory through the chat loop", () => {

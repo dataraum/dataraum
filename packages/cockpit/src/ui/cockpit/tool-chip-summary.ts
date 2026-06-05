@@ -131,16 +131,26 @@ export function toolChipSummary(
 			return `${plural(verticals.length, "vertical")} (${parts.join(", ")})`;
 		}
 		case "list_tables": {
-			const src = (input as { source_id?: string } | undefined)?.source_id;
-			if (!done) return src ? `listing tables for ${src}…` : "listing tables…";
+			// The input `source_id` is only a SIGNAL that the call was filtered — for
+			// uploads it's the content-keyed `src_<40hex>` digest, which must never
+			// reach the chip text (running state included).
+			const filtered = Boolean(
+				(input as { source_id?: string } | undefined)?.source_id,
+			);
+			if (!done) return "listing tables…";
 			const tables = Array.isArray(output) ? (output as InventoryTable[]) : [];
 			// Count LOGICAL tables (DAT-437): the engine emits one row per physical
 			// layer (raw / typed / quarantine), so the raw length triples what the
 			// user thinks of as "their tables" — collapse layers the same way the
 			// inventory widget does.
 			const logical = groupLogicalTables(tables).length;
-			return src
-				? `${plural(logical, "table")} in ${src}`
+			// Name the filter by the rows' HUMAN source label (`source_name` — post-
+			// DAT-433 the filename for uploads, the connection name for db sources).
+			// An empty filtered result has no label to show — drop the suffix.
+			const label =
+				filtered && tables.length > 0 ? tables[0]?.source_name : undefined;
+			return label
+				? `${plural(logical, "table")} in ${label}`
 				: plural(logical, "table");
 		}
 		case "look_table": {

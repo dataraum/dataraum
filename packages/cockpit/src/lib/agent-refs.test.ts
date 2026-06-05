@@ -12,9 +12,13 @@ import {
 
 describe("agentRefsBlock / isAgentRefsPart", () => {
 	it("marks a refs body and the predicate flags it", () => {
-		const block = agentRefsBlock('column_id for "amount": c_123');
+		// The production refs shape: key=value imperative, never embedded in prose.
+		const block = agentRefsBlock(
+			"Internal only — do not quote in prose: column_id=c_123 " +
+				"(use as the column_id argument to the why_column tool).",
+		);
 		expect(block.startsWith(AGENT_REFS_MARKER)).toBe(true);
-		expect(block).toContain("c_123");
+		expect(block).toContain("column_id=c_123");
 		expect(isAgentRefsPart(block)).toBe(true);
 	});
 
@@ -30,7 +34,8 @@ describe("turnWithRefs — the two-part turn", () => {
 	it("carries a clean bubble first and the marked refs part second", () => {
 		const turn = turnWithRefs(
 			'Explain the readiness for column "amount" using the why_column tool.',
-			'column_id for "amount": c_123',
+			"Internal only — do not quote in prose: column_id=c_123 " +
+				"(use as the column_id argument to the why_column tool).",
 		);
 		expect(turn.content).toHaveLength(2);
 		const [bubble, refs] = turn.content;
@@ -39,6 +44,6 @@ describe("turnWithRefs — the two-part turn", () => {
 		expect(bubble?.content).not.toContain(AGENT_REFS_MARKER);
 		expect(refs?.type).toBe("text");
 		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("c_123");
+		expect(refs?.content).toContain("column_id=c_123");
 	});
 });

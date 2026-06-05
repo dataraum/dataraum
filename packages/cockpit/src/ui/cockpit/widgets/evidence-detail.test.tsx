@@ -75,17 +75,38 @@ describe("EvidenceDetail (DAT-437)", () => {
 		expect(el.textContent).toContain("plain detector note");
 	});
 
+	it("bounds the plain-string branch like the parsed branch (no unbounded cell)", () => {
+		const el = renderDetail("x ".repeat(5000));
+		expect(el.style.maxWidth).toBe("360px");
+		expect(el.style.maxHeight).toBe("200px");
+		expect(el.style.overflowY).toBe("auto");
+	});
+
+	it("caps a long array at 20 elements with a '+N more' tail", () => {
+		const items = Array.from({ length: 25 }, (_, i) => ({
+			metric: `metric_${i}`,
+		}));
+		const el = renderDetail(JSON.stringify(items));
+		const text = el.textContent ?? "";
+		expect(text).toContain("metric_0");
+		expect(text).toContain("metric_19");
+		// The 21st element never reaches the DOM — the tail counts it instead.
+		expect(text).not.toContain("metric_20");
+		expect(text).toContain("+5 more");
+	});
+
 	it("renders a dash for an empty detail", () => {
 		const el = renderDetail("");
 		expect(el.textContent).toContain("—");
 	});
 
-	it("renders null values and empty containers as dashes", () => {
-		const el = renderDetail('{"a":null,"b":{},"c":[]}');
+	it("renders null values, empty strings, and empty containers as dashes", () => {
+		const el = renderDetail('{"a":null,"b":{},"c":[],"d":""}');
 		const text = el.textContent ?? "";
 		expect(text).toContain("a:");
-		// All three render a muted dash rather than literal null/{}/[].
+		expect(text).toContain("d:");
+		// All four render a dash rather than literal null/{}/[] or a hollow cell.
 		expect(text).not.toContain("null");
-		expect((text.match(/—/g) ?? []).length).toBeGreaterThanOrEqual(3);
+		expect((text.match(/—/g) ?? []).length).toBeGreaterThanOrEqual(4);
 	});
 });

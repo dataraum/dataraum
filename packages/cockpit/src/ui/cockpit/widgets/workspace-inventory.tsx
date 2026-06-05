@@ -292,8 +292,8 @@ export function WorkspaceInventoryWidget({
 		sendMessage(
 			turnWithRefs(
 				`Show the readiness for table "${tableName}" using the look_table tool.`,
-				`The table "${tableName}" has table_id ${tableId} — pass this id ` +
-					`to look_table. It is internal; never echo it.`,
+				`Internal only — do not quote in prose: table_id=${tableId} ` +
+					`(use as the table_id argument to the look_table tool).`,
 			),
 		);
 

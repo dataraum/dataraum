@@ -118,8 +118,8 @@ export function TableReadinessWidget({
 		sendMessage(
 			turnWithRefs(
 				`Explain the readiness for column "${columnName}" using the why_column tool.`,
-				`The column "${columnName}" has column_id ${columnId} — pass this id ` +
-					`to why_column. It is internal; never echo it.`,
+				`Internal only — do not quote in prose: column_id=${columnId} ` +
+					`(use as the column_id argument to the why_column tool).`,
 			),
 			{ label: "Explaining the column…" },
 		);

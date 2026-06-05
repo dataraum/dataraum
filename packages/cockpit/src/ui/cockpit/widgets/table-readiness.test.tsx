@@ -184,8 +184,10 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		expect(bubble?.content).toContain("amount");
 		expect(bubble?.content).toContain("why_column");
 		expect(bubble?.content).not.toContain("c_amount");
-		// The refs part: marked model-only, carries the id.
+		// The refs part: marked model-only, carries the id in the unambiguous
+		// key=value imperative form.
 		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("c_amount");
+		expect(refs?.content).toContain("column_id=c_amount");
+		expect(refs?.content).toContain("Internal only");
 	});
 });

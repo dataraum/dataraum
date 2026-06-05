@@ -10,25 +10,36 @@
 //   - objects   → one row per key (key dimmed, value beside it); a nested
 //                 object/array indents under its key
 //   - arrays    → repeated groups, one per element (objects get a hairline
-//                 left border so consecutive groups read as units)
+//                 left border so consecutive groups read as units), capped at
+//                 MAX_ARRAY_ITEMS with a muted "+N more" tail
 //   - leaves    → text, truncated past MAX_VALUE_CHARS with the full value in
 //                 the `title` attr (hover reveals it)
 //   - non-JSON  → detectors are free to emit a plain string; render it as-is —
 //                 a parse failure must never blank the cell
-//   - ""        → a muted dash, so an empty detail never renders a hollow cell
+//   - ""        → a muted dash (whole detail or a leaf), so an empty value
+//                 never renders a hollow cell
 
 import { Box, Stack, Text } from "@mantine/core";
 
 const MAX_VALUE_CHARS = 80;
+// Never render an unbounded array into the DOM — cap the elements and show a
+// muted "+N more" tail for the rest.
+const MAX_ARRAY_ITEMS = 20;
 
 /** A leaf value as display text. */
 function leafText(value: unknown): string {
 	if (value === null) return "—";
+	// An empty string would render `key: ` with a hollow cell — same dash as
+	// null / {} / [].
+	if (value === "") return "—";
 	if (typeof value === "string") return value;
 	return String(value);
 }
 
-/** Truncated leaf text; the full value rides in `title` when cut. */
+/** Truncated leaf text; the full value rides in `title` when cut.
+ * Trade-off: the full value is hover-only — it can't be selected/copied from
+ * the cell. Accepted for now; an expander is deliberately not built until a
+ * real need shows up. */
 function LeafValue({ value }: { value: unknown }) {
 	const text = leafText(value);
 	const truncated =
@@ -58,9 +69,11 @@ function DetailNode({ value }: { value: unknown }) {
 
 	if (Array.isArray(value)) {
 		if (value.length === 0) return <LeafValue value="—" />;
+		const visible = value.slice(0, MAX_ARRAY_ITEMS);
+		const overflow = value.length - visible.length;
 		return (
 			<Stack gap={4}>
-				{value.map((item, i) => (
+				{visible.map((item, i) => (
 					<Box
 						// biome-ignore lint/suspicious/noArrayIndexKey: static parsed JSON
 						key={i}
@@ -74,6 +87,11 @@ function DetailNode({ value }: { value: unknown }) {
 						<DetailNode value={item} />
 					</Box>
 				))}
+				{overflow > 0 && (
+					<Text span size="xs" c="dimmed">
+						+{overflow} more
+					</Text>
+				)}
 			</Stack>
 		);
 	}
@@ -123,11 +141,19 @@ export function EvidenceDetail({ detail }: { detail: string }) {
 	try {
 		parsed = JSON.parse(detail);
 	} catch {
-		// Not JSON — a detector emitted a plain string; show it untouched.
+		// Not JSON — a detector emitted a plain string; show it untouched, but
+		// scroll-bounded the same as the parsed branch (a huge free-text detail
+		// must not blow up the evidence table's row height either).
 		return (
 			<Text
 				size="xs"
-				style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+				style={{
+					whiteSpace: "pre-wrap",
+					wordBreak: "break-word",
+					maxWidth: 360,
+					maxHeight: 200,
+					overflowY: "auto",
+				}}
 				data-testid="evidence-detail"
 			>
 				{detail}

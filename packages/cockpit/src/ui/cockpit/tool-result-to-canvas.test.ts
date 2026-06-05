@@ -40,7 +40,6 @@ describe("toolResultToCanvas", () => {
 				source_name: "orders.csv",
 				source_type: "file",
 				source_backend: null,
-				source_status: null,
 				analyzed: true,
 				worst_band: "ready",
 				readiness: { ready: 3, investigate: 0, blocked: 0, unanalyzed: 0 },

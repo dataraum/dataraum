@@ -203,9 +203,9 @@ export function toolChipSummary(
 		default:
 			// Never surface a raw snake_case verb as the summary — humanize unmapped
 			// tools the same way the title does (look_relationships → "Look relationships").
-			// NOTE: when relationship tools (look_relationships / why_relationship) get
-			// explicit cases, run their `from_table_name`/`to_table_name` through
-			// `displayTableName` — their output carries the raw `<source>__table` form.
+			// Relationship tools (look_relationships / why_relationship) already emit
+			// `from_table_name`/`to_table_name` in display form (stripped in the tool
+			// projections, DAT-431) — no extra `displayTableName` needed for new cases.
 			return toolLabel(toolName);
 	}
 }

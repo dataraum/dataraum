@@ -109,6 +109,44 @@ class TestBuilderExtractsSemanticFields:
         assert col.business_description == "Total value before tax in local currency"
         assert col.unit_source_column == "currency_code"
 
+    def test_stale_addsource_run_dropped(self, session: Session) -> None:
+        """Coexisting add_source runs ⇒ read only the table's promoted run (DAT-429 #2).
+
+        A replay/teach leaves >1 column-metadata row per column (distinct run_id).
+        The promoted ``table:{id}``/``detect`` head names the current add_source run;
+        the builder must surface ONLY that run's annotation. Head-flip guard: with
+        identical data, flipping the head flips the result — without run-scoping the
+        head is ignored and both builds return the same value, so one assert fails.
+        """
+        from dataraum.analysis.semantic.db_models import SemanticAnnotation
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+
+        _source_id, table_id, column_id = _insert_source_table_column(session)
+        for rid, name in (("new", "NEW name"), ("old", "OLD name")):
+            session.add(
+                SemanticAnnotation(
+                    annotation_id=_id(),
+                    column_id=column_id,
+                    run_id=rid,
+                    semantic_role="measure",
+                    business_name=name,
+                    confidence=0.9,
+                )
+            )
+        head = MetadataSnapshotHead(
+            head_id=_id(), target=f"table:{table_id}", stage="detect", run_id="new"
+        )
+        session.add(head)
+        session.flush()
+
+        ctx_new = build_execution_context(session, [table_id])
+        assert ctx_new.tables[0].columns[0].business_name == "NEW name"
+
+        head.run_id = "old"
+        session.flush()
+        ctx_old = build_execution_context(session, [table_id])
+        assert ctx_old.tables[0].columns[0].business_name == "OLD name"
+
 
 class TestBuilderExtractsTableEntity:
     """Verify builder reads table_description, grain_columns, time_column."""

@@ -1,11 +1,12 @@
 // Per-turn WORKSPACE CONTEXT for the agent — session-awareness.
 //
 // The agent learns state ONLY from what reaches its message context (tool
-// results + the structured handoff parts). The "Add source" button bypasses the
-// agent entirely — it never sees the session it creates — and the chat messages
-// are in-memory, so a reload wipes them. Result: replay / teach / look_relationships
-// / why_relationship had no way to know which session the user is in, and asked
-// for an id.
+// results + the structured handoff parts), and the chat messages are
+// in-memory, so a reload wipes them. (Historically the "Add source" button
+// also bypassed the agent entirely — DAT-436 folded that trigger into the
+// approved `select`, whose result now reaches the agent — but a reload still
+// loses it.) Result: replay / teach / look_relationships / why_relationship
+// had no way to know which session the user is in, and asked for an id.
 //
 // Fix: each turn, read the workspace's sessions from `investigation_sessions` and
 // hand the agent the CURRENT session (most recent — the honest proxy until the

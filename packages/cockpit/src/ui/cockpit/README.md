@@ -20,7 +20,7 @@ State lives in `cockpit-state.tsx`, which also OWNS the agent chat (`useChat`).
 The focus canvas is **derived** from the message stream during render — not
 stored — so there are no effects mirroring it (see "Chat transport" below). The
 context is split in two: a reactive **state** context (`messages`, `canvas`, …)
-and a stable **actions** context (`sendMessage`, `showCanvas`, …).
+and a stable **actions** context (`sendMessage`, `pinCanvas`, …).
 Components that only dispatch read `useCockpitActions()` and never re-render
 while a turn streams; components that render streaming state read `useCockpit()`.
 
@@ -58,14 +58,15 @@ stream → the server aborts the Anthropic call (see `routes/api/chat.ts`).
 The focus canvas is **derived during render**, not synced through effects:
 
 ```
-canvas = pinned ?? override ?? live ?? (isLoading ? loading : empty)
+canvas = pinned ?? live ?? (isLoading ? loading : empty)
 ```
 
 where `live = canvasFromMessages(messages)` finds the latest completed tool
-result and maps it via `toolResultToCanvas`; `pinned = canvasFromCallId(...)`
-re-resolves a clicked history chip; and `override` is the one imperative slot
-(the add_source progress widget seeded by a REST trigger, via `showCanvas`),
-cleared on the next turn. `useStableValue` returns the previous reference when
+result and maps it via `toolResultToCanvas`, and `pinned = canvasFromCallId(...)`
+re-resolves a clicked history chip. (The imperative `showCanvas` override slot
+was retired by DAT-436: its one user — the add_source progress widget seeded by
+the REST trigger button — became chat-derivable when approving `select` started
+the import and its result began carrying the run ids.) `useStableValue` returns the previous reference when
 the derived canvas is value-equal, so streaming text doesn't churn the canvas
 subtree (`FocusCanvas` is `memo`'d). This replaced an effect chain that mirrored
 the canvas into state and was the source of a recurring stuck-spinner /

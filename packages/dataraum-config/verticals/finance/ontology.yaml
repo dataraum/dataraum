@@ -212,6 +212,27 @@ concepts:
     typical_role: measure
     unit_from_concept: currency
 
+  # Trial-balance / ledger period balances (DAT-405). Without this concept,
+  # debit_balance/credit_balance keyword-match the `debit`/`credit` FLOW
+  # concepts below and inherit `additive` — but a balance column is a
+  # point-in-time stock per period. That mislabel made temporal_drift's
+  # point-in-time gate inert on trial_balance (period-over-period distribution
+  # shift is the data model there, not drift) and misgrounds query agents
+  # (a periodic TB must not be summed across periods).
+  - name: account_balance
+    description: Account balance as of a period end (trial balance, ledger balance)
+    indicators:
+      - account_balance
+      - debit_balance
+      - credit_balance
+      - opening_balance
+      - closing_balance
+      - ending_balance
+      - beginning_balance
+    temporal_behavior: point_in_time
+    typical_role: measure
+    unit_from_concept: currency
+
   - name: transaction_amount
     description: Monetary value of a transaction
     indicators:

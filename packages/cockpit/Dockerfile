@@ -49,7 +49,10 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0
 
 # oven/bun:1-slim ships without wget; add it for the healthcheck.
-RUN apt-get update && apt-get install -y wget \
+# libgssapi-krb5-2: runtime dependency of the community mssql DuckDB extension
+# (probe backend) — without it LOAD mssql fails with a missing
+# libgssapi_krb5.so.2, both at the pre-bake below and at runtime.
+RUN apt-get update && apt-get install -y wget libgssapi-krb5-2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Nitro produces a self-contained server bundle at .output/server/index.mjs.
@@ -63,6 +66,28 @@ COPY --from=build /app/.output ./.output
 # The deps stage installs the binding for THIS image's platform/libc (alpine =
 # musl), which matches the runner — so the binary loads.
 COPY --from=deps /app/node_modules/@duckdb ./node_modules/@duckdb
+
+# Pre-install the DuckDB extensions at image build time (mirror of the engine's
+# worker.Dockerfile): ducklake + httpfs for the READ_ONLY lake reader / S3
+# secret, plus the connect-probe backends (postgres/mysql/sqlite + community
+# mssql). Runtime sets DUCKLAKE_SKIP_INSTALL=1 (read via config.ts by lake.ts /
+# s3-secret.ts / probe.ts) so neither cold start nor a probe ever hits
+# extensions.duckdb.org — required behind egress proxy filters and in
+# air-gapped deploys. `SET extension_directory` lands the cache at a known
+# image path; the matching env var keeps the runtime LOAD aligned with it.
+RUN bun -e "const { DuckDBInstance } = await import('@duckdb/node-api'); \
+    const inst = await DuckDBInstance.create(':memory:'); \
+    const conn = await inst.connect(); \
+    await conn.run(\"SET extension_directory = '/opt/dataraum/duckdb-extensions'\"); \
+    for (const ext of ['ducklake', 'httpfs', 'postgres', 'mysql', 'sqlite']) { \
+      await conn.run('INSTALL ' + ext); \
+      await conn.run('LOAD ' + ext); \
+    } \
+    await conn.run('INSTALL mssql FROM community'); \
+    await conn.run('LOAD mssql');"
+
+ENV DUCKDB_EXTENSION_DIRECTORY=/opt/dataraum/duckdb-extensions \
+    DUCKLAKE_SKIP_INSTALL=1
 
 EXPOSE 3000
 

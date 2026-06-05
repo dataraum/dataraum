@@ -1,19 +1,22 @@
 import type { DuckDBConnection } from "@duckdb/node-api";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // applyS3Secret imports `#/config`, which parses process.env at module load.
 // Mock it with S3 values so the unit test needs no real env. The mock MUST use
 // the `#/` alias — a relative `./config` mock does NOT intercept (DAT-381).
-vi.mock("#/config", () => ({
-	config: {
-		s3Endpoint: "seaweedfs:8333",
-		s3Region: "us-east-1",
-		s3UseSsl: false,
-		s3AccessKeyId: "dataraum",
-		s3SecretAccessKey: "dataraum-s3-secret",
-		s3Bucket: "dataraum-lake",
-	},
+// Hoisted + mutable so tests can flip the extension-cache fields (the
+// container pre-bake contract) per case.
+const mockConfig = vi.hoisted(() => ({
+	s3Endpoint: "seaweedfs:8333",
+	s3Region: "us-east-1",
+	s3UseSsl: false,
+	s3AccessKeyId: "dataraum",
+	s3SecretAccessKey: "dataraum-s3-secret",
+	s3Bucket: "dataraum-lake",
+	duckdbExtensionDirectory: undefined as string | undefined,
+	ducklakeSkipInstall: false,
 }));
+vi.mock("#/config", () => ({ config: mockConfig }));
 
 import { applyS3Secret, buildS3SecretSql } from "./s3-secret";
 
@@ -74,6 +77,11 @@ function fakeConn(run: ReturnType<typeof vi.fn>): DuckDBConnection {
 }
 
 describe("applyS3Secret (DAT-388)", () => {
+	afterEach(() => {
+		mockConfig.duckdbExtensionDirectory = undefined;
+		mockConfig.ducklakeSkipInstall = false;
+	});
+
 	it("installs + loads httpfs, then registers the secret from config", async () => {
 		const run = vi.fn().mockResolvedValue(undefined);
 		await applyS3Secret(fakeConn(run));
@@ -98,5 +106,31 @@ describe("applyS3Secret (DAT-388)", () => {
 		const sql = run.mock.calls.map((c) => c[0] as string);
 		expect(sql).toContain("LOAD httpfs");
 		expect(sql.some((s) => s.includes("CREATE OR REPLACE SECRET"))).toBe(true);
+	});
+
+	it("pins extension_directory + skips INSTALL when the image pre-bakes", async () => {
+		// The container contract (Dockerfile): DUCKDB_EXTENSION_DIRECTORY points
+		// at the baked cache and DUCKLAKE_SKIP_INSTALL=1 — the cold start must
+		// not touch extensions.duckdb.org.
+		mockConfig.duckdbExtensionDirectory = "/opt/dataraum/duckdb-extensions";
+		mockConfig.ducklakeSkipInstall = true;
+		const run = vi.fn().mockResolvedValue(undefined);
+		await applyS3Secret(fakeConn(run));
+
+		const sql = run.mock.calls.map((c) => c[0] as string);
+		expect(sql[0]).toBe(
+			"SET extension_directory = '/opt/dataraum/duckdb-extensions'",
+		);
+		expect(sql[1]).toBe("LOAD httpfs");
+		expect(sql[2]).toContain("CREATE OR REPLACE SECRET dataraum_s3");
+		expect(sql.some((s) => s.startsWith("INSTALL"))).toBe(false);
+	});
+
+	it("escapes the extension directory as a SQL literal", async () => {
+		mockConfig.duckdbExtensionDirectory = "/odd'path";
+		const run = vi.fn().mockResolvedValue(undefined);
+		await applyS3Secret(fakeConn(run));
+
+		expect(run.mock.calls[0][0]).toBe("SET extension_directory = '/odd''path'");
 	});
 });

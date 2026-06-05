@@ -81,11 +81,59 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		expect(toolChipSummary("list_sources", {}, [])).toBe("no available inputs");
 	});
 
-	it("list_tables counts tables and notes the source filter", () => {
-		expect(toolChipSummary("list_tables", {}, [{}, {}])).toBe("2 tables");
-		expect(toolChipSummary("list_tables", { source_id: "s9" }, [{}])).toBe(
-			"1 table in s9",
+	// DAT-437: the engine emits one row per physical layer (raw/typed/quarantine),
+	// so the chip must count LOGICAL tables — 8 logical tables must never read as
+	// "24 tables".
+	it("list_tables counts LOGICAL tables (physical layers collapse)", () => {
+		const layers = (source_id: string, table_name: string) =>
+			["raw", "typed", "quarantine"].map((layer) => ({
+				source_id,
+				table_name,
+				source_name: `${table_name}.csv`,
+				layer,
+			}));
+		// 8 logical tables × 3 physical layers = 24 rows → the chip says 8.
+		const inventory = Array.from({ length: 8 }, (_, i) =>
+			layers("s1", `tbl_${i}`),
+		).flat();
+		expect(toolChipSummary("list_tables", {}, inventory)).toBe("8 tables");
+		// Same-named tables from DIFFERENT sources stay distinct logical tables.
+		expect(
+			toolChipSummary("list_tables", {}, [
+				...layers("s1", "orders"),
+				...layers("s2", "orders"),
+			]),
+		).toBe("2 tables");
+	});
+
+	// DAT-437 review: an upload's source_id is the content-keyed `src_<40hex>`
+	// digest — the filter suffix must use the rows' HUMAN source_name (post-DAT-433
+	// the filename for uploads, the connection name for db), and the digest must
+	// never reach the chip text in ANY state.
+	it("list_tables names the source filter by the rows' source_name, never the digest source_id", () => {
+		const digestId = `src_${"deadbeef".repeat(5)}`; // a REAL content-keyed upload id
+		const rows = ["raw", "typed", "quarantine"].map((layer) => ({
+			source_id: digestId,
+			source_name: "trial_balance.csv",
+			table_name: "trial_balance",
+			layer,
+		}));
+		const summary = toolChipSummary(
+			"list_tables",
+			{ source_id: digestId },
+			rows,
 		);
+		expect(summary).toBe("1 table in trial_balance.csv");
+		expect(summary).not.toContain("src_");
+		expect(summary).not.toContain("deadbeef");
+		// An empty filtered result has no human label — the suffix drops entirely.
+		expect(toolChipSummary("list_tables", { source_id: digestId }, [])).toBe(
+			"0 tables",
+		);
+		// The running state can't know the human label yet — no id echo either.
+		expect(
+			toolChipSummary("list_tables", { source_id: digestId }, undefined),
+		).toBe("listing tables…");
 	});
 
 	it("look_table names the table + column count + analyzed state", () => {

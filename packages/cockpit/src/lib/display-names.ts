@@ -193,18 +193,3 @@ export function humanizeIdentifier(token: string): string {
 	const joined = words.join(" ");
 	return joined.charAt(0).toUpperCase() + joined.slice(1);
 }
-
-/**
- * Pretty-print a compact JSON string (a detector's evidence blob) with 2-space
- * indentation. Returns the original string unchanged when it isn't valid JSON —
- * detectors are free to emit a plain string, and a parse failure must never blank
- * the cell.
- */
-export function prettyJson(raw: string): string {
-	if (!raw) return "";
-	try {
-		return JSON.stringify(JSON.parse(raw), null, 2);
-	} catch {
-		return raw;
-	}
-}

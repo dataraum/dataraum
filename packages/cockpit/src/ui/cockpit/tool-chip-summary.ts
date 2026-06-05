@@ -27,6 +27,7 @@ import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
 import type { WhyColumnResult } from "#/tools/why-column";
+import { groupLogicalTables } from "#/ui/cockpit/widgets/inventory-grouping";
 
 // Re-exported from the canvas bridge: defined ONCE there (derived from the
 // projector map), surfaced here so the chat rail's existing import is unchanged.
@@ -130,12 +131,27 @@ export function toolChipSummary(
 			return `${plural(verticals.length, "vertical")} (${parts.join(", ")})`;
 		}
 		case "list_tables": {
-			const src = (input as { source_id?: string } | undefined)?.source_id;
-			if (!done) return src ? `listing tables for ${src}…` : "listing tables…";
+			// The input `source_id` is only a SIGNAL that the call was filtered — for
+			// uploads it's the content-keyed `src_<40hex>` digest, which must never
+			// reach the chip text (running state included).
+			const filtered = Boolean(
+				(input as { source_id?: string } | undefined)?.source_id,
+			);
+			if (!done) return "listing tables…";
 			const tables = Array.isArray(output) ? (output as InventoryTable[]) : [];
-			return src
-				? `${plural(tables.length, "table")} in ${src}`
-				: plural(tables.length, "table");
+			// Count LOGICAL tables (DAT-437): the engine emits one row per physical
+			// layer (raw / typed / quarantine), so the raw length triples what the
+			// user thinks of as "their tables" — collapse layers the same way the
+			// inventory widget does.
+			const logical = groupLogicalTables(tables).length;
+			// Name the filter by the rows' HUMAN source label (`source_name` — post-
+			// DAT-433 the filename for uploads, the connection name for db sources).
+			// An empty filtered result has no label to show — drop the suffix.
+			const label =
+				filtered && tables.length > 0 ? tables[0]?.source_name : undefined;
+			return label
+				? `${plural(logical, "table")} in ${label}`
+				: plural(logical, "table");
 		}
 		case "look_table": {
 			const r = output as LookTableResult | undefined;

@@ -225,11 +225,15 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
                 started_at=datetime.now(UTC),
             )
         )
-    identity = SourceIdentity(workspace_id="test", source_id=source_id, session_id=add_session_id)
-    assert run_phase(manager, "import", identity, []).status == "completed"
+    import_identity = SourceIdentity(
+        workspace_id="test", source_id=source_id, session_id=add_session_id
+    )
+    assert run_phase(manager, "import", import_identity, []).status == "completed"
+    # Past import the chain runs source-free (DAT-422), as AddSourceWorkflow threads it.
+    child_identity = SourceIdentity(workspace_id="test", session_id=add_session_id)
     typed: list[str] = []
     for raw_id in raw_table_ids(manager, source_id):
-        assert run_phase(manager, "typing", identity, [raw_id]).status == "completed"
+        assert run_phase(manager, "typing", child_identity, [raw_id]).status == "completed"
         typed_id = typed_table_id_for_raw(manager, raw_id)
         assert typed_id is not None
         typed.append(typed_id)

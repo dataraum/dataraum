@@ -23,12 +23,12 @@ class TestStatisticalQualityPhase:
     ):
         """Test skip when no typed tables exist."""
         phase = StatisticalQualityPhase()
-        source_id = str(uuid4())
 
+        # Source-free ctx — the production post-import shape (DAT-422/426).
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            source_id=None,
             config={},
         )
 
@@ -76,7 +76,7 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            source_id=None,
             table_ids=[table.table_id],
             config={},
         )
@@ -90,12 +90,11 @@ class TestStatisticalQualityPhase:
     ):
         """Test failure when run without typed tables."""
         phase = StatisticalQualityPhase()
-        source_id = str(uuid4())
 
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            source_id=None,
             config={},
         )
 
@@ -144,7 +143,7 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            source_id=None,
             table_ids=[table.table_id],
             config={},
         )

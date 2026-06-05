@@ -63,14 +63,16 @@ def _annotate(session: Session, table: Table, run_id: str | None = None) -> None
     session.flush()
 
 
-def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: str) -> PhaseContext:
+def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
     # semantic_per_column is session-scoped now (DAT-421): it derives its tables
     # from the run's ``session_tables``, so the ctx must carry the session id the
-    # typed tables above are linked under (``baseline_session_id()``).
+    # typed tables above are linked under (``baseline_session_id()``). Source-FREE
+    # (DAT-422/426): the reduce runs past the add_source boundary, where the
+    # workflow threads source_id=None.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=source_id,
+        source_id=None,
         session_id=baseline_session_id(),
     )
 
@@ -96,8 +98,8 @@ class TestPerColumnShouldSkip:
     def test_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        src = _source(session)
-        assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
+        _source(session)  # a Source exists, but no typed tables
+        assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn)) == (
             "No typed tables found"
         )
 
@@ -106,9 +108,7 @@ class TestPerColumnShouldSkip:
     ) -> None:
         src = _source(session)
         _typed_table(session, src.source_id, "t1", ["a", "b"])
-        assert (
-            SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
-        )
+        assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn)) is None
 
     def test_re_runs_when_only_a_prior_runs_annotations_exist(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -125,9 +125,7 @@ class TestPerColumnShouldSkip:
         src = _source(session)
         t1 = _typed_table(session, src.source_id, "t1", ["a", "b"])
         _annotate(session, t1, run_id="run-A")
-        assert (
-            SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) is None
-        )
+        assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn)) is None
 
     def test_scopes_by_session_anchor_not_source(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -151,9 +149,7 @@ class TestPerColumnShouldSkip:
         session.add(orphan)
         session.flush()
 
-        scoped = set(
-            SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn, src_a.source_id))
-        )
+        scoped = set(SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn)))
         assert scoped == {a.table_id, b.table_id}  # across sources, session-anchored
         assert orphan.table_id not in scoped  # same source, but not session-linked
 
@@ -168,9 +164,7 @@ class TestPerColumnShouldSkip:
         t1 = _typed_table(session, src.source_id, "t1", ["a"])
         t2 = _typed_table(session, src.source_id, "t2", ["b"])
 
-        scoped = set(
-            SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn, src.source_id))
-        )
+        scoped = set(SemanticPerColumnPhase()._typed_table_ids(_ctx(session, duckdb_conn)))
         # The pre-DAT-421 key: every typed table under this source.
         old_key = {
             tid
@@ -189,13 +183,11 @@ class TestPerColumnAdhocFailLoud:
     the cockpit ``frame`` stage must write ``concept`` overlay rows first.
     """
 
-    def _adhoc_ctx(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, source_id: str
-    ) -> PhaseContext:
+    def _adhoc_ctx(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
         return PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
+            source_id=None,
             config={"vertical": "_adhoc"},
             session_id=baseline_session_id(),
         )
@@ -223,7 +215,7 @@ class TestPerColumnAdhocFailLoud:
         src = _source(session)
         _typed_table(session, src.source_id, "t1", ["a"])
 
-        result = SemanticPerColumnPhase()._run(self._adhoc_ctx(session, duckdb_conn, src.source_id))
+        result = SemanticPerColumnPhase()._run(self._adhoc_ctx(session, duckdb_conn))
 
         assert result.status == PhaseStatus.FAILED
         assert "No concepts found for vertical '_adhoc'" in (result.error or "")

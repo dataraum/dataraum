@@ -81,8 +81,9 @@ def _run_phase_capturing(
         lambda source, phase_name, ident: {},
     )
 
+    # Source-free identity (the production post-import shape, DAT-422/426):
+    # run_phase never resolves a Source row, so no session.get stub is needed.
     session = MagicMock()
-    session.get.return_value = MagicMock()  # the Source row exists
 
     @contextmanager
     def _session_scope():  # noqa: ANN202
@@ -106,7 +107,6 @@ def test_run_phase_threads_run_id_from_identity(monkeypatch: Any) -> None:
     """A stamped ``SourceIdentity.run_id`` lands on ``PhaseContext.run_id``."""
     identity = SourceIdentity(
         workspace_id="ws-1",
-        source_id="src-1",
         session_id="sess-1",
         run_id="run-xyz",
     )
@@ -118,7 +118,6 @@ def test_run_phase_run_id_defaults_none(monkeypatch: Any) -> None:
     """An identity with no ``run_id`` (cockpit initial-run shape) stays ``None``."""
     identity = SourceIdentity(
         workspace_id="ws-1",
-        source_id="src-1",
         session_id="sess-1",
     )
     ctx = _run_phase_capturing(monkeypatch, identity)

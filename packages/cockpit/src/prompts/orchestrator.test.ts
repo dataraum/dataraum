@@ -15,4 +15,15 @@ describe("orchestrator system prompt", () => {
 			expect(prompt).toContain(stage.id);
 		}
 	});
+
+	// Lockstep with the list_tables/look_table/run_sql projections (DAT-433):
+	// table_name is display-only prose, physical_name is the run_sql address, and
+	// the content-keyed src_<digest> shape is named as never-echo internal.
+	it("teaches the table_name/physical_name split and the src_<digest> rule", () => {
+		const prompt = getOrchestratorInstructions();
+		expect(prompt).toContain("physical_name");
+		expect(prompt).toContain("lake.<layer>.<physical_name>");
+		expect(prompt).toContain('"src_" followed by 40 hex characters');
+		expect(prompt).toContain("name the FILE");
+	});
 });

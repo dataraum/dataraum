@@ -96,7 +96,8 @@ export interface InventoryTableRow {
  * user-chosen name; any other source is a content-keyed upload whose name is
  * the internal `src_<digest>` — emit the uploaded file's name instead (the
  * basename of `connection_config.file_uris[0]`, matching the human-side
- * inventory display). A malformed config degrades to the neutral "upload",
+ * inventory display). A malformed config — or an empty-string URI, whose
+ * basename would be a blank label — degrades to the neutral "upload",
  * never the digest.
  */
 function sourceLabel(row: InventoryTableRow): string {
@@ -104,7 +105,11 @@ function sourceLabel(row: InventoryTableRow): string {
 	const cfg = row.sourceConnectionConfig;
 	if (cfg !== null && typeof cfg === "object") {
 		const uris = (cfg as Record<string, unknown>).file_uris;
-		if (Array.isArray(uris) && typeof uris[0] === "string") {
+		if (
+			Array.isArray(uris) &&
+			typeof uris[0] === "string" &&
+			uris[0].length > 0
+		) {
 			return fileName(uris[0]);
 		}
 	}

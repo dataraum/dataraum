@@ -354,6 +354,29 @@ describe("select (DAT-398) — database source", () => {
 		).rejects.toThrow(/requires a valid source_name/);
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
+
+	// Family-prefix reservation (DAT-433): the display rules in
+	// lib/display-names.ts are sound only because no source name can start with
+	// a derived-table family prefix — `select` is the only source writer, so the
+	// rejection here IS the reservation.
+	it("rejects a source_name starting with a reserved family prefix, before any write", async () => {
+		for (const name of ["src_mydata", "enriched_data", "slice_metrics"]) {
+			await expect(
+				select({ source_name: name, schema: DB_SCHEMA, backend: "mssql" }),
+			).rejects.toThrow(/reserved prefix/);
+		}
+		expect(valuesMock).not.toHaveBeenCalled();
+	});
+
+	it("allows names that merely share leading characters with a reserved prefix", async () => {
+		// Only the PREFIXED forms (`src_`/`enriched_`/`slice_`) collide with the
+		// families; the bare words and near-misses are legitimate names.
+		for (const name of ["srcdata", "enriched", "slicer", "warehouse"]) {
+			await expect(
+				select({ source_name: name, schema: DB_SCHEMA, backend: "mssql" }),
+			).resolves.toMatchObject({ name });
+		}
+	});
 });
 
 describe("select — upsert", () => {

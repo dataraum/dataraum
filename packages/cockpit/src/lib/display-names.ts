@@ -13,10 +13,24 @@
 // Physical table names derived from it embed `src_<digest>__` (raw/typed
 // layers), `enriched_src_<digest>__` (enriched views), or — underscore-collapsed
 // by the engine's slice sanitizer — `slice_src_<digest>_` (slice tables).
-const SRC_DIGEST = /src_[0-9a-f]{40}/;
-const SRC_DIGEST_PREFIX_G = /src_[0-9a-f]{40}__/g;
-const SRC_DIGEST_G = /src_[0-9a-f]{40}/g;
-const SLICE_FAMILY = /^slice_src_[0-9a-f]{40}_(.+)$/;
+// `(?![0-9a-f])` pins the digest to EXACTLY 40 hex chars — `src_` + 41 hex is
+// NOT a digest, and stripping its first 40 chars would mid-word mangle the
+// token, so it must not match. The `i` flag is free insurance (the engine
+// emits lowercase digests today).
+const SRC_DIGEST = /src_[0-9a-f]{40}(?![0-9a-f])/i;
+const SRC_DIGEST_PREFIX_G = /src_[0-9a-f]{40}(?![0-9a-f])__/gi;
+const SRC_DIGEST_G = /src_[0-9a-f]{40}(?![0-9a-f])/gi;
+const SLICE_FAMILY = /^slice_src_[0-9a-f]{40}(?![0-9a-f])_(.+)$/i;
+// A staged-upload object path (`uploads/<digest>/<file>`, upload/policy.ts
+// buildUploadKey) — the one place a BARE digest (no `src_` prefix) reaches
+// engine-built text, e.g. an import-failure message quoting the s3 URI.
+// Matched up to and including the digest segment's trailing `/` so a replace
+// leaves only the filename. Deliberately NOT a blanket bare-40-hex strip:
+// evidence values can legitimately carry hex (git SHAs in user data); the
+// uploads-path shape is the distinctive safe target.
+const UPLOAD_URI_PREFIX =
+	/(?:s3:\/\/[^\s"']+\/)?uploads\/[0-9a-f]{40}(?![0-9a-f])\//i;
+const UPLOAD_URI_PREFIX_G = new RegExp(UPLOAD_URI_PREFIX.source, "gi");
 
 /**
  * Drop the engine's `<source>__` physical-table prefix for display, e.g.
@@ -46,6 +60,17 @@ const SLICE_FAMILY = /^slice_src_[0-9a-f]{40}_(.+)$/;
  *   `slice_src_<digest>_<rest>` → `slice_<rest>`. A human-named source's
  *   boundary is unrecoverable after the collapse (`slice_finance_journal_…`) —
  *   left as-is, which is fine: a human-chosen name is not a leak.
+ *
+ * SOUNDNESS of the family rules rests on the name reservation in select
+ * (select/mappers.ts `RESERVED_SOURCE_NAME_PREFIXES`, enforced by the db-source
+ * branch of tools/select.ts): a user-chosen source name can never start with
+ * `src_`/`enriched_`/`slice_`, so a physical name carrying one of those
+ * prefixes can ONLY be the corresponding derived family — never a plain table
+ * of a source that happens to share the prefix. Without it, callers that pass
+ * no sourceName (the why_column / why_table / why_relationship /
+ * look_relationships projections) would family-map a db source named
+ * `enriched_data` differently from the sourceName-passing callers AND collide
+ * it with the real enriched view of a source named `data`.
  */
 export function displayTableName(
 	tableName: string,
@@ -53,8 +78,9 @@ export function displayTableName(
 ): string {
 	// Exact source-prefix strip first: an actual enriched/slice name never
 	// starts with `<sourceName>__` (it starts with its family prefix), so this
-	// only fires for a plain physical table — including one whose SOURCE is
-	// legitimately named `enriched_*` and must not be mistaken for the family.
+	// only fires for a plain physical table. Family-prefixed SOURCE names can't
+	// exist (reserved at select validation — see the doc above); this branch
+	// stays as defense-in-depth for any pre-reservation row.
 	if (sourceName) {
 		const prefix = `${sourceName}__`;
 		if (tableName.startsWith(prefix)) return tableName.slice(prefix.length);
@@ -74,15 +100,26 @@ export function displayTableName(
 /**
  * Backstop strip for engine-built FREE TEXT (failure messages, serialized
  * evidence) that can embed content-keyed names this module's structured
- * handling didn't see. `src_<digest>__` physical-name prefixes drop (leaving
- * the table stem); a remaining bare `src_<digest>` (the source name itself, or
- * a digest inside an underscore-collapsed slice name) reads as `upload` — a
- * neutral, digest-free stand-in. This is the LAST line of defense; explicit
- * name keys should be display-mapped before text ever gets here.
+ * handling didn't see. Three rules, most-specific first:
+ * - a staged-upload URI (`s3://<bucket>/uploads/<digest>/<file>` — the one
+ *   shape where the BARE digest appears with no `src_` prefix, e.g. an import
+ *   failure quoting the source URI) drops down to its trailing filename;
+ * - `src_<digest>__` physical-name prefixes drop (leaving the table stem);
+ * - a remaining bare `src_<digest>` (the source name itself, or a digest
+ *   inside an underscore-collapsed slice name) reads as `upload` — a neutral,
+ *   digest-free stand-in.
+ * The `upload` collapse is LOSSY: distinct digests all read `upload`, so a
+ * message naming two uploads loses which is which — the structured
+ * `failure.table_id` projected alongside is the disambiguator. This is the
+ * LAST line of defense; explicit name keys should be display-mapped before
+ * text ever gets here.
  */
 export function stripSrcDigests(text: string): string {
-	if (!SRC_DIGEST.test(text)) return text;
-	return text.replace(SRC_DIGEST_PREFIX_G, "").replace(SRC_DIGEST_G, "upload");
+	if (!SRC_DIGEST.test(text) && !UPLOAD_URI_PREFIX.test(text)) return text;
+	return text
+		.replace(UPLOAD_URI_PREFIX_G, "")
+		.replace(SRC_DIGEST_PREFIX_G, "")
+		.replace(SRC_DIGEST_G, "upload");
 }
 
 // Evidence keys that carry a PHYSICAL table name by engine convention:
@@ -90,6 +127,15 @@ export function stripSrcDigests(text: string): string {
 // (`entropy/detectors/structural/relations.py`), slice detectors
 // `slice_table_name` (`entropy/detectors/value/slice_variance.py`). These get
 // display-mapped rather than dropped — the name is meaningful, the digest isn't.
+//
+// KNOWN LIMITATION: evidence carries no sourceName context, so the mapping is
+// displayTableName's no-sourceName form — two same-stem tables from DIFFERENT
+// sources (two distinct "orders.csv" uploads → src_<d1>__orders /
+// src_<d2>__orders) collapse to the same display name ("orders") inside an
+// evidence detail. The top-level from_table_name/to_table_name on the tool
+// result remain the more reliable identifiers. Deliberately NOT "fixed" by
+// threading source context through every evidence node — the plumbing cost
+// outweighs the cross-source same-stem corner case.
 const EVIDENCE_TABLE_NAME_KEYS = new Set([
 	"from_table",
 	"to_table",

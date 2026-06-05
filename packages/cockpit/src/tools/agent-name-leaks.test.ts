@@ -264,4 +264,30 @@ describe("agent name-leak property (DAT-433)", () => {
 		expect(out.failure?.phase).toBe("typing");
 		expect(out.failure?.table_id).toBe("t2");
 	});
+
+	it("workflow_status: an import failure quoting the staged-upload s3 URI is digest-free", () => {
+		// Engine import failures realistically embed the source's s3 URI — where
+		// the digest appears BARE (`uploads/<digest>/`, no `src_` prefix), so the
+		// generic /src_<40hex>/ property regex is blind to it. Assert on the
+		// fixture's specific digest instead.
+		const progress: AddSourceProgress = {
+			phase: "import",
+			tables_total: 0,
+			tables_completed: 0,
+			tables: [],
+			failure: {
+				message: `Invalid Input Error: CSV header mismatch in 's3://dataraum-lake/uploads/${D2}/orders.csv'`,
+				phase: "import",
+				table_id: null,
+			},
+			status: "FAILED",
+			done: true,
+		};
+		const out = projectWorkflowStatus(progress);
+		expect(JSON.stringify(out)).not.toContain(D2);
+		// The strip keeps the trailing filename — the root cause stays readable.
+		expect(out.failure?.message).toBe(
+			"Invalid Input Error: CSV header mismatch in 'orders.csv'",
+		);
+	});
 });

@@ -80,6 +80,24 @@ describe("displayTableName", () => {
 			"report",
 		);
 	});
+
+	it("an enriched_* name with NO sourceName context is the family (prefix reservation)", () => {
+		// `enriched_` is a RESERVED source-name prefix (select/mappers.ts
+		// RESERVED_SOURCE_NAME_PREFIXES, enforced by tools/select.ts), so a
+		// physical name starting with it can ONLY be an actual enriched view —
+		// here the enriched view of source `data`'s `report` table. This is what
+		// makes the no-sourceName callers (why_*/look_relationships) sound.
+		expect(displayTableName("enriched_data__report")).toBe("enriched_report");
+	});
+
+	it("a slice_src_* name with NO sourceName context is the slice family (prefix reservation)", () => {
+		// `src_` is reserved too, so `slice_src_<digest>_…` can only be a slice
+		// table over a content-keyed upload — never a table of a source that
+		// happens to be named `slice_src_…`.
+		expect(displayTableName(`slice_src_${DIGEST}_orders_region_emea`)).toBe(
+			"slice_orders_region_emea",
+		);
+	});
 });
 
 describe("stripSrcDigests", () => {
@@ -103,6 +121,36 @@ describe("stripSrcDigests", () => {
 
 	it("returns digest-free text unchanged", () => {
 		const s = "import failed for journal_lines.csv";
+		expect(stripSrcDigests(s)).toBe(s);
+	});
+
+	// The staged-upload URI is the one shape where a BARE digest (no `src_`
+	// prefix) reaches engine-built text — e.g. an import failure quoting
+	// `s3://<bucket>/uploads/<digest>/<file>`.
+	it("strips a staged-upload s3 URI down to its filename (bare digest, no src_ prefix)", () => {
+		expect(
+			stripSrcDigests(
+				`Invalid Input Error in 's3://lake/uploads/${DIGEST}/orders.csv': bad header`,
+			),
+		).toBe("Invalid Input Error in 'orders.csv': bad header");
+	});
+
+	it("strips a bucketless uploads/<digest>/ path the same way", () => {
+		expect(stripSrcDigests(`uploads/${DIGEST}/orders.csv missing`)).toBe(
+			"orders.csv missing",
+		);
+	});
+
+	it("does NOT blanket-strip bare 40-hex (git SHAs in user data are legitimate)", () => {
+		const sha = "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3";
+		const s = `value column contains commit ${sha}`;
+		expect(stripSrcDigests(s)).toBe(s);
+	});
+
+	it("leaves src_ + 41 hex chars alone (not a digest — no mid-word mangle)", () => {
+		// One extra hex char means the token is NOT a content digest; stripping
+		// its first 40 chars would mangle it mid-word.
+		const s = `lookup failed for src_${DIGEST}0`;
 		expect(stripSrcDigests(s)).toBe(s);
 	});
 });

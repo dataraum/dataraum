@@ -52,7 +52,9 @@ import { enumeratePrefixUris } from "../select/enumerate";
 import {
 	connectTablesToRecipeTables,
 	contentKeyedSourceName,
+	RESERVED_SOURCE_NAME_PREFIXES,
 	recipeContentHash,
+	reservedSourceNamePrefix,
 	SOURCE_NAME_PATTERN,
 	sourceTypeForUri,
 } from "../select/mappers";
@@ -318,6 +320,20 @@ export async function select(
 				"letter, 2–49 chars of [a-z0-9_]).",
 		);
 	}
+	// Family-prefix reservation (DAT-433): the display rules in
+	// lib/display-names.ts are sound only if no source name starts with a
+	// derived-table family prefix. Reject here — `select` is the only writer of
+	// source rows, so this check IS the reservation.
+	const reserved = reservedSourceNamePrefix(name);
+	if (reserved !== null) {
+		throw new Error(
+			`Source name '${name}' starts with the reserved prefix '${reserved}' — ` +
+				`${RESERVED_SOURCE_NAME_PREFIXES.join("/")} name the derived-table ` +
+				"families (content-keyed uploads, enriched views, slice tables), and a " +
+				"source name using one would make table display names ambiguous. " +
+				"Pick a different source_name.",
+		);
+	}
 	if (!input.backend || !SUPPORTED_BACKENDS.includes(input.backend)) {
 		throw new Error(
 			`Database select requires a supported backend (got '${input.backend ?? ""}'; ` +
@@ -394,7 +410,9 @@ export const selectTool = toolDefinition({
 			.nullish()
 			.describe(
 				"Database source only: a unique source name (lowercase, starts with a " +
-					"letter, [a-z0-9_], 2–49 chars). Ignored for file sources (content-keyed).",
+					"letter, [a-z0-9_], 2–49 chars; must NOT start with the reserved " +
+					"prefixes src_/enriched_/slice_ — they name derived-table families). " +
+					"Ignored for file sources (content-keyed).",
 			),
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		file_uris: z

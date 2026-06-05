@@ -89,6 +89,14 @@ describe("buildInventory (DAT-349)", () => {
 		expect(JSON.stringify(rest)).not.toMatch(/src_[0-9a-f]{40}/);
 	});
 
+	it("degrades an empty-string upload URI to 'upload', not a blank label", () => {
+		const [out] = buildInventory(
+			[tableRow({ sourceConnectionConfig: { file_uris: [""] } })],
+			[],
+		);
+		expect(out.source_name).toBe("upload");
+	});
+
 	it("rolls a table's column bands up to a distribution + column count", () => {
 		const cols: ColumnBandRow[] = [
 			{ tableId: "t_orders", band: "ready" },

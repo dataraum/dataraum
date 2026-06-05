@@ -87,7 +87,12 @@ const LookTableResult = z.object({
 	// The raw DuckDB table name — what run_sql addresses as
 	// `lake.<layer>.<physical_name>`. NOT for prose (it embeds the content-keyed
 	// source prefix for uploads). Empty when the table id didn't resolve.
-	physical_name: z.string(),
+	physical_name: z
+		.string()
+		.describe(
+			"Raw DuckDB table name for run_sql (lake.<layer>.<physical_name>) — " +
+				"never use in prose.",
+		),
 	// False when no column carries a readiness row — the table hasn't been
 	// analyzed (no `detect` run yet), so the grid should say so rather than imply
 	// everything is clean.

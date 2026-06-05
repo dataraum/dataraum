@@ -16,6 +16,7 @@ import {
 	contentKeyedSourceName,
 	recipeContentHash,
 	recipeSqlForDisplayName,
+	reservedSourceNamePrefix,
 	sanitizeRecipeName,
 	sourceTypeForUri,
 } from "./mappers";
@@ -64,6 +65,22 @@ describe("contentKeyedSourceName", () => {
 		expect(() =>
 			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}`),
 		).toThrow(/must be a staged upload/);
+	});
+});
+
+describe("reservedSourceNamePrefix (DAT-433)", () => {
+	it("flags each derived-table family prefix", () => {
+		expect(reservedSourceNamePrefix("src_mydata")).toBe("src_");
+		expect(reservedSourceNamePrefix("enriched_data")).toBe("enriched_");
+		expect(reservedSourceNamePrefix("slice_metrics")).toBe("slice_");
+	});
+
+	it("passes bare words and near-misses (only the prefixed forms collide)", () => {
+		expect(reservedSourceNamePrefix("src")).toBeNull();
+		expect(reservedSourceNamePrefix("srcdata")).toBeNull();
+		expect(reservedSourceNamePrefix("enriched")).toBeNull();
+		expect(reservedSourceNamePrefix("slice")).toBeNull();
+		expect(reservedSourceNamePrefix("finance_data")).toBeNull();
 	});
 });
 

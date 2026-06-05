@@ -25,7 +25,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
-import { displayTableName } from "#/lib/display-names";
+import { displayTableName, stripSrcDigests } from "#/lib/display-names";
 import type { AddSourceProgress, TableStep } from "#/temporal/progress";
 import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -278,7 +278,10 @@ export function MeasureProgressWidget({
 /** The human-readable failure line: the engine's root-cause message, scoped to
  * the failed table (by name) or the failed source-level phase. Falls back to the
  * describe() status when the snapshot carried no failure detail (e.g. a run
- * TERMINATED out-of-band, which never stamps `failure`). */
+ * TERMINATED out-of-band, which never stamps `failure`). The engine-built
+ * message can embed content-keyed `src_<digest>` names or the staged-upload s3
+ * URI — `stripSrcDigests` neutralizes them, the same treatment the agent-facing
+ * workflow_status projection applies (DAT-433). */
 function failureMessage(data: AddSourceProgress): string {
 	const f = data.failure;
 	if (!f) {
@@ -290,7 +293,7 @@ function failureMessage(data: AddSourceProgress): string {
 		const name =
 			data.tables.find((t) => t.raw_table_id === f.table_id)?.name ??
 			`table ${f.table_id.slice(0, 8)}`;
-		return `Add source failed on ${displayTableName(name)}: ${f.message}`;
+		return `Add source failed on ${displayTableName(name)}: ${stripSrcDigests(f.message)}`;
 	}
-	return `Add source failed during ${phaseLabel(f.phase)}: ${f.message}`;
+	return `Add source failed during ${phaseLabel(f.phase)}: ${stripSrcDigests(f.message)}`;
 }

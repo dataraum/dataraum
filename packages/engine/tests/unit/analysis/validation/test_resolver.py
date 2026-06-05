@@ -167,10 +167,31 @@ def two_tables_with_relationship(session):
 
 
 def test_get_multi_table_schema_for_llm(session, two_tables_with_relationship):
-    """Test fetching multi-table schema with relationships."""
+    """Multi-table schema formats tables + the session's run-scoped relationships.
+
+    Fail-closed (DAT-429): relationships surface only for the session's promoted
+    run, so resolve the fixture relationship under one and pass the ``session_id``.
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+
     txn_table, acct_table = two_tables_with_relationship
 
-    schema = get_multi_table_schema_for_llm(session, [txn_table.table_id, acct_table.table_id])
+    session_id = "sess-fmt"
+    session.add(InvestigationSession(session_id=session_id, intent="test"))
+    session.flush()
+    rel = session.query(Relationship).one()
+    rel.session_id = session_id
+    rel.run_id = "run-1"
+    session.add(
+        MetadataSnapshotHead(target=session_head_target(session_id), stage="detect", run_id="run-1")
+    )
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(
+        session, [txn_table.table_id, acct_table.table_id], session_id=session_id
+    )
 
     assert "error" not in schema
     assert "tables" in schema
@@ -246,10 +267,15 @@ def test_get_multi_table_schema_for_llm_scopes_to_current_run(
     assert len(scoped["relationships"]) == 1
     assert scoped["relationships"][0]["confidence"] == 0.95
 
-    # Without session_id: the read is unscoped and both runs leak through (the bug
-    # this fix closes for the agent tier).
+    # Fail-closed (DAT-429): with no session_id the run is unresolved, so the read
+    # surfaces NOTHING — never the cross-run union that would leak other sessions'
+    # relationships into this schema.
     unscoped = get_multi_table_schema_for_llm(session, table_ids)
-    assert len(unscoped["relationships"]) == 2
+    assert unscoped["relationships"] == []
+
+    # A session_id whose head was never promoted is equally unresolved → still empty.
+    unpromoted = get_multi_table_schema_for_llm(session, table_ids, session_id="sess-no-head")
+    assert unpromoted["relationships"] == []
 
 
 def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns):

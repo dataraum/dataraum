@@ -117,13 +117,32 @@ def build_cycle_detection_context(
 
     context["tables"] = table_info
 
-    # 2. Entity classifications (fact vs dimension)
-    entities_stmt = (
-        select(TableEntity, Table.table_name)
-        .join(Table, TableEntity.table_id == Table.table_id)
-        .where(Table.table_id.in_(table_ids))
-    )
-    entities = session.execute(entities_stmt).all()
+    # Resolve the session's current (promoted) run ONCE via the per-session head
+    # (DAT-409). Both run-versioned reads below — entity classifications AND the
+    # defined relationships (DAT-408/413: they coexist across runs) — scope to the
+    # SAME run. **Fail-closed (DAT-429, session isolation):** with no resolved run
+    # (no session_id, or the session hasn't promoted one yet) we MUST NOT fall back
+    # to a cross-run read — that would mix OTHER sessions' entities/relationships
+    # into this context. Leave both empty instead. The remaining reads (slices,
+    # temporal, enriched views) are keyed by table_id and are unaffected.
+    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    if session_id and run_id is None:
+        logger.warning(
+            "session_run_unresolved",
+            session_id=session_id,
+            detail="no promoted run for this session; entity/relationship context is empty",
+        )
+
+    # 2. Entity classifications (fact vs dimension) — run-scoped (fail-closed above).
+    entities: list[Any] = []
+    if run_id is not None:
+        entities = list(
+            session.execute(
+                select(TableEntity, Table.table_name)
+                .join(Table, TableEntity.table_id == Table.table_id)
+                .where(Table.table_id.in_(table_ids), TableEntity.run_id == run_id)
+            ).all()
+        )
 
     context["entity_classifications"] = [
         {
@@ -137,12 +156,11 @@ def build_cycle_detection_context(
         for ent, table_name in entities
     ]
 
-    # 3. The defined relationships (not candidate) within the selection, scoped to
-    # the session's current (promoted) run via the per-session head (DAT-409). With
-    # no session_id (legacy/un-sealed callers) the head is unresolved and the read
-    # falls back to the cross-run catalog.
-    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
-    relationships = load_defined_relationships(session, table_ids, run_id=run_id)
+    # 3. The defined relationships (not candidate) within the selection — run-scoped,
+    # fail-closed above (empty when the session's run is unresolved).
+    relationships = (
+        load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
+    )
 
     rel_list = []
     for rel in relationships:

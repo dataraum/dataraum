@@ -56,6 +56,14 @@ nodes:
     dimension: coverage
     sub_dimension: dimension_coverage
 
+  # Value-layer cross-column patterns (DAT-403) — table-scoped dimensional_entropy
+  # (mutual exclusivity / conditional dependency / correlated variance across the
+  # slices). Columns that are not independent raise query + aggregation risk.
+  cross_column_patterns:
+    layer: semantic
+    dimension: dimensional
+    sub_dimension: cross_column_patterns
+
   # Zone 3 observable roots (2) — table-scoped detectors, broadcast to columns
   cross_table_consistency:
     layer: computational
@@ -118,6 +126,9 @@ edges:
   # slice_stability -> intents
   - [slice_stability, query_intent, 0.4]
   - [slice_stability, aggregation_intent, 0.5]
+  # cross_column_patterns -> intents (DAT-403; initial strengths, eval-calibrated)
+  - [cross_column_patterns, query_intent, 0.3]
+  - [cross_column_patterns, aggregation_intent, 0.4]
   # -> query_intent (7 parents)
   - [type_fidelity, query_intent, 0.7]
   - [join_path_determinism, query_intent, 0.8]

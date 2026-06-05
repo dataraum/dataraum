@@ -105,11 +105,23 @@ _PROMOTE_STAGES = (
 # ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
 # declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
-# DAT-415). Distinct from the source-scoped ``_DETECTOR_PHASES`` so add_source
-# never runs the relationship/coverage detectors and begin_session never runs the
-# column ones. Public (imported by ``activities.py`` + tests) — unlike
-# ``_DETECTOR_PHASES`` / ``_PROMOTE_STAGES``, used only within this module.
-SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table", "enriched_views")
+# DAT-415); the value layer (DAT-403) declares ``slice_variance`` (slice_analysis),
+# ``temporal_drift`` + ``dimensional_entropy`` (temporal_slice_analysis), and
+# ``derived_value`` (correlations) — column/table-grain value-readiness signals over
+# the slices + enriched views the begin_session spine just built. Distinct from the
+# source-scoped ``_DETECTOR_PHASES`` so add_source never runs these and begin_session
+# never runs the column-profiling ones. A declared detector whose inputs are absent
+# (no slice profiles / drift / derived columns) simply produces no objects — the
+# value detectors no-op cleanly on a relationship-only run. Public (imported by
+# ``activities.py`` + tests).
+SESSION_DETECTOR_PHASES = (
+    "relationships",
+    "semantic_per_table",
+    "enriched_views",
+    "slice_analysis",
+    "temporal_slice_analysis",
+    "correlations",
+)
 
 
 @dataclass

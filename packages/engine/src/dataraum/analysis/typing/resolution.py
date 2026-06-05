@@ -196,19 +196,32 @@ class ColumnTypeSpec:
     decision_source: str = "automatic"  # 'automatic', 'manual', 'override', 'fallback'
     decision_reason: str | None = None
     candidate_confidence: float | None = None  # Confidence from best TypeCandidate
+    decided_by: str | None = None  # Provenance carried from an honored manual decision
 
 
 def _select_best_candidates(
     columns: list[Column],
     min_confidence: float,
+    run_id: str | None,
     table_name: str = "",
 ) -> list[ColumnTypeSpec]:
-    """Select best type candidate per column.
+    """Select best type candidate per column for THIS run.
 
     Priority:
-    1. TypeDecision (human override) if exists
-    2. Highest confidence TypeCandidate >= threshold
-    3. Fallback to VARCHAR
+    1. Manual TypeDecision (human override) — pins the TYPE; the best
+       same-type candidate still supplies the standardization expr.
+    2. Highest confidence TypeCandidate >= threshold (this run's candidates).
+    3. Fallback to VARCHAR.
+
+    Only ``decision_source == "manual"`` rows are honored as overrides:
+    resolution persists its own ``automatic``/``fallback`` decisions every
+    run, and honoring those froze the first run's outcome forever — a prior
+    fallback-VARCHAR row blocked taught patterns from ever applying, and a
+    prior automatic DATE row re-applied WITHOUT its standardization expr,
+    plain-TRY_CASTing e.g. DD.MM.YYYY to an all-NULL column. Candidates are
+    likewise scoped to ``run_id`` (DAT-413: runs coexist): a prior run's
+    VARCHAR fallback at confidence 1.0 must not outcompete this run's real
+    candidates.
 
     Returns ColumnTypeSpec with decision metadata for persisting TypeDecision records.
     """
@@ -217,21 +230,41 @@ def _select_best_candidates(
     specs = []
 
     for col in sorted(columns, key=lambda c: c.column_position):
-        # Check for human override (pre-existing TypeDecision)
-        if col.type_decision:
+        candidates = sorted(
+            (c for c in col.type_candidates if c.run_id == run_id),
+            key=lambda c: c.confidence,
+            reverse=True,
+        )
+
+        # Human override: the latest manual decision pins the TYPE. Keep the
+        # best same-type candidate's pattern — honoring the type while
+        # dropping its standardization expr is the destruction path.
+        manual = max(
+            (td for td in col.type_decisions if td.decision_source == "manual"),
+            key=lambda td: td.decided_at,
+            default=None,
+        )
+        if manual is not None:
+            pattern = None
+            for cand in candidates:
+                if cand.data_type == manual.decided_type and cand.detected_pattern:
+                    pattern = _resolve_pattern(cand.detected_pattern, patterns_by_name)
+                    if pattern is not None:
+                        break
             specs.append(
                 ColumnTypeSpec(
                     column_id=col.column_id,
                     column_name=col.column_name,
-                    data_type=DataType[col.type_decision.decided_type],
-                    decision_source="manual",  # Already decided by human
-                    decision_reason=col.type_decision.decision_reason,
+                    data_type=DataType[manual.decided_type],
+                    pattern=pattern,
+                    decision_source="manual",
+                    decision_reason=manual.decision_reason,
+                    decided_by=manual.decided_by,
                 )
             )
             continue
 
         # Find best candidate
-        candidates = sorted(col.type_candidates, key=lambda c: c.confidence, reverse=True)
         if candidates and candidates[0].confidence >= min_confidence:
             best = candidates[0]
             pattern = (
@@ -354,7 +387,7 @@ def resolve_types(
         .where(Table.table_id == table_id)
         .options(
             selectinload(Table.columns).selectinload(Column.type_candidates),
-            selectinload(Table.columns).selectinload(Column.type_decision),
+            selectinload(Table.columns).selectinload(Column.type_decisions),
         )
     )
     result = session.execute(stmt)
@@ -382,30 +415,31 @@ def resolve_types(
     specs = _select_best_candidates(
         table.columns,
         min_confidence,
+        run_id,
         table_name=table.table_name,
     )
 
-    # Persist TypeDecision records for columns that don't already have one
-    # (columns with pre-existing TypeDecision are human overrides, don't overwrite).
-    # Use relationship assignment (column=raw_col) instead of FK assignment
-    # (column_id=...) so that back_populates fires and raw_col.type_decision
-    # is populated for the copy step below.
+    # Persist THIS run's TypeDecision for every column — upsert on
+    # ``(column_id, run_id)`` (idempotent under a Temporal at-least-once
+    # retry; prior runs' rows coexist untouched, DAT-413). Each run records
+    # what it actually executed, including ``manual`` when it honored a
+    # human override.
     raw_col_by_id = {col.column_id: col for col in table.columns}
-    columns_with_decision = {col.column_id for col in table.columns if col.type_decision}
-    for spec in specs:
-        if spec.column_id not in columns_with_decision:
-            raw_col = raw_col_by_id[spec.column_id]
-            type_decision = TypeDecision(
-                decision_id=str(uuid4()),
-                session_id=session_id,
-                column=raw_col,
-                run_id=run_id,
-                decided_type=spec.data_type.value,
-                decision_source=spec.decision_source,
-                decided_at=datetime.now(UTC),
-                decision_reason=spec.decision_reason,
-            )
-            session.add(type_decision)
+    decided_at = datetime.now(UTC)
+    raw_decision_rows: list[dict[str, Any]] = [
+        {
+            "session_id": session_id,
+            "column_id": spec.column_id,
+            "run_id": run_id,
+            "decided_type": spec.data_type.value,
+            "decision_source": spec.decision_source,
+            "decided_at": decided_at,
+            "decided_by": spec.decided_by,
+            "decision_reason": spec.decision_reason,
+        }
+        for spec in specs
+    ]
+    upsert(session, TypeDecision, raw_decision_rows, index_elements=["column_id", "run_id"])
 
     # Emit → store → execute (DAT-414): build the materialization DDL strings
     # first, persist them as versioned recipes stamped with ``run_id`` (so a
@@ -529,11 +563,13 @@ def resolve_types(
             )
         )
 
-        # Set quarantine metrics on raw TypeCandidate records
+        # Set quarantine metrics on THIS run's raw TypeCandidate records
+        # (prior runs' candidates coexist and keep their own metrics).
         raw_col = raw_col_by_id[spec.column_id]
         for tc in raw_col.type_candidates:
-            tc.quarantine_count = failures
-            tc.quarantine_rate = q_rate
+            if tc.run_id == run_id:
+                tc.quarantine_count = failures
+                tc.quarantine_rate = q_rate
 
     # Copy TypeDecision and TypeCandidate from raw columns to typed columns.
     # Raw columns keep originals (audit trail); typed columns get copies so
@@ -557,30 +593,34 @@ def resolve_types(
         )
         session.flush()
 
+    spec_by_column_id = {spec.column_id: spec for spec in specs}
     type_decision_rows: list[dict[str, Any]] = []
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:
             continue
 
-        if raw_col.type_decision:
-            td = raw_col.type_decision
+        # The typed copy mirrors THIS run's executed decision (the spec) —
+        # never a prior run's row off the multi-run relationship.
+        col_spec = spec_by_column_id.get(raw_col.column_id)
+        if col_spec is not None:
             # PK omitted so the model's Python-side default applies.
             type_decision_rows.append(
                 {
                     "session_id": session_id,
                     "column_id": target_col_id,
                     "run_id": run_id,
-                    "decided_type": td.decided_type,
-                    "decision_source": td.decision_source,
-                    "decided_at": td.decided_at,
-                    "decided_by": td.decided_by,
-                    "previous_type": td.previous_type,
-                    "decision_reason": td.decision_reason,
+                    "decided_type": col_spec.data_type.value,
+                    "decision_source": col_spec.decision_source,
+                    "decided_at": decided_at,
+                    "decided_by": col_spec.decided_by,
+                    "decision_reason": col_spec.decision_reason,
                 }
             )
 
         for tc in raw_col.type_candidates:
+            if tc.run_id != run_id:
+                continue  # copy only THIS run's candidates (DAT-413 coexistence)
             session.add(
                 TypeCandidate(
                     candidate_id=str(uuid4()),

@@ -133,7 +133,7 @@ class TypeDecision(Base):
     decision_reason: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    column: Mapped[Column] = relationship(back_populates="type_decision")
+    column: Mapped[Column] = relationship(back_populates="type_decisions")
 
 
 class MaterializationRecipe(Base):

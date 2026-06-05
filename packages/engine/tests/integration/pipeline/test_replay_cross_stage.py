@@ -89,11 +89,14 @@ def _resolve_once(
     staged_table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    run_id: str | None = None,
 ) -> str:
     """Infer + resolve types for a raw table, returning the typed table id."""
     raw_table = session.get(Table, staged_table_id)
     assert raw_table is not None
-    infer = infer_type_candidates(raw_table, duckdb_conn, session, session_id=baseline_session_id())
+    infer = infer_type_candidates(
+        raw_table, duckdb_conn, session, session_id=baseline_session_id(), run_id=run_id
+    )
     assert infer.success, infer.error
     session.flush()
     resolve = resolve_types(
@@ -102,6 +105,7 @@ def _resolve_once(
         session,
         min_confidence=0.85,
         session_id=baseline_session_id(),
+        run_id=run_id,
     )
     assert resolve.success, resolve.error
     return resolve.unwrap().typed_table_id
@@ -136,6 +140,67 @@ class TestStableTypedIdentity:
         # The typed Table id and every typed Column id are UNCHANGED.
         assert second_typed_id == first_typed_id
         assert second_cols == first_cols
+
+
+class TestRetypeDoesNotFreezeOrDestroyDateColumns:
+    """The replay-poison regression (German-dates user report, 2026-06-05).
+
+    Run A persists an ``automatic`` TypeDecision for every column. The old
+    selection honored that row as a human override on run B — re-applying the
+    DATE type WITHOUT its standardization expr, so DD.MM.YYYY values plain-
+    TRY_CAST to NULL: a 100%-NULL typed column whose rows all quarantine, which
+    eligibility then drops as all_null. Run B must instead re-decide from its
+    own candidates and keep parsing.
+    """
+
+    def test_second_run_still_parses_ddmmyyyy_dates(self, duckdb_conn, session, tmp_path) -> None:
+        from dataraum.analysis.typing.db_models import TypeDecision
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        # 5 parseable DD.MM.YYYY dates + 1 regex-matching but unparseable value
+        # (no leap day): parse success 5/6 ≈ 0.83 clears the 0.8 gate, the bad
+        # row quarantines instead of zeroing the pattern (TRY_STRPTIME).
+        csv_file = tmp_path / "bookings.csv"
+        csv_file.write_text(
+            "id,tag_datum\n"
+            "1,15.01.2024\n2,31.12.2023\n3,29.02.2023\n4,01.06.2026\n5,07.04.2025\n6,24.12.2024\n"
+        )
+        _source_id, staged_table_id = _seed_source(duckdb_conn, session, csv_file)
+
+        _resolve_once(staged_table_id, duckdb_conn, session, run_id="run-A")
+        typed_id = _resolve_once(staged_table_id, duckdb_conn, session, run_id="run-B")
+
+        # Run B's decision is its own automatic DATE — not run A's row replayed
+        # as a frozen "manual" override.
+        raw_date_col = session.execute(
+            select(Column).where(
+                Column.table_id == staged_table_id, Column.column_name == "tag_datum"
+            )
+        ).scalar_one()
+        run_b_decision = session.execute(
+            select(TypeDecision).where(
+                TypeDecision.column_id == raw_date_col.column_id,
+                TypeDecision.run_id == "run-B",
+            )
+        ).scalar_one()
+        assert run_b_decision.decided_type == "DATE"
+        assert run_b_decision.decision_source == "automatic"
+
+        # The typed column still resolves DATE and still PARSES: 5 real dates,
+        # only the unparseable row NULL. (The destruction path produced 0.)
+        typed_col = session.execute(
+            select(Column).where(Column.table_id == typed_id, Column.column_name == "tag_datum")
+        ).scalar_one()
+        assert typed_col.resolved_type == "DATE"
+
+        typed_table = session.get(Table, typed_id)
+        assert typed_table is not None
+        fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{typed_table.duckdb_path}"'
+        (parsed,) = duckdb_conn.execute(
+            f"SELECT COUNT(*) FROM {fqn} WHERE tag_datum IS NOT NULL"
+        ).fetchone()
+        assert parsed == 5
 
 
 class TestCrossStageSurvival:

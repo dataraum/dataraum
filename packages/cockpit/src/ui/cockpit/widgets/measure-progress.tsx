@@ -176,14 +176,11 @@ export function MeasureProgressWidget({
 
 	return (
 		<Stack gap="sm" data-testid="canvas-measure-progress">
-			<Group justify="space-between" wrap="nowrap">
-				<Text size="sm" fw={600}>
-					Add source — progress
-				</Text>
-				{!data.done && (
-					<Loader size="xs" data-testid="measure-progress-spinner" />
-				)}
-			</Group>
+			{/* No corner spinner: the per-phase pipeline + captions below already
+			    show liveness; a detached top-right Loader read as "stuck". */}
+			<Text size="sm" fw={600}>
+				Add source — progress
+			</Text>
 
 			{/* Phase pipeline — current step highlighted, prior steps done. */}
 			<Group gap="xs" wrap="wrap" data-testid="measure-progress-phases">

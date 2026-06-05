@@ -1,17 +1,15 @@
-// Engine metadata Drizzle config — pull-only against the active workspace's
-// Postgres schema in the engine substrate (DAT-339 pivot, slice 1).
+// Engine metadata Drizzle config — pull-only. The engine owns the SQLAlchemy
+// schema; the cockpit re-derives matching Drizzle types by introspection.
+// We do NOT push from here — the engine is the source of truth.
 //
-// The engine owns the SQLAlchemy schema; the cockpit re-derives matching
-// Drizzle types by introspection. We do NOT push from here — the engine is
-// the source of truth for these tables.
+// Usage — don't run drizzle-kit directly; the wrapper provisions everything
+// (offline DDL dump from the SQLAlchemy models → scratch Postgres → pull;
+// no running stack, no engine boot):
+//   bun run db:pull:metadata        (scripts/pull-metadata.sh)
 //
-// Usage:
-//   bunx drizzle-kit pull --config drizzle.config.metadata.ts
-//
-// Env:
-//   METADATA_DATABASE_URL — postgres URL pointing at the engine's metadata DB
-//                           (same instance as the engine; e.g. .../dataraum).
-//                           The connection URL is augmented with a
+// Env (set by the wrapper):
+//   METADATA_DATABASE_URL — postgres URL of the scratch DB holding the
+//                           materialized schema. The URL is augmented with a
 //                           ?options=-c%20search_path=<ws_schema> hint so
 //                           drizzle-kit introspects the workspace schema as
 //                           the default and generates plain pgTable() exports

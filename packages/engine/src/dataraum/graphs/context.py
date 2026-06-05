@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     import duckdb
 
     from dataraum.analysis.cycles.health import HealthReport
+    from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.graphs.field_mapping import FieldMappings
 
 logger = get_logger(__name__)
@@ -337,13 +338,33 @@ def build_execution_context(
             columns_by_table[col.table_id] = []
         columns_by_table[col.table_id].append(col)
 
-    # 3. Load statistical profiles
+    # Each table's current (promoted) add_source run names the run that wrote its
+    # column metadata — ``promote_run`` flips every ``(table:{id}, stage)`` head to
+    # that one run. The column-metadata reads below drop rows from STALE earlier
+    # runs (a replay/teach leaves >1 run per column, DAT-413); a table with no
+    # promoted run keeps what's there — there is no "current" to scope to. This is
+    # run-STALENESS scoping: column metadata is add_source-derived and shared across
+    # sessions, so it is NOT the cross-session isolation concern the
+    # entities/relationships read (below) fails closed on.
+    from dataraum.storage.snapshot_head import head_run_id
+
+    addsource_run_by_table = {
+        tid: head_run_id(session, f"table:{tid}", "detect") for tid in table_ids
+    }
+    run_by_column = {col.column_id: addsource_run_by_table.get(col.table_id) for col in columns}
+
+    def _is_current(row: Any) -> bool:
+        want = run_by_column.get(row.column_id)
+        return want is None or row.run_id == want
+
+    # 3. Load statistical profiles (current add_source run only)
     column_ids = [col.column_id for col in columns]
     stat_profiles: dict[str, StatisticalProfile] = {}
     if column_ids:
         stat_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
-        for profile in session.execute(stat_stmt).scalars().all():
-            stat_profiles[profile.column_id] = profile
+        for profile in session.execute(stat_stmt).scalars():
+            if _is_current(profile):
+                stat_profiles[profile.column_id] = profile
 
     # 4. Load statistical quality metrics
     stat_quality: dict[str, StatisticalQualityMetrics] = {}
@@ -351,15 +372,17 @@ def build_execution_context(
         qual_stmt = select(StatisticalQualityMetrics).where(
             StatisticalQualityMetrics.column_id.in_(column_ids)
         )
-        for metrics in session.execute(qual_stmt).scalars().all():
-            stat_quality[metrics.column_id] = metrics
+        for metrics in session.execute(qual_stmt).scalars():
+            if _is_current(metrics):
+                stat_quality[metrics.column_id] = metrics
 
     # 5. Load semantic annotations
     semantic: dict[str, SemanticAnnotation] = {}
     if column_ids:
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        for ann in session.execute(sem_stmt).scalars().all():
-            semantic[ann.column_id] = ann
+        for ann in session.execute(sem_stmt).scalars():
+            if _is_current(ann):
+                semantic[ann.column_id] = ann
 
     # 6. Load temporal profiles
     temporal: dict[str, TemporalColumnProfile] = {}
@@ -367,31 +390,57 @@ def build_execution_context(
         temp_stmt = select(TemporalColumnProfile).where(
             TemporalColumnProfile.column_id.in_(column_ids)
         )
-        for temp_prof in session.execute(temp_stmt).scalars().all():
-            temporal[temp_prof.column_id] = temp_prof
+        for temp_prof in session.execute(temp_stmt).scalars():
+            if _is_current(temp_prof):
+                temporal[temp_prof.column_id] = temp_prof
 
     # 7. Load type decisions
     type_decisions: dict[str, TypeDecision] = {}
     if column_ids:
         type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
-        for decision in session.execute(type_stmt).scalars().all():
-            type_decisions[decision.column_id] = decision
+        for decision in session.execute(type_stmt).scalars():
+            if _is_current(decision):
+                type_decisions[decision.column_id] = decision
 
-    # 8. Load table entities (fact/dimension classification)
-    table_entities: dict[str, TableEntity] = {}
-    entity_stmt = select(TableEntity).where(TableEntity.table_id.in_(table_ids))
-    for entity in session.execute(entity_stmt).scalars().all():
-        table_entities[entity.table_id] = entity
-
-    # 9. The defined relationships (not candidate) within the selection, scoped to
-    # the session's current (promoted) run via the per-session head (DAT-409). With
-    # no session_id the head is unresolved and the read falls back to the cross-run
-    # catalog.
-    from dataraum.analysis.relationships.utils import load_defined_relationships
-    from dataraum.storage.snapshot_head import head_run_id, session_head_target
+    # Resolve the session's current (promoted) run ONCE via the per-session head
+    # (DAT-409). TableEntity AND the relationship catalog are both run-versioned
+    # and coexist across runs (DAT-408/413), so both reads below must scope to the
+    # SAME run — else the assembled context silently mixes runs. With no session_id
+    # the head is unresolved and reads fall back to the cross-run set.
+    from dataraum.storage.snapshot_head import session_head_target
 
     run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
-    relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
+
+    # Observability (DAT-429): a session was named but its run doesn't resolve —
+    # the context comes back run-versioned-empty by design (fail-closed below), so
+    # surface WHY rather than leave a silent hollow context to debug. A bare
+    # session_id=None (deliberate session-less use) is expected and not flagged.
+    if session_id and run_id is None:
+        logger.warning(
+            "session_run_unresolved",
+            session_id=session_id,
+            detail="no promoted run for this session; entity/relationship context is empty",
+        )
+
+    # 8 + 9. The run-versioned context — table entities (fact/dimension) and the
+    # defined relationships — is read ONLY when the session's promoted run resolves.
+    # **Fail-closed (DAT-429, session isolation):** with no resolved run (no
+    # session_id, or the session hasn't promoted one yet) we MUST NOT fall back to a
+    # cross-run read — that would surface OTHER sessions' entities/relationships into
+    # this context. Leave both empty instead. (The non-run-versioned field metadata
+    # above is keyed by the passed table/column ids and is unaffected.)
+    from dataraum.analysis.relationships.utils import load_defined_relationships
+
+    table_entities: dict[str, TableEntity] = {}
+    relationships_db: list[Relationship] = []
+    if run_id is not None:
+        for entity in session.execute(
+            select(TableEntity).where(
+                TableEntity.table_id.in_(table_ids), TableEntity.run_id == run_id
+            )
+        ).scalars():
+            table_entities[entity.table_id] = entity
+        relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
 
     # Build relationship contexts
     relationships: list[RelationshipContext] = []

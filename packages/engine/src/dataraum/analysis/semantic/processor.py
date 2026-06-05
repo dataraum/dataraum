@@ -318,9 +318,10 @@ def synthesize_and_store_tables(
     # Idempotent + non-destructive (DAT-408): TableEntity is versioned by ``run_id``
     # (a session has MANY runs). Clear only THIS run's prior entities before
     # re-inserting — a Temporal at-least-once retry (same run_id) is idempotent,
-    # and EARLIER runs in the session survive (no unique key to upsert on, so a
-    # run-scoped delete-before-insert is the equivalent of the run_id upsert the
-    # other versioned metadata uses).
+    # and EARLIER runs in the session survive. Delete-before-insert (not upsert)
+    # because it must also drop tables no longer classified as entities this run;
+    # the ``uq_table_entity_table_run`` constraint then guarantees at most one row
+    # per ``(table_id, run_id)`` so run-scoped readers can trust the grain.
     session.execute(
         delete(EntityModel).where(
             EntityModel.session_id == session_id, EntityModel.run_id == run_id

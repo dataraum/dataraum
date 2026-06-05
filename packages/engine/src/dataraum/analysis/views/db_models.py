@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,9 +35,16 @@ class EnrichedView(Base):
     (``layer="enriched"``) — the view's ``CREATE VIEW`` DDL is stored there
     (sqlglot-gated, the single rebuild source), never here. ``view_sql`` was
     removed (it was write-only).
+
+    The latest-only "one row per ``fact_table_id``" invariant the reconcile and
+    every reader (e.g. ``dimension_coverage`` via ``scalar_one_or_none``) rely on
+    is **DB-enforced** by ``uq_enriched_view_fact_table`` — not just an app-level
+    convention. A second row for the same fact fails loudly at insert instead of
+    silently surfacing as ``MultipleResultsFound`` in a reader.
     """
 
     __tablename__ = "enriched_views"
+    __table_args__ = (UniqueConstraint("fact_table_id", name="uq_enriched_view_fact_table"),)
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(

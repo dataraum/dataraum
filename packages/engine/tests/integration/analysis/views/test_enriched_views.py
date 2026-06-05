@@ -173,27 +173,29 @@ class TestEnrichedViewsPhaseDuckLake:
 
     Proves the source-free phase composes the right FQNs, materializes a real
     ``lake.typed`` view, versions its ``CREATE VIEW`` DDL on the recipe
-    substrate, and writes a run-versioned ``EnrichedView`` — idempotent on a
-    same-run retry, coexisting across runs. The enrichment LLM is stubbed (a
-    real call would be e2e); everything below the recommendation is exercised.
+    substrate, and writes a latest-only ``EnrichedView`` (one row per fact,
+    DB-enforced) driven by THIS run's run-scoped ``TableEntity`` — idempotent on
+    a same-run retry. The enrichment LLM is stubbed (a real call would be e2e);
+    everything below the recommendation is exercised.
     """
 
     @staticmethod
     def _seed(session, duckdb_conn):
         """Materialize a typed fact + dimension in lake.typed + their metadata.
 
-        Returns ``(fact_table_id, dim_table_id, canned_recommendations)``.
+        Does NOT write the ``TableEntity`` — that is run-versioned, so each run
+        seeds its own via ``_seed_fact_entity`` (mirroring how ``semantic_per_table``
+        re-detects entities per run). Returns
+        ``(fact_table_id, dim_table_id, canned_recommendations)``.
         """
         from uuid import uuid4
 
-        from dataraum.analysis.semantic.db_models import TableEntity
         from dataraum.analysis.views.builder import DimensionJoin
         from dataraum.analysis.views.enrichment_models import (
             EnrichmentAnalysisResult,
             EnrichmentRecommendation,
         )
         from dataraum.storage import Column, Source, Table
-        from tests.conftest import baseline_session_id
 
         # Physical typed tables in the lake (the phase joins these into a view).
         duckdb_conn.execute(
@@ -246,15 +248,6 @@ class TestEnrichedViewsPhaseDuckLake:
                     )
                 )
 
-        session.add(
-            TableEntity(
-                entity_id=str(uuid4()),
-                session_id=baseline_session_id(),
-                table_id=fact.table_id,
-                detected_entity_type="fact",
-                is_fact_table=True,
-            )
-        )
         session.flush()
 
         canned = EnrichmentAnalysisResult(
@@ -283,6 +276,39 @@ class TestEnrichedViewsPhaseDuckLake:
         )
         return fact.table_id, dim.table_id, canned
 
+    @staticmethod
+    def _seed_fact_entity(session, *, table_id: str, run_id: str) -> None:
+        """Write a run-scoped fact ``TableEntity`` for ``run_id``.
+
+        Mirrors ``semantic_per_table``'s run-scoped delete-then-insert
+        (``processor.synthesize_and_store_tables``) so a same-run retry is
+        idempotent and prior runs' entities coexist — the conditions under which
+        the unscoped fact query used to over-iterate.
+        """
+        from uuid import uuid4
+
+        from sqlalchemy import delete
+
+        from dataraum.analysis.semantic.db_models import TableEntity
+        from tests.conftest import baseline_session_id
+
+        session.execute(
+            delete(TableEntity).where(
+                TableEntity.table_id == table_id, TableEntity.run_id == run_id
+            )
+        )
+        session.add(
+            TableEntity(
+                entity_id=str(uuid4()),
+                session_id=baseline_session_id(),
+                table_id=table_id,
+                run_id=run_id,
+                detected_entity_type="fact",
+                is_fact_table=True,
+            )
+        )
+        session.flush()
+
     def test_phase_materializes_versioned_view(self, session, duckdb_conn, monkeypatch):
         from sqlalchemy import select
 
@@ -299,6 +325,9 @@ class TestEnrichedViewsPhaseDuckLake:
         )
 
         def run(run_id: str) -> None:
+            # Each run re-detects its entities (run-scoped), as semantic_per_table
+            # does in begin_session — prior runs' rows coexist.
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=duckdb_conn,
@@ -420,6 +449,55 @@ class TestEnrichedViewsPhaseDuckLake:
             == 1
         )
 
+    def test_run_scoped_fact_query_ignores_prior_runs(self, session, duckdb_conn, monkeypatch):
+        """Coexisting prior-run fact entities must not multiply EnrichedViews.
+
+        Regression for the ``dimension_coverage`` ``MultipleResultsFound`` bug:
+        after N begin_session runs there are N coexisting ``TableEntity`` rows for
+        the same fact (DAT-408/413, run-versioned). The phase must enrich only
+        THIS run's entity — one fact processed, one ``EnrichedView`` — so the
+        ``scalar_one_or_none`` reader in ``dimension_coverage`` resolves cleanly.
+
+        The ``records_processed`` assertion is what fails without the run-scoping
+        fix even under the test session's ``autoflush=True`` (which would otherwise
+        mask the duplicate-row symptom that bites production's ``autoflush=False``).
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from tests.conftest import baseline_session_id
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+
+        # Two coexisting run-scoped fact entities — as if begin_session ran twice.
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-1")
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-2")
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, dim_id],
+            session_id=baseline_session_id(),
+            run_id="run-2",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.COMPLETED, result.error
+
+        # Only THIS run's fact was processed (an unscoped read would see 2).
+        assert result.records_processed == 1
+        assert result.outputs["fact_tables"] == 1
+
+        # The dimension_coverage reader contract resolves to exactly one row.
+        view = session.execute(
+            select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+        ).scalar_one_or_none()
+        assert view is not None
+        assert view.run_id == "run-2"
+
     def test_rebuild_rematerializes_current_and_drops_strays(self, session, duckdb_conn):
         """rebuild_enriched_views re-execs the latest recipe per fact + drops strays.
 
@@ -495,3 +573,117 @@ class TestEnrichedViewsPhaseDuckLake:
         remaining = {row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()}
         assert "enriched_csv__orders" in remaining
         assert "enriched_legacy" not in remaining, "the session's stray view is dropped"
+
+
+class TestVersionedGrainConstraints:
+    """The latest-only / run-grain invariants are DB-enforced, not app-level only.
+
+    These pin the structural backstops added alongside the run-scoped reads: a
+    duplicate fails loudly at insert instead of silently surfacing later as a
+    ``MultipleResultsFound`` crash in a reader.
+    """
+
+    @staticmethod
+    def _fact(session):
+        from uuid import uuid4
+
+        from dataraum.storage import Source, Table
+
+        source = Source(source_id=str(uuid4()), name="csv", source_type="csv")
+        session.add(source)
+        session.flush()
+        fact = Table(
+            table_id=str(uuid4()),
+            source_id=source.source_id,
+            table_name="orders",
+            layer="typed",
+            duckdb_path="csv__orders",
+        )
+        session.add(fact)
+        session.flush()
+        return fact.table_id
+
+    def test_enriched_view_unique_per_fact(self, session):
+        """A second EnrichedView for the same fact_table_id is rejected."""
+        from uuid import uuid4
+
+        from sqlalchemy.exc import IntegrityError
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from tests.conftest import baseline_session_id
+
+        fact_id = self._fact(session)
+        session.add(
+            EnrichedView(
+                view_id=str(uuid4()),
+                session_id=baseline_session_id(),
+                fact_table_id=fact_id,
+                view_name="enriched_csv__orders",
+            )
+        )
+        session.flush()
+        session.add(
+            EnrichedView(
+                view_id=str(uuid4()),
+                session_id=baseline_session_id(),
+                fact_table_id=fact_id,
+                view_name="enriched_csv__orders_dup",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+    def test_table_entity_unique_per_table_run(self, session):
+        """A second TableEntity for the same (table_id, run_id) is rejected."""
+        from uuid import uuid4
+
+        from sqlalchemy.exc import IntegrityError
+
+        from dataraum.analysis.semantic.db_models import TableEntity
+        from tests.conftest import baseline_session_id
+
+        fact_id = self._fact(session)
+        for _ in range(2):
+            session.add(
+                TableEntity(
+                    entity_id=str(uuid4()),
+                    session_id=baseline_session_id(),
+                    table_id=fact_id,
+                    run_id="run-1",
+                    detected_entity_type="fact",
+                    is_fact_table=True,
+                )
+            )
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+    def test_table_entity_null_run_id_coexists(self, session):
+        """Run-versioned coexistence is intact: different run_ids (incl. NULL) are allowed."""
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        from dataraum.analysis.semantic.db_models import TableEntity
+        from tests.conftest import baseline_session_id
+
+        fact_id = self._fact(session)
+        for run_id in ("run-1", "run-2", None, None):
+            session.add(
+                TableEntity(
+                    entity_id=str(uuid4()),
+                    session_id=baseline_session_id(),
+                    table_id=fact_id,
+                    run_id=run_id,
+                    detected_entity_type="fact",
+                    is_fact_table=True,
+                )
+            )
+        session.flush()
+        rows = (
+            session.execute(select(TableEntity).where(TableEntity.table_id == fact_id))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 4, "distinct run_ids and NULLs coexist (NULLs are distinct)"

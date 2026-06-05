@@ -1,17 +1,26 @@
 // Tool-call chip state (DAT-436) — the terminal-state mapping the chat rail's
 // chips render from. Pure, no React.
 //
+// SDK-VERSION CONTRACT: the shapes below are UNDOCUMENTED internals of
+// @tanstack/ai, pinned at 0.26.1 (package.json pins it exactly) and pinned
+// empirically by tool-chip-state.contract.test.ts, which drives the real
+// chat() → SSE → ChatClient pipeline. On ANY @tanstack/ai bump: re-run the
+// contract test and RE-VERIFY this mapping against the new version before
+// trusting the chips.
+//
 // WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
 // state (verified against @tanstack/ai 0.26.1 by driving the real server chat()
 // loop + client StreamProcessor end-to-end):
 //
 //   - An ERRORED tool execution comes back as `state: "input-complete"` with
-//     `output: { error }` and a sibling `tool-result` part `state: "error"`
-//     (processor.js handleToolCallEndEvent/handleToolCallResultEvent map
-//     `output-error` → "input-complete"; message-updaters.js
-//     updateToolCallWithOutput defaults errored calls to "input-complete").
-//     `state === "complete"` therefore NEVER matches — the old done-condition
-//     spun the Loader forever (the live stuck workflow_status chips).
+//     the error riding in `output` and a sibling `tool-result` part
+//     `state: "error"` (processor.js handleToolCallEndEvent/
+//     handleToolCallResultEvent map `output-error` → "input-complete";
+//     message-updaters.js updateToolCallWithOutput defaults errored calls to
+//     "input-complete"). `state === "complete"` therefore NEVER matches — the
+//     old done-condition spun the Loader forever (the live stuck
+//     workflow_status chips). The output carries one of TWO error shapes —
+//     see `outputError`.
 //   - The client resolves the turn at the FIRST per-iteration RUN_FINISHED (the
 //     Anthropic adapter emits one per model call) and back-fills later results
 //     via a background drain. Anything that severs that drain — stop(), a new
@@ -47,9 +56,36 @@ export type ToolChipStatus =
 	| { kind: "denied" }
 	| { kind: "error"; message: string };
 
-/** The `{ error: string }` shape the SDK writes onto an errored call's output
- * (updateToolCallWithOutput: `output = { error: errorText }`). */
+/** The error-string prefix of the SDK's PLAIN-STRING errored-output shape
+ * (tool-calls.js ToolCallManager.executeTools:
+ * `toolResultContent = \`Error executing tool: ${message}\``). */
+const SERVER_TOOL_ERROR_PREFIX = "Error executing tool:";
+
+/**
+ * The error carried in an errored call's `output`, in EITHER of the SDK's two
+ * shapes — or null when the output isn't error-shaped:
+ *
+ *   - `{ error: string }` — what 0.26.1's live execution path produces for
+ *     server tools (executeServerTool pushes `result: { error: message }`;
+ *     the wire JSON round-trips it back to an object on the client). Also the
+ *     client-tool shape (updateToolCallWithOutput: `output = {error}`).
+ *   - `"Error executing tool: <msg>"` — the SDK's PLAIN-STRING shape
+ *     (ToolCallManager.executeTools, tool-calls.js): the client's JSON.parse
+ *     of that string fails, so `output` stays the raw string. Dead in
+ *     0.26.1's chat() loop but still in the SDK source — recognized so a
+ *     bump that rewires it (or a stream that delivered it) renders "failed",
+ *     not an eternal spinner or a fake success.
+ *
+ * The empirical contract test (tool-chip-state.contract.test.ts) pins which
+ * shape the pinned SDK actually produces.
+ */
 function outputError(output: unknown): string | null {
+	if (
+		typeof output === "string" &&
+		output.startsWith(SERVER_TOOL_ERROR_PREFIX)
+	) {
+		return output;
+	}
 	if (
 		output !== null &&
 		typeof output === "object" &&
@@ -86,7 +122,7 @@ export function toolChipStatus(
 	// error STATE to test. Check before "complete" so an error-shaped output is
 	// never read as success.
 	const err = opts.resultError ?? outputError(part.output);
-	if (err !== null && err !== undefined) {
+	if (err !== null) {
 		return { kind: "error", message: err };
 	}
 

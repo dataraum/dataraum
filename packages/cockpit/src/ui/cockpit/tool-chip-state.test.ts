@@ -65,6 +65,32 @@ describe("toolChipStatus (DAT-436)", () => {
 		});
 	});
 
+	it("recognizes the SDK's PLAIN-STRING errored-output shape too", () => {
+		// tool-calls.js's ToolCallManager.executeTools path emits the raw string
+		// `Error executing tool: <msg>` — the client's JSON.parse of it fails, so
+		// the part's output stays that string (no {error} wrapper). Dead in
+		// 0.26.1's chat() loop but still in the SDK source; a chip seeing it must
+		// read "failed", never success or an eternal spinner.
+		const status = toolChipStatus(
+			part({
+				state: "input-complete",
+				output: "Error executing tool: Temporal query failed",
+			}),
+		);
+		expect(status).toEqual({
+			kind: "error",
+			message: "Error executing tool: Temporal query failed",
+		});
+	});
+
+	it("does NOT read an ordinary string output as an error", () => {
+		// Only the `Error executing tool:` prefix marks a string output as the
+		// SDK's error shape — a tool that legitimately returns prose completes.
+		expect(
+			toolChipStatus(part({ state: "input-complete", output: "all good" })),
+		).toEqual({ kind: "complete" });
+	});
+
 	it("prefers the correlated tool-result error when provided", () => {
 		const status = toolChipStatus(part({ state: "input-complete" }), {
 			resultError: "boom",
@@ -98,7 +124,13 @@ describe("toolChipStatus (DAT-436)", () => {
 			"input-complete",
 		]) {
 			expect(
-				toolChipStatus(part({ state }), { conversationMovedOn: false }),
+				toolChipStatus(part({ state }), {
+					// Explicit: no correlated tool-result error exists for an in-flight
+					// call — the spinner is the no-error, no-output, current-turn cell
+					// of the matrix.
+					resultError: undefined,
+					conversationMovedOn: false,
+				}),
 			).toEqual({ kind: "running" });
 		}
 	});

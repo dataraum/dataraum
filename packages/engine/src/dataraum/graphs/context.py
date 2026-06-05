@@ -377,20 +377,29 @@ def build_execution_context(
         for decision in session.execute(type_stmt).scalars().all():
             type_decisions[decision.column_id] = decision
 
-    # 8. Load table entities (fact/dimension classification)
+    # Resolve the session's current (promoted) run ONCE via the per-session head
+    # (DAT-409). TableEntity AND the relationship catalog are both run-versioned
+    # and coexist across runs (DAT-408/413), so both reads below must scope to the
+    # SAME run — else the assembled context silently mixes runs. With no session_id
+    # the head is unresolved and reads fall back to the cross-run set.
+    from dataraum.storage.snapshot_head import head_run_id, session_head_target
+
+    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+
+    # 8. Load table entities (fact/dimension classification), run-scoped. Without
+    # the filter, N coexisting runs' rows for one table would last-write an
+    # arbitrary run's classification into this dict (keyed by table_id).
     table_entities: dict[str, TableEntity] = {}
     entity_stmt = select(TableEntity).where(TableEntity.table_id.in_(table_ids))
+    if run_id is not None:
+        entity_stmt = entity_stmt.where(TableEntity.run_id == run_id)
     for entity in session.execute(entity_stmt).scalars().all():
         table_entities[entity.table_id] = entity
 
     # 9. The defined relationships (not candidate) within the selection, scoped to
-    # the session's current (promoted) run via the per-session head (DAT-409). With
-    # no session_id the head is unresolved and the read falls back to the cross-run
-    # catalog.
+    # the same promoted run.
     from dataraum.analysis.relationships.utils import load_defined_relationships
-    from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
-    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
     relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
 
     # Build relationship contexts

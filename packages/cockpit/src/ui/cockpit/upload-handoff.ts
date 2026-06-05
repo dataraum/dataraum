@@ -3,25 +3,15 @@
 // When the user drops files, the staged objects must reach the agent so it can
 // connect/select them — but the raw `s3://…/uploads/<hash>/…` URIs must NEVER
 // appear in a chat bubble (they leaked there before, baked into an English
-// sentence the model also had to re-parse). The fix: the upload turn carries TWO
-// text parts —
-//   1. a CLEAN bubble (filenames only) the chat rail renders, and
-//   2. a marked REFS block (the ordered objects + their uris) the model reads but
-//      the rail skips (`isUploadRefsPart`).
-// Self-contained on the message — no side-channel state to thread or clear. The
-// ordered batch flows STRUCTURALLY; the agent never extracts paths from prose.
+// sentence the model also had to re-parse). The fix is the shared refs pattern
+// (lib/agent-refs, generalized from here in DAT-437): the upload turn carries a
+// CLEAN bubble (filenames only) plus a marked, model-only refs part the rail
+// skips (`isAgentRefsPart`). Self-contained on the message — no side-channel
+// state to thread or clear. The ordered batch flows STRUCTURALLY; the agent
+// never extracts paths from prose.
 
+import { type RefsTurn, turnWithRefs } from "#/lib/agent-refs";
 import { fileName } from "#/lib/file-uri";
-
-// Sentinel prefix marking the model-only refs part. The chat rail skips any user
-// text part that starts with it; nothing a human types begins this way.
-export const UPLOAD_REFS_MARKER = "[[dataraum:uploaded-objects]]";
-
-/** True when a user text part is the structured upload-refs block — the rail
- * must NOT render it (it carries the `s3://` uris, model-only). */
-export function isUploadRefsPart(content: string): boolean {
-	return content.startsWith(UPLOAD_REFS_MARKER);
-}
 
 /** The clean, human-facing bubble for an upload turn: filenames only, no paths. */
 export function uploadBubbleText(uris: string[]): string {
@@ -31,22 +21,19 @@ export function uploadBubbleText(uris: string[]): string {
 }
 
 /**
- * The model-only refs block: the ordered objects + their `s3://` uris, so the
- * agent can connect/select them without any path reaching the bubble.
+ * The complete upload turn: the clean bubble + the model-only refs part carrying
+ * the ordered objects and their `s3://` uris, so the agent can connect/select
+ * them without any path reaching the bubble.
  *
- * The chat rail skips this part via `isUploadRefsPart` BEFORE rendering — any new
- * surface that renders user message parts (transcript export, copy-to-clipboard,
- * a debug panel) MUST apply the same skip, or the uri leaks.
- *
- * It carries the OBJECTS only. The standing "connect by uri → vertical → select,
- * narrate by filename, never echo the uri" instruction lives once in the
- * orchestrator prompt (`prompts/orchestrator.ts`, the `upload` tool entry) — not
- * duplicated here, so the two can't drift.
+ * The refs part carries the OBJECTS only. The standing "connect by uri →
+ * vertical → select, narrate by filename, never echo the uri" instruction lives
+ * once in the orchestrator prompt (`prompts/orchestrator.ts`, the `upload` tool
+ * entry) — not duplicated here, so the two can't drift.
  */
-export function uploadRefsBlock(uris: string[]): string {
+export function uploadTurn(uris: string[]): RefsTurn {
 	const lines = uris.map((u, i) => `${i + 1}. ${fileName(u)} — ${u}`);
-	return (
-		`${UPLOAD_REFS_MARKER} The user just uploaded these objects, in order ` +
-		`(filename — uri):\n${lines.join("\n")}`
+	return turnWithRefs(
+		uploadBubbleText(uris),
+		`The user just uploaded these objects, in order (filename — uri):\n${lines.join("\n")}`,
 	);
 }

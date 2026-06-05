@@ -81,11 +81,35 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		expect(toolChipSummary("list_sources", {}, [])).toBe("no available inputs");
 	});
 
-	it("list_tables counts tables and notes the source filter", () => {
-		expect(toolChipSummary("list_tables", {}, [{}, {}])).toBe("2 tables");
-		expect(toolChipSummary("list_tables", { source_id: "s9" }, [{}])).toBe(
-			"1 table in s9",
-		);
+	// DAT-437: the engine emits one row per physical layer (raw/typed/quarantine),
+	// so the chip must count LOGICAL tables — 8 logical tables must never read as
+	// "24 tables".
+	it("list_tables counts LOGICAL tables (physical layers collapse) and notes the source filter", () => {
+		const layers = (source_id: string, table_name: string) =>
+			["raw", "typed", "quarantine"].map((layer) => ({
+				source_id,
+				table_name,
+				layer,
+			}));
+		// 8 logical tables × 3 physical layers = 24 rows → the chip says 8.
+		const inventory = Array.from({ length: 8 }, (_, i) =>
+			layers("s1", `tbl_${i}`),
+		).flat();
+		expect(toolChipSummary("list_tables", {}, inventory)).toBe("8 tables");
+		// Same-named tables from DIFFERENT sources stay distinct logical tables.
+		expect(
+			toolChipSummary("list_tables", {}, [
+				...layers("s1", "orders"),
+				...layers("s2", "orders"),
+			]),
+		).toBe("2 tables");
+		expect(
+			toolChipSummary(
+				"list_tables",
+				{ source_id: "s9" },
+				layers("s9", "orders"),
+			),
+		).toBe("1 table in s9");
 	});
 
 	it("look_table names the table + column count + analyzed state", () => {

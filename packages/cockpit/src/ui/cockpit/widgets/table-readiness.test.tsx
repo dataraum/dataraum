@@ -15,6 +15,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { LookTableResult } from "#/tools/look-table";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { theme } from "#/ui/theme";
@@ -168,14 +169,23 @@ describe("TableReadinessWidget (DAT-350)", () => {
 	// DAT-352: clicking a column routes a why_column request through the chat-loop
 	// hook (sendMessage), carrying the row's column_id — it does NOT call
 	// whyColumn directly (the request runs once per click through the agent loop,
-	// where the paid Anthropic synthesis is gated).
-	it("click-through dispatches a why_column request for the row's column_id", () => {
+	// where the paid Anthropic synthesis is gated). DAT-437: the id rides in the
+	// model-only refs part; the visible bubble carries the human name only.
+	it("click-through dispatches a why_column request — id in the refs part, never the bubble", () => {
 		renderWidget(analyzed);
 		fireEvent.click(screen.getByTestId("readiness-why-amount"));
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const text = sendMessage.mock.calls[0][0] as string;
-		expect(text).toContain("c_amount");
-		expect(text).toContain("amount");
-		expect(text).toContain("why_column");
+		const turn = sendMessage.mock.calls[0][0] as {
+			content: Array<{ type: "text"; content: string }>;
+		};
+		expect(turn.content).toHaveLength(2);
+		const [bubble, refs] = turn.content;
+		// The bubble: human name + intent, NO internal id.
+		expect(bubble?.content).toContain("amount");
+		expect(bubble?.content).toContain("why_column");
+		expect(bubble?.content).not.toContain("c_amount");
+		// The refs part: marked model-only, carries the id.
+		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
+		expect(refs?.content).toContain("c_amount");
 	});
 });

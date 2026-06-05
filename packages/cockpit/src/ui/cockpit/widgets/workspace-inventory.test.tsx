@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { InventoryTable } from "#/tools/list-tables";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
 import { theme } from "#/ui/theme";
@@ -183,14 +184,24 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("canvas-workspace-inventory-empty")).toBeTruthy();
 	});
 
-	it("table-name click routes a look_table request through the chat loop", () => {
+	// DAT-437: the table_id rides in the model-only refs part; the visible bubble
+	// carries the human name only.
+	it("table-name click routes a look_table request — id in the refs part, never the bubble", () => {
 		renderWidget(inventory);
 		fireEvent.click(screen.getByTestId("inventory-table-t_orders"));
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const text = sendMessage.mock.calls[0][0] as string;
-		expect(text).toContain("t_orders");
-		expect(text).toContain("orders");
-		expect(text).toContain("look_table");
+		const turn = sendMessage.mock.calls[0][0] as {
+			content: Array<{ type: "text"; content: string }>;
+		};
+		expect(turn.content).toHaveLength(2);
+		const [bubble, refs] = turn.content;
+		// The bubble: human name + intent, NO internal id.
+		expect(bubble?.content).toContain("orders");
+		expect(bubble?.content).toContain("look_table");
+		expect(bubble?.content).not.toContain("t_orders");
+		// The refs part: marked model-only, carries the id.
+		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
+		expect(refs?.content).toContain("t_orders");
 	});
 
 	it("Refresh re-lists the inventory through the chat loop", () => {

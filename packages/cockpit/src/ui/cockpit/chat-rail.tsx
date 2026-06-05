@@ -23,6 +23,7 @@ import {
 	Text,
 } from "@mantine/core";
 import { useEffect, useRef } from "react";
+import { isAgentRefsPart } from "#/lib/agent-refs";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
@@ -31,7 +32,6 @@ import {
 	toolChipSummary,
 	toolLabel,
 } from "#/ui/cockpit/tool-chip-summary";
-import { isUploadRefsPart } from "#/ui/cockpit/upload-handoff";
 
 // The untyped tool-call part shape (we register tools server-side, so useChat
 // sees them untyped). Narrowed off `part.type === "tool-call"`. `arguments` is
@@ -219,9 +219,10 @@ export function ChatRail() {
 								// text renders as sanitized markdown so snippets / SQL / lists
 								// stop showing as raw `**` and ``` fences.
 								if (m.role === "user") {
-									// DAT-423: the upload turn's model-only refs part carries the
-									// raw s3:// uris — the model reads it, the bubble never shows it.
-									if (isUploadRefsPart(part.content)) return null;
+									// DAT-423/DAT-437: a turn's model-only refs part carries raw
+									// internals (s3:// uris, table/column ids) — the model reads
+									// it, the bubble never shows it.
+									if (isAgentRefsPart(part.content)) return null;
 									return (
 										<Text
 											// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
 	displayTableName,
 	humanizeIdentifier,
-	prettyJson,
 	renderEvidenceDetail,
 	stripSrcDigests,
 } from "#/lib/display-names";
@@ -240,21 +239,5 @@ describe("humanizeIdentifier", () => {
 	it("returns an empty string for empty/garbage input so callers can fall back", () => {
 		expect(humanizeIdentifier("")).toBe("");
 		expect(humanizeIdentifier("._.")).toBe("");
-	});
-});
-
-describe("prettyJson", () => {
-	it("indents valid JSON with two spaces", () => {
-		expect(prettyJson('[{"metric":"undeclared_ratio","value":0.8}]')).toBe(
-			'[\n  {\n    "metric": "undeclared_ratio",\n    "value": 0.8\n  }\n]',
-		);
-	});
-
-	it("returns the original string unchanged when it is not valid JSON", () => {
-		expect(prettyJson("not json")).toBe("not json");
-	});
-
-	it("returns an empty string for empty input", () => {
-		expect(prettyJson("")).toBe("");
 	});
 });

@@ -152,7 +152,7 @@ describe("ChatRail (DAT-353)", () => {
 		);
 	});
 
-	it("renders the upload turn's clean bubble but NOT the model-only refs part (DAT-423)", () => {
+	it("renders a turn's clean bubble but NOT the model-only refs part (DAT-423/DAT-437)", () => {
 		h.messages = [
 			{
 				id: "u1",
@@ -162,7 +162,7 @@ describe("ChatRail (DAT-353)", () => {
 					{
 						type: "text",
 						content:
-							"[[dataraum:uploaded-objects]] ...\n1. invoices.csv — s3://dataraum-lake/uploads/aaa/invoices.csv",
+							"[[dataraum:refs]] The user just uploaded these objects, in order (filename — uri):\n1. invoices.csv — s3://dataraum-lake/uploads/aaa/invoices.csv",
 					},
 				],
 			},
@@ -172,7 +172,7 @@ describe("ChatRail (DAT-353)", () => {
 		expect(text).toContain("Uploaded invoices.csv and payments.csv.");
 		// The refs part — and crucially its s3:// uri — never reaches the DOM.
 		expect(text).not.toContain("s3://");
-		expect(text).not.toContain("[[dataraum:uploaded-objects]]");
+		expect(text).not.toContain("[[dataraum:refs]]");
 	});
 
 	it("projects a list_sources tool result onto the source-list canvas", () => {
@@ -244,7 +244,22 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		{
 			name: "list_tables",
 			state: "complete",
-			output: [{ table_id: "t1" }, { table_id: "t2" }],
+			// Two LOGICAL tables (distinct table_name) — the chip counts logical
+			// tables, collapsing physical layers (DAT-437).
+			output: [
+				{
+					table_id: "t1",
+					source_id: "s1",
+					table_name: "orders",
+					layer: "typed",
+				},
+				{
+					table_id: "t2",
+					source_id: "s1",
+					table_name: "items",
+					layer: "typed",
+				},
+			],
 			summary: "2 tables",
 		},
 		{

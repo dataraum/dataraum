@@ -51,6 +51,14 @@ export function displayTableName(
 	tableName: string,
 	sourceName?: string,
 ): string {
+	// Exact source-prefix strip first: an actual enriched/slice name never
+	// starts with `<sourceName>__` (it starts with its family prefix), so this
+	// only fires for a plain physical table — including one whose SOURCE is
+	// legitimately named `enriched_*` and must not be mistaken for the family.
+	if (sourceName) {
+		const prefix = `${sourceName}__`;
+		if (tableName.startsWith(prefix)) return tableName.slice(prefix.length);
+	}
 	if (tableName.startsWith("enriched_")) {
 		const rest = tableName.slice("enriched_".length);
 		const j = rest.indexOf("__");
@@ -59,10 +67,6 @@ export function displayTableName(
 	}
 	const slice = SLICE_FAMILY.exec(tableName);
 	if (slice) return `slice_${slice[1]}`;
-	if (sourceName) {
-		const prefix = `${sourceName}__`;
-		if (tableName.startsWith(prefix)) return tableName.slice(prefix.length);
-	}
 	const i = tableName.indexOf("__");
 	return i >= 0 ? tableName.slice(i + 2) : tableName;
 }

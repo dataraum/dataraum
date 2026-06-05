@@ -67,12 +67,18 @@ describe("displayTableName", () => {
 		);
 	});
 
-	it("family handling wins over an exact source-name prefix match", () => {
-		// Defensive: even when a caller passes the raw source name, the family
-		// rules run first so enriched/slice names never lose their prefix.
+	it("family handling applies even when the raw source name is passed", () => {
+		// An enriched name never starts with `<sourceName>__` (the family prefix
+		// comes first), so the exact-prefix check falls through to the family rule.
 		expect(
 			displayTableName(`enriched_src_${DIGEST}__orders`, `src_${DIGEST}`),
 		).toBe("enriched_orders");
+	});
+
+	it("a source legitimately named enriched_* is not mistaken for the family", () => {
+		expect(displayTableName("enriched_data__report", "enriched_data")).toBe(
+			"report",
+		);
 	});
 });
 

@@ -24,6 +24,20 @@ post-DAT-403 calibration runs in dataraum-eval (findings list on DAT-405):
   `slice_view_unbindable`, and skips that slice. The underlying replay hazard —
   `slicing` skips itself when "all fact tables already have slice definitions",
   freezing stale definitions across runs — is documented on DAT-405, not yet fixed.
+- **Loaders head-fallback (second commit)** — `load_semantic`/`load_statistics`
+  fall back to the promoted `(table:{id}, stage)` snapshot head when the current
+  run has no row. Session detects carried the SESSION run's run_id while the
+  per-column rows were written by the add_source run, so strict this-run reads
+  silently broke `temporal_drift` (0 records ever — fail closed) and
+  `slice_variance`'s role gate (1.000 on ID columns on clean data — fail open).
+- **Systemic (not yet fixed): slice definitions are table-scoped + immortal**
+  while enriched/slicing views are run-versioned and LLM-shaped. Third
+  manifestation observed same day: `drift_analysis_failed` GROUP BY on a stale
+  dim column after a re-run's enriched view picked different dims. Content-keyed
+  sources (DAT-422) widen this to CROSS-strategy leakage in eval (same bytes →
+  same table_id). Proposed: run-version slice definitions (stamp run_id, promote
+  via MetadataSnapshotHead, re-derive instead of skip on column-set change).
+  Full mechanics on DAT-405.
 
 ### dataraum-eval
 - Re-run value-layer calibration; detection-typing-v1 completes begin_session

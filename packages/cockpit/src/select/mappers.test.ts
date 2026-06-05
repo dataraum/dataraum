@@ -14,6 +14,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import {
 	connectTablesToRecipeTables,
 	contentKeyedSourceName,
+	recipeContentHash,
 	recipeSqlForDisplayName,
 	sanitizeRecipeName,
 	sourceTypeForUri,
@@ -169,5 +170,32 @@ describe("connectTablesToRecipeTables", () => {
 
 	it("throws on an empty selection", () => {
 		expect(() => connectTablesToRecipeTables([])).toThrow(/at least one/);
+	});
+});
+
+describe("recipeContentHash (DAT-430)", () => {
+	const tables = [
+		{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
+		{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+	];
+
+	it("is a deterministic sha256 hex over the canonical tables JSON", () => {
+		const h = recipeContentHash(tables);
+		expect(h).toMatch(/^[0-9a-f]{64}$/);
+		// Same pick → same hash: the property the engine's idempotent-re-select
+		// skip relies on (current recipe_hash == imported_recipe_hash witness).
+		expect(recipeContentHash(tables.map((t) => ({ ...t })))).toBe(h);
+	});
+
+	it("changes when the pick, the SQL, or the order changes", () => {
+		const h = recipeContentHash(tables);
+		expect(recipeContentHash([tables[0]])).not.toBe(h); // dropped table
+		expect(
+			recipeContentHash([
+				tables[0],
+				{ ...tables[1], sql: 'SELECT * FROM "Archive"."Customers"' },
+			]),
+		).not.toBe(h); // re-pointed SQL
+		expect(recipeContentHash([tables[1], tables[0]])).not.toBe(h); // order
 	});
 });

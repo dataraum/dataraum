@@ -9,10 +9,11 @@ would drag the engine into the sandbox.
 Topology (DAT-370): the table is the unit of work.
 
     AddSourceWorkflow(identity)                              [parent]
-      import()                  -> raw table ids             (source-level enumerator)
+      import() per source_id    -> raw table ids             (per-source enumerator)
+      check_column_limit()                                   (run-scoped cost gate, DAT-430)
       fan-out via workflow.as_completed:
         ProcessTableWorkflow(raw_id) for each raw id         [child, per table]
-      semantic_per_column()                                  (source-level reduce)
+      semantic_per_column()                                  (session-scoped reduce)
       detect()                                               (single terminal detector pass)
 
     ProcessTableWorkflow(raw_table_id)                       [child]
@@ -46,6 +47,7 @@ with workflow.unsafe.imports_passed_through():
         ProcessTableResult,
         ProgressFailure,
         ProgressSnapshot,
+        RunScopedInput,
         SessionScopedInput,
         TableProgress,
         TableScopedInput,
@@ -252,6 +254,21 @@ class AddSourceWorkflow:
         # drops ``source_id``. ``typing`` links each typed table to the session, so
         # the reduce/detect see the union across every imported source.
         identity = base.model_copy(update={"source_id": None})
+
+        # Run-scoped column gate (DAT-430): ``limits.max_columns`` bounds the
+        # RUN's pipeline/LLM cost, so it must judge the union of the run's raw
+        # tables — a per-source check stopped bounding anything once a run
+        # became a SET of per-file sources. Runs unconditionally before the
+        # fan-out (so a run recomposing already-imported sources — every import
+        # skipped — is still gated); a breach raises the non-retryable
+        # PhaseFailed and the run ends here, before any child does table work.
+        await workflow.execute_activity(
+            "check_column_limit",
+            RunScopedInput(identity=identity, table_ids=target_raw_ids),
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
 
         # The fan-out width is now known (import recorded ``raw_table_ids`` in
         # history → deterministic on replay). Set the progress denominator + seed

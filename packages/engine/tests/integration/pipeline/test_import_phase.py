@@ -1,9 +1,9 @@
 """Tests for import phase.
 
-Per DAT-290, the import phase runs against a single source whose Source
-row is already in the session DB. These tests pre-create the Source row
-and populate ``ctx.config`` with the keys that ``setup_pipeline`` would
-otherwise supply.
+The import phase runs once per source of an add_source run (DAT-422), against
+a Source row already in the workspace DB. These tests pre-create the Source row
+and populate ``ctx.config`` with the keys the worker's ``_build_phase_config``
+would otherwise supply.
 
 Per DAT-389 the import ingress (``_run``) gates the source URI through
 ``validate_source_uri`` — only ``s3://<lake-bucket>/<key>`` reaches a loader
@@ -54,6 +54,43 @@ def _seed_source(
             status="configured",
         )
     )
+    session.flush()
+
+
+def _seed_db_source(
+    session: Session,
+    source_id: str,
+    name: str,
+    connection_config: dict[str, Any],
+    *,
+    with_raw_table: bool,
+) -> None:
+    """Insert a db_recipe Source row (mimicking the cockpit ``select``), optionally imported.
+
+    ``with_raw_table=True`` adds one raw Table row — the state after a prior
+    import — so the should_skip / staleness paths can be driven directly.
+    """
+    session.add(
+        Source(
+            source_id=source_id,
+            name=name,
+            source_type="db_recipe",
+            connection_config=connection_config,
+            backend="mssql",
+            status="configured",
+        )
+    )
+    if with_raw_table:
+        session.add(
+            Table(
+                table_id=str(uuid4()),
+                source_id=source_id,
+                table_name=f"{name}__t1",
+                layer="raw",
+                duckdb_path=f"{name}__t1",
+                row_count=1,
+            )
+        )
     session.flush()
 
 
@@ -240,7 +277,13 @@ class TestImportPhase:
     def test_skip_if_tables_exist(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):
-        """Test that import is skipped if tables already exist."""
+        """An upload source with raw tables skips on presence alone.
+
+        Upload sources are content-keyed (``src_<digest>``): changed bytes mint
+        a NEW source, so existing raw tables are by construction the current
+        content — no hash check needed (DAT-430 adds one only for the
+        name-keyed db sources).
+        """
         source_id = str(uuid4())
 
         # First, create a source with tables
@@ -275,42 +318,155 @@ class TestImportPhase:
         assert skip_reason is not None
         assert "already has" in skip_reason
 
-    def test_force_reimport(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
+    def test_db_recipe_should_skip_when_recipe_unchanged(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test force_reimport config bypasses skip."""
+        """A db source whose recipe_hash matches the import witness skips (DAT-430).
+
+        The idempotent paths: a teach re-run (no re-select happened) and a
+        re-select of the SAME pick (select recomputes the same hash and carries
+        the witness forward) both see matching hashes → skip, like before.
+        """
         source_id = str(uuid4())
-
-        # Create existing source
-        source = Source(
-            source_id=source_id,
-            name="existing_source",
-            source_type="csv",
+        _seed_db_source(
+            session,
+            source_id,
+            "warehouse",
+            {
+                "tables": [{"name": "t1", "sql": "SELECT 1"}],
+                "recipe_hash": "hash-A",
+                "imported_recipe_hash": "hash-A",
+            },
+            with_raw_table=True,
         )
-        session.add(source)
 
-        table = Table(
-            table_id=str(uuid4()),
-            source_id=source_id,
-            table_name="existing_table",
-            layer="raw",
-            duckdb_path="raw_existing_table",
-            row_count=10,
+        skip_reason = ImportPhase().should_skip(
+            PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
         )
-        session.add(table)
-        session.commit()
+        assert skip_reason is not None
+        assert "recipe unchanged" in skip_reason
 
-        # Try with force_reimport
+    @pytest.mark.parametrize(
+        ("recipe_hash", "imported_hash"),
+        [
+            ("hash-B", "hash-A"),  # re-pointed recipe (changed table pick)
+            ("hash-A", None),  # raw tables predate recipe hashing / witness lost
+            (None, None),  # hand-seeded row, never hashed
+        ],
+    )
+    def test_db_recipe_changed_never_silently_skips(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        recipe_hash: str | None,
+        imported_hash: str | None,
+    ):
+        """A db source whose hashes don't BOTH match never skips — and fails loud.
+
+        This is the DAT-430 staleness kill: re-selecting the same source name
+        with a changed pick used to presence-skip forever, silently 'succeeding'
+        over the old raw tables. Now ``should_skip`` declines and the db load
+        path refuses to re-extract (re-import-with-replace is deferred), naming
+        the source.
+        """
+        cc: dict[str, Any] = {"tables": [{"name": "t1", "sql": "SELECT 1"}]}
+        if recipe_hash:
+            cc["recipe_hash"] = recipe_hash
+        if imported_hash:
+            cc["imported_recipe_hash"] = imported_hash
+        source_id = str(uuid4())
+        _seed_db_source(session, source_id, "warehouse", cc, with_raw_table=True)
+        source = session.get(Source, source_id)
+        assert source is not None
         phase = ImportPhase()
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={"force_reimport": True},
-        )
+        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
 
+        assert phase.should_skip(ctx) is None  # never a silent skip
+
+        result = phase._load_database_source(ctx, source, "warehouse", cc, "mssql")
+        assert result.status == PhaseStatus.FAILED
+        assert "warehouse" in (result.error or "")
+        assert "re-import is not yet supported" in (result.error or "")
+
+    def test_db_recipe_import_requires_recipe_hash(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ):
+        """A fresh db import without a select-stamped recipe_hash fails loud.
+
+        The hash pair is what makes every later run's skip decision sound, so an
+        unhashed first import would re-open the silent-staleness hole — refuse it
+        up front (the cockpit ``select`` always stamps the hash).
+        """
+        cc: dict[str, Any] = {"tables": [{"name": "t1", "sql": "SELECT 1"}]}
+        source_id = str(uuid4())
+        _seed_db_source(session, source_id, "warehouse", cc, with_raw_table=False)
+        source = session.get(Source, source_id)
+        assert source is not None
+
+        result = ImportPhase()._load_database_source(
+            PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={}),
+            source,
+            "warehouse",
+            cc,
+            "mssql",
+        )
+        assert result.status == PhaseStatus.FAILED
+        assert "no recipe_hash" in (result.error or "")
+
+    def test_db_recipe_import_stamps_witness(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ):
+        """A successful db import copies recipe_hash to imported_recipe_hash.
+
+        The witness completes the pair ``should_skip`` compares: right after a
+        clean import the source skips (recipe unchanged), and a later re-pointed
+        recipe (different recipe_hash) stops matching. Extraction + credentials
+        are faked — the stamping contract, not the backend, is under test.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from dataraum.core.models import Result
+        from dataraum.sources.backends import BackendExtractionResult, ExtractedTable
+
+        cc: dict[str, Any] = {
+            "tables": [{"name": "t1", "sql": "SELECT 1"}],
+            "recipe_hash": "hash-A",
+        }
+        source_id = str(uuid4())
+        _seed_db_source(session, source_id, "warehouse", cc, with_raw_table=False)
+        source = session.get(Source, source_id)
+        assert source is not None
+        phase = ImportPhase()
+        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+
+        extracted = BackendExtractionResult(
+            tables=[
+                ExtractedTable(
+                    name="t1",
+                    duckdb_table="warehouse__t1",
+                    row_count=2,
+                    columns=[("a", "VARCHAR")],
+                )
+            ]
+        )
+        chain = MagicMock()
+        chain.resolve.return_value = MagicMock(url="mssql://ignored")
+        with (
+            patch("dataraum.core.credentials.CredentialChain", return_value=chain),
+            patch("dataraum.sources.backends.extract_backend", return_value=Result.ok(extracted)),
+        ):
+            result = phase._load_database_source(ctx, source, "warehouse", cc, "mssql")
+
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        assert source.connection_config is not None
+        assert source.connection_config["imported_recipe_hash"] == "hash-A"
+        assert source.connection_config["recipe_hash"] == "hash-A"
+        session.flush()
+
+        # The pair now matches → the next run's should_skip is a clean skip.
         skip_reason = phase.should_skip(ctx)
-        assert skip_reason is None  # Should not skip with force_reimport
+        assert skip_reason is not None
+        assert "recipe unchanged" in skip_reason
 
     def test_drop_junk_columns(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, tmp_path: Path

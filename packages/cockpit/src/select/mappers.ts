@@ -26,6 +26,8 @@
 //     non-default-schema table still resolves, with identifier quoting treated
 //     as a (low) injection surface and escaped.
 
+import { createHash } from "node:crypto";
+
 import type { ConnectSchema } from "../duckdb/connect";
 import {
 	ALLOWED_EXTENSIONS,
@@ -33,18 +35,21 @@ import {
 	UPLOAD_PREFIX,
 } from "../upload/policy";
 
-// The engine's source-name rule (`sources/manager.py` `_NAME_PATTERN`): lowercase,
-// starts with a letter, 2–49 chars of `[a-z0-9_]`. A persisted source name must
-// match it (the engine credential lookup `DATARAUM_<NAME>_URL` and the raw-table
-// prefix `<name>__` both key off it) and is UNIQUE (`uq_sources_name`). Lives here
-// in the pure-shape module so both the db-source name validation (`tools/select.ts`)
-// and the content-keyed file-source name derivation below agree on one pattern.
+// THE source-name rule — this pattern is the authority (DAT-430 deleted the
+// engine's legacy `SourceManager` and its `_NAME_PATTERN`; `select` is the only
+// writer of source rows): lowercase, starts with a letter, 2–49 chars of
+// `[a-z0-9_]`. The engine consumes the persisted name verbatim — the credential
+// lookup `DATARAUM_<NAME>_URL` and the raw-table prefix `<name>__` both key off
+// it — and it is UNIQUE (`uq_sources_name`). Lives here in the pure-shape module
+// so both the db-source name validation (`tools/select.ts`) and the content-keyed
+// file-source name derivation below agree on one pattern.
 export const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
 // --- source_type from a file URI suffix -------------------------------------
 
-// Suffix → engine `source_type`. MIRRORS the engine's `_EXTENSION_MAP`
-// (sources/manager.py) + the cockpit connect/upload contract: csv/tsv/txt → csv,
+// Suffix → engine `source_type`. MIRRORS the engine's import-dispatch suffix map
+// (`pipeline/phases/import_phase.py` `_PARQUET_EXTENSIONS`/`_JSON_EXTENSIONS` +
+// CSV default) + the cockpit connect/upload contract: csv/tsv/txt → csv,
 // parquet/pq → parquet, json/jsonl/ndjson → json. A file source's `source_type`
 // is this derived value, NEVER the literal "file" — the engine import dispatch
 // keys off it.
@@ -140,6 +145,25 @@ export function contentKeyedSourceName(uri: string): string {
 export interface RecipeTable {
 	name: string;
 	sql: string;
+}
+
+/**
+ * The recipe content hash (`connection_config.recipe_hash`) — sha256 over the
+ * canonical `tables` JSON (DAT-430).
+ *
+ * Canonical = `JSON.stringify` of the `{name, sql}` array: key order is fixed
+ * by construction and array order follows the connected schema's table order,
+ * so a re-select of the SAME pick serializes — and hashes — identically. The
+ * engine treats the value as an OPAQUE token: it never recomputes it, only
+ * copies it to `imported_recipe_hash` at import success and compares the two on
+ * a later run (`ImportPhase.should_skip`) — so no cross-language
+ * canonicalization contract exists beyond this one function. This is what kills
+ * the silent-staleness hole for name-keyed db sources: a re-pointed recipe
+ * stops matching the import witness and the run fails loud instead of
+ * presence-skipping over the old raw tables.
+ */
+export function recipeContentHash(tables: RecipeTable[]): string {
+	return createHash("sha256").update(JSON.stringify(tables)).digest("hex");
 }
 
 /** Quote a single SQL identifier segment, doubling embedded double-quotes.

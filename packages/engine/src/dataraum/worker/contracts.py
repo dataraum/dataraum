@@ -224,6 +224,23 @@ class ProcessTableResult(BaseModel):
     typed_table_id: str
 
 
+class RunScopedInput(BaseModel):
+    """Input to an add_source run-level gate — run identity + the run's raw table set.
+
+    The add_source counterpart of :class:`SessionScopedInput`: after the per-source
+    import loop, the parent workflow holds the UNION of the run's raw table ids,
+    and a run-level gate (``check_column_limit``, DAT-430) judges that whole set
+    before the per-table fan-out. Scoping by the explicit id union — not by a
+    source (the run has many) and not by ``session_tables`` (typing links those
+    later) — means the gate also fires when every import SKIPPED, e.g. a run
+    recomposing already-imported sources into a bigger set. The identity is the
+    run's source-free form (``source_id=None``).
+    """
+
+    identity: SourceIdentity
+    table_ids: list[str]
+
+
 class SessionScopedInput(BaseModel):
     """Input to a begin_session activity — session identity + the typed table set.
 

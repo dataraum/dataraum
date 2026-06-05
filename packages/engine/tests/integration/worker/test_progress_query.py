@@ -41,6 +41,7 @@ from dataraum.worker.contracts import (
     PhaseOutcome,
     ProcessTableInput,
     ProgressSnapshot,
+    RunScopedInput,
     SourceIdentity,
     TypingResult,
     add_source_workflow_id,
@@ -65,6 +66,15 @@ _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
 @activity.defn(name="import")
 async def _import(_identity: SourceIdentity) -> ImportResult:
     return ImportResult(raw_table_ids=list(_RAW_IDS))
+
+
+@activity.defn(name="check_column_limit")
+async def _check_column_limit(_payload: RunScopedInput) -> PhaseOutcome:
+    # Run-scoped column gate (DAT-430), between the import loop and the fan-out.
+    # A trivial pass here — the gate's counting/limit logic is exercised in
+    # ``tests/unit/worker/test_check_column_limit.py``; this test cares that the
+    # orchestration calls it and progress bookkeeping survives it.
+    return PhaseOutcome(status="completed")
 
 
 @activity.defn(name="typing")
@@ -113,6 +123,7 @@ async def _promote_to_latest(_identity: SourceIdentity) -> PhaseOutcome:
 
 _MOCK_ACTIVITIES = [
     _import,
+    _check_column_limit,
     _typing,
     _statistics,
     _column_eligibility,

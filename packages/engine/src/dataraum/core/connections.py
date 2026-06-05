@@ -407,19 +407,16 @@ class ConnectionManager:
         self._duckdb_conn = _LakeScopedConnection(raw_conn, qualified)
 
     def _import_all_models(self) -> None:
-        """Import all DB model modules to register them with SQLAlchemy."""
-        # Core models not owned by any phase
-        from dataraum.documentation import db_models as _fixes  # noqa: F401
-        from dataraum.entropy import db_models as _entropy  # noqa: F401
-        from dataraum.investigation import db_models as _investigation  # noqa: F401
+        """Import all DB model modules to register them with SQLAlchemy.
 
-        # Phase-owned models: auto-discovered from registry
-        from dataraum.pipeline.registry import import_all_phase_models
-        from dataraum.query import db_models as _query  # noqa: F401
-        from dataraum.query import snippet_models as _snippets  # noqa: F401
-        from dataraum.storage import models as _storage  # noqa: F401
+        Delegates to storage.base.load_all_models — the ONE model-registration
+        list, shared with the offline DDL dump (storage.dump_ddl) so the live
+        schema and the checked-in schema.sql / drizzle mirror can never see
+        different model sets.
+        """
+        from dataraum.storage.base import load_all_models
 
-        import_all_phase_models()
+        load_all_models()
 
     def _ensure_initialized(self) -> None:
         if not self._initialized:

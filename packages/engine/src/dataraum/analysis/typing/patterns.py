@@ -19,12 +19,37 @@ from dataraum.core.models.base import DataType
 
 logger = get_logger(__name__)
 
+# Error-throwing DuckDB functions and their NULL-returning TRY_ variants.
+# ``\b`` keeps already-prefixed calls (TRY_STRPTIME, TRY_CAST) untouched:
+# the underscore is a word character, so there is no boundary before the
+# bare function name inside them — normalization is idempotent.
+_TRY_FUNC_RE = re.compile(r"\b(STRPTIME|CAST)\(")
+
+
+def normalize_standardization_expr(expr: str) -> str:
+    """Rewrite error-throwing functions to their ``TRY_`` variants.
+
+    DuckDB's ``STRPTIME``/``CAST`` raise on non-conforming input, and a
+    surrounding ``TRY_CAST`` does NOT catch errors thrown by inner function
+    calls — so a single malformed value would fail an entire inference query
+    (scoring the pattern 0.0) or the typed-table ``CREATE`` itself.
+    ``TRY_STRPTIME``/``TRY_CAST`` return NULL instead, which the quarantine
+    flow is designed around: the bad rows quarantine, the column still types.
+
+    Applied once at :class:`Pattern` construction so builtin YAML patterns,
+    overlay-taught patterns, and synthetic combined patterns all carry the
+    safe form.
+    """
+    return _TRY_FUNC_RE.sub(lambda m: f"TRY_{m.group(1)}(", expr)
+
 
 @dataclass
 class Pattern:
     """A single pattern definition for value matching.
 
     Patterns match against actual cell values (not column names).
+    ``standardization_expr`` is normalized to TRY_ function variants on
+    construction (see :func:`normalize_standardization_expr`).
     """
 
     name: str
@@ -43,9 +68,11 @@ class Pattern:
     _regex: re.Pattern[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Compile regex pattern."""
+        """Compile regex pattern and normalize the standardization expr."""
         flags = 0 if self.case_sensitive else re.IGNORECASE
         self._regex = re.compile(self.pattern, flags)
+        if self.standardization_expr:
+            self.standardization_expr = normalize_standardization_expr(self.standardization_expr)
 
     def matches(self, value: str) -> bool:
         """Check if value matches this pattern.

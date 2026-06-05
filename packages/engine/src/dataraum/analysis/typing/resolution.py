@@ -70,13 +70,12 @@ def _resolve_pattern(
         return parts[0]
 
     # Build COALESCE(TRY_STRPTIME("{col}", fmt1), TRY_STRPTIME("{col}", fmt2), ...)
-    # Each part's standardization_expr is e.g. STRPTIME("{col}", '%m/%d/%Y')
-    # We replace STRPTIME → TRY_STRPTIME so mismatches return NULL not error
+    # Exprs are TRY_-normalized at Pattern construction, so each part returns
+    # NULL on mismatch instead of erroring.
     coalesce_parts = []
     for p in parts:
         if p.standardization_expr:
-            expr = p.standardization_expr.replace("STRPTIME(", "TRY_STRPTIME(")
-            coalesce_parts.append(expr)
+            coalesce_parts.append(p.standardization_expr)
 
     if not coalesce_parts:
         return parts[0]  # No standardization exprs, fallback to first

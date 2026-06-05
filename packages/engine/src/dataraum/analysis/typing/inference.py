@@ -299,14 +299,11 @@ def _infer_column_types(
                 continue  # Need multiple patterns to COALESCE
 
             # Build COALESCE(TRY_STRPTIME(col, fmt1), TRY_STRPTIME(col, fmt2), ...)
-            # Replace error-throwing functions with TRY_ variants so mismatches
+            # Exprs are TRY_-normalized at Pattern construction, so mismatches
             # return NULL instead of failing the entire COALESCE expression.
             parts = []
             for p in type_patterns:
-                expr = p.standardization_expr.format(col=col_name)  # type: ignore[union-attr]
-                expr = expr.replace("STRPTIME(", "TRY_STRPTIME(")
-                expr = expr.replace("CAST(", "TRY_CAST(")
-                parts.append(expr)
+                parts.append(p.standardization_expr.format(col=col_name))  # type: ignore[union-attr]
             coalesce_expr = f"COALESCE({', '.join(parts)})"
 
             parse_result = _test_type_cast(
@@ -466,5 +463,9 @@ def _test_type_cast(
         )
 
     except Exception as e:
-        logger.debug("type_cast_test_error", table=table_name, column=col_name, error=str(e))
+        # With TRY_-normalized exprs this should not fire for malformed VALUES
+        # (those return NULL and count as failures with examples). An exception
+        # here means the expression itself is broken — surface it loudly, since
+        # the caller will score the pattern 0.0 with no failed examples.
+        logger.warning("type_cast_test_error", table=table_name, column=col_name, error=str(e))
         return ParseResult(success_rate=0.0, failed_examples=[])

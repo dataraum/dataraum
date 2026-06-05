@@ -277,3 +277,100 @@ class TestLoaderRunIdFilter:
 
         # No run_id (non-detect / legacy callers) → unfiltered → still found.
         assert load_typing(real_session, "col-1") is not None
+
+
+class TestLoaderHeadFallback:
+    """DAT-405: session-detect reads fall back to the promoted head run.
+
+    A begin_session detect carries the SESSION run's run_id, but per-column
+    analysis rows (semantic, statistics) were written by the add_source run.
+    A strict this-run read returned None and silently disabled the semantic-
+    gated session detectors. The loaders now resolve the column's
+    ``(table:{id}, stage)`` snapshot head and read that run's row; without a
+    promoted head they keep returning None (never guess a run).
+    """
+
+    def _seed_column(self, session, column_id: str, table_id: str) -> None:
+        from dataraum.storage import Column
+
+        session.add(
+            Column(
+                column_id=column_id,
+                table_id=table_id,
+                column_name="amount",
+                column_position=0,
+                raw_type="VARCHAR",
+            )
+        )
+        session.flush()
+
+    def _seed_annotation(self, session, column_id: str, run_id: str) -> None:
+        from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
+        session.add(
+            SemanticAnnotation(
+                annotation_id=str(uuid4()),
+                session_id="sess-1",
+                column_id=column_id,
+                run_id=run_id,
+                semantic_role="measure",
+            )
+        )
+        session.flush()
+
+    def _promote(self, session, table_id: str, stage: str, run_id: str) -> None:
+        from datetime import UTC, datetime
+
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+
+        session.add(
+            MetadataSnapshotHead(
+                target=f"table:{table_id}",
+                stage=stage,
+                run_id=run_id,
+                promoted_at=datetime.now(UTC),
+                version=0,
+            )
+        )
+        session.flush()
+
+    def test_semantic_falls_back_to_promoted_head(self, real_session):
+        self._seed_column(real_session, "col-h1", "tbl-h1")
+        self._seed_annotation(real_session, "col-h1", "run-addsource")
+        self._promote(real_session, "tbl-h1", "semantic_per_column", "run-addsource")
+
+        # Session run has no annotation; the head names the add_source run.
+        sem = load_semantic(real_session, "col-h1", run_id="run-session")
+        assert sem is not None
+        assert sem["semantic_role"] == "measure"
+
+    def test_semantic_without_head_stays_none(self, real_session):
+        self._seed_column(real_session, "col-h2", "tbl-h2")
+        self._seed_annotation(real_session, "col-h2", "run-addsource")
+
+        # No promoted head → no fallback → None (never guess a run).
+        assert load_semantic(real_session, "col-h2", run_id="run-session") is None
+
+    def test_statistics_falls_back_to_promoted_head(self, real_session):
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        self._seed_column(real_session, "col-h3", "tbl-h3")
+        real_session.add(
+            StatisticalProfile(
+                profile_id=str(uuid4()),
+                session_id="sess-1",
+                column_id="col-h3",
+                run_id="run-addsource",
+                total_count=100,
+                null_count=0,
+                distinct_count=90,
+                cardinality_ratio=0.9,
+                profile_data={},
+            )
+        )
+        real_session.flush()
+        self._promote(real_session, "tbl-h3", "statistics", "run-addsource")
+
+        stats = load_statistics(real_session, "col-h3", run_id="run-session")
+        assert stats is not None
+        assert stats["cardinality_ratio"] == 0.9

@@ -115,13 +115,19 @@ class TestBuilderExtractsTableEntity:
 
     def test_table_description_and_grain(self, session: Session) -> None:
         from dataraum.analysis.semantic.db_models import TableEntity
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
+        sess_id = "sess-fields"
         source_id, table_id, column_id = _insert_source_table_column(session)
 
+        # Entity fields only flow into the context when the session's run resolves
+        # (DAT-429 fail-closed), so seed a promoted head + run-stamped entity.
         session.add(
             TableEntity(
                 entity_id=_id(),
+                session_id=sess_id,
                 table_id=table_id,
+                run_id="r1",
                 detected_entity_type="financial_transaction",
                 description="Records of all financial transactions",
                 grain_columns=["invoice_id"],
@@ -129,14 +135,53 @@ class TestBuilderExtractsTableEntity:
                 is_fact_table=True,
             )
         )
+        session.add(
+            MetadataSnapshotHead(
+                head_id=_id(), target=session_head_target(sess_id), stage="detect", run_id="r1"
+            )
+        )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id])
+        ctx = build_execution_context(session, [table_id], session_id=sess_id)
 
         table = ctx.tables[0]
         assert table.table_description == "Records of all financial transactions"
         assert table.grain_columns == ["invoice_id"]
         assert table.time_column == "created_at"
+
+    def test_unresolved_session_reads_no_run_versioned_data(self, session: Session) -> None:
+        """Fail-closed (DAT-429): no resolved run ⇒ no entities/relationships, never cross-run.
+
+        Entities exist under runs, but with no promoted head for the queried
+        session the context must surface NONE of them — reading cross-run here is
+        the session-isolation leak this guards against.
+        """
+        from dataraum.analysis.semantic.db_models import TableEntity
+
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        for rid in ("run-1", "run-2"):
+            session.add(
+                TableEntity(
+                    entity_id=_id(),
+                    session_id="sX",
+                    table_id=table_id,
+                    run_id=rid,
+                    detected_entity_type="fact",
+                    description=f"{rid} classification",
+                    is_fact_table=True,
+                )
+            )
+        session.flush()
+
+        # No session_id ⇒ unresolved run ⇒ no entity data, no relationships.
+        ctx_none = build_execution_context(session, [table_id])
+        assert ctx_none.tables[0].table_description is None
+        assert ctx_none.relationships == []
+
+        # A session_id whose head was never promoted is equally unresolved.
+        ctx_unpromoted = build_execution_context(session, [table_id], session_id="sX")
+        assert ctx_unpromoted.tables[0].table_description is None
+        assert ctx_unpromoted.relationships == []
 
     def test_run_scoped_to_promoted_head(self, session: Session) -> None:
         """Coexisting runs' classifications must not bleed in — read the promoted run.

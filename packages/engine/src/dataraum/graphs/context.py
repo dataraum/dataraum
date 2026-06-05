@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     import duckdb
 
     from dataraum.analysis.cycles.health import HealthReport
+    from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.graphs.field_mapping import FieldMappings
 
 logger = get_logger(__name__)
@@ -386,21 +387,25 @@ def build_execution_context(
 
     run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
 
-    # 8. Load table entities (fact/dimension classification), run-scoped. Without
-    # the filter, N coexisting runs' rows for one table would last-write an
-    # arbitrary run's classification into this dict (keyed by table_id).
-    table_entities: dict[str, TableEntity] = {}
-    entity_stmt = select(TableEntity).where(TableEntity.table_id.in_(table_ids))
-    if run_id is not None:
-        entity_stmt = entity_stmt.where(TableEntity.run_id == run_id)
-    for entity in session.execute(entity_stmt).scalars().all():
-        table_entities[entity.table_id] = entity
-
-    # 9. The defined relationships (not candidate) within the selection, scoped to
-    # the same promoted run.
+    # 8 + 9. The run-versioned context — table entities (fact/dimension) and the
+    # defined relationships — is read ONLY when the session's promoted run resolves.
+    # **Fail-closed (DAT-429, session isolation):** with no resolved run (no
+    # session_id, or the session hasn't promoted one yet) we MUST NOT fall back to a
+    # cross-run read — that would surface OTHER sessions' entities/relationships into
+    # this context. Leave both empty instead. (The non-run-versioned field metadata
+    # above is keyed by the passed table/column ids and is unaffected.)
     from dataraum.analysis.relationships.utils import load_defined_relationships
 
-    relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
+    table_entities: dict[str, TableEntity] = {}
+    relationships_db: list[Relationship] = []
+    if run_id is not None:
+        for entity in session.execute(
+            select(TableEntity).where(
+                TableEntity.table_id.in_(table_ids), TableEntity.run_id == run_id
+            )
+        ).scalars():
+            table_entities[entity.table_id] = entity
+        relationships_db = load_defined_relationships(session, table_ids, run_id=run_id)
 
     # Build relationship contexts
     relationships: list[RelationshipContext] = []

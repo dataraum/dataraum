@@ -16,7 +16,6 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     String,
-    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -91,12 +90,24 @@ class EnrichedView(Base):
 class SlicingView(Base):
     """Record of a slicing DuckDB view.
 
-    Projection of enriched_view keeping only slice-relevant dimension columns.
-    The view contains all fact table columns plus only the dimension columns
-    that correspond to SliceDefinitions for this table.
+    Projection of the enriched view keeping only slice-relevant dimension columns:
+    all fact table columns plus the dimension columns that correspond to this
+    table's SliceDefinitions.
+
+    **Latest-only** (DAT-415), exactly like :class:`EnrichedView`: one row per
+    ``fact_table_id``, reconciled in place each run — ``run_id`` is a provenance
+    stamp (the run that last materialized it), NOT a version axis. The view's
+    ``CREATE VIEW`` DDL + its version history live in the
+    :class:`~dataraum.analysis.typing.db_models.MaterializationRecipe`
+    (``layer="slicing"``, sqlglot-gated), the single rebuild source — never stored
+    here (``view_sql`` was removed, it was write-only). The one-row-per-fact
+    invariant is **DB-enforced** by ``uq_slicing_view_fact_table`` so an errant
+    second row fails loudly at insert instead of surfacing as ``MultipleResultsFound``
+    in a reader.
     """
 
     __tablename__ = "slicing_views"
+    __table_args__ = (UniqueConstraint("fact_table_id", name="uq_slicing_view_fact_table"),)
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(
@@ -109,7 +120,10 @@ class SlicingView(Base):
     )
 
     view_name: Mapped[str] = mapped_column(String, nullable=False)
-    view_sql: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Snapshot version axis (DAT-415): the begin_session run that materialized this
+    # view definition. None for non-run callers (tests).
+    run_id: Mapped[str | None] = mapped_column(String, index=True)
 
     # Which slice definitions drove column selection
     slice_definition_ids: Mapped[list[str] | None] = mapped_column(JSON)

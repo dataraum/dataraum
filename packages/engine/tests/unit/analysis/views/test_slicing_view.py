@@ -15,17 +15,22 @@ class TestSlicingView:
         assert SlicingView.__tablename__ == "slicing_views"
 
     def test_instantiation(self):
-        """SlicingView can be instantiated with expected fields."""
+        """SlicingView can be instantiated with expected fields.
+
+        DAT-415: ``view_sql`` is gone — the DDL lives in a ``MaterializationRecipe``
+        (``layer="slicing"``); ``run_id`` stamps the run that materialized the view.
+        """
         view = SlicingView(
             fact_table_id="table-123",
             view_name="slicing_orders",
-            view_sql='CREATE OR REPLACE VIEW "slicing_orders" AS SELECT ...',
+            run_id="run-1",
             slice_definition_ids=["slice-1", "slice-2"],
             slice_columns=["customers__region", "products__category"],
             is_grain_verified=True,
         )
         assert view.fact_table_id == "table-123"
         assert view.view_name == "slicing_orders"
+        assert view.run_id == "run-1"
         assert view.slice_columns == ["customers__region", "products__category"]
         assert view.slice_definition_ids == ["slice-1", "slice-2"]
         assert view.is_grain_verified is True
@@ -35,8 +40,8 @@ class TestSlicingView:
         view = SlicingView(
             fact_table_id="table-123",
             view_name="slicing_orders",
-            view_sql="SELECT ...",
         )
+        assert view.run_id is None
         assert view.slice_columns is None
         assert view.slice_definition_ids is None
 
@@ -46,6 +51,5 @@ class TestSlicingView:
             view_id="my-uuid",
             fact_table_id="t1",
             view_name="slicing_a",
-            view_sql="SELECT 1",
         )
         assert view.view_id == "my-uuid"

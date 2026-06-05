@@ -394,15 +394,18 @@ CREATE TABLE slicing_views (
 	session_id VARCHAR NOT NULL, 
 	fact_table_id VARCHAR NOT NULL, 
 	view_name VARCHAR NOT NULL, 
-	view_sql TEXT NOT NULL, 
+	run_id VARCHAR, 
 	slice_definition_ids JSON, 
 	slice_columns JSON, 
 	is_grain_verified BOOLEAN NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slicing_views PRIMARY KEY (view_id), 
+	CONSTRAINT uq_slicing_view_fact_table UNIQUE (fact_table_id), 
 	CONSTRAINT fk_slicing_views_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_slicing_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id) ON DELETE CASCADE
 );
+
+CREATE INDEX ix_slicing_views_run_id ON slicing_views (run_id);
 
 CREATE INDEX ix_slicing_views_session_id ON slicing_views (session_id);
 

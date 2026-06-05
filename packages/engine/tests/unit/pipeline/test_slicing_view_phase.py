@@ -75,7 +75,7 @@ class TestBuildSlicingViewSql:
 
         slice_def = _make_slice_def("sd1", "c1", "t1")
 
-        sql, slice_dim_cols, slice_def_ids = self.phase._build_slicing_view_sql(
+        sql, slice_dim_cols, slice_def_ids, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=None,
@@ -108,7 +108,7 @@ class TestBuildSlicingViewSql:
         # LLM recommended the full enriched dim col name; column_id points to the FK column
         slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
 
-        sql, slice_dim_cols, slice_def_ids = self.phase._build_slicing_view_sql(
+        sql, slice_dim_cols, slice_def_ids, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
@@ -131,7 +131,7 @@ class TestBuildSlicingViewSql:
 
         slice_def = _make_slice_def("sd1", "c2", "t1")
 
-        _, slice_dim_cols, _ = self.phase._build_slicing_view_sql(
+        _, slice_dim_cols, _, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
@@ -151,7 +151,7 @@ class TestBuildSlicingViewSql:
         enriched_view = _make_enriched_view("t1", "orders", ["customer_id__region"])
         slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
 
-        sql, _, _ = self.phase._build_slicing_view_sql(
+        sql, _, _, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
@@ -172,7 +172,7 @@ class TestBuildSlicingViewSql:
         enriched_view = _make_enriched_view("t1", "orders", ["customers__region"])
         slice_def = _make_slice_def("sd1", "c2", "t1")
 
-        sql, _, _ = self.phase._build_slicing_view_sql(
+        sql, _, _, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
@@ -192,7 +192,7 @@ class TestBuildSlicingViewSql:
         sd1 = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
         sd2 = _make_slice_def("sd2", "c_fk", "t1", column_name="customer_id__region")
 
-        _, slice_dim_cols, _ = self.phase._build_slicing_view_sql(
+        _, slice_dim_cols, _, _ = self.phase._build_slicing_view_sql(
             fact_table=fact_table,
             slice_defs=[sd1, sd2],
             enriched_view=enriched_view,

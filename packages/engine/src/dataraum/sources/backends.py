@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import duckdb
 
 from dataraum.core.models import Result
+from dataraum.core.settings import get_settings
 from dataraum.sources.db_recipe import RecipeTable
 
 _log = logging.getLogger(__name__)
@@ -120,12 +121,23 @@ def extract_backend(
     default_catalog_row = duckdb_conn.execute("SELECT current_catalog()").fetchone()
     default_catalog = default_catalog_row[0] if default_catalog_row else "memory"
 
-    # 1. Install + load extension.
+    # 1. Install + load extension. Honors the image's pre-baked extension
+    # cache, same contract as bootstrap_lake / apply_s3_secret
+    # (server/storage.py): point ``extension_directory`` at the baked path so
+    # LOAD resolves it, and skip the network INSTALL when
+    # ``DUCKLAKE_SKIP_INSTALL`` is set — a db-recipe extraction must not hit
+    # extensions.duckdb.org at runtime (egress-filtered / air-gapped deploys).
+    settings = get_settings()
     try:
-        if extension in _COMMUNITY_EXTENSIONS:
-            duckdb_conn.execute(f"INSTALL {extension} FROM community")
-        else:
-            duckdb_conn.execute(f"INSTALL {extension}")
+        ext_dir = settings.duckdb_extension_directory
+        if ext_dir:
+            safe_dir = str(ext_dir).replace("'", "''")
+            duckdb_conn.execute(f"SET extension_directory = '{safe_dir}'")
+        if not settings.ducklake_skip_install:
+            if extension in _COMMUNITY_EXTENSIONS:
+                duckdb_conn.execute(f"INSTALL {extension} FROM community")
+            else:
+                duckdb_conn.execute(f"INSTALL {extension}")
         duckdb_conn.execute(f"LOAD {extension}")
     except Exception as exc:
         return Result.fail(f"DuckDB extension '{extension}' failed to install/load: {exc}")

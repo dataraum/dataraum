@@ -267,6 +267,57 @@ class TestExtractBackendCleanup:
         assert result[0] == "memory"
 
 
+class TestExtensionCachePreBake:
+    """The image pre-bakes extensions (worker.Dockerfile): extract_backend must
+    honor DUCKDB_EXTENSION_DIRECTORY (cache lookup at the baked path) and
+    DUCKLAKE_SKIP_INSTALL (no network INSTALL) — the same contract as
+    bootstrap_lake / apply_s3_secret in server/storage.py.
+    """
+
+    def test_install_lands_in_configured_extension_directory(
+        self, sqlite_source, duckdb_conn, tmp_path, monkeypatch
+    ):
+        """With DUCKDB_EXTENSION_DIRECTORY set, the INSTALL writes the cache there."""
+        ext_dir = tmp_path / "ext-cache"
+        monkeypatch.setenv("DUCKDB_EXTENSION_DIRECTORY", str(ext_dir))
+        result = extract_backend(
+            backend="sqlite",
+            url=sqlite_source,
+            queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
+            duckdb_conn=duckdb_conn,
+        )
+        assert result.success, result.error
+        assert list(ext_dir.rglob("sqlite_scanner.duckdb_extension"))
+
+    def test_skip_install_loads_from_pre_baked_cache(self, sqlite_source, tmp_path, monkeypatch):
+        """The container contract: extensions baked at build time, INSTALL skipped.
+
+        Bake sqlite into a cache dir (stand-in for the image build step), then
+        run extract_backend with DUCKLAKE_SKIP_INSTALL=1 — LOAD must resolve
+        the baked file and the extraction must work end-to-end.
+        """
+        ext_dir = tmp_path / "ext-cache"
+        bake = duckdb.connect(":memory:")
+        bake.execute(f"SET extension_directory = '{ext_dir}'")
+        bake.execute("INSTALL sqlite")
+        bake.close()
+
+        monkeypatch.setenv("DUCKDB_EXTENSION_DIRECTORY", str(ext_dir))
+        monkeypatch.setenv("DUCKLAKE_SKIP_INSTALL", "1")
+        conn = duckdb.connect(":memory:")
+        try:
+            result = extract_backend(
+                backend="sqlite",
+                url=sqlite_source,
+                queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
+                duckdb_conn=conn,
+            )
+            assert result.success, result.error
+            assert result.unwrap().tables[0].row_count == 3
+        finally:
+            conn.close()
+
+
 class TestExtractBackendFileBackedConnection:
     """In production the DuckDB connection is file-backed (session data.duckdb),
     not :memory:. extract_backend must use the connection's actual catalog name

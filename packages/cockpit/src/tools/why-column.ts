@@ -31,6 +31,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
 
@@ -59,6 +60,8 @@ const EvidenceSignal = z.object({
 const WhyColumnResult = z.object({
 	column_id: z.string(),
 	column_name: z.string(),
+	// Display name (`src_<digest>__` prefix stripped, DAT-431) — this result feeds
+	// the agent's context and the synthesis prompt; the round-trip key is column_id.
 	table_name: z.string(),
 	// False when column_id matched no column — distinct from "found but not yet
 	// analyzed" (found=true, band=null), so the widget can tell the two apart
@@ -85,6 +88,7 @@ export type WhyColumnData = Omit<WhyColumnResult, "analysis">;
 export interface WhyReadinessRow {
 	columnId: string;
 	columnName: string;
+	/** Raw physical table name (`src_<digest>__<stem>`) — projected to display form. */
 	tableName: string;
 	band: string | null;
 	worstIntentRisk: number | null;
@@ -138,7 +142,10 @@ export function projectWhyData(
 	return {
 		column_id: readiness.columnId,
 		column_name: readiness.columnName,
-		table_name: readiness.tableName,
+		// The agent reads this result (and the synthesis prompt interpolates it) —
+		// strip the content-keyed `src_<digest>__` prefix here so no hash name
+		// reaches LLM context (DAT-431). Idempotent for already-plain names.
+		table_name: displayTableName(readiness.tableName),
 		found: true,
 		band: readiness.band ?? null,
 		worst_intent_risk: readiness.worstIntentRisk ?? null,

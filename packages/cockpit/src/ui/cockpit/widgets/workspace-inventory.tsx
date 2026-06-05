@@ -118,9 +118,11 @@ function SourceCard({
 				</Anchor>
 			</Group>
 			<Group gap="xs">
-				{/* A connection shows its kind/backend/status; the Uploads umbrella spans
-				    many per-file sources, so a single type/backend/status is meaningless —
-				    show a neutral marker instead of any one file's metadata (or the hash). */}
+				{/* A connection shows its kind/backend; the Uploads umbrella spans
+				    many per-file sources, so a single type/backend is meaningless —
+				    show a neutral marker instead of any one file's metadata (or the
+				    hash). No status badge: the engine never updates `Source.status`
+				    post-import, so it read `configured` forever (DAT-431). */}
 				{group.kind === "connection" ? (
 					<>
 						<Badge variant="outline" color="gray" tt="lowercase">
@@ -129,11 +131,6 @@ function SourceCard({
 						{head.source_backend && (
 							<Badge variant="outline" color="gray" tt="lowercase">
 								{head.source_backend}
-							</Badge>
-						)}
-						{head.source_status && (
-							<Badge variant="outline" color="gray" tt="lowercase">
-								{head.source_status}
 							</Badge>
 						)}
 					</>

@@ -4,20 +4,23 @@ import type { InventoryTable } from "#/tools/list-tables";
 import {
 	groupLogicalTables,
 	humanizeBand,
-	logicalTableName,
 	sourceGroup,
 	UPLOADS_GROUP_ID,
 } from "#/ui/cockpit/widgets/inventory-grouping";
 
+// Fixtures mirror the list_tables PROJECTION (DAT-433): `table_name` arrives in
+// display form, the raw DuckDB name rides in `physical_name`, and an upload's
+// `source_name` is the uploaded file's name.
 function phys(over: Partial<InventoryTable> = {}): InventoryTable {
 	return {
 		table_id: "t",
-		table_name: "src__orders",
+		table_name: "orders",
+		physical_name: "src__orders",
 		layer: "typed",
 		row_count: 100,
 		column_count: 5,
 		source_id: "s1",
-		source_name: "src",
+		source_name: "orders.csv",
 		source_type: "csv",
 		source_backend: null,
 		analyzed: true,
@@ -58,20 +61,6 @@ describe("sourceGroup (DAT-424 — demote uploads)", () => {
 	});
 });
 
-describe("logicalTableName", () => {
-	it("strips the source prefix", () => {
-		expect(
-			logicalTableName("detection_v1__bank_transactions", "detection_v1"),
-		).toBe("bank_transactions");
-	});
-	it("falls back to dropping up to the first __ when the prefix doesn't match", () => {
-		expect(logicalTableName("foo__bar", "other")).toBe("bar");
-	});
-	it("returns the name unchanged when there is no prefix", () => {
-		expect(logicalTableName("orders", "src")).toBe("orders");
-	});
-});
-
 describe("humanizeBand", () => {
 	it("title-cases known bands and dashes the absent one", () => {
 		expect(humanizeBand("ready")).toBe("Ready");
@@ -107,13 +96,13 @@ describe("groupLogicalTables", () => {
 
 	it("separates tables that differ by source or name", () => {
 		const out = groupLogicalTables([
-			phys({ table_id: "a", table_name: "src__orders", source_id: "s1" }),
-			phys({ table_id: "b", table_name: "src__items", source_id: "s1" }),
+			phys({ table_id: "a", table_name: "orders", source_id: "s1" }),
+			phys({ table_id: "b", table_name: "items", source_id: "s1" }),
 			phys({
 				table_id: "c",
-				table_name: "src__orders",
+				table_name: "orders",
 				source_id: "s2",
-				source_name: "src2",
+				source_name: "orders_v2.csv",
 			}),
 		]);
 		expect(out).toHaveLength(3);

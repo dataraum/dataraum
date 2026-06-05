@@ -18,7 +18,6 @@
 // is the part's `output` (undefined until the call completes).
 
 import type { ConnectSchema } from "#/duckdb/connect";
-import { displayTableName } from "#/lib/display-names";
 import { fileName } from "#/lib/file-uri";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
@@ -142,17 +141,18 @@ export function toolChipSummary(
 			const r = output as LookTableResult | undefined;
 			if (!r || !Array.isArray(r.columns)) return "reading table readiness…";
 			const cols = plural(r.columns.length, "column");
-			const table = displayTableName(r.table_name);
+			// `table_name` arrives in display form (projected in the tool, DAT-433).
 			return r.analyzed
-				? `${table} — ${cols}`
-				: `${table} — ${cols}, not yet analyzed`;
+				? `${r.table_name} — ${cols}`
+				: `${r.table_name} — ${cols}, not yet analyzed`;
 		}
 		case "why_column": {
 			const r = output as WhyColumnResult | undefined;
 			if (!r) return "explaining column…";
 			if (!r.found) return "column not found";
 			const band = r.band ?? "not analyzed";
-			return `${r.column_name} (${displayTableName(r.table_name)}) — ${band}`;
+			// `table_name` arrives in display form (projected in the tool, DAT-431).
+			return `${r.column_name} (${r.table_name}) — ${band}`;
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;

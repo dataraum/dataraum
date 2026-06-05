@@ -43,9 +43,11 @@ export const runSqlTool = toolDefinition({
 	name: "run_sql",
 	description:
 		"Run read-only DuckDB SQL over the data lake and return JSON rows. " +
-		"Address tables by their fully-qualified lake name, e.g. " +
-		"`lake.typed.<table>` (type-resolved), `lake.raw.<table>` (VARCHAR " +
-		"staging), or `lake.quarantine.<table>` (failed casts). The rows you " +
+		"Address tables by their fully-qualified lake name using the " +
+		"`physical_name` from list_tables / look_table (NOT the display " +
+		"table_name): `lake.typed.<physical_name>` (type-resolved), " +
+		"`lake.raw.<physical_name>` (VARCHAR staging), or " +
+		"`lake.quarantine.<physical_name>` (failed casts). The rows you " +
 		`receive are a BOUNDED in-context SAMPLE (at most ${AGENT_SAMPLE_ROWS} ` +
 		"rows, and trimmed further if the serialized result is large) — they are " +
 		"for YOUR inspection, not the user's full answer. When `truncated` is " +

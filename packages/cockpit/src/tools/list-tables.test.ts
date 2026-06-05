@@ -18,35 +18,75 @@ import {
 	type InventoryTableRow,
 } from "./list-tables";
 
+// A 40-char sha-1 hex digest, as the content-keyed upload sources mint them.
+const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+
 function tableRow(
 	overrides: Partial<InventoryTableRow> = {},
 ): InventoryTableRow {
 	return {
 		tableId: "t_orders",
-		tableName: "orders",
+		tableName: `src_${DIGEST}__orders`,
 		layer: "typed",
 		rowCount: 1000,
 		sourceId: "s_sales",
-		sourceName: "sales.csv",
-		sourceType: "file",
-		sourceBackend: "duckdb",
+		sourceName: `src_${DIGEST}`,
+		sourceType: "csv",
+		sourceBackend: null,
+		sourceConnectionConfig: {
+			file_uris: [`s3://lake/uploads/${DIGEST}/sales.csv`],
+		},
 		...overrides,
 	};
 }
 
 describe("buildInventory (DAT-349)", () => {
-	it("carries provenance + shape through unchanged", () => {
+	it("carries provenance + shape through, names display-mapped (DAT-433)", () => {
 		const [out] = buildInventory([tableRow()], []);
 		expect(out).toMatchObject({
 			table_id: "t_orders",
+			// Prose name: digest prefix stripped; the raw DuckDB name rides in
+			// physical_name for the run_sql round-trip.
 			table_name: "orders",
+			physical_name: `src_${DIGEST}__orders`,
 			layer: "typed",
 			row_count: 1000,
 			source_id: "s_sales",
+			// Upload source: the FILE's name, never the content-keyed `src_<digest>`.
 			source_name: "sales.csv",
-			source_type: "file",
-			source_backend: "duckdb",
+			source_type: "csv",
+			source_backend: null,
 		});
+	});
+
+	it("keeps a db_recipe source's user-chosen name as source_name", () => {
+		const [out] = buildInventory(
+			[
+				tableRow({
+					tableName: "finance__journal_lines",
+					sourceName: "finance",
+					sourceType: "db_recipe",
+					sourceBackend: "postgres",
+					sourceConnectionConfig: { tables: [] },
+				}),
+			],
+			[],
+		);
+		expect(out.source_name).toBe("finance");
+		expect(out.table_name).toBe("journal_lines");
+		expect(out.physical_name).toBe("finance__journal_lines");
+	});
+
+	it("degrades a malformed upload config to the neutral 'upload', never the digest", () => {
+		const [out] = buildInventory(
+			[tableRow({ sourceConnectionConfig: null })],
+			[],
+		);
+		expect(out.source_name).toBe("upload");
+		// The digest appears ONLY in the sanctioned physical_name (the run_sql
+		// round-trip key) — nowhere else in the projection.
+		const { physical_name: _pn, ...rest } = out;
+		expect(JSON.stringify(rest)).not.toMatch(/src_[0-9a-f]{40}/);
 	});
 
 	it("rolls a table's column bands up to a distribution + column count", () => {

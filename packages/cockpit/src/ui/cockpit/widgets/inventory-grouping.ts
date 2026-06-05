@@ -7,13 +7,13 @@
 // (typed) as the representative, surfacing the quarantine layer only as a count.
 // Pure (no React/DB) so the grouping is unit-testable.
 
-import { displayTableName } from "#/lib/display-names";
 import type { InventoryTable } from "#/tools/list-tables";
 
 export interface LogicalTable {
 	key: string; // `${source_id}::${table_name}` — stable React key
-	displayName: string; // table_name minus the `${source}__` prefix
-	tableName: string; // raw logical name (look_table routing needs the original)
+	// The display name — list_tables already projects `table_name` to display
+	// form (DAT-433), so no extra strip happens here.
+	displayName: string;
 	sourceId: string;
 	sourceName: string;
 	sourceType: string;
@@ -24,15 +24,6 @@ export interface LogicalTable {
 	quarantineRows: number;
 	// Every physical layer in this group — the detail modal lists them.
 	layers: InventoryTable[];
-}
-
-/** Strip the `${sourceName}__` prefix the engine prepends to physical tables.
- * Thin alias over the shared `displayTableName` (kept for the call sites here). */
-export function logicalTableName(
-	tableName: string,
-	sourceName: string,
-): string {
-	return displayTableName(tableName, sourceName);
 }
 
 const BAND_LABELS: Record<string, string> = {
@@ -71,8 +62,7 @@ export function groupLogicalTables(tables: InventoryTable[]): LogicalTable[] {
 		const quarantine = layers.find((t) => t.layer === "quarantine");
 		out.push({
 			key,
-			displayName: logicalTableName(rep.table_name, rep.source_name),
-			tableName: rep.table_name,
+			displayName: rep.table_name,
 			sourceId: rep.source_id,
 			sourceName: rep.source_name,
 			sourceType: rep.source_type,
@@ -88,11 +78,12 @@ export function groupLogicalTables(tables: InventoryTable[]): LogicalTable[] {
 // --- source presentation grouping (DAT-424) ----------------------------------
 //
 // An uploaded file is its OWN content-keyed source (DAT-422: one `src_<digest>`
-// source per file). Rendering each as a peer named "source" floods the inventory
-// with hash-named badges — the noise this phase removes. Instead, every upload
-// collapses under ONE "Uploads" umbrella (a presentation group, NOT a data row —
-// the re-pin dropped the umbrella source), shown by FILENAME (already the row's
-// `displayName`); a connection (db_recipe) stays its own named origin.
+// source per file; since DAT-433 `source_name` already carries the FILENAME, the
+// digest never reaches this module). Rendering each as a peer named "source"
+// floods the inventory with per-file badges — the noise this phase removes.
+// Instead, every upload collapses under ONE "Uploads" umbrella (a presentation
+// group, NOT a data row — the re-pin dropped the umbrella source); a connection
+// (db_recipe) stays its own named origin.
 
 /** Filter id of the single "Uploads" umbrella — every content-keyed upload
  * source groups under it, so the digest source name is never shown. */

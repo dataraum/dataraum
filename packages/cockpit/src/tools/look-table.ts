@@ -35,6 +35,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 
 // The persisted JSONB grammar (intents / top_drivers) lives in
 // `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
@@ -80,7 +81,13 @@ export type TableReadiness = z.infer<typeof TableReadiness>;
 
 const LookTableResult = z.object({
 	table_id: z.string(),
+	// Display name (`src_<digest>__` prefix stripped, DAT-433) — for prose. The
+	// round-trip key is table_id; SQL addresses the table via `physical_name`.
 	table_name: z.string(),
+	// The raw DuckDB table name — what run_sql addresses as
+	// `lake.<layer>.<physical_name>`. NOT for prose (it embeds the content-keyed
+	// source prefix for uploads). Empty when the table id didn't resolve.
+	physical_name: z.string(),
 	// False when no column carries a readiness row — the table hasn't been
 	// analyzed (no `detect` run yet), so the grid should say so rather than imply
 	// everything is clean.
@@ -188,6 +195,31 @@ export interface LookTableInput {
 	session_id?: string;
 }
 
+/**
+ * Assemble the tool result from the resolved pieces. Pure (no DB) so the
+ * display/physical name split is unit-testable: `table_name` is the display
+ * form for prose (digest prefix stripped, DAT-433), `physical_name` the raw
+ * DuckDB name run_sql addresses. A null rawTableName (stale table id) yields
+ * the empty not-found shell.
+ */
+export function projectLookTable(
+	tableId: string,
+	rawTableName: string | null,
+	cols: ColumnReadiness[],
+	tableReadiness: TableReadiness | null,
+	pendingTeaches: number,
+): LookTableResult {
+	return {
+		table_id: tableId,
+		table_name: rawTableName === null ? "" : displayTableName(rawTableName),
+		physical_name: rawTableName ?? "",
+		analyzed: cols.some((c) => c.band !== null),
+		pending_teaches: pendingTeaches,
+		columns: cols,
+		table_readiness: tableReadiness,
+	};
+}
+
 /** Per-column readiness for one table, plus a pending-teach hint. */
 export async function lookTable(
 	input: LookTableInput,
@@ -201,14 +233,7 @@ export async function lookTable(
 	if (!table) {
 		// Unknown table id — return an empty shell, not an error, so the agent can
 		// say "no such table" cleanly rather than surfacing a tool failure.
-		return {
-			table_id: input.table_id,
-			table_name: "",
-			analyzed: false,
-			pending_teaches: 0,
-			columns: [],
-			table_readiness: null,
-		};
+		return projectLookTable(input.table_id, null, [], null, 0);
 	}
 
 	// Three independent reads once the table is known: the per-column grid (its own
@@ -222,14 +247,13 @@ export async function lookTable(
 		getPendingOverlays(),
 	]);
 
-	return {
-		table_id: table.tableId,
-		table_name: table.tableName,
-		analyzed: cols.some((c) => c.band !== null),
-		pending_teaches: pending.length,
-		columns: cols,
-		table_readiness: tableReadiness,
-	};
+	return projectLookTable(
+		table.tableId,
+		table.tableName,
+		cols,
+		tableReadiness,
+		pending.length,
+	);
 }
 
 /** Resolve a table's per-column readiness grid (the add_source view). Readiness is
@@ -323,11 +347,14 @@ export const lookTableTool = toolDefinition({
 		"Show a table's per-column readiness — ready/investigate/blocked across the " +
 		"query, aggregation, and reporting intents — with the top quality drivers " +
 		"per column. Read-only; reflects the latest analysis (the calibrated, " +
-		"persisted band). Pass a begin_session session_id to also get the table's " +
-		"whole-table readiness band (table_readiness) from that session; use " +
-		"`why_table` to explain it. pending_teaches counts un-applied teaches across " +
-		"the workspace (not scoped to this table); if > 0, suggest a `replay` before " +
-		"trusting the bands. Use `why_column` to explain a specific column's band.",
+		"persisted band). table_name is the display name for prose; physical_name " +
+		"is the DuckDB name — use it ONLY to address the table in run_sql as " +
+		"`lake.<layer>.<physical_name>`. Pass a begin_session session_id to also " +
+		"get the table's whole-table readiness band (table_readiness) from that " +
+		"session; use `why_table` to explain it. pending_teaches counts un-applied " +
+		"teaches across the workspace (not scoped to this table); if > 0, suggest " +
+		"a `replay` before trusting the bands. Use `why_column` to explain a " +
+		"specific column's band.",
 	inputSchema: z.object({
 		table_id: z
 			.string()

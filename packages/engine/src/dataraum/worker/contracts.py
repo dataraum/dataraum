@@ -53,8 +53,9 @@ class ProgressFailure:
             error chain unwrapped to the phase's own non-retryable failure text.
         phase: The stage in flight when it failed (the snapshot's ``phase``).
         table_id: The raw table whose child failed, when the failure is
-            table-scoped; ``None`` for source-level stages (``import`` /
-            ``semantic_per_column`` / ``detect``).
+            table-scoped; ``None`` for run-level stages (``import`` /
+            ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
+            ``promote``).
     """
 
     message: str
@@ -83,9 +84,10 @@ class ProgressSnapshot:
 
     Attributes:
         phase: The stage the parent is currently in. Advances
-            ``"import"`` → ``"processing_tables"`` → ``"semantic_per_column"``
-            → ``"detect"`` → ``"done"``. A plain string (not an enum) so the
-            wire value stays a bare JSON string for the cockpit.
+            ``"import"`` → ``"check_column_limit"`` → ``"processing_tables"``
+            → ``"semantic_per_column"`` → ``"detect"`` → ``"promote"`` →
+            ``"done"``. A plain string (not an enum) so the wire value stays a
+            bare JSON string for the cockpit.
         tables_total: The number of child ``ProcessTableWorkflow``s fanned
             out. ``0`` until ``import`` enumerates the raw tables (or a
             replay narrows the set); set once before the fan-out awaits.
@@ -222,6 +224,23 @@ class ProcessTableResult(BaseModel):
 
     raw_table_id: str
     typed_table_id: str
+
+
+class RunScopedInput(BaseModel):
+    """Input to an add_source run-level gate — run identity + the run's raw table set.
+
+    The add_source counterpart of :class:`SessionScopedInput`: after the per-source
+    import loop, the parent workflow holds the UNION of the run's raw table ids,
+    and a run-level gate (``check_column_limit``, DAT-430) judges that whole set
+    before the per-table fan-out. Scoping by the explicit id union — not by a
+    source (the run has many) and not by ``session_tables`` (typing links those
+    later) — means the gate also fires when every import SKIPPED, e.g. a run
+    recomposing already-imported sources into a bigger set. The identity is the
+    run's source-free form (``source_id=None``).
+    """
+
+    identity: SourceIdentity
+    table_ids: list[str]
 
 
 class SessionScopedInput(BaseModel):

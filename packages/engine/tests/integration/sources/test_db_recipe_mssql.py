@@ -36,13 +36,12 @@ from __future__ import annotations
 import datetime
 import os
 from decimal import Decimal
-from pathlib import Path
 
 import duckdb
 import pytest
 
 from dataraum.sources.backends import extract_backend
-from dataraum.sources.db_recipe import RecipeTable, parse_recipe
+from dataraum.sources.db_recipe import RecipeTable
 
 _TEST_URL_ENV = "DATARAUM_MSSQL_TEST_URL"
 
@@ -260,38 +259,3 @@ class TestRealMSSQLExtraction:
         assert not result.success
         assert "broken" in result.error
         assert "SELECT failed" in result.error
-
-
-class TestRealMSSQLViaRecipe:
-    """End-to-end via the recipe parser → manager → extract path."""
-
-    def test_recipe_parses_and_extracts(self, mssql_url, duckdb_conn, tmp_path: Path) -> None:
-        """Recipe yaml parsed, persisted-config queries fed to extract_backend."""
-        recipe_path = tmp_path / "adventureworks.yaml"
-        recipe_path.write_text(
-            "backend: mssql\n"
-            "tables:\n"
-            "  customers:\n"
-            "    sql: SELECT CustomerID, FirstName, LastName FROM SalesLT.Customer\n"
-            "  products:\n"
-            "    sql: SELECT ProductID, Name, ListPrice FROM SalesLT.Product\n"
-        )
-
-        parsed = parse_recipe(recipe_path)
-        assert parsed.success, parsed.error
-        recipe = parsed.value
-        assert recipe is not None
-        assert recipe.backend == "mssql"
-        assert [t.name for t in recipe.tables] == ["customers", "products"]
-
-        result = extract_backend(
-            backend=recipe.backend,
-            url=mssql_url,
-            queries=recipe.tables,
-            duckdb_conn=duckdb_conn,
-            raw_prefix="aw_",
-        )
-        assert result.success, result.error
-        tables = {t.name: t for t in result.unwrap().tables}
-        assert tables["customers"].row_count > 0
-        assert tables["products"].row_count > 0

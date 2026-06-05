@@ -1,18 +1,20 @@
 """Unit tests for the import phase.
 
-DAT-290 collapsed multi-source semantics into single-source-per-session.
+The import phase loads ONE source per activity of an add_source run (DAT-422).
 This module covers:
 
-- TestColumnLimit: enforcement of the max-columns guard (orthogonal to
-  source model).
-- TestImportDispatch: ``_run`` dispatches on the bound source's type
-  without orchestrating across multiple sources.
+- TestImportDispatch: ``_run`` validates its config and dispatches on the bound
+  source's type. (The column limit is no longer checked here — the run-scoped
+  ``check_column_limit`` gate owns it, DAT-430; see
+  ``tests/unit/worker/test_check_column_limit.py``.)
 - TestSuffixDispatch: file-source loader selection is driven by the source
   URI's suffix alone (DAT-389), not the filesystem.
-- TestMultiUriDispatch: a file source carries a list of explicit ``s3://`` URIs
-  under ``connection_config['file_uris']`` (DAT-378); ``_run`` validates EVERY
-  element (the engine never globs) then loads each in turn, so one import yields
-  one raw table per URI and a single bad element fails the whole import.
+- TestMultiUriDispatch: the file loader loop is list-generic over
+  ``connection_config['file_uris']`` — ``_run`` validates EVERY element (the
+  engine never globs) then loads each in turn, and a single bad element fails
+  the whole import. The cockpit ``select`` persists one-element lists today
+  (one content-keyed source per file, DAT-422); the loop and its all-or-nothing
+  rollback remain the load mechanism.
 """
 
 from __future__ import annotations
@@ -28,98 +30,8 @@ from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.sources.csv.models import StagedTable
 
 
-class TestColumnLimit:
-    """Tests for the column limit enforcement."""
-
-    def test_column_limit_check_under_limit(self):
-        """_check_column_limit returns None when under limit."""
-        phase = ImportPhase()
-        mock_session = MagicMock()
-        mock_session.execute.return_value.scalar_one.return_value = 50
-
-        ctx = PhaseContext(
-            session=mock_session,
-            duckdb_conn=MagicMock(),
-            source_id="test-source",
-            config={},
-        )
-
-        with patch(
-            "dataraum.pipeline.phases.import_phase.load_pipeline_config",
-            return_value={"limits": {"max_columns": 500}},
-        ):
-            result = phase._check_column_limit(ctx)
-
-        assert result is None
-
-    def test_column_limit_check_over_limit(self):
-        """_check_column_limit returns error when over limit."""
-        phase = ImportPhase()
-        mock_session = MagicMock()
-        mock_session.execute.return_value.scalar_one.return_value = 600
-
-        ctx = PhaseContext(
-            session=mock_session,
-            duckdb_conn=MagicMock(),
-            source_id="test-source",
-            config={},
-        )
-
-        with patch(
-            "dataraum.pipeline.phases.import_phase.load_pipeline_config",
-            return_value={"limits": {"max_columns": 500}},
-        ):
-            result = phase._check_column_limit(ctx)
-
-        assert result is not None
-        assert "600 > 500" in result
-        assert "limits.max_columns" in result
-
-    def test_column_limit_defaults_to_500(self):
-        """When limits section missing, defaults to 500."""
-        phase = ImportPhase()
-        mock_session = MagicMock()
-        mock_session.execute.return_value.scalar_one.return_value = 50
-
-        ctx = PhaseContext(
-            session=mock_session,
-            duckdb_conn=MagicMock(),
-            source_id="test-source",
-            config={},
-        )
-
-        with patch(
-            "dataraum.pipeline.phases.import_phase.load_pipeline_config",
-            return_value={},
-        ):
-            result = phase._check_column_limit(ctx)
-
-        assert result is None
-
-    def test_run_fails_when_no_source(self):
-        """_run fails when ctx.config is missing source_name / source_type."""
-        phase = ImportPhase()
-        ctx = PhaseContext(
-            session=MagicMock(),
-            duckdb_conn=MagicMock(),
-            source_id="test-source",
-            config={},
-        )
-
-        result = phase._run(ctx)
-
-        assert result.status == PhaseStatus.FAILED
-        assert "source_name" in (result.error or "")
-        assert "source_type" in (result.error or "")
-
-
 class TestImportDispatch:
-    """Tests for ``_run``'s dispatch on single-source configuration.
-
-    Per DAT-290 the import phase consumes a single source's identity from
-    ``ctx.config``. The orchestration over multiple registered sources is
-    gone — see git log for the old ``_load_registered_sources`` tests.
-    """
+    """Tests for ``_run``'s config validation + dispatch on the bound source's type."""
 
     def _ctx(self, config: dict[str, Any]) -> PhaseContext:
         return PhaseContext(
@@ -128,6 +40,17 @@ class TestImportDispatch:
             source_id="test-source",
             config=config,
         )
+
+    def test_run_fails_when_no_source(self):
+        """_run fails when ctx.config is missing source_name / source_type."""
+        phase = ImportPhase()
+        ctx = self._ctx({})
+
+        result = phase._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "source_name" in (result.error or "")
+        assert "source_type" in (result.error or "")
 
     def test_run_fails_when_source_row_missing(self) -> None:
         """_run reports a missing Source row clearly rather than crashing."""
@@ -254,7 +177,6 @@ class TestSuffixDispatch:
                 "dataraum.pipeline.phases.import_phase.load_null_value_config",
                 return_value=MagicMock(),
             ),
-            patch.object(ImportPhase, "_check_column_limit", return_value=None),
         ):
             result = phase._run(ctx)
 
@@ -313,14 +235,13 @@ class TestSuffixDispatch:
 
 
 class TestMultiUriDispatch:
-    """A file source loads a LIST of explicit ``s3://`` URIs (DAT-378).
+    """The file loader loop is list-generic over ``connection_config['file_uris']``.
 
-    The cockpit ``select`` stage enumerates a prefix (ListObjectsV2) into an
-    explicit, immutable ``connection_config['file_uris']`` list before the
-    workflow triggers. ``_run`` validates EVERY element through
-    ``validate_source_uri`` (the engine never globs) then loads each in turn, so
-    one import activity yields one raw table per URI. A single bad element fails
-    the whole import before any loader runs.
+    The cockpit ``select`` tool persists one-element lists today (one
+    content-keyed source per file, DAT-422), but the loop is the load
+    mechanism: ``_run`` validates EVERY element through ``validate_source_uri``
+    (the engine never globs) then loads each in turn, and a single bad element
+    fails the whole import before any loader runs.
     """
 
     def _ctx(self, file_uris: list[str]) -> PhaseContext:
@@ -374,7 +295,6 @@ class TestMultiUriDispatch:
                 "dataraum.pipeline.phases.import_phase.load_null_value_config",
                 return_value=MagicMock(),
             ),
-            patch.object(ImportPhase, "_check_column_limit", return_value=None),
         ):
             result = phase._run(ctx)
 
@@ -478,44 +398,3 @@ class TestMultiUriDispatch:
             if c.args and "DROP TABLE IF EXISTS" in str(c.args[0])
         ]
         assert any("src__customers" in d for d in drops), drops
-
-    def test_duplicate_basenames_fail_loud_before_loading(self) -> None:
-        """Two URIs with the same basename fail the import up front (DAT-378).
-
-        Both ``2024/data.csv`` and ``2025/data.csv`` map to raw table
-        ``src__data``; the engine can't merge them onto one table, so ``_run``
-        rejects the list BEFORE any loader runs rather than letting the second
-        ``CREATE OR REPLACE`` clobber the first.
-        """
-        phase = ImportPhase()
-        uris = [
-            "s3://dataraum-lake/2024/data.csv",
-            "s3://dataraum-lake/2025/data.csv",  # same basename -> same raw table
-        ]
-        ctx = self._ctx(uris)
-
-        staged = StagedTable(
-            table_id="t",
-            table_name="src__data",
-            raw_table_name="src__data",
-            row_count=1,
-            column_count=1,
-        )
-        loaders = self._patched_loaders(staged)
-
-        with (
-            patch("dataraum.pipeline.phases.import_phase.CSVLoader", loaders["CSVLoader"]),
-            patch("dataraum.pipeline.phases.import_phase.ParquetLoader", loaders["ParquetLoader"]),
-            patch("dataraum.pipeline.phases.import_phase.JsonLoader", loaders["JsonLoader"]),
-            patch(
-                "dataraum.pipeline.phases.import_phase.load_null_value_config",
-                return_value=MagicMock(),
-            ),
-        ):
-            result = phase._run(ctx)
-
-        assert result.status == PhaseStatus.FAILED
-        assert "same raw table" in (result.error or "")
-        # Fail-loud happens before any load — no loader was constructed/called.
-        for inst in loaders.values():
-            inst.return_value._load_single_file.assert_not_called()

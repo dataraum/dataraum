@@ -1,12 +1,12 @@
 // Tool-call chip state (DAT-436) — the terminal-state mapping the chat rail's
 // chips render from. Pure, no React.
 //
-// SDK-VERSION CONTRACT: the shapes below are UNDOCUMENTED internals of
-// @tanstack/ai, pinned at 0.26.1 (package.json pins it exactly) and pinned
+// SDK CONTRACT: the shapes below are UNDOCUMENTED internals of @tanstack/ai.
+// Deps stay "latest" by project convention — bun.lock owns the installed
+// version, which only moves on an explicit `bun update`. The shapes are pinned
 // empirically by tool-chip-state.contract.test.ts, which drives the real
-// chat() → SSE → ChatClient pipeline. On ANY @tanstack/ai bump: re-run the
-// contract test and RE-VERIFY this mapping against the new version before
-// trusting the chips.
+// chat() → SSE → ChatClient pipeline on every suite run — an update that
+// changes the contract fails the suite loudly; re-verify this mapping then.
 //
 // WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
 // state (verified against @tanstack/ai 0.26.1 by driving the real server chat()

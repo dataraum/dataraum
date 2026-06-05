@@ -7,7 +7,8 @@
 // of the SDK's stream pipeline — nothing type-checks it, so an SDK bump can
 // silently change it and resurrect the eternal chip spinner.
 //
-// This test is the drift-catcher: it drives the REAL pinned SDK end to end —
+// This test is the contract-catcher: it drives the REAL installed SDK end to
+// end (bun.lock owns the version; deps stay "latest" by project convention) —
 // the exact production pipeline, no network, no LLM:
 //
 //   scripted adapter (plays the model: emits the tool call)
@@ -16,8 +17,8 @@
 //     → fetchServerSentEvents       (with an in-process fetchClient)
 //     → ChatClient / StreamProcessor (what useChat renders from)
 //
-// and asserts the exact part shapes toolChipStatus() keys on. If a bump of
-// @tanstack/ai (pinned 0.26.1) changes the contract — adds an error terminal
+// and asserts the exact part shapes toolChipStatus() keys on. If a
+// `bun update` of @tanstack/ai changes the contract — adds an error terminal
 // state, moves the error off `output`, renames the result part — this test
 // fails and tool-chip-state.ts must be re-verified.
 
@@ -226,7 +227,7 @@ function toolResultParts(messages: TurnMessage[]): TurnPart[] {
 // The contract.
 // ---------------------------------------------------------------------------
 
-describe("@tanstack/ai tool-call part contract (pinned 0.26.1)", () => {
+describe("@tanstack/ai tool-call part contract (installed version, bun.lock-owned)", () => {
 	it("an errored SERVER tool execution parks at input-complete with the error in output + a tool-result part state error", async () => {
 		const failing = toolDefinition({
 			name: TOOL_NAME,

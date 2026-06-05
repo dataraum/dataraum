@@ -30,18 +30,16 @@ class Base(DeclarativeBase):
     metadata = metadata_obj
 
 
-def init_database(engine: Engine) -> None:
-    """
-    Initialize database schema.
+def load_all_models() -> None:
+    """Import every module that defines SQLAlchemy models.
 
-    Creates all tables defined in SQLAlchemy models.
-    Safe to call multiple times - only creates missing tables.
-
-    Args:
-        engine: SQLAlchemy engine
+    Populates ``Base.metadata`` with the complete engine schema without
+    touching a database. Used by schema creation (``init_database``) and
+    the offline DDL dump (``dump_ddl``).
     """
     # Core models not owned by any phase
     from dataraum.documentation import db_models as _fix_ledger  # noqa: F401
+    from dataraum.entropy import db_models as _entropy  # noqa: F401
     from dataraum.investigation import db_models as _investigation  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry
@@ -53,6 +51,19 @@ def init_database(engine: Engine) -> None:
     from dataraum.storage import snapshot_head as _snapshot_head  # noqa: F401
 
     import_all_phase_models()
+
+
+def init_database(engine: Engine) -> None:
+    """
+    Initialize database schema.
+
+    Creates all tables defined in SQLAlchemy models.
+    Safe to call multiple times - only creates missing tables.
+
+    Args:
+        engine: SQLAlchemy engine
+    """
+    load_all_models()
 
     with engine.begin() as conn:
         Base.metadata.create_all(conn)
@@ -67,19 +78,7 @@ def reset_database(engine: Engine) -> None:
     Args:
         engine: SQLAlchemy engine
     """
-    # Core models not owned by any phase
-    from dataraum.documentation import db_models as _fix_ledger  # noqa: F401
-    from dataraum.investigation import db_models as _investigation  # noqa: F401
-
-    # Phase-owned models: auto-discovered from registry
-    from dataraum.pipeline.registry import import_all_phase_models
-    from dataraum.query import db_models as _query  # noqa: F401
-    from dataraum.query import snippet_models as _snippets  # noqa: F401
-    from dataraum.storage import models as _storage  # noqa: F401
-    from dataraum.storage import overlay_models as _overlay  # noqa: F401
-    from dataraum.storage import snapshot_head as _snapshot_head  # noqa: F401
-
-    import_all_phase_models()
+    load_all_models()
 
     with engine.begin() as conn:
         Base.metadata.drop_all(conn)

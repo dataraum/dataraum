@@ -81,43 +81,9 @@ jobs:
                   echo "Buckets:"; echo "$buckets"
                   echo "$buckets" | grep -q "$S3_BUCKET"
 
-            - name: Set up Bun (for drizzle-kit pull drift check)
-              uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: "1.3.14"
-
-            - name: Install cockpit deps
-              working-directory: packages/cockpit
-              run: bun install --frozen-lockfile
-
-            - name: Drizzle metadata schema drift check
-              working-directory: packages/cockpit
-              run: |
-                  # Catches: engine added/changed SQLAlchemy models without
-                  # the cockpit refreshing src/db/metadata/. The engine-worker
-                  # materializes the ws_<id> schema during substrate bootstrap,
-                  # which strictly precedes it reporting Status=Running — and the
-                  # heartbeat gate above waited for Running — so the schema is
-                  # fully materialized and a re-pull here is deterministic.
-                  #
-                  # Source the same .env compose used so creds + workspace_id
-                  # stay in lockstep with .env.example. Avoids drift between
-                  # this step and the database-existence check above.
-                  set -a
-                  # shellcheck disable=SC1091
-                  . ../infra/.env
-                  set +a
-                  export METADATA_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}"
-                  bun run db:pull:metadata
-                  drift_modified=$(git diff --name-only -- src/db/metadata/)
-                  drift_untracked=$(git ls-files --others --exclude-standard -- src/db/metadata/)
-                  if [ -n "$drift_modified" ] || [ -n "$drift_untracked" ]; then
-                      echo "::error::Drift detected: engine SQLAlchemy schema differs from committed src/db/metadata/. Run 'bun run db:pull:metadata' locally and commit the result."
-                      [ -n "$drift_modified" ] && { echo "Modified:"; echo "$drift_modified"; }
-                      [ -n "$drift_untracked" ] && { echo "Untracked:"; echo "$drift_untracked"; }
-                      git diff -- src/db/metadata/ || true
-                      exit 1
-                  fi
+            # (The drizzle metadata drift check moved to ci.yml `schema-drift` —
+            # it no longer needs the live stack: schema.sql is dumped offline
+            # from the SQLAlchemy models and pulled via a scratch Postgres.)
 
             - name: Dump compose logs on failure
               if: failure()

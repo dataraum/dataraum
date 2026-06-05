@@ -18,7 +18,6 @@ export interface LogicalTable {
 	sourceName: string;
 	sourceType: string;
 	sourceBackend: string | null;
-	sourceStatus: string | null;
 	// The analyzed representative (typed > semantic > any non-quarantine > first).
 	representative: InventoryTable;
 	// Rows held back during typing (the quarantine layer's row count). 0 when none.
@@ -78,7 +77,6 @@ export function groupLogicalTables(tables: InventoryTable[]): LogicalTable[] {
 			sourceName: rep.source_name,
 			sourceType: rep.source_type,
 			sourceBackend: rep.source_backend,
-			sourceStatus: rep.source_status,
 			representative: rep,
 			quarantineRows: quarantine?.row_count ?? 0,
 			layers,

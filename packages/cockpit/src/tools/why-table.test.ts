@@ -120,4 +120,18 @@ describe("projectWhyTable (DAT-415)", () => {
 		expect(out.band).toBe("investigate"); // scalar still comes through
 		expect(out.pending_teaches).toBe(2);
 	});
+
+	it("strips the content-keyed `src_<digest>__` prefix from table_name (DAT-431)", () => {
+		// The result feeds the agent's context + the synthesis prompt — never the
+		// hash form. The round-trip key is table_id; the caller keeps the raw name
+		// for the readiness target.
+		const out = projectWhyTable(
+			TABLE_ID,
+			"src_204bc8e118543a6c35654c1f68c43539a2e226f2__payments",
+			readiness(),
+			[],
+			0,
+		);
+		expect(out.table_name).toBe("payments");
+	});
 });

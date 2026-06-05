@@ -132,20 +132,31 @@ class SlicingPhase(BasePhase):
                 records_created=0,
             )
 
-        # Initialize LLM infrastructure
+        # Initialize LLM infrastructure. LLM intentionally unavailable (no config,
+        # feature disabled) is a documented operating mode — SKIP gracefully so a
+        # wired begin_session run proceeds, exactly like ``enriched_views``. A
+        # misconfiguration WITH the feature enabled (below) stays a loud failure.
         try:
             config = load_llm_config()
-        except FileNotFoundError as e:
-            return PhaseResult.failed(f"LLM config not found: {e}")
+        except FileNotFoundError:
+            return PhaseResult.success(
+                outputs={"slice_definitions": 0, "message": "LLM config not found, skipping"},
+                records_processed=0,
+                records_created=0,
+                summary="skipped (LLM config not found)",
+            )
 
         # Check if slicing analysis is enabled
         if not config.features.slicing_analysis or not config.features.slicing_analysis.enabled:
-            return PhaseResult.failed(
-                "Slicing analysis is disabled in config. "
-                "Enable it in config/llm.yaml or use --skip-llm to skip LLM phases."
+            return PhaseResult.success(
+                outputs={"slice_definitions": 0, "message": "slicing analysis disabled"},
+                records_processed=0,
+                records_created=0,
+                summary="skipped (slicing analysis disabled)",
             )
 
-        # Create provider
+        # Create provider. Missing provider config / creation failures ARE
+        # misconfigurations now that the feature is enabled — fail loudly.
         provider_config = config.providers.get(config.active_provider)
         if not provider_config:
             return PhaseResult.failed(f"Provider '{config.active_provider}' not configured")

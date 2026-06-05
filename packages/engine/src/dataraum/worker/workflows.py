@@ -262,6 +262,9 @@ class AddSourceWorkflow:
         # fan-out (so a run recomposing already-imported sources — every import
         # skipped — is still gated); a breach raises the non-retryable
         # PhaseFailed and the run ends here, before any child does table work.
+        # Advance the snapshot first so a gate failure is attributed to THIS
+        # stage, not left stamped as "import".
+        self._progress.phase = "check_column_limit"
         await workflow.execute_activity(
             "check_column_limit",
             RunScopedInput(identity=identity, table_ids=target_raw_ids),

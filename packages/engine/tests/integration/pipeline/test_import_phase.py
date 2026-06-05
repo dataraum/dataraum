@@ -458,15 +458,92 @@ class TestImportPhase:
             result = phase._load_database_source(ctx, source, "warehouse", cc, "mssql")
 
         assert result.status == PhaseStatus.COMPLETED, result.error
+
+        # Pin the PERSISTENCE, not the in-session attribute: flush, then expire,
+        # so the assertions re-read the row from the DB. An in-place JSON
+        # mutation (which SQLAlchemy would not change-track, so the flush would
+        # persist nothing) fails here instead of passing on the live object.
+        session.flush()
+        session.expire_all()
+        source = session.get(Source, source_id)
+        assert source is not None
         assert source.connection_config is not None
         assert source.connection_config["imported_recipe_hash"] == "hash-A"
         assert source.connection_config["recipe_hash"] == "hash-A"
-        session.flush()
 
         # The pair now matches → the next run's should_skip is a clean skip.
         skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "recipe unchanged" in skip_reason
+
+    def test_db_recipe_witness_stamp_merges_into_current_config(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ):
+        """The witness stamp merges into the ROW's current config, never the snapshot.
+
+        The mid-import re-select wedge (DAT-430 review): a user re-selects while
+        import runs, re-pointing ``connection_config`` to a NEW recipe; the
+        engine's commit lands last. Stamping the phase-START snapshot would
+        silently REVERT the user's new recipe. Instead the stamp merges into the
+        row's current value: the new tables + recipe_hash survive, the witness
+        records the recipe THIS import materialized, and the next run's hash
+        compare fails loud (mismatch) rather than silently reverting.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from dataraum.core.models import Result
+        from dataraum.sources.backends import BackendExtractionResult, ExtractedTable
+
+        cc: dict[str, Any] = {
+            "tables": [{"name": "t1", "sql": "SELECT 1"}],
+            "recipe_hash": "hash-A",
+        }
+        source_id = str(uuid4())
+        _seed_db_source(session, source_id, "warehouse", cc, with_raw_table=False)
+        source = session.get(Source, source_id)
+        assert source is not None
+        phase = ImportPhase()
+        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+
+        # Simulate the re-select landing mid-import: the row now carries a NEW
+        # recipe while the phase still holds the OLD phase-start snapshot (cc).
+        source.connection_config = {
+            "tables": [{"name": "t2", "sql": "SELECT 2"}],
+            "recipe_hash": "hash-B",
+        }
+        session.flush()
+
+        extracted = BackendExtractionResult(
+            tables=[
+                ExtractedTable(
+                    name="t1",
+                    duckdb_table="warehouse__t1",
+                    row_count=2,
+                    columns=[("a", "VARCHAR")],
+                )
+            ]
+        )
+        chain = MagicMock()
+        chain.resolve.return_value = MagicMock(url="mssql://ignored")
+        with (
+            patch("dataraum.core.credentials.CredentialChain", return_value=chain),
+            patch("dataraum.sources.backends.extract_backend", return_value=Result.ok(extracted)),
+        ):
+            result = phase._load_database_source(ctx, source, "warehouse", cc, "mssql")
+
+        assert result.status == PhaseStatus.COMPLETED, result.error
+        session.flush()
+        session.expire_all()
+        source = session.get(Source, source_id)
+        assert source is not None
+        assert source.connection_config is not None
+        # The user's re-pointed recipe survives the engine's commit …
+        assert source.connection_config["tables"] == [{"name": "t2", "sql": "SELECT 2"}]
+        assert source.connection_config["recipe_hash"] == "hash-B"
+        # … and the witness names the recipe THIS import materialized, so the
+        # next run mismatches (hash-B != hash-A) and fails loud, never skipping.
+        assert source.connection_config["imported_recipe_hash"] == "hash-A"
+        assert phase.should_skip(ctx) is None
 
     def test_drop_junk_columns(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, tmp_path: Path

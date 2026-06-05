@@ -7,10 +7,11 @@
 // once the snapshot reports `done` — either phase==="done" OR a terminal
 // describe() status (so a FAILED run, which never sets "done", still halts).
 //
-// Renders the phase pipeline (import → processing_tables → semantic_per_column →
-// detect → done) with the current step highlighted, the per-table fan-out tally
-// during processing_tables, plus done / failed states. Receives ONLY {state}
-// (canvas widgets have no sendMessage) — the run identity is on the state.
+// Renders the phase pipeline (import → check_column_limit → processing_tables →
+// semantic_per_column → detect → promote → done) with the current step
+// highlighted, the per-table fan-out tally during processing_tables, plus done /
+// failed states. Receives ONLY {state} (canvas widgets have no sendMessage) —
+// the run identity is on the state.
 
 import {
 	Alert,
@@ -30,14 +31,17 @@ import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 // The phase pipeline in order, with friendly labels. Mirrors the engine's
-// advance sequence (workflows.py): import → processing_tables →
-// semantic_per_column → detect → done. A `phase` the engine reports that isn't
-// here (forward-compat) renders no highlight rather than crashing.
+// advance sequence (workflows.py): import → check_column_limit →
+// processing_tables → semantic_per_column → detect → promote → done. A `phase`
+// the engine reports that isn't here (forward-compat) renders no highlight
+// rather than crashing.
 const PHASES = [
 	{ key: "import", label: "Import" },
+	{ key: "check_column_limit", label: "Check size" },
 	{ key: "processing_tables", label: "Type tables" },
 	{ key: "semantic_per_column", label: "Semantic" },
 	{ key: "detect", label: "Detect" },
+	{ key: "promote", label: "Promote" },
 	{ key: "done", label: "Done" },
 ] as const;
 
@@ -53,15 +57,18 @@ function phaseLabel(phase: string): string {
 	return PHASES.find((p) => p.key === phase)?.label ?? phase;
 }
 
-// Live caption for the phases that carry NO per-table signal: `import` (before the
-// fan-out exists) and `semantic_per_column` / `detect` (each ONE source-level
-// reduce activity, workflows.py). For these the table tally is frozen/empty, so the
-// caption keeps the surface alive ("still working, here's on what") instead of dead
-// air. `processing_tables` is intentionally absent — it has its own tally bar.
+// Live caption for the phases that carry NO per-table signal: `import` /
+// `check_column_limit` (before the fan-out exists) and `semantic_per_column` /
+// `detect` / `promote` (each ONE run-level activity, workflows.py). For these the
+// table tally is frozen/empty, so the caption keeps the surface alive ("still
+// working, here's on what") instead of dead air. `processing_tables` is
+// intentionally absent — it has its own tally bar.
 const PHASE_CAPTION: Record<string, string> = {
 	import: "Importing rows…",
+	check_column_limit: "Checking the run's column count against the limit…",
 	semantic_per_column: "Analyzing column semantics across all tables…",
 	detect: "Scoring readiness across all columns…",
+	promote: "Promoting this run's results…",
 };
 
 /** The leading status glyph for one fanned-out table row. */

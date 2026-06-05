@@ -23,8 +23,8 @@ Source shapes — both written by the cockpit ``select`` tool, the only producer
   nothing produces a multi-element list today.
 - A db source is NAME-keyed and carries the synthesized recipe under
   ``connection_config['tables']`` (a list of ``{name, sql}`` query dicts) plus
-  ``recipe_hash`` — sha256 over the canonical recipe JSON, stamped by
-  ``select``. Name-keying means re-selecting the same source name with a
+  ``recipe_hash`` — sha256 over the canonical ``{backend, tables}`` JSON,
+  stamped by ``select``. Name-keying means re-selecting the same source name with a
   different table pick re-points the recipe under raw tables materialized from
   the OLD one, so presence alone cannot justify a skip (DAT-430). At import
   success this phase copies the hash to ``imported_recipe_hash`` — the
@@ -415,8 +415,9 @@ class ImportPhase(BasePhase):
             return PhaseResult.failed(
                 f"Recipe for database source '{source_name}' changed since its raw "
                 f"tables were imported (or that import predates recipe hashing) — "
-                "re-import is not yet supported. Delete and re-create the source "
-                "(or start a fresh workspace) to materialize the new selection."
+                "re-import is not yet supported. Re-select the new pick under a NEW "
+                "source name to import it fresh; re-import in place lands with the "
+                "deferred GC work."
             )
 
         recipe_hash = connection_config.get("recipe_hash")
@@ -505,10 +506,23 @@ class ImportPhase(BasePhase):
         # Stamp the materialization witness (DAT-430): record WHICH recipe these
         # raw tables came from, so a later run can tell an idempotent re-select
         # (hashes match → skip) from a re-pointed recipe (mismatch → loud
-        # failure). A fresh dict, not in-place mutation — SQLAlchemy's plain JSON
-        # column only change-tracks on reassignment. ``select`` carries this key
-        # forward when it re-points the config (its upsert replaces the JSON).
-        source.connection_config = {**connection_config, "imported_recipe_hash": recipe_hash}
+        # failure). Merge into the ROW's current config, not the phase-start
+        # ``connection_config`` snapshot from ctx.config: if a re-select commits
+        # mid-import and the engine commits last, stamping the snapshot would
+        # silently REVERT the user's new recipe — merging the row value keeps it
+        # (the witness is still THIS import's ``recipe_hash``, so the next run's
+        # compare fails loud against the re-pointed recipe). The other wedge arm
+        # — select commits AFTER this stamp — replaces the JSON without the
+        # witness (select read the row pre-stamp), so the next run sees no
+        # witness and also fails loud; acceptable (loud-fail direction), full
+        # select/import serialization is deferred. A fresh dict, not in-place
+        # mutation — SQLAlchemy's plain JSON column only change-tracks on
+        # reassignment. ``select`` carries this key forward when it re-points
+        # the config (its upsert replaces the JSON).
+        source.connection_config = {
+            **(source.connection_config or {}),
+            "imported_recipe_hash": recipe_hash,
+        }
 
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},

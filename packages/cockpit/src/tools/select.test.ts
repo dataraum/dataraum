@@ -219,8 +219,8 @@ describe("select (DAT-398) — database source", () => {
 		expect(insertedRows[0].connectionConfig).toEqual({
 			tables: expectedTables,
 			// The content hash the engine's import skip keys off (DAT-430) —
-			// deterministic over the canonical tables JSON.
-			recipe_hash: recipeContentHash(expectedTables),
+			// deterministic over the canonical {backend, tables} JSON.
+			recipe_hash: recipeContentHash("mssql", expectedTables),
 		});
 		expect(
 			(insertedRows[0].connectionConfig as Record<string, unknown>).recipe_hash,
@@ -246,8 +246,28 @@ describe("select (DAT-398) — database source", () => {
 		const subset = [{ name: "customers", sql: 'SELECT * FROM "Customers"' }];
 		expect(insertedRows[0].connectionConfig).toEqual({
 			tables: subset,
-			recipe_hash: recipeContentHash(subset),
+			recipe_hash: recipeContentHash("postgres", subset),
 		});
+	});
+
+	it("hashes the backend into recipe_hash — same tables, different backend ≠ same recipe (DAT-430)", async () => {
+		// A re-select of the same source name against a DIFFERENT backend with
+		// identical table names must mint a DIFFERENT recipe_hash, so the engine's
+		// witness compare fails loud instead of silently skipping over raw tables
+		// extracted from the other DBMS.
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "mssql",
+		});
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "postgres",
+		});
+		const hashOf = (row: Record<string, unknown>) =>
+			(row.connectionConfig as Record<string, unknown>).recipe_hash;
+		expect(hashOf(insertedRows[0])).not.toBe(hashOf(insertedRows[1]));
 	});
 
 	it("carries the engine's imported_recipe_hash witness across a re-select (DAT-430)", async () => {
@@ -275,7 +295,7 @@ describe("select (DAT-398) — database source", () => {
 		expect(cc.imported_recipe_hash).toBe("prior-hash");
 		// The CURRENT recipe_hash is the fresh pick's hash, not the witness.
 		expect(cc.recipe_hash).toBe(
-			recipeContentHash([
+			recipeContentHash("mssql", [
 				{ name: "customers", sql: 'SELECT * FROM "Customers"' },
 			]),
 		);

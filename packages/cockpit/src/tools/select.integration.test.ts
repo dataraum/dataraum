@@ -170,8 +170,9 @@ describe.skipIf(!STACK_AVAILABLE)(
 			];
 			expect(row.connection_config).toEqual({
 				tables: expectedTables,
-				// DAT-430: the content hash the engine's import skip keys off.
-				recipe_hash: recipeContentHash(expectedTables),
+				// DAT-430: the content hash the engine's import skip keys off —
+				// canonical over {backend, tables}, so the backend is part of it.
+				recipe_hash: recipeContentHash("mssql", expectedTables),
 			});
 			// tables and file_uris never cross-contaminate.
 			expect(row.connection_config).not.toHaveProperty("file_uris");

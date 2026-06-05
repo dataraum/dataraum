@@ -149,21 +149,32 @@ export interface RecipeTable {
 
 /**
  * The recipe content hash (`connection_config.recipe_hash`) — sha256 over the
- * canonical `tables` JSON (DAT-430).
+ * canonical `{backend, tables}` JSON (DAT-430).
  *
- * Canonical = `JSON.stringify` of the `{name, sql}` array: key order is fixed
- * by construction and array order follows the connected schema's table order,
- * so a re-select of the SAME pick serializes — and hashes — identically. The
- * engine treats the value as an OPAQUE token: it never recomputes it, only
- * copies it to `imported_recipe_hash` at import success and compares the two on
- * a later run (`ImportPhase.should_skip`) — so no cross-language
- * canonicalization contract exists beyond this one function. This is what kills
- * the silent-staleness hole for name-keyed db sources: a re-pointed recipe
- * stops matching the import witness and the run fails loud instead of
- * presence-skipping over the old raw tables.
+ * Canonical = `JSON.stringify` of a `{backend, tables}` object: key order is
+ * fixed by construction (this literal + the `{name, sql}` entries) and array
+ * order follows the connected schema's table order, so a re-select of the SAME
+ * pick serializes — and hashes — identically. The backend is PART of the
+ * identity: the recipe SQL is interpreted against the connected backend, so the
+ * same table names against a DIFFERENT backend are a different recipe — without
+ * it, re-selecting a source name against another DBMS with identical table
+ * names would match the import witness and silently skip over raw tables
+ * extracted from the old backend. The engine treats the value as an OPAQUE
+ * token: it never recomputes it, only copies it to `imported_recipe_hash` at
+ * import success and compares the two on a later run
+ * (`ImportPhase.should_skip`) — so no cross-language canonicalization contract
+ * exists beyond this one function. This is what kills the silent-staleness
+ * hole for name-keyed db sources: a re-pointed recipe stops matching the
+ * import witness and the run fails loud instead of presence-skipping over the
+ * old raw tables.
  */
-export function recipeContentHash(tables: RecipeTable[]): string {
-	return createHash("sha256").update(JSON.stringify(tables)).digest("hex");
+export function recipeContentHash(
+	backend: string,
+	tables: RecipeTable[],
+): string {
+	return createHash("sha256")
+		.update(JSON.stringify({ backend, tables }))
+		.digest("hex");
 }
 
 /** Quote a single SQL identifier segment, doubling embedded double-quotes.

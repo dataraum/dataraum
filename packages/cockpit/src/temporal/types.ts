@@ -75,7 +75,8 @@ export interface TableProgress {
 // Why an add_source run ended badly — mirrors `worker.contracts.ProgressFailure`.
 // `message` is the root-cause text (the phase's own failure, not a Temporal
 // wrapper); `phase` is the stage in flight; `table_id` pins a table-scoped
-// failure (null for source-level stages import/semantic_per_column/detect).
+// failure (null for run-level stages import/check_column_limit/
+// semantic_per_column/detect/promote).
 export interface ProgressFailure {
 	message: string;
 	phase: string;
@@ -88,9 +89,10 @@ export interface ProgressFailure {
 // over Temporal's pydantic data converter. snake_case, no key remap. Evolve
 // this and the engine dataclass in lockstep (a field rename is cross-PACKAGE).
 //
-// `phase` advances "import" → "processing_tables" → "semantic_per_column" →
-// "detect" → "done" (a bare string, not an enum, so the wire value is plain
-// JSON). `tables_total` is 0 until import enumerates the fan-out; resets per run.
+// `phase` advances "import" → "check_column_limit" → "processing_tables" →
+// "semantic_per_column" → "detect" → "promote" → "done" (a bare string, not an
+// enum, so the wire value is plain JSON). `tables_total` is 0 until import
+// enumerates the fan-out; resets per run.
 // `tables` are the named steps behind the count; `failure` is set (non-null)
 // once a run ends badly.
 export interface ProgressSnapshot {

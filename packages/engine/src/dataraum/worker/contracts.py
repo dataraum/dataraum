@@ -53,8 +53,9 @@ class ProgressFailure:
             error chain unwrapped to the phase's own non-retryable failure text.
         phase: The stage in flight when it failed (the snapshot's ``phase``).
         table_id: The raw table whose child failed, when the failure is
-            table-scoped; ``None`` for source-level stages (``import`` /
-            ``semantic_per_column`` / ``detect``).
+            table-scoped; ``None`` for run-level stages (``import`` /
+            ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
+            ``promote``).
     """
 
     message: str
@@ -83,9 +84,10 @@ class ProgressSnapshot:
 
     Attributes:
         phase: The stage the parent is currently in. Advances
-            ``"import"`` → ``"processing_tables"`` → ``"semantic_per_column"``
-            → ``"detect"`` → ``"done"``. A plain string (not an enum) so the
-            wire value stays a bare JSON string for the cockpit.
+            ``"import"`` → ``"check_column_limit"`` → ``"processing_tables"``
+            → ``"semantic_per_column"`` → ``"detect"`` → ``"promote"`` →
+            ``"done"``. A plain string (not an enum) so the wire value stays a
+            bare JSON string for the cockpit.
         tables_total: The number of child ``ProcessTableWorkflow``s fanned
             out. ``0`` until ``import`` enumerates the raw tables (or a
             replay narrows the set); set once before the fan-out awaits.

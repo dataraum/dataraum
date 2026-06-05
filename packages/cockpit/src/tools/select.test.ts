@@ -512,4 +512,46 @@ describe("select — one approval gate (DAT-436)", () => {
 		).rejects.toThrow(/supported backend/);
 		expect(trigger).not.toHaveBeenCalled();
 	});
+
+	// The failure seam INSIDE the gate: persistence succeeded, then the trigger
+	// threw (Temporal down / unconfigured). This pins the INTENDED half-state —
+	// there is deliberately no rollback machinery around the upsert.
+	it("a failing trigger leaves sources persisted, errors the call, and a re-approval recovers", async () => {
+		// First approval: the upsert lands, then workflow.start fails.
+		const failingTrigger = vi.fn(async () => {
+			throw new Error("TransportError: failed to connect to Temporal");
+		});
+		await expect(
+			select(
+				{ schema: FILE_SCHEMA, vertical: "finance" },
+				undefined,
+				failingTrigger,
+			),
+		).rejects.toThrow(/failed to connect to Temporal/);
+
+		// The half-state: the source row WAS written (persist precedes trigger in
+		// the gate) and the tool call errored — no SelectResult, no run identity;
+		// the user sees the failed call, not a phantom "import running".
+		expect(valuesMock).toHaveBeenCalledTimes(1);
+		expect(failingTrigger).toHaveBeenCalledTimes(1);
+
+		// Re-approval recovers: the SAME selection upserts idempotently onto the
+		// same content-keyed name (the conflict path, not a duplicate row) and a
+		// fresh trigger starts the run — nothing about the half-state blocks it.
+		const trigger = makeTrigger();
+		const result = await select(
+			{ schema: FILE_SCHEMA, vertical: "finance" },
+			undefined,
+			trigger,
+		);
+		expect(valuesMock).toHaveBeenCalledTimes(2);
+		expect(insertedRows[1].name).toBe(insertedRows[0].name);
+		expect(onConflictMock).toHaveBeenCalledTimes(2);
+		expect(trigger).toHaveBeenCalledWith({
+			source_ids: result.source_ids,
+			vertical: "finance",
+		});
+		expect(result.workflow_id).toBe("addsource-ws-sess");
+		expect(result.run_id).toBe("run-1");
+	});
 });

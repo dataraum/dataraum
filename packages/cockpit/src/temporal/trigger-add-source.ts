@@ -128,6 +128,13 @@ export async function triggerAddSource(
 	// session_id; without the parent row the run dies mid-fan-out at that FK. No
 	// source_id on the session (DAT-407): a session's source is derived from its
 	// linked tables.
+	//
+	// Failure seam: if `workflow.start` below throws AFTER this insert (Temporal
+	// down / misconfigured), the row stays behind as an orphan — a session no
+	// workflow ever runs against. That is accepted: it is FK-satisfied and
+	// harmless (nothing joins to it until a run links tables), and the next
+	// approval seeds a FRESH session_id rather than reusing it. No cleanup
+	// machinery — the select call surfaces the error and a re-approval recovers.
 	await metadataDb.insert(investigationSessions).values({
 		sessionId,
 		intent: SEED_INTENT,
@@ -160,6 +167,15 @@ export async function triggerAddSource(
 			args: [payload],
 			// Reused per run (keyed by session) across replays so Temporal UI groups
 			// iterations under one id — same policy the replay tool uses.
+			//
+			// DUPLICATE RUNS ARE BY DESIGN (decision pinned in the PR #231 review):
+			// every select approval mints a fresh session_id, so a re-called select
+			// starts an INDEPENDENT full run. Under the versioned-snapshot model
+			// (DAT-412) runs coexist — each writes its own run_id-stamped metadata,
+			// none clobbers another — so there is nothing to guard. The human gate
+			// IS the approval card: a re-called select requires a visible second
+			// approval the user can deny. Deliberately NO idempotency key and NO
+			// in-flight check here.
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 

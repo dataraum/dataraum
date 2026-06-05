@@ -16,7 +16,6 @@ from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
 from dataraum.analysis.eligibility.evaluator import (
     evaluate_rules,
     extract_metrics,
-    is_likely_key,
     quarantine_and_drop_columns,
 )
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -127,13 +126,6 @@ class ColumnEligibilityPhase(BasePhase):
             profile = profile_map.get(column.column_id)
             metrics = extract_metrics(profile)
             status, rule_id, reason = evaluate_rules(config, metrics, column.column_name)
-
-            # Check if critical column (likely key)
-            if status == "INELIGIBLE" and is_likely_key(column.column_name, config.key_patterns):
-                return PhaseResult.failed(
-                    f"Critical column '{column.column_name}' in table '{table.table_name}' "
-                    f"is ineligible: {reason}. Cannot proceed with unusable key column."
-                )
 
             # PK omitted so the model's Python-side default applies.
             rows.append(

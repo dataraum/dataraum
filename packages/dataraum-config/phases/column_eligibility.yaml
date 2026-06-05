@@ -45,10 +45,3 @@ rules:
 
 # Default status if no rules match
 default_status: "ELIGIBLE"
-
-# Patterns to identify likely key columns (regex)
-# Pipeline fails if a column matching these patterns is INELIGIBLE
-key_patterns:
-  - "_id$"      # Columns ending in _id
-  - "^id$"      # Column named exactly 'id'
-  - "_key$"     # Columns ending in _key

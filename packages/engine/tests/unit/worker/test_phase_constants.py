@@ -46,7 +46,9 @@ _CHAIN_PHASES = (
 # independently from workflows.py so a detector-bearing session phase that isn't
 # wired into the terminal ``session_detect`` (SESSION_DETECTOR_PHASES) is caught —
 # the regression DAT-403's value layer would have been (detectors declared, phase
-# unwired).
+# unwired). The interleaved non-phase steps (``session_materialize_overlays``,
+# ``session_write_keepers``, ``session_promote_to_latest``) declare no detectors and
+# are intentionally omitted — the orphan guard only needs the detector-bearing phases.
 _SESSION_CHAIN_PHASES = (
     "begin_session_select",
     *_SESSION_PHASE_ORDER,

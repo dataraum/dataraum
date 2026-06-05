@@ -90,6 +90,11 @@ class EnrichedViewsPhase(BasePhase):
         DAT-413 re-seam): there is NO "views already exist → skip" bail — a re-run
         mints a fresh ``run_id`` and re-derives the view definitions under it, and
         ``_run`` is idempotent on the ``run_id`` grain.
+
+        Run-scoped: ``TableEntity`` is run-versioned and coexists across runs
+        (DAT-408/413), so the fact lookup filters to ``ctx.run_id`` — same as
+        ``_run`` and ``load_defined_relationships`` below. An unscoped read would
+        see every prior run's fact row for the same table.
         """
         if not ctx.table_ids:
             return "No tables in session selection"
@@ -98,6 +103,8 @@ class EnrichedViewsPhase(BasePhase):
             TableEntity.table_id.in_(ctx.table_ids),
             TableEntity.is_fact_table.is_(True),
         )
+        if ctx.run_id is not None:
+            fact_stmt = fact_stmt.where(TableEntity.run_id == ctx.run_id)
         if ctx.session.execute(fact_stmt).first() is None:
             return "No fact tables identified"
 
@@ -118,11 +125,22 @@ class EnrichedViewsPhase(BasePhase):
         tables_by_id = {t.table_id: t for t in typed_tables}
         tables_by_name = {t.table_name: t for t in typed_tables}
 
-        # Find fact tables from entity detections
+        # Find this run's fact tables from entity detections. Run-scoped to
+        # ``ctx.run_id`` — exactly like the relationship query below and
+        # ``load_defined_relationships``. ``TableEntity`` is run-versioned and
+        # coexists across runs (DAT-408/413: delete-by-run_id then insert), so an
+        # unscoped read iterates every prior run's fact row for the same table and
+        # drives a redundant loop iteration per stale row — which, with the
+        # production session's ``autoflush=False``, inserts a duplicate
+        # ``EnrichedView`` per stale row and breaks the latest-only,
+        # one-row-per-fact contract that ``dimension_coverage`` reads via
+        # ``scalar_one_or_none``.
         fact_stmt = select(TableEntity).where(
             TableEntity.table_id.in_(table_ids),
             TableEntity.is_fact_table.is_(True),
         )
+        if ctx.run_id is not None:
+            fact_stmt = fact_stmt.where(TableEntity.run_id == ctx.run_id)
         fact_entities = ctx.session.execute(fact_stmt).scalars().all()
 
         if not fact_entities:
@@ -297,10 +315,12 @@ class EnrichedViewsPhase(BasePhase):
             # DAT-415): reconcile-in-place, stamping the run that materialized it.
             # The recipe (above) carries the version history; readers resolve the
             # current view here without run-scoping. Keyed on fact_table_id alone
-            # (no session filter) — the physical view is shared in lake.typed, so
-            # the metadata is last-writer-wins per fact, which under single-user
-            # sequential begin_session is exactly one writer. (Concurrent sessions
-            # enriching the same fact is a multi-session concern, not this slice.)
+            # (no session filter) and now DB-enforced by ``uq_enriched_view_fact_table``
+            # — the physical view is shared in lake.typed, so the metadata is
+            # last-writer-wins per fact. The run-scoped fact query above means one
+            # iteration per fact; the unique constraint is the structural backstop
+            # so any errant second insert fails loudly here instead of silently
+            # surfacing as ``MultipleResultsFound`` in a downstream reader.
             view_record = ctx.session.execute(
                 select(EnrichedView).where(EnrichedView.fact_table_id == fact_table.table_id)
             ).scalar_one_or_none()

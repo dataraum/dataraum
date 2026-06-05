@@ -73,16 +73,22 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 		expect(screen.getByTestId("canvas-column-why-signals").textContent).toMatch(
 			/Based on 1 signal\b/,
 		);
-		// The evidence table carries the humanized dimension + detector, with the
-		// raw dotted path kept beneath as a technical subtitle.
-		expect(screen.getByTestId("canvas-column-why-evidence")).toBeTruthy();
+		// The evidence table carries the humanized dimension + detector. The raw
+		// dotted taxonomy path is NOT rendered (DAT-437) — it survives only as a
+		// hover tooltip on the label.
+		const evidence = screen.getByTestId("canvas-column-why-evidence");
+		expect(evidence).toBeTruthy();
 		expect(screen.getByText("Unit entropy")).toBeTruthy();
-		expect(screen.getByText("Unit declaration")).toBeTruthy();
-		expect(screen.getByText("semantic.units.unit_declaration")).toBeTruthy();
-		// The JSON detail blob is pretty-printed (technical, but readable).
-		expect(
-			screen.getByTestId("canvas-column-why-evidence").textContent,
-		).toContain("undeclared_ratio");
+		const label = screen.getByText("Unit declaration");
+		expect(label.getAttribute("title")).toBe("semantic.units.unit_declaration");
+		expect(evidence.textContent).not.toContain(
+			"semantic.units.unit_declaration",
+		);
+		// The detail renders as a key→value hierarchy, not a JSON blob (DAT-437).
+		expect(evidence.textContent).toContain("undeclared_ratio");
+		expect(evidence.textContent).toContain("0.8");
+		expect(evidence.textContent).not.toContain("{");
+		expect(evidence.textContent).not.toContain('"metric"');
 	});
 
 	it("falls back to a dash for an evidence row with an empty dimension path (no blank cell)", () => {

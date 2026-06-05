@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { isAgentRefsPart } from "#/lib/agent-refs";
 import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 
 // The widget drives the connect flow via the stable actions context; mock it so
@@ -69,7 +70,7 @@ describe("UploadAreaWidget", () => {
 		expect(bubble.content).toContain("people.csv");
 		expect(bubble.content).not.toContain("s3://");
 		expect(refs.content).toContain("s3://dataraum-lake/uploads/u/people.csv");
-		expect(refs.content.startsWith("[[dataraum:uploaded-objects]]")).toBe(true);
+		expect(isAgentRefsPart(refs.content)).toBe(true);
 
 		vi.unstubAllGlobals();
 	});

@@ -21,6 +21,7 @@ import {
 	Text,
 } from "@mantine/core";
 import { useState } from "react";
+import { turnWithRefs } from "#/lib/agent-refs";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -284,11 +285,16 @@ export function WorkspaceInventoryWidget({
 
 	// Click-through to the per-table readiness grid (DAT-350): route through the
 	// agent loop (sendMessage) so look_table runs once per click, carrying the
-	// row's table_id — it does NOT call lookTable directly.
+	// row's table_id — it does NOT call lookTable directly. The id rides in a
+	// model-only refs part (DAT-437) so the visible bubble carries the human
+	// name only.
 	const inspectTable = (tableId: string, tableName: string) =>
 		sendMessage(
-			`Show the readiness for table "${tableName}" (table_id ${tableId}) ` +
-				`using the look_table tool.`,
+			turnWithRefs(
+				`Show the readiness for table "${tableName}" using the look_table tool.`,
+				`Internal only — do not quote in prose: table_id=${tableId} ` +
+					`(use as the table_id argument to the look_table tool).`,
+			),
 		);
 
 	const logical = groupLogicalTables(tables);

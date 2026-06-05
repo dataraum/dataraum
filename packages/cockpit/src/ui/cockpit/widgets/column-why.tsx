@@ -5,9 +5,10 @@
 //
 // Reads theme/tokens only; the row type is a type-only import (erased).
 
-import { Alert, Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
-import { humanizeIdentifier, prettyJson } from "#/lib/display-names";
+import { Alert, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { humanizeIdentifier } from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
 
 const INTENT_LABEL: Record<string, string> = {
 	query_intent: "Query",
@@ -146,29 +147,21 @@ export function ColumnWhyWidget({
 						</Table.Thead>
 						<Table.Tbody>
 							{why.evidence.map((e) => {
-								// Lead with the readable dimension (the last path segment,
-								// humanized) and keep the full dotted path as a dimmed,
-								// technical subtitle — "Naming clarity" over the raw
-								// `semantic.business_meaning.naming_clarity`.
+								// The readable dimension: the last path segment, humanized
+								// ("Naming clarity"). The dotted `dimension_path` is internal
+								// taxonomy (DAT-437) — never shown, kept only as a hover
+								// tooltip on the label.
 								const dimLeaf = e.dimension_path.split(".").at(-1) ?? "";
 								return (
 									<Table.Tr key={`${e.dimension_path}-${e.detector_id}`}>
 										<Table.Td>
-											<Stack gap={0}>
-												<Text span size="xs">
-													{humanizeIdentifier(dimLeaf) ||
-														e.dimension_path ||
-														"—"}
-												</Text>
-												{/* Raw dotted path as a technical subtitle — skip it
-												    entirely when empty so the cell doesn't show a blank
-												    monospace line. */}
-												{e.dimension_path && (
-													<Text span size="xs" c="dimmed" ff="monospace">
-														{e.dimension_path}
-													</Text>
-												)}
-											</Stack>
+											<Text
+												span
+												size="xs"
+												title={e.dimension_path || undefined}
+											>
+												{humanizeIdentifier(dimLeaf) || "—"}
+											</Text>
 										</Table.Td>
 										<Table.Td>
 											<Text span size="xs" c="dimmed">
@@ -177,27 +170,9 @@ export function ColumnWhyWidget({
 										</Table.Td>
 										<Table.Td>{e.score.toFixed(2)}</Table.Td>
 										<Table.Td>
-											{e.detail ? (
-												<Code
-													block
-													style={{
-														fontSize: 11,
-														maxWidth: 360,
-														maxHeight: 200,
-														overflow: "auto",
-														// Wrap so a long blob (or a plain-string detail
-														// that isn't JSON) doesn't force the table wider.
-														whiteSpace: "pre-wrap",
-														wordBreak: "break-word",
-													}}
-												>
-													{prettyJson(e.detail)}
-												</Code>
-											) : (
-												<Text span size="xs" c="dimmed">
-													—
-												</Text>
-											)}
+											{/* Key→value hierarchy, shared with the upcoming
+											    why_table / why_relationship widgets (DAT-434). */}
+											<EvidenceDetail detail={e.detail} />
 										</Table.Td>
 									</Table.Tr>
 								);

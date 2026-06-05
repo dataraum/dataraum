@@ -8,6 +8,7 @@
 // code in the client bundle).
 
 import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { turnWithRefs } from "#/lib/agent-refs";
 import type { TableReadiness } from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -109,12 +110,17 @@ export function TableReadinessWidget({
 	// through the agent loop (sendMessage) so `why_column` runs once per click.
 	// why_column takes the row's column_id; its paid Anthropic synthesis is gated
 	// inside whyColumn (skipped for an un-analyzed column), so this just asks for
-	// the explanation by id — it does NOT call whyColumn directly. The label
-	// captions the loading canvas until the explanation streams back.
+	// the explanation by id — it does NOT call whyColumn directly. The id rides in
+	// a model-only refs part (DAT-437) so the visible bubble carries the human
+	// name only. The label captions the loading canvas until the explanation
+	// streams back.
 	const explainColumn = (columnId: string, columnName: string) => {
 		sendMessage(
-			`Explain the readiness for column "${columnName}" (column_id ${columnId}) ` +
-				`using the why_column tool.`,
+			turnWithRefs(
+				`Explain the readiness for column "${columnName}" using the why_column tool.`,
+				`Internal only — do not quote in prose: column_id=${columnId} ` +
+					`(use as the column_id argument to the why_column tool).`,
+			),
 			{ label: "Explaining the column…" },
 		);
 	};

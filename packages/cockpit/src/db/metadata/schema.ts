@@ -295,6 +295,7 @@ export const enrichedViews = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_enriched_view_fact_table").on(table.factTableId),
 	],
 );
 
@@ -965,6 +966,7 @@ export const tableEntities = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_table_entity_table_run").on(table.tableId, table.runId),
 	],
 );
 

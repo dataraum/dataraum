@@ -349,6 +349,7 @@ CREATE TABLE enriched_views (
 	evidence JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_enriched_views PRIMARY KEY (view_id), 
+	CONSTRAINT uq_enriched_view_fact_table UNIQUE (fact_table_id), 
 	CONSTRAINT fk_enriched_views_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_enriched_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
 	CONSTRAINT fk_enriched_views_view_table_id_tables FOREIGN KEY(view_table_id) REFERENCES tables (table_id) ON DELETE SET NULL
@@ -443,6 +444,7 @@ CREATE TABLE table_entities (
 	detection_source VARCHAR, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_table_entities PRIMARY KEY (entity_id), 
+	CONSTRAINT uq_table_entity_table_run UNIQUE (table_id, run_id), 
 	CONSTRAINT fk_table_entities_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_table_entities_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE
 );

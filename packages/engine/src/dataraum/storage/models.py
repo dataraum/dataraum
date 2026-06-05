@@ -165,9 +165,11 @@ class Column(Base):
     type_candidates: Mapped[list[TypeCandidate]] = relationship(
         back_populates="column", cascade="all, delete-orphan", passive_deletes=True
     )
-    type_decision: Mapped[TypeDecision | None] = relationship(
+    # One TypeDecision per column PER RUN (DAT-413) — runs coexist, so this is
+    # a list; readers pick the relevant run's row (or the latest manual), never
+    # "the" decision.
+    type_decisions: Mapped[list[TypeDecision]] = relationship(
         back_populates="column",
-        uselist=False,
         cascade="all, delete-orphan",
         passive_deletes=True,
     )

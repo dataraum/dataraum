@@ -4,7 +4,11 @@ Tests the value-based pattern matching used for type inference.
 Column name patterns are intentionally NOT supported.
 """
 
-from dataraum.analysis.typing.patterns import Pattern, PatternConfig
+from dataraum.analysis.typing.patterns import (
+    Pattern,
+    PatternConfig,
+    normalize_standardization_expr,
+)
 from dataraum.core.models.base import DataType
 
 
@@ -98,6 +102,64 @@ class TestPattern:
         assert pattern.matches("$1,234.56")
         assert pattern.matches("$100")
         assert pattern.detected_unit == "USD"
+
+
+class TestNormalizeStandardizationExpr:
+    """TRY_-normalization of standardization expressions.
+
+    DuckDB's STRPTIME/CAST throw on non-conforming input, and TRY_CAST does
+    NOT catch inner-function errors — one malformed value would score a
+    pattern 0.0 in inference or fail the typed-table CREATE outright.
+    """
+
+    def test_strptime_rewritten(self):
+        assert (
+            normalize_standardization_expr("STRPTIME(\"{col}\", '%d.%m.%Y')")
+            == "TRY_STRPTIME(\"{col}\", '%d.%m.%Y')"
+        )
+
+    def test_inner_cast_rewritten(self):
+        expr = "CAST(REPLACE(\"{col}\", '%', '') AS DOUBLE) / 100"
+        assert (
+            normalize_standardization_expr(expr)
+            == "TRY_CAST(REPLACE(\"{col}\", '%', '') AS DOUBLE) / 100"
+        )
+
+    def test_idempotent_on_try_variants(self):
+        expr = 'COALESCE(TRY_STRPTIME("{col}", \'%d.%m.%Y\'), TRY_CAST("{col}" AS DATE))'
+        assert normalize_standardization_expr(expr) == expr
+
+    def test_other_functions_untouched(self):
+        expr = 'MAKE_DATE(TRY_CAST(LEFT("{col}", 4) AS INT), 1, 1)'
+        assert normalize_standardization_expr(expr) == expr
+
+    def test_pattern_normalizes_on_construction(self):
+        pattern = Pattern(
+            name="eu_date",
+            pattern=r"^\d{1,2}\.\d{1,2}\.\d{2,4}$",
+            inferred_type=DataType.DATE,
+            standardization_expr="STRPTIME(\"{col}\", '%d.%m.%Y')",
+        )
+        assert pattern.standardization_expr == "TRY_STRPTIME(\"{col}\", '%d.%m.%Y')"
+
+    def test_taught_override_pattern_normalized(self):
+        """Overlay-taught patterns get the same normalization as builtins."""
+        config = PatternConfig(
+            {
+                "overrides": {
+                    "patterns": {
+                        "de_date_ddmmyyyy": {
+                            "pattern": r"^\d{1,2}\.\d{1,2}\.\d{4}$",
+                            "standardization_expr": "STRPTIME(\"{col}\", '%d.%m.%Y')",
+                        }
+                    }
+                }
+            }
+        )
+        (p,) = config.get_patterns()
+        assert p.standardization_expr == "TRY_STRPTIME(\"{col}\", '%d.%m.%Y')"
+        # inferred_type defaults to DATE for override patterns with an expr
+        assert p.inferred_type == DataType.DATE
 
 
 class TestPatternConfig:

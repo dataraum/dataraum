@@ -48,25 +48,22 @@ class BasePhase(ABC):
         return []
 
     def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
-        """The typed tables this phase should process, scoped to ``ctx.table_ids``.
+        """The typed tables this phase should process — the per-table fan-out unit.
 
         The table-local phases run per-table under the DAT-370 fan-out:
         ``ctx.table_ids`` carries the single typed table the child workflow is
-        processing, so the phase analyzes exactly that table. An empty
-        ``ctx.table_ids`` means source-wide (direct/test invocation).
+        processing, so the phase analyzes exactly that table.
 
-        This base implementation is **source-scoped** (add_source lineage) — it
-        calls :meth:`PhaseContext.require_source_id`, so a phase past the
-        add_source boundary (``source_id is None``) that forgets to override it
-        fails loud rather than silently matching zero rows on ``source_id IS
-        NULL``. Session-scoped phases (begin_session) MUST override this to scope
-        by ``ctx.table_ids`` alone.
+        Source-free (DAT-422): past ``import`` a run spans 1–N per-object sources,
+        so resolution keys on the ``table_ids`` the fan-out hands in — never
+        ``source_id`` (which the source-free children leave ``None``). The
+        table-local phases always run under the fan-out, so an empty ``table_ids``
+        (no scoped unit) resolves to nothing; the run-wide reduce
+        (``semantic_per_column``) overrides this to scope by the session instead.
         """
-        stmt = select(Table).where(
-            Table.layer == "typed", Table.source_id == ctx.require_source_id()
-        )
-        if ctx.table_ids:
-            stmt = stmt.where(Table.table_id.in_(ctx.table_ids))
+        if not ctx.table_ids:
+            return []
+        stmt = select(Table).where(Table.layer == "typed", Table.table_id.in_(ctx.table_ids))
         return list(ctx.session.execute(stmt).scalars().all())
 
     def run(self, ctx: PhaseContext) -> PhaseResult:

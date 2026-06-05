@@ -106,7 +106,7 @@ beforeEach(() => {
 
 describe("triggerAddSource (DAT-352)", () => {
 	it("seeds the investigation_sessions row BEFORE starting the workflow", async () => {
-		await triggerAddSource({ source_id: "src-1" });
+		await triggerAddSource({ source_ids: ["src-1"] });
 
 		// Order is the whole point: the pre-flight concept check runs first (no
 		// orphan session on failure), then the typing-phase FK needs the parent
@@ -122,7 +122,8 @@ describe("triggerAddSource (DAT-352)", () => {
 	});
 
 	it("starts addSourceWorkflow with the right id / queue / args (non-blocking)", async () => {
-		const result = await triggerAddSource({ source_id: "src-1" });
+		const result = await triggerAddSource({ source_ids: ["src-1"] });
+		const sessionId = h.seededRow?.sessionId as string;
 
 		expect(startMock).toHaveBeenCalledTimes(1);
 		const [name, opts] = startMock.mock.calls[0] as [
@@ -130,25 +131,30 @@ describe("triggerAddSource (DAT-352)", () => {
 			Record<string, unknown>,
 		];
 		expect(name).toBe("addSourceWorkflow");
-		expect(opts.workflowId).toBe(`addsource-${WS}-src-1`);
+		// Workflow id is keyed by the run's session (DAT-422), not a source.
+		expect(opts.workflowId).toBe(`addsource-${WS}-${sessionId}`);
 		expect(opts.taskQueue).toBe("dataraum-pipeline");
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 
-		// The args carry the SAME session_id that was seeded — the FK match.
-		const args = opts.args as [{ identity: Record<string, unknown> }];
+		// The args carry the source SET (DAT-422) + a source-free identity with the
+		// SAME session_id that was seeded — the FK match.
+		const args = opts.args as [
+			{ identity: Record<string, unknown>; source_ids: string[] },
+		];
 		const identity = args[0].identity;
 		expect(identity.workspace_id).toBe(WS);
-		expect(identity.source_id).toBe("src-1");
-		expect(identity.session_id).toBe(h.seededRow?.sessionId);
+		expect(identity.source_id).toBeUndefined();
+		expect(identity.session_id).toBe(sessionId);
 		expect(identity.vertical).toBe("_adhoc");
+		expect(args[0].source_ids).toEqual(["src-1"]);
 
 		// Returns the workflow + run id immediately (no replay scope on the input).
 		expect(args[0]).not.toHaveProperty("replay");
 		expect(result).toEqual({
-			workflow_id: `addsource-${WS}-src-1`,
+			workflow_id: `addsource-${WS}-${sessionId}`,
 			run_id: "run-abc",
-			source_id: "src-1",
-			session_id: h.seededRow?.sessionId,
+			source_ids: ["src-1"],
+			session_id: sessionId,
 		});
 		// Connection is always closed.
 		expect(closeMock).toHaveBeenCalledTimes(1);
@@ -156,7 +162,7 @@ describe("triggerAddSource (DAT-352)", () => {
 
 	it("passes an explicit vertical through to the seed + the workflow identity", async () => {
 		await triggerAddSource({
-			source_id: "src-2",
+			source_ids: ["src-2"],
 			vertical: "financial_reporting",
 		});
 		expect(h.seededRow?.vertical).toBe("financial_reporting");
@@ -174,7 +180,7 @@ describe("triggerAddSource (DAT-352)", () => {
 		// semantic_per_column — so reject here with a readable "run frame" message
 		// and never seed a session or start a doomed workflow.
 		h.conceptCount = 0;
-		await expect(triggerAddSource({ source_id: "src-1" })).rejects.toThrow(
+		await expect(triggerAddSource({ source_ids: ["src-1"] })).rejects.toThrow(
 			NoConceptsError,
 		);
 		expect(h.calls).toEqual(["count"]);
@@ -184,7 +190,7 @@ describe("triggerAddSource (DAT-352)", () => {
 
 	it("throws when Temporal is unconfigured (like replay.ts) and does NOT seed", async () => {
 		h.config = { dataraumWorkspaceId: WS };
-		await expect(triggerAddSource({ source_id: "src-1" })).rejects.toThrow(
+		await expect(triggerAddSource({ source_ids: ["src-1"] })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		// The guard runs first — no orphan session row, no workflow start.
@@ -197,7 +203,7 @@ describe("TriggerAddSourceInputSchema (API trust boundary)", () => {
 	it("accepts a valid framed name, a builtin, and the _adhoc default", () => {
 		for (const vertical of ["sales", "finance", "_adhoc", undefined]) {
 			expect(
-				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+				TriggerAddSourceInputSchema.safeParse({ source_ids: ["s"], vertical })
 					.success,
 			).toBe(true);
 		}
@@ -206,9 +212,15 @@ describe("TriggerAddSourceInputSchema (API trust boundary)", () => {
 	it("rejects a path-traversal / unsafe vertical before it reaches the engine", () => {
 		for (const vertical of ["../etc", "a/b", "Finance", "_nope", ""]) {
 			expect(
-				TriggerAddSourceInputSchema.safeParse({ source_id: "s", vertical })
+				TriggerAddSourceInputSchema.safeParse({ source_ids: ["s"], vertical })
 					.success,
 			).toBe(false);
 		}
+	});
+
+	it("rejects an empty source set", () => {
+		expect(
+			TriggerAddSourceInputSchema.safeParse({ source_ids: [] }).success,
+		).toBe(false);
 	});
 });

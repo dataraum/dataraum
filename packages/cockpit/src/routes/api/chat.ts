@@ -18,6 +18,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { config } from "../../config";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
+import { buildWorkspaceContext } from "../../prompts/workspace-context";
 import { tools } from "../../tools/registry";
 
 type ChatMessages = Awaited<
@@ -57,9 +58,17 @@ function disableBunIdleTimeoutForSse(request: Request) {
  * no model call) so the wiring — cached system prompt + the tool registry — is
  * unit-testable without hitting the LLM.
  *
- * The orchestrator instructions are sent as a cached system block: they are
- * byte-stable across turns, so `cache_control: ephemeral` turns them into a
- * prompt-cache hit. Per-turn context belongs in `messages`, never here.
+ * The orchestrator instructions are the CACHED system block: byte-stable across
+ * turns, so `cache_control: ephemeral` makes them a prompt-cache hit. It must
+ * stay stateless — that's what is cached.
+ *
+ * `workspaceContext` (the current sessions — session-awareness for replay / teach
+ * / look) is a SECOND system block placed AFTER the orchestrator. The cache
+ * breakpoint is ON the orchestrator, so the cached prefix is exactly the
+ * orchestrator; this dynamic block sits past the breakpoint and is never cached —
+ * a small fresh suffix each turn. So the orchestrator keeps hitting even as the
+ * session changes; the two don't thrash. The handler computes the block (a DB
+ * read) and passes it; `buildChatOptions` stays pure for the unit wiring test.
  *
  * `abortController` (when given) is threaded into the agentic loop so a cancelled
  * stream — the client calling useChat's `stop()`, or simply disconnecting —
@@ -70,18 +79,27 @@ function disableBunIdleTimeoutForSse(request: Request) {
 export function buildChatOptions(
 	messages: ChatMessages,
 	abortController?: AbortController,
+	workspaceContext?: string | null,
 ) {
+	const systemPrompts: Array<{
+		content: string;
+		metadata?: { cache_control: { type: "ephemeral" } };
+	}> = [
+		{
+			content: getOrchestratorInstructions(),
+			metadata: { cache_control: { type: "ephemeral" } },
+		},
+	];
+	// A second, UNCACHED block past the cache breakpoint (see above).
+	if (workspaceContext != null) {
+		systemPrompts.push({ content: workspaceContext });
+	}
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
 		// Explicit output budget — the adapter defaults to 1024, which truncates
 		// real turns mid-tool-call / mid-narrative (see src/llm.ts).
 		maxTokens: MAX_OUTPUT_TOKENS,
-		systemPrompts: [
-			{
-				content: getOrchestratorInstructions(),
-				metadata: { cache_control: { type: "ephemeral" as const } },
-			},
-		],
+		systemPrompts,
 		messages,
 		tools: [...tools],
 		abortController,
@@ -96,6 +114,21 @@ export const Route = createFileRoute("/api/chat")({
 			POST: async ({ request }: { request: Request }) => {
 				disableBunIdleTimeoutForSse(request);
 				const { messages } = await chatParamsFromRequest(request);
+				// The current sessions, so the agent knows where the user is (replay /
+				// teach / look_relationships resolve against the session without asking).
+				// A cheap DB read per turn — negligible beside the LLM call. It is
+				// OPPORTUNISTIC enrichment: a DB hiccup must NOT take down chat, so a
+				// throw degrades to no block (the agent falls back to asking for an id —
+				// the pre-fix behavior), never a dead turn.
+				const workspaceContext = await buildWorkspaceContext().catch(
+					(err: unknown) => {
+						console.error(
+							"[chat] workspace-context read failed — continuing without it:",
+							err,
+						);
+						return null;
+					},
+				);
 				// One controller threads cancellation end to end: the SSE stream's
 				// cancel() (client stop()/disconnect) aborts it, which aborts the
 				// chat() loop + its Anthropic call. Also link request.signal so a
@@ -107,7 +140,9 @@ export const Route = createFileRoute("/api/chat")({
 					() => abortController.abort(),
 					{ once: true },
 				);
-				const stream = chat(buildChatOptions(messages, abortController));
+				const stream = chat(
+					buildChatOptions(messages, abortController, workspaceContext),
+				);
 				return toServerSentEventsResponse(stream, { abortController });
 			},
 		},

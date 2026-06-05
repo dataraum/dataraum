@@ -17,9 +17,11 @@
 //
 // The start is NON-blocking (`workflow.start`, not `.execute`): it returns the
 // workflow + run id immediately so the cockpit polls progress via the
-// `get_progress` query (see `progress.ts`). The workflow id is reused per source
-// (addsource-<workspace_id>-<source_id>) under ALLOW_DUPLICATE so replays group
-// under one id — so callers MUST target the precise `run_id` when querying.
+// `get_progress` query (see `progress.ts`). A run ingests a SET of objects from
+// 1–N sources (DAT-422), so the workflow id is keyed by the run's `session_id`
+// (addsource-<workspace_id>-<session_id>), mirroring begin_session, and reused
+// under ALLOW_DUPLICATE so replays group under one id — callers MUST target the
+// precise `run_id` when querying.
 
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
@@ -58,18 +60,21 @@ export class NoConceptsError extends Error {
 }
 
 export interface TriggerAddSourceInput {
-	source_id: string;
+	// The sources this run imports (DAT-422): a run is over a SET of objects from
+	// 1–N sources. One file-upload `select` mints one content-keyed source per file;
+	// a database `select` mints one. Must be non-empty.
+	source_ids: string[];
 	// Vertical the engine resolves phase config + ontology against. Cold-start
 	// workspaces use "_adhoc" (induction generates concepts from the data); pass
-	// the source's framed vertical to keep the run on the same ontology. Defaults
-	// to "_adhoc" when unset, matching the engine default.
+	// the run's framed vertical to keep it on the same ontology. Defaults to
+	// "_adhoc" when unset, matching the engine default.
 	vertical?: string;
 }
 
 export interface TriggerAddSourceResult {
 	workflow_id: string;
 	run_id: string;
-	source_id: string;
+	source_ids: string[];
 	session_id: string;
 }
 
@@ -142,18 +147,17 @@ export async function triggerAddSource(
 		vertical,
 	});
 
+	// Source-free identity (DAT-422): the per-source ids ride in `source_ids`; the
+	// engine scopes each `import` to one of them and the run-level reduce/detect are
+	// session-scoped. The run is keyed by `session_id`, not a source.
 	const identity: SourceIdentity = {
 		workspace_id: config.dataraumWorkspaceId,
-		source_id: input.source_id,
 		session_id: sessionId,
 		vertical,
 	};
-	const payload: AddSourceInput = { identity };
+	const payload: AddSourceInput = { identity, source_ids: input.source_ids };
 
-	const workflowId = addSourceWorkflowId(
-		config.dataraumWorkspaceId,
-		input.source_id,
-	);
+	const workflowId = addSourceWorkflowId(config.dataraumWorkspaceId, sessionId);
 
 	const connection = await Connection.connect({ address: host });
 	try {
@@ -164,15 +168,15 @@ export async function triggerAddSource(
 			taskQueue,
 			workflowId,
 			args: [payload],
-			// Reused per source across replays so Temporal UI groups iterations
-			// under one id — same policy the replay tool uses.
+			// Reused per run (keyed by session) across replays so Temporal UI groups
+			// iterations under one id — same policy the replay tool uses.
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 
 		return {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
-			source_id: input.source_id,
+			source_ids: input.source_ids,
 			session_id: sessionId,
 		};
 	} finally {
@@ -188,7 +192,7 @@ export async function triggerAddSource(
  * MUST be a safe segment here — a path-traversal `../…` is rejected. Allows the
  * `_adhoc` default (leading underscore) plus the engine-valid name shape. */
 export const TriggerAddSourceInputSchema = z.object({
-	source_id: z.string().min(1),
+	source_ids: z.array(z.string().min(1)).min(1),
 	vertical: z
 		.string()
 		.refine((v) => v === "_adhoc" || /^[a-z][a-z0-9_]{1,48}$/.test(v), {

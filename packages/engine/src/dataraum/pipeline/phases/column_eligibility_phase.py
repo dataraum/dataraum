@@ -16,7 +16,6 @@ from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
 from dataraum.analysis.eligibility.evaluator import (
     evaluate_rules,
     extract_metrics,
-    is_likely_key,
     quarantine_and_drop_columns,
 )
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -128,20 +127,18 @@ class ColumnEligibilityPhase(BasePhase):
             metrics = extract_metrics(profile)
             status, rule_id, reason = evaluate_rules(config, metrics, column.column_name)
 
-            # Check if critical column (likely key)
-            if status == "INELIGIBLE" and is_likely_key(column.column_name, config.key_patterns):
-                return PhaseResult.failed(
-                    f"Critical column '{column.column_name}' in table '{table.table_name}' "
-                    f"is ineligible: {reason}. Cannot proceed with unusable key column."
-                )
-
             # PK omitted so the model's Python-side default applies.
             rows.append(
                 {
                     "session_id": ctx.require_session_id(),
                     "column_id": column.column_id,
                     "table_id": table.table_id,
-                    "source_id": ctx.source_id,
+                    # The column's source is its table's source — derived from the
+                    # table, not the run-level ``ctx.source_id`` (DAT-422: the
+                    # source-free fan-out children leave that None, and a run can
+                    # span multiple per-object sources, so there is no single run
+                    # source to record).
+                    "source_id": table.source_id,
                     "run_id": ctx.run_id,
                     "column_name": column.column_name,
                     "table_name": table.table_name,

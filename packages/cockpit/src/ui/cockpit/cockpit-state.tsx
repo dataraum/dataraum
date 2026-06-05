@@ -42,6 +42,13 @@ export interface SendOptions {
 	label?: string;
 }
 
+/** The content a turn carries: a plain string, or multimodal content parts — the
+ * upload handoff (DAT-423) sends a clean text part + a model-only refs part.
+ * Mirrors the shape the SDK's `sendMessage` accepts; we only use text parts. */
+export type TurnContent =
+	| string
+	| { content: Array<{ type: "text"; content: string }> };
+
 // The context is SPLIT in two so that consumers reading only stable callbacks
 // don't re-render on every streaming token. React context subscription ignores
 // memo() boundaries: a single merged value (which changes every token, because
@@ -67,8 +74,10 @@ interface CockpitState {
  * so a consumer that reads ONLY these never re-renders from context. */
 interface CockpitActions {
 	/** Send a turn into the agent loop. Clears any imperative canvas override and
-	 * sets the loading caption. Callable from any widget (no bridge). */
-	sendMessage: (text: string, opts?: SendOptions) => void;
+	 * sets the loading caption. Callable from any widget (no bridge). Accepts a
+	 * plain string or multimodal content (the upload handoff sends a clean text
+	 * part + a model-only refs part — DAT-423). */
+	sendMessage: (content: TurnContent, opts?: SendOptions) => void;
 	/** Abort the in-flight turn (cancels the SSE stream → the server aborts the
 	 * Anthropic call — see /api/chat). */
 	stop: () => void;
@@ -124,11 +133,16 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	);
 
 	const sendTurn = useCallback(
-		(text: string, opts?: SendOptions) => {
+		(content: TurnContent, opts?: SendOptions) => {
 			// A new turn supersedes any imperative override and re-captions loading.
 			setOverride(null);
 			setPendingLabel(opts?.label);
-			void sendMessage(text);
+			// This call is the compile-time guard that `TurnContent` stays assignable
+			// to the SDK's `sendMessage` param: if a future SDK bump narrows it, this
+			// line stops type-checking. (We can't assert against the SDK's
+			// `MultimodalContent` directly — @tanstack/ai-react doesn't export it,
+			// which is why `TurnContent` mirrors the shape locally.)
+			void sendMessage(content);
 		},
 		[sendMessage],
 	);

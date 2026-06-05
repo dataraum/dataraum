@@ -31,6 +31,9 @@ def _make_enriched_view(
     ev = MagicMock(spec=EnrichedView)
     ev.fact_table_id = fact_table_id
     ev.dimension_columns = dim_cols
+    # Slicing now sources from the view's stored name (collision-named off the
+    # fact's duckdb_path, DAT-415), not a reconstructed ``enriched_{table_name}``.
+    ev.view_name = f"enriched_{fact_table_name}"
     return ev
 
 

@@ -187,12 +187,13 @@ describe("toolResultToCanvas", () => {
 
 	it("maps select to a selected-source canvas (DAT-398)", () => {
 		const selection = {
-			source_id: "s1",
-			name: "orders",
+			source_ids: ["s1"],
+			name: "orders.csv",
 			source_type: "csv",
 			backend: null,
 			stage: "add_source",
-			file_uris: ["s3://dataraum-lake/orders.csv"],
+			vertical: "_adhoc",
+			file_uris: ["s3://dataraum-lake/uploads/aaa111/orders.csv"],
 			recipe_tables: null,
 		};
 		expect(toolResultToCanvas("select", selection)).toEqual({

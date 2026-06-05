@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
+from dataraum.pipeline.phases.column_eligibility_phase import ColumnEligibilityPhase
 from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
 from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
@@ -97,18 +98,21 @@ class PipelineTestHarness:
             raise ValueError(f"Phase '{phase_name}' not registered")
 
         with self.session_factory() as session:
-            # The session-scoped phases (relationships, semantic_per_table) read
-            # ctx.table_ids, not ctx.source_id (DAT-401). When a caller doesn't
-            # pin a scope, default to the source's typed tables so those phases
-            # see the whole source — a no-op narrowing for the still-source-scoped
-            # phases (which read source_id and ignore table_ids).
+            # The per-table phases (typing, statistics, …) and the session-scoped
+            # phases (relationships, semantic_per_table) read ctx.table_ids, not
+            # ctx.source_id (DAT-401/422 — no source_id fallback). When a caller
+            # doesn't pin a scope, default to the source's tables of the layer the
+            # phase consumes: TYPING's input is the RAW tables (it PRODUCES the typed
+            # ones, which don't exist yet), everything downstream scopes to TYPED.
             scoped_table_ids = table_ids
             if scoped_table_ids is None:
+                default_layer = "raw" if phase_name == "typing" else "typed"
                 scoped_table_ids = [
                     row[0]
                     for row in session.execute(
                         select(Table.table_id).where(
-                            Table.source_id == self.source_id, Table.layer == "typed"
+                            Table.source_id == self.source_id,
+                            Table.layer == default_layer,
                         )
                     )
                 ]
@@ -464,6 +468,7 @@ def integration_phases() -> dict[str, Phase]:
         ImportPhase(),
         TypingPhase(),
         StatisticsPhase(),
+        ColumnEligibilityPhase(),
         StatisticalQualityPhase(),
         RelationshipsPhase(),
         CorrelationsPhase(),

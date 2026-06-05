@@ -68,12 +68,22 @@ class PhaseActivities:
 
     @activity.defn(name="import")
     def run_import(self, identity: SourceIdentity) -> ImportResult:
-        """Import activity — loads the source into ``lake.raw.*``, returns raw ids.
+        """Import activity — loads ONE source into ``lake.raw.*``, returns its raw ids.
 
-        The discovered raw ids are the parent workflow's fan-out source, so they
-        are read authoritatively from the substrate after the phase — correct
-        even when import is skipped because the source was already imported.
+        ``import`` is the one per-source activity (DAT-422): the parent runs it once
+        per source in the run's set, each call scoped to a single ``source_id``. So a
+        ``None`` source_id is a caller bug — fail loud rather than load nothing. The
+        discovered raw ids are the parent workflow's fan-out source, read
+        authoritatively from the substrate after the phase — correct even when import
+        is skipped because the source was already imported.
         """
+        if identity.source_id is None:
+            raise ApplicationError(
+                "import requires identity.source_id — the workflow scopes each import "
+                "to one source (DAT-422).",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
         self._run_or_raise("import", identity, [])
         return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
 
@@ -81,9 +91,7 @@ class PhaseActivities:
     def run_typing(self, payload: ProcessTableInput) -> TypingResult:
         """Typing activity — type-resolves one raw table, returns its typed id."""
         self._run_or_raise("typing", payload.identity, [payload.raw_table_id])
-        typed_id = typed_table_id_for_raw(
-            self._manager, payload.identity.source_id, payload.raw_table_id
-        )
+        typed_id = typed_table_id_for_raw(self._manager, payload.raw_table_id)
         if typed_id is None:
             raise ApplicationError(
                 f"typing produced no typed table for raw table '{payload.raw_table_id}'",
@@ -114,12 +122,14 @@ class PhaseActivities:
 
     @activity.defn(name="semantic_per_column")
     def run_semantic_per_column(self, identity: SourceIdentity) -> PhaseOutcome:
-        """Semantic-per-column activity — the source-level LLM reduce (roles, concepts, terms).
+        """Semantic-per-column activity — the session-scoped LLM reduce (roles, concepts, terms).
 
-        Runs once over the whole source after the per-table fan-out (its ontology
-        induction is source-global). Needs a working ``ANTHROPIC_API_KEY`` + the
-        provider/prompt config resolvable from ``dataraum.core.config``; unlike the
-        analytics phases it makes real LLM calls.
+        Runs once after the per-table fan-out over the run's SESSION tables
+        (``tables_for_session``, DAT-421) — not "the whole source" — so a run whose
+        tables span multiple per-object sources is grounded as one set. Grounding
+        only (induction left the engine, DAT-382). Needs a working
+        ``ANTHROPIC_API_KEY`` + the provider/prompt config resolvable from
+        ``dataraum.core.config``; unlike the analytics phases it makes real LLM calls.
         """
         return self._run_or_raise("semantic_per_column", identity, [])
 
@@ -136,7 +146,7 @@ class PhaseActivities:
         count = run_detectors(self._manager, session_id=identity.session_id, run_id=identity.run_id)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} detector records for source {identity.source_id}",
+            summary=f"{count} detector records for session {identity.session_id}",
         )
 
     @activity.defn(name="promote_to_latest")
@@ -152,7 +162,7 @@ class PhaseActivities:
         count = promote_run(self._manager, identity)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"promoted {count} snapshot head(s) for source {identity.source_id}",
+            summary=f"promoted {count} snapshot head(s) for session {identity.session_id}",
         )
 
     # --- begin_session activities (DAT-401) — source-free, session-scoped ----
@@ -191,6 +201,22 @@ class PhaseActivities:
             self._manager, "semantic_per_table", payload.identity, payload.table_ids
         )
         return self._outcome_or_raise(run, "semantic_per_table")
+
+    @activity.defn(name="enriched_views")
+    def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Enriched-views activity — grain-preserving fact×dimension views (DAT-415).
+
+        Source-free: builds one ``CREATE OR REPLACE VIEW`` per session fact table
+        over its LLM-confirmed dimension joins, versioning each view's DDL on the
+        materialization-recipe substrate (run-stamped) and registering the enriched
+        lake substrate latest-only. Runs after ``session_materialize_overlays`` so
+        the user's durable relationship teaches are folded in. Makes real Anthropic
+        calls (the enrichment agent); needs ``ANTHROPIC_API_KEY``.
+        """
+        run = run_session_phase(
+            self._manager, "enriched_views", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "enriched_views")
 
     @activity.defn(name="session_materialize_overlays")
     def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:

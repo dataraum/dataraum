@@ -61,16 +61,53 @@ jobs:
                   name: coverage-report-${{ matrix.python-version }}
                   path: packages/engine/coverage.xml
 
+    # Schema seam: SQLAlchemy models → schema.sql (offline dump) → scratch
+    # Postgres → drizzle-kit pull. Both generated artifacts are checked in;
+    # this job regenerates them and fails on any diff, so the engine schema,
+    # packages/engine/schema.sql, and the cockpit's drizzle mirror can never
+    # drift apart. No engine boot involved.
+    schema-drift:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.3.14"
+
+            - name: Install cockpit deps
+              working-directory: packages/cockpit
+              run: bun install --frozen-lockfile
+
+            - name: Regenerate schema.sql + drizzle mirror
+              working-directory: packages/cockpit
+              run: bun run db:pull:metadata
+
+            - name: Fail on drift
+              run: |
+                  drift=$(git status --porcelain -- packages/engine/schema.sql packages/cockpit/src/db/metadata/)
+                  if [ -n "$drift" ]; then
+                      echo "::error::Schema drift: SQLAlchemy models differ from the checked-in schema.sql / drizzle mirror. Run 'bun run db:pull:metadata' in packages/cockpit and commit the result."
+                      echo "$drift"
+                      git diff -- packages/engine/schema.sql packages/cockpit/src/db/metadata/ || true
+                      exit 1
+                  fi
+
     # Single status for branch protection (matrix jobs report as "check (3.x)")
     check:
         if: always()
-        needs: [test, docs]
+        needs: [test, docs, schema-drift]
         runs-on: ubuntu-latest
         steps:
             - name: All checks passed
               run: |
-                  if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.docs.result }}" != "success" ]; then
-                    echo "test=${{ needs.test.result }} docs=${{ needs.docs.result }}"
+                  if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.docs.result }}" != "success" ] || [ "${{ needs.schema-drift.result }}" != "success" ]; then
+                    echo "test=${{ needs.test.result }} docs=${{ needs.docs.result }} schema-drift=${{ needs.schema-drift.result }}"
                     exit 1
                   fi
 

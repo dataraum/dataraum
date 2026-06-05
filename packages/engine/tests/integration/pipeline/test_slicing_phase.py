@@ -82,7 +82,6 @@ class TestSlicingPhase:
                 view_id=str(uuid4()),
                 fact_table_id=table.table_id,
                 view_name="slicing_test_table",
-                view_sql="SELECT * FROM typed_test_table",
                 is_grain_verified=True,
                 dimension_columns=[],
             )
@@ -166,7 +165,6 @@ class TestSlicingPhase:
                 view_id=str(uuid4()),
                 fact_table_id=table_id,
                 view_name="slicing_test_table",
-                view_sql="SELECT * FROM typed_test_table",
                 is_grain_verified=True,
                 dimension_columns=[],
             )

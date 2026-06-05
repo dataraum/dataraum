@@ -1,30 +1,35 @@
-// Replay tool (DAT-343, DAT-413) — re-runs the whole source to apply pending
+// Replay tool (DAT-343, DAT-413, DAT-422) — re-run a SESSION to apply pending
 // teaches as a full add_source re-run under a fresh run_id.
 //
-// Pure compute kick: starts a fresh `addSourceWorkflow` execution with the same
-// workflow id as the initial run (`addsource-<workspace_id>-<source_id>`; see
-// workflow-id.ts, DAT-364), and uses ALLOW_DUPLICATE policy so Temporal UI
-// groups iterations per source. The engine mints a fresh `run_id` internally
-// (versioned metadata, append-only snapshots) — the cockpit does NOT choose a
-// scope or a from_phase; a replay is always a full, non-destructive re-run.
+// The agent thinks in SESSIONS (the only named analytical unit), not sources —
+// so replay takes a `session_id`, resolves the sources that session was built
+// from (its linked tables → their `source_id`s), and re-runs add_source over
+// that source set. A replay generates a NEW session: a fresh analytical pass over
+// the same data (transparent — the agent replays the session it knows and gets a
+// new one back). The engine mints a fresh `run_id` internally (versioned
+// metadata, append-only snapshots); there is no scope or from_phase to choose —
+// a replay is always a full, non-destructive re-run that re-reads the durable
+// teach overlays.
 //
-// Returns the workflow id + run id immediately — the caller polls / queries
-// Temporal for progress. End-to-end "replay actually produces clean output"
-// coverage lives in the integration smoke that drives the running stack.
+// Pure compute kick: starts a fresh `addSourceWorkflow` keyed by the NEW session
+// (`addsource-<workspace_id>-<session_id>`; see workflow-id.ts, DAT-422 — a run
+// is keyed by its session) and returns the workflow id + run id immediately; the
+// caller polls / queries Temporal for progress. End-to-end "replay actually
+// produces clean output" coverage lives in the integration smoke that drives the
+// running stack.
 //
 // HARD PRECONDITION (DAT-407 FK), same as triggerAddSource: the re-run's typing
 // phase writes per-session rows (type_candidates, session_tables) with a NOT-NULL
-// FK to investigation_sessions.session_id. A full replay (DAT-413) re-runs typing,
-// so it MUST seed that parent row first — otherwise the run dies deep in the
-// per-table fan-out with a ForeignKeyViolation. The initial add_source seeds via
-// the "Add source" trigger; a replay mints (or reuses) its own session id, so it
-// seeds here too (onConflictDoNothing makes reusing an existing session a no-op).
+// FK to investigation_sessions.session_id, so the new session row MUST be seeded
+// BEFORE the workflow starts — otherwise the run dies deep in the per-table
+// fan-out with a ForeignKeyViolation. The seed goes through the same metadata
+// write seam triggerAddSource uses.
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
-import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -34,6 +39,7 @@ import {
 	sessionTables,
 	tables,
 } from "../db/metadata/schema";
+import { currentSessionId } from "../prompts/workspace-context";
 import type {
 	AddSourceInput,
 	AddSourceResult,
@@ -42,63 +48,66 @@ import type {
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 
 /**
- * Resolve the vertical a source was framed on — a replay must re-run against the
- * SAME ontology, never silently fall back to `_adhoc`. The vertical isn't on the
- * `sources` row (DAT-407: it lives on the session, which has no `source_id`), so
- * walk source → tables → session_tables → investigation_sessions and take the
- * most-recent NON-`_adhoc` vertical. Returns null when the source has no framed
- * session yet (the caller then falls back to `_adhoc`).
+ * The distinct sources a session was built from — its linked tables' `source_id`s.
+ * A run is over a SET of objects from 1–N sources (DAT-422), so a session can span
+ * sources; replay re-runs add_source over exactly that set. Empty when the session
+ * has no linked tables yet (the caller rejects that — nothing to replay).
  */
-async function resolveSourceVertical(sourceId: string): Promise<string | null> {
+async function sourcesForSession(sessionId: string): Promise<string[]> {
+	const rows = await metadataDb
+		.selectDistinct({ sourceId: tables.sourceId })
+		.from(sessionTables)
+		.innerJoin(tables, eq(tables.tableId, sessionTables.tableId))
+		.where(eq(sessionTables.sessionId, sessionId));
+	return rows
+		.map((r) => r.sourceId)
+		.filter((id): id is string => id !== null && id !== undefined);
+}
+
+/**
+ * The vertical a session was framed on — a replay must re-run against the SAME
+ * ontology. Read straight off the session row (DAT-422: we replay by session, so
+ * no source → tables → session walk is needed). Null when the session row is
+ * missing or carries no vertical (the caller then falls back to `_adhoc`).
+ */
+async function sessionVertical(sessionId: string): Promise<string | null> {
 	const [row] = await metadataDb
 		.select({ vertical: investigationSessions.vertical })
 		.from(investigationSessions)
-		.innerJoin(
-			sessionTables,
-			eq(sessionTables.sessionId, investigationSessions.sessionId),
-		)
-		.innerJoin(tables, eq(tables.tableId, sessionTables.tableId))
-		.where(
-			and(
-				eq(tables.sourceId, sourceId),
-				isNotNull(investigationSessions.vertical),
-				ne(investigationSessions.vertical, "_adhoc"),
-			),
-		)
-		.orderBy(desc(investigationSessions.startedAt))
+		.where(eq(investigationSessions.sessionId, sessionId))
 		.limit(1);
 	return row?.vertical ?? null;
 }
 
 export interface ReplayInput {
-	source_id: string;
-	// Per-replay session id — the engine uses it as the FK on per-session
-	// rows the activities create. Optional: a stable random uuid is fine
-	// for slice 1 (no session lifecycle).
+	// The session to replay. OPTIONAL: omitted, replay re-runs the CURRENT session
+	// (the most recent — the one the user has been teaching). Replay resolves the
+	// session's sources and re-runs add_source over them as a NEW session, applying
+	// any pending teaches.
 	session_id?: string;
-	// Vertical to ground the re-run against. Optional: when omitted, replay
-	// resolves the source's FRAMED vertical (resolveSourceVertical), falling back
-	// to "_adhoc" only if the source was never framed. Pass an explicit vertical
-	// to override.
+	// Vertical to ground the re-run against. Optional: omitted, replay re-runs on
+	// the session's OWN framed vertical (sessionVertical), falling back to `_adhoc`
+	// only if the session carries none. Pass an explicit vertical to override.
 	vertical?: string;
 }
 
 export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
-	source_id: string;
+	// The sources the new run re-ingested (resolved from the replayed session).
+	source_ids: string[];
+	// The NEW session the replay created (≠ the replayed session_id).
 	session_id: string;
 }
 
 /**
  * Start an `addSourceWorkflow` execution to re-apply pending teaches as a full
- * source re-run. Returns immediately with the workflow + run id; the caller
- * polls Temporal for progress and the final result.
+ * re-run of a session's sources. Returns immediately with the workflow + run id
+ * (and the new session id); the caller polls Temporal for progress.
  *
- * Workflow id is reused per source (`addsource-<workspace_id>-<source_id>`)
- * with `ALLOW_DUPLICATE` so each replay shows up as a fresh run under the same
- * id in Temporal UI — natural grouping for "all iterations of this source's
- * teach history".
+ * The new run is keyed by the fresh session (`addsource-<workspace_id>-<session_id>`,
+ * DAT-422). `ALLOW_DUPLICATE` is kept for parity with triggerAddSource; each replay
+ * is its own session, so it is a distinct workflow id (no accidental reuse).
  */
 export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	if (
@@ -112,43 +121,55 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
-	const sessionId = input.session_id ?? randomUUID();
-	// Explicit input wins (override); else the source's framed vertical; else the
+	// The session to replay: the one named, else the CURRENT session (most recent —
+	// the one the user is in / has been teaching). So a bare "replay" just works.
+	const sessionId = input.session_id ?? (await currentSessionId());
+	if (!sessionId) {
+		throw new Error(
+			"No session to replay — add a source or begin a session first.",
+		);
+	}
+
+	// Resolve what to replay FROM the session — the sources it was built on.
+	const sourceIds = await sourcesForSession(sessionId);
+	if (sourceIds.length === 0) {
+		throw new Error(
+			`Session '${sessionId}' has no sources to replay — it has no ` +
+				"linked tables yet (nothing was added to it).",
+		);
+	}
+	// Explicit input wins (override); else the session's framed vertical; else the
 	// cold-start `_adhoc`. Omitting it must NOT silently re-run against `_adhoc` —
 	// that grounds the semantic pass against an empty ontology and fails the run.
 	const vertical =
-		input.vertical ??
-		(await resolveSourceVertical(input.source_id)) ??
-		"_adhoc";
+		input.vertical ?? (await sessionVertical(sessionId)) ?? "_adhoc";
 
-	// Seed the investigation_sessions parent row the re-run's per-table fan-out FKs
-	// against, BEFORE starting the workflow (see the HARD PRECONDITION note above).
-	// onConflictDoNothing: a caller-supplied existing session id (e.g. the drive
-	// smoke reusing the initial run's session) is a no-op, a fresh random one is
-	// seeded. Mirrors triggerAddSource's seed through the same metadata write seam.
-	await metadataDb
-		.insert(investigationSessions)
-		.values({
-			sessionId,
-			intent: "replay",
-			status: "active",
-			startedAt: new Date(),
-			stepCount: 0,
-			vertical,
-		})
-		.onConflictDoNothing({ target: investigationSessions.sessionId });
+	// A replay generates a NEW session — a fresh analytical pass over the same
+	// sources. Seed its investigation_sessions row BEFORE starting the workflow
+	// (the typing-phase session_tables FK precondition). The id is fresh, so no
+	// conflict handling is needed. Mirrors triggerAddSource's seed seam.
+	const newSessionId = randomUUID();
+	await metadataDb.insert(investigationSessions).values({
+		sessionId: newSessionId,
+		intent: "replay",
+		status: "active",
+		startedAt: new Date(),
+		stepCount: 0,
+		vertical,
+	});
 
+	// Source-free identity (DAT-422): the sources ride in `source_ids`; the engine
+	// scopes each `import` to one and the run-level reduce/detect are session-scoped.
 	const identity: SourceIdentity = {
 		workspace_id: config.dataraumWorkspaceId,
-		source_id: input.source_id,
-		session_id: sessionId,
+		session_id: newSessionId,
 		vertical,
 	};
-	const payload: AddSourceInput = { identity };
+	const payload: AddSourceInput = { identity, source_ids: sourceIds };
 
 	const workflowId = addSourceWorkflowId(
 		config.dataraumWorkspaceId,
-		input.source_id,
+		newSessionId,
 	);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
@@ -169,8 +190,8 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		return {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
-			source_id: input.source_id,
-			session_id: sessionId,
+			source_ids: sourceIds,
+			session_id: newSessionId,
 		};
 	} finally {
 		await connection.close();
@@ -185,30 +206,25 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Re-run the whole source to apply pending teaches — a full re-run under a fresh run_id (no scope to choose). Requires user approval. Returns the workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
+		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Requires user approval. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
-		source_id: z
-			.string()
-			.describe(
-				"The registered source to re-process (a source_id from list_tables or a select result).",
-			),
 		session_id: z
 			.string()
 			.optional()
 			.describe(
-				"Optional session id for the replay run; omit to auto-generate.",
+				"Optional. The session to replay (a session_id, e.g. from the WORKSPACE CONTEXT block or a prior add_source / begin_session). Omit to replay the CURRENT (most recent) session.",
 			),
 		vertical: z
 			.string()
 			.optional()
 			.describe(
-				"Optional. Omit to re-run on the vertical the source was framed on (resolved automatically); pass one only to override.",
+				"Optional. Omit to re-run on the session's own framed vertical (resolved automatically); pass one only to override.",
 			),
 	}),
 	outputSchema: z.object({
 		workflow_id: z.string(),
 		run_id: z.string(),
-		source_id: z.string(),
+		source_ids: z.array(z.string()),
 		session_id: z.string(),
 	}),
 	needsApproval: true,

@@ -278,7 +278,7 @@ export const enrichedViews = metadataSchema.table(
 			onDelete: "set null",
 		}),
 		viewName: varchar("view_name").notNull(),
-		viewSql: text("view_sql").notNull(),
+		runId: varchar("run_id"),
 		relationshipIds: json("relationship_ids"),
 		dimensionTableIds: json("dimension_table_ids"),
 		dimensionColumns: json("dimension_columns"),
@@ -287,10 +287,15 @@ export const enrichedViews = metadataSchema.table(
 		createdAt: timestamp("created_at").notNull(),
 	},
 	(table) => [
+		index("ix_enriched_views_run_id").using(
+			"btree",
+			table.runId.asc().nullsLast(),
+		),
 		index("ix_enriched_views_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_enriched_view_fact_table").on(table.factTableId),
 	],
 );
 
@@ -961,6 +966,7 @@ export const tableEntities = metadataSchema.table(
 			"btree",
 			table.sessionId.asc().nullsLast(),
 		),
+		unique("uq_table_entity_table_run").on(table.tableId, table.runId),
 	],
 );
 

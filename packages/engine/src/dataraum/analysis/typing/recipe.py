@@ -88,7 +88,9 @@ def store_recipe(
     )
 
 
-def _order_by_dependency(recipes: list[MaterializationRecipe]) -> list[MaterializationRecipe]:
+def order_recipes_by_dependency(
+    recipes: list[MaterializationRecipe],
+) -> list[MaterializationRecipe]:
     """Order recipes so a DDL runs after the artifacts it reads from.
 
     Each recipe's ``target_fqn`` is matched against the ``depends_on`` of the
@@ -159,7 +161,7 @@ def _replay(
     rebuilt: list[str] = []
     duckdb_conn.execute("BEGIN TRANSACTION")
     try:
-        for recipe in _order_by_dependency(recipes):
+        for recipe in order_recipes_by_dependency(recipes):
             duckdb_conn.execute(recipe.ddl)
             rebuilt.append(recipe.target_fqn)
     except Exception:

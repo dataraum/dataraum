@@ -15,7 +15,6 @@ from dataraum.analysis.eligibility.evaluator import (
     evaluate_rules,
     extract_metrics,
     format_reason,
-    is_likely_key,
     quarantine_and_drop_columns,
 )
 
@@ -27,7 +26,6 @@ __all__ = [
     "evaluate_rules",
     "extract_metrics",
     "format_reason",
-    "is_likely_key",
     "load_eligibility_config",
     "quarantine_and_drop_columns",
 ]

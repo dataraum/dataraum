@@ -26,7 +26,9 @@ src/
 └── config.ts       # typed Zod env, parsed + validated once at boot — server-only
 ```
 
-`src/db/metadata/{schema,relations}.ts` is generated — never edit by hand; re-run `bun run db:pull:metadata` after the engine changes SQLAlchemy models.
+`src/db/metadata/{schema,relations}.ts` is generated — never edit by hand; re-run `bun run db:pull:metadata` after the engine changes SQLAlchemy models. The command is **self-contained** (needs docker + uv + bun, ~15s): it dumps the engine models offline to `packages/engine/schema.sql`, materializes a scratch Postgres, and pulls — **no running stack, no engine boot**. CI (`schema-drift` in ci.yml) fails on any drift between the models and the two checked-in artifacts.
+
+To grasp the engine DB schema, read `packages/engine/schema.sql` — the full DDL, always current (CI-enforced).
 
 ## Dev loop
 

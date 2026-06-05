@@ -6,7 +6,6 @@ Pure logic — no pipeline/phase dependencies.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from dataraum.analysis.eligibility.config import EligibilityConfig
@@ -110,14 +109,6 @@ def format_reason(template: str, metrics: dict[str, Any]) -> str:
         return template.format(**metrics)
     except KeyError, ValueError:
         return template
-
-
-def is_likely_key(column_name: str, patterns: list[str]) -> bool:
-    """Check if column name matches key patterns."""
-    for pattern in patterns:
-        if re.search(pattern, column_name, re.IGNORECASE):
-            return True
-    return False
 
 
 def quarantine_and_drop_columns(

@@ -4,6 +4,111 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-05: typing replay-poison + STRPTIME-throw + eligibility key-abort fixes
+
+Three add_source typing/eligibility bug fixes from a user report (German DD.MM.YYYY
+data; branch `fix/typing-replay-poison`). **Typing outcomes change — re-run the
+add_source recall suite.** Expected movement: date-typed coverage UP.
+
+### dataraum-eval
+- **Changed:** `analysis/typing/{patterns.py, inference.py, resolution.py}`,
+  `analysis/eligibility/{evaluator.py, config.py}`, `pipeline/phases/column_eligibility_phase.py`,
+  `storage/models.py` (`Column.type_decision` → `type_decisions` list), `graphs/context.py`,
+  `dataraum-config/phases/column_eligibility.yaml` (`key_patterns` removed).
+- **Behavior changes:**
+  1. **One malformed value no longer zeroes a date pattern.** Standardization exprs are
+     TRY_-normalized (`STRPTIME`→`TRY_STRPTIME`, inner `CAST`→`TRY_CAST`) at Pattern load.
+     A 99%-clean DD.MM.YYYY column now types DATE with the bad rows quarantined instead of
+     falling back to VARCHAR with `success_rate=0.0` and no failed examples. Columns that
+     previously stayed VARCHAR because of a single dirty value will now be DATE — ground
+     truths that encoded the buggy VARCHAR outcome need updating.
+  2. **Re-runs/replays re-decide types.** Resolution honors only `decision_source='manual'`
+     TypeDecisions (latest), and a manual pin keeps the standardization expr; candidates are
+     run-scoped. Previously ANY second run froze the first run's outcome (taught patterns
+     never applied) or re-applied DATE without its parse expr (100%-NULL column → all rows
+     quarantined → eligibility dropped it). Any calibration that re-runs typing on the same
+     workspace exercises this path.
+  3. **Eligibility no longer aborts on all-null key-named columns.** `is_likely_key` /
+     `key_patterns` deleted; an all-null `*_id` column drops + records INELIGIBLE like any
+     other and the run continues. Scenarios that asserted a pipeline FAILURE for null key
+     columns now expect a completed run with `dropped >= 1`.
+- **Calibrate:** add_source recall suite + any teach/replay strategy. No new response
+  fields; no workflow contract change.
+
+### dataraum-testdata
+- Injection hints: (a) a date column with exactly one unparseable-but-regex-matching value
+  (e.g. `29.02.2023`) — should type DATE, quarantine 1 row; (b) a 100%-null `*_id` column —
+  should drop, not abort; (c) a DD.MM.YYYY column re-typed across two runs — second run must
+  still parse (the replay-poison regression).
+
+## 2026-06-04: DAT-421 — add_source `semantic_per_column` scopes by session, not source
+
+Epic DAT-420 (source model). The add_source source-level reduce was the last spine
+phase still selecting its tables by `Table.source_id == ctx.source_id`; it now uses the
+session anchor `tables_for_session(session_id)` — the same key `detect`/readiness already
+use (DAT-410), populated by `typing` via `session_tables` (DAT-407).
+
+- **Behavior-preserving for single-source calibration.** For an add_source run `typing`
+  links exactly that source's freshly-typed tables to the run's session, so the reduce's
+  table set is identical to the old source filter. The `[semantic]` producer feeds the
+  same columns to `business_meaning`, `unit_entropy`, `temporal`, `null_ratio`,
+  `type_fidelity`, `benford` — **no recall/precision movement expected** from this ticket.
+- **What changed for eval:** the scoping KEY is now session-id, not source-id. If a future
+  calibration exercises a multi-(per-object-)source run, the reduce selects the run's
+  session-linked tables across sources — intended, not a regression.
+- **No schema / contract / workflow change**, no new tables, no detector changes.
+- **Calibrate:** nothing new required; re-run the add_source recall suite after bumping the
+  engine submodule → expect no movement.
+
+## 2026-06-04: DAT-415 + DAT-402 — enriched_views revival + table-grain readiness + view-DDL versioning
+
+begin_session Slice 2.1 (DAT-402) bundled with view-DDL versioning (DAT-415, Phase 2 Slice B
+of the versioned-metadata epic). Revives the dormant `enriched_views` phase as a run-versioned
+begin_session step and gives begin_session its first **table-grain readiness** signal.
+
+### dataraum-eval
+- **Changed:** `pipeline/phases/enriched_views_phase.py` (source-free re-seam, run-versioned,
+  recipe-backed DDL), `analysis/views/{recipe.py (new), db_models.py, builder.py}`,
+  `entropy/detectors/semantic/dimension_coverage.py` (scope view→table),
+  `entropy/views/readiness_context.py` + `entropy/readiness.py` (table-grain rollup + persist),
+  `worker/{workflows.py, activities.py, activity.py, main.py}` (new `enriched_views` activity in
+  the begin_session spine + `SESSION_DETECTOR_PHASES`), `core/sql_normalize.py` (new),
+  `analysis/typing/recipe.py` (`order_recipes_by_dependency` made public).
+- **Affects:** the **begin_session** path only — add_source is untouched (no `table:`-scoped
+  detector runs on `_DETECTOR_PHASES`; `enriched_views` is not in it). begin_session now runs
+  `relationships → semantic_per_table → session_materialize_overlays → enriched_views →
+  session_detect → …`, and `session_detect` runs `dimension_coverage` (newly wired) in addition
+  to the relationship detectors.
+- **Calibrate (the real gate — DAT-405):** `dimension_coverage` recall/precision at **table
+  grain**. It builds a grain-preserving LEFT JOIN view per fact table over its LLM-confirmed
+  dimension relationships, then scores the mean NULL rate across the joined dimension columns
+  (sqrt-boosted). Ground truth = the finance `break_referential_integrity` injection on
+  `payments.invoice_id` (~20% orphans): the enriched view's joined `invoices.*` columns are NULL
+  for orphaned rows → `dimension_coverage ≈ sqrt(0.2) ≈ 0.45` on **`table:payments`** → a
+  non-`ready` band (rolls into `query_intent` 0.5 / `reporting_intent` 0.6). Validate that a clean
+  join (no orphans) scores ~0 and the 20%-orphan case lands `investigate`. This is a NEW readiness
+  surface — there was no `table:` band before.
+- **Notes:**
+  - **New readiness rows:** `entropy_readiness` now carries `target = "table:{table_name}"` rows
+    (table FK set, **column_id NULL**) alongside the existing `column:` / `relationship:` rows.
+    Resolve the current run via the per-session head (`session:{id}`, stage `detect`) — same as
+    relationship readiness, NOT the per-table head. Engine reader: `load_table_readiness(session,
+    session_id)`.
+  - **Schema changes (need a fresh ws schema):** `enriched_views.view_sql` is **dropped** and
+    `enriched_views.run_id` **added**; `materialization_recipes` now also stores `layer="enriched"`
+    rows. `create_all` is additive — it will NOT drop `view_sql`, so a stale workspace whose
+    `enriched_views.view_sql` is still `NOT NULL` will **fail inserts**. Re-pull a clean schema
+    (`docker compose down -v`) before driving begin_session. (The eval's vendored engine submodule
+    is pinned pre-DAT-408 and uninitialized — bump it to current `main` first; see the eval
+    teach→keeper foundation notes.)
+  - **View determinism:** the enrichment LLM runs at temperature 0 and view DDL is sqlglot-canonical
+    + collision-free-named (`enriched_{source}__{table}`), so a re-run with the same confirmed joins
+    produces a byte-identical recipe (no spurious new version). Eval can diff recipe DDL to detect a
+    genuine view change across runs.
+  - **No add_source recall movement expected** from this ticket — if the add_source detector-recall
+    suite moves, that's a regression, not this change.
+- **Status:** pending
+
 ## 2026-06-04: DAT-414 — versioned typed/quarantine materialization DDL
 
 Phase 2 of the versioned-metadata epic (DAT-412), Slice A typed/quarantine only.

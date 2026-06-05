@@ -59,7 +59,7 @@ class TemporalPhase(BasePhase):
         typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
-            return f"No typed tables found for source {ctx.source_id}"
+            return "No typed tables in scope"
 
         logger.debug(f"Temporal: Found {len(typed_tables)} typed tables")
 

@@ -102,13 +102,14 @@ _PROMOTE_STAGES = (
 )
 
 # The begin_session chain phases whose declared detectors the terminal session
-# ``detect`` runs (DAT-408): ``semantic_per_table`` declares the relationship
-# detectors (join_path_determinism + relationship_entropy). Distinct from the
-# source-scoped ``_DETECTOR_PHASES`` so add_source never runs the relationship
-# detectors and begin_session never runs the column ones.
-# Public (imported by ``activities.py`` + tests) — unlike ``_DETECTOR_PHASES`` /
-# ``_PROMOTE_STAGES``, which are used only within this module.
-SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table")
+# ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
+# (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
+# declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
+# DAT-415). Distinct from the source-scoped ``_DETECTOR_PHASES`` so add_source
+# never runs the relationship/coverage detectors and begin_session never runs the
+# column ones. Public (imported by ``activities.py`` + tests) — unlike
+# ``_DETECTOR_PHASES`` / ``_PROMOTE_STAGES``, used only within this module.
+SESSION_DETECTOR_PHASES = ("relationships", "semantic_per_table", "enriched_views")
 
 
 @dataclass
@@ -165,16 +166,24 @@ def run_phase(
     # commits on clean exit (so the phase's writes are visible to later
     # activities); duckdb_cursor closes the derived cursor on exit.
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        source = session.get(Source, identity.source_id)
-        if source is None:
-            return PhaseRun(
-                status=PhaseStatus.FAILED.value,
-                error=(
-                    f"Source '{identity.source_id}' not found in workspace "
-                    f"'{identity.workspace_id}'. The workflow caller must write the "
-                    "Source row before the phase runs."
-                ),
-            )
+        # Only ``import`` ingests from a ``Source`` (it reads connection_config +
+        # backend to load files); past it the run is source-free (DAT-422), so a
+        # ``None`` source_id means "no Source to resolve" — the config is built from
+        # the phase's static config + the run's vertical. A source_id that IS set
+        # but doesn't resolve is still a fail-loud caller bug (the import caller
+        # must write the Source row before the phase runs).
+        source = None
+        if identity.source_id is not None:
+            source = session.get(Source, identity.source_id)
+            if source is None:
+                return PhaseRun(
+                    status=PhaseStatus.FAILED.value,
+                    error=(
+                        f"Source '{identity.source_id}' not found in workspace "
+                        f"'{identity.workspace_id}'. The workflow caller must write the "
+                        "Source row before the phase runs."
+                    ),
+                )
         config = _build_phase_config(source, phase_name, identity)
         ctx = PhaseContext(
             session=session,
@@ -223,15 +232,18 @@ def raw_table_ids(manager: ConnectionManager, source_id: str) -> list[str]:
 
 def typed_table_id_for_raw(
     manager: ConnectionManager,
-    source_id: str,
     raw_table_id: str,
 ) -> str | None:
     """Resolve the typed table id ``typing`` produced for one raw table.
 
-    Typing creates the typed table under the same ``table_name`` as its raw
-    input, so the mapping is by name. Returns the persisted id whether typing
-    just minted it or it already existed (skip path) — ``None`` if neither the
-    raw row nor its typed table is present.
+    Typing creates the typed table under the same ``(source_id, table_name)`` as
+    its raw input, so the mapping is by name within the raw table's OWN source —
+    read off the raw row, not threaded in (DAT-422). That keeps the call site
+    source-agnostic: a run spanning per-object sources resolves each raw's typed
+    counterpart without ambiguity (a same-named table in another source can't
+    shadow it). Returns the persisted id whether typing just minted it or it
+    already existed (skip path) — ``None`` if neither the raw row nor its typed
+    table is present.
     """
     with manager.session_scope() as session:
         raw = session.get(Table, raw_table_id)
@@ -239,7 +251,7 @@ def typed_table_id_for_raw(
             return None
         return session.execute(
             select(Table.table_id).where(
-                Table.source_id == source_id,
+                Table.source_id == raw.source_id,
                 Table.table_name == raw.table_name,
                 Table.layer == "typed",
             )
@@ -546,11 +558,7 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
         if not table_ids:
             # Same empty-set signal as run_detectors: a populated source with no
             # session links is a bug; nothing to promote.
-            logger.warning(
-                "promote_no_session_tables",
-                source_id=identity.source_id,
-                session_id=identity.session_id,
-            )
+            logger.warning("promote_no_session_tables", session_id=identity.session_id)
             return 0
         now = datetime.now(UTC)
         for table_id in table_ids:
@@ -564,7 +572,6 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
 
     logger.info(
         "promote_to_latest_done",
-        source_id=identity.source_id,
         session_id=identity.session_id,
         run_id=run_id,
         heads_promoted=promoted,
@@ -625,24 +632,30 @@ def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -
 
 
 def _build_phase_config(
-    source: Source,
+    source: Source | None,
     phase_name: str,
     identity: SourceIdentity,
 ) -> dict[str, Any]:
-    """Reconstruct ``ctx.config`` = phase static config + source-identity runtime config.
+    """Reconstruct ``ctx.config`` = phase static config + run-identity runtime config.
 
     Mirrors the ``phase_config | runtime_config`` merge ``setup_pipeline`` did,
     minus the PipelineRun-only fields (fingerprint, source_path) the worker path
-    doesn't carry. The caller (:func:`run_phase`) guarantees ``source`` exists.
+    doesn't carry. ``source`` is set only for the per-source ``import`` (DAT-422):
+    every downstream phase is source-free, so the source-identity fields are
+    omitted and only the static config + the run's ``vertical`` remain — which is
+    all a reduce like ``semantic_per_column`` reads off the config.
     """
-    runtime_config: dict[str, Any] = {
-        "source_id": source.source_id,
-        "source_name": source.name,
-        "source_type": source.source_type,
-        "source_connection_config": source.connection_config or {},
-        "source_backend": source.backend,
-        "vertical": identity.vertical or "_adhoc",
-    }
+    runtime_config: dict[str, Any] = {"vertical": identity.vertical or "_adhoc"}
+    if source is not None:
+        runtime_config.update(
+            {
+                "source_id": source.source_id,
+                "source_name": source.name,
+                "source_type": source.source_type,
+                "source_connection_config": source.connection_config or {},
+                "source_backend": source.backend,
+            }
+        )
 
     config: dict[str, Any] = {}
     config.update(load_phase_config(phase_name))

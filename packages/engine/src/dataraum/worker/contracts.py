@@ -109,17 +109,23 @@ class ProgressSnapshot:
 
 
 class SourceIdentity(BaseModel):
-    """The identity header the workflows carry into every activity.
+    """The run-identity header the workflows carry into every activity.
 
-    Pure data — IDs the runner uses to reconstruct source identity + phase
-    config from the workspace substrate. ``session_id`` is the per-run FK for
-    session-scoped rows (the workflow execution processing the source), NOT a
-    connection scope. ``workspace_id`` is the (future, DAT-364) routing key the
-    runner checks against the worker's bound workspace.
+    Pure data. ``session_id`` is the per-run FK for session-scoped rows AND the
+    run's table-set anchor (``session_tables``) — the relational scope key the
+    analysis phases use (DAT-421). ``workspace_id`` is the (future, DAT-364)
+    routing key the runner checks against the worker's bound workspace.
+
+    ``source_id`` is OPTIONAL (DAT-422): a run is over a SET of objects from 1–N
+    sources, not one source — the per-source ids ride in
+    ``AddSourceInput.source_ids`` and ``import`` resolves each. It stays here only
+    for the per-source ``import``/per-table activities that the workflow scopes to
+    one source at a time (the runner sets it per call); the run-level reduce/detect
+    phases are session-scoped and leave it ``None``.
     """
 
     workspace_id: str
-    source_id: str
+    source_id: str | None = None
     session_id: str
     vertical: str | None = None
     # Snapshot version axis (DAT-413): minted once by ``AddSourceWorkflow.run``
@@ -254,13 +260,21 @@ class BeginSessionResult(BaseModel):
 
 
 class AddSourceInput(BaseModel):
-    """Input to ``AddSourceWorkflow`` — the source identity header.
+    """Input to ``AddSourceWorkflow`` — the run-identity header + the source set.
 
-    The table set is unknown until ``import`` enumerates it (a source is a dir /
-    DB recipe), so the parent carries identity only and discovers tables at run.
+    A run ingests a SET of sources (DAT-422): N per-file content-sources for an
+    upload, or one connection source for a database. ``import`` runs once per
+    source in ``source_ids`` (a source is a dir of files / a DB recipe — its raw
+    tables are discovered at run), and the per-table fan-out + the session-scoped
+    reduce/detect run over the union. The ``identity`` is source-free — its
+    ``source_id`` is set per-``import`` by the workflow from this set, never
+    carried in by the caller.
     """
 
     identity: SourceIdentity
+    # The sources this run imports, in order — at least one. The cockpit Client
+    # enforces a non-empty set (Zod ``min(1)``).
+    source_ids: list[str]
 
 
 class AddSourceResult(BaseModel):
@@ -276,7 +290,7 @@ class AddSourceResult(BaseModel):
 # Slice 1 runs single-workspace, so the segment is constant today — but threading
 # it through now means slice 2+ multi-workspace routing (DAT-357) is a no-op
 # rename instead of an audit of every ``start_workflow``/``getHandle`` call site,
-# and two workspaces can never collide on a shared ``source_id``. The ``ws_<id>``
+# and two workspaces can never collide on a shared ``session_id``. The ``ws_<id>``
 # isolation guard in :mod:`dataraum.worker.activity` is the data-side cornerstone;
 # this is its workflow-ID counterpart. See the ``durable-execution-lean`` memory.
 #
@@ -291,15 +305,17 @@ class AddSourceResult(BaseModel):
 # side mirrors this convention in ``packages/cockpit/src/temporal/workflow-id.ts``.
 
 
-def add_source_workflow_id(workspace_id: str, source_id: str) -> str:
-    """Workflow ID for the parent ``addSourceWorkflow`` of one source.
+def add_source_workflow_id(workspace_id: str, session_id: str) -> str:
+    """Workflow ID for the parent ``addSourceWorkflow`` of one run.
 
-    Reused across teach replays of the same source (with
-    ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
-    under one ID. Mirrored cockpit-side; the cockpit is the caller that starts
-    the parent, so this Python helper exists for tests + the child-ID builder.
+    A run ingests a SET of objects from 1–N sources (DAT-422), so it is keyed by
+    its ``session_id`` — the run's table-set anchor — NOT a source, mirroring
+    :func:`begin_session_workflow_id`. Reused across teach replays of the same run
+    (with ``WorkflowIdReusePolicy.ALLOW_DUPLICATE``) so Temporal groups iterations
+    under one ID. Mirrored cockpit-side; the cockpit is the caller that starts the
+    parent, so this Python helper exists for tests + the child-ID builder.
     """
-    return f"addsource-{workspace_id}-{source_id}"
+    return f"addsource-{workspace_id}-{session_id}"
 
 
 def begin_session_workflow_id(workspace_id: str, session_id: str) -> str:
@@ -314,14 +330,15 @@ def begin_session_workflow_id(workspace_id: str, session_id: str) -> str:
     return f"beginsession-{workspace_id}-{session_id}"
 
 
-def process_table_workflow_id(workspace_id: str, source_id: str, raw_table_id: str) -> str:
-    """Child ``processTableWorkflow`` ID for one raw table under a source.
+def process_table_workflow_id(workspace_id: str, session_id: str, raw_table_id: str) -> str:
+    """Child ``processTableWorkflow`` ID for one raw table under a run.
 
     Deterministic + collision-free so replay stays stable: the same raw table
     re-runs under the same child ID across teach iterations. Prefixed with the
-    parent's ``addsource-{workspace_id}-{source_id}`` so children are greppable
+    parent's ``addsource-{workspace_id}-{session_id}`` so children are greppable
     under their parent in the Temporal UI (the prefix is a naming convention, not
-    a Temporal-native hierarchy), and two workspaces sharing a ``source_id`` get
-    distinct child IDs.
+    a Temporal-native hierarchy), and two workspaces sharing a ``raw_table_id`` get
+    distinct child IDs. ``raw_table_id`` is unique per run, so two per-object
+    sources in the same run never collide on a child ID.
     """
-    return f"{add_source_workflow_id(workspace_id, source_id)}-table-{raw_table_id}"
+    return f"{add_source_workflow_id(workspace_id, session_id)}-table-{raw_table_id}"

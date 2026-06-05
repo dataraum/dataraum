@@ -150,24 +150,24 @@ class TestTargetRef:
 
 class TestLoadData:
     def test_load_data_populates_enriched_view(self, detector: DimensionCoverageDetector):
-        """load_data queries EnrichedView by view_name."""
+        """load_data queries the fact table's EnrichedView by table_id (DAT-415)."""
         mock_view = _make_enriched_view(["col1"])
         session = MagicMock()
         session.execute.return_value.scalar_one_or_none.return_value = mock_view
 
-        ctx = DetectorContext(view_name="enriched_orders", session=session)
+        ctx = DetectorContext(table_id="fact-1", session=session)
         detector.load_data(ctx)
 
         assert ctx.analysis_results["enriched_view"] is mock_view
 
     def test_load_data_no_session(self, detector: DimensionCoverageDetector):
         """load_data is no-op without session."""
-        ctx = DetectorContext(view_name="enriched_orders")
+        ctx = DetectorContext(table_id="fact-1")
         detector.load_data(ctx)
         assert "enriched_view" not in ctx.analysis_results
 
-    def test_load_data_no_view_name(self, detector: DimensionCoverageDetector):
-        """load_data is no-op without view_name."""
+    def test_load_data_no_table_id(self, detector: DimensionCoverageDetector):
+        """load_data is no-op without table_id (a non-fact context → skipped)."""
         ctx = DetectorContext(session=MagicMock())
         detector.load_data(ctx)
         assert "enriched_view" not in ctx.analysis_results

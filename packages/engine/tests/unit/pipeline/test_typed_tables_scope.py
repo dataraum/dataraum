@@ -1,11 +1,16 @@
-"""Unit tests for ``BasePhase._typed_tables`` per-table scoping (DAT-370).
+"""Unit tests for ``BasePhase._typed_tables`` per-table scoping (DAT-370, DAT-422).
 
 The four table-local analytics phases (statistics, column_eligibility,
 statistical_quality, temporal) all resolve their working set through this one
 helper. Under the per-table fan-out, ``ctx.table_ids`` carries the single typed
-table a child workflow is processing, so the helper must return exactly that
-table; an empty filter means source-wide (direct/test invocation). These cover
-that resolution directly via a constructed ``PhaseContext`` — no real profiling.
+table a child workflow is processing, so the helper returns exactly that table.
+
+Source-free (DAT-422): the fan-out children run with ``source_id=None`` (a run
+spans 1–N per-object sources), so the helper keys purely on ``table_ids`` and
+must NOT require a source — the regression these pin is that an analytics phase
+under a source-free child resolves its table instead of raising on a missing
+source. These exercise the resolution directly via a constructed ``PhaseContext``
+— no real profiling.
 """
 
 from __future__ import annotations
@@ -34,23 +39,15 @@ def _table(session: Session, source_id: str, name: str, layer: str) -> Table:
     return table
 
 
-def _ctx(session: Session, duck: duckdb.DuckDBPyConnection, source_id: str, table_ids: list[str]):  # noqa: ANN202
+def _ctx(
+    session: Session,
+    duck: duckdb.DuckDBPyConnection,
+    table_ids: list[str],
+    source_id: str | None = None,
+):  # noqa: ANN202
+    # source_id defaults to None — the fan-out children are source-free (DAT-422);
+    # the helper must resolve by table_ids alone regardless of source.
     return PhaseContext(session=session, duckdb_conn=duck, source_id=source_id, table_ids=table_ids)
-
-
-def test_empty_filter_returns_all_typed_tables(
-    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-) -> None:
-    src = _source(session)
-    raw = _table(session, src.source_id, "orders", layer="raw")
-    t1 = _table(session, src.source_id, "orders", layer="typed")
-    t2 = _table(session, src.source_id, "items", layer="typed")
-
-    resolved = StatisticsPhase()._typed_tables(_ctx(session, duckdb_conn, src.source_id, []))
-
-    ids = {t.table_id for t in resolved}
-    assert ids == {t1.table_id, t2.table_id}, "empty filter = all typed tables"
-    assert raw.table_id not in ids, "raw tables are never returned"
 
 
 def test_filter_scopes_to_the_single_requested_typed_table(
@@ -60,24 +57,61 @@ def test_filter_scopes_to_the_single_requested_typed_table(
     t1 = _table(session, src.source_id, "orders", layer="typed")
     _table(session, src.source_id, "items", layer="typed")
 
-    resolved = StatisticsPhase()._typed_tables(
-        _ctx(session, duckdb_conn, src.source_id, [t1.table_id])
-    )
+    resolved = StatisticsPhase()._typed_tables(_ctx(session, duckdb_conn, [t1.table_id]))
 
     assert [t.table_id for t in resolved] == [t1.table_id], (
         "a per-table run must see only its own typed table, not its siblings"
     )
 
 
-def test_filter_does_not_cross_source_boundaries(
+def test_resolves_with_no_source_id(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection
 ) -> None:
+    """The DAT-422 regression guard: the fan-out children run source-free
+    (``source_id=None``), so a per-table analytics phase must resolve its typed
+    table by ``table_ids`` alone — NOT raise on a missing source (the bug the
+    ``Table.source_id == require_source_id()`` base scoping introduced).
+    """
+    src = _source(session)
+    t1 = _table(session, src.source_id, "orders", layer="typed")
+
+    resolved = StatisticsPhase()._typed_tables(
+        _ctx(session, duckdb_conn, [t1.table_id], source_id=None)
+    )
+
+    assert [t.table_id for t in resolved] == [t1.table_id]
+
+
+def test_filter_keeps_typed_tables_across_sources(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """DAT-422: the per-table scope is source-AGNOSTIC — ``table_ids`` spanning two
+    sources resolve BOTH (a run is over a set of objects from 1–N sources), with
+    no source boundary to cross.
+    """
     src_a = _source(session)
     src_b = _source(session)
     a1 = _table(session, src_a.source_id, "orders", layer="typed")
-    _table(session, src_b.source_id, "orders", layer="typed")
+    b1 = _table(session, src_b.source_id, "orders", layer="typed")
 
-    # Scoped to src_a but with no filter: only src_a's typed tables.
-    resolved = StatisticsPhase()._typed_tables(_ctx(session, duckdb_conn, src_a.source_id, []))
+    resolved = StatisticsPhase()._typed_tables(
+        _ctx(session, duckdb_conn, [a1.table_id, b1.table_id])
+    )
 
-    assert [t.table_id for t in resolved] == [a1.table_id]
+    assert {t.table_id for t in resolved} == {a1.table_id, b1.table_id}
+
+
+def test_empty_filter_resolves_nothing(
+    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """The table-local phases always run under the per-table fan-out (a scoped
+    typed table_id), so an empty filter has no unit to process → ``[]``. The
+    run-wide reduce (``semantic_per_column``) overrides ``_typed_tables`` to scope
+    by the session instead, so this base path never carries the run-wide case.
+    """
+    src = _source(session)
+    _table(session, src.source_id, "orders", layer="typed")
+
+    resolved = StatisticsPhase()._typed_tables(_ctx(session, duckdb_conn, []))
+
+    assert resolved == []

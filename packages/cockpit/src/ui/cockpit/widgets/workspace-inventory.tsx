@@ -28,6 +28,8 @@ import {
 	groupLogicalTables,
 	humanizeBand,
 	type LogicalTable,
+	type SourceGroup,
+	sourceGroup,
 } from "#/ui/cockpit/widgets/inventory-grouping";
 
 // Band → Mantine color. An absent band (table not analyzed) renders as a muted
@@ -69,9 +71,11 @@ const MAX_VISIBLE_ROWS = 100;
  * Built entirely from the inventory rows already in hand (no extra fetch). */
 function SourceCard({
 	tables,
+	group,
 	onClose,
 }: {
 	tables: InventoryTable[];
+	group: SourceGroup;
 	onClose: () => void;
 }) {
 	const head = tables[0];
@@ -101,7 +105,7 @@ function SourceCard({
 		>
 			<Group justify="space-between" wrap="nowrap">
 				<Text size="sm" fw={600} truncate>
-					{head.source_name}
+					{group.label}
 				</Text>
 				<Anchor
 					component="button"
@@ -114,22 +118,34 @@ function SourceCard({
 				</Anchor>
 			</Group>
 			<Group gap="xs">
-				<Badge variant="outline" color="gray" tt="lowercase">
-					{head.source_type}
-				</Badge>
-				{head.source_backend && (
+				{/* A connection shows its kind/backend/status; the Uploads umbrella spans
+				    many per-file sources, so a single type/backend/status is meaningless —
+				    show a neutral marker instead of any one file's metadata (or the hash). */}
+				{group.kind === "connection" ? (
+					<>
+						<Badge variant="outline" color="gray" tt="lowercase">
+							{head.source_type}
+						</Badge>
+						{head.source_backend && (
+							<Badge variant="outline" color="gray" tt="lowercase">
+								{head.source_backend}
+							</Badge>
+						)}
+						{head.source_status && (
+							<Badge variant="outline" color="gray" tt="lowercase">
+								{head.source_status}
+							</Badge>
+						)}
+					</>
+				) : (
 					<Badge variant="outline" color="gray" tt="lowercase">
-						{head.source_backend}
-					</Badge>
-				)}
-				{head.source_status && (
-					<Badge variant="outline" color="gray" tt="lowercase">
-						{head.source_status}
+						uploaded files
 					</Badge>
 				)}
 			</Group>
 			<Text size="xs" c="dimmed">
-				{logical.length} table{logical.length === 1 ? "" : "s"}
+				{logical.length} {group.kind === "uploads" ? "file" : "table"}
+				{logical.length === 1 ? "" : "s"}
 			</Text>
 			<Group gap={8}>
 				<Text span size="xs" c="green">
@@ -184,8 +200,13 @@ function TableDetailModal({
 			{table && (
 				<Stack gap="sm">
 					<Group gap="xs">
+						{/* The source label is the GROUP, never the `src_<digest>` hash:
+						    "Uploads" for an uploaded file, the connection name otherwise. */}
 						<Badge variant="outline" color="gray" tt="lowercase">
-							{table.sourceName}
+							{
+								sourceGroup(table.sourceName, table.sourceType, table.sourceId)
+									.label
+							}
 						</Badge>
 						<Badge variant="outline" color="gray" tt="lowercase">
 							{table.sourceType}
@@ -245,7 +266,9 @@ export function WorkspaceInventoryWidget({
 	// Action-only: the stable actions context, so the inventory grid does NOT
 	// re-render while a turn streams.
 	const { sendMessage } = useCockpitActions();
-	const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+	// The selected SOURCE GROUP (DAT-424): the "Uploads" umbrella or a connection's
+	// source_id — not a per-file content-keyed source id.
+	const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 	const [detail, setDetail] = useState<LogicalTable | null>(null);
 
 	if (tables.length === 0) {
@@ -275,8 +298,14 @@ export function WorkspaceInventoryWidget({
 	const visible = logical.slice(0, MAX_VISIBLE_ROWS);
 	const overflow = logical.length - visible.length;
 
-	const selected = selectedSourceId
-		? tables.filter((t) => t.source_id === selectedSourceId)
+	// Filter by the selected GROUP: "Uploads" matches every content-keyed upload
+	// source; a connection matches its own source_id.
+	const selected = selectedGroupId
+		? tables.filter(
+				(t) =>
+					sourceGroup(t.source_name, t.source_type, t.source_id).id ===
+					selectedGroupId,
+			)
 		: [];
 
 	return (
@@ -315,6 +344,14 @@ export function WorkspaceInventoryWidget({
 						<Table.Tbody>
 							{visible.map((lt) => {
 								const t = lt.representative;
+								// The source DIMENSION is a group: uploads collapse under one
+								// "Uploads" umbrella (the digest name is never shown); a
+								// connection is its own named origin.
+								const group = sourceGroup(
+									lt.sourceName,
+									lt.sourceType,
+									lt.sourceId,
+								);
 								return (
 									<Table.Tr
 										key={lt.key}
@@ -334,19 +371,21 @@ export function WorkspaceInventoryWidget({
 										<Table.Td>
 											<Badge
 												variant={
-													selectedSourceId === lt.sourceId ? "filled" : "light"
+													selectedGroupId === group.id ? "filled" : "light"
 												}
 												color="gray"
 												style={{ cursor: "pointer" }}
 												onClick={() =>
-													setSelectedSourceId((prev) =>
-														prev === lt.sourceId ? null : lt.sourceId,
+													setSelectedGroupId((prev) =>
+														prev === group.id ? null : group.id,
 													)
 												}
-												tt="lowercase"
-												data-testid={`inventory-source-badge-${lt.sourceId}`}
+												tt={group.kind === "uploads" ? "none" : "lowercase"}
+												data-testid={`inventory-source-badge-${group.id}`}
 											>
-												{lt.sourceName} · {lt.sourceType}
+												{group.kind === "uploads"
+													? group.label
+													: `${group.label} · ${lt.sourceType}`}
 											</Badge>
 										</Table.Td>
 										<Table.Td>{t.row_count ?? "—"}</Table.Td>
@@ -389,10 +428,18 @@ export function WorkspaceInventoryWidget({
 				</Table.ScrollContainer>
 			</Stack>
 
-			{selectedSourceId && selected.length > 0 && (
+			{selectedGroupId && selected.length > 0 && (
+				// `selected` is non-empty (guarded) and every row in it resolves to the
+				// SAME group (that's how it was filtered), so `selected[0]` safely
+				// yields the card's group label/kind.
 				<SourceCard
 					tables={selected}
-					onClose={() => setSelectedSourceId(null)}
+					group={sourceGroup(
+						selected[0].source_name,
+						selected[0].source_type,
+						selected[0].source_id,
+					)}
+					onClose={() => setSelectedGroupId(null)}
 				/>
 			)}
 

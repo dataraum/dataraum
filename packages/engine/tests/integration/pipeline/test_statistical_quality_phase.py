@@ -77,6 +77,7 @@ class TestStatisticalQualityPhase:
             session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
+            table_ids=[table.table_id],
             config={},
         )
 
@@ -144,6 +145,7 @@ class TestStatisticalQualityPhase:
             session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
+            table_ids=[table.table_id],
             config={},
         )
 

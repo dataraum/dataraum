@@ -4,6 +4,43 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-05: typing replay-poison + STRPTIME-throw + eligibility key-abort fixes
+
+Three add_source typing/eligibility bug fixes from a user report (German DD.MM.YYYY
+data; branch `fix/typing-replay-poison`). **Typing outcomes change — re-run the
+add_source recall suite.** Expected movement: date-typed coverage UP.
+
+### dataraum-eval
+- **Changed:** `analysis/typing/{patterns.py, inference.py, resolution.py}`,
+  `analysis/eligibility/{evaluator.py, config.py}`, `pipeline/phases/column_eligibility_phase.py`,
+  `storage/models.py` (`Column.type_decision` → `type_decisions` list), `graphs/context.py`,
+  `dataraum-config/phases/column_eligibility.yaml` (`key_patterns` removed).
+- **Behavior changes:**
+  1. **One malformed value no longer zeroes a date pattern.** Standardization exprs are
+     TRY_-normalized (`STRPTIME`→`TRY_STRPTIME`, inner `CAST`→`TRY_CAST`) at Pattern load.
+     A 99%-clean DD.MM.YYYY column now types DATE with the bad rows quarantined instead of
+     falling back to VARCHAR with `success_rate=0.0` and no failed examples. Columns that
+     previously stayed VARCHAR because of a single dirty value will now be DATE — ground
+     truths that encoded the buggy VARCHAR outcome need updating.
+  2. **Re-runs/replays re-decide types.** Resolution honors only `decision_source='manual'`
+     TypeDecisions (latest), and a manual pin keeps the standardization expr; candidates are
+     run-scoped. Previously ANY second run froze the first run's outcome (taught patterns
+     never applied) or re-applied DATE without its parse expr (100%-NULL column → all rows
+     quarantined → eligibility dropped it). Any calibration that re-runs typing on the same
+     workspace exercises this path.
+  3. **Eligibility no longer aborts on all-null key-named columns.** `is_likely_key` /
+     `key_patterns` deleted; an all-null `*_id` column drops + records INELIGIBLE like any
+     other and the run continues. Scenarios that asserted a pipeline FAILURE for null key
+     columns now expect a completed run with `dropped >= 1`.
+- **Calibrate:** add_source recall suite + any teach/replay strategy. No new response
+  fields; no workflow contract change.
+
+### dataraum-testdata
+- Injection hints: (a) a date column with exactly one unparseable-but-regex-matching value
+  (e.g. `29.02.2023`) — should type DATE, quarantine 1 row; (b) a 100%-null `*_id` column —
+  should drop, not abort; (c) a DD.MM.YYYY column re-typed across two runs — second run must
+  still parse (the replay-poison regression).
+
 ## 2026-06-04: DAT-421 — add_source `semantic_per_column` scopes by session, not source
 
 Epic DAT-420 (source model). The add_source source-level reduce was the last spine

@@ -93,7 +93,12 @@ def test_prior_run_candidates_do_not_compete() -> None:
 def test_manual_decision_pins_type_and_keeps_standardization_expr() -> None:
     """A human override pins the TYPE but the same-type candidate's pattern
     still supplies the standardization expr — honoring the type while dropping
-    the expr would plain-TRY_CAST DD.MM.YYYY to an all-NULL column."""
+    the expr would plain-TRY_CAST DD.MM.YYYY to an all-NULL column.
+
+    The DATE candidate sits BELOW min_confidence (0.7 < 0.85) on purpose: a
+    manual pin bypasses the threshold — even a weak same-type candidate's expr
+    beats a plain cast.
+    """
     col = _column()
     col.type_decisions.append(_decision("run-A", "manual", "DATE"))
     col.type_candidates.append(_candidate("run-B", "DATE", 0.7, pattern="eu_date"))
@@ -106,6 +111,26 @@ def test_manual_decision_pins_type_and_keeps_standardization_expr() -> None:
     assert spec.pattern is not None
     assert spec.pattern.standardization_expr is not None
     assert "TRY_STRPTIME" in spec.pattern.standardization_expr
+
+
+def test_manual_decision_without_matching_candidate_plain_casts_and_warns() -> None:
+    """No same-type candidate this run → the manual type is honored with a
+    plain TRY_CAST (pattern None) and the degradation is logged loudly — for
+    string-parsed types that cast can NULL every value, and silence here was
+    part of the original destruction path."""
+    from structlog.testing import capture_logs
+
+    col = _column()
+    col.type_decisions.append(_decision("run-A", "manual", "DATE"))
+    col.type_candidates.append(_candidate("run-B", "VARCHAR", 1.0))
+
+    with capture_logs() as logs:
+        (spec,) = _select_best_candidates([col], MIN_CONFIDENCE, run_id="run-B")
+
+    assert spec.decision_source == "manual"
+    assert spec.data_type == DataType.DATE
+    assert spec.pattern is None
+    assert any(e["event"] == "manual_override_no_matching_candidate" for e in logs)
 
 
 def test_no_run_candidates_falls_back_to_varchar() -> None:

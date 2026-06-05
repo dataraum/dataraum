@@ -126,11 +126,11 @@ class TestNormalizeStandardizationExpr:
         )
 
     def test_idempotent_on_try_variants(self):
-        expr = "COALESCE(TRY_STRPTIME(\"{col}\", '%d.%m.%Y'), TRY_CAST(\"{col}\" AS DATE))"
+        expr = 'COALESCE(TRY_STRPTIME("{col}", \'%d.%m.%Y\'), TRY_CAST("{col}" AS DATE))'
         assert normalize_standardization_expr(expr) == expr
 
     def test_other_functions_untouched(self):
-        expr = "MAKE_DATE(TRY_CAST(LEFT(\"{col}\", 4) AS INT), 1, 1)"
+        expr = 'MAKE_DATE(TRY_CAST(LEFT("{col}", 4) AS INT), 1, 1)'
         assert normalize_standardization_expr(expr) == expr
 
     def test_pattern_normalizes_on_construction(self):

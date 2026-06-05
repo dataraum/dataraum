@@ -203,7 +203,6 @@ def _select_best_candidates(
     columns: list[Column],
     min_confidence: float,
     run_id: str | None,
-    table_name: str = "",
 ) -> list[ColumnTypeSpec]:
     """Select best type candidate per column for THIS run.
 
@@ -245,12 +244,25 @@ def _select_best_candidates(
             default=None,
         )
         if manual is not None:
+            # The pattern search deliberately ignores min_confidence — a human
+            # pinned the type, so even a weak same-type candidate's expr beats
+            # a plain cast.
             pattern = None
             for cand in candidates:
                 if cand.data_type == manual.decided_type and cand.detected_pattern:
                     pattern = _resolve_pattern(cand.detected_pattern, patterns_by_name)
                     if pattern is not None:
                         break
+            if pattern is None:
+                # No same-type candidate this run → the DDL plain-TRY_CASTs to
+                # the decided type. For string-parsed types (dates) that can
+                # NULL every value — surface it instead of failing silently.
+                logger.warning(
+                    "manual_override_no_matching_candidate",
+                    column=col.column_name,
+                    decided_type=manual.decided_type,
+                    run_id=run_id,
+                )
             specs.append(
                 ColumnTypeSpec(
                     column_id=col.column_id,
@@ -412,12 +424,7 @@ def resolve_types(
     quarantine_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("quarantine")}."{bare}"'
 
     # Select best candidates
-    specs = _select_best_candidates(
-        table.columns,
-        min_confidence,
-        run_id,
-        table_name=table.table_name,
-    )
+    specs = _select_best_candidates(table.columns, min_confidence, run_id)
 
     # Persist THIS run's TypeDecision for every column — upsert on
     # ``(column_id, run_id)`` (idempotent under a Temporal at-least-once

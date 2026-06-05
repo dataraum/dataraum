@@ -45,6 +45,34 @@ import {
 // file-source name derivation below agree on one pattern.
 export const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
+// Reserved family prefixes (DAT-433). The display rules in lib/display-names.ts
+// are SOUND only because a user-chosen source name can never start with a
+// derived-table family prefix: `src_` (content-keyed upload sources →
+// `src_<digest>__<table>` physical names), `enriched_` (enriched views
+// `enriched_<source>__<table>`), `slice_` (slice tables
+// `slice_<source table>_<col>_<value>`). Without the reservation, a db source
+// named `enriched_data` would display differently per tool (callers without
+// sourceName context apply the family rule) AND collide with the real enriched
+// view of a source named `data`. Only the PREFIXED forms collide — the bare
+// words `src`/`enriched`/`slice` are fine as source names.
+export const RESERVED_SOURCE_NAME_PREFIXES = [
+	"src_",
+	"enriched_",
+	"slice_",
+] as const;
+
+/**
+ * The reserved family prefix a candidate source name starts with, or null when
+ * the name is safe. The db-source branch of `tools/select.ts` rejects on
+ * non-null — `select` is the only writer of source rows, so this IS the
+ * reservation. The content-keyed `src_<digest>` names minted by
+ * `contentKeyedSourceName` below are exempt by construction: they ARE the
+ * family the `src_` prefix is reserved for.
+ */
+export function reservedSourceNamePrefix(name: string): string | null {
+	return RESERVED_SOURCE_NAME_PREFIXES.find((p) => name.startsWith(p)) ?? null;
+}
+
 // --- source_type from a file URI suffix -------------------------------------
 
 // Suffix → engine `source_type`. MIRRORS the engine's import-dispatch suffix map

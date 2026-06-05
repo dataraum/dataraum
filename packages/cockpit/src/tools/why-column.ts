@@ -31,7 +31,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
-import { displayTableName } from "../lib/display-names";
+import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
 
@@ -53,7 +53,8 @@ const EvidenceSignal = z.object({
 	detector_id: z.string(),
 	score: z.number(),
 	// Compact JSON of the detector-specific evidence blob (shape varies per
-	// detector); the narrative + the widget render it as-is.
+	// detector), rendered agent-safe via `renderEvidenceDetail` (DAT-433) — the
+	// narrative + the widget render it as-is.
 	detail: z.string(),
 });
 
@@ -105,12 +106,6 @@ export interface WhyEvidenceRow {
 	evidence: unknown;
 }
 
-/** Compact, JSON-safe rendering of a detector's evidence blob. */
-function renderDetail(evidence: unknown): string {
-	if (evidence === null || evidence === undefined) return "";
-	return JSON.stringify(evidence);
-}
-
 /**
  * Assemble the structured (non-narrative) why-payload from the readiness row and
  * the column's evidence rows. Pure — no DB, no LLM — so the parsing + correlation
@@ -132,11 +127,14 @@ export function projectWhyData(
 			}))
 		: [];
 
+	// `detail` reaches the agent AND the synthesis prompt — render through the
+	// shared sanitizer (DAT-433): engine-internal `_`-keys dropped, explicit
+	// table-name keys display-mapped, src-digest backstop applied.
 	const evidence: z.infer<typeof EvidenceSignal>[] = evidenceRows.map((e) => ({
 		dimension_path: `${e.layer}.${e.dimension}.${e.subDimension}`,
 		detector_id: e.detectorId,
 		score: e.score,
-		detail: renderDetail(e.evidence),
+		detail: renderEvidenceDetail(e.evidence),
 	}));
 
 	return {

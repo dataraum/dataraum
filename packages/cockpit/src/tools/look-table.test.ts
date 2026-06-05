@@ -14,6 +14,7 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {
 	projectColumnReadiness,
+	projectLookTable,
 	projectTableBand,
 	type ReadinessRow,
 	type TableBandRow,
@@ -185,5 +186,55 @@ describe("projectTableBand (DAT-415)", () => {
 		expect(out.intents).toEqual([]);
 		expect(out.top_drivers).toEqual([]);
 		expect(out.band).toBe("investigate"); // scalar still comes through
+	});
+});
+
+describe("projectLookTable (DAT-433)", () => {
+	const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+
+	it("splits the raw name into display table_name + raw physical_name", () => {
+		const out = projectLookTable(
+			"t_orders",
+			`src_${DIGEST}__orders`,
+			[projectColumnReadiness(row())],
+			null,
+			2,
+		);
+		expect(out.table_name).toBe("orders");
+		expect(out.physical_name).toBe(`src_${DIGEST}__orders`);
+		expect(out.analyzed).toBe(true);
+		expect(out.pending_teaches).toBe(2);
+		// The digest appears ONLY in the sanctioned physical_name (the run_sql
+		// round-trip key) — nowhere else in the projection.
+		const { physical_name: _pn, ...rest } = out;
+		expect(JSON.stringify(rest)).not.toMatch(/src_[0-9a-f]{40}/);
+	});
+
+	it("returns the empty not-found shell for a stale table id", () => {
+		const out = projectLookTable("t_gone", null, [], null, 0);
+		expect(out).toEqual({
+			table_id: "t_gone",
+			table_name: "",
+			physical_name: "",
+			analyzed: false,
+			pending_teaches: 0,
+			columns: [],
+			table_readiness: null,
+		});
+	});
+
+	it("analyzed reflects whether any column carries a band", () => {
+		const unanalyzed = projectLookTable(
+			"t_orders",
+			"orders",
+			[
+				projectColumnReadiness(
+					row({ band: null, worstIntentRisk: null, intents: null }),
+				),
+			],
+			null,
+			0,
+		);
+		expect(unanalyzed.analyzed).toBe(false);
 	});
 });

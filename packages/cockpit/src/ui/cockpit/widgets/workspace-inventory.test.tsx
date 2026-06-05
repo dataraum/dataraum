@@ -39,18 +39,20 @@ function renderWidget(tables: InventoryTable[]) {
 	);
 }
 
+// Fixtures mirror the list_tables PROJECTION (DAT-433): `table_name` is the
+// display form (digest prefix already stripped in the tool), the raw DuckDB
+// name rides in `physical_name`, and an upload's `source_name` is the uploaded
+// FILE's name (the content-keyed `src_<digest>` source name is never emitted).
 function table(overrides: Partial<InventoryTable> = {}): InventoryTable {
 	return {
 		table_id: "t_orders",
-		// A content-keyed upload's raw table is `<src_digest>__<filename-stem>`.
-		table_name: "src_aaa__orders",
+		table_name: "orders",
+		physical_name: "src_aaa__orders",
 		layer: "typed",
 		row_count: 1000,
 		column_count: 5,
 		source_id: "src_aaa",
-		// The source NAME is the content digest (DAT-422) — never shown; the
-		// inventory surfaces the filename ("orders", the de-prefixed table name).
-		source_name: "src_aaa",
+		source_name: "orders.csv",
 		source_type: "csv",
 		source_backend: null,
 		analyzed: true,
@@ -60,15 +62,16 @@ function table(overrides: Partial<InventoryTable> = {}): InventoryTable {
 	};
 }
 
-// Two UPLOADED FILES — each its own content-keyed `src_<digest>` source — plus one
-// db_recipe CONNECTION. The two uploads must collapse under ONE "Uploads" group.
+// Two UPLOADED FILES — each its own content-keyed source — plus one db_recipe
+// CONNECTION. The two uploads must collapse under ONE "Uploads" group.
 const inventory: InventoryTable[] = [
-	table(), // src_aaa → orders
+	table(), // orders.csv → orders
 	table({
 		table_id: "t_items",
-		table_name: "src_bbb__items",
+		table_name: "items",
+		physical_name: "src_bbb__items",
 		source_id: "src_bbb",
-		source_name: "src_bbb",
+		source_name: "items.csv",
 		row_count: 50,
 		column_count: 2,
 		worst_band: "ready",
@@ -76,7 +79,8 @@ const inventory: InventoryTable[] = [
 	}),
 	table({
 		table_id: "t_users",
-		table_name: "crm__users",
+		table_name: "users",
+		physical_name: "crm__users",
 		source_id: "s_crm",
 		source_name: "crm",
 		source_type: "db_recipe",
@@ -137,21 +141,18 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		renderWidget([
 			table({
 				table_id: "raw1",
-				table_name: "src_aaa__orders",
 				layer: "raw",
 				row_count: 1000,
 				worst_band: null,
 			}),
 			table({
 				table_id: "typed1",
-				table_name: "src_aaa__orders",
 				layer: "typed",
 				row_count: 998,
 				worst_band: "investigate",
 			}),
 			table({
 				table_id: "q1",
-				table_name: "src_aaa__orders",
 				layer: "quarantine",
 				row_count: 2,
 				worst_band: null,
@@ -162,7 +163,7 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		expect(screen.getByTestId("inventory-row-typed1")).toBeTruthy();
 		expect(screen.queryByTestId("inventory-row-raw1")).toBeNull();
 		expect(screen.queryByTestId("inventory-row-q1")).toBeNull();
-		// The name is de-prefixed (no `src_aaa__`).
+		// The display name shows (the digest only ever rides in physical_name).
 		const row = within(screen.getByTestId("inventory-row-typed1"));
 		expect(row.getByText("orders")).toBeTruthy();
 		// The quarantine count opens the detail modal.

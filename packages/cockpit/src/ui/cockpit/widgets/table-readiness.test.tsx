@@ -37,7 +37,10 @@ function renderWidget(readiness: LookTableResult) {
 
 const analyzed: LookTableResult = {
 	table_id: "t_1",
+	// Display form — look_table strips the physical prefix in the tool (DAT-433);
+	// the raw DuckDB name rides in physical_name.
 	table_name: "orders",
+	physical_name: "src_aaa__orders",
 	analyzed: true,
 	pending_teaches: 0,
 	columns: [

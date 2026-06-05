@@ -22,6 +22,8 @@ import {
 	sources,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
+import { fileName } from "../lib/file-uri";
 
 // The calibrated bands the engine emits (entropy_readiness.band). A column with
 // no readiness row (left-join miss) counts as `unanalyzed`, never as a band.
@@ -41,7 +43,14 @@ export type ReadinessRollup = z.infer<typeof ReadinessRollup>;
 
 const InventoryTable = z.object({
 	table_id: z.string(),
+	// Display name (`src_<digest>__` prefix stripped, DAT-433) — for prose. The
+	// result feeds the agent's context; the round-trip key is table_id, and SQL
+	// addresses the table via `physical_name`.
 	table_name: z.string(),
+	// The raw DuckDB table name — what run_sql addresses as
+	// `lake.<layer>.<physical_name>`. NOT for prose (it embeds the content-keyed
+	// source prefix for uploads).
+	physical_name: z.string(),
 	layer: z.string(),
 	row_count: z.number().nullable(),
 	column_count: z.number(),
@@ -51,6 +60,9 @@ const InventoryTable = z.object({
 	// retired in DAT-369), so it's write-once noise — imported-ness is derivable
 	// from the typed tables under the source (DAT-431).
 	source_id: z.string(),
+	// db_recipe: the user-chosen connection name. Uploads: the uploaded FILE's
+	// name (the source row's name is the content-keyed `src_<digest>`, which is
+	// internal and never emitted — DAT-433). The filtering key is source_id.
 	source_name: z.string(),
 	source_type: z.string(),
 	source_backend: z.string().nullable(),
@@ -66,13 +78,42 @@ export type InventoryTable = z.infer<typeof InventoryTable>;
 /** One table ⟕ source provenance row, as the Drizzle select returns it. */
 export interface InventoryTableRow {
 	tableId: string;
+	/** Raw physical table name (`src_<digest>__<stem>` for uploads). */
 	tableName: string;
 	layer: string;
 	rowCount: number | null;
 	sourceId: string;
+	/** Raw source name (`src_<digest>` for uploads) — projected, never emitted. */
 	sourceName: string;
 	sourceType: string;
 	sourceBackend: string | null;
+	/** The source's `connection_config` JSONB — `file_uris` names the upload. */
+	sourceConnectionConfig: unknown;
+}
+
+/**
+ * The agent-facing source label (DAT-433). A db_recipe source keeps its
+ * user-chosen name; any other source is a content-keyed upload whose name is
+ * the internal `src_<digest>` — emit the uploaded file's name instead (the
+ * basename of `connection_config.file_uris[0]`, matching the human-side
+ * inventory display). A malformed config — or an empty-string URI, whose
+ * basename would be a blank label — degrades to the neutral "upload",
+ * never the digest.
+ */
+function sourceLabel(row: InventoryTableRow): string {
+	if (row.sourceType === "db_recipe") return row.sourceName;
+	const cfg = row.sourceConnectionConfig;
+	if (cfg !== null && typeof cfg === "object") {
+		const uris = (cfg as Record<string, unknown>).file_uris;
+		if (
+			Array.isArray(uris) &&
+			typeof uris[0] === "string" &&
+			uris[0].length > 0
+		) {
+			return fileName(uris[0]);
+		}
+	}
+	return "upload";
 }
 
 /** One column ⟕ readiness row (band null = the column has no readiness row). */
@@ -126,12 +167,16 @@ export function buildInventory(
 						: null;
 		return {
 			table_id: t.tableId,
-			table_name: t.tableName,
+			// Display form for prose (the raw source name strips its exact prefix;
+			// the fallback handles the rest) — the raw name rides in physical_name
+			// for run_sql (DAT-433).
+			table_name: displayTableName(t.tableName, t.sourceName),
+			physical_name: t.tableName,
 			layer: t.layer,
 			row_count: t.rowCount,
 			column_count: r.ready + r.investigate + r.blocked + r.unanalyzed,
 			source_id: t.sourceId,
-			source_name: t.sourceName,
+			source_name: sourceLabel(t),
 			source_type: t.sourceType,
 			source_backend: t.sourceBackend,
 			analyzed,
@@ -163,6 +208,7 @@ export async function listTables(
 			sourceName: sources.name,
 			sourceType: sources.sourceType,
 			sourceBackend: sources.backend,
+			sourceConnectionConfig: sources.connectionConfig,
 		})
 		.from(tables)
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
@@ -184,9 +230,12 @@ export const listTablesTool = toolDefinition({
 	name: "list_tables",
 	description:
 		"List the workspace table inventory, optionally filtered to one source. " +
-		"Returns each table's id, name, layer, row count, column count, its source " +
-		"(name/type/backend), and a readiness rollup — how many of its " +
-		"columns are ready / investigate / blocked / unanalyzed plus the worst band.",
+		"Returns each table's id, display name (table_name — use this in prose), " +
+		"physical_name (the DuckDB name — use ONLY to address the table in " +
+		"run_sql as `lake.<layer>.<physical_name>`), layer, row count, column " +
+		"count, its source (name/type/backend), and a readiness rollup — how " +
+		"many of its columns are ready / investigate / blocked / unanalyzed plus " +
+		"the worst band.",
 	inputSchema: z.object({
 		source_id: z
 			.string()

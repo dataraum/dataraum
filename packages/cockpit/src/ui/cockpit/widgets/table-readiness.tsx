@@ -8,7 +8,6 @@
 // code in the client bundle).
 
 import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
-import { displayTableName } from "#/lib/display-names";
 import type { TableReadiness } from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -120,8 +119,9 @@ export function TableReadinessWidget({
 		);
 	};
 
-	// Show the plain table name, never the engine's `<source>__table` physical id.
-	const tableLabel = displayTableName(readiness.table_name);
+	// `table_name` arrives in display form — the look_table projection strips the
+	// physical prefix (DAT-433); the raw name rides in `physical_name`.
+	const tableLabel = readiness.table_name;
 
 	if (readiness.columns.length === 0) {
 		return (

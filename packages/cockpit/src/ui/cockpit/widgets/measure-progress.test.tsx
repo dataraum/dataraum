@@ -375,6 +375,33 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		expect(alert.textContent).not.toContain("finance_data__journal_lines");
 	});
 
+	it("strips content-keyed digests from the failure message (DAT-433 — same treatment as the agent side)", () => {
+		const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+		h.queryResult = {
+			data: {
+				phase: "import",
+				tables_total: 0,
+				tables_completed: 0,
+				tables: [],
+				failure: {
+					message: `import failed for s3://lake/uploads/${DIGEST}/orders.csv (source src_${DIGEST})`,
+					phase: "import",
+					table_id: null,
+				},
+				status: "FAILED",
+				done: true,
+			},
+			error: undefined,
+			isLoading: false,
+		};
+		renderWidget();
+		const alert = screen.getByTestId("measure-progress-failed");
+		expect(alert.textContent).not.toContain(DIGEST);
+		// The strip keeps the human parts: the filename and a neutral source label.
+		expect(alert.textContent).toContain("orders.csv");
+		expect(alert.textContent).toContain("source upload");
+	});
+
 	it("surfaces a query error", () => {
 		h.queryResult = {
 			data: undefined,

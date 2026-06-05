@@ -6,11 +6,7 @@
 // Reads theme/tokens only; the row type is a type-only import (erased).
 
 import { Alert, Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
-import {
-	displayTableName,
-	humanizeIdentifier,
-	prettyJson,
-} from "#/lib/display-names";
+import { humanizeIdentifier, prettyJson } from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 const INTENT_LABEL: Record<string, string> = {
@@ -80,7 +76,8 @@ export function ColumnWhyWidget({
 				<Text size="sm" fw={600}>
 					{why.column_name}{" "}
 					<Text span c="dimmed">
-						· {displayTableName(why.table_name)}
+						{/* table_name arrives in display form (projected in the tool). */}·{" "}
+						{why.table_name}
 					</Text>
 				</Text>
 				<BandBadge band={why.band} />

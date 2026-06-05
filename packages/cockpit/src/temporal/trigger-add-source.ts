@@ -1,17 +1,20 @@
-// add_source TRIGGER (DAT-352) — the explicit "Add source" action that starts
-// the engine's addSourceWorkflow for a source `select` already persisted.
+// add_source TRIGGER (DAT-352, folded into the select approval gate by DAT-436)
+// — seeds the run's investigation_sessions row and starts the engine's
+// addSourceWorkflow for the source set `select` just persisted.
 //
-// `select` (DAT-398) writes the `sources` row and advances its stage cursor to
-// `add_source`, but does NOT start the import — that is this trigger. It is the
-// cockpit-side caller the engine import phase assumes seeded the workspace state.
+// Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): approving
+// the `select` tool is the single gate that registers the source(s) AND starts
+// the import — there is no separate "Add source" button or `/api/add-source`
+// route. select runs the vertical pre-flight (NoConceptsError) BEFORE any write,
+// so by the time this trigger runs the vertical is known to resolve to ≥1
+// concept; this function does not re-check it.
 //
 // HARD PRECONDITION (DAT-407 FK): the addSourceWorkflow's typing phase writes a
 // `session_tables` row with a NOT-NULL FK to `investigation_sessions.session_id`
-// (typing_phase.link_session_tables). `select` persists only the `sources` row —
-// it never creates an investigation_sessions row. So a random session_id with no
-// parent row passes `workflow.start` (non-blocking) but kills the run deep in the
-// per-table fan-out at that FK, surfacing only as a stuck/failed progress poll.
-// This trigger therefore INSERTs the investigation_sessions SEED (status='active',
+// (typing_phase.link_session_tables). A random session_id with no parent row
+// passes `workflow.start` (non-blocking) but kills the run deep in the per-table
+// fan-out at that FK, surfacing only as a stuck/failed progress poll. This
+// trigger therefore INSERTs the investigation_sessions SEED (status='active',
 // step_count=0, intent, started_at, vertical) through the SAME metadata-client
 // write seam select/teach/frame use, BEFORE starting the workflow.
 //
@@ -26,12 +29,10 @@
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
-import { z } from "zod";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessions } from "../db/metadata/schema";
-import { verticalConceptCount } from "../tools/list-verticals";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
@@ -45,8 +46,8 @@ const SEED_STATUS = "active";
  * The chosen vertical resolves to ZERO concepts (no builtin ontology.yaml
  * concepts AND no overlay rows) — so add_source would fail loud deep in the
  * engine's grounding phase (semantic_per_column). A user-fixable PRECONDITION,
- * not a server fault: the API route surfaces it as a 400 with this message, and
- * the trigger never starts the doomed workflow.
+ * not a server fault: `select` raises it BEFORE any source write, so a refused
+ * vertical leaves no half-state and never starts the doomed workflow.
  */
 export class NoConceptsError extends Error {
 	constructor(public readonly vertical: string) {
@@ -67,7 +68,8 @@ export interface TriggerAddSourceInput {
 	// Vertical the engine resolves phase config + ontology against. Cold-start
 	// workspaces use "_adhoc" (induction generates concepts from the data); pass
 	// the run's framed vertical to keep it on the same ontology. Defaults to
-	// "_adhoc" when unset, matching the engine default.
+	// "_adhoc" when unset, matching the engine default. The caller (select) has
+	// already pre-flighted it against the effective concept count.
 	vertical?: string;
 }
 
@@ -121,18 +123,6 @@ export async function triggerAddSource(
 	const sessionId = randomUUID();
 	const vertical = input.vertical ?? "_adhoc";
 
-	// PRE-FLIGHT (Theme B obs 4, generalized in Theme A): refuse early when the
-	// chosen vertical resolves to zero concepts — builtin ontology.yaml concepts
-	// PLUS active overlay rows. The engine fails loud on this deep in
-	// semantic_per_column (semantic_per_column_phase.py), surfacing only as a
-	// dead Temporal run; catching it here gives the user a readable message and
-	// never starts the doomed workflow (no orphan session row either — this runs
-	// before the seed). An adopted builtin (finance) ships concepts → passes; an
-	// empty _adhoc or an un-framed vertical → refused.
-	if ((await verticalConceptCount(vertical)) === 0) {
-		throw new NoConceptsError(vertical);
-	}
-
 	// CRITICAL: seed the session BEFORE starting the workflow. typing_phase's
 	// link_session_tables writes a session_tables row with a NOT-NULL FK to this
 	// session_id; without the parent row the run dies mid-fan-out at that FK. No
@@ -183,21 +173,3 @@ export async function triggerAddSource(
 		await connection.close();
 	}
 }
-
-/** Request-body schema for `POST /api/add-source` — the API route validates the
- * trigger input against this before firing the workflow. The API is the trust
- * boundary: a direct call bypasses `select`/`frame` validation, and the vertical
- * flows into `OntologyLoader.load(vertical)` → `verticals/<v>/ontology.yaml` path
- * construction (engine) + a config-tree fs read (`verticalConceptCount`), so it
- * MUST be a safe segment here — a path-traversal `../…` is rejected. Allows the
- * `_adhoc` default (leading underscore) plus the engine-valid name shape. */
-export const TriggerAddSourceInputSchema = z.object({
-	source_ids: z.array(z.string().min(1)).min(1),
-	vertical: z
-		.string()
-		.refine((v) => v === "_adhoc" || /^[a-z][a-z0-9_]{1,48}$/.test(v), {
-			message:
-				"Invalid vertical (lowercase, starts with a letter, 2–49 chars of [a-z0-9_]) or '_adhoc'.",
-		})
-		.optional(),
-});

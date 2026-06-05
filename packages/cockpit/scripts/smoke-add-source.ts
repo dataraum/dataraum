@@ -65,10 +65,13 @@ const fileUris = env.SOURCE_PATH.split(",")
 
 async function seed(sourceId: string, sessionId: string): Promise<void> {
 	// Seed through the SAME Drizzle metadata client the cockpit's write seams use
-	// (select writes `sources`, the trigger writes `investigation_sessions`); the
-	// client targets the active workspace's `ws_<id>` schema via pgSchema, so no
-	// raw connection / search_path juggling. Source.name is UNIQUE — keep it
-	// unique per run so the driver is repeatable.
+	// (the one-gate `select` writes `sources` and seeds `investigation_sessions`
+	// via triggerAddSource — DAT-436); the client targets the active workspace's
+	// `ws_<id>` schema via pgSchema, so no raw connection / search_path juggling.
+	// This driver seeds DIRECTLY (not through select): its `_adhoc` cold-start
+	// run must bypass select's zero-concept pre-flight — induction generating
+	// concepts from the data is exactly what this smoke proves (DAT-371).
+	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
 	await metadataDb

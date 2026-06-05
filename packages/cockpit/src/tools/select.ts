@@ -1,6 +1,10 @@
-// select tool (DAT-398, DAT-422) — the agent-tier step that turns a connected
-// source + the user's subset choice into real `sources` rows, advancing the
-// onboarding cursor to `add_source`.
+// select tool (DAT-398, DAT-422; one-gate trigger DAT-436) — the agent-tier
+// step that turns a connected source + the user's subset choice into real
+// `sources` rows AND starts the import: approving `select` is the SINGLE
+// approval that registers the source(s) and kicks off addSourceWorkflow,
+// mirroring the one-gate pattern of `replay` and `begin_session` (seed +
+// workflow.start atomically inside ONE needsApproval gate). There is no
+// separate "Add source" button or `/api/add-source` route.
 //
 // This is the FIRST cockpit writer of the engine-owned `ws_<id>.sources` table.
 // Nothing upstream creates the Source row: `connect` is read-only and `frame`
@@ -12,8 +16,12 @@
 // documented policy break (the metadata client is otherwise read-only; the engine
 // owns the schema, and these onboarding writes flow through this one seam).
 //
-// It does NOT trigger `addSourceWorkflow` — that is the `add_source` trigger
-// (temporal/trigger-add-source.ts). `select` only persists + advances the cursor.
+// Order inside the gate: the vertical PRE-FLIGHT (NoConceptsError when it
+// resolves to zero concepts) runs BEFORE any write, so a refused vertical
+// leaves no half-state; then the source upsert(s); then the trigger (the
+// investigation_sessions seed + the non-blocking workflow.start —
+// temporal/trigger-add-source.ts). The result carries the workflow/run/session
+// ids so the progress canvas member follows immediately.
 //
 // Dispatch is on `ConnectSchema.sourceKind`:
 //   - file:     each uploaded file is its OWN content-keyed source (DAT-422 — the
@@ -36,7 +44,8 @@
 //               are content-keyed, so it is ignored for them).
 //
 // `needsApproval: true` — it mutates workspace state (creates/updates source
-// rows), so the SDK pauses for the user exactly like `teach`/`frame`/`replay`.
+// rows) AND starts a durable engine run, so the SDK pauses for the user exactly
+// like `teach`/`frame`/`replay`.
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
@@ -58,6 +67,11 @@ import {
 	SOURCE_NAME_PATTERN,
 	sourceTypeForUri,
 } from "../select/mappers";
+import {
+	NoConceptsError,
+	triggerAddSource,
+} from "../temporal/trigger-add-source";
+import { verticalConceptCount } from "./list-verticals";
 
 // The onboarding stage `select` leaves the source(s) at. The cockpit drives a
 // source `connect → frame → select → add_source` BEFORE the workflow triggers;
@@ -76,10 +90,10 @@ const DEFAULT_VERTICAL = "_adhoc";
 // letter) — or the `_adhoc` default (exempt: the built-in leading-underscore key).
 const VERTICAL_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
-/** The vertical add_source will ground against — a builtin the user adopted
- * (e.g. finance), a vertical just framed, or `_adhoc`. Echoed in the result so
- * the add_source trigger seeds the session with it (it isn't persisted on the
- * source row — the conversation carries it). */
+/** The vertical the run grounds against — a builtin the user adopted (e.g.
+ * finance), a vertical just framed, or `_adhoc`. Seeded onto the run's session
+ * by the trigger and echoed in the result (it isn't persisted on the source
+ * row — the conversation carries it). */
 function resolveVertical(name?: string | null): string {
 	const trimmed = name?.trim();
 	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
@@ -92,9 +106,11 @@ function resolveVertical(name?: string | null): string {
 	return trimmed;
 }
 
-/** The persisted Source descriptor `select` returns (and the canvas renders). */
+/** The persisted Source descriptor + the started run's identity. The
+ * workflow/run/session ids are what the progress canvas member keys its
+ * `get_progress` poll on (tool-result-to-canvas.ts, replay precedent). */
 export const SelectResult = z.object({
-	// Every source `select` minted/UPSERTed for this selection — the SET an
+	// Every source `select` minted/UPSERTed for this selection — the SET the
 	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
 	// source per uploaded file), 1 for a database selection; always ≥1 (a select
 	// that registered nothing is a loud failure), matching the trigger contract.
@@ -108,8 +124,8 @@ export const SelectResult = z.object({
 	source_type: z.string(),
 	backend: z.string().nullable(),
 	stage: z.string(),
-	// The vertical add_source will ground against (adopted builtin / framed /
-	// `_adhoc`). The trigger reads it off the selection to seed the session.
+	// The vertical the run grounds against (adopted builtin / framed / `_adhoc`),
+	// pre-flighted against the effective concept count BEFORE any write.
 	vertical: z.string(),
 	// The concrete file URIs persisted (file source), else null (db source).
 	file_uris: z.array(z.string()).nullable(),
@@ -117,8 +133,24 @@ export const SelectResult = z.object({
 	recipe_tables: z
 		.array(z.object({ name: z.string(), sql: z.string() }))
 		.nullable(),
+	// The started addSourceWorkflow run (DAT-436: approving select STARTS the
+	// import). workflow_id + run_id pin the precise execution the progress
+	// canvas polls; session_id is the run's seeded investigation session.
+	workflow_id: z.string(),
+	run_id: z.string(),
+	session_id: z.string(),
 });
 export type SelectResult = z.infer<typeof SelectResult>;
+
+/** The persisted selection BEFORE the trigger — what `persistSelection`
+ * returns. `select` composes this with the trigger's run identity. The
+ * integration smoke drives `persistSelection` directly (row-shape contract
+ * against a real Postgres; starting a real workflow is the compose smoke's
+ * job). */
+export type PersistedSelection = Omit<
+	SelectResult,
+	"workflow_id" | "run_id" | "session_id"
+>;
 
 export interface SelectInput {
 	// Database source only: the unique source name (lowercase, starts with a
@@ -142,9 +174,9 @@ export interface SelectInput {
 	// Database backend, persisted as the `backend` COLUMN (required for db sources;
 	// the engine import fails loud without it). For a file source it is ignored.
 	backend?: string | null;
-	// The vertical add_source grounds against: a builtin the user adopted (e.g.
+	// The vertical the run grounds against: a builtin the user adopted (e.g.
 	// finance), a vertical just framed (the SAME `vertical_name` passed to frame),
-	// or omitted → `_adhoc`. Echoed in the result for the trigger; not persisted.
+	// or omitted → `_adhoc`. Pre-flighted before any write; not persisted.
 	vertical?: string | null;
 	session_id?: string | null;
 }
@@ -246,16 +278,17 @@ async function importedRecipeHash(name: string): Promise<string | null> {
 
 /**
  * Persist (UPSERT) the `sources` row(s) for the selected subset and advance the
- * onboarding cursor to `add_source`. Returns the selection descriptor (the SET of
- * source ids the add_source trigger will run over).
+ * onboarding cursor to `add_source`. Returns the selection descriptor (the SET
+ * of source ids the trigger runs over) — persistence ONLY; the one-gate
+ * composition (pre-flight → persist → trigger) lives in `select`.
  *
  * `enumerate` is injected for testability; the default is the real
  * `enumeratePrefixUris`.
  */
-export async function select(
+export async function persistSelection(
 	input: SelectInput,
 	enumerate: typeof enumeratePrefixUris = enumeratePrefixUris,
-): Promise<SelectResult> {
+): Promise<PersistedSelection> {
 	const vertical = resolveVertical(input.vertical);
 	const schema = ConnectSchema.parse(input.schema);
 	const now = new Date();
@@ -387,23 +420,72 @@ export async function select(
 }
 
 /**
+ * The one-gate select (DAT-436): vertical pre-flight → source upsert(s) →
+ * investigation_sessions seed + non-blocking workflow.start. Approving the
+ * `select` tool is the single approval that starts the import — mirroring
+ * `replay` / `begin_session`, which also seed + start inside their one gate.
+ *
+ * Ordering is load-bearing: the pre-flight runs BEFORE any write so a refused
+ * vertical (NoConceptsError) leaves no half-state — no source row, no orphan
+ * session, no doomed workflow. `trigger` is injected for testability; the
+ * default is the real `triggerAddSource`.
+ */
+export async function select(
+	input: SelectInput,
+	enumerate: typeof enumeratePrefixUris = enumeratePrefixUris,
+	trigger: typeof triggerAddSource = triggerAddSource,
+): Promise<SelectResult> {
+	// PRE-FLIGHT (Theme A guard, relocated from the retired trigger hop): refuse
+	// early when the chosen vertical resolves to zero concepts — builtin
+	// ontology.yaml concepts PLUS active overlay rows. The engine fails loud on
+	// this deep in semantic_per_column, surfacing only as a dead Temporal run;
+	// catching it here gives the user a readable message BEFORE anything is
+	// written. An adopted builtin (finance) ships concepts → passes; an empty
+	// _adhoc or an un-framed vertical → refused.
+	const vertical = resolveVertical(input.vertical);
+	if ((await verticalConceptCount(vertical)) === 0) {
+		throw new NoConceptsError(vertical);
+	}
+
+	const selection = await persistSelection(input, enumerate);
+
+	// Seed the run's session + start addSourceWorkflow over the persisted SET.
+	// Non-blocking: the ids come back immediately and the progress canvas member
+	// (keyed on workflow_id + run_id) follows the run.
+	const run = await trigger({
+		source_ids: selection.source_ids,
+		vertical: selection.vertical,
+	});
+
+	return {
+		...selection,
+		workflow_id: run.workflow_id,
+		run_id: run.run_id,
+		session_id: run.session_id,
+	};
+}
+
+/**
  * The `select` tool for the agent loop. `needsApproval: true` — it creates/
- * updates source rows (workspace state), so the SDK pauses for user confirmation
- * before `.server` runs. Run it after `connect` (and `frame` on a cold-start
- * workspace) and before `add_source`.
+ * updates source rows (workspace state) AND starts a durable engine run, so the
+ * SDK pauses for user confirmation before `.server` runs. Run it after
+ * `connect` (and `frame` on a cold-start workspace); approving it IS the
+ * add_source start.
  */
 export const selectTool = toolDefinition({
 	name: "select",
 	description:
-		"Register the data the user chose to import as workspace source(s) and advance " +
-		"to the add_source stage. Pass the `connect` result as `schema`. For a FILE " +
-		"source: each uploaded file becomes its own content-keyed source automatically — " +
-		"pass `file_uris` (the staged s3:// upload URIs) or `prefix` (an s3:// folder), " +
+		"Register the data the user chose to import as workspace source(s) AND start " +
+		"the import (add_source) in one step — approving this tool kicks off the " +
+		"engine run. Pass the `connect` result as `schema`. For a FILE source: each " +
+		"uploaded file becomes its own content-keyed source automatically — pass " +
+		"`file_uris` (the staged s3:// upload URIs) or `prefix` (an s3:// folder), " +
 		"or omit both for the single connected file; no `source_name` is needed. For a " +
 		"DATABASE source: pass `source_name` (lowercase, starts with a letter), `backend`, " +
 		"and optionally `table_names` (a subset of the schema's tables; all if omitted). " +
-		"Requires user approval — it writes to the workspace. Does NOT start the import; " +
-		"that is the add_source step.",
+		"Requires user approval — it writes to the workspace and starts a durable run. " +
+		"Returns the run's workflow_id + run_id; progress renders live in the canvas, " +
+		"and workflow_status with those ids reports completion.",
 	inputSchema: z.object({
 		source_name: z
 			.string()

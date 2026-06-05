@@ -17,7 +17,6 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
-import type { SelectResult } from "#/tools/select";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
@@ -69,16 +68,23 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
 			? { kind: "concept-frame", frame: result as FrameResult }
 			: null,
-	// The persisted Source descriptor renders as SelectedSource; a missing result
-	// (e.g. a rejected duplicate-basename select) leaves the canvas unchanged.
-	select: (result) =>
-		result
-			? { kind: "selected-source", selection: result as SelectResult }
-			: null,
+	// Approving select STARTS the import (DAT-436): the result carries the
+	// started run's workflow_id + run_id, so project the live add-source-progress
+	// widget directly — the same member replay projects. A refused/failed select
+	// (no ids — e.g. NoConceptsError) leaves the canvas unchanged.
+	select: (result) => {
+		const r = result as { workflow_id?: string; run_id?: string } | null;
+		return r?.workflow_id && r?.run_id
+			? {
+					kind: "add-source-progress",
+					workflowId: r.workflow_id,
+					runId: r.run_id,
+				}
+			: null;
+	},
 	// A replay is an addSourceWorkflow run (reused workflow id, fresh run_id), so
-	// project the SAME live-progress widget the add_source trigger uses — sourced
-	// from the tool result here instead of the button click. A rejected/failed
-	// replay (no ids) leaves the canvas unchanged.
+	// project the SAME live-progress widget — sourced from the tool result. A
+	// rejected/failed replay (no ids) leaves the canvas unchanged.
 	replay: (result) => {
 		const r = result as { workflow_id?: string; run_id?: string } | null;
 		return r?.workflow_id && r?.run_id

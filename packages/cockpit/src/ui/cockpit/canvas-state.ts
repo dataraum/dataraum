@@ -10,7 +10,6 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookTableResult } from "#/tools/look-table";
-import type { SelectResult } from "#/tools/select";
 import type { WhyColumnResult } from "#/tools/why-column";
 
 export type CanvasState =
@@ -28,7 +27,6 @@ export type CanvasState =
 	| { kind: "workspace-inventory"; tables: InventoryTable[] }
 	| { kind: "schema-preview"; schema: ConnectSchema }
 	| { kind: "concept-frame"; frame: FrameResult }
-	| { kind: "selected-source"; selection: SelectResult }
 	// DAT-350: per-table readiness traffic-light grid. Carries the look_table
 	// tool result (calibrated bands per column × intent, read from the persisted
 	// entropy_readiness rows — the cockpit never re-derives the band).

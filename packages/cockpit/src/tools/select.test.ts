@@ -1,7 +1,9 @@
-// Unit tests for the select tool (DAT-398, DAT-422) — the cockpit's first writer
-// of the engine `ws_<id>.sources` table.
+// Unit tests for the select tool (DAT-398, DAT-422; one-gate trigger DAT-436)
+// — the cockpit's first writer of the engine `ws_<id>.sources` table, and since
+// DAT-436 the single approval that also STARTS the import.
 //
-// Two mocked seams: `#/config` (s3Bucket) and the Drizzle metadata client. The
+// Persistence tests drive `persistSelection` (the row-shape core) against two
+// mocked seams: `#/config` (s3Bucket) and the Drizzle metadata client. The
 // metadata stub records EVERY row passed to `.values(...)` (a file selection
 // mints one content-keyed source per file, so there can be N) and the conflict
 // `set`, and returns the just-inserted row's id from `.returning(...)`, so we
@@ -10,12 +12,31 @@
 // path is exercised without a bucket. Importing select.ts transitively pulls
 // config + the metadata client (and `../duckdb/connect` for ConnectSchema), so
 // both are mocked at the `#/` alias — same approach as frame.test.ts.
+//
+// The one-gate suite drives the composed `select`: the vertical pre-flight
+// (mocked `#/tools/list-verticals`) BEFORE any write, then persist, then the
+// injected trigger stub — asserting order, the no-half-state refusal, and the
+// merged run identity in the result.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ConnectSchema } from "#/duckdb/connect";
 
 vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
+
+// Pre-flight effective-concept count (relocated into select by DAT-436).
+// Default >0 so the gate's happy path passes; the refusal test flips it to 0.
+const preflight = vi.hoisted(() => ({
+	conceptCount: 1,
+	calls: [] as string[],
+}));
+const countMock = vi.fn(async (vertical: string) => {
+	preflight.calls.push(`count:${vertical}`);
+	return preflight.conceptCount;
+});
+vi.mock("#/tools/list-verticals", () => ({
+	verticalConceptCount: (vertical: string) => countMock(vertical),
+}));
 
 // Capture EVERY inserted row + each conflict-update set; `.returning()` echoes
 // the most-recently inserted row's id (each values→onConflict→returning chain is
@@ -61,7 +82,7 @@ vi.mock("#/db/metadata/schema", () => ({
 }));
 
 import { recipeContentHash } from "../select/mappers";
-import { select } from "./select";
+import { persistSelection, select } from "./select";
 
 // A staged upload URI is `s3://<bucket>/uploads/<digest>/<file>` — the digest
 // segment is what `select` content-keys the source on.
@@ -87,15 +108,21 @@ beforeEach(() => {
 	insertedRows = [];
 	conflictConfigs = [];
 	existingRows = [];
+	preflight.conceptCount = 1;
+	preflight.calls = [];
 	valuesMock.mockClear();
 	onConflictMock.mockClear();
 	returningMock.mockClear();
 	limitMock.mockClear();
+	countMock.mockClear();
 });
 
 describe("select (DAT-422) — file source is content-keyed", () => {
 	it("mints ONE content-keyed source per uploaded file", async () => {
-		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, B] });
+		const result = await persistSelection({
+			schema: FILE_SCHEMA,
+			file_uris: [A, B],
+		});
 
 		// Two files → two source rows, each named src_<digest> with its own single
 		// file_uri (never the literal "file" source_type).
@@ -121,7 +148,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 	});
 
 	it("registers the single connected file as one content-keyed source", async () => {
-		const result = await select({ schema: FILE_SCHEMA });
+		const result = await persistSelection({ schema: FILE_SCHEMA });
 		expect(insertedRows).toHaveLength(1);
 		expect(insertedRows[0].name).toBe("src_aaa111");
 		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
@@ -132,12 +159,18 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 	});
 
 	it("labels a multi-file selection by count", async () => {
-		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, B] });
+		const result = await persistSelection({
+			schema: FILE_SCHEMA,
+			file_uris: [A, B],
+		});
 		expect(result.name).toBe("2 files");
 	});
 
 	it("dedups a repeated URI to ONE UPSERT (same content key)", async () => {
-		const result = await select({ schema: FILE_SCHEMA, file_uris: [A, A] });
+		const result = await persistSelection({
+			schema: FILE_SCHEMA,
+			file_uris: [A, A],
+		});
 		expect(insertedRows).toHaveLength(1);
 		expect(result.source_ids).toHaveLength(1);
 		expect(result.file_uris).toEqual([A]);
@@ -145,7 +178,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 
 	it("fails loud on a non-upload URI BEFORE persisting (not content-addressed)", async () => {
 		await expect(
-			select({
+			persistSelection({
 				schema: FILE_SCHEMA,
 				file_uris: ["s3://dataraum-lake/data/2024/sales.csv"],
 			}),
@@ -155,7 +188,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 
 	it("enumerates a prefix into content-keyed sources via the injected driver", async () => {
 		const enumerate = vi.fn().mockResolvedValue([A, B]);
-		const result = await select(
+		const result = await persistSelection(
 			{ schema: FILE_SCHEMA, prefix: "uploads/" },
 			enumerate,
 		);
@@ -166,7 +199,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 
 	it("file_uris takes precedence over prefix when both are passed", async () => {
 		const enumerate = vi.fn().mockResolvedValue([B]);
-		await select(
+		await persistSelection(
 			{ schema: FILE_SCHEMA, file_uris: [A], prefix: "uploads/" },
 			enumerate,
 		);
@@ -177,7 +210,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 
 	it("ignores source_name for a file source (content-keyed instead)", async () => {
 		// An invalid name that the db path would reject is harmless here.
-		const result = await select({
+		const result = await persistSelection({
 			schema: FILE_SCHEMA,
 			source_name: "Not A Valid Name!",
 		});
@@ -186,22 +219,28 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 	});
 
 	it("echoes the chosen vertical (adopted builtin or framed) in the result", async () => {
-		const adopted = await select({ schema: FILE_SCHEMA, vertical: "finance" });
+		const adopted = await persistSelection({
+			schema: FILE_SCHEMA,
+			vertical: "finance",
+		});
 		expect(adopted.vertical).toBe("finance");
-		const framed = await select({ schema: FILE_SCHEMA, vertical: "sales" });
+		const framed = await persistSelection({
+			schema: FILE_SCHEMA,
+			vertical: "sales",
+		});
 		expect(framed.vertical).toBe("sales");
 	});
 
 	it("rejects an unsafe vertical", async () => {
 		await expect(
-			select({ schema: FILE_SCHEMA, vertical: "../x" }),
+			persistSelection({ schema: FILE_SCHEMA, vertical: "../x" }),
 		).rejects.toThrow(/Invalid vertical/);
 	});
 });
 
 describe("select (DAT-398) — database source", () => {
 	it("persists source_type=db_recipe, the backend column, and synthesized tables", async () => {
-		const result = await select({
+		const result = await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "mssql",
@@ -237,7 +276,7 @@ describe("select (DAT-398) — database source", () => {
 	});
 
 	it("selects only the requested subset of tables", async () => {
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "postgres",
@@ -255,12 +294,12 @@ describe("select (DAT-398) — database source", () => {
 		// identical table names must mint a DIFFERENT recipe_hash, so the engine's
 		// witness compare fails loud instead of silently skipping over raw tables
 		// extracted from the other DBMS.
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "mssql",
 		});
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "postgres",
@@ -285,7 +324,7 @@ describe("select (DAT-398) — database source", () => {
 				},
 			},
 		];
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "mssql",
@@ -303,7 +342,7 @@ describe("select (DAT-398) — database source", () => {
 
 	it("omits the witness for a fresh / never-imported source", async () => {
 		existingRows = []; // no row under this name
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "mssql",
@@ -315,7 +354,7 @@ describe("select (DAT-398) — database source", () => {
 		// A row that exists but was never imported (no witness yet) — same shape.
 		insertedRows = [];
 		existingRows = [{ connectionConfig: { tables: [], recipe_hash: "h" } }];
-		await select({
+		await persistSelection({
 			source_name: "warehouse",
 			schema: DB_SCHEMA,
 			backend: "mssql",
@@ -326,17 +365,17 @@ describe("select (DAT-398) — database source", () => {
 	});
 
 	it("does not read existing rows for file sources (no witness logic)", async () => {
-		await select({ schema: FILE_SCHEMA });
+		await persistSelection({ schema: FILE_SCHEMA });
 		expect(limitMock).not.toHaveBeenCalled();
 		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
 	});
 
 	it("rejects a database select with no/unsupported backend (import would fail loud)", async () => {
 		await expect(
-			select({ source_name: "warehouse", schema: DB_SCHEMA }),
+			persistSelection({ source_name: "warehouse", schema: DB_SCHEMA }),
 		).rejects.toThrow(/supported backend/);
 		await expect(
-			select({
+			persistSelection({
 				source_name: "warehouse",
 				schema: DB_SCHEMA,
 				backend: "oracle",
@@ -347,10 +386,14 @@ describe("select (DAT-398) — database source", () => {
 
 	it("requires a valid source_name (db-only) before any write", async () => {
 		await expect(
-			select({ schema: DB_SCHEMA, backend: "mssql" }),
+			persistSelection({ schema: DB_SCHEMA, backend: "mssql" }),
 		).rejects.toThrow(/requires a valid source_name/);
 		await expect(
-			select({ source_name: "Orders!", schema: DB_SCHEMA, backend: "mssql" }),
+			persistSelection({
+				source_name: "Orders!",
+				schema: DB_SCHEMA,
+				backend: "mssql",
+			}),
 		).rejects.toThrow(/requires a valid source_name/);
 		expect(valuesMock).not.toHaveBeenCalled();
 	});
@@ -362,7 +405,11 @@ describe("select (DAT-398) — database source", () => {
 	it("rejects a source_name starting with a reserved family prefix, before any write", async () => {
 		for (const name of ["src_mydata", "enriched_data", "slice_metrics"]) {
 			await expect(
-				select({ source_name: name, schema: DB_SCHEMA, backend: "mssql" }),
+				persistSelection({
+					source_name: name,
+					schema: DB_SCHEMA,
+					backend: "mssql",
+				}),
 			).rejects.toThrow(/reserved prefix/);
 		}
 		expect(valuesMock).not.toHaveBeenCalled();
@@ -373,7 +420,11 @@ describe("select (DAT-398) — database source", () => {
 		// families; the bare words and near-misses are legitimate names.
 		for (const name of ["srcdata", "enriched", "slicer", "warehouse"]) {
 			await expect(
-				select({ source_name: name, schema: DB_SCHEMA, backend: "mssql" }),
+				persistSelection({
+					source_name: name,
+					schema: DB_SCHEMA,
+					backend: "mssql",
+				}),
 			).resolves.toMatchObject({ name });
 		}
 	});
@@ -381,7 +432,7 @@ describe("select (DAT-398) — database source", () => {
 
 describe("select — upsert", () => {
 	it("UPSERTs on the unique name, re-pointing config/type/backend/stage", async () => {
-		await select({ schema: FILE_SCHEMA });
+		await persistSelection({ schema: FILE_SCHEMA });
 		expect(onConflictMock).toHaveBeenCalledTimes(1);
 		expect(conflictConfigs[0]?.target).toBe("sources.name");
 		const set = conflictConfigs[0]?.set as Record<string, unknown>;
@@ -390,5 +441,75 @@ describe("select — upsert", () => {
 		expect(set.connectionConfig).toEqual({ file_uris: [A] });
 		// created_at is NOT in the conflict set (only set on insert).
 		expect(set).not.toHaveProperty("createdAt");
+	});
+});
+
+describe("select — one approval gate (DAT-436)", () => {
+	// The injected trigger stub: records its input + the call order and hands
+	// back a fixed run identity (the real triggerAddSource seeds the session +
+	// starts addSourceWorkflow — its own unit test covers that).
+	function makeTrigger() {
+		return vi.fn(async (input: { source_ids: string[]; vertical?: string }) => {
+			preflight.calls.push("trigger");
+			return {
+				workflow_id: "addsource-ws-sess",
+				run_id: "run-1",
+				source_ids: input.source_ids,
+				session_id: "sess-1",
+			};
+		});
+	}
+
+	it("pre-flights the vertical, persists, then triggers — in that order", async () => {
+		const trigger = makeTrigger();
+		const result = await select(
+			{ schema: FILE_SCHEMA, vertical: "finance" },
+			undefined,
+			trigger,
+		);
+
+		// Order is the contract: count BEFORE any write, trigger AFTER the upsert.
+		expect(preflight.calls[0]).toBe("count:finance");
+		expect(preflight.calls.at(-1)).toBe("trigger");
+		expect(valuesMock).toHaveBeenCalledTimes(1);
+
+		// The trigger runs over the persisted SET with the resolved vertical.
+		expect(trigger).toHaveBeenCalledWith({
+			source_ids: result.source_ids,
+			vertical: "finance",
+		});
+
+		// The result merges the persisted descriptor with the run identity — the
+		// canvas keys its progress poll on these ids.
+		expect(result.workflow_id).toBe("addsource-ws-sess");
+		expect(result.run_id).toBe("run-1");
+		expect(result.session_id).toBe("sess-1");
+		expect(result.name).toBe("orders.csv");
+	});
+
+	it("refuses a zero-concept vertical BEFORE any write (no source row, no trigger)", async () => {
+		preflight.conceptCount = 0;
+		const trigger = makeTrigger();
+		await expect(
+			select({ schema: FILE_SCHEMA }, undefined, trigger),
+		).rejects.toThrow(/No concepts declared yet/);
+
+		// No half-state: the refusal happened before the upsert and the trigger.
+		expect(valuesMock).not.toHaveBeenCalled();
+		expect(trigger).not.toHaveBeenCalled();
+		expect(preflight.calls).toEqual(["count:_adhoc"]);
+	});
+
+	it("does not trigger when persistence fails (validation rejects first)", async () => {
+		const trigger = makeTrigger();
+		await expect(
+			// db source without a backend — persistSelection rejects pre-write.
+			select(
+				{ source_name: "warehouse", schema: DB_SCHEMA },
+				undefined,
+				trigger,
+			),
+		).rejects.toThrow(/supported backend/);
+		expect(trigger).not.toHaveBeenCalled();
 	});
 });

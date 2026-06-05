@@ -199,6 +199,8 @@ async function driveTurn(tools: ChatTools): Promise<TurnMessage[]> {
 					throw new Error("tool result not delivered yet");
 				}
 			},
+			// Everything is in-process — the real drain lands in <100ms; 5s is the
+			// flake ceiling for a loaded CI worker, not an expected wait.
 			{ timeout: 5000 },
 		);
 	} finally {

@@ -9,8 +9,9 @@
 // changes the contract fails the suite loudly; re-verify this mapping then.
 //
 // WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
-// state (verified against @tanstack/ai 0.26.1 by driving the real server chat()
-// loop + client StreamProcessor end-to-end):
+// state (verified against the installed @tanstack/ai — bun.lock owns the
+// version — by driving the real server chat() loop + client StreamProcessor
+// end-to-end):
 //
 //   - An ERRORED tool execution comes back as `state: "input-complete"` with
 //     the error riding in `output` and a sibling `tool-result` part
@@ -25,15 +26,18 @@
 //     Anthropic adapter emits one per model call) and back-fills later results
 //     via a background drain. Anything that severs that drain — stop(), a new
 //     send, a network cut, RUN_ERROR/max_tokens — permanently parks the pending
-//     parts at "input-complete" with NO output. Those can never complete; once
-//     the conversation has moved on (a later user message exists) they are
-//     provably dead.
+//     parts at "input-complete" with NO output. Those can never complete; they
+//     are provably dead once the conversation moved on (a later user message
+//     exists) OR the stream went idle (isLoading false — isLoading spans the
+//     ENTIRE drain, so idle + no output means no result is ever coming; a user
+//     stop() with no follow-up message is exactly this cell).
 //
 // So "done" is NOT `state === "complete"`: a chip is terminal when the part
 // reached "complete", when it carries ANY output (success or error), when its
-// approval was denied, or when the conversation moved past it. The mapping
-// below recognizes all of them; the rail renders `error` as an explicit red
-// state — an errored tool call must never spin forever.
+// approval was denied, or when the conversation moved past it / the stream went
+// idle without delivering its result. The mapping below recognizes all of them;
+// the rail renders `error` as an explicit red state — an errored tool call must
+// never spin forever.
 
 /** The untyped tool-call part shape the rail narrows off `type === "tool-call"`
  * (tools register server-side, so useChat sees them untyped). `arguments` is
@@ -65,15 +69,16 @@ const SERVER_TOOL_ERROR_PREFIX = "Error executing tool:";
  * The error carried in an errored call's `output`, in EITHER of the SDK's two
  * shapes — or null when the output isn't error-shaped:
  *
- *   - `{ error: string }` — what 0.26.1's live execution path produces for
- *     server tools (executeServerTool pushes `result: { error: message }`;
- *     the wire JSON round-trips it back to an object on the client). Also the
- *     client-tool shape (updateToolCallWithOutput: `output = {error}`).
+ *   - `{ error: string }` — what the installed SDK's live execution path
+ *     produces for server tools (executeServerTool pushes
+ *     `result: { error: message }`; the wire JSON round-trips it back to an
+ *     object on the client). Also the client-tool shape
+ *     (updateToolCallWithOutput: `output = {error}`).
  *   - `"Error executing tool: <msg>"` — the SDK's PLAIN-STRING shape
  *     (ToolCallManager.executeTools, tool-calls.js): the client's JSON.parse
- *     of that string fails, so `output` stays the raw string. Dead in
- *     0.26.1's chat() loop but still in the SDK source — recognized so a
- *     bump that rewires it (or a stream that delivered it) renders "failed",
+ *     of that string fails, so `output` stays the raw string. Dead in the
+ *     installed SDK's chat() loop but still in the SDK source — recognized so
+ *     a bump that rewires it (or a stream that delivered it) renders "failed",
  *     not an eternal spinner or a fake success.
  *
  * The empirical contract test (tool-chip-state.contract.test.ts) pins which
@@ -104,6 +109,10 @@ function outputError(output: unknown): string | null {
  * with `state: "error"` (see `toolResultErrorsById`). `conversationMovedOn` —
  * a LATER user message exists, so an output-less part can never receive its
  * result (the stream that owned it is gone; the SDK never re-attaches).
+ * `streamIdle` — the chat stream is not loading (`!isLoading`); isLoading
+ * spans the ENTIRE drain (sendMessage no-ops while loading), so an output-less
+ * part with the stream idle is equally dead — this is the stop-then-idle cell,
+ * where the user hit stop() and never sent another message.
  *
  * Precedence: denied → error (result error / error-shaped output) → complete
  * (the "complete" state OR any output — terminal even if a stream hiccup never
@@ -111,7 +120,11 @@ function outputError(output: unknown): string | null {
  */
 export function toolChipStatus(
 	part: ToolCallPartLike,
-	opts: { resultError?: string; conversationMovedOn?: boolean } = {},
+	opts: {
+		resultError?: string;
+		conversationMovedOn?: boolean;
+		streamIdle?: boolean;
+	} = {},
 ): ToolChipStatus {
 	// A denied approval is terminal: the tool never runs, so the call never
 	// completes — without this the chip would spin forever.
@@ -132,11 +145,21 @@ export function toolChipStatus(
 		return { kind: "complete" };
 	}
 
-	// Orphaned: no output, and the conversation moved past the turn that owned
-	// this call (stop() / a new send / a severed stream). It can never finish.
+	// Orphaned: no output, and either the conversation moved past the turn that
+	// owned this call (stop() + a new send / a severed stream) or the stream
+	// went idle without delivering it (stop() with NO further activity — no
+	// false-failure window: isLoading covers the whole back-fill drain, so idle
+	// means no result is ever coming). It can never finish.
 	// EXCEPT a pending approval request — its Approve/Deny buttons stay live
-	// across turns, so it is awaiting the user, not dead.
-	if (opts.conversationMovedOn && part.state !== "approval-requested") {
+	// across turns (and the stream is idle BY DESIGN while the SDK awaits the
+	// user), so it is awaiting the user, not dead. "approval-responded" is
+	// deliberately NOT carved out: a denied response short-circuited to
+	// `denied` above, and an approved-but-severed call (approval given, drain
+	// cut before the result landed) is exactly the orphan this catches.
+	if (
+		(opts.conversationMovedOn || opts.streamIdle) &&
+		part.state !== "approval-requested"
+	) {
 		return {
 			kind: "error",
 			message: "The call didn't finish — its run was interrupted.",

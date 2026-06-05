@@ -89,6 +89,7 @@ function ToolCallCard({
 	part,
 	resultError,
 	conversationMovedOn,
+	streamIdle,
 	onApprove,
 	onRehydrate,
 }: {
@@ -97,6 +98,9 @@ function ToolCallCard({
 	resultError?: string;
 	/** A later user message exists — an output-less call can never finish. */
 	conversationMovedOn: boolean;
+	/** The stream is not loading — an output-less call's drain is over (the
+	 * stop-then-idle cell: stop() with no follow-up message). */
+	streamIdle: boolean;
 	onApprove: (approvalId: string, approved: boolean) => void;
 	onRehydrate: (callId: string) => void;
 }) {
@@ -105,7 +109,11 @@ function ToolCallCard({
 	// and a severed stream orphans pending parts. toolChipStatus recognizes all
 	// terminal shapes; an errored call renders an explicit error state, never an
 	// infinite spinner.
-	const status = toolChipStatus(part, { resultError, conversationMovedOn });
+	const status = toolChipStatus(part, {
+		resultError,
+		conversationMovedOn,
+		streamIdle,
+	});
 	const done = status.kind === "complete";
 	const approvalId = part.approval?.id;
 	const awaitingApproval =
@@ -200,7 +208,8 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const { messages, error, addToolApprovalResponse, pinCanvas } = useCockpit();
+	const { messages, isLoading, error, addToolApprovalResponse, pinCanvas } =
+		useCockpit();
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -233,9 +242,14 @@ export function ChatRail() {
 	// Chip terminal-state inputs (DAT-436): errored tool-result parts by call id,
 	// and the last user message index — a tool call rendered from an EARLIER
 	// message belongs to a turn the conversation moved past, so an output-less
-	// one can never finish (see tool-chip-state.ts).
+	// one can never finish (see tool-chip-state.ts). `!isLoading` is the third
+	// input: isLoading spans the ENTIRE result drain (sendMessage no-ops while
+	// loading), so an output-less call with the stream idle is equally dead —
+	// the stop-then-idle cell, where stop() severed the drain and no later
+	// message exists to move the conversation on.
 	const resultErrors = toolResultErrorsById(messages);
 	const lastUserIdx = lastUserMessageIndex(messages);
+	const streamIdle = !isLoading;
 
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
@@ -294,6 +308,7 @@ export function ChatRail() {
 										part={part as ToolCallPart}
 										resultError={resultErrors.get(part.id)}
 										conversationMovedOn={mi < lastUserIdx}
+										streamIdle={streamIdle}
 										onApprove={(approvalId, approved) =>
 											void addToolApprovalResponse({ id: approvalId, approved })
 										}

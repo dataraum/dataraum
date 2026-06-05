@@ -13,13 +13,25 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
+import { MAX_OUTPUT_TOKENS } from "../../llm";
 import { buildChatOptions } from "./chat";
+
+/** Narrow the SDK's `SystemPrompt` union (string | {content, metadata?}) to the
+ * object form buildChatOptions always emits — the return type is pinned to
+ * chat()'s own options type, so the union must be narrowed before asserting on
+ * `.metadata`. */
+function systemPromptObjects(opts: ReturnType<typeof buildChatOptions>) {
+	return (opts.systemPrompts ?? []).map((p) =>
+		typeof p === "string" ? { content: p, metadata: undefined } : p,
+	);
+}
 
 describe("chat route wiring (DAT-353)", () => {
 	it("sends the orchestrator instructions as a cached system block", () => {
 		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
-		expect(opts.systemPrompts).toHaveLength(1);
-		const sys = opts.systemPrompts[0];
+		const prompts = systemPromptObjects(opts);
+		expect(prompts).toHaveLength(1);
+		const sys = prompts[0];
 		expect(sys?.metadata?.cache_control).toEqual({ type: "ephemeral" });
 		expect((sys?.content ?? "").length).toBeGreaterThan(0);
 	});
@@ -31,15 +43,16 @@ describe("chat route wiring (DAT-353)", () => {
 			undefined,
 			ctx,
 		);
-		expect(opts.systemPrompts).toHaveLength(2);
+		const prompts = systemPromptObjects(opts);
+		expect(prompts).toHaveLength(2);
 		// The orchestrator stays the cached FIRST block (the cache breakpoint)…
-		expect(opts.systemPrompts[0]?.metadata?.cache_control).toEqual({
+		expect(prompts[0]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});
 		// …the session context is the SECOND block, past the breakpoint → no
 		// cache_control, so it's never cached (a fresh suffix each turn).
-		expect(opts.systemPrompts[1]?.content).toBe(ctx);
-		expect(opts.systemPrompts[1]?.metadata).toBeUndefined();
+		expect(prompts[1]?.content).toBe(ctx);
+		expect(prompts[1]?.metadata).toBeUndefined();
 	});
 
 	it("omits the second block when there is no current session", () => {
@@ -49,9 +62,20 @@ describe("chat route wiring (DAT-353)", () => {
 		).toHaveLength(1);
 	});
 
+	it("sets the output budget via modelOptions.max_tokens — NOT a top-level maxTokens", () => {
+		// THE DAT-436 root-cause pin: chat()'s TextActivityOptions has no
+		// `maxTokens` field — a top-level one type-checks through an inferred
+		// return while the anthropic adapter falls back to
+		// `modelOptions?.max_tokens ?? 1024`, truncating every real turn
+		// mid-tool-call (the severed-drain trigger behind the eternal spinners).
+		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
+		expect(opts.modelOptions).toEqual({ max_tokens: MAX_OUTPUT_TOKENS });
+		expect(opts).not.toHaveProperty("maxTokens");
+	});
+
 	it("attaches the full tool registry to the loop", () => {
 		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
-		const names = opts.tools.map((t: { name: string }) => t.name);
+		const names = (opts.tools ?? []).map((t: { name: string }) => t.name);
 		expect(new Set(names)).toEqual(
 			new Set([
 				"list_sources",

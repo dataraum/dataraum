@@ -1,9 +1,11 @@
 // Unit pins for the tool-call chip terminal-state mapping (DAT-436).
 //
 // The part shapes below are NOT invented — they were derived empirically by
-// driving the REAL @tanstack/ai 0.26.1 pipeline (server chat() loop with a
-// scripted adapter → toServerSentEventsResponse → fetchServerSentEvents →
-// ChatClient/StreamProcessor) and dumping the resulting UIMessage parts:
+// driving the REAL installed @tanstack/ai pipeline (bun.lock owns the version;
+// tool-chip-state.contract.test.ts re-pins the shapes on every run) — server
+// chat() loop with a scripted adapter → toServerSentEventsResponse →
+// fetchServerSentEvents → ChatClient/StreamProcessor — and dumping the
+// resulting UIMessage parts:
 //
 //   clean multi-poll turn   → tool-call { state: "complete", output: {...} }
 //                             + tool-result { state: "complete" }
@@ -68,9 +70,9 @@ describe("toolChipStatus (DAT-436)", () => {
 	it("recognizes the SDK's PLAIN-STRING errored-output shape too", () => {
 		// tool-calls.js's ToolCallManager.executeTools path emits the raw string
 		// `Error executing tool: <msg>` — the client's JSON.parse of it fails, so
-		// the part's output stays that string (no {error} wrapper). Dead in
-		// 0.26.1's chat() loop but still in the SDK source; a chip seeing it must
-		// read "failed", never success or an eternal spinner.
+		// the part's output stays that string (no {error} wrapper). Dead in the
+		// installed SDK's chat() loop but still in the SDK source; a chip seeing
+		// it must read "failed", never success or an eternal spinner.
 		const status = toolChipStatus(
 			part({
 				state: "input-complete",
@@ -117,7 +119,7 @@ describe("toolChipStatus (DAT-436)", () => {
 		).toEqual({ kind: "denied" });
 	});
 
-	it("spins while a call is genuinely in flight (current turn, no output)", () => {
+	it("spins while a call is genuinely in flight (current turn, stream loading, no output)", () => {
 		for (const state of [
 			"awaiting-input",
 			"input-streaming",
@@ -126,10 +128,13 @@ describe("toolChipStatus (DAT-436)", () => {
 			expect(
 				toolChipStatus(part({ state }), {
 					// Explicit: no correlated tool-result error exists for an in-flight
-					// call — the spinner is the no-error, no-output, current-turn cell
-					// of the matrix.
+					// call — the spinner is the no-error, no-output, current-turn,
+					// stream-loading cell of the matrix. streamIdle false = the drain
+					// is still live, so the result can still arrive (no false-failure
+					// window during a live back-fill).
 					resultError: undefined,
 					conversationMovedOn: false,
+					streamIdle: false,
 				}),
 			).toEqual({ kind: "running" });
 		}
@@ -137,9 +142,26 @@ describe("toolChipStatus (DAT-436)", () => {
 
 	it("marks an output-less call from a PAST turn as interrupted (error, not spinner)", () => {
 		// The severed-drain orphan: stop()/a new send/a network cut killed the
-		// stream that owned this call — it can never receive its result.
+		// stream that owned this call — it can never receive its result. streamIdle
+		// false isolates the moved-on axis: even with a NEW turn's stream live,
+		// the old call is dead.
 		const status = toolChipStatus(part({ state: "input-complete" }), {
 			conversationMovedOn: true,
+			streamIdle: false,
+		});
+		expect(status.kind).toBe("error");
+		expect((status as { message: string }).message).toMatch(/didn't finish/);
+	});
+
+	it("marks an output-less call as interrupted when the stream went idle — stop() with NO follow-up", () => {
+		// The stop-then-idle cell: the user hit stop() and never sent another
+		// message, so NO later user message exists (conversationMovedOn false) —
+		// but isLoading spans the entire drain, so an idle stream + no output
+		// means the result is never coming. Without streamIdle this chip spun
+		// until the next message.
+		const status = toolChipStatus(part({ state: "input-complete" }), {
+			conversationMovedOn: false,
+			streamIdle: true,
 		});
 		expect(status.kind).toBe("error");
 		expect((status as { message: string }).message).toMatch(/didn't finish/);
@@ -157,6 +179,36 @@ describe("toolChipStatus (DAT-436)", () => {
 				{ conversationMovedOn: true },
 			),
 		).toEqual({ kind: "running" });
+	});
+
+	it("never orphans a pending approval on an idle stream (idle BY DESIGN while awaiting the user)", () => {
+		// The SDK pauses the loop for needsApproval tools — the stream is idle
+		// while the Approve/Deny buttons wait. The approval-requested carve-out
+		// must hold for streamIdle exactly as for conversationMovedOn.
+		expect(
+			toolChipStatus(
+				part({
+					state: "approval-requested",
+					approval: { id: "a1", needsApproval: true },
+				}),
+				{ streamIdle: true },
+			),
+		).toEqual({ kind: "running" });
+	});
+
+	it("orphans an approved-but-severed call (approval-responded is NOT carved out)", () => {
+		// The user approved, the post-approval stream was severed before the
+		// result landed, and the rail sits idle: denied already short-circuited
+		// to `denied`, so an output-less approval-responded part on an idle
+		// stream is a dead call — error, not an eternal spinner.
+		const status = toolChipStatus(
+			part({
+				state: "approval-responded",
+				approval: { id: "a1", needsApproval: true, approved: true },
+			}),
+			{ streamIdle: true },
+		);
+		expect(status.kind).toBe("error");
 	});
 });
 

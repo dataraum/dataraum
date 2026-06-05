@@ -2,17 +2,19 @@
 
 // Rendered repro of the stuck tool-chip spinner (DAT-436) — reconstructs the
 // REAL part lifecycle of a multi-poll agent turn in the rail and pins the chip
-// states. The message fixtures mirror what the @tanstack/ai 0.26.1 client
-// actually produces (verified by driving the real server chat() loop + client
-// StreamProcessor):
+// states. The message fixtures mirror what the installed @tanstack/ai client
+// actually produces (bun.lock owns the version; verified by driving the real
+// server chat() loop + client StreamProcessor — re-pinned every run by
+// tool-chip-state.contract.test.ts):
 //
 //   - a completed call    → state "complete" + output            → no spinner
 //   - an ERRORED call     → state "input-complete" + output.error
 //                           (+ tool-result state "error")        → "failed",
 //                           never a spinner (there is NO error ToolCallState)
 //   - an orphaned call    → state "input-complete", no output, and the
-//                           conversation moved on                → "failed"
-//   - a live in-flight call (current turn)                       → spinner
+//                           conversation moved on OR the stream
+//                           went idle (stop-then-idle)           → "failed"
+//   - a live in-flight call (current turn, stream loading)       → spinner
 //
 // Lives in its own file (not chat-rail.test.tsx) so the DAT-437 lane's
 // text-part work doesn't collide.
@@ -123,6 +125,9 @@ describe("ChatRail chip terminal states (DAT-436)", () => {
 		// The severed-drain orphan: the polling turn's stream was cut (stop / a
 		// new send / network), so tc-stale never received its result. A LATER
 		// user message proves the conversation moved on — it can never finish.
+		// isLoading true (the NEW turn's stream is live) isolates the moved-on
+		// axis from the stream-idle one.
+		h.isLoading = true;
 		h.messages = [
 			{ id: "u1", role: "user", parts: [{ type: "text", content: "import" }] },
 			{
@@ -148,7 +153,40 @@ describe("ChatRail chip terminal states (DAT-436)", () => {
 		);
 	});
 
-	it("a genuinely in-flight call (current turn) still spins", () => {
+	it("an output-less call shows failed after stop-then-idle (no later message, stream idle)", () => {
+		// The user hit stop() and walked away: NO later user message exists, but
+		// isLoading dropped to false — and isLoading spans the ENTIRE result
+		// drain, so idle + no output means the result is never coming. Before
+		// the streamIdle input this chip spun until the next message.
+		h.isLoading = false;
+		h.messages = [
+			{ id: "u1", role: "user", parts: [{ type: "text", content: "import" }] },
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-call",
+						id: "tc-stopped",
+						name: "workflow_status",
+						state: "input-complete",
+						arguments: "{}",
+					},
+				],
+			},
+		];
+		renderRail();
+
+		expect(chipHasLoader("tc-stopped")).toBe(false);
+		expect(screen.getByTestId("tool-error-tc-stopped").textContent).toBe(
+			"failed",
+		);
+	});
+
+	it("a genuinely in-flight call (current turn, stream loading) still spins", () => {
+		// isLoading true = the drain is live; the result can still arrive, so
+		// there is no false-failure window during a live back-fill.
+		h.isLoading = true;
 		h.messages = [
 			{ id: "u1", role: "user", parts: [{ type: "text", content: "go" }] },
 			{

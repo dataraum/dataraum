@@ -144,6 +144,16 @@ export async function triggerAddSource(
 		vertical,
 	});
 
+	// Correlation breadcrumb for the orphan seam above: logged BEFORE the start
+	// (not in a catch) so ANY failure mode — a thrown start, a crash, a hang —
+	// leaves the seeded session_id in the log next to its approval. An
+	// investigation_sessions row with no run is then traceable to this line.
+	console.warn(
+		`[trigger-add-source] seeded investigation_session ${sessionId} ` +
+			`(sources: ${input.source_ids.join(", ")}) — starting addSourceWorkflow; ` +
+			"if no run follows, this row is an orphan from a failed approval",
+	);
+
 	// Source-free identity (DAT-422): the per-source ids ride in `source_ids`; the
 	// engine scopes each `import` to one of them and the run-level reduce/detect are
 	// session-scoped. The run is keyed by `session_id`, not a source.

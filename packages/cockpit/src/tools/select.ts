@@ -539,4 +539,7 @@ export const selectTool = toolDefinition({
 	}),
 	outputSchema: SelectResult,
 	needsApproval: true,
+	// The lambda is load-bearing: .server() calls its handler as (input, context)
+	// — passing `select` bare would shove the SDK's context object into select's
+	// injectable `enumerate` test-seam parameter, clobbering its default.
 }).server((input) => select(input));

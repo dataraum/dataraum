@@ -70,9 +70,10 @@ def _heads(session_factory: Any) -> list[MetadataSnapshotHead]:
 
 def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_factory):
     """First promote inserts a v0 head per (table_id, stage); a re-run bumps + re-points."""
+    # Source-free: AddSourceWorkflow threads source_id=None into the terminal
+    # promote (DAT-422/426) — the test feeds exactly what production feeds.
     identity = SourceIdentity(
         workspace_id="ws-1",
-        source_id="src-1",
         session_id="sess-1",
         run_id="run-A",
     )
@@ -110,7 +111,6 @@ def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
     """An empty session-table set promotes nothing (logged warning, no rows)."""
     identity = SourceIdentity(
         workspace_id="ws-1",
-        source_id="src-1",
         session_id="sess-1",
         run_id="run-A",
     )
@@ -123,7 +123,7 @@ def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
 
 def test_promote_run_requires_run_id(monkeypatch, session_factory):
     """A missing run_id is a caller bug — fail loud rather than write a NULL head."""
-    identity = SourceIdentity(workspace_id="ws-1", source_id="src-1", session_id="sess-1")
+    identity = SourceIdentity(workspace_id="ws-1", session_id="sess-1")
     monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
 
     with pytest.raises(RuntimeError, match="requires a stamped identity.run_id"):

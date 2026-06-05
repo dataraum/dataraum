@@ -75,13 +75,15 @@ def _make_typed_table(session: Session, source_id: str, name: str) -> Table:
 def _ctx(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    source_id: str,
     table_ids: list[str] | None = None,
 ) -> PhaseContext:
+    # Source-FREE — the production shape (DAT-422/426): typing runs in the
+    # per-table fan-out children, which AddSourceWorkflow threads source_id=None
+    # into. ``source_id`` above is a Table DB column (seeding), never ctx identity.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=source_id,
+        source_id=None,
         table_ids=table_ids or [],
     )
 
@@ -103,9 +105,7 @@ class TestResolveTargetTableIds:
         _make_table(session, src.source_id, "t1")
         _make_table(session, src.source_id, "t2")
 
-        resolved = TypingPhase()._resolve_target_table_ids(
-            _ctx(session, duckdb_conn, src.source_id)
-        )
+        resolved = TypingPhase()._resolve_target_table_ids(_ctx(session, duckdb_conn))
 
         assert resolved == []
 
@@ -118,7 +118,7 @@ class TestResolveTargetTableIds:
         t3 = _make_table(session, src.source_id, "t3")
 
         resolved = TypingPhase()._resolve_target_table_ids(
-            _ctx(session, duckdb_conn, src.source_id, table_ids=[t1.table_id])
+            _ctx(session, duckdb_conn, table_ids=[t1.table_id])
         )
 
         # Only the targeted table is resolved; siblings are excluded so _run
@@ -145,7 +145,6 @@ class TestResolveTargetTableIds:
             _ctx(
                 session,
                 duckdb_conn,
-                src.source_id,
                 table_ids=[t1.table_id, typed.table_id, foreign.table_id],
             )
         )
@@ -163,11 +162,11 @@ class TestResolveTargetTableIds:
         verbatim when the source has no raw rows" fallback is gone; the per-table
         fan-out always hands real raw ids.
         """
-        src = _make_source(session)
+        _make_source(session)  # a Source exists, but the carried ids are not its tables
         carried = [str(uuid4()), str(uuid4())]  # not real tables
 
         resolved = TypingPhase()._resolve_target_table_ids(
-            _ctx(session, duckdb_conn, src.source_id, table_ids=carried)
+            _ctx(session, duckdb_conn, table_ids=carried)
         )
 
         assert resolved == []
@@ -182,8 +181,8 @@ class TestShouldSkip:
     def test_no_raw_tables_skips(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        src = _make_source(session)
-        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, src.source_id))
+        _make_source(session)  # a Source exists, but it has no raw tables
+        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn))
         assert reason == "No raw tables to process"
 
     def test_targeted_untyped_runs_even_when_siblings_typed(
@@ -197,9 +196,7 @@ class TestShouldSkip:
         _make_typed_table(session, src.source_id, "t2")
         t3 = _make_table(session, src.source_id, "t3")
 
-        reason = TypingPhase().should_skip(
-            _ctx(session, duckdb_conn, src.source_id, table_ids=[t3.table_id])
-        )
+        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, table_ids=[t3.table_id]))
         assert reason is None
 
     def test_targeted_already_typed_re_runs(
@@ -216,9 +213,7 @@ class TestShouldSkip:
         _make_typed_table(session, src.source_id, "t1")
         _make_table(session, src.source_id, "t2")  # untyped sibling, but not targeted
 
-        reason = TypingPhase().should_skip(
-            _ctx(session, duckdb_conn, src.source_id, table_ids=[t1.table_id])
-        )
+        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, table_ids=[t1.table_id]))
         assert reason is None
 
     def test_filter_matches_no_raw_tables_skips(
@@ -227,7 +222,5 @@ class TestShouldSkip:
         src = _make_source(session)
         _make_table(session, src.source_id, "t1")
 
-        reason = TypingPhase().should_skip(
-            _ctx(session, duckdb_conn, src.source_id, table_ids=[str(uuid4())])
-        )
+        reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, table_ids=[str(uuid4())]))
         assert reason == "No raw tables match the requested table_ids filter"

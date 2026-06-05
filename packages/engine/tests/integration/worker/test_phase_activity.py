@@ -93,7 +93,16 @@ def worker_manager(pg_url_clean: str, lake_anchor, lake_clean):  # noqa: ANN001
     manager.close()
 
 
-def _identity(source_id: str, session_id: str, run_id: str | None = None) -> SourceIdentity:
+def _identity(
+    session_id: str, *, source_id: str | None = None, run_id: str | None = None
+) -> SourceIdentity:
+    """Source-FREE by default — the production shape past ``import`` (DAT-422/426).
+
+    ``AddSourceWorkflow`` drops ``source_id`` after the import loop, so every
+    post-import phase runs source-free. Pass ``source_id`` ONLY for the
+    per-source ``import`` activity; feeding it anywhere else would mask a
+    regression that reintroduces a ``ctx.source_id`` read.
+    """
     return SourceIdentity(
         workspace_id="test", source_id=source_id, session_id=session_id, run_id=run_id
     )
@@ -205,11 +214,12 @@ def test_import_then_typing_share_one_manager(
     source_id = str(uuid4())
     session_id = str(uuid4())
     _seed_source_and_session(worker_manager, source_id, session_id, "orders", csv)
-    identity = _identity(source_id, session_id)
 
-    # import (no LLM, no prereq) — raw tables land; the source's raw ids are the
-    # fan-out source the parent reads.
-    import_result = run_phase(worker_manager, "import", identity, [])
+    # import (no LLM, no prereq) — the one source-bearing activity; raw tables
+    # land and the source's raw ids are the fan-out source the parent reads.
+    import_result = run_phase(
+        worker_manager, "import", _identity(session_id, source_id=source_id), []
+    )
     assert import_result.status == "completed", import_result.error
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert raw_ids, "import produced no raw tables"
@@ -220,8 +230,8 @@ def test_import_then_typing_share_one_manager(
     duckdb_conn_after_import = worker_manager._duckdb_conn  # noqa: SLF001
 
     # typing scoped to the single raw table (DuckDB-heavy; runs on the SAME
-    # long-lived manager).
-    typing_result = run_phase(worker_manager, "typing", identity, [raw_ids[0]])
+    # long-lived manager), source-free as the workflow threads it (DAT-422).
+    typing_result = run_phase(worker_manager, "typing", _identity(session_id), [raw_ids[0]])
     assert typing_result.status == "completed", typing_result.error
     assert _lake_tables(worker_manager, "typed"), "no tables in lake.typed after typing"
     assert typed_table_id_for_raw(worker_manager, raw_ids[0]) is not None
@@ -234,8 +244,7 @@ def test_import_then_typing_share_one_manager(
 
 def test_unknown_phase_returns_failed(worker_manager: ConnectionManager) -> None:
     """A phase name not in the registry fails cleanly rather than raising."""
-    identity = _identity(str(uuid4()), str(uuid4()))
-    result = run_phase(worker_manager, "does_not_exist", identity, [])
+    result = run_phase(worker_manager, "does_not_exist", _identity(str(uuid4())), [])
     assert result.status == "failed"
     assert "does_not_exist" in (result.error or "")
 
@@ -297,17 +306,19 @@ def test_addsource_runs_under_nondefault_workspace(
         session_id = str(uuid4())
         files = _enumerate_fixture_files(small_finance_path)
         _seed_source_and_session(manager, source_id, session_id, "small_finance", files)
-        identity = SourceIdentity(
+        import_identity = SourceIdentity(
             workspace_id=nondefault_workspace,
             source_id=source_id,
             session_id=session_id,
         )
 
-        assert run_phase(manager, "import", identity, []).status == "completed"
+        assert run_phase(manager, "import", import_identity, []).status == "completed"
         raw_ids = raw_table_ids(manager, source_id)
         assert raw_ids, "import produced no raw tables under the non-default workspace"
 
-        typed_ids = [_process_one_table(manager, identity, raw_id) for raw_id in raw_ids]
+        # Past import the chain runs source-free (DAT-422), as the workflow threads it.
+        child_identity = SourceIdentity(workspace_id=nondefault_workspace, session_id=session_id)
+        typed_ids = [_process_one_table(manager, child_identity, raw_id) for raw_id in raw_ids]
         assert len(typed_ids) == len(raw_ids)
         assert _lake_tables(manager, "typed"), "no typed tables after the chain"
     finally:
@@ -340,10 +351,10 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     session_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id)
 
-    # ONE import activity over the multi-URI list yields N raw tables.
-    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    # ONE import activity (source-bearing) over the multi-URI list yields N raw tables.
+    import_identity = _identity(session_id, source_id=source_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
@@ -365,6 +376,8 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
         "per-URI loop changed the raw-table set — dataraum-eval baselines would move"
     )
 
+    # Past import the chain + terminal detect run source-free (DAT-422).
+    identity = _identity(session_id)
     typed_ids = [_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids]
     assert len(typed_ids) == len(raw_ids)
     assert _lake_tables(worker_manager, "typed"), "no typed tables after the chain"
@@ -392,10 +405,12 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     session_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id)
 
-    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
+    # Past import: source-free, as the workflow threads it (DAT-422).
+    identity = _identity(session_id)
     typed_ids = {_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids}
 
     # Terminal detect: writes entropy_objects AND persists readiness in one pass.
@@ -473,10 +488,13 @@ def test_persisted_readiness_is_single_source_of_truth(
     run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id, run_id=run_id)
 
-    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
+    # Past import: source-free (DAT-422) — the chain, detect AND promote all run
+    # under the source-free identity, exactly as AddSourceWorkflow threads it.
+    identity = _identity(session_id, run_id=run_id)
     typed_ids = sorted({_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids})
     assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
     # Promote this run so the head names it — the query-time read is head-resolved.
@@ -525,7 +543,9 @@ def test_source_free_children_run_the_full_per_table_chain(
     whole ProcessTableWorkflow body (typing → statistics → … → temporal) under a
     source-free identity. It guards the regression where the table-local phases
     scoped via ``Table.source_id == require_source_id()`` and raised on the
-    source-free child — a break the source-bearing test identities masked.
+    source-free child — a break the source-bearing test identities masked. Since
+    DAT-426 the whole suite defaults to the source-free shape; this test stays as
+    the explicit, named statement of the invariant.
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
@@ -533,8 +553,8 @@ def test_source_free_children_run_the_full_per_table_chain(
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
 
     # import is the one per-source activity — it needs the source.
-    import_status = run_phase(worker_manager, "import", _identity(source_id, session_id), []).status
-    assert import_status == "completed"
+    import_identity = _identity(session_id, source_id=source_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert raw_ids, "import produced no raw tables"
 
@@ -568,13 +588,16 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     session_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id)
 
-    # ONE import activity over the multi-URI list yields N raw tables.
-    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    # ONE import activity (source-bearing) over the multi-URI list yields N raw tables.
+    import_identity = _identity(session_id, source_id=source_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
+
+    # Past import: source-free, as the workflow threads it into the children (DAT-422).
+    identity = _identity(session_id)
 
     # Fan the per-table analytics chains out across threads — concurrent typing +
     # analytics against the shared lake from independent cursors.
@@ -639,9 +662,11 @@ def test_semantic_per_column_reduce_runs_live(
     session_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
-    identity = _identity(source_id, session_id)
 
-    assert run_phase(worker_manager, "import", identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id)
+    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    # Past import: source-free (DAT-422) — typing, statistics AND the reduce.
+    identity = _identity(session_id)
     for raw_id in raw_table_ids(worker_manager, source_id):
         assert run_phase(worker_manager, "typing", identity, [raw_id]).status == "completed"
         typed_id = typed_table_id_for_raw(worker_manager, raw_id)

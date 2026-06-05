@@ -318,10 +318,12 @@ class TestStronglyTypedRecipe:
         raw_table.columns[0].raw_type = "BIGINT"
         session.flush()
 
+        # Source-free ctx — typing runs in the source-free fan-out children
+        # (DAT-422/426); the Table row's source_id is a DB field, not ctx identity.
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=raw_table.source_id,
+            source_id=None,
             table_ids=[raw_id],
             session_id=baseline_session_id(),
             run_id="run-strong",

@@ -28,6 +28,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { recipeContentHash } from "../select/mappers";
+
 const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
 
 // Stub the cockpit env so config.ts loads even when the test doesn't have every
@@ -162,11 +164,15 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// The backend COLUMN is set — import_phase.py fails loud without it.
 			expect(row.backend).toBe("mssql");
 			expect(row.stage).toBe("add_source");
+			const expectedTables = [
+				{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
+				{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+			];
 			expect(row.connection_config).toEqual({
-				tables: [
-					{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
-					{ name: "customers", sql: 'SELECT * FROM "Customers"' },
-				],
+				tables: expectedTables,
+				// DAT-430: the content hash the engine's import skip keys off —
+				// canonical over {backend, tables}, so the backend is part of it.
+				recipe_hash: recipeContentHash("mssql", expectedTables),
 			});
 			// tables and file_uris never cross-contaminate.
 			expect(row.connection_config).not.toHaveProperty("file_uris");

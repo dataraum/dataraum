@@ -14,6 +14,7 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import {
 	connectTablesToRecipeTables,
 	contentKeyedSourceName,
+	recipeContentHash,
 	recipeSqlForDisplayName,
 	sanitizeRecipeName,
 	sourceTypeForUri,
@@ -169,5 +170,47 @@ describe("connectTablesToRecipeTables", () => {
 
 	it("throws on an empty selection", () => {
 		expect(() => connectTablesToRecipeTables([])).toThrow(/at least one/);
+	});
+});
+
+describe("recipeContentHash (DAT-430)", () => {
+	const tables = [
+		{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
+		{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+	];
+
+	it("is a deterministic sha256 hex over the canonical {backend, tables} JSON", () => {
+		const h = recipeContentHash("mssql", tables);
+		expect(h).toMatch(/^[0-9a-f]{64}$/);
+		// Same backend + same pick → same hash: the property the engine's
+		// idempotent-re-select skip relies on (current recipe_hash ==
+		// imported_recipe_hash witness).
+		expect(
+			recipeContentHash(
+				"mssql",
+				tables.map((t) => ({ ...t })),
+			),
+		).toBe(h);
+	});
+
+	it("changes when the pick, the SQL, or the order changes", () => {
+		const h = recipeContentHash("mssql", tables);
+		expect(recipeContentHash("mssql", [tables[0]])).not.toBe(h); // dropped table
+		expect(
+			recipeContentHash("mssql", [
+				tables[0],
+				{ ...tables[1], sql: 'SELECT * FROM "Archive"."Customers"' },
+			]),
+		).not.toBe(h); // re-pointed SQL
+		expect(recipeContentHash("mssql", [tables[1], tables[0]])).not.toBe(h); // order
+	});
+
+	it("changes when the SAME tables are picked against a DIFFERENT backend", () => {
+		// The backend is part of the recipe identity: a re-select of the same
+		// source name against another DBMS with identical table names must NOT
+		// match the import witness — otherwise the engine would silently skip
+		// over raw tables extracted from the old backend.
+		const h = recipeContentHash("mssql", tables);
+		expect(recipeContentHash("postgres", tables)).not.toBe(h);
 	});
 });

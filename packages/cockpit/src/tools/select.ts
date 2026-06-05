@@ -26,15 +26,21 @@
 //               differ), so no basename rejection is needed. A run then ingests
 //               the SET of these source ids (`source_ids`).
 //   - database: ONE source — `source_type='db_recipe'`, the `backend` COLUMN, and
-//               `connection_config.tables` synthesized from the picked tables. The
-//               user-chosen `source_name` is required here (files are content-keyed,
-//               so it is ignored for them).
+//               `connection_config.tables` synthesized from the picked tables,
+//               plus `recipe_hash` (sha256 over the canonical {backend, tables}
+//               JSON, DAT-430) so the engine can tell an idempotent re-select
+//               from a re-pointed recipe — including the same table names
+//               against a different backend; the engine-stamped
+//               `imported_recipe_hash` witness on an existing row is carried
+//               forward. The user-chosen `source_name` is required here (files
+//               are content-keyed, so it is ignored for them).
 //
 // `needsApproval: true` — it mutates workspace state (creates/updates source
 // rows), so the SDK pauses for the user exactly like `teach`/`frame`/`replay`.
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -46,6 +52,7 @@ import { enumeratePrefixUris } from "../select/enumerate";
 import {
 	connectTablesToRecipeTables,
 	contentKeyedSourceName,
+	recipeContentHash,
 	SOURCE_NAME_PATTERN,
 	sourceTypeForUri,
 } from "../select/mappers";
@@ -211,6 +218,31 @@ function basename(uri: string): string {
 }
 
 /**
+ * The engine-stamped `imported_recipe_hash` witness on an existing source row,
+ * if any (DAT-430).
+ *
+ * At import success the engine copies the recipe's `recipe_hash` into
+ * `connection_config.imported_recipe_hash` — the record of WHICH recipe the
+ * source's raw tables were materialized from. The db-source upsert below
+ * REPLACES the whole `connection_config` JSON, so `select` must carry that
+ * engine-owned key forward: preserving it is what lets the engine skip an
+ * idempotent re-select (current hash == witness) and fail loud on a re-pointed
+ * recipe (mismatch) instead of silently serving stale raw tables. A fresh name
+ * (or a never-imported source) has no witness — returns null, and the key is
+ * simply absent from the new config.
+ */
+async function importedRecipeHash(name: string): Promise<string | null> {
+	const rows = await metadataDb
+		.select({ connectionConfig: sources.connectionConfig })
+		.from(sources)
+		.where(eq(sources.name, name))
+		.limit(1);
+	const cc = rows[0]?.connectionConfig as Record<string, unknown> | null;
+	const witness = cc?.imported_recipe_hash;
+	return typeof witness === "string" && witness.length > 0 ? witness : null;
+}
+
+/**
  * Persist (UPSERT) the `sources` row(s) for the selected subset and advance the
  * onboarding cursor to `add_source`. Returns the selection descriptor (the SET of
  * source ids the add_source trigger will run over).
@@ -304,12 +336,25 @@ export async function select(
 		);
 	}
 	const recipeTables = connectTablesToRecipeTables(picked);
+	// Content-hash the synthesized recipe (DAT-430): db sources are NAME-keyed,
+	// so the engine's import skip can't rely on row presence — it compares this
+	// hash against the `imported_recipe_hash` witness it stamped at import. The
+	// backend is part of the hashed identity (same table names on a different
+	// DBMS = a different recipe). The witness is read off the existing row (if
+	// any) and carried forward, because this upsert replaces the whole
+	// connection_config JSON.
+	const witness = await importedRecipeHash(name);
+	const connectionConfig: Record<string, unknown> = {
+		// DISTINCT key from the file `file_uris` key — never folded together.
+		tables: recipeTables,
+		recipe_hash: recipeContentHash(input.backend, recipeTables),
+		...(witness === null ? {} : { imported_recipe_hash: witness }),
+	};
 	const sourceId = await upsertSource({
 		name,
 		sourceType: "db_recipe",
 		backend: input.backend,
-		// DISTINCT key from the file `file_uris` key — never folded together.
-		connectionConfig: { tables: recipeTables },
+		connectionConfig,
 		now,
 	});
 

@@ -22,6 +22,10 @@ vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 // per-source and awaited in order, so `.at(-1)` is that source's row).
 let insertedRows: Record<string, unknown>[] = [];
 let conflictConfigs: Record<string, unknown>[] = [];
+// The existing-row read the db branch does before its upsert (DAT-430 witness
+// preservation): tests seed `existingRows` to simulate a previously-imported
+// source carrying the engine-stamped `imported_recipe_hash`.
+let existingRows: { connectionConfig: Record<string, unknown> | null }[] = [];
 const returningMock = vi.fn(async () => {
 	const r = insertedRows.at(-1) ?? {};
 	return [{ sourceId: r.sourceId }];
@@ -34,16 +38,29 @@ const valuesMock = vi.fn((row: Record<string, unknown>) => {
 	insertedRows.push(row);
 	return { onConflictDoUpdate: onConflictMock };
 });
+const limitMock = vi.fn(async () => existingRows);
 vi.mock("#/db/metadata/client", () => ({
-	metadataDb: { insert: vi.fn(() => ({ values: valuesMock })) },
+	metadataDb: {
+		insert: vi.fn(() => ({ values: valuesMock })),
+		select: vi.fn(() => ({
+			from: vi.fn(() => ({
+				where: vi.fn(() => ({ limit: limitMock })),
+			})),
+		})),
+	},
 }));
 
 // The generated Drizzle schema imports the live client transitively in some
 // suites; stub `sources` to a marker so `.insert(sources)` is callable.
 vi.mock("#/db/metadata/schema", () => ({
-	sources: { name: "sources.name", sourceId: "sources.sourceId" },
+	sources: {
+		name: "sources.name",
+		sourceId: "sources.sourceId",
+		connectionConfig: "sources.connectionConfig",
+	},
 }));
 
+import { recipeContentHash } from "../select/mappers";
 import { select } from "./select";
 
 // A staged upload URI is `s3://<bucket>/uploads/<digest>/<file>` — the digest
@@ -69,9 +86,11 @@ const DB_SCHEMA: ConnectSchema = {
 beforeEach(() => {
 	insertedRows = [];
 	conflictConfigs = [];
+	existingRows = [];
 	valuesMock.mockClear();
 	onConflictMock.mockClear();
 	returningMock.mockClear();
+	limitMock.mockClear();
 });
 
 describe("select (DAT-422) — file source is content-keyed", () => {
@@ -188,17 +207,24 @@ describe("select (DAT-398) — database source", () => {
 			backend: "mssql",
 		});
 
+		const expectedTables = [
+			{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
+			{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+		];
 		expect(insertedRows).toHaveLength(1);
 		expect(insertedRows[0].sourceType).toBe("db_recipe");
 		// The backend COLUMN is set (import fails loud without it).
 		expect(insertedRows[0].backend).toBe("mssql");
 		expect(insertedRows[0].stage).toBe("add_source");
 		expect(insertedRows[0].connectionConfig).toEqual({
-			tables: [
-				{ name: "dbo_invoices", sql: 'SELECT * FROM "dbo"."Invoices"' },
-				{ name: "customers", sql: 'SELECT * FROM "Customers"' },
-			],
+			tables: expectedTables,
+			// The content hash the engine's import skip keys off (DAT-430) —
+			// deterministic over the canonical {backend, tables} JSON.
+			recipe_hash: recipeContentHash("mssql", expectedTables),
 		});
+		expect(
+			(insertedRows[0].connectionConfig as Record<string, unknown>).recipe_hash,
+		).toMatch(/^[0-9a-f]{64}$/);
 		// tables and file_uris never cross-contaminate.
 		expect(insertedRows[0].connectionConfig).not.toHaveProperty("file_uris");
 
@@ -217,9 +243,92 @@ describe("select (DAT-398) — database source", () => {
 			backend: "postgres",
 			table_names: ["Customers"],
 		});
+		const subset = [{ name: "customers", sql: 'SELECT * FROM "Customers"' }];
 		expect(insertedRows[0].connectionConfig).toEqual({
-			tables: [{ name: "customers", sql: 'SELECT * FROM "Customers"' }],
+			tables: subset,
+			recipe_hash: recipeContentHash("postgres", subset),
 		});
+	});
+
+	it("hashes the backend into recipe_hash — same tables, different backend ≠ same recipe (DAT-430)", async () => {
+		// A re-select of the same source name against a DIFFERENT backend with
+		// identical table names must mint a DIFFERENT recipe_hash, so the engine's
+		// witness compare fails loud instead of silently skipping over raw tables
+		// extracted from the other DBMS.
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "mssql",
+		});
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "postgres",
+		});
+		const hashOf = (row: Record<string, unknown>) =>
+			(row.connectionConfig as Record<string, unknown>).recipe_hash;
+		expect(hashOf(insertedRows[0])).not.toBe(hashOf(insertedRows[1]));
+	});
+
+	it("carries the engine's imported_recipe_hash witness across a re-select (DAT-430)", async () => {
+		// The existing row was imported: the engine stamped the witness. The
+		// upsert replaces the whole connection_config JSON, so select must carry
+		// the witness forward — it is what lets the engine skip an idempotent
+		// re-select and fail loud on a changed pick instead of silently
+		// presence-skipping over stale raw tables.
+		existingRows = [
+			{
+				connectionConfig: {
+					tables: [{ name: "old", sql: "SELECT 1" }],
+					recipe_hash: "prior-hash",
+					imported_recipe_hash: "prior-hash",
+				},
+			},
+		];
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "mssql",
+			table_names: ["Customers"],
+		});
+		const cc = insertedRows[0].connectionConfig as Record<string, unknown>;
+		expect(cc.imported_recipe_hash).toBe("prior-hash");
+		// The CURRENT recipe_hash is the fresh pick's hash, not the witness.
+		expect(cc.recipe_hash).toBe(
+			recipeContentHash("mssql", [
+				{ name: "customers", sql: 'SELECT * FROM "Customers"' },
+			]),
+		);
+	});
+
+	it("omits the witness for a fresh / never-imported source", async () => {
+		existingRows = []; // no row under this name
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "mssql",
+		});
+		expect(insertedRows[0].connectionConfig).not.toHaveProperty(
+			"imported_recipe_hash",
+		);
+
+		// A row that exists but was never imported (no witness yet) — same shape.
+		insertedRows = [];
+		existingRows = [{ connectionConfig: { tables: [], recipe_hash: "h" } }];
+		await select({
+			source_name: "warehouse",
+			schema: DB_SCHEMA,
+			backend: "mssql",
+		});
+		expect(insertedRows[0].connectionConfig).not.toHaveProperty(
+			"imported_recipe_hash",
+		);
+	});
+
+	it("does not read existing rows for file sources (no witness logic)", async () => {
+		await select({ schema: FILE_SCHEMA });
+		expect(limitMock).not.toHaveBeenCalled();
+		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
 	});
 
 	it("rejects a database select with no/unsupported backend (import would fail loud)", async () => {

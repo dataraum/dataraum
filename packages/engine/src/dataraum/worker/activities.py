@@ -30,6 +30,7 @@ from dataraum.worker.activity import (
     SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
+    check_run_column_limit,
     materialize_session_overlays,
     promote_run,
     promote_session_run,
@@ -44,6 +45,7 @@ from dataraum.worker.contracts import (
     ImportResult,
     PhaseOutcome,
     ProcessTableInput,
+    RunScopedInput,
     SessionIdentity,
     SessionScopedInput,
     SourceIdentity,
@@ -86,6 +88,20 @@ class PhaseActivities:
             )
         self._run_or_raise("import", identity, [])
         return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
+
+    @activity.defn(name="check_column_limit")
+    def run_check_column_limit(self, payload: RunScopedInput) -> PhaseOutcome:
+        """Run-scoped column gate — bound the run's total cost before the fan-out (DAT-430).
+
+        Counts the columns across the UNION of the run's raw tables (the import
+        loop's accumulated ids) against ``limits.max_columns``. Run-level, not
+        per-source: a run is a SET of per-file content sources (DAT-422), so only
+        the union bounds the pipeline/LLM cost — and because the workflow calls
+        this unconditionally, it also gates runs whose imports all skipped. A
+        breach raises the non-retryable ``PhaseFailed``.
+        """
+        run = check_run_column_limit(self._manager, payload.identity, payload.table_ids)
+        return self._outcome_or_raise(run, "check_column_limit")
 
     @activity.defn(name="typing")
     def run_typing(self, payload: ProcessTableInput) -> TypingResult:

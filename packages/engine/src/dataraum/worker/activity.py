@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from dataraum.core.config import load_phase_config
+from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
@@ -34,7 +34,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
-from dataraum.storage import MetadataSnapshotHead, Source, Table, session_head_target
+from dataraum.storage import Column, MetadataSnapshotHead, Source, Table, session_head_target
 from dataraum.worker.contracts import SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
@@ -48,6 +48,7 @@ __all__ = [
     "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
+    "check_run_column_limit",
     "declared_detector_ids",
     "materialize_session_overlays",
     "promote_run",
@@ -282,6 +283,57 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
             if detector_id not in detector_ids:
                 detector_ids.append(detector_id)
     return detector_ids
+
+
+def check_run_column_limit(
+    manager: ConnectionManager,
+    identity: SourceIdentity,
+    table_ids: list[str],
+) -> PhaseRun:
+    """Gate the RUN's total raw column count before the per-table fan-out (DAT-430).
+
+    ``limits.max_columns`` bounds a run's pipeline/LLM cost, so it must judge the
+    run's whole object set: a per-source check stopped meaning anything once a
+    run became a SET of per-file content sources (DAT-422 — 100 sources at 499
+    columns each would each pass a per-source cap). The parent workflow calls
+    this once after the import loop with the union of the run's raw table ids,
+    so the gate also fires when every import skipped (already-imported sources
+    recomposed into a bigger run). A breach is a deterministic FAILED →
+    non-retryable ``PhaseFailed`` in the activity wrapper.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error=(
+                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
+                f"but this worker is bound to '{active_workspace_id}'. Refusing "
+                "to run to avoid a cross-workspace miswrite (DAT-364)."
+            ),
+        )
+
+    max_columns = load_pipeline_config().get("limits", {}).get("max_columns", 500)
+    with manager.session_scope() as session:
+        count = session.execute(
+            select(func.count(Column.column_id)).where(Column.table_id.in_(table_ids))
+        ).scalar_one()
+
+    if count > max_columns:
+        return PhaseRun(
+            status=PhaseStatus.FAILED.value,
+            error=(
+                f"Column limit exceeded for this run: {count} columns across "
+                f"{len(table_ids)} raw table(s) > max_columns={max_columns}. "
+                "Import fewer/narrower objects in one run, or raise "
+                "limits.max_columns in pipeline.yaml."
+            ),
+        )
+    return PhaseRun(
+        status=PhaseStatus.COMPLETED.value,
+        summary=(
+            f"{count} columns across {len(table_ids)} raw table(s) within max_columns={max_columns}"
+        ),
+    )
 
 
 def begin_session_select(

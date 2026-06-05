@@ -46,12 +46,14 @@ const InventoryTable = z.object({
 	row_count: z.number().nullable(),
 	column_count: z.number(),
 	// Denormalized provenance — the inventory groups tables under their source
-	// (SourceCard), so each row carries its source's identity + status.
+	// (SourceCard), so each row carries its source's identity. No `status`: the
+	// engine never updates `Source.status` post-import (the scheduler that did was
+	// retired in DAT-369), so it's write-once noise — imported-ness is derivable
+	// from the typed tables under the source (DAT-431).
 	source_id: z.string(),
 	source_name: z.string(),
 	source_type: z.string(),
 	source_backend: z.string().nullable(),
-	source_status: z.string().nullable(),
 	// False when no column carries a band — the table hasn't been analyzed.
 	analyzed: z.boolean(),
 	// The most severe band across the table's columns (blocked > investigate >
@@ -71,7 +73,6 @@ export interface InventoryTableRow {
 	sourceName: string;
 	sourceType: string;
 	sourceBackend: string | null;
-	sourceStatus: string | null;
 }
 
 /** One column ⟕ readiness row (band null = the column has no readiness row). */
@@ -133,7 +134,6 @@ export function buildInventory(
 			source_name: t.sourceName,
 			source_type: t.sourceType,
 			source_backend: t.sourceBackend,
-			source_status: t.sourceStatus,
 			analyzed,
 			worst_band,
 			readiness: r,
@@ -163,7 +163,6 @@ export async function listTables(
 			sourceName: sources.name,
 			sourceType: sources.sourceType,
 			sourceBackend: sources.backend,
-			sourceStatus: sources.status,
 		})
 		.from(tables)
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
@@ -186,7 +185,7 @@ export const listTablesTool = toolDefinition({
 	description:
 		"List the workspace table inventory, optionally filtered to one source. " +
 		"Returns each table's id, name, layer, row count, column count, its source " +
-		"(name/type/backend/status), and a readiness rollup — how many of its " +
+		"(name/type/backend), and a readiness rollup — how many of its " +
 		"columns are ready / investigate / blocked / unanalyzed plus the worst band.",
 	inputSchema: z.object({
 		source_id: z

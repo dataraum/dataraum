@@ -7,8 +7,9 @@ cockpit Client polls while the parent is blocked in the fan-out (mirrored TS-sid
 in DAT-352). Two things have to hold:
 
 * **The snapshot advances.** ``phase`` walks ``import`` →
-  ``processing_tables`` → ``semantic_per_column`` → ``detect`` → ``done`` and
-  ``tables_completed`` climbs monotonically toward ``tables_total`` as each
+  ``check_column_limit`` → ``processing_tables`` → ``semantic_per_column`` →
+  ``detect`` → ``promote`` → ``done`` and ``tables_completed`` climbs
+  monotonically toward ``tables_total`` as each
   child resolves. We drive a real run on a Temporal **dev-server testcontainer**
   (NOT ``WorkflowEnvironment`` — its time-skipping test-server binary stalls CI,
   per the project's Temporal-test convention) with the activities + the child
@@ -41,6 +42,7 @@ from dataraum.worker.contracts import (
     PhaseOutcome,
     ProcessTableInput,
     ProgressSnapshot,
+    RunScopedInput,
     SourceIdentity,
     TypingResult,
     add_source_workflow_id,
@@ -65,6 +67,23 @@ _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
 @activity.defn(name="import")
 async def _import(_identity: SourceIdentity) -> ImportResult:
     return ImportResult(raw_table_ids=list(_RAW_IDS))
+
+
+# Records every invocation so the test can assert the workflow actually ran the
+# gate — without this, dropping the ``execute_activity("check_column_limit", …)``
+# call from workflows.py would still pass (the mock merely being registered
+# proves nothing).
+_check_column_limit_calls: list[RunScopedInput] = []
+
+
+@activity.defn(name="check_column_limit")
+async def _check_column_limit(payload: RunScopedInput) -> PhaseOutcome:
+    # Run-scoped column gate (DAT-430), between the import loop and the fan-out.
+    # A trivial pass here — the gate's counting/limit logic is exercised in
+    # ``tests/unit/worker/test_check_column_limit.py``; this test cares that the
+    # orchestration calls it and progress bookkeeping survives it.
+    _check_column_limit_calls.append(payload)
+    return PhaseOutcome(status="completed")
 
 
 @activity.defn(name="typing")
@@ -113,6 +132,7 @@ async def _promote_to_latest(_identity: SourceIdentity) -> PhaseOutcome:
 
 _MOCK_ACTIVITIES = [
     _import,
+    _check_column_limit,
     _typing,
     _statistics,
     _column_eligibility,
@@ -148,6 +168,7 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     mutations are determinism-safe — both DAT-406 guarantees in one live run.
     """
     workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.session_id)
+    _check_column_limit_calls.clear()
 
     async with _worker(temporal_client):
         handle = await temporal_client.start_workflow(
@@ -173,6 +194,12 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
 
     assert len(result.tables) == len(_RAW_IDS)
 
+    # The run-scoped column gate (DAT-430) actually RAN, exactly once, judging
+    # the union of the run's raw tables — dropping the ``execute_activity`` call
+    # from the workflow body fails here.
+    assert len(_check_column_limit_calls) == 1
+    assert _check_column_limit_calls[0].table_ids == _RAW_IDS
+
     # Terminal snapshot: every child counted, fan-out width correct, phase done.
     final = observed[-1]
     assert final.phase == "done"
@@ -190,9 +217,19 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     assert completed == sorted(completed), f"tables_completed regressed: {completed}"
     assert all(s.tables_completed <= s.tables_total or s.tables_total == 0 for s in observed)
 
-    # Phase only ever moves forward through the declared order. ``promote`` is the
-    # terminal head-flip step (DAT-413) the parent runs after detect, before done.
-    order = ["import", "processing_tables", "semantic_per_column", "detect", "promote", "done"]
+    # Phase only ever moves forward through the declared order.
+    # ``check_column_limit`` is the run-scoped gate between the import loop and
+    # the fan-out (DAT-430); ``promote`` is the terminal head-flip step
+    # (DAT-413) the parent runs after detect, before done.
+    order = [
+        "import",
+        "check_column_limit",
+        "processing_tables",
+        "semantic_per_column",
+        "detect",
+        "promote",
+        "done",
+    ]
     seen_indices = [order.index(s.phase) for s in observed]
     assert seen_indices == sorted(seen_indices), f"phase regressed: {[s.phase for s in observed]}"
 

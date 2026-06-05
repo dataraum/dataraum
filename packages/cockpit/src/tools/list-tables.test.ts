@@ -30,7 +30,6 @@ function tableRow(
 		sourceName: "sales.csv",
 		sourceType: "file",
 		sourceBackend: "duckdb",
-		sourceStatus: "ready",
 		...overrides,
 	};
 }
@@ -47,7 +46,6 @@ describe("buildInventory (DAT-349)", () => {
 			source_name: "sales.csv",
 			source_type: "file",
 			source_backend: "duckdb",
-			source_status: "ready",
 		});
 	});
 

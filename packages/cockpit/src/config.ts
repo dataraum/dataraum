@@ -55,6 +55,16 @@ const ConfigSchema = z.object({
 	// cockpit needs it explicitly to address PutObject. Must match S3_BUCKET.
 	s3Bucket: z.string().min(1),
 
+	// --- DuckDB extension cache (mirror of the engine's
+	// duckdb_extension_directory / ducklake_skip_install — core/settings.py).
+	// The container image pre-installs ducklake/httpfs/probe-backend extensions
+	// at /opt/dataraum/duckdb-extensions and sets both vars (Dockerfile), so a
+	// cold start never hits extensions.duckdb.org — required behind egress proxy
+	// filters / air-gapped. Both unset in host dev: DuckDB falls back to
+	// ~/.duckdb and installs on demand. ---
+	duckdbExtensionDirectory: z.string().min(1).optional(),
+	ducklakeSkipInstall: z.boolean(),
+
 	// --- Temporal (optional for slice-1: the cockpit Temporal client lands in
 	// E4 (DAT-344), which flips these to required; no Temporal service yet) ---
 	temporalHost: z.string().optional(),
@@ -84,6 +94,10 @@ function loadConfig(): Config {
 		s3AccessKeyId: process.env.S3_ACCESS_KEY_ID,
 		s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
 		s3Bucket: process.env.S3_BUCKET,
+		duckdbExtensionDirectory: process.env.DUCKDB_EXTENSION_DIRECTORY,
+		// Same env contract as the engine ("set to 1"); anything else — including
+		// unset — keeps the on-demand INSTALL path for host dev.
+		ducklakeSkipInstall: (process.env.DUCKLAKE_SKIP_INSTALL ?? "0") === "1",
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,

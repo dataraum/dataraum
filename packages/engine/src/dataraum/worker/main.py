@@ -83,6 +83,9 @@ async def run_worker() -> None:
                 workflows=[AddSourceWorkflow, ProcessTableWorkflow, BeginSessionWorkflow],
                 activities=[
                     phase_activities.run_import,
+                    # DAT-430 run-scoped column gate — between the import loop
+                    # and the per-table fan-out.
+                    phase_activities.run_check_column_limit,
                     phase_activities.run_typing,
                     phase_activities.run_statistics,
                     phase_activities.run_column_eligibility,
@@ -136,6 +139,7 @@ async def run_worker() -> None:
                 ],
                 activities=[
                     "import",
+                    "check_column_limit",
                     "typing",
                     "statistics",
                     "column_eligibility",

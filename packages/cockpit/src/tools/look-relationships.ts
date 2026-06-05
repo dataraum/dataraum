@@ -34,6 +34,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 
 // --- The tool's output: per-relationship bands + a few top driver labels each.
 
@@ -54,8 +55,10 @@ const RelationshipReadiness = z.object({
 	// — these feed why_relationship for the drill-down.
 	from_column_id: z.string(),
 	to_column_id: z.string(),
-	// Endpoint names for display; null when a column id no longer resolves (a
-	// dropped column on a stale row), so the grid degrades rather than omitting it.
+	// Endpoint names for display — table names in DISPLAY form (`src_<digest>__`
+	// prefix stripped, DAT-431; the drill-down round-trip keys on the column ids);
+	// null when a column id no longer resolves (a dropped column on a stale row),
+	// so the grid degrades rather than omitting it.
 	from_table_name: z.string().nullable(),
 	from_column_name: z.string().nullable(),
 	to_table_name: z.string().nullable(),
@@ -117,9 +120,11 @@ export function projectRelationshipReadiness(
 	return {
 		from_column_id: pair.fromColumnId,
 		to_column_id: pair.toColumnId,
-		from_table_name: from?.tableName ?? null,
+		// This result goes back to the agent — strip the content-keyed
+		// `src_<digest>__` prefix so no hash name reaches LLM context (DAT-431).
+		from_table_name: from ? displayTableName(from.tableName) : null,
 		from_column_name: from?.columnName ?? null,
-		to_table_name: to?.tableName ?? null,
+		to_table_name: to ? displayTableName(to.tableName) : null,
 		to_column_name: to?.columnName ?? null,
 		band: row.band ?? null,
 		worst_intent_risk: row.worstIntentRisk ?? null,

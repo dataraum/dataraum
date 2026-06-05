@@ -66,7 +66,9 @@ result and maps it via `toolResultToCanvas`, and `pinned = canvasFromCallId(...)
 re-resolves a clicked history chip. (The imperative `showCanvas` override slot
 was retired by DAT-436: its one user — the add_source progress widget seeded by
 the REST trigger button — became chat-derivable when approving `select` started
-the import and its result began carrying the run ids.) `useStableValue` returns the previous reference when
+the import and its result began carrying the run ids.)
+
+`useStableValue` returns the previous reference when
 the derived canvas is value-equal, so streaming text doesn't churn the canvas
 subtree (`FocusCanvas` is `memo`'d). This replaced an effect chain that mirrored
 the canvas into state and was the source of a recurring stuck-spinner /

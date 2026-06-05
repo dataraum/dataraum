@@ -34,11 +34,13 @@ export type CanvasState =
 	// DAT-351: per-column readiness explanation. Carries the why_column result —
 	// per-intent drivers + detector evidence + the synthesized narrative.
 	| { kind: "column-why"; why: WhyColumnResult }
-	// DAT-352: live add_source workflow progress. Carries ONLY the (workflowId,
-	// runId) the TRIGGER returned — the widget polls `get_progress` for the
-	// snapshot; the run id pins the precise iteration (the id is reused per source
-	// under ALLOW_DUPLICATE). Projected by the TRIGGER UI action, NOT by the
-	// tool-result mapper (progress is not a tool result).
+	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
+	// (workflowId, runId) of the started run — the widget polls `get_progress`
+	// for the snapshot; the run id pins the precise iteration (the id is reused
+	// per session under ALLOW_DUPLICATE). Projected from the select/replay TOOL
+	// RESULTS by the tool-result mapper (tool-result-to-canvas.ts): approving
+	// select STARTS the import, so its result carries the run ids. (The old
+	// trigger-button UI action that used to seed this member is retired.)
 	| { kind: "add-source-progress"; workflowId: string; runId: string }
 	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
 	// (no queryId→SQL registry), so the grid re-issues the query — it carries the

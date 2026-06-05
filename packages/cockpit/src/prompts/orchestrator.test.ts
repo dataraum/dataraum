@@ -26,4 +26,14 @@ describe("orchestrator system prompt", () => {
 		expect(prompt).toContain('"src_" followed by 40 hex characters');
 		expect(prompt).toContain("name the FILE");
 	});
+
+	// Lockstep with the one-gate select (DAT-436): approving select IS the
+	// import start — the prompt must say so, and must no longer steer the user
+	// toward the retired "Add source" button / separate trigger hop.
+	it("teaches that approving select starts the import — no button hop", () => {
+		const prompt = getOrchestratorInstructions();
+		expect(prompt).toContain("Approving select STARTS the import");
+		expect(prompt).not.toContain("Add source button");
+		expect(prompt).not.toContain('"Add source"');
+	});
 });

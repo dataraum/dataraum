@@ -31,6 +31,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
@@ -159,10 +160,16 @@ export function projectWhyData(
  * Synthesize the grounded narrative from the structured data via one forced
  * Anthropic call. Split out so the assembly is testable apart from the LLM. The
  * model sees only the band + drivers + evidence we pass — never the whole DB.
+ * `signal` is the tool-context abort (DAT-449): a stopped run aborts this
+ * nested call instead of billing it to completion.
  */
-export async function synthesizeAnalysis(data: WhyColumnData): Promise<string> {
+export async function synthesizeAnalysis(
+	data: WhyColumnData,
+	signal?: AbortSignal,
+): Promise<string> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		abortController: linkedAbortController(signal),
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getWhyInstructions()],
 		messages: [
@@ -198,6 +205,7 @@ export interface WhyColumnInput {
 /** Explain one column's readiness: pre-computed drivers + evidence + narrative. */
 export async function whyColumn(
 	input: WhyColumnInput,
+	signal?: AbortSignal,
 ): Promise<WhyColumnResult> {
 	// Resolve the column + its table first — even an unanalyzed column has a name.
 	const [col] = await metadataDb
@@ -301,7 +309,7 @@ export async function whyColumn(
 
 	// Nothing to explain when the column has no readiness row — skip the LLM call
 	// (no cost, no risk of fabricating an explanation for absent data).
-	const analysis = data.analyzed ? await synthesizeAnalysis(data) : "";
+	const analysis = data.analyzed ? await synthesizeAnalysis(data, signal) : "";
 
 	return { ...data, analysis };
 }
@@ -322,4 +330,4 @@ export const whyColumnTool = toolDefinition({
 			.describe("The column to explain (a column_id from look_table)."),
 	}),
 	outputSchema: WhyColumnResult,
-}).server((input) => whyColumn(input));
+}).server((input, ctx) => whyColumn(input, ctx?.abortSignal));

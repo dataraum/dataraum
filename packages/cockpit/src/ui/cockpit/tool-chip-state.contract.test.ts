@@ -1,11 +1,14 @@
 // SDK contract test for the tool-chip terminal-state mapping (DAT-436).
 //
-// tool-chip-state.ts encodes UNDOCUMENTED @tanstack/ai internals: the SDK has
-// no error-terminal ToolCallState, so an errored server-tool execution parks at
+// tool-chip-state.ts encodes the SDK's errored-tool-call behavior: there is no
+// error-terminal ToolCallState, so an errored server-tool execution parks at
 // `state: "input-complete"` with the error riding in `output` + a sibling
-// `tool-result` part `state: "error"`. That shape is an implementation detail
-// of the SDK's stream pipeline — nothing type-checks it, so an SDK bump can
-// silently change it and resurrect the eternal chip spinner.
+// `tool-result` part `state: "error"`. The tool-CALL half (error-in-output at
+// "input-complete") is an UNDOCUMENTED implementation detail of the SDK's
+// stream pipeline — nothing type-checks it, so an SDK bump can silently change
+// it and resurrect the eternal chip spinner. The tool-RESULT half is the
+// public `ToolResultPart` export of @tanstack/ai-client (typed), but WHEN the
+// SDK emits it with `state: "error"` is still behavior only this test pins.
 //
 // This test is the contract-catcher: it drives the REAL installed SDK end to
 // end (bun.lock owns the version; deps stay "latest" by project convention) —

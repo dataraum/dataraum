@@ -35,6 +35,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
@@ -152,11 +153,17 @@ export function projectWhyTable(
 
 /** Synthesize the grounded narrative via one forced Anthropic call (split out so
  * the assembly is testable apart from the LLM). The model sees only the band +
- * drivers + evidence we pass — and the same why instructions as why_column. */
-export async function synthesizeAnalysis(data: WhyTableData): Promise<string> {
+ * drivers + evidence we pass — and the same why instructions as why_column.
+ * `signal` is the tool-context abort (DAT-449): a stopped run aborts this
+ * nested call instead of billing it to completion. */
+export async function synthesizeAnalysis(
+	data: WhyTableData,
+	signal?: AbortSignal,
+): Promise<string> {
 	const label = data.table_name ?? data.table_id;
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		abortController: linkedAbortController(signal),
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getWhyInstructions()],
 		messages: [
@@ -191,7 +198,10 @@ export interface WhyTableInput {
 }
 
 /** Explain one table's table-grain readiness: pre-computed drivers + evidence + narrative. */
-export async function whyTable(input: WhyTableInput): Promise<WhyTableResult> {
+export async function whyTable(
+	input: WhyTableInput,
+	signal?: AbortSignal,
+): Promise<WhyTableResult> {
 	// Resolve the table name up front — it's the target key AND the display label,
 	// and even an unanalyzed table has a name. Null only when the id is stale.
 	const [table] = await metadataDb
@@ -278,7 +288,7 @@ export async function whyTable(input: WhyTableInput): Promise<WhyTableResult> {
 	);
 
 	// Nothing to explain when there's no readiness row — skip the LLM call.
-	const analysis = data.analyzed ? await synthesizeAnalysis(data) : "";
+	const analysis = data.analyzed ? await synthesizeAnalysis(data, signal) : "";
 
 	return { ...data, analysis };
 }
@@ -307,4 +317,4 @@ export const whyTableTool = toolDefinition({
 			),
 	}),
 	outputSchema: WhyTableResult,
-}).server((input) => whyTable(input));
+}).server((input, ctx) => whyTable(input, ctx?.abortSignal));

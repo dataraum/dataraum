@@ -18,3 +18,13 @@
 export const MODEL = "claude-sonnet-4-6";
 
 export const MAX_OUTPUT_TOKENS = 24576;
+
+// The agent-loop iteration ceiling for /api/chat. chat() defaults to
+// maxIterations(5) when no agentLoopStrategy is given — a SILENT governor from
+// the same defect class as the 1024-token default above: a 17-tool orchestrator
+// turn (poll → poll → look → why → narrate) just STOPS mid-task at iteration 5,
+// no error, no signal (DAT-449). 20 follows the @tanstack/ai tool-calling
+// skill's multi-tool example; it is a runaway-loop ceiling, not an expected
+// budget — normal turns finish well under it, and a turn that genuinely needs
+// more is a prompt/tool-design problem, not a reason to raise this.
+export const AGENT_LOOP_MAX_ITERATIONS = 20;

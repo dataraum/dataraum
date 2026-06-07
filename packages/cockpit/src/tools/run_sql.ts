@@ -69,4 +69,10 @@ export const runSqlTool = toolDefinition({
 			.describe("Max rows to return (default 1000, capped at 200000)."),
 	}),
 	outputSchema: QueryResultSchema,
+	// ctx.abortSignal deliberately NOT forwarded (DAT-449): duckdb-neo has no
+	// per-query cancellation — its only primitive is connection-level
+	// `interrupt()`, and the lake connection is process-wide memoized
+	// (duckdb/lake.ts), so interrupting would kill CONCURRENT queries (the
+	// grid's /api/run-sql, other tool calls), not just this one. Revisit only
+	// with a per-query connection or a driver-level signal API.
 }).server((input) => runSql(input));

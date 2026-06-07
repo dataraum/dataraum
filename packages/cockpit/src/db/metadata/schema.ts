@@ -26,6 +26,7 @@ export const columnDriftSummaries = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		sliceTableName: varchar("slice_table_name", { length: 255 }).notNull(),
 		columnName: varchar("column_name", { length: 255 }).notNull(),
 		timeColumn: varchar("time_column", { length: 255 }).notNull(),
@@ -48,6 +49,11 @@ export const columnDriftSummaries = metadataSchema.table(
 		index("ix_column_drift_summaries_slice_table_name").using(
 			"btree",
 			table.sliceTableName.asc().nullsLast(),
+		),
+		unique("uq_drift_slice_column_run").on(
+			table.sliceTableName,
+			table.columnName,
+			table.runId,
 		),
 	],
 );
@@ -195,6 +201,7 @@ export const derivedColumns = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		tableId: varchar("table_id")
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
@@ -694,6 +701,7 @@ export const sliceDefinitions = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		tableId: varchar("table_id")
 			.notNull()
 			.references(() => tables.tableId, { onDelete: "cascade" }),
@@ -1043,6 +1051,7 @@ export const temporalSliceAnalyses = metadataSchema.table(
 		sessionId: varchar("session_id")
 			.notNull()
 			.references(() => investigationSessions.sessionId),
+		runId: varchar("run_id"),
 		sliceTableName: varchar("slice_table_name", { length: 255 }).notNull(),
 		timeColumn: varchar("time_column", { length: 255 }).notNull(),
 		periodLabel: varchar("period_label", { length: 50 }).notNull(),

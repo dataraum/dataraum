@@ -184,25 +184,32 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("maps select to a selected-source canvas (DAT-398)", () => {
+	it("maps select to the add-source-progress canvas (DAT-436: approving select starts the import)", () => {
 		const selection = {
 			source_ids: ["s1"],
 			name: "orders.csv",
 			source_type: "csv",
 			backend: null,
 			stage: "add_source",
-			vertical: "_adhoc",
+			vertical: "finance",
 			file_uris: ["s3://dataraum-lake/uploads/aaa111/orders.csv"],
 			recipe_tables: null,
+			workflow_id: "addsource-ws-sess",
+			run_id: "run-1",
+			session_id: "sess-1",
 		};
 		expect(toolResultToCanvas("select", selection)).toEqual({
-			kind: "selected-source",
-			selection,
+			kind: "add-source-progress",
+			workflowId: "addsource-ws-sess",
+			runId: "run-1",
 		});
 	});
 
-	it("returns null for a missing select result (canvas unchanged)", () => {
+	it("returns null for a missing/refused select result (canvas unchanged)", () => {
 		expect(toolResultToCanvas("select", null)).toBeNull();
+		// A refused select (NoConceptsError — no run ids) projects nothing; the
+		// last good canvas stays and the error surfaces in the chat rail.
+		expect(toolResultToCanvas("select", { error: "no concepts" })).toBeNull();
 	});
 
 	it("returns null for write/compute tools (canvas unchanged)", () => {

@@ -1,6 +1,7 @@
-// Lane smoke for the select tool (DAT-398) — drives select() against a REAL
-// Postgres ws_<id>.sources table and asserts the row lands with the exact keys
-// the engine import phase reads.
+// Lane smoke for the select tool (DAT-398) — drives persistSelection() (the
+// persistence core of the one-gate `select`, DAT-436) against a REAL Postgres
+// ws_<id>.sources table and asserts the row lands with the exact keys the
+// engine import phase reads.
 //
 // This closes the cross-package contract loop a pure unit test cannot: the unit
 // tests assert the row SHAPE against a stubbed metadata client; here the row is
@@ -16,10 +17,11 @@
 //                      (import_phase.py `_load_database_source` reads tables +
 //                       the backend column; an empty backend fails loud.)
 //
-// It does NOT trigger addSourceWorkflow (out of scope; that is the future
-// add_source tool, and the full forward run makes real LLM calls). Proving the
-// engine ACCEPTS the cockpit-written row end-to-end through addSourceWorkflow is
-// the compose smoke's job (scripts/smoke-add-source.ts), which already seeds an
+// It deliberately drives persistSelection, NOT the composed select(): the full
+// select gate also pre-flights the vertical and STARTS addSourceWorkflow
+// (DAT-436), and the full forward run makes real LLM calls. Proving the engine
+// ACCEPTS the cockpit-written row end-to-end through addSourceWorkflow is the
+// compose smoke's job (scripts/smoke-add-source.ts), which already seeds an
 // identically-shaped file_uris row.
 //
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the
@@ -33,40 +35,47 @@ import { recipeContentHash } from "../select/mappers";
 const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
 
 // Stub the cockpit env so config.ts loads even when the test doesn't have every
-// var set (select imports config transitively for s3Bucket).
-const REQUIRED_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL:
-		process.env.COCKPIT_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL: process.env.METADATA_DATABASE_URL ?? "",
-	DATARAUM_WORKSPACE_ID:
-		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
-	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
-	DUCKLAKE_CATALOG_URL:
-		process.env.DUCKLAKE_CATALOG_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
-	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
-	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
-	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
-	S3_SECRET_ACCESS_KEY:
-		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
-	S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
-};
-for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
+// var set (select imports config transitively for s3Bucket). GATED on the
+// stack: when the suite is skipped, mutating process.env at module scope would
+// leak into every other test file sharing this vitest worker (e.g. un-skipping
+// other env-gated suites or shadowing their stubs).
+if (STACK_AVAILABLE) {
+	const REQUIRED_DEFAULTS: Record<string, string> = {
+		COCKPIT_DATABASE_URL:
+			process.env.COCKPIT_DATABASE_URL ??
+			"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
+		DATARAUM_WORKSPACE_ID:
+			process.env.DATARAUM_WORKSPACE_ID ??
+			"00000000-0000-0000-0000-000000000001",
+		DATARAUM_LAKE_PATH:
+			process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
+		DUCKLAKE_CATALOG_URL:
+			process.env.DUCKLAKE_CATALOG_URL ??
+			"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
+		ANTHROPIC_API_KEY:
+			process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
+		S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
+		S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
+		S3_SECRET_ACCESS_KEY:
+			process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
+		S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
+	};
+	for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
+		if (!process.env[k]) process.env[k] = v;
+	}
 }
 
-const SCHEMA = `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll(
-	"-",
-	"_",
-)}`;
+// Safe when skipped: the suite below never runs without the stack, so the
+// empty-string fallback is never read.
+const SCHEMA = STACK_AVAILABLE
+	? `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll("-", "_")}`
+	: "";
 
 describe.skipIf(!STACK_AVAILABLE)(
 	"select persists a Source row (DAT-398)",
 	() => {
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
-		let select: any;
+		let persistSelection: any;
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported Bun SQL client
 		let sql: any;
 		const writtenNames: string[] = [];
@@ -75,7 +84,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// Dynamic imports so the missing-env skip works — top-level imports would
 			// boot config.ts before describe.skipIf runs.
 			const mod = await import("./select");
-			select = mod.select;
+			persistSelection = mod.persistSelection;
 			const { SQL } = await import("bun");
 			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
 		});
@@ -122,7 +131,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			writtenNames.push(name);
 			const uri = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
 
-			const result = await select({
+			const result = await persistSelection({
 				source_name: name,
 				schema: { sourceKind: "file", source: uri, tables: [] },
 			});
@@ -143,7 +152,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const name = `sel398_db_${Date.now()}`;
 			writtenNames.push(name);
 
-			const result = await select({
+			const result = await persistSelection({
 				source_name: name,
 				backend: "mssql",
 				schema: {
@@ -184,12 +193,12 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const csv = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
 			const parquet = `s3://${process.env.S3_BUCKET}/sel398/${name}.parquet`;
 
-			await select({
+			await persistSelection({
 				source_name: name,
 				schema: { sourceKind: "file", source: csv, tables: [] },
 			});
 			// Re-select the same name with a different file — must update, not error.
-			await select({
+			await persistSelection({
 				source_name: name,
 				schema: { sourceKind: "file", source: parquet, tables: [] },
 			});

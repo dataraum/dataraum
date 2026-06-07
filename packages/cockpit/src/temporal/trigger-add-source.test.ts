@@ -1,11 +1,14 @@
-// Unit tests for the add_source TRIGGER (DAT-352).
+// Unit tests for the add_source TRIGGER (DAT-352; folded into the select
+// approval gate by DAT-436 — `select.server` is the only caller, and it
+// pre-flights the vertical BEFORE any write, so the trigger itself no longer
+// re-checks concepts).
 //
-// Three mocked seams (units project — no DB, no Temporal): `#/config` (workspace
-// id + Temporal config), the Drizzle metadata client (records the seeded
-// investigation_sessions row), and `@temporalio/client` (records the start call
-// + returns a handle). We assert: (1) the session is seeded BEFORE the workflow
-// starts, (2) the start uses the right workflow id / queue / args (non-blocking),
-// and (3) it throws when Temporal is unconfigured, like replay.ts.
+// Two mocked seams (units project — no DB, no Temporal): the Drizzle metadata
+// client (records the seeded investigation_sessions row) and
+// `@temporalio/client` (records the start call + returns a handle). We assert:
+// (1) the session is seeded BEFORE the workflow starts, (2) the start uses the
+// right workflow id / queue / args (non-blocking), and (3) it throws when
+// Temporal is unconfigured, like replay.ts.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,9 +28,6 @@ const h = vi.hoisted(() => ({
 	calls: [] as string[],
 	startArgs: null as unknown,
 	seededRow: null as Record<string, unknown> | null,
-	// Active concept-overlay count the pre-flight guard reads. Default > 0 so the
-	// happy-path tests pass the guard; the guard test flips it to 0.
-	conceptCount: 1,
 }));
 
 // A live getter, not a snapshot: the unconfigured-guard test reassigns
@@ -49,19 +49,6 @@ vi.mock("#/db/metadata/client", () => ({
 vi.mock("#/db/metadata/schema", () => ({
 	investigationSessions: { name: "investigation_sessions" },
 }));
-// Pre-flight effective-concept count (Theme A guard) — records that the guard
-// ran and returns the configured count. Records "count" in the call order so
-// the guard test can assert it ran BEFORE any seed/start.
-const countMock = vi.fn(async (_vertical: string) => {
-	h.calls.push("count");
-	return h.conceptCount;
-});
-// Reference countMock LAZILY (through a wrapper) — a direct reference in the
-// factory return is evaluated at import time, before the `const` initializes
-// (the seed/start mocks dodge this by referencing their fns inside inner fns).
-vi.mock("#/tools/list-verticals", () => ({
-	verticalConceptCount: (vertical: string) => countMock(vertical),
-}));
 
 // Temporal client: record the start args (after the seed) + hand back a run id.
 const startMock = vi.fn(async (_name: string, opts: unknown) => {
@@ -81,11 +68,7 @@ vi.mock("@temporalio/common", () => ({
 	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
 
-import {
-	NoConceptsError,
-	TriggerAddSourceInputSchema,
-	triggerAddSource,
-} from "./trigger-add-source";
+import { NoConceptsError, triggerAddSource } from "./trigger-add-source";
 
 beforeEach(() => {
 	h.config = {
@@ -97,21 +80,19 @@ beforeEach(() => {
 	h.calls = [];
 	h.startArgs = null;
 	h.seededRow = null;
-	h.conceptCount = 1;
 	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
-	countMock.mockClear();
 });
 
-describe("triggerAddSource (DAT-352)", () => {
+describe("triggerAddSource (DAT-352, one-gate DAT-436)", () => {
 	it("seeds the investigation_sessions row BEFORE starting the workflow", async () => {
 		await triggerAddSource({ source_ids: ["src-1"] });
 
-		// Order is the whole point: the pre-flight concept check runs first (no
-		// orphan session on failure), then the typing-phase FK needs the parent
-		// row to exist before the run reaches it.
-		expect(h.calls).toEqual(["count", "seed", "start"]);
+		// Order is the whole point: the typing-phase FK needs the parent row to
+		// exist before the run reaches it. (The vertical pre-flight runs in
+		// `select`, before its source writes — not here.)
+		expect(h.calls).toEqual(["seed", "start"]);
 
 		expect(h.seededRow?.status).toBe("active");
 		expect(h.seededRow?.stepCount).toBe(0);
@@ -169,23 +150,6 @@ describe("triggerAddSource (DAT-352)", () => {
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [{ identity: Record<string, unknown> }];
 		expect(args[0].identity.vertical).toBe("financial_reporting");
-		// The pre-flight effective-concept count runs for EVERY vertical now
-		// (builtin ontology + overlay) — a builtin with concepts simply passes it.
-		expect(countMock).toHaveBeenCalledWith("financial_reporting");
-	});
-
-	it("refuses an overlay-backed vertical with zero declared concepts (no seed, no start)", async () => {
-		// Pre-flight (obs 4): _adhoc grounds only against frame-written concept
-		// overlay rows. With none, the engine would fail loud deep in
-		// semantic_per_column — so reject here with a readable "run frame" message
-		// and never seed a session or start a doomed workflow.
-		h.conceptCount = 0;
-		await expect(triggerAddSource({ source_ids: ["src-1"] })).rejects.toThrow(
-			NoConceptsError,
-		);
-		expect(h.calls).toEqual(["count"]);
-		expect(valuesMock).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
 	});
 
 	it("throws when Temporal is unconfigured (like replay.ts) and does NOT seed", async () => {
@@ -199,28 +163,13 @@ describe("triggerAddSource (DAT-352)", () => {
 	});
 });
 
-describe("TriggerAddSourceInputSchema (API trust boundary)", () => {
-	it("accepts a valid framed name, a builtin, and the _adhoc default", () => {
-		for (const vertical of ["sales", "finance", "_adhoc", undefined]) {
-			expect(
-				TriggerAddSourceInputSchema.safeParse({ source_ids: ["s"], vertical })
-					.success,
-			).toBe(true);
-		}
-	});
-
-	it("rejects a path-traversal / unsafe vertical before it reaches the engine", () => {
-		for (const vertical of ["../etc", "a/b", "Finance", "_nope", ""]) {
-			expect(
-				TriggerAddSourceInputSchema.safeParse({ source_ids: ["s"], vertical })
-					.success,
-			).toBe(false);
-		}
-	});
-
-	it("rejects an empty source set", () => {
-		expect(
-			TriggerAddSourceInputSchema.safeParse({ source_ids: [] }).success,
-		).toBe(false);
+describe("NoConceptsError (raised by select's pre-flight)", () => {
+	it("carries a user-fixable 'run frame' message per vertical", () => {
+		expect(new NoConceptsError("_adhoc").message).toMatch(
+			/No concepts declared yet/,
+		);
+		expect(new NoConceptsError("sales").message).toMatch(
+			/"sales" vertical has no concepts/,
+		);
 	});
 });

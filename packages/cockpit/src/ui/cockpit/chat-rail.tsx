@@ -28,6 +28,11 @@ import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
 import {
+	lastUserMessageIndex,
+	toolChipStatus,
+	toolResultErrorsById,
+} from "#/ui/cockpit/tool-chip-state";
+import {
 	isCanvasTool,
 	toolChipSummary,
 	toolLabel,
@@ -82,28 +87,44 @@ function ThinkingBlock({ content }: { content: string }) {
 
 function ToolCallCard({
 	part,
+	resultError,
+	conversationMovedOn,
+	streamIdle,
 	onApprove,
 	onRehydrate,
 }: {
 	part: ToolCallPart;
+	/** The correlated tool-result part's error, when one exists (state "error"). */
+	resultError?: string;
+	/** A later user message exists — an output-less call can never finish. */
+	conversationMovedOn: boolean;
+	/** The stream is not loading — an output-less call's drain is over (the
+	 * stop-then-idle cell: stop() with no follow-up message). */
+	streamIdle: boolean;
 	onApprove: (approvalId: string, approved: boolean) => void;
 	onRehydrate: (callId: string) => void;
 }) {
-	const done = part.state === "complete";
+	// DAT-436: "done" is NOT `state === "complete"` — the SDK has no error-
+	// terminal state (an errored call parks at "input-complete" + output.error),
+	// and a severed stream orphans pending parts. toolChipStatus recognizes all
+	// terminal shapes; an errored call renders an explicit error state, never an
+	// infinite spinner.
+	const status = toolChipStatus(part, {
+		resultError,
+		conversationMovedOn,
+		streamIdle,
+	});
+	const done = status.kind === "complete";
 	const approvalId = part.approval?.id;
 	const awaitingApproval =
 		part.state === "approval-requested" &&
 		approvalId !== undefined &&
 		part.approval?.approved === undefined;
-	// A denied approval is terminal: the tool never runs, so the call never
-	// reaches "complete". Without this the card would spin its Loader forever
-	// (the buttons vanish once `approved` is defined) — show "denied" instead.
-	const denied = part.approval?.approved === false;
 
 	// A canvas-producing tool's chip rehydrates the focus canvas to THIS call's
-	// result on click (pins by call-id). Only once complete — an in-flight call
-	// has no result to project. probe / teach / replay map to no canvas member,
-	// so their chips are display-only (no click).
+	// result on click (pins by call-id). Only once complete — an in-flight or
+	// errored call has no result to project. probe / teach map to no canvas
+	// member, so their chips are display-only (no click).
 	const clickable = done && isCanvasTool(part.name);
 	const input = parseArguments(part.arguments);
 	const summary = toolChipSummary(part.name, input, part.output);
@@ -135,15 +156,28 @@ function ToolCallCard({
 						{summary}
 					</Text>
 				</Box>
-				{done ? (
+				{status.kind === "complete" ? (
 					clickable ? (
 						<Text size="xs" c="blue">
 							view
 						</Text>
 					) : null
-				) : denied ? (
+				) : status.kind === "denied" ? (
+					// A denied approval is terminal: the tool never runs, so the call
+					// never reaches "complete" — show "denied", not a spinner.
 					<Text size="xs" c="dimmed" data-testid={`tool-denied-${part.id}`}>
 						denied
+					</Text>
+				) : status.kind === "error" ? (
+					// Explicit error state — the message rides on title for hover; the
+					// agent's narration carries the readable explanation.
+					<Text
+						size="xs"
+						c="red"
+						title={status.message}
+						data-testid={`tool-error-${part.id}`}
+					>
+						failed
 					</Text>
 				) : (
 					<Loader size="xs" />
@@ -174,7 +208,8 @@ function ToolCallCard({
 }
 
 export function ChatRail() {
-	const { messages, error, addToolApprovalResponse, pinCanvas } = useCockpit();
+	const { messages, isLoading, error, addToolApprovalResponse, pinCanvas } =
+		useCockpit();
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -203,6 +238,18 @@ export function ChatRail() {
 			if (part.type === "tool-call") lastToolCallAt.set(part.id, `${mi}:${i}`);
 		});
 	});
+
+	// Chip terminal-state inputs (DAT-436): errored tool-result parts by call id,
+	// and the last user message index — a tool call rendered from an EARLIER
+	// message belongs to a turn the conversation moved past, so an output-less
+	// one can never finish (see tool-chip-state.ts). `!isLoading` is the third
+	// input: isLoading spans the ENTIRE result drain (sendMessage no-ops while
+	// loading), so an output-less call with the stream idle is equally dead —
+	// the stop-then-idle cell, where stop() severed the drain and no later
+	// message exists to move the conversation on.
+	const resultErrors = toolResultErrorsById(messages);
+	const lastUserIdx = lastUserMessageIndex(messages);
+	const streamIdle = !isLoading;
 
 	return (
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
@@ -259,6 +306,9 @@ export function ChatRail() {
 									<ToolCallCard
 										key={part.id}
 										part={part as ToolCallPart}
+										resultError={resultErrors.get(part.id)}
+										conversationMovedOn={mi < lastUserIdx}
+										streamIdle={streamIdle}
 										onApprove={(approvalId, approved) =>
 											void addToolApprovalResponse({ id: approvalId, approved })
 										}

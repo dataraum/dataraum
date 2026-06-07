@@ -25,6 +25,17 @@ type ChatMessages = Awaited<
 	ReturnType<typeof chatParamsFromRequest>
 >["messages"];
 
+// The EXACT options type chat() accepts. buildChatOptions's return is pinned to
+// it so the object literal gets excess-property checking — a field chat() does
+// not know (e.g. a top-level `maxTokens`, which silently did nothing while the
+// adapter defaulted max_tokens to 1024) fails tsc instead of shipping. The
+// generics are pinned (anthropic adapter, no output schema, streaming) so
+// chat()'s result stays the AsyncIterable the SSE response requires AND
+// modelOptions narrows to the adapter's real provider-options type.
+type ChatOptions = Parameters<
+	typeof chat<ReturnType<typeof createAnthropicChat>, undefined, true>
+>[0];
+
 type BunRuntimeRequest = Request & {
 	runtime?: {
 		name?: string;
@@ -80,7 +91,7 @@ export function buildChatOptions(
 	messages: ChatMessages,
 	abortController?: AbortController,
 	workspaceContext?: string | null,
-) {
+): ChatOptions {
 	const systemPrompts: Array<{
 		content: string;
 		metadata?: { cache_control: { type: "ephemeral" } };
@@ -96,9 +107,12 @@ export function buildChatOptions(
 	}
 	return {
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		// Explicit output budget — the adapter defaults to 1024, which truncates
-		// real turns mid-tool-call / mid-narrative (see src/llm.ts).
-		maxTokens: MAX_OUTPUT_TOKENS,
+		// Explicit output budget — provider params ride in modelOptions; the
+		// anthropic adapter reads `modelOptions?.max_tokens ?? 1024`, and 1024
+		// truncates real turns mid-tool-call / mid-narrative (see src/llm.ts).
+		// A truncated stream severs the client's background result drain, which
+		// is what parked tool chips on an eternal spinner (DAT-436).
+		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts,
 		messages,
 		tools: [...tools],

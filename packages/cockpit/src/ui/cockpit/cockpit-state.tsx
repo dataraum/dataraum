@@ -5,13 +5,14 @@
 // state and synced through effects — so the whole "stuck spinner / duplicate
 // chip / re-issued stream" bug class can't exist:
 //
-//   canvas = pinned ?? override ?? live ?? (isLoading ? loading : empty)
+//   canvas = pinned ?? live ?? (isLoading ? loading : empty)
 //
 // where `live = canvasFromMessages(messages)` and `pinned` re-resolves a past
-// tool-call by id (canvasFromCallId). The ONLY stored canvas piece is `override`
-// — an imperative swap a widget makes from a REST result (add_source progress),
-// cleared on the next turn. `useStableValue` returns the previous reference when
-// the derived canvas is value-equal, so streaming text doesn't churn the canvas.
+// tool-call by id (canvasFromCallId). No canvas piece is stored: the imperative
+// `override` axis (showCanvas) existed solely for the REST-triggered add_source
+// progress hop, which DAT-436 folded into the chat-derivable select result.
+// `useStableValue` returns the previous reference when the derived canvas is
+// value-equal, so streaming text doesn't churn the canvas.
 //
 // Chat lives HERE (not trapped in a leaf) so any canvas widget can drive a turn
 // through the real `sendMessage` — no registration bridge.
@@ -73,10 +74,9 @@ interface CockpitState {
 /** Stable action handles — referentially constant for the provider's lifetime,
  * so a consumer that reads ONLY these never re-renders from context. */
 interface CockpitActions {
-	/** Send a turn into the agent loop. Clears any imperative canvas override and
-	 * sets the loading caption. Callable from any widget (no bridge). Accepts a
-	 * plain string or multimodal content (the upload handoff sends a clean text
-	 * part + a model-only refs part — DAT-423). */
+	/** Send a turn into the agent loop. Sets the loading caption. Callable from
+	 * any widget (no bridge). Accepts a plain string or multimodal content (the
+	 * upload handoff sends a clean text part + a model-only refs part — DAT-423). */
 	sendMessage: (content: TurnContent, opts?: SendOptions) => void;
 	/** Abort the in-flight turn (cancels the SSE stream → the server aborts the
 	 * Anthropic call — see /api/chat). */
@@ -89,10 +89,6 @@ interface CockpitActions {
 	pinCanvas: (callId: string) => void;
 	/** Clear the pin → the canvas snaps back to the live latest. */
 	returnToLive: () => void;
-	/** Imperatively show a canvas member NOT derivable from the chat stream (the
-	 * add_source progress widget, seeded by a REST trigger). Cleared on the next
-	 * `sendMessage`. The one legitimate stored-canvas write. */
-	showCanvas: (canvas: CanvasState) => void;
 }
 
 const CockpitStateContext = createContext<CockpitState | null>(null);
@@ -126,16 +122,13 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	} = useChat({ connection });
 
 	const [pinnedCallId, setPinnedCallId] = useState<string | null>(null);
-	// The one imperative canvas override + the pending loading caption.
-	const [override, setOverride] = useState<CanvasState | null>(null);
+	// The pending loading caption for the next turn.
 	const [pendingLabel, setPendingLabel] = useState<string | undefined>(
 		undefined,
 	);
 
 	const sendTurn = useCallback(
 		(content: TurnContent, opts?: SendOptions) => {
-			// A new turn supersedes any imperative override and re-captions loading.
-			setOverride(null);
 			setPendingLabel(opts?.label);
 			// This call is the compile-time guard that `TurnContent` stays assignable
 			// to the SDK's `sendMessage` param: if a future SDK bump narrows it, this
@@ -152,21 +145,16 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 		[],
 	);
 	const returnToLive = useCallback(() => setPinnedCallId(null), []);
-	const showCanvas = useCallback(
-		(canvas: CanvasState) => setOverride(canvas),
-		[],
-	);
 
-	// Derive the canvas from the stream + the override axes. canvasFromMessages /
-	// canvasFromCallId are pure; the precedence is the whole state machine:
-	//   pinned (history)  >  override (imperative)  >  live (latest result)
+	// Derive the canvas from the stream. canvasFromMessages / canvasFromCallId
+	// are pure; the precedence is the whole state machine:
+	//   pinned (history)  >  live (latest result)
 	//   >  loading (a turn is running, nothing to show yet)  >  empty.
 	const live = canvasFromMessages(messages);
 	const pinned =
 		pinnedCallId !== null ? canvasFromCallId(messages, pinnedCallId) : null;
 	const canvas = useStableValue<CanvasState>(
 		pinned ??
-			override ??
 			live ??
 			(isLoading
 				? { kind: "loading", label: pendingLabel }
@@ -189,16 +177,8 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 			addToolApprovalResponse,
 			pinCanvas,
 			returnToLive,
-			showCanvas,
 		}),
-		[
-			sendTurn,
-			stop,
-			addToolApprovalResponse,
-			pinCanvas,
-			returnToLive,
-			showCanvas,
-		],
+		[sendTurn, stop, addToolApprovalResponse, pinCanvas, returnToLive],
 	);
 
 	return (
@@ -221,7 +201,7 @@ export function useCockpitState(): CockpitState {
 }
 
 /** Stable action handles. Reading ONLY this never re-renders from context — the
- * right hook for widgets that just dispatch (sendMessage / showCanvas / …). */
+ * right hook for widgets that just dispatch (sendMessage / pinCanvas / …). */
 export function useCockpitActions(): CockpitActions {
 	const value = useContext(CockpitActionsContext);
 	if (value === null) {

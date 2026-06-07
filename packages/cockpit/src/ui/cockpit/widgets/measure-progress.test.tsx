@@ -114,6 +114,9 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		expect(
 			screen.getByTestId("measure-phase-detect").getAttribute("data-state"),
 		).toBe("pending");
+		// DAT-436: no detached corner spinner while running — the phase pipeline
+		// (and the per-phase caption) is the liveness signal.
+		expect(screen.queryByTestId("measure-progress-spinner")).toBeNull();
 	});
 
 	it("shows the per-table tally during the fan-out", () => {

@@ -15,7 +15,6 @@ import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAddSourceProgressRouteImport } from './routes/api/add-source-progress'
-import { Route as ApiAddSourceRouteImport } from './routes/api/add-source'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
@@ -51,11 +50,6 @@ const ApiChatRoute = ApiChatRouteImport.update({
 const ApiAddSourceProgressRoute = ApiAddSourceProgressRouteImport.update({
   id: '/api/add-source-progress',
   path: '/api/add-source-progress',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAddSourceRoute = ApiAddSourceRouteImport.update({
-  id: '/api/add-source',
-  path: '/api/add-source',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appSettingsRoute = appSettingsRouteImport.update({
@@ -100,7 +94,6 @@ const appWorkspaceWsIdCockpitRoute = appWorkspaceWsIdCockpitRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
-  '/api/add-source': typeof ApiAddSourceRoute
   '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -115,7 +108,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
-  '/api/add-source': typeof ApiAddSourceRoute
   '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -132,7 +124,6 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
   '/(app)/settings': typeof appSettingsRoute
-  '/api/add-source': typeof ApiAddSourceRoute
   '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -149,7 +140,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/settings'
-    | '/api/add-source'
     | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
@@ -164,7 +154,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/settings'
-    | '/api/add-source'
     | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
@@ -180,7 +169,6 @@ export interface FileRouteTypes {
     | '/'
     | '/(app)'
     | '/(app)/settings'
-    | '/api/add-source'
     | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
@@ -196,7 +184,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
-  ApiAddSourceRoute: typeof ApiAddSourceRoute
   ApiAddSourceProgressRoute: typeof ApiAddSourceProgressRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
@@ -245,13 +232,6 @@ declare module '@tanstack/react-router' {
       path: '/api/add-source-progress'
       fullPath: '/api/add-source-progress'
       preLoaderRoute: typeof ApiAddSourceProgressRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/add-source': {
-      id: '/api/add-source'
-      path: '/api/add-source'
-      fullPath: '/api/add-source'
-      preLoaderRoute: typeof ApiAddSourceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/settings': {
@@ -344,7 +324,6 @@ const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
-  ApiAddSourceRoute: ApiAddSourceRoute,
   ApiAddSourceProgressRoute: ApiAddSourceProgressRoute,
   ApiChatRoute: ApiChatRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
@@ -353,12 +332,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

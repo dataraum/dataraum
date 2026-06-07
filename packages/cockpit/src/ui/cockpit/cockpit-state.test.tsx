@@ -2,7 +2,9 @@
 //
 // The provider now OWNS the chat (useChat) and DERIVES the canvas from the
 // message stream. We mock useChat at the SDK boundary to feed messages / loading
-// and assert the derivation: canvas = pinned ?? override ?? live ?? loading/empty.
+// and assert the derivation: canvas = pinned ?? live ?? loading/empty.
+// (The imperative `showCanvas` override axis was retired by DAT-436 — its one
+// caller, the REST-triggered add_source progress hop, is now chat-derivable.)
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -138,36 +140,33 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		expect(result.current.pinnedCallId).toBeNull();
 	});
 
-	it("showCanvas imperatively overrides the canvas; the next turn clears it", () => {
+	it("a completed select result derives the add-source-progress canvas (DAT-436)", () => {
+		// Approving select starts the run; the result's ids key the progress poll.
+		h.messages = [
+			{
+				id: "m-sel",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-call",
+						id: "sel-1",
+						name: "select",
+						state: "complete",
+						output: {
+							source_ids: ["s1"],
+							workflow_id: "wf1",
+							run_id: "run1",
+							session_id: "sess1",
+						},
+					},
+				],
+			},
+		];
 		const { result } = renderHook(() => useCockpit(), { wrapper });
-		act(() =>
-			result.current.showCanvas({
-				kind: "add-source-progress",
-				workflowId: "wf1",
-				runId: "run1",
-			}),
-		);
 		expect(result.current.canvas).toEqual({
 			kind: "add-source-progress",
 			workflowId: "wf1",
 			runId: "run1",
 		});
-		// A new turn supersedes the imperative override.
-		act(() => result.current.sendMessage("next"));
-		expect(result.current.canvas.kind).not.toBe("add-source-progress");
-	});
-
-	it("a pin outranks an imperative override", () => {
-		h.messages = [sourcesCall("c1")];
-		const { result } = renderHook(() => useCockpit(), { wrapper });
-		act(() =>
-			result.current.showCanvas({
-				kind: "add-source-progress",
-				workflowId: "wf1",
-				runId: "run1",
-			}),
-		);
-		act(() => result.current.pinCanvas("c1"));
-		expect(result.current.canvas.kind).toBe("source-list");
 	});
 });

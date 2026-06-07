@@ -48,8 +48,8 @@ export interface SendOptions {
 
 /** The content a turn carries: a plain string, or multimodal content parts — the
  * upload handoff (DAT-423) sends a clean text part + a model-only refs part.
- * EXACTLY `sendMessage`'s param type (the SDK exports `MultimodalContent` —
- * re-exported by @tanstack/ai-react — so no hand-mirrored shape, DAT-449). */
+ * EXACTLY `sendMessage`'s param type, built on the public `MultimodalContent`
+ * export (see the import note above) — no hand-mirrored shape (DAT-449). */
 export type TurnContent = string | MultimodalContent;
 
 // The context is SPLIT in two so that consumers reading only stable callbacks

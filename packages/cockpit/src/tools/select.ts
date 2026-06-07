@@ -542,4 +542,9 @@ export const selectTool = toolDefinition({
 	// The lambda is load-bearing: .server() calls its handler as (input, context)
 	// — passing `select` bare would shove the SDK's context object into select's
 	// injectable `enumerate` test-seam parameter, clobbering its default.
+	// ctx.abortSignal deliberately NOT forwarded (DAT-449): the trigger's
+	// `workflow.start` is a short, non-blocking gRPC call — an abort mid-start
+	// can't un-start the Temporal workflow and would only orphan the seeded
+	// investigation_sessions row (the exact failure seam trigger-add-source.ts
+	// guards against).
 }).server((input) => select(input));

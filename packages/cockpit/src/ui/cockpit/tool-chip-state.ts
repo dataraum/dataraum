@@ -5,9 +5,11 @@
 //   - The tool-CALL part behavior — an errored execution parking at
 //     "input-complete" with the error riding in `output` — is an UNDOCUMENTED
 //     internal of @tanstack/ai (no error-terminal ToolCallState exists).
-//   - The tool-RESULT part shape (`state: "error"` + `error?: string`) is the
-//     PUBLIC `ToolResultPart` export of @tanstack/ai-client —
-//     `toolResultErrorsById` consumes a documented contract, not an internal.
+//   - The tool-RESULT part shape (`state: "error"` + `error?: string`) MATCHES
+//     the PUBLIC `ToolResultPart` export of @tanstack/ai-client — a documented
+//     contract, not an internal. (`MessageLike` below still reads it through a
+//     loose structural type: the rail iterates heterogeneous parts, so only
+//     the contract test — not tsc — ties the field names to the export.)
 // Deps stay "latest" by project convention — bun.lock owns the installed
 // version, which only moves on an explicit `bun update`. BOTH halves are
 // pinned empirically by tool-chip-state.contract.test.ts, which drives the
@@ -192,8 +194,9 @@ export interface MessageLike {
  * Collect every errored `tool-result` part's error text by toolCallId. The SDK
  * emits these alongside the (state-less) error on the tool-call part itself;
  * the rail prefers this text when present (it survives even when the call
- * part's output was clobbered). The part shape read here is the PUBLIC
- * `ToolResultPart` export of @tanstack/ai-client (a documented contract).
+ * part's output was clobbered). The fields read here match the PUBLIC
+ * `ToolResultPart` export of @tanstack/ai-client (a documented contract; the
+ * tie is pinned by the contract test, not tsc — see the header).
  */
 export function toolResultErrorsById(
 	messages: ReadonlyArray<MessageLike>,

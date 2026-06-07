@@ -245,7 +245,7 @@ class ValidationPhase(BasePhase):
             summary=(
                 f"{executed}/{len(artifacts)} validations executed "
                 f"({run_result.passed_checks} passed, {run_result.failed_checks} failed); "
-                f"{declared_stuck} ungroundable, {grounded_stuck} execution errors"
+                f"{declared_stuck} ungroundable, {grounded_stuck} unresolved (execution error or inconclusive)"
             ),
         )
 

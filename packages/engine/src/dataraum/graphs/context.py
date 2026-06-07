@@ -1171,9 +1171,14 @@ def format_metadata_document(
         lines.append("")
         lines.append("## Validation Results")
         lines.append("")
-        failed = [v for v in context.validations if not v.passed]
+        # Bucket by STATUS, not the passed bool (DAT-439): error = the
+        # evaluation was inconclusive and skipped = never executed — labeling
+        # either as FAILED would tell the LLM the data failed a check it was
+        # never actually judged by.
         passed = [v for v in context.validations if v.passed]
-        lines.append(f"PASSED: {len(passed)} | FAILED: {len(failed)}")
+        failed = [v for v in context.validations if v.status == "failed"]
+        unjudged = [v for v in context.validations if v.status in ("error", "skipped")]
+        lines.append(f"PASSED: {len(passed)} | FAILED: {len(failed)} | UNJUDGED: {len(unjudged)}")
         if failed:
             lines.append("")
             lines.append("Failed:")
@@ -1183,6 +1188,11 @@ def format_metadata_document(
                     summary = v.details.get("summary", "")
                     if summary:
                         lines.append(f"  Details: {summary}")
+        if unjudged:
+            lines.append("")
+            lines.append("Unjudged (inconclusive or not executed — NOT data failures):")
+            for v in unjudged:
+                lines.append(f"- [{v.status}] {v.validation_id}: {v.message}")
 
     return "\n".join(lines)
 

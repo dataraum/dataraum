@@ -73,3 +73,25 @@ enforced by grants.** Concretely:
   introspection on `pull`; workspace bootstrap must create the read schema and
   grant the cockpit role per new `ws_<id>`; eval's score read moves to
   head-resolved runs (DAT-447 step 0).
+
+## Deviations (2026-06-07, DAT-453 implementation)
+
+- **Engine in-process readers stay on the `head_run_id()` helper seam** rather
+  than querying the views. Grants only bind external roles — the engine connects
+  as schema owner, so views would give it convention, not enforcement — and view
+  SQL would cost typed ORM reads (or a parallel set of hand-maintained view
+  models). Decision §4's "engine readers … use the views" is satisfied in
+  spirit: one chokepoint per consumer class — `head_run_id()` engine-side,
+  `current_*` views for the cockpit (the role grants make those the only
+  expressible reads).
+- **A minimal control-plane write surface exists alongside the read schema**:
+  the cockpit legitimately WRITES three un-versioned control tables (`sources`,
+  `investigation_sessions`, `config_overlay` — registering a source, opening a
+  session, teaching). The reader role carries exactly those verbs on exactly
+  those tables (column-level UPDATE on `sources` for the select upsert); all
+  run-stamped tables remain unreachable raw.
+- **Dual-grain artifacts carry discriminators**: `entropy_objects` /
+  `entropy_readiness` are written by BOTH detect paths, so after
+  add_source + begin_session a column has two legitimately-current rows;
+  `current_*` exposes `via_table_head` / `via_session_head` for consumers to
+  pin a grain.

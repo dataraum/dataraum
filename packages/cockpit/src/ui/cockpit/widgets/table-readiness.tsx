@@ -17,6 +17,7 @@ import {
 	INTENT_LABEL,
 	INTENTS,
 } from "#/ui/cockpit/widgets/band-badge";
+import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
 // The begin_session whole-table band (DAT-415): the `dimension_coverage` rollup
 // for the table, sealed at the session head — distinct from, and shown above, the
@@ -119,13 +120,10 @@ export function TableReadinessWidget({
 				</Alert>
 			)}
 
-			{readiness.pending_teaches > 0 && (
-				<Alert color="blue" data-testid="canvas-table-readiness-pending">
-					{readiness.pending_teaches} pending teach
-					{readiness.pending_teaches === 1 ? "" : "es"} may affect this view —
-					consider a replay before trusting it.
-				</Alert>
-			)}
+			<PendingTeachAlert
+				count={readiness.pending_teaches}
+				testId="canvas-table-readiness-pending"
+			/>
 
 			<Table.ScrollContainer minWidth={480}>
 				<Table striped highlightOnHover>

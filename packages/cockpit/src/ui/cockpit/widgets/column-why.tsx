@@ -1,15 +1,21 @@
 // Column-why widget (DAT-351) — renders the `why_column` result: the synthesized
 // narrative, the per-intent drivers (the pre-computed diagnosis, ranked by
-// impact), and the underlying detector evidence. The bands/drivers are the
-// engine's persisted values; this widget only displays them.
+// impact), and the underlying detector evidence. The shared blocks live in
+// why-detail.tsx (rule 13, DAT-434 — this widget was the template the table/
+// relationship analogs cloned; the clones are now one module). The bands/
+// drivers are the engine's persisted values; this widget only displays them.
 //
 // Reads theme/tokens only; the row type is a type-only import (erased).
 
-import { Alert, Group, Stack, Table, Text } from "@mantine/core";
-import { humanizeIdentifier } from "#/lib/display-names";
+import { Alert, Group, Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { BandBadge, INTENT_LABEL } from "#/ui/cockpit/widgets/band-badge";
-import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
+import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
+import {
+	EvidenceTable,
+	IntentDriversBlock,
+	PendingTeachAlert,
+	SignalsCaption,
+} from "#/ui/cockpit/widgets/why-detail";
 
 export function ColumnWhyWidget({
 	state,
@@ -58,10 +64,10 @@ export function ColumnWhyWidget({
 				<BandBadge band={why.band} />
 			</Group>
 
-			<Text size="xs" c="dimmed" data-testid="canvas-column-why-signals">
-				Based on {why.signal_count} signal{why.signal_count === 1 ? "" : "s"}
-				{why.signal_count === 0 ? " — not yet characterised" : ""}.
-			</Text>
+			<SignalsCaption
+				count={why.signal_count}
+				testId="canvas-column-why-signals"
+			/>
 
 			{why.analysis && (
 				<Text size="sm" data-testid="canvas-column-why-analysis">
@@ -76,85 +82,17 @@ export function ColumnWhyWidget({
 				</Alert>
 			)}
 
-			{why.pending_teaches > 0 && (
-				<Alert color="blue" data-testid="canvas-column-why-pending">
-					{why.pending_teaches} pending teach
-					{why.pending_teaches === 1 ? "" : "es"} may affect this view —
-					consider a replay before trusting it.
-				</Alert>
-			)}
+			<PendingTeachAlert
+				count={why.pending_teaches}
+				testId="canvas-column-why-pending"
+			/>
 
-			{/* Per-intent drivers — the pre-computed diagnosis, ranked by impact. */}
-			<Stack gap={4}>
-				{why.intents.map((i) => (
-					<Group key={i.intent} gap="xs" wrap="wrap" align="center">
-						<Text size="xs" fw={500} w={92}>
-							{INTENT_LABEL[i.intent] ?? i.intent}
-						</Text>
-						<BandBadge band={i.band} />
-						{i.drivers.length === 0 ? (
-							<Text span size="xs" c="dimmed">
-								no drivers
-							</Text>
-						) : (
-							i.drivers.map((d) => (
-								<Text key={d.node} span size="xs" c="dimmed">
-									{d.label} ({d.state})
-								</Text>
-							))
-						)}
-					</Group>
-				))}
-			</Stack>
+			<IntentDriversBlock intents={why.intents} />
 
-			{/* Underlying detector evidence. */}
-			{why.evidence.length > 0 && (
-				<Table.ScrollContainer minWidth={360}>
-					<Table striped data-testid="canvas-column-why-evidence">
-						<Table.Thead>
-							<Table.Tr>
-								<Table.Th>Dimension</Table.Th>
-								<Table.Th>Detector</Table.Th>
-								<Table.Th>Score</Table.Th>
-								<Table.Th>Detail</Table.Th>
-							</Table.Tr>
-						</Table.Thead>
-						<Table.Tbody>
-							{why.evidence.map((e) => {
-								// The readable dimension: the last path segment, humanized
-								// ("Naming clarity"). The dotted `dimension_path` is internal
-								// taxonomy (DAT-437) — never shown, kept only as a hover
-								// tooltip on the label.
-								const dimLeaf = e.dimension_path.split(".").at(-1) ?? "";
-								return (
-									<Table.Tr key={`${e.dimension_path}-${e.detector_id}`}>
-										<Table.Td>
-											<Text
-												span
-												size="xs"
-												title={e.dimension_path || undefined}
-											>
-												{humanizeIdentifier(dimLeaf) || "—"}
-											</Text>
-										</Table.Td>
-										<Table.Td>
-											<Text span size="xs" c="dimmed">
-												{humanizeIdentifier(e.detector_id) || e.detector_id}
-											</Text>
-										</Table.Td>
-										<Table.Td>{e.score.toFixed(2)}</Table.Td>
-										<Table.Td>
-											{/* Key→value hierarchy, shared with the upcoming
-											    why_table / why_relationship widgets (DAT-434). */}
-											<EvidenceDetail detail={e.detail} />
-										</Table.Td>
-									</Table.Tr>
-								);
-							})}
-						</Table.Tbody>
-					</Table>
-				</Table.ScrollContainer>
-			)}
+			<EvidenceTable
+				evidence={why.evidence}
+				testId="canvas-column-why-evidence"
+			/>
 		</Stack>
 	);
 }

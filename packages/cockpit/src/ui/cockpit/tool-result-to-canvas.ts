@@ -16,13 +16,22 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyRelationshipResult } from "#/tools/why-relationship";
+import type { WhyTableResult } from "#/tools/why-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 /** Projects one tool's result (+ call input) to a CanvasState, or null to leave
  * the canvas unchanged. */
 type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
+
+/** A complete why_* result carries the boolean `found` discriminant — the SDK's
+ * errored-call output (`{ error: string }`) does not, and must not project. */
+function isWhyResult(result: unknown): boolean {
+	return typeof (result as { found?: unknown } | null)?.found === "boolean";
+}
 
 /**
  * The canonical tool → canvas projector map — the SINGLE source of truth for
@@ -50,9 +59,32 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		result
 			? { kind: "table-readiness", readiness: result as LookTableResult }
 			: null,
-	// The per-column explanation; a missing result leaves the canvas as-is.
+	// The per-column explanation. Guard on the `found` discriminant, not mere
+	// truthiness (DAT-434 review): an ERRORED tool call's output is the SDK's
+	// truthy `{ error }` object, which would project and render as "No such
+	// column" — a failure masquerading as not-found. Error shape → leave the
+	// canvas unchanged; the failure surfaces in the chat rail (connect behavior).
 	why_column: (result) =>
-		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
+		isWhyResult(result)
+			? { kind: "column-why", why: result as WhyColumnResult }
+			: null,
+	// The per-table explanation (DAT-434) — same `found` guard.
+	why_table: (result) =>
+		isWhyResult(result)
+			? { kind: "table-why", why: result as WhyTableResult }
+			: null,
+	// The per-relationship explanation (DAT-434) — same `found` guard.
+	why_relationship: (result) =>
+		isWhyResult(result)
+			? { kind: "relationship-why", why: result as WhyRelationshipResult }
+			: null,
+	// The begin_session relationship-readiness list (DAT-434). Project only a
+	// complete result (a `relationships` array) — a partial/streaming or errored
+	// output would crash the list widget's .map (same guard as connect/frame).
+	look_relationships: (result) =>
+		Array.isArray((result as { relationships?: unknown } | null)?.relationships)
+			? { kind: "relationship-list", look: result as LookRelationshipsResult }
+			: null,
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and
 	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file

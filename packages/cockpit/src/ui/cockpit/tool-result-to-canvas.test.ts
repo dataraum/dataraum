@@ -85,6 +85,82 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("why_column", null)).toBeNull();
 	});
 
+	it("the why_* projectors reject the SDK's errored-call output shape (DAT-434)", () => {
+		// An errored server tool's output is the truthy `{ error }` object — it
+		// must NOT project (it would render as a not-found state, masking the
+		// failure); the error surfaces in the chat rail instead.
+		for (const tool of ["why_column", "why_table", "why_relationship"]) {
+			expect(
+				toolResultToCanvas(tool, { error: "Temporal query failed" }),
+			).toBeNull();
+		}
+	});
+
+	it("maps why_table to a table-why canvas (DAT-434)", () => {
+		const state = toolResultToCanvas("why_table", {
+			table_id: "t1",
+			table_name: "orders",
+			found: true,
+			band: "ready",
+			worst_intent_risk: 0.1,
+			analyzed: true,
+			intents: [],
+			evidence: [],
+			signal_count: 0,
+			analysis: "…",
+			pending_teaches: 0,
+		});
+		expect(state?.kind).toBe("table-why");
+	});
+
+	it("leaves the canvas unchanged when why_table has no result", () => {
+		expect(toolResultToCanvas("why_table", null)).toBeNull();
+	});
+
+	it("maps why_relationship to a relationship-why canvas (DAT-434)", () => {
+		const state = toolResultToCanvas("why_relationship", {
+			from_column_id: "c1",
+			to_column_id: "c2",
+			from_table_name: "orders",
+			from_column_name: "customer_id",
+			to_table_name: "customers",
+			to_column_name: "id",
+			found: true,
+			band: "ready",
+			worst_intent_risk: 0.1,
+			analyzed: true,
+			intents: [],
+			evidence: [],
+			signal_count: 0,
+			analysis: "…",
+			pending_teaches: 0,
+		});
+		expect(state?.kind).toBe("relationship-why");
+	});
+
+	it("leaves the canvas unchanged when why_relationship has no result", () => {
+		expect(toolResultToCanvas("why_relationship", null)).toBeNull();
+	});
+
+	it("maps look_relationships to a relationship-list canvas (DAT-434)", () => {
+		const state = toolResultToCanvas("look_relationships", {
+			session_id: "s1",
+			analyzed: true,
+			pending_teaches: 0,
+			relationships: [],
+		});
+		expect(state?.kind).toBe("relationship-list");
+	});
+
+	it("leaves the canvas unchanged for a partial look_relationships output (no relationships array)", () => {
+		// Same partial/streaming guard as connect/frame: a truthy object without
+		// the array must not project (the list widget maps over it).
+		expect(
+			toolResultToCanvas("look_relationships", { analyzed: true }),
+		).toBeNull();
+		expect(toolResultToCanvas("look_relationships", null)).toBeNull();
+	});
+
 	it("maps connect to a schema-preview canvas", () => {
 		const schema = {
 			sourceKind: "file" as const,

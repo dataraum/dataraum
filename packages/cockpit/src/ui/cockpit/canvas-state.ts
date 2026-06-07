@@ -9,8 +9,11 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyRelationshipResult } from "#/tools/why-relationship";
+import type { WhyTableResult } from "#/tools/why-table";
 
 export type CanvasState =
 	| { kind: "empty" }
@@ -34,6 +37,15 @@ export type CanvasState =
 	// DAT-351: per-column readiness explanation. Carries the why_column result —
 	// per-intent drivers + detector evidence + the synthesized narrative.
 	| { kind: "column-why"; why: WhyColumnResult }
+	// DAT-434: per-table readiness explanation (the begin_session table-grain
+	// analog of column-why). Carries the why_table result.
+	| { kind: "table-why"; why: WhyTableResult }
+	// DAT-434: per-relationship readiness explanation. Carries the
+	// why_relationship result.
+	| { kind: "relationship-why"; why: WhyRelationshipResult }
+	// DAT-434: the begin_session relationship-readiness list — one row per
+	// relationship pair with its band; rows drill down to relationship-why.
+	| { kind: "relationship-list"; look: LookRelationshipsResult }
 	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused

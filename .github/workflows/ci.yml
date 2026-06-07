@@ -98,16 +98,57 @@ jobs:
                       exit 1
                   fi
 
+    # Cockpit quality gates (DAT-454). Deps are declared `latest` with bun.lock
+    # owning resolution (NOTHING freezes — no version pins); the guards against
+    # an SDK move are exactly these: tsc + the unit suite, which includes the
+    # @tanstack/ai contract test (tool-chip-state.contract.test.ts) driving the
+    # real chat()→SSE→ChatClient pipeline. `bun run build` catches the Nitro/
+    # preset/externalization breakage class (duckdb-neo bindings, bun preset).
+    # Integration tests need a real stack and stay out of this fast PR gate.
+    # NOT path-filtered: engine PRs touching worker/contracts.py are
+    # cross-package (the cockpit hand-mirrors the Temporal contracts).
+    cockpit:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        defaults:
+            run:
+                working-directory: packages/cockpit
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.3.14"
+
+            - name: Install deps
+              run: bun install --frozen-lockfile
+
+            - name: Biome check
+              run: bun run check
+
+            # `bun run typecheck` (NOT bare `bunx tsc`): the script resolves the
+            # locked devDep and fails loudly if typescript ever leaves the
+            # lockfile — bare bunx would silently fetch latest instead.
+            - name: Type check
+              run: bun run typecheck
+
+            - name: Unit tests
+              run: bun run test
+
+            - name: Build
+              run: bun run build
+
     # Single status for branch protection (matrix jobs report as "check (3.x)")
     check:
         if: always()
-        needs: [test, docs, schema-drift]
+        needs: [test, docs, schema-drift, cockpit]
         runs-on: ubuntu-latest
         steps:
             - name: All checks passed
               run: |
-                  if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.docs.result }}" != "success" ] || [ "${{ needs.schema-drift.result }}" != "success" ]; then
-                    echo "test=${{ needs.test.result }} docs=${{ needs.docs.result }} schema-drift=${{ needs.schema-drift.result }}"
+                  if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.docs.result }}" != "success" ] || [ "${{ needs.schema-drift.result }}" != "success" ] || [ "${{ needs.cockpit.result }}" != "success" ]; then
+                    echo "test=${{ needs.test.result }} docs=${{ needs.docs.result }} schema-drift=${{ needs.schema-drift.result }} cockpit=${{ needs.cockpit.result }}"
                     exit 1
                   fi
 

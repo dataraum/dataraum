@@ -16,6 +16,7 @@
     "preview": "bun --bun vite preview",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "typecheck": "tsc --noEmit",
     "format": "bun --bun biome format",
     "lint": "bun --bun biome lint",
     "check": "bun --bun biome check",

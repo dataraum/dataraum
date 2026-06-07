@@ -13,7 +13,10 @@ import type { RelationshipReadiness } from "#/tools/look-relationships";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
-import { relationshipEndpointLabel } from "#/ui/cockpit/widgets/relationship-why";
+import {
+	PendingTeachAlert,
+	relationshipEndpointLabel,
+} from "#/ui/cockpit/widgets/why-detail";
 
 // Cap the rows rendered into the DOM (rule 15: a wide workspace can carry
 // hundreds of candidate relationships). Navigation surface, not a result set —
@@ -89,13 +92,10 @@ export function RelationshipListWidget({
 				</Text>
 			</Text>
 
-			{look.pending_teaches > 0 && (
-				<Alert color="blue" data-testid="canvas-relationship-list-pending">
-					{look.pending_teaches} pending teach
-					{look.pending_teaches === 1 ? "" : "es"} may affect this view —
-					consider a replay before trusting it.
-				</Alert>
-			)}
+			<PendingTeachAlert
+				count={look.pending_teaches}
+				testId="canvas-relationship-list-pending"
+			/>
 
 			<Table.ScrollContainer minWidth={420}>
 				<Table striped highlightOnHover data-testid="relationship-rows">
@@ -161,8 +161,12 @@ export function RelationshipListWidget({
 			</Table.ScrollContainer>
 
 			{overflow > 0 && (
+				// look_relationships has NO narrowing input (session-wide by design),
+				// so don't promise a filtered re-render — the agent can only answer
+				// about specific tables in prose from the result already in context.
 				<Text size="xs" c="dimmed" data-testid="relationship-list-overflow">
-					…and {overflow} more — ask the agent to narrow down (e.g. by table).
+					…and {overflow} more — ask the agent about a specific table's
+					relationships.
 				</Text>
 			)}
 		</Stack>

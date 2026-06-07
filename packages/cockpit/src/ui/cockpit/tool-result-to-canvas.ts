@@ -27,6 +27,12 @@ import type { CanvasState } from "#/ui/cockpit/canvas-state";
  * the canvas unchanged. */
 type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
 
+/** A complete why_* result carries the boolean `found` discriminant — the SDK's
+ * errored-call output (`{ error: string }`) does not, and must not project. */
+function isWhyResult(result: unknown): boolean {
+	return typeof (result as { found?: unknown } | null)?.found === "boolean";
+}
+
 /**
  * The canonical tool → canvas projector map — the SINGLE source of truth for
  * which tools produce a canvas member. A new canvas tool adds ONE entry here
@@ -53,15 +59,23 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		result
 			? { kind: "table-readiness", readiness: result as LookTableResult }
 			: null,
-	// The per-column explanation; a missing result leaves the canvas as-is.
+	// The per-column explanation. Guard on the `found` discriminant, not mere
+	// truthiness (DAT-434 review): an ERRORED tool call's output is the SDK's
+	// truthy `{ error }` object, which would project and render as "No such
+	// column" — a failure masquerading as not-found. Error shape → leave the
+	// canvas unchanged; the failure surfaces in the chat rail (connect behavior).
 	why_column: (result) =>
-		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
-	// The per-table explanation (DAT-434) — same guard as why_column.
+		isWhyResult(result)
+			? { kind: "column-why", why: result as WhyColumnResult }
+			: null,
+	// The per-table explanation (DAT-434) — same `found` guard.
 	why_table: (result) =>
-		result ? { kind: "table-why", why: result as WhyTableResult } : null,
-	// The per-relationship explanation (DAT-434) — same guard.
+		isWhyResult(result)
+			? { kind: "table-why", why: result as WhyTableResult }
+			: null,
+	// The per-relationship explanation (DAT-434) — same `found` guard.
 	why_relationship: (result) =>
-		result
+		isWhyResult(result)
 			? { kind: "relationship-why", why: result as WhyRelationshipResult }
 			: null,
 	// The begin_session relationship-readiness list (DAT-434). Project only a

@@ -85,6 +85,17 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("why_column", null)).toBeNull();
 	});
 
+	it("the why_* projectors reject the SDK's errored-call output shape (DAT-434)", () => {
+		// An errored server tool's output is the truthy `{ error }` object — it
+		// must NOT project (it would render as a not-found state, masking the
+		// failure); the error surfaces in the chat rail instead.
+		for (const tool of ["why_column", "why_table", "why_relationship"]) {
+			expect(
+				toolResultToCanvas(tool, { error: "Temporal query failed" }),
+			).toBeNull();
+		}
+	});
+
 	it("maps why_table to a table-why canvas (DAT-434)", () => {
 		const state = toolResultToCanvas("why_table", {
 			table_id: "t1",

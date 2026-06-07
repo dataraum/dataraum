@@ -189,11 +189,11 @@ export function toolChipSummary(
 			if (!r) return "explaining relationship…";
 			if (!r.found) return "relationship not found";
 			const band = r.band ?? "not analyzed";
-			// Endpoint names arrive in display form (DAT-431); nulls degrade to the
-			// bare arrow — never a column id.
-			const from = r.from_table_name ?? "";
-			const to = r.to_table_name ?? "";
-			return `${from} → ${to} — ${band}`.trim();
+			// Endpoint names arrive in display form (DAT-431); nulls degrade to a
+			// placeholder word (matching why_table) — never a column id.
+			const from = r.from_table_name ?? "table";
+			const to = r.to_table_name ?? "table";
+			return `${from} → ${to} — ${band}`;
 		}
 		case "look_relationships": {
 			const r = output as LookRelationshipsResult | undefined;

@@ -1,26 +1,21 @@
 // Relationship-why widget (DAT-434) — renders the `why_relationship` result:
 // the synthesized narrative, per-intent drivers, and detector evidence for ONE
-// relationship pair (mirrors column-why/table-why). The bands/drivers are the
-// engine's persisted values; this widget only displays them.
+// relationship pair. The shared blocks live in why-detail.tsx (rule 13); the
+// bands/drivers are the engine's persisted values — this widget only displays.
 //
 // Endpoint names arrive in DISPLAY form (`src_<digest>__` stripped, DAT-431);
 // a null name (stale id) renders a dimmed placeholder — never the raw id.
 
-import { Alert, Group, Stack, Table, Text } from "@mantine/core";
-import { humanizeIdentifier } from "#/lib/display-names";
+import { Alert, Group, Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { BandBadge, INTENT_LABEL } from "#/ui/cockpit/widgets/band-badge";
-import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
-
-/** "table.column" endpoint label from nullable display names — NEVER an id. */
-export function relationshipEndpointLabel(
-	tableName: string | null,
-	columnName: string | null,
-): string {
-	const table = tableName ?? "(unknown table)";
-	const column = columnName ?? "(unknown column)";
-	return `${table}.${column}`;
-}
+import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
+import {
+	EvidenceTable,
+	IntentDriversBlock,
+	PendingTeachAlert,
+	relationshipEndpointLabel,
+	SignalsCaption,
+} from "#/ui/cockpit/widgets/why-detail";
 
 export function RelationshipWhyWidget({
 	state,
@@ -78,10 +73,10 @@ export function RelationshipWhyWidget({
 				<BandBadge band={why.band} />
 			</Group>
 
-			<Text size="xs" c="dimmed" data-testid="canvas-relationship-why-signals">
-				Based on {why.signal_count} signal{why.signal_count === 1 ? "" : "s"}
-				{why.signal_count === 0 ? " — not yet characterised" : ""}.
-			</Text>
+			<SignalsCaption
+				count={why.signal_count}
+				testId="canvas-relationship-why-signals"
+			/>
 
 			{why.analysis && (
 				<Text size="sm" data-testid="canvas-relationship-why-analysis">
@@ -96,79 +91,17 @@ export function RelationshipWhyWidget({
 				</Alert>
 			)}
 
-			{why.pending_teaches > 0 && (
-				<Alert color="blue" data-testid="canvas-relationship-why-pending">
-					{why.pending_teaches} pending teach
-					{why.pending_teaches === 1 ? "" : "es"} may affect this view —
-					consider a replay before trusting it.
-				</Alert>
-			)}
+			<PendingTeachAlert
+				count={why.pending_teaches}
+				testId="canvas-relationship-why-pending"
+			/>
 
-			{/* Per-intent drivers — the pre-computed diagnosis, ranked by impact. */}
-			<Stack gap={4}>
-				{why.intents.map((i) => (
-					<Group key={i.intent} gap="xs" wrap="wrap" align="center">
-						<Text size="xs" fw={500} w={92}>
-							{INTENT_LABEL[i.intent] ?? i.intent}
-						</Text>
-						<BandBadge band={i.band} />
-						{i.drivers.length === 0 ? (
-							<Text span size="xs" c="dimmed">
-								no drivers
-							</Text>
-						) : (
-							i.drivers.map((d) => (
-								<Text key={d.node} span size="xs" c="dimmed">
-									{d.label} ({d.state})
-								</Text>
-							))
-						)}
-					</Group>
-				))}
-			</Stack>
+			<IntentDriversBlock intents={why.intents} />
 
-			{/* Underlying detector evidence. */}
-			{why.evidence.length > 0 && (
-				<Table.ScrollContainer minWidth={360}>
-					<Table striped data-testid="canvas-relationship-why-evidence">
-						<Table.Thead>
-							<Table.Tr>
-								<Table.Th>Dimension</Table.Th>
-								<Table.Th>Detector</Table.Th>
-								<Table.Th>Score</Table.Th>
-								<Table.Th>Detail</Table.Th>
-							</Table.Tr>
-						</Table.Thead>
-						<Table.Tbody>
-							{why.evidence.map((e) => {
-								const dimLeaf = e.dimension_path.split(".").at(-1) ?? "";
-								return (
-									<Table.Tr key={`${e.dimension_path}-${e.detector_id}`}>
-										<Table.Td>
-											<Text
-												span
-												size="xs"
-												title={e.dimension_path || undefined}
-											>
-												{humanizeIdentifier(dimLeaf) || "—"}
-											</Text>
-										</Table.Td>
-										<Table.Td>
-											<Text span size="xs" c="dimmed">
-												{humanizeIdentifier(e.detector_id) || e.detector_id}
-											</Text>
-										</Table.Td>
-										<Table.Td>{e.score.toFixed(2)}</Table.Td>
-										<Table.Td>
-											<EvidenceDetail detail={e.detail} />
-										</Table.Td>
-									</Table.Tr>
-								);
-							})}
-						</Table.Tbody>
-					</Table>
-				</Table.ScrollContainer>
-			)}
+			<EvidenceTable
+				evidence={why.evidence}
+				testId="canvas-relationship-why-evidence"
+			/>
 		</Stack>
 	);
 }

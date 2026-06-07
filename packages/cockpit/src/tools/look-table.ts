@@ -16,7 +16,7 @@
 // rows); the pure row→shape projection is unit-tested directly here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -25,14 +25,10 @@ import {
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
-import {
-	sessionHeadTarget,
-	tableTargetKey,
-} from "../db/metadata/relationship-target";
+import { tableTargetKey } from "../db/metadata/relationship-target";
 import {
 	columns,
-	entropyReadiness,
-	metadataSnapshotHead,
+	currentEntropyReadiness,
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
@@ -246,64 +242,54 @@ export async function lookTable(
 	// `session:{id}` head — a different head), and the workspace teach count. Fan
 	// them out — they share no input, so sequential awaits only add latency to the
 	// hot path. table_readiness stays null without a session_id (add_source view).
+	const tableName = table.tableName ?? "";
 	const [cols, tableReadiness, pending] = await Promise.all([
 		loadColumnGrid(input.table_id),
-		input.session_id ? loadTableBand(input.session_id, table.tableName) : null,
+		input.session_id ? loadTableBand(input.session_id, tableName) : null,
 		getPendingOverlays(),
 	]);
 
 	return projectLookTable(
-		table.tableId,
-		table.tableName,
+		table.tableId ?? input.table_id,
+		tableName,
 		cols,
 		tableReadiness,
 		pending.length,
 	);
 }
 
-/** Resolve a table's per-column readiness grid (the add_source view). Readiness is
- * versioned by run_id (DAT-413): a column has one row PER run, so resolve the
- * PROMOTED detect snapshot via the `table:{id}` head and LEFT JOIN only that run's
- * rows — no promoted run (never detected) ⇒ every column reads back unanalyzed. */
+/** Resolve a table's per-column readiness grid (the add_source view). The
+ * current_* view IS the promoted run (ADR-0008/DAT-453) — the head join lives
+ * in the database, so a plain LEFT JOIN suffices; no promoted run (never
+ * detected) ⇒ the view is empty ⇒ every column reads back unanalyzed. */
 async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
-		.where(
-			and(
-				// Head key generalized to a target string (DAT-408): column readiness
-				// is table-grain, so the key is `table:{id}`.
-				eq(metadataSnapshotHead.target, `table:${tableId}`),
-				eq(metadataSnapshotHead.stage, "detect"),
-			),
-		)
-		.limit(1);
-	const headRunId = head?.runId ?? null;
-
 	const rows = await metadataDb
 		.select({
 			columnId: columns.columnId,
 			columnName: columns.columnName,
 			resolvedType: columns.resolvedType,
-			band: entropyReadiness.band,
-			worstIntentRisk: entropyReadiness.worstIntentRisk,
-			intents: entropyReadiness.intents,
-			topDrivers: entropyReadiness.topDrivers,
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(columns)
 		.leftJoin(
-			entropyReadiness,
-			headRunId
-				? and(
-						eq(entropyReadiness.columnId, columns.columnId),
-						eq(entropyReadiness.runId, headRunId),
-					)
-				: sql`false`,
+			currentEntropyReadiness,
+			eq(currentEntropyReadiness.columnId, columns.columnId),
 		)
 		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));
 
-	return rows.map(projectColumnReadiness);
+	// View columns type as nullable (Postgres views carry no NOT NULL) — the
+	// identity fields are guaranteed by the underlying tables; coalesce.
+	return rows.map((r) =>
+		projectColumnReadiness({
+			...r,
+			columnId: r.columnId ?? "",
+			columnName: r.columnName ?? "",
+		}),
+	);
 }
 
 /** Resolve a session's table-grain readiness band for one table (DAT-415).
@@ -314,32 +300,18 @@ async function loadTableBand(
 	sessionId: string,
 	tableName: string,
 ): Promise<TableReadiness | null> {
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
-		.where(
-			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(sessionId)),
-				eq(metadataSnapshotHead.stage, "detect"),
-			),
-		)
-		.limit(1);
-	const headRunId = head?.runId ?? null;
-	if (!headRunId) return null;
-
 	const [row] = await metadataDb
 		.select({
-			band: entropyReadiness.band,
-			worstIntentRisk: entropyReadiness.worstIntentRisk,
-			intents: entropyReadiness.intents,
-			topDrivers: entropyReadiness.topDrivers,
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+			topDrivers: currentEntropyReadiness.topDrivers,
 		})
-		.from(entropyReadiness)
+		.from(currentEntropyReadiness)
 		.where(
 			and(
-				eq(entropyReadiness.sessionId, sessionId),
-				eq(entropyReadiness.runId, headRunId),
-				eq(entropyReadiness.target, tableTargetKey(tableName)),
+				eq(currentEntropyReadiness.sessionId, sessionId),
+				eq(currentEntropyReadiness.target, tableTargetKey(tableName)),
 			),
 		)
 		.limit(1);

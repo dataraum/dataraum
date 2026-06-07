@@ -18,7 +18,7 @@ import { z } from "zod";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
-	entropyReadiness,
+	currentEntropyReadiness,
 	sources,
 	tables,
 } from "../db/metadata/schema";
@@ -216,14 +216,30 @@ export async function listTables(
 		.orderBy(asc(sources.createdAt), asc(tables.tableName));
 
 	const columnBandRows = await metadataDb
-		.select({ tableId: columns.tableId, band: entropyReadiness.band })
+		.select({ tableId: columns.tableId, band: currentEntropyReadiness.band })
 		.from(columns)
 		.innerJoin(tables, eq(tables.tableId, columns.tableId))
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.leftJoin(entropyReadiness, eq(entropyReadiness.columnId, columns.columnId))
+		.leftJoin(
+			currentEntropyReadiness,
+			eq(currentEntropyReadiness.columnId, columns.columnId),
+		)
 		.where(and(isNull(sources.archivedAt), sourceFilter));
 
-	return buildInventory(tableRows, columnBandRows);
+	// View columns type as nullable (Postgres views carry no NOT NULL) —
+	// coalesce the fields the underlying tables guarantee.
+	return buildInventory(
+		tableRows.map((r) => ({
+			...r,
+			tableId: r.tableId ?? "",
+			tableName: r.tableName ?? "",
+			layer: r.layer ?? "",
+			sourceId: r.sourceId ?? "",
+			sourceName: r.sourceName ?? "",
+			sourceType: r.sourceType ?? "",
+		})),
+		columnBandRows.map((r) => ({ ...r, tableId: r.tableId ?? "" })),
+	);
 }
 
 export const listTablesTool = toolDefinition({

@@ -39,6 +39,7 @@ import {
 	sessionTables,
 	tables,
 } from "../db/metadata/schema";
+import { investigationSessionsWrite } from "../db/metadata/write-surface";
 import { currentSessionId } from "../prompts/workspace-context";
 import type {
 	AddSourceInput,
@@ -149,7 +150,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// (the typing-phase session_tables FK precondition). The id is fresh, so no
 	// conflict handling is needed. Mirrors triggerAddSource's seed seam.
 	const newSessionId = randomUUID();
-	await metadataDb.insert(investigationSessions).values({
+	await metadataDb.insert(investigationSessionsWrite).values({
 		sessionId: newSessionId,
 		intent: "replay",
 		status: "active",

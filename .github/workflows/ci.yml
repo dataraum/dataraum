@@ -90,11 +90,11 @@ jobs:
 
             - name: Fail on drift
               run: |
-                  drift=$(git status --porcelain -- packages/engine/schema.sql packages/cockpit/src/db/metadata/)
+                  drift=$(git status --porcelain -- packages/engine/schema.sql packages/engine/schema_read.sql packages/cockpit/src/db/metadata/)
                   if [ -n "$drift" ]; then
-                      echo "::error::Schema drift: SQLAlchemy models differ from the checked-in schema.sql / drizzle mirror. Run 'bun run db:pull:metadata' in packages/cockpit and commit the result."
+                      echo "::error::Schema drift: SQLAlchemy models differ from the checked-in schema.sql / schema_read.sql / drizzle mirror. Run 'bun run db:pull:metadata' in packages/cockpit and commit the result."
                       echo "$drift"
-                      git diff -- packages/engine/schema.sql packages/cockpit/src/db/metadata/ || true
+                      git diff -- packages/engine/schema.sql packages/engine/schema_read.sql packages/cockpit/src/db/metadata/ || true
                       exit 1
                   fi
 

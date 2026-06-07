@@ -222,13 +222,27 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
     return len(statements)
 
 
+# The cockpit's CONTROL-PLANE write surface (DAT-453): the only raw tables the
+# reader role can touch, with the minimum verbs. Registering a source, opening
+# a session, and teaching (config_overlay) are deliberate cockpit writes — the
+# teach vocabulary IS overlay rows. Everything else stays read-only via the
+# read schema. SELECT is included because INSERT … RETURNING needs it.
+_CONTROL_WRITE_GRANTS: dict[str, str] = {
+    "sources": "SELECT, INSERT",
+    "investigation_sessions": "SELECT, INSERT",
+    "config_overlay": "SELECT, INSERT, UPDATE",
+}
+
+
 def ensure_reader_role(connection: Connection, workspace_schema: str, password: str) -> None:
-    """Create the ``cockpit_reader`` role and grant it the read schema ONLY.
+    """Create the ``cockpit_reader`` role and grant it the read surface.
 
     The grant is the ADR-0008 enforcement: the cockpit's metadata connection
     uses this role, so raw run-stamped tables are not even visible to its
-    introspection — the wrong query is unwritable, not discouraged. The role
-    is cluster-global and idempotent; grants are per read schema. Requires the
+    introspection — the wrong query is unwritable, not discouraged. The one
+    carve-out is the control-plane write surface (``_CONTROL_WRITE_GRANTS``):
+    three un-versioned control tables the cockpit legitimately writes. The
+    role is cluster-global and idempotent; grants are per schema. Requires the
     bootstrap connection to hold CREATEROLE (true for the compose superuser;
     managed-Postgres deployments pre-provision the role instead).
     """
@@ -251,3 +265,10 @@ def ensure_reader_role(connection: Connection, workspace_schema: str, password: 
             f"GRANT SELECT ON TABLES TO {READER_ROLE}"
         )
     )
+    # Control-plane write surface: USAGE on the raw schema exposes nothing by
+    # itself; only the explicitly granted tables become reachable.
+    connection.execute(text(f'GRANT USAGE ON SCHEMA "{workspace_schema}" TO {READER_ROLE}'))
+    for table, verbs in _CONTROL_WRITE_GRANTS.items():
+        connection.execute(
+            text(f'GRANT {verbs} ON "{workspace_schema}".{table} TO {READER_ROLE}')
+        )

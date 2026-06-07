@@ -43,14 +43,19 @@ docker exec "$CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q || {
     exit 1
 }
 
-# 3. Materialize the schema from the dump (psql via the container — no host psql).
+# 3. Materialize the schema from the dump (psql via the container — no host psql),
+#    then the promoted-read surface (ADR-0008/DAT-453): schema_read.sql is
+#    tokenized (__WS__ / __READ__); substitute and apply. The READ schema is
+#    what drizzle introspects below — the cockpit's whole metadata surface.
+READ_SCHEMA="${SCHEMA_NAME}_read"
 docker exec "$CONTAINER" psql -U postgres -d scratch -v ON_ERROR_STOP=1 \
-    -c "CREATE SCHEMA $SCHEMA_NAME" >/dev/null
+    -c "CREATE SCHEMA $SCHEMA_NAME" -c "CREATE SCHEMA $READ_SCHEMA" >/dev/null
 (
     echo "SET search_path TO $SCHEMA_NAME;"
     cat ../engine/schema.sql
+    sed -e "s/__READ__/$READ_SCHEMA/g" -e "s/__WS__/$SCHEMA_NAME/g" ../engine/schema_read.sql
 ) | docker exec -i "$CONTAINER" psql -U postgres -d scratch -v ON_ERROR_STOP=1 -f - >/dev/null
-echo "→ materialized $SCHEMA_NAME in scratch Postgres"
+echo "→ materialized $SCHEMA_NAME + $READ_SCHEMA in scratch Postgres"
 
 # 4. Pull + normalize + lint.
 export DATARAUM_WORKSPACE_ID="$WORKSPACE_ID"

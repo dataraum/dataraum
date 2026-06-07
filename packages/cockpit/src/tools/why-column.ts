@@ -14,7 +14,7 @@
 
 import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -26,9 +26,8 @@ import {
 } from "../db/metadata/readiness-schemas";
 import {
 	columns,
-	entropyObjects,
-	entropyReadiness,
-	metadataSnapshotHead,
+	currentEntropyObjects,
+	currentEntropyReadiness,
 	tables,
 } from "../db/metadata/schema";
 import { linkedAbortController } from "../lib/abort";
@@ -237,72 +236,52 @@ export async function whyColumn(
 		};
 	}
 
-	// Readiness is versioned by run_id now (DAT-413): pick the PROMOTED detect
-	// snapshot for the column's table via the head pointer, then read that run's
-	// readiness row. No promoted run → unanalyzed (null band).
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
-		.where(
-			and(
-				// Head key generalized to a target string (DAT-408): column readiness
-				// is table-grain, so the key is `table:{id}`.
-				eq(metadataSnapshotHead.target, `table:${col.tableId}`),
-				eq(metadataSnapshotHead.stage, "detect"),
-			),
-		)
+	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// lives in the database — no head resolution, no runId plumbing. No promoted
+	// run → empty views → unanalyzed (null band).
+	const [readinessRow] = await metadataDb
+		.select({
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+		})
+		.from(currentEntropyReadiness)
+		.where(eq(currentEntropyReadiness.columnId, input.column_id))
 		.limit(1);
-	const headRunId = head?.runId ?? null;
 
-	const [readinessRow] = headRunId
-		? await metadataDb
-				.select({
-					band: entropyReadiness.band,
-					worstIntentRisk: entropyReadiness.worstIntentRisk,
-					intents: entropyReadiness.intents,
-				})
-				.from(entropyReadiness)
-				.where(
-					and(
-						eq(entropyReadiness.columnId, input.column_id),
-						eq(entropyReadiness.runId, headRunId),
-					),
-				)
-				.limit(1)
-		: [];
-
+	// View columns type as nullable (Postgres views carry no NOT NULL); the
+	// underlying tables guarantee these — coalesce at the edge.
 	const readiness: WhyReadinessRow = {
-		columnId: col.columnId,
-		columnName: col.columnName,
-		tableName: col.tableName,
+		columnId: col.columnId ?? input.column_id,
+		columnName: col.columnName ?? "",
+		tableName: col.tableName ?? "",
 		band: readinessRow?.band ?? null,
 		worstIntentRisk: readinessRow?.worstIntentRisk ?? null,
 		intents: readinessRow?.intents ?? null,
 	};
 
-	// Scope evidence to the SAME promoted run (DAT-413): entropy_objects are
-	// versioned by run_id and coexist across runs, so filter to the head run_id —
-	// an unscoped read would mix stale runs and inflate signal_count. No promoted
-	// run → no evidence (nothing to show).
-	const evidenceRows = headRunId
-		? await metadataDb
-				.select({
-					layer: entropyObjects.layer,
-					dimension: entropyObjects.dimension,
-					subDimension: entropyObjects.subDimension,
-					score: entropyObjects.score,
-					detectorId: entropyObjects.detectorId,
-					evidence: entropyObjects.evidence,
-				})
-				.from(entropyObjects)
-				.where(
-					and(
-						eq(entropyObjects.columnId, input.column_id),
-						eq(entropyObjects.runId, headRunId),
-					),
-				)
-				.orderBy(asc(entropyObjects.dimension))
-		: [];
+	// Evidence comes from the same promoted-run view, so stale runs can't mix in
+	// or inflate signal_count.
+	const rawEvidence = await metadataDb
+		.select({
+			layer: currentEntropyObjects.layer,
+			dimension: currentEntropyObjects.dimension,
+			subDimension: currentEntropyObjects.subDimension,
+			score: currentEntropyObjects.score,
+			detectorId: currentEntropyObjects.detectorId,
+			evidence: currentEntropyObjects.evidence,
+		})
+		.from(currentEntropyObjects)
+		.where(eq(currentEntropyObjects.columnId, input.column_id))
+		.orderBy(asc(currentEntropyObjects.dimension));
+	const evidenceRows = rawEvidence.map((e) => ({
+		layer: e.layer ?? "",
+		dimension: e.dimension ?? "",
+		subDimension: e.subDimension ?? "",
+		score: e.score ?? 0,
+		detectorId: e.detectorId ?? "",
+		evidence: e.evidence,
+	}));
 
 	const pending = await getPendingOverlays();
 	const data = projectWhyData(readiness, evidenceRows, pending.length);

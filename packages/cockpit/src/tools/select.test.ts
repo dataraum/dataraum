@@ -72,9 +72,19 @@ vi.mock("#/db/metadata/client", () => ({
 }));
 
 // The generated Drizzle schema imports the live client transitively in some
-// suites; stub `sources` to a marker so `.insert(sources)` is callable.
+// suites; stub `sources` (the read view) to a marker so reads are callable.
 vi.mock("#/db/metadata/schema", () => ({
 	sources: {
+		name: "sources.name",
+		sourceId: "sources.sourceId",
+		connectionConfig: "sources.connectionConfig",
+	},
+}));
+
+// The INSERT goes through the control-plane write surface (ADR-0008/DAT-453) —
+// stub it with the same markers so the upsert target/returning are assertable.
+vi.mock("#/db/metadata/write-surface", () => ({
+	sourcesWrite: {
 		name: "sources.name",
 		sourceId: "sources.sourceId",
 		connectionConfig: "sources.connectionConfig",

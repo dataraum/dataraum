@@ -46,11 +46,13 @@ export async function getPendingOverlays(): Promise<PendingOverlay[]> {
 		.where(isNull(configOverlay.supersededAt))
 		.orderBy(asc(configOverlay.createdAt));
 
+	// View columns type as nullable (Postgres views carry no NOT NULL) —
+	// coalesce the fields the underlying table guarantees.
 	return rows.map((r) => ({
-		overlay_id: r.overlayId,
-		type: r.type,
+		overlay_id: r.overlayId ?? "",
+		type: r.type ?? "",
 		payload: r.payload as Record<string, unknown>,
-		created_at: r.createdAt,
+		created_at: r.createdAt ?? new Date(0),
 		session_id: r.sessionId,
 	}));
 }

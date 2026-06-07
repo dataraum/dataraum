@@ -27,7 +27,10 @@ import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
 
 import { metadataDb } from "#/db/metadata/client";
-import { investigationSessions, sources } from "#/db/metadata/schema";
+import {
+	investigationSessionsWrite,
+	sourcesWrite,
+} from "#/db/metadata/write-surface";
 import { beginSession } from "#/tools/begin-session";
 import { lookRelationships } from "#/tools/look-relationships";
 import { lookTable } from "#/tools/look-table";
@@ -60,7 +63,7 @@ async function ingest(client: Client): Promise<string[]> {
 	const sessionId = randomUUID();
 	const now = new Date();
 	await metadataDb
-		.insert(sources)
+		.insert(sourcesWrite)
 		.values({
 			sourceId,
 			name: `smoke_${sourceId.slice(0, 8)}`,
@@ -70,9 +73,9 @@ async function ingest(client: Client): Promise<string[]> {
 			createdAt: now,
 			updatedAt: now,
 		})
-		.onConflictDoNothing({ target: sources.sourceId });
+		.onConflictDoNothing({ target: sourcesWrite.sourceId });
 	await metadataDb
-		.insert(investigationSessions)
+		.insert(investigationSessionsWrite)
 		.values({
 			sessionId,
 			intent: "smoke add_source",
@@ -83,7 +86,7 @@ async function ingest(client: Client): Promise<string[]> {
 			// isn't landed, so grounding needs a vertical that already ships concepts.
 			vertical: VERTICAL,
 		})
-		.onConflictDoNothing({ target: investigationSessions.sessionId });
+		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
 
 	const input: AddSourceInput = {
 		// Source-free identity + the run's source SET (DAT-422): one source here, so

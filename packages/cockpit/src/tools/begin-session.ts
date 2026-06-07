@@ -29,6 +29,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessions, sessionTables } from "../db/metadata/schema";
+import { investigationSessionsWrite } from "../db/metadata/write-surface";
 import type {
 	BeginSessionInput,
 	BeginSessionResult,
@@ -124,7 +125,7 @@ export async function beginSession(
 	// onConflictDoNothing: re-running an existing session (caller-supplied id) is a
 	// no-op; a fresh id is seeded. Mirrors triggerAddSource / replay.
 	await metadataDb
-		.insert(investigationSessions)
+		.insert(investigationSessionsWrite)
 		.values({
 			sessionId,
 			intent: "begin_session",

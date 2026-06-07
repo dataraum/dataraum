@@ -43,8 +43,18 @@ def _score_validation_result(result: Any) -> float:
     if result.passed:
         return 0.0
 
+    if result.status == "skipped":
+        # Bind-time skip: the LLM declared the validation inapplicable to
+        # this workspace. Not a data measurement — it must not contribute
+        # entropy. Without this branch a skipped row that carries table_ids
+        # falls into the check-type scoring below and can score 1.0
+        # (comparison's binary branch) — a mislabel (DAT-439).
+        return 0.0
+
     if result.status == "error":
-        # Execution error — can't assess, treat as moderate uncertainty
+        # Execution error or inconclusive evaluation (DAT-439) — the check
+        # could not assess the data; moderate uncertainty, never a failure
+        # measurement.
         return 0.5
 
     details = result.details or {}

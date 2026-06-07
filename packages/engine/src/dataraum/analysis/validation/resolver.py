@@ -76,6 +76,13 @@ def get_multi_table_schema_for_llm(
     if not tables:
         return {"error": "No tables found"}
 
+    # A requested table missing from metadata silently shrinks the LLM's
+    # schema — surface it loudly (DAT-439 sweep): the session-scope wiring
+    # asked for a table that does not exist.
+    if len(tables) < len(table_ids):
+        missing = sorted(set(table_ids) - {t.table_id for t in tables})
+        logger.warning("validation_schema_tables_missing", missing_table_ids=missing)
+
     annotations = _load_pinned_annotations(session, tables, base_runs.semantic_runs)
 
     # Build table schemas
@@ -85,6 +92,14 @@ def get_multi_table_schema_for_llm(
 
     for table in tables:
         if not table.duckdb_path:
+            # Excluded from the schema the LLM sees — loud, never a silent
+            # drop (DAT-439 sweep). A typed table without a lake path is a
+            # pipeline wiring bug.
+            logger.warning(
+                "validation_schema_table_without_duckdb_path",
+                table=table.table_name,
+                table_id=table.table_id,
+            )
             continue
 
         row_count = None
@@ -95,6 +110,14 @@ def get_multi_table_schema_for_llm(
                 ).fetchone()
                 row_count = result[0] if result else None
             except Exception:
+                # DAT-439 decision (item 4): KEEP this swallow. Row counts are
+                # LLM-context garnish — a failed COUNT(*) must not block
+                # schema assembly. The real failure it could mask (table
+                # missing from the lake) surfaces loudly downstream: bind
+                # proves every generated SQL with EXPLAIN, which fails →
+                # bind ERROR → the artifact stays ``declared`` with the
+                # reason. Pinned by test_bind_missing_lake_table_fails_explain
+                # and test_missing_lake_table_keeps_schema_without_row_count.
                 logger.warning(
                     "row_count_failed",
                     table=table.table_name,

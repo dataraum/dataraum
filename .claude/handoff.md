@@ -4,6 +4,35 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-07: validation agent-tier honesty pass — `status=failed` semantics changed (DAT-439)
+
+Branch `feat/dat-439-fail-loud-sweep`. **DAT-442's cross_table_consistency
+calibration must land AFTER this** — what `status=failed` MEANS in
+`validation_results` changed:
+
+- **`failed` now means a JUDGED data failure only.** An evaluation that could
+  not judge the data (no recognizable result columns, zero rows from a
+  balance/comparison/aggregate summary query, unrecognized `check_type`) is
+  now `status=error` — previously these surfaced as `failed` (live-proven:
+  `three_way_match` "Comparison check inconclusive" was reported FAILED).
+  The artifact stays `grounded` with the reason in
+  `lifecycle_artifacts.state_reason`; the result row is `error`, never
+  `failed`. Any eval assertion counting failures must not expect
+  inconclusives among them.
+- **`_score_validation_result` branches** (`entropy/detectors/computational/
+  cross_table_consistency.py`): `skipped` now scores 0.0 explicitly
+  (previously fell into check-type scoring and a skip carrying table_ids
+  could score 1.0); `error` keeps 0.5 (covers execution errors AND
+  inconclusive evaluations). Calibration of these constants = DAT-442.
+- **No-tool-call LLM responses are no longer rescued** by JSON-parsing the
+  text content — they are bind ERRORs (artifact stays `declared` + reason
+  "no structured output"). A mocked-LLM eval scenario that emitted plain-text
+  JSON instead of a tool call now yields an ungroundable validation.
+- `can_validate=true` with no SQL is a bind ERROR now, not `skipped`.
+- Unrecognized `check_type` (e.g. `referential`) no longer passes on
+  row_count>0 — it is `error` (inconclusive). Only `balance` / `comparison` /
+  `constraint` / `aggregate` are judgeable.
+
 ## 2026-06-07: operating_model stage — validation lifecycle revival (DAT-438)
 
 Branch `feat/dat-438-operating-model`. The validation family moved from a

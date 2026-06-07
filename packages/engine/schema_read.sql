@@ -4,7 +4,8 @@
 -- Tokenized: __WS__ = raw workspace schema, __READ__ = read schema.
 -- Appliers substitute both (engine bootstrap; pull-metadata.sh via sed).
 
-CREATE OR REPLACE VIEW __READ__.current_column_drift_summaries AS
+DROP VIEW IF EXISTS __READ__.current_column_drift_summaries;
+CREATE VIEW __READ__.current_column_drift_summaries AS
 SELECT r.* FROM __WS__.column_drift_summaries r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -13,7 +14,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_column_eligibility AS
+DROP VIEW IF EXISTS __READ__.current_column_eligibility;
+CREATE VIEW __READ__.current_column_eligibility AS
 SELECT r.* FROM __WS__.column_eligibility r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -22,16 +24,20 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.column_slice_profiles AS
+DROP VIEW IF EXISTS __READ__.column_slice_profiles;
+CREATE VIEW __READ__.column_slice_profiles AS
 SELECT * FROM __WS__.column_slice_profiles;
 
-CREATE OR REPLACE VIEW __READ__.columns AS
+DROP VIEW IF EXISTS __READ__.columns;
+CREATE VIEW __READ__.columns AS
 SELECT * FROM __WS__.columns;
 
-CREATE OR REPLACE VIEW __READ__.config_overlay AS
+DROP VIEW IF EXISTS __READ__.config_overlay;
+CREATE VIEW __READ__.config_overlay AS
 SELECT * FROM __WS__.config_overlay;
 
-CREATE OR REPLACE VIEW __READ__.current_derived_columns AS
+DROP VIEW IF EXISTS __READ__.current_derived_columns;
+CREATE VIEW __READ__.current_derived_columns AS
 SELECT r.* FROM __WS__.derived_columns r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -40,10 +46,12 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.detected_business_cycles AS
+DROP VIEW IF EXISTS __READ__.detected_business_cycles;
+CREATE VIEW __READ__.detected_business_cycles AS
 SELECT * FROM __WS__.detected_business_cycles;
 
-CREATE OR REPLACE VIEW __READ__.current_enriched_views AS
+DROP VIEW IF EXISTS __READ__.current_enriched_views;
+CREATE VIEW __READ__.current_enriched_views AS
 SELECT r.* FROM __WS__.enriched_views r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -52,8 +60,20 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_entropy_objects AS
-SELECT r.* FROM __WS__.entropy_objects r
+DROP VIEW IF EXISTS __READ__.current_entropy_objects;
+CREATE VIEW __READ__.current_entropy_objects AS
+SELECT r.*,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'table:' || r.table_id
+  ) AS via_table_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_session_head
+FROM __WS__.entropy_objects r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.stage = 'detect'
@@ -62,8 +82,20 @@ WHERE EXISTS (
       OR h.target = 'session:' || r.session_id)
 );
 
-CREATE OR REPLACE VIEW __READ__.current_entropy_readiness AS
-SELECT r.* FROM __WS__.entropy_readiness r
+DROP VIEW IF EXISTS __READ__.current_entropy_readiness;
+CREATE VIEW __READ__.current_entropy_readiness AS
+SELECT r.*,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'table:' || r.table_id
+  ) AS via_table_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_session_head
+FROM __WS__.entropy_readiness r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.stage = 'detect'
@@ -72,16 +104,20 @@ WHERE EXISTS (
       OR h.target = 'session:' || r.session_id)
 );
 
-CREATE OR REPLACE VIEW __READ__.fix_ledger AS
+DROP VIEW IF EXISTS __READ__.fix_ledger;
+CREATE VIEW __READ__.fix_ledger AS
 SELECT * FROM __WS__.fix_ledger;
 
-CREATE OR REPLACE VIEW __READ__.investigation_sessions AS
+DROP VIEW IF EXISTS __READ__.investigation_sessions;
+CREATE VIEW __READ__.investigation_sessions AS
 SELECT * FROM __WS__.investigation_sessions;
 
-CREATE OR REPLACE VIEW __READ__.investigation_steps AS
+DROP VIEW IF EXISTS __READ__.investigation_steps;
+CREATE VIEW __READ__.investigation_steps AS
 SELECT * FROM __WS__.investigation_steps;
 
-CREATE OR REPLACE VIEW __READ__.current_materialization_recipes AS
+DROP VIEW IF EXISTS __READ__.current_materialization_recipes;
+CREATE VIEW __READ__.current_materialization_recipes AS
 SELECT r.* FROM __WS__.materialization_recipes r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -90,13 +126,16 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.metadata_snapshot_head AS
+DROP VIEW IF EXISTS __READ__.metadata_snapshot_head;
+CREATE VIEW __READ__.metadata_snapshot_head AS
 SELECT * FROM __WS__.metadata_snapshot_head;
 
-CREATE OR REPLACE VIEW __READ__.query_executions AS
+DROP VIEW IF EXISTS __READ__.query_executions;
+CREATE VIEW __READ__.query_executions AS
 SELECT * FROM __WS__.query_executions;
 
-CREATE OR REPLACE VIEW __READ__.current_relationships AS
+DROP VIEW IF EXISTS __READ__.current_relationships;
+CREATE VIEW __READ__.current_relationships AS
 SELECT r.* FROM __WS__.relationships r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -105,7 +144,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_semantic_annotations AS
+DROP VIEW IF EXISTS __READ__.current_semantic_annotations;
+CREATE VIEW __READ__.current_semantic_annotations AS
 SELECT r.* FROM __WS__.semantic_annotations r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -116,10 +156,12 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.session_tables AS
+DROP VIEW IF EXISTS __READ__.session_tables;
+CREATE VIEW __READ__.session_tables AS
 SELECT * FROM __WS__.session_tables;
 
-CREATE OR REPLACE VIEW __READ__.current_slice_definitions AS
+DROP VIEW IF EXISTS __READ__.current_slice_definitions;
+CREATE VIEW __READ__.current_slice_definitions AS
 SELECT r.* FROM __WS__.slice_definitions r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -128,7 +170,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_slicing_views AS
+DROP VIEW IF EXISTS __READ__.current_slicing_views;
+CREATE VIEW __READ__.current_slicing_views AS
 SELECT r.* FROM __WS__.slicing_views r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -137,16 +180,20 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.snippet_usage AS
+DROP VIEW IF EXISTS __READ__.snippet_usage;
+CREATE VIEW __READ__.snippet_usage AS
 SELECT * FROM __WS__.snippet_usage;
 
-CREATE OR REPLACE VIEW __READ__.sources AS
+DROP VIEW IF EXISTS __READ__.sources;
+CREATE VIEW __READ__.sources AS
 SELECT * FROM __WS__.sources;
 
-CREATE OR REPLACE VIEW __READ__.sql_snippets AS
+DROP VIEW IF EXISTS __READ__.sql_snippets;
+CREATE VIEW __READ__.sql_snippets AS
 SELECT * FROM __WS__.sql_snippets;
 
-CREATE OR REPLACE VIEW __READ__.current_statistical_profiles AS
+DROP VIEW IF EXISTS __READ__.current_statistical_profiles;
+CREATE VIEW __READ__.current_statistical_profiles AS
 SELECT r.* FROM __WS__.statistical_profiles r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -157,7 +204,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_statistical_quality_metrics AS
+DROP VIEW IF EXISTS __READ__.current_statistical_quality_metrics;
+CREATE VIEW __READ__.current_statistical_quality_metrics AS
 SELECT r.* FROM __WS__.statistical_quality_metrics r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -168,7 +216,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_table_entities AS
+DROP VIEW IF EXISTS __READ__.current_table_entities;
+CREATE VIEW __READ__.current_table_entities AS
 SELECT r.* FROM __WS__.table_entities r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -177,10 +226,12 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.tables AS
+DROP VIEW IF EXISTS __READ__.tables;
+CREATE VIEW __READ__.tables AS
 SELECT * FROM __WS__.tables;
 
-CREATE OR REPLACE VIEW __READ__.current_temporal_column_profiles AS
+DROP VIEW IF EXISTS __READ__.current_temporal_column_profiles;
+CREATE VIEW __READ__.current_temporal_column_profiles AS
 SELECT r.* FROM __WS__.temporal_column_profiles r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -191,7 +242,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_temporal_slice_analyses AS
+DROP VIEW IF EXISTS __READ__.current_temporal_slice_analyses;
+CREATE VIEW __READ__.current_temporal_slice_analyses AS
 SELECT r.* FROM __WS__.temporal_slice_analyses r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
@@ -200,7 +252,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_type_candidates AS
+DROP VIEW IF EXISTS __READ__.current_type_candidates;
+CREATE VIEW __READ__.current_type_candidates AS
 SELECT r.* FROM __WS__.type_candidates r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -211,7 +264,8 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.current_type_decisions AS
+DROP VIEW IF EXISTS __READ__.current_type_decisions;
+CREATE VIEW __READ__.current_type_decisions AS
 SELECT r.* FROM __WS__.type_decisions r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.columns c
@@ -222,5 +276,6 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-CREATE OR REPLACE VIEW __READ__.validation_results AS
+DROP VIEW IF EXISTS __READ__.validation_results;
+CREATE VIEW __READ__.validation_results AS
 SELECT * FROM __WS__.validation_results;

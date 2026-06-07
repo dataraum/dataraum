@@ -14,7 +14,7 @@
 
 import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -246,7 +246,16 @@ export async function whyColumn(
 			intents: currentEntropyReadiness.intents,
 		})
 		.from(currentEntropyReadiness)
-		.where(eq(currentEntropyReadiness.columnId, input.column_id))
+		.where(
+			and(
+				eq(currentEntropyReadiness.columnId, input.column_id),
+				// Pin the add_source grain: after begin_session, a column has a
+				// second current row sealed by the session head (different
+				// detector subset) — via_table_head keeps the old head-join
+				// semantics deterministic.
+				eq(currentEntropyReadiness.viaTableHead, true),
+			),
+		)
 		.limit(1);
 
 	// View columns type as nullable (Postgres views carry no NOT NULL); the
@@ -272,7 +281,12 @@ export async function whyColumn(
 			evidence: currentEntropyObjects.evidence,
 		})
 		.from(currentEntropyObjects)
-		.where(eq(currentEntropyObjects.columnId, input.column_id))
+		.where(
+			and(
+				eq(currentEntropyObjects.columnId, input.column_id),
+				eq(currentEntropyObjects.viaTableHead, true),
+			),
+		)
 		.orderBy(asc(currentEntropyObjects.dimension));
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",

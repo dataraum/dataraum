@@ -162,9 +162,11 @@ export const currentEntropyObjects = metadataSchema
 		detectorId: varchar("detector_id"),
 		sourceAnalysisIds: jsonb("source_analysis_ids"),
 		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
 	})
 	.as(
-		sql`SELECT object_id, session_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at FROM ws_00000000_0000_0000_0000_000000000001.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+		sql`SELECT object_id, session_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
 	);
 
 export const currentEntropyReadiness = metadataSchema
@@ -180,9 +182,11 @@ export const currentEntropyReadiness = metadataSchema
 		intents: jsonb(),
 		topDrivers: jsonb("top_drivers"),
 		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
 	})
 	.as(
-		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
 	);
 
 export const currentMaterializationRecipes = metadataSchema

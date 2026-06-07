@@ -24,10 +24,14 @@ import {
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
-import { parseRelationshipTarget } from "../db/metadata/relationship-target";
+import {
+	parseRelationshipTarget,
+	sessionHeadTarget,
+} from "../db/metadata/relationship-target";
 import {
 	columns,
 	currentEntropyReadiness,
+	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
@@ -149,10 +153,32 @@ export interface LookRelationshipsInput {
 export async function lookRelationships(
 	input: LookRelationshipsInput,
 ): Promise<LookRelationshipsResult> {
+	// `analyzed` = the session SEALED a detect run — distinct from "sealed but
+	// zero relationships" (single-table session), which must not read as
+	// never-ran. The head pass-through stays on the read surface for exactly
+	// this check; the rows themselves come from the current_* view.
+	const [head] = await metadataDb
+		.select({ runId: metadataSnapshotHead.runId })
+		.from(metadataSnapshotHead)
+		.where(
+			and(
+				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
+				eq(metadataSnapshotHead.stage, "detect"),
+			),
+		)
+		.limit(1);
+	if (!head?.runId) {
+		return {
+			session_id: input.session_id,
+			analyzed: false,
+			pending_teaches: 0,
+			relationships: [],
+		};
+	}
+
 	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. `target` carries the identity (relationship rows
 	// have null table_id/column_id), so filter by the `relationship:%` prefix.
-	// No promoted run → empty view → analyzed=false below.
 	const rawRows = await metadataDb
 		.select({
 			target: currentEntropyReadiness.target,
@@ -175,15 +201,6 @@ export async function lookRelationships(
 		...r,
 		target: r.target ?? "",
 	}));
-
-	if (readinessRows.length === 0) {
-		return {
-			session_id: input.session_id,
-			analyzed: false,
-			pending_teaches: 0,
-			relationships: [],
-		};
-	}
 
 	// Batch-resolve endpoint names: collect every column id the targets reference,
 	// then one join to columns⟕tables. Avoids an N+1 over relationships.

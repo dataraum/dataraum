@@ -42,10 +42,12 @@ def test_statements_are_deterministic_and_tokenized() -> None:
     for _, sql in first:
         assert READ_TOKEN in sql
         assert WS_TOKEN in sql
-        assert sql.startswith("CREATE OR REPLACE VIEW")
-    # The checked-in artifact carries the apply contract in its header.
+        assert sql.startswith("CREATE VIEW")
+    # The checked-in artifact carries the apply contract in its header and a
+    # DROP per view (CREATE OR REPLACE cannot drop/rename view columns).
     ddl = dump_read_ddl()
     assert "GENERATED" in ddl and WS_TOKEN in ddl and READ_TOKEN in ddl
+    assert ddl.count("DROP VIEW IF EXISTS") == len(first)
 
 
 def test_head_join_shape_for_column_grain() -> None:
@@ -56,11 +58,15 @@ def test_head_join_shape_for_column_grain() -> None:
     assert "h.run_id = r.run_id" in sql
 
 
-def test_dual_grain_accepts_either_head() -> None:
-    """entropy objects/readiness: add_source seals per table, begin_session per session."""
+def test_dual_grain_accepts_either_head_and_discriminates() -> None:
+    """entropy objects/readiness: add_source seals per table, begin_session per
+    session — and after both, a column has TWO current rows; the ``via_*``
+    discriminators let consumers pin one grain (review finding, 2026-06-07)."""
     sql = dict(read_view_statements())["current_entropy_objects"]
     assert "'table:' || r.table_id" in sql
     assert "'session:' || r.session_id" in sql
+    assert "AS via_table_head" in sql
+    assert "AS via_session_head" in sql
 
 
 def test_unclassified_versioned_table_fails_loud() -> None:

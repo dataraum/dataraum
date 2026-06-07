@@ -276,7 +276,12 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		.from(columns)
 		.leftJoin(
 			currentEntropyReadiness,
-			eq(currentEntropyReadiness.columnId, columns.columnId),
+			and(
+				eq(currentEntropyReadiness.columnId, columns.columnId),
+				// Pin the add_source grain — see why_column; without it the grid
+				// fans out to two rows per column once a session head is promoted.
+				eq(currentEntropyReadiness.viaTableHead, true),
+			),
 		)
 		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));

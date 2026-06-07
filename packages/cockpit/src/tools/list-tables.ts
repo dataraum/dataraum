@@ -222,7 +222,12 @@ export async function listTables(
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
 		.leftJoin(
 			currentEntropyReadiness,
-			eq(currentEntropyReadiness.columnId, columns.columnId),
+			and(
+				eq(currentEntropyReadiness.columnId, columns.columnId),
+				// Pin the add_source grain — see why_column; prevents double-
+				// counting columns once a session head is promoted.
+				eq(currentEntropyReadiness.viaTableHead, true),
+			),
 		)
 		.where(and(isNull(sources.archivedAt), sourceFilter));
 

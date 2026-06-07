@@ -32,7 +32,9 @@ class ColumnDriftSummary(Base):
     # Snapshot version axis (DAT-448): the begin_session run that computed this
     # summary. The write path was append-only — a re-run within a session
     # duplicated rows and load_drift_summaries read them all, cross-run. Nullable
-    # for pre-existing rows; the unique constraint guarantees the per-run grain.
+    # for pre-existing rows; the unique constraint guards the grain for stamped
+    # rows (NULL run_id rows are NULLS-DISTINCT — the run-scoped delete covers
+    # that legacy/test path).
     run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

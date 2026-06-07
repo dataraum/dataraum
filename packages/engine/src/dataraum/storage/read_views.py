@@ -89,7 +89,7 @@ def _current_view_sql(table: str) -> str:
     if table in _COLUMN_GRAIN:
         stage = _COLUMN_GRAIN[table]
         return (
-            f"CREATE OR REPLACE VIEW {READ_TOKEN}.current_{table} AS\n"
+            f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.columns c\n"
@@ -103,7 +103,7 @@ def _current_view_sql(table: str) -> str:
     if table in _TABLE_GRAIN:
         stage = _TABLE_GRAIN[table]
         return (
-            f"CREATE OR REPLACE VIEW {READ_TOKEN}.current_{table} AS\n"
+            f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
@@ -114,9 +114,26 @@ def _current_view_sql(table: str) -> str:
         )
     if table in _DUAL_GRAIN:
         stage = _DUAL_GRAIN[table]
+        # Written by BOTH detect paths, so after add_source + begin_session a
+        # column legitimately has TWO current rows (one per sealed run, computed
+        # from different detector subsets). The ``via_*`` discriminators let a
+        # consumer pin one grain — e.g. the cockpit's per-column reads pin
+        # ``via_table_head`` to keep the add_source state, exactly what the
+        # hand-rolled head join used to do.
         return (
-            f"CREATE OR REPLACE VIEW {READ_TOKEN}.current_{table} AS\n"
-            f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
+            f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
+            f"SELECT r.*,\n"
+            f"  EXISTS (\n"
+            f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
+            f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
+            f"      AND h.target = 'table:' || r.table_id\n"
+            f"  ) AS via_table_head,\n"
+            f"  EXISTS (\n"
+            f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
+            f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
+            f"      AND h.target = 'session:' || r.session_id\n"
+            f"  ) AS via_session_head\n"
+            f"FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"  WHERE h.stage = '{stage}'\n"
@@ -127,7 +144,7 @@ def _current_view_sql(table: str) -> str:
         )
     if table in _SESSION_GRAIN:
         return (
-            f"CREATE OR REPLACE VIEW {READ_TOKEN}.current_{table} AS\n"
+            f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
@@ -171,7 +188,7 @@ def read_view_statements() -> list[tuple[str, str]]:
         statements.append(
             (
                 name,
-                f"CREATE OR REPLACE VIEW {READ_TOKEN}.{name} AS\n"
+                f"CREATE VIEW {READ_TOKEN}.{name} AS\n"
                 f"SELECT * FROM {WS_TOKEN}.{name};",
             )
         )
@@ -194,7 +211,15 @@ def dump_read_ddl() -> str:
         f"-- Tokenized: {WS_TOKEN} = raw workspace schema, {READ_TOKEN} = read schema.\n"
         "-- Appliers substitute both (engine bootstrap; pull-metadata.sh via sed).\n"
     )
-    return header + "\n" + "\n\n".join(sql for _, sql in read_view_statements()) + "\n"
+    return (
+        header
+        + "\n"
+        + "\n\n".join(
+            f"DROP VIEW IF EXISTS {READ_TOKEN}.{name};\n{sql}"
+            for name, sql in read_view_statements()
+        )
+        + "\n"
+    )
 
 
 def read_schema_name_for(workspace_schema: str) -> str:
@@ -205,9 +230,11 @@ def read_schema_name_for(workspace_schema: str) -> str:
 def materialize_read_schema(connection: Connection, workspace_schema: str) -> int:
     """Create/refresh the read schema's views for one workspace (idempotent).
 
-    Runs after ``create_all`` on every boot — ``CREATE OR REPLACE VIEW`` keeps
-    the views in lockstep with the models without migrations. Postgres-only;
-    callers guard on dialect (the SQLite test substrate has no read surface).
+    Runs after ``create_all`` on every boot — DROP + CREATE keeps the views in
+    lockstep with the models without migrations (``CREATE OR REPLACE`` cannot
+    drop or rename view columns, so the first removed model column would fail
+    every boot). Nothing depends on view identity. Postgres-only; callers guard
+    on dialect (the SQLite test substrate has no read surface).
 
     Returns:
         Number of views created/refreshed.
@@ -215,7 +242,8 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
     read_schema = read_schema_name_for(workspace_schema)
     connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{read_schema}"'))
     statements = read_view_statements()
-    for _, sql in statements:
+    for name, sql in statements:
+        connection.execute(text(f'DROP VIEW IF EXISTS "{read_schema}".{name}'))
         connection.execute(
             text(sql.replace(READ_TOKEN, f'"{read_schema}"').replace(WS_TOKEN, f'"{workspace_schema}"'))
         )
@@ -227,8 +255,20 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
 # a session, and teaching (config_overlay) are deliberate cockpit writes — the
 # teach vocabulary IS overlay rows. Everything else stays read-only via the
 # read schema. SELECT is included because INSERT … RETURNING needs it.
+#
+# ``sources`` carries a COLUMN-level UPDATE: the cockpit's select upsert is
+# ``INSERT … ON CONFLICT DO UPDATE`` and Postgres checks the UPDATE privilege
+# statically at executor startup — even when the conflict arm never runs. The
+# column list is exactly the upsert's SET list (cockpit select.ts); identity
+# columns (source_id, name, created_at) stay unwritable.
+#
+# NOTE: grants are append-only on a live cluster — shrinking this dict does not
+# REVOKE anything already granted; revoke manually when narrowing.
 _CONTROL_WRITE_GRANTS: dict[str, str] = {
-    "sources": "SELECT, INSERT",
+    "sources": (
+        "SELECT, INSERT, "
+        "UPDATE (source_type, connection_config, status, stage, backend, updated_at)"
+    ),
     "investigation_sessions": "SELECT, INSERT",
     "config_overlay": "SELECT, INSERT, UPDATE",
 }
@@ -247,14 +287,21 @@ def ensure_reader_role(connection: Connection, workspace_schema: str, password: 
     managed-Postgres deployments pre-provision the role instead).
     """
     read_schema = read_schema_name_for(workspace_schema)
+    # Literal-quoting: doubling embedded single quotes is the only escape a
+    # standard single-quoted literal needs; the DO body uses a tagged dollar
+    # quote so a password containing ``$$`` cannot terminate it.
+    pw = password.replace("'", "''")
     connection.execute(
         text(
-            "DO $$ BEGIN "
+            "DO $dataraum_role$ BEGIN "
             f"IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{READER_ROLE}') THEN "
-            f"CREATE ROLE {READER_ROLE} LOGIN PASSWORD :pw; "
-            "END IF; END $$;".replace(":pw", f"'{password}'")
+            f"CREATE ROLE {READER_ROLE} LOGIN PASSWORD '{pw}'; "
+            "END IF; END $dataraum_role$;"
         )
     )
+    # Rotation: the CREATE above fires once per cluster; re-assert the password
+    # every boot so changing METADATA_READER_PASSWORD actually takes effect.
+    connection.execute(text(f"ALTER ROLE {READER_ROLE} PASSWORD '{pw}'"))
     connection.execute(text(f'GRANT USAGE ON SCHEMA "{read_schema}" TO {READER_ROLE}'))
     connection.execute(
         text(f'GRANT SELECT ON ALL TABLES IN SCHEMA "{read_schema}" TO {READER_ROLE}')

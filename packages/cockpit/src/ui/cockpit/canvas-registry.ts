@@ -16,6 +16,7 @@ import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
+import { SessionProgressWidget } from "#/ui/cockpit/widgets/session-progress";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { TableWhyWidget } from "#/ui/cockpit/widgets/table-why";
@@ -40,4 +41,5 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "relationship-why", component: RelationshipWhyWidget })
 	.register({ kind: "relationship-list", component: RelationshipListWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
+	.register({ kind: "session-progress", component: SessionProgressWidget })
 	.register({ kind: "upload-area", component: UploadAreaWidget });

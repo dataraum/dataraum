@@ -54,6 +54,10 @@ export type CanvasState =
 	// select STARTS the import, so its result carries the run ids. (The old
 	// trigger-button UI action that used to seed this member is retired.)
 	| { kind: "add-source-progress"; workflowId: string; runId: string }
+	// DAT-435: live begin_session workflow progress — the session analogue of
+	// add-source-progress. Same carry (the started run's ids; the widget polls
+	// `get_progress`), projected from the begin_session TOOL RESULT.
+	| { kind: "session-progress"; workflowId: string; runId: string }
 	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
 	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
 	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool

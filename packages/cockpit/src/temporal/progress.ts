@@ -1,12 +1,16 @@
-// add_source progress poll (DAT-352) — the read side of the TRIGGER.
+// Workflow progress poll (DAT-352 add_source; DAT-435 begin_session) — the
+// read side of the TRIGGER.
 //
-// Queries the running addSourceWorkflow's `get_progress` @workflow.query (DAT-406)
-// for the parent-level ProgressSnapshot {phase, tables_total, tables_completed},
-// plus its describe() status so the poll can stop on a terminal run (a workflow
-// that FAILED/TERMINATED never reaches phase==="done", so phase alone can't tell
-// a stuck run from a finished one).
+// Queries a running workflow's `get_progress` @workflow.query (DAT-406) for the
+// ProgressSnapshot {phase, tables_total, tables_completed}, plus its describe()
+// status so the poll can stop on a terminal run (a workflow that
+// FAILED/TERMINATED never reaches phase==="done", so phase alone can't tell a
+// stuck run from a finished one). `addSourceWorkflow` and `beginSessionWorkflow`
+// both serve the SAME query name + snapshot shape (one seam, no per-workflow
+// branch); a workflow without the query (operatingModelWorkflow) degrades to
+// describe()-only.
 //
-// Targets the PRECISE run_id: the workflow id is reused per source under
+// Targets the PRECISE run_id: the workflow id is reused per session under
 // ALLOW_DUPLICATE across replays, so getHandle(id, runId) pins the iteration the
 // TRIGGER returned. NON-mutating (query + describe) → safe to poll on an interval.
 
@@ -37,7 +41,7 @@ const TERMINAL_STATUSES = new Set([
 	"CONTINUED_AS_NEW",
 ]);
 
-export interface AddSourceProgressInput {
+export interface WorkflowProgressInput {
 	workflow_id: string;
 	run_id: string;
 }
@@ -49,8 +53,8 @@ export interface TableStep {
 	status: "running" | "done" | "failed";
 }
 
-/** The progress snapshot plus the run's terminal-ness — what the widget polls. */
-export interface AddSourceProgress {
+/** The progress snapshot plus the run's terminal-ness — what the widgets poll. */
+export interface WorkflowProgress {
 	phase: string;
 	tables_total: number;
 	tables_completed: number;
@@ -111,16 +115,18 @@ export function isProgressDone(phase: string, status: string): boolean {
  * (workflowId, runId) so a replay/re-run iteration sharing the workflow id is
  * never confused for the run being watched.
  *
- * Works for any cockpit-triggered workflow. `addSourceWorkflow` registers a
- * `get_progress` @workflow.query (rich phase + per-table fan-out detail);
- * `beginSessionWorkflow` is sequential (no fan-out) and registers none, so its
- * query raises `WorkflowQueryFailedError` — caught here to fall back to a
- * `describe()`-only status (no phase detail, but the authoritative run status +
- * `done`). Any OTHER query error is a real failure and rethrows.
+ * Works for any cockpit-triggered workflow. `addSourceWorkflow` (DAT-406) and
+ * `beginSessionWorkflow` (DAT-435) both register a `get_progress`
+ * @workflow.query serving the same snapshot shape (add_source with per-table
+ * fan-out detail, begin_session sequential with empty fan-out fields). A
+ * workflow without the query (`operatingModelWorkflow`) raises
+ * `WorkflowQueryFailedError` — caught here to fall back to a `describe()`-only
+ * status (no phase detail, but the authoritative run status + `done`). Any
+ * OTHER query error is a real failure and rethrows.
  */
-export async function getAddSourceProgress(
-	input: AddSourceProgressInput,
-): Promise<AddSourceProgress> {
+export async function getWorkflowProgress(
+	input: WorkflowProgressInput,
+): Promise<WorkflowProgress> {
 	const { host, namespace } = requireTemporalConfig();
 
 	const connection = await Connection.connect({ address: host });
@@ -134,7 +140,7 @@ export async function getAddSourceProgress(
 		try {
 			snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
 		} catch (err) {
-			// A workflow with no get_progress handler (begin_session) raises
+			// A workflow with no get_progress handler (operating_model) raises
 			// WorkflowQueryFailedError — degrade to describe()-only. Match on the
 			// error name to avoid coupling to the SDK's class export.
 			if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {
@@ -171,9 +177,9 @@ export async function getAddSourceProgress(
 	}
 }
 
-/** Request-body schema for `POST /api/add-source-progress` — the API route
+/** Request-body schema for `POST /api/workflow-progress` — the API route
  * validates the polled `{workflow_id, run_id}` against this before querying. */
-export const AddSourceProgressInputSchema = z.object({
+export const WorkflowProgressInputSchema = z.object({
 	workflow_id: z.string().min(1),
 	run_id: z.string().min(1),
 });

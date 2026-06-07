@@ -63,6 +63,7 @@ const TOOL_LABELS: Record<string, string> = {
 	connect: "Reading source",
 	frame: "Concepts",
 	select: "Registering source",
+	begin_session: "Starting session",
 	run_sql: "Query",
 	probe: "Data check",
 	teach: "Teaching",
@@ -77,6 +78,7 @@ const TOOL_LABELS: Record<string, string> = {
 const TOOL_LABELS_DONE: Record<string, string> = {
 	connect: "Source schema",
 	select: "Registered source",
+	begin_session: "Session started",
 	teach: "Taught",
 	replay: "Re-ran",
 };
@@ -224,6 +226,21 @@ export function toolChipSummary(
 			const s = output as SelectResult | undefined;
 			if (!s) return "registering source…";
 			return `${s.name} (${s.source_type})`;
+		}
+		case "begin_session": {
+			// The tool returns as soon as the workflow STARTS — the run keeps going
+			// (the session-progress widget tracks it), so the settled summary still
+			// reads as in-flight analysis. Count from the INPUT selection (present
+			// from approval time); ids (workflow/run/session uuids) never reach the
+			// chip.
+			const args = input as { table_ids?: unknown } | undefined;
+			const count = Array.isArray(args?.table_ids)
+				? args.table_ids.length
+				: null;
+			if (!done) return "starting the session…";
+			return count !== null
+				? `analyzing ${plural(count, "table")}`
+				: "analysis running";
 		}
 		case "run_sql": {
 			const sql = (input as { sql?: string } | undefined)?.sql;

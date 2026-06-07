@@ -1,17 +1,17 @@
-// add_source progress endpoint (DAT-352) — the read side the MeasureProgress
-// widget polls.
+// Workflow progress endpoint (DAT-352 add_source; DAT-435 begin_session) —
+// the read side the progress widgets poll.
 //
-// A thin I/O shell over `getAddSourceProgress` (temporal/progress.ts): parse +
+// A thin I/O shell over `getWorkflowProgress` (temporal/progress.ts): parse +
 // validate `{workflow_id, run_id}`, query the run's `get_progress` + describe(),
 // return the snapshot + `done`. POST (not GET) so the run identity rides in the
-// body, not the URL. The widget posts here on a TanStack Query `refetchInterval`
+// body, not the URL. The widgets post here on a TanStack Query `refetchInterval`
 // rather than importing the server module — keeping config/Temporal deps out of
 // the client bundle, same as `/api/run-sql`.
 
 import { createFileRoute } from "@tanstack/react-router";
 import {
-	AddSourceProgressInputSchema,
-	getAddSourceProgress,
+	getWorkflowProgress,
+	WorkflowProgressInputSchema,
 } from "../../temporal/progress";
 
 function badRequest(message: string): Response {
@@ -21,7 +21,7 @@ function badRequest(message: string): Response {
 	});
 }
 
-export const Route = createFileRoute("/api/add-source-progress")({
+export const Route = createFileRoute("/api/workflow-progress")({
 	server: {
 		handlers: {
 			POST: async ({ request }) => {
@@ -31,7 +31,7 @@ export const Route = createFileRoute("/api/add-source-progress")({
 				} catch {
 					return badRequest("Request body must be JSON.");
 				}
-				const parsed = AddSourceProgressInputSchema.safeParse(raw);
+				const parsed = WorkflowProgressInputSchema.safeParse(raw);
 				if (!parsed.success) {
 					return badRequest(
 						parsed.error.issues[0]?.message ?? "Invalid input.",
@@ -39,10 +39,10 @@ export const Route = createFileRoute("/api/add-source-progress")({
 				}
 
 				try {
-					const result = await getAddSourceProgress(parsed.data);
+					const result = await getWorkflowProgress(parsed.data);
 					return Response.json(result);
 				} catch (err) {
-					console.error("add-source-progress query failed", err);
+					console.error("workflow-progress query failed", err);
 					return new Response(
 						JSON.stringify({ error: "Internal server error." }),
 						{

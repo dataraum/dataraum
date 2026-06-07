@@ -5,8 +5,9 @@
 // way to query the run, the agent had no signal for "is it done?" and fell back
 // to re-calling list_tables until tables appeared — a fragile proxy that can't
 // tell RUNNING from FAILED. This tool wraps the SAME cross-language
-// `get_progress` query the progress widget polls (`getAddSourceProgress`), so
-// the agent can check completion directly.
+// `get_progress` query the progress widgets poll (`getWorkflowProgress`), so
+// the agent can check completion directly. begin_session serves the same query
+// (DAT-435), so its runs report real phases here too.
 //
 // The agent-facing result is an EXPLICIT projection of that progress object
 // (DAT-433) — never the object itself, whose extra fields used to be withheld
@@ -25,8 +26,8 @@ import { z } from "zod";
 
 import { stripSrcDigests } from "../lib/display-names";
 import {
-	type AddSourceProgress,
-	getAddSourceProgress,
+	getWorkflowProgress,
+	type WorkflowProgress,
 } from "../temporal/progress";
 
 // Why the run ended badly — projected from `ProgressFailure` (temporal/types.ts).
@@ -61,7 +62,7 @@ export type WorkflowStatusResult = z.infer<typeof WorkflowStatus>;
  * carries a content-keyed `src_<digest>` name.
  */
 export function projectWorkflowStatus(
-	progress: AddSourceProgress,
+	progress: WorkflowProgress,
 ): WorkflowStatusResult {
 	return {
 		phase: progress.phase,
@@ -87,8 +88,8 @@ export const workflowStatusTool = toolDefinition({
 		"Returns the current phase, tables_completed / tables_total, the run status, " +
 		"`done` (true once the run is closed), and — when the run ended badly — " +
 		"`failure` with the root-cause message, the phase in flight, and the failing " +
-		"table's id (look it up via list_tables to name it). begin_session is " +
-		"sequential, so it reports status + done without per-phase detail. Use this " +
+		"table's id (look it up via list_tables to name it). begin_session reports " +
+		"its real phases too (sequential — tables_total/completed stay 0). Use this " +
 		"to detect completion — do NOT poll list_tables as a proxy.",
 	inputSchema: z.object({
 		workflow_id: z
@@ -106,5 +107,5 @@ export const workflowStatusTool = toolDefinition({
 	}),
 	outputSchema: WorkflowStatus,
 }).server(async (input) =>
-	projectWorkflowStatus(await getAddSourceProgress(input)),
+	projectWorkflowStatus(await getWorkflowProgress(input)),
 );

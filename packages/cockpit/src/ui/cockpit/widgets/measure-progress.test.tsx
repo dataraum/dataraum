@@ -28,7 +28,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 // The widget only `import type`s from #/temporal/progress (erased) and reaches the
-// server over `fetch("/api/add-source-progress")`, so no config mock is needed —
+// server over `fetch("/api/workflow-progress")`, so no config mock is needed —
 // `useQuery` is mocked, so the queryFn (the fetch) never runs in these units.
 
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
@@ -70,7 +70,7 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		};
 		renderWidget();
 		expect(h.lastOptions?.queryKey).toEqual([
-			"add-source-progress",
+			"workflow-progress",
 			"addsource-ws-src",
 			"run-1",
 		]);

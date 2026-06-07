@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 @dataclass
@@ -276,6 +276,54 @@ class BeginSessionResult(BaseModel):
 
     session_id: str
     table_ids: list[str]
+
+
+class OperatingModelInput(BaseModel):
+    """Input to ``operatingModelWorkflow`` — session identity ONLY (DAT-438).
+
+    Unlike begin_session (which ESTABLISHES the table set), operating_model
+    operates on the set the session already anchors: the pre-flight
+    ``operating_model_resolve`` activity re-reads ``session_tables`` instead
+    of trusting a re-passed copy that could diverge.
+    """
+
+    identity: SessionIdentity
+
+
+class OperatingModelScope(BaseModel):
+    """``operating_model_resolve``'s output — table set + pinned base-run map.
+
+    The ADR-0008 in-run pin, resolved ONCE at run start: ``relationship_run_id``
+    is begin_session's promoted ``(session:{id}, detect)`` head; ``semantic_runs``
+    the per-table promoted ``(table:{id}, semantic_per_column)`` heads. Wire
+    mirror of :class:`dataraum.lifecycle.BaseRunMap` (contracts stay
+    engine-free for the workflow sandbox — same hand-mirror discipline as the
+    cockpit's ``types.ts``).
+    """
+
+    table_ids: list[str]
+    relationship_run_id: str | None = None
+    semantic_runs: dict[str, str] = Field(default_factory=dict)
+
+
+class OperatingModelScopedInput(BaseModel):
+    """Input to an operating_model phase activity — identity + resolved scope."""
+
+    identity: SessionIdentity
+    scope: OperatingModelScope
+
+
+class OperatingModelResult(BaseModel):
+    """``operatingModelWorkflow`` result.
+
+    ``validation_summary`` carries the phase's explicit outcome verbatim —
+    including the loud ``no_declared_validations`` case — so the cockpit
+    renders what happened without re-deriving it.
+    """
+
+    session_id: str
+    table_ids: list[str]
+    validation_summary: str = ""
 
 
 class AddSourceInput(BaseModel):

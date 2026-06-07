@@ -38,7 +38,7 @@ from dataraum.analysis.validation.models import (
 )
 from dataraum.analysis.validation.resolver import get_multi_table_schema_for_llm
 from dataraum.core.logging import get_logger
-from dataraum.lifecycle import declare_artifact, resolve_base_runs, transition
+from dataraum.lifecycle import BaseRunMap, declare_artifact, transition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -106,9 +106,18 @@ class ValidationPhase(BasePhase):
 
         session_id = ctx.require_session_id()
         run_id = ctx.require_run_id()
-        # Pinned upstream heads (ADR-0008 in-run mode; the pin moves to the
-        # workflow's pre-flight resolve activity with OperatingModelWorkflow).
-        base_runs = resolve_base_runs(ctx.session, session_id, table_ids)
+        # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
+        # workflow's pre-flight ``operating_model_resolve`` activity and
+        # threaded here through the phase config. The phase performs NO head
+        # resolution itself — a missing pin is a wiring bug, fail loud.
+        raw_base_runs = ctx.config.get("base_runs")
+        if raw_base_runs is None:
+            return PhaseResult.failed(
+                "base_runs missing from the phase config — OperatingModelWorkflow's "
+                "resolve activity pins the base-run map before this phase runs "
+                "(ADR-0008 in-run mode; no per-phase head resolution)."
+            )
+        base_runs = BaseRunMap.model_validate(raw_base_runs)
         grounded_against = base_runs.model_dump(mode="json")
 
         # Initialize LLM infrastructure

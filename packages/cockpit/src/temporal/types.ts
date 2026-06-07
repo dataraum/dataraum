@@ -50,6 +50,25 @@ export interface BeginSessionResult {
 	table_ids: string[];
 }
 
+// operating_model (DAT-438) — the journey's third stage: validations (and later
+// cycles/metrics) through the typed artifact lifecycle. Mirrors
+// `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Identity ONLY:
+// begin_session ESTABLISHES the table set; this stage re-reads it from
+// `session_tables` via its pre-flight resolve activity — the client never
+// re-passes a copy that could diverge. The activity-level messages
+// (OperatingModelScope/ScopedInput) are engine-internal, not mirrored.
+export interface OperatingModelInput {
+	identity: SessionIdentity;
+}
+
+export interface OperatingModelResult {
+	session_id: string;
+	table_ids: string[];
+	// The validation phase's explicit outcome verbatim — including the loud
+	// "no declared validations" case — render it, don't re-derive it.
+	validation_summary: string;
+}
+
 // One raw→typed mapping, produced by a ProcessTableWorkflow child.
 export interface ProcessTableResult {
 	raw_table_id: string;

@@ -38,3 +38,17 @@ export function beginSessionWorkflowId(
 ): string {
 	return `beginsession-${workspaceId}-${sessionId}`;
 }
+
+/**
+ * Workflow ID for the `operatingModelWorkflow` of one analytical session
+ * (DAT-438). Keyed by `session_id` like `beginSessionWorkflowId` — the stage
+ * operates on the session's anchored table set; reused across re-runs of the
+ * same session (with `ALLOW_DUPLICATE`) so Temporal groups the iterations
+ * under one ID.
+ */
+export function operatingModelWorkflowId(
+	workspaceId: string,
+	sessionId: string,
+): string {
+	return `operatingmodel-${workspaceId}-${sessionId}`;
+}

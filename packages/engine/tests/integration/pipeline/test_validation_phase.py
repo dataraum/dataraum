@@ -103,7 +103,9 @@ def _make_ctx(
         table_ids=table_ids,
         session_id=_SESSION_ID,
         run_id=run_id,
-        config={"vertical": "finance"},
+        # base_runs is the workflow-resolved pin (ADR-0008), threaded by the
+        # validation activity; empty pins are legitimate (fail-closed reads).
+        config={"vertical": "finance", "base_runs": {}},
     )
 
 
@@ -174,6 +176,18 @@ class TestValidationPhaseOutcomes:
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["outcome"] == "no_declared_validations"
+
+    def test_missing_base_runs_pin_fails_loud(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, workspace_table: Table
+    ) -> None:
+        """No per-phase head resolution (ADR-0008): an unthreaded pin is a wiring bug."""
+        ctx = _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+        ctx.config = {"vertical": "finance"}  # no base_runs
+
+        result = ValidationPhase()._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "base_runs missing" in (result.error or "")
 
 
 class TestValidationLifecycleFlow:

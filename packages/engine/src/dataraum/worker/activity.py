@@ -35,7 +35,7 @@ from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.server.workspace import get_active_workspace_id
 from dataraum.storage import Column, MetadataSnapshotHead, Source, Table, session_head_target
-from dataraum.worker.contracts import SessionIdentity, SourceIdentity
+from dataraum.worker.contracts import OperatingModelScope, SessionIdentity, SourceIdentity
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -406,6 +406,7 @@ def run_session_phase(
     phase_name: str,
     identity: SessionIdentity,
     table_ids: list[str],
+    extra_config: dict[str, Any] | None = None,
 ) -> PhaseRun:
     """Run one begin_session phase over ``table_ids`` — source-free (DAT-401).
 
@@ -416,6 +417,10 @@ def run_session_phase(
     ``InvestigationSession`` row — never a ``Source``. The ``PhaseContext`` is
     built with ``source_id=None`` so the phase body cannot silently fall back to
     source scoping.
+
+    ``extra_config`` merges runtime keys over the static phase config — e.g.
+    the operating_model activities thread the resolved ``base_runs`` pin
+    (ADR-0008) into ``ctx.config`` through it.
     """
     active_workspace_id = get_active_workspace_id()
     if identity.workspace_id != active_workspace_id:
@@ -448,6 +453,8 @@ def run_session_phase(
                 ),
             )
         config = _build_session_phase_config(phase_name, inv_session.vertical)
+        if extra_config:
+            config.update(extra_config)
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
@@ -701,6 +708,95 @@ def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -
         )
 
     logger.info("session_promote_done", session_id=identity.session_id, run_id=run_id)
+    return 1
+
+
+def resolve_operating_model_scope(
+    manager: ConnectionManager, identity: SessionIdentity
+) -> OperatingModelScope:
+    """Pre-flight for ``operatingModelWorkflow`` — table set + pinned base runs (DAT-438).
+
+    The session anchors its table set (``session_tables``, persisted by
+    ``begin_session_select``); operating_model re-reads it instead of trusting
+    a re-passed copy. The base-run map (ADR-0008 in-run mode) is resolved HERE,
+    once per run, and travels with the workflow's contracts — no per-phase head
+    resolution downstream.
+
+    Raises:
+        RuntimeError: workspace mismatch, unknown session, or a session with
+            no linked tables (begin_session must have run) — fail loud, the
+            workflow has nothing to operate on.
+    """
+    from dataraum.lifecycle import resolve_base_runs
+
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: operating_model resolve targets '{identity.workspace_id}' "
+            f"but this worker is bound to '{active_workspace_id}'."
+        )
+
+    with manager.session_scope() as session:
+        if session.get(InvestigationSession, identity.session_id) is None:
+            raise RuntimeError(
+                f"InvestigationSession '{identity.session_id}' not found — "
+                "operating_model runs over an existing journey session."
+            )
+        table_ids = tables_for_session(session, identity.session_id)
+        if not table_ids:
+            raise RuntimeError(
+                f"Session '{identity.session_id}' has no linked tables — "
+                "begin_session must compose the workspace before operating_model runs."
+            )
+        base_runs = resolve_base_runs(session, identity.session_id, table_ids)
+
+    logger.info(
+        "operating_model_scope_resolved",
+        session_id=identity.session_id,
+        tables=len(table_ids),
+        relationship_run=base_runs.relationship_run_id,
+        semantic_runs=len(base_runs.semantic_runs),
+    )
+    return OperatingModelScope(
+        table_ids=table_ids,
+        relationship_run_id=base_runs.relationship_run_id,
+        semantic_runs=base_runs.semantic_runs,
+    )
+
+
+def promote_operating_model_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+    """Seal this operating_model run as the session's current run (DAT-438).
+
+    Terminal promote: point the per-session head ``(session:{id},
+    "operating_model")`` at this run. Readers (the cockpit's validation
+    surfaces, cross_table_consistency's query tier) resolve the current
+    lifecycle artifacts + validation results through it. Distinct stage from
+    begin_session's ``"detect"`` head — the two stages' runs coexist on the
+    same session target.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: operating_model promote targets '{identity.workspace_id}' "
+            f"but this worker is bound to '{active_workspace_id}'."
+        )
+    run_id = identity.run_id
+    if run_id is None:
+        raise RuntimeError(
+            "promote_operating_model_run requires a stamped identity.run_id — "
+            "OperatingModelWorkflow mints it before the first activity (DAT-408)."
+        )
+
+    with manager.session_scope() as session:
+        _upsert_head(
+            session,
+            session_head_target(identity.session_id),
+            "operating_model",
+            run_id,
+            datetime.now(UTC),
+        )
+
+    logger.info("operating_model_promote_done", session_id=identity.session_id, run_id=run_id)
     return 1
 
 

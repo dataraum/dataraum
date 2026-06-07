@@ -32,9 +32,11 @@ from dataraum.worker.activity import (
     begin_session_select,
     check_run_column_limit,
     materialize_session_overlays,
+    promote_operating_model_run,
     promote_run,
     promote_session_run,
     raw_table_ids,
+    resolve_operating_model_scope,
     run_detectors,
     run_phase,
     run_session_phase,
@@ -43,6 +45,8 @@ from dataraum.worker.activity import (
 )
 from dataraum.worker.contracts import (
     ImportResult,
+    OperatingModelScope,
+    OperatingModelScopedInput,
     PhaseOutcome,
     ProcessTableInput,
     RunScopedInput,
@@ -353,6 +357,54 @@ class PhaseActivities:
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
             summary=f"promoted {count} relationship head(s) for session {identity.session_id}",
+        )
+
+    @activity.defn(name="operating_model_resolve")
+    def run_operating_model_resolve(self, identity: SessionIdentity) -> OperatingModelScope:
+        """Pre-flight for operating_model (DAT-438) — table set + pinned base runs.
+
+        Re-reads the session's ``session_tables`` (the session anchors its
+        table set) and resolves the ADR-0008 base-run map ONCE; both travel
+        with the workflow's contracts to every downstream activity. Fails loud
+        (RuntimeError → activity failure) when the session is unknown or has
+        no linked tables.
+        """
+        return resolve_operating_model_scope(self._manager, identity)
+
+    @activity.defn(name="validation")
+    def run_validation(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
+        """Validation activity — the lifecycle family: declare → bind → execute.
+
+        Threads the resolved scope's base-run pin into the phase config
+        (``ctx.config["base_runs"]``); the phase performs NO head resolution
+        itself. Makes real Anthropic calls (SQL generation per declared spec).
+        """
+        run = run_session_phase(
+            self._manager,
+            "validation",
+            payload.identity,
+            payload.scope.table_ids,
+            extra_config={
+                "base_runs": {
+                    "relationship_run_id": payload.scope.relationship_run_id,
+                    "semantic_runs": payload.scope.semantic_runs,
+                }
+            },
+        )
+        return self._outcome_or_raise(run, "validation")
+
+    @activity.defn(name="operating_model_promote")
+    def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Terminal promote for operating_model — flip the session's stage head.
+
+        Points ``(session:{id}, "operating_model")`` at this ``run_id`` so the
+        query tier (cockpit validation surfaces, graphs context) resolves this
+        run's lifecycle artifacts + validation results as current.
+        """
+        count = promote_operating_model_run(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"promoted {count} operating_model head(s) for session {identity.session_id}",
         )
 
     def _run_or_raise(

@@ -33,6 +33,7 @@ from dataraum.worker.bootstrap import (
 from dataraum.worker.workflows import (
     AddSourceWorkflow,
     BeginSessionWorkflow,
+    OperatingModelWorkflow,
     ProcessTableWorkflow,
 )
 
@@ -80,7 +81,12 @@ async def run_worker() -> None:
             worker = Worker(
                 client,
                 task_queue=task_queue,
-                workflows=[AddSourceWorkflow, ProcessTableWorkflow, BeginSessionWorkflow],
+                workflows=[
+                    AddSourceWorkflow,
+                    ProcessTableWorkflow,
+                    BeginSessionWorkflow,
+                    OperatingModelWorkflow,
+                ],
                 activities=[
                     phase_activities.run_import,
                     # DAT-430 run-scoped column gate — between the import loop
@@ -111,6 +117,11 @@ async def run_worker() -> None:
                     phase_activities.run_session_detect,
                     phase_activities.run_session_write_keepers,
                     phase_activities.run_session_promote_to_latest,
+                    # DAT-438 operating_model spine — resolve (pins) →
+                    # validation lifecycle → promote the stage head.
+                    phase_activities.run_operating_model_resolve,
+                    phase_activities.run_validation,
+                    phase_activities.run_operating_model_promote,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,

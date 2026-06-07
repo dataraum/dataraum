@@ -90,11 +90,27 @@ def _seed_fact_with_enriched_view(session: Session, duckdb_conn: duckdb.DuckDBPy
             dimension_table_ids=[],
         )
     )
+    _seed_slice_definition(session, fact.table_id, "run-1")
+    session.flush()
+    return fact.table_id
+
+
+def _seed_slice_definition(session: Session, fact_id: str, run_id: str) -> None:
+    """Seed this run's slice definition — run-versioned (DAT-448), one per run.
+
+    Mirrors what the run-scoped ``slicing`` phase now produces: a fresh run
+    re-derives its own definition (here byte-identical), it never reuses a
+    prior run's row.
+    """
+    region_col = session.execute(
+        select(Column.column_id).where(Column.table_id == fact_id, Column.column_name == "region")
+    ).scalar_one()
     session.add(
         SliceDefinition(
-            table_id=fact.table_id,
+            table_id=fact_id,
             column_id=region_col,
             column_name="region",
+            run_id=run_id,
             slice_priority=1,
             slice_type="categorical",
             distinct_values=["us", "eu"],
@@ -107,7 +123,6 @@ def _seed_fact_with_enriched_view(session: Session, duckdb_conn: duckdb.DuckDBPy
         )
     )
     session.flush()
-    return fact.table_id
 
 
 def _seed_fact_entity(session: Session, fact_id: str, run_id: str) -> None:
@@ -187,8 +202,10 @@ class TestSlicingViewRecipeVersioning:
         assert views[0].run_id == "run-1"
 
         # Run B: fresh run_id, identical DDL — reconcile in place, no new recipe version.
-        # The entity re-detects per run (run-versioned), as semantic_per_table would.
+        # The entity re-detects per run (run-versioned), as semantic_per_table would;
+        # the slice definition re-derives per run (DAT-448), as slicing would.
         _seed_fact_entity(session, fact_id, "run-2")
+        _seed_slice_definition(session, fact_id, "run-2")
         ctx_b = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,

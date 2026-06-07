@@ -431,10 +431,13 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
     begin_session_select(worker_manager, _session_identity(session_id), [t1])
 
     # A poorly-matching derived column → high derived_value entropy on ``total``.
+    # Run-stamped (DAT-448): the correlations phase of the same begin_session
+    # run writes it, and the detector loaders read this-run rows only.
     with worker_manager.session_scope() as session:
         session.add(
             DerivedColumn(
                 session_id=session_id,
+                run_id="run-1",
                 table_id=t1,
                 derived_column_id=total,
                 source_column_ids=[qty, price],

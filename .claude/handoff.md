@@ -4,6 +4,42 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-07: operating_model stage — validation lifecycle revival (DAT-438)
+
+Branch `feat/dat-438-operating-model`. The validation family moved from a
+dormant source-scoped phase into a new `operatingModelWorkflow`
+(resolve → validation → promote, stage head `(session:{id}, "operating_model")`).
+What eval needs to know:
+
+- **`ValidationResultRecord` is run-versioned now**: new `run_id` column (NOT
+  NULL) + UNIQUE `(session_id, validation_id, run_id)`. Any eval read of
+  `validation_results` must scope to the promoted operating_model head
+  (`head_run_id(session, session_head_target(sid), "operating_model")`) or
+  this-run's id — an unscoped read double-counts superseded runs. Schema
+  change ⇒ `down -v` on any persistent stack.
+- **Validation is no longer in any begin_session/add_source chain** — it runs
+  ONLY via `operatingModelWorkflow` (input: SessionIdentity only; the table
+  set comes from `session_tables`). Driving it: start the workflow after a
+  begin_session run of the same session.
+- **Validation induction is DELETED** (`ValidationInductionAgent`,
+  `save_validation_specs`). `_adhoc` sessions now yield ZERO declared
+  validations (explicit `no_declared_validations` outcome) — any eval
+  scenario that relied on cold-start induced validations is obsolete.
+  Declared set = vertical YAML ⊕ `validation` config_overlay rows (new teach
+  applier — a teach scenario can now ADD/REPLACE a validation by
+  `validation_id`).
+- **New `lifecycle_artifacts` table**: per `(session, "validation",
+  validation_id, run)` row with state declared/grounded/executed +
+  `state_reason`. Recall-style assertions can use it: an ungroundable spec is
+  `declared` + reason (never silently absent); an execution error is
+  `grounded` + reason; PASSED/FAILED results have `executed` artifacts.
+- **`cross_table_consistency` detector** now filters `run_id == ctx.run_id`
+  on the detect path when set (band wiring + eval gate = DAT-432, unchanged
+  here).
+- Calibration impact expected: NONE on existing detectors (validation wasn't
+  in any driven chain). The cross_table recall assertions stay
+  `OUT_OF_SLICE_REASON` until DAT-432.
+
 ## 2026-06-07: value artifacts run-versioned + promoted-read surface (DAT-448 + DAT-453)
 
 Branch `feat/dat-448-453-promoted-read-surface`. Two coupled changes.

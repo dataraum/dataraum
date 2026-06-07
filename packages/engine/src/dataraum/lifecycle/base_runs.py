@@ -58,6 +58,9 @@ def resolve_base_runs(session: Session, session_id: str, table_ids: list[str]) -
         at the readers), and logged — a missing begin_session head on a
         session that is supposed to have one is worth seeing.
     """
+    # "detect" is begin_session's promoted stage on the session target (see
+    # promote_session_run) — distinct from operating_model's own head, which
+    # this run WRITES at terminal promote and never reads from.
     relationship_run_id = head_run_id(session, session_head_target(session_id), "detect")
     if relationship_run_id is None:
         logger.warning(

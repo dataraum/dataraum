@@ -207,6 +207,11 @@ class ValidationPhase(BasePhase):
         )
         _persist_results(ctx.session, run_result, session_id=session_id)
 
+        # Two distinct axes in the outputs below: the LIFECYCLE counts
+        # (declared/executed/stuck_* — where each artifact landed; stuck_declared
+        # covers BOTH skipped and generation-error binds) and the RESULT counts
+        # (passed/failed/skipped/error — the per-check measurements). They
+        # overlap by design; don't sum across axes.
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
@@ -230,6 +235,7 @@ class ValidationPhase(BasePhase):
                 "tables_validated": [t["table_name"] for t in schema.get("tables", [])],
             },
             records_processed=run_result.total_checks,
+            # One ValidationResultRecord per check + one LifecycleArtifact per spec.
             records_created=run_result.total_checks + len(artifacts),
             warnings=warnings,
             summary=(

@@ -147,6 +147,7 @@ async def run_worker() -> None:
                     "addSourceWorkflow",
                     "processTableWorkflow",
                     "beginSessionWorkflow",
+                    "operatingModelWorkflow",
                 ],
                 activities=[
                     "import",
@@ -172,6 +173,9 @@ async def run_worker() -> None:
                     "session_detect",
                     "session_write_keepers",
                     "session_promote_to_latest",
+                    "operating_model_resolve",
+                    "validation",
+                    "operating_model_promote",
                 ],
             )
             async with worker:

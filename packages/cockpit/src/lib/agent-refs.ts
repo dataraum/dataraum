@@ -13,18 +13,27 @@
 // transcript export, copy-to-clipboard, debug panel) MUST apply the same skip,
 // or the internals leak.
 //
-// DAT-452 — the AG-UI event layer was explored as a replacement and REJECTED:
-// a sanctioned, typed client→server channel DOES exist (`sendMessage(content,
-// body)` → wire `forwardedProps` → `chatParamsFromRequest().forwardedProps`),
-// but it is per-REQUEST. Refs must stay model-visible across LATER turns
-// (chat is in-memory; the client re-sends `messages[]` each request, and the
-// model resolves "the file I uploaded earlier" from history) — the marker
-// gets that for free by riding IN the message, while forwardedProps would
-// need a client-side refs store replayed on every send: exactly the
-// side-channel state this design exists to avoid. Persistent model-visible
-// context is what MESSAGES are for; the marker is the protocol-correct fit.
-// (Server→client CUSTOM events — `ctx.emitCustomEvent` → `onCustomEvent` —
-// flow the wrong direction for refs; they're the live tool-progress channel.)
+// DAT-452 — the AG-UI event layer was explored as a replacement and REJECTED
+// FOR THE CURRENT ARCHITECTURE: a sanctioned, typed client→server channel
+// DOES exist (`sendMessage(content, body)` → wire `forwardedProps` →
+// `chatParamsFromRequest().forwardedProps`), but it is per-REQUEST. Refs must
+// stay model-visible across LATER turns (chat is in-memory; the client
+// re-sends `messages[]` each request, and the model resolves "the file I
+// uploaded earlier" from history) — the marker gets that for free by riding
+// IN the message, while forwardedProps would need a client-side refs store
+// replayed on every send: exactly the side-channel state this design exists
+// to avoid. (Server→client CUSTOM events — `ctx.emitCustomEvent` →
+// `onCustomEvent` — flow the wrong direction for refs.)
+//
+// TRIGGER CONDITION — this verdict is an artifact of IN-MEMORY chat, not a
+// permanent truth. It survives SDK-seam persistence (`ChatClientPersistence`
+// stores `UIMessage[]` verbatim — the marker rides along). But if/when
+// conversations become SERVER-OWNED in cockpit_db (client sends only the new
+// turn + conversation id; server loads/appends/persists; `MESSAGES_SNAPSHOT`
+// syncs back), FLIP the design: refs go `sendMessage(bubble, { refs })` →
+// forwardedProps → a typed model-only row, the rail never receives them, and
+// `isAgentRefsPart` + every renderer skip is DELETED in the same cut — the
+// leak class becomes impossible by construction instead of by convention.
 
 // Both halves of `RefsTurn` are PUBLIC SDK exports (DAT-449): the message
 // shape from @tanstack/ai-client, the content-part shape from the

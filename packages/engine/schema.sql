@@ -159,6 +159,27 @@ CREATE INDEX idx_inv_step_tool ON investigation_steps (tool_name);
 
 CREATE INDEX ix_investigation_steps_session_id ON investigation_steps (session_id);
 
+CREATE TABLE lifecycle_artifacts (
+	artifact_id VARCHAR NOT NULL, 
+	session_id VARCHAR NOT NULL, 
+	artifact_type VARCHAR NOT NULL, 
+	artifact_key VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	state VARCHAR NOT NULL, 
+	state_reason TEXT, 
+	stage VARCHAR NOT NULL, 
+	strictness FLOAT, 
+	grounded_against JSON, 
+	teaches JSON, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 
+	CONSTRAINT uq_lifecycle_artifact_identity UNIQUE (session_id, artifact_type, artifact_key, run_id), 
+	CONSTRAINT fk_lifecycle_artifacts_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_lifecycle_artifacts_session_id ON lifecycle_artifacts (session_id);
+
 CREATE TABLE query_executions (
 	execution_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 

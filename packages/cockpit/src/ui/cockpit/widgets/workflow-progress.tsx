@@ -93,7 +93,13 @@ function phaseDescriptor(
 	const caption = display.captions[phase];
 	if (!caption) return group.label;
 	const detail = caption.replace(/…+$/u, "");
-	return `${group.label} (${detail.charAt(0).toLowerCase()}${detail.slice(1)})`;
+	// Sentence-case → lowercase for the parenthetical, but leave an
+	// acronym-leading caption ("LLM …") alone — only a [A-Z][a-z] start is a
+	// sentence capital.
+	const decapped = /^[A-Z][a-z]/.test(detail)
+		? detail.charAt(0).toLowerCase() + detail.slice(1)
+		: detail;
+	return `${group.label} (${decapped})`;
 }
 
 /** The leading status glyph for one fanned-out table row. */

@@ -434,7 +434,7 @@ class BeginSessionWorkflow:
     :class:`ProgressSnapshot` in ``self._progress`` and advances ``phase``
     before each stage; the read-only :meth:`get_progress` query serves it under
     the SAME query name and snapshot shape as ``AddSourceWorkflow``, so the
-    cockpit's existing poll (``getAddSourceProgress``) and ``workflow_status``
+    cockpit's existing poll (``getWorkflowProgress``) and ``workflow_status``
     tool report real phases with no contract change. Sequential chain, no
     fan-out → the per-table fields stay at their empty defaults. Every mutation
     sits between awaited, history-recorded activity completions, so a replay

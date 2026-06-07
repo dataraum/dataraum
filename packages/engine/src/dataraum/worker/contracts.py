@@ -43,19 +43,21 @@ class TableProgress:
 
 @dataclass
 class ProgressFailure:
-    """Why an add_source run ended badly — surfaced in the cockpit, not buried.
+    """Why a workflow run ended badly — surfaced in the cockpit, not buried.
 
     A polling cockpit reads this off the snapshot instead of opening the Temporal
-    UI for the failure detail.
+    UI for the failure detail. Served by both progress-bearing workflows
+    (add_source DAT-406, begin_session DAT-435).
 
     Attributes:
         message: The root-cause message — Temporal's Activity/ChildWorkflow
             error chain unwrapped to the phase's own non-retryable failure text.
         phase: The stage in flight when it failed (the snapshot's ``phase``).
         table_id: The raw table whose child failed, when the failure is
-            table-scoped; ``None`` for run-level stages (``import`` /
-            ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
-            ``promote``).
+            table-scoped; ``None`` for add_source's run-level stages (``import``
+            / ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
+            ``promote``) and ALWAYS ``None`` for begin_session (sequential, no
+            table-scoped stages).
     """
 
     message: str

@@ -165,9 +165,7 @@ def read_view_statements() -> list[tuple[str, str]]:
     table cannot silently skip the read surface.
     """
     load_all_models()
-    classified = (
-        set(_COLUMN_GRAIN) | set(_TABLE_GRAIN) | set(_SESSION_GRAIN) | set(_DUAL_GRAIN)
-    )
+    classified = set(_COLUMN_GRAIN) | set(_TABLE_GRAIN) | set(_SESSION_GRAIN) | set(_DUAL_GRAIN)
 
     statements: list[tuple[str, str]] = []
     versioned: set[str] = set()
@@ -188,8 +186,7 @@ def read_view_statements() -> list[tuple[str, str]]:
         statements.append(
             (
                 name,
-                f"CREATE VIEW {READ_TOKEN}.{name} AS\n"
-                f"SELECT * FROM {WS_TOKEN}.{name};",
+                f"CREATE VIEW {READ_TOKEN}.{name} AS\nSELECT * FROM {WS_TOKEN}.{name};",
             )
         )
 
@@ -245,7 +242,11 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
     for name, sql in statements:
         connection.execute(text(f'DROP VIEW IF EXISTS "{read_schema}".{name}'))
         connection.execute(
-            text(sql.replace(READ_TOKEN, f'"{read_schema}"').replace(WS_TOKEN, f'"{workspace_schema}"'))
+            text(
+                sql.replace(READ_TOKEN, f'"{read_schema}"').replace(
+                    WS_TOKEN, f'"{workspace_schema}"'
+                )
+            )
         )
     return len(statements)
 
@@ -316,6 +317,4 @@ def ensure_reader_role(connection: Connection, workspace_schema: str, password: 
     # itself; only the explicitly granted tables become reachable.
     connection.execute(text(f'GRANT USAGE ON SCHEMA "{workspace_schema}" TO {READER_ROLE}'))
     for table, verbs in _CONTROL_WRITE_GRANTS.items():
-        connection.execute(
-            text(f'GRANT {verbs} ON "{workspace_schema}".{table} TO {READER_ROLE}')
-        )
+        connection.execute(text(f'GRANT {verbs} ON "{workspace_schema}".{table} TO {READER_ROLE}'))

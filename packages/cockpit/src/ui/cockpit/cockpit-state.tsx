@@ -17,6 +17,9 @@
 // Chat lives HERE (not trapped in a leaf) so any canvas widget can drive a turn
 // through the real `sendMessage` — no registration bridge.
 
+// MultimodalContent comes from @tanstack/ai-client (the package that defines
+// it) — @tanstack/ai-react's root index does not re-export it.
+import type { MultimodalContent } from "@tanstack/ai-client";
 import {
 	fetchServerSentEvents,
 	type UIMessage,
@@ -45,10 +48,9 @@ export interface SendOptions {
 
 /** The content a turn carries: a plain string, or multimodal content parts — the
  * upload handoff (DAT-423) sends a clean text part + a model-only refs part.
- * Mirrors the shape the SDK's `sendMessage` accepts; we only use text parts. */
-export type TurnContent =
-	| string
-	| { content: Array<{ type: "text"; content: string }> };
+ * EXACTLY `sendMessage`'s param type (the SDK exports `MultimodalContent` —
+ * re-exported by @tanstack/ai-react — so no hand-mirrored shape, DAT-449). */
+export type TurnContent = string | MultimodalContent;
 
 // The context is SPLIT in two so that consumers reading only stable callbacks
 // don't re-render on every streaming token. React context subscription ignores
@@ -130,11 +132,9 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	const sendTurn = useCallback(
 		(content: TurnContent, opts?: SendOptions) => {
 			setPendingLabel(opts?.label);
-			// This call is the compile-time guard that `TurnContent` stays assignable
-			// to the SDK's `sendMessage` param: if a future SDK bump narrows it, this
-			// line stops type-checking. (We can't assert against the SDK's
-			// `MultimodalContent` directly — @tanstack/ai-react doesn't export it,
-			// which is why `TurnContent` mirrors the shape locally.)
+			// `TurnContent` IS the SDK's `string | MultimodalContent` (type-only
+			// import), so this call is assignable by construction — an SDK bump
+			// that reshapes the param surfaces at the import, not here.
 			void sendMessage(content);
 		},
 		[sendMessage],

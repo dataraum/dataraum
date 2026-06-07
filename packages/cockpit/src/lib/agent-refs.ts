@@ -13,6 +13,19 @@
 // transcript export, copy-to-clipboard, debug panel) MUST apply the same skip,
 // or the internals leak.
 
+// Both halves of `RefsTurn` are PUBLIC SDK exports (DAT-449): the message
+// shape from @tanstack/ai-client, the content-part shape from the
+// @tanstack/ai/client subpath — no hand-mirrored field shapes to drift.
+import type { TextPart } from "@tanstack/ai/client";
+import type { MultimodalContent } from "@tanstack/ai-client";
+
+/** A refs turn IS the SDK's `MultimodalContent` (what `sendMessage` accepts),
+ * narrowed to the text-part array this module actually emits — consumers keep
+ * `turn.content[i].content` precision without re-narrowing the SDK union. */
+export type RefsTurn = Omit<MultimodalContent, "content"> & {
+	content: Array<TextPart>;
+};
+
 /** Sentinel prefix marking a model-only refs part. Renderers skip any user text
  * part that starts with it; nothing a human types begins this way.
  * Replaced DAT-423's `[[dataraum:uploaded-objects]]` outright — chat is
@@ -31,14 +44,6 @@ export function isAgentRefsPart(content: string): boolean {
  * tool calls, never echo them). */
 export function agentRefsBlock(body: string): string {
 	return `${AGENT_REFS_MARKER} ${body}`;
-}
-
-/** A two-part turn: the clean bubble + the marked refs part. Structurally the
- * multimodal content shape the SDK's `sendMessage` accepts (mirrored as
- * `TurnContent` in cockpit-state — kept structural here so lib/ doesn't import
- * from ui/). */
-export interface RefsTurn {
-	content: Array<{ type: "text"; content: string }>;
 }
 
 /** Compose a turn whose bubble is clean and whose internals ride in a marked,

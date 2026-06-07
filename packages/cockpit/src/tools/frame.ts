@@ -26,6 +26,7 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { ConnectSchema } from "../duckdb/connect";
+import { linkedAbortController } from "../lib/abort";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getFrameInstructions } from "../prompts";
 import { teach } from "./teach";
@@ -131,13 +132,16 @@ export interface FrameInput {
  * Induce a business vocabulary from a `ConnectSchema` via one forced
  * structured-output Anthropic call. Returns the proposed concepts; does NOT
  * write anything. Split out so the induction step is testable apart from the
- * DB write.
+ * DB write. `signal` is the tool-context abort (DAT-449): a stopped run aborts
+ * this nested call instead of billing it to completion.
  */
 export async function induceConcepts(
 	schema: ConnectSchema,
+	signal?: AbortSignal,
 ): Promise<ProposedConcept[]> {
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		abortController: linkedAbortController(signal),
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getFrameInstructions()],
 		messages: [
@@ -160,13 +164,16 @@ export async function induceConcepts(
  * the shared teach seam. Returns the written concepts + their overlay ids for
  * the ConceptFrame widget.
  */
-export async function frame(input: FrameInput): Promise<FrameResult> {
+export async function frame(
+	input: FrameInput,
+	signal?: AbortSignal,
+): Promise<FrameResult> {
 	const schema = ConnectSchema.parse(input.schema);
 	const vertical = resolveVertical(input.vertical_name);
 	const concepts =
 		input.concepts && input.concepts.length > 0
 			? input.concepts.map((c) => ProposedConcept.parse(c))
-			: await induceConcepts(schema);
+			: await induceConcepts(schema, signal);
 
 	if (concepts.length === 0) {
 		throw new Error(
@@ -239,4 +246,4 @@ export const frameTool = toolDefinition({
 	}),
 	outputSchema: FrameResult,
 	needsApproval: true,
-}).server((input) => frame(input));
+}).server((input, ctx) => frame(input, ctx?.abortSignal));

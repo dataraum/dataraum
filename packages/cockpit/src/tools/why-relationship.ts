@@ -35,6 +35,7 @@ import {
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
+import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
@@ -176,14 +177,17 @@ export function projectWhyRelationship(
 
 /** Synthesize the grounded narrative via one forced Anthropic call (split out so
  * the assembly is testable apart from the LLM). The model sees only the band +
- * drivers + evidence we pass. */
+ * drivers + evidence we pass. `signal` is the tool-context abort (DAT-449): a
+ * stopped run aborts this nested call instead of billing it to completion. */
 export async function synthesizeAnalysis(
 	data: WhyRelationshipData,
+	signal?: AbortSignal,
 ): Promise<string> {
 	const fromLabel = `${data.from_table_name ?? "?"}.${data.from_column_name ?? data.from_column_id}`;
 	const toLabel = `${data.to_table_name ?? "?"}.${data.to_column_name ?? data.to_column_id}`;
 	const result = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		abortController: linkedAbortController(signal),
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		systemPrompts: [getWhyInstructions()],
 		messages: [
@@ -221,6 +225,7 @@ export interface WhyRelationshipInput {
 /** Explain one relationship's readiness: pre-computed drivers + evidence + narrative. */
 export async function whyRelationship(
 	input: WhyRelationshipInput,
+	signal?: AbortSignal,
 ): Promise<WhyRelationshipResult> {
 	const target = relationshipTargetKey(
 		input.from_column_id,
@@ -301,7 +306,7 @@ export async function whyRelationship(
 	);
 
 	// Nothing to explain when there's no readiness row — skip the LLM call.
-	const analysis = data.analyzed ? await synthesizeAnalysis(data) : "";
+	const analysis = data.analyzed ? await synthesizeAnalysis(data, signal) : "";
 
 	return { ...data, analysis };
 }
@@ -364,4 +369,4 @@ export const whyRelationshipTool = toolDefinition({
 			),
 	}),
 	outputSchema: WhyRelationshipResult,
-}).server((input) => whyRelationship(input));
+}).server((input, ctx) => whyRelationship(input, ctx?.abortSignal));

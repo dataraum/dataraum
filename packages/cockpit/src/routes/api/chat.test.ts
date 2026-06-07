@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { MAX_OUTPUT_TOKENS } from "../../llm";
+import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS } from "../../llm";
 import { buildChatOptions } from "./chat";
 
 /** Narrow the SDK's `SystemPrompt` union (string | {content, metadata?}) to the
@@ -71,6 +71,23 @@ describe("chat route wiring (DAT-353)", () => {
 		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
 		expect(opts.modelOptions).toEqual({ max_tokens: MAX_OUTPUT_TOKENS });
 		expect(opts).not.toHaveProperty("maxTokens");
+	});
+
+	it("sets an explicit agent-loop budget — no silent maxIterations(5) default", () => {
+		// THE DAT-449 pin, sibling of the max_tokens pin above: chat() defaults
+		// agentLoopStrategy to maxIterations(5) when omitted, silently stopping a
+		// multi-tool turn at iteration 5 with no error. The strategy is a pure
+		// predicate over the loop state, so pin the exact budget behaviorally.
+		const strategy = buildChatOptions([
+			{ role: "user", content: "hi" },
+		]).agentLoopStrategy;
+		expect(strategy).toBeDefined();
+		const continues = (iterationCount: number) =>
+			strategy?.({ iterationCount, messages: [], finishReason: null });
+		expect(continues(AGENT_LOOP_MAX_ITERATIONS - 1)).toBe(true);
+		expect(continues(AGENT_LOOP_MAX_ITERATIONS)).toBe(false);
+		// And the budget itself is deliberately ABOVE the SDK default.
+		expect(AGENT_LOOP_MAX_ITERATIONS).toBeGreaterThan(5);
 	});
 
 	it("attaches the full tool registry to the loop", () => {

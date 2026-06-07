@@ -1,12 +1,18 @@
 // Tool-call chip state (DAT-436) — the terminal-state mapping the chat rail's
 // chips render from. Pure, no React.
 //
-// SDK CONTRACT: the shapes below are UNDOCUMENTED internals of @tanstack/ai.
+// SDK CONTRACT (two halves, DAT-449):
+//   - The tool-CALL part behavior — an errored execution parking at
+//     "input-complete" with the error riding in `output` — is an UNDOCUMENTED
+//     internal of @tanstack/ai (no error-terminal ToolCallState exists).
+//   - The tool-RESULT part shape (`state: "error"` + `error?: string`) is the
+//     PUBLIC `ToolResultPart` export of @tanstack/ai-client —
+//     `toolResultErrorsById` consumes a documented contract, not an internal.
 // Deps stay "latest" by project convention — bun.lock owns the installed
-// version, which only moves on an explicit `bun update`. The shapes are pinned
-// empirically by tool-chip-state.contract.test.ts, which drives the real
-// chat() → SSE → ChatClient pipeline on every suite run — an update that
-// changes the contract fails the suite loudly; re-verify this mapping then.
+// version, which only moves on an explicit `bun update`. BOTH halves are
+// pinned empirically by tool-chip-state.contract.test.ts, which drives the
+// real chat() → SSE → ChatClient pipeline on every suite run — an update that
+// changes either fails the suite loudly; re-verify this mapping then.
 //
 // WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
 // state (verified against the installed @tanstack/ai — bun.lock owns the
@@ -186,7 +192,8 @@ export interface MessageLike {
  * Collect every errored `tool-result` part's error text by toolCallId. The SDK
  * emits these alongside the (state-less) error on the tool-call part itself;
  * the rail prefers this text when present (it survives even when the call
- * part's output was clobbered).
+ * part's output was clobbered). The part shape read here is the PUBLIC
+ * `ToolResultPart` export of @tanstack/ai-client (a documented contract).
  */
 export function toolResultErrorsById(
 	messages: ReadonlyArray<MessageLike>,

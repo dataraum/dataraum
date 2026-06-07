@@ -10,13 +10,14 @@
 import {
 	chat,
 	chatParamsFromRequest,
+	maxIterations,
 	toServerSentEventsResponse,
 } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
-import { MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
+import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
 import { buildWorkspaceContext } from "../../prompts/workspace-context";
 import { tools } from "../../tools/registry";
@@ -113,6 +114,9 @@ export function buildChatOptions(
 		// A truncated stream severs the client's background result drain, which
 		// is what parked tool chips on an eternal spinner (DAT-436).
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+		// Explicit loop budget — the SDK's silent default is maxIterations(5),
+		// which stops a multi-tool turn mid-task with no error (see src/llm.ts).
+		agentLoopStrategy: maxIterations(AGENT_LOOP_MAX_ITERATIONS),
 		systemPrompts,
 		messages,
 		tools: [...tools],

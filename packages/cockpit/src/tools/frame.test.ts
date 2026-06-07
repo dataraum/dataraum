@@ -168,4 +168,32 @@ describe("frame (DAT-382)", () => {
 		expect(concepts).toEqual([{ name: "customer_id", typical_role: "key" }]);
 		expect(insertedRows).toHaveLength(0);
 	});
+
+	it("forwards the tool-context abort into the nested induction chat() (DAT-449)", async () => {
+		// The pattern shared by all four nested-synthesis sites (frame induction +
+		// the three why_* narratives): the .server() context's abortSignal is
+		// bridged into the abortController chat() expects, so a user stop()
+		// cancels the in-flight nested Anthropic call instead of billing it out.
+		chatMock.mockResolvedValue({ concepts: [] });
+		const source = new AbortController();
+		await induceConcepts(SCHEMA, source.signal);
+
+		const options = chatMock.mock.calls[0]?.[0] as {
+			abortController?: AbortController;
+		};
+		expect(options.abortController).toBeDefined();
+		expect(options.abortController?.signal.aborted).toBe(false);
+		// Stopping the run (the tool context's signal) aborts the nested call.
+		source.abort();
+		expect(options.abortController?.signal.aborted).toBe(true);
+	});
+
+	it("passes NO abortController when the tool context carries no signal", async () => {
+		chatMock.mockResolvedValue({ concepts: [] });
+		await induceConcepts(SCHEMA);
+		const options = chatMock.mock.calls[0]?.[0] as {
+			abortController?: AbortController;
+		};
+		expect(options.abortController).toBeUndefined();
+	});
 });

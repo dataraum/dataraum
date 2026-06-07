@@ -12,10 +12,13 @@ import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
+import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
+import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
+import { TableWhyWidget } from "#/ui/cockpit/widgets/table-why";
 import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
 
@@ -33,5 +36,8 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
 	.register({ kind: "column-why", component: ColumnWhyWidget })
+	.register({ kind: "table-why", component: TableWhyWidget })
+	.register({ kind: "relationship-why", component: RelationshipWhyWidget })
+	.register({ kind: "relationship-list", component: RelationshipListWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "upload-area", component: UploadAreaWidget });

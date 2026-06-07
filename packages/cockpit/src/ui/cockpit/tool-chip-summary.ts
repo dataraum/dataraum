@@ -23,10 +23,13 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { Vertical } from "#/tools/list-verticals";
+import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyRelationshipResult } from "#/tools/why-relationship";
+import type { WhyTableResult } from "#/tools/why-table";
 import { groupLogicalTables } from "#/ui/cockpit/widgets/inventory-grouping";
 
 // Re-exported from the canvas bridge: defined ONCE there (derived from the
@@ -54,6 +57,9 @@ const TOOL_LABELS: Record<string, string> = {
 	list_tables: "Workspace tables",
 	look_table: "Table readiness",
 	why_column: "Column detail",
+	why_table: "Table detail",
+	why_relationship: "Relationship detail",
+	look_relationships: "Relationships",
 	connect: "Reading source",
 	frame: "Concepts",
 	select: "Registering source",
@@ -169,6 +175,33 @@ export function toolChipSummary(
 			const band = r.band ?? "not analyzed";
 			// `table_name` arrives in display form (projected in the tool, DAT-431).
 			return `${r.column_name} (${r.table_name}) — ${band}`;
+		}
+		case "why_table": {
+			const r = output as WhyTableResult | undefined;
+			if (!r) return "explaining table…";
+			if (!r.found) return "table not found";
+			const band = r.band ?? "not analyzed";
+			// `table_name` arrives in display form (DAT-431); null → no id fallback.
+			return `${r.table_name ?? "table"} — ${band}`;
+		}
+		case "why_relationship": {
+			const r = output as WhyRelationshipResult | undefined;
+			if (!r) return "explaining relationship…";
+			if (!r.found) return "relationship not found";
+			const band = r.band ?? "not analyzed";
+			// Endpoint names arrive in display form (DAT-431); nulls degrade to the
+			// bare arrow — never a column id.
+			const from = r.from_table_name ?? "";
+			const to = r.to_table_name ?? "";
+			return `${from} → ${to} — ${band}`.trim();
+		}
+		case "look_relationships": {
+			const r = output as LookRelationshipsResult | undefined;
+			if (!r || !Array.isArray(r.relationships))
+				return "reading relationships…";
+			return r.analyzed
+				? plural(r.relationships.length, "relationship")
+				: "not yet analyzed";
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;

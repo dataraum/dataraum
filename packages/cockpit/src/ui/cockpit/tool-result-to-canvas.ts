@@ -16,8 +16,11 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyRelationshipResult } from "#/tools/why-relationship";
+import type { WhyTableResult } from "#/tools/why-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 /** Projects one tool's result (+ call input) to a CanvasState, or null to leave
@@ -53,6 +56,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The per-column explanation; a missing result leaves the canvas as-is.
 	why_column: (result) =>
 		result ? { kind: "column-why", why: result as WhyColumnResult } : null,
+	// The per-table explanation (DAT-434) — same guard as why_column.
+	why_table: (result) =>
+		result ? { kind: "table-why", why: result as WhyTableResult } : null,
+	// The per-relationship explanation (DAT-434) — same guard.
+	why_relationship: (result) =>
+		result
+			? { kind: "relationship-why", why: result as WhyRelationshipResult }
+			: null,
+	// The begin_session relationship-readiness list (DAT-434). Project only a
+	// complete result (a `relationships` array) — a partial/streaming or errored
+	// output would crash the list widget's .map (same guard as connect/frame).
+	look_relationships: (result) =>
+		Array.isArray((result as { relationships?: unknown } | null)?.relationships)
+			? { kind: "relationship-list", look: result as LookRelationshipsResult }
+			: null,
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and
 	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file

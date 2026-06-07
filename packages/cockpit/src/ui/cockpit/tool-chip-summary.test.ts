@@ -41,13 +41,16 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 10 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(10);
+	it("marks the 13 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(13);
 		for (const name of [
 			"list_sources",
 			"list_tables",
 			"look_table",
 			"why_column",
+			"why_table",
+			"why_relationship",
+			"look_relationships",
 			"connect",
 			"frame",
 			"select",
@@ -177,6 +180,62 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		expect(toolChipSummary("why_column", {}, { found: false })).toBe(
 			"column not found",
 		);
+	});
+
+	it("why_table names the table + band (DAT-434)", () => {
+		expect(
+			toolChipSummary(
+				"why_table",
+				{},
+				{ table_name: "orders", found: true, band: "ready" },
+			),
+		).toBe("orders — ready");
+		expect(toolChipSummary("why_table", {}, { found: false })).toBe(
+			"table not found",
+		);
+		// A null display name degrades to a placeholder, never the table_id.
+		expect(
+			toolChipSummary(
+				"why_table",
+				{},
+				{ table_id: "t_1", table_name: null, found: true, band: "ready" },
+			),
+		).toBe("table — ready");
+	});
+
+	it("why_relationship names the endpoints + band (DAT-434)", () => {
+		expect(
+			toolChipSummary(
+				"why_relationship",
+				{},
+				{
+					from_table_name: "orders",
+					to_table_name: "customers",
+					found: true,
+					band: "ready",
+				},
+			),
+		).toBe("orders → customers — ready");
+		expect(toolChipSummary("why_relationship", {}, { found: false })).toBe(
+			"relationship not found",
+		);
+	});
+
+	it("look_relationships counts the relationships (DAT-434)", () => {
+		expect(
+			toolChipSummary(
+				"look_relationships",
+				{},
+				{ analyzed: true, relationships: [{}, {}] },
+			),
+		).toBe("2 relationships");
+		expect(
+			toolChipSummary(
+				"look_relationships",
+				{},
+				{ analyzed: false, relationships: [] },
+			),
+		).toBe("not yet analyzed");
 	});
 
 	it("connect names the source + table count", () => {

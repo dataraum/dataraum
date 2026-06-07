@@ -96,8 +96,10 @@ export const Route = createFileRoute("/api/run-sql")({
 	server: {
 		handlers: {
 			POST: async ({ request }) => {
-				// The first NDJSON byte waits on DuckDB's first batch — a heavy query
-				// can exceed Bun's 10s first-byte idle timeout. Exempt this request.
+				// The NDJSON stream goes quiet whenever DuckDB takes >10s to produce
+				// the next batch — first byte or mid-stream; Bun's idle timeout kills
+				// either kind of silence. Exempt this request (see
+				// lib/bun-request-timeout).
 				disableBunIdleTimeout(request);
 				let body: RunSqlStreamBody;
 				try {

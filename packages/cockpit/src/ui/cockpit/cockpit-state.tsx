@@ -98,9 +98,12 @@ const CockpitActionsContext = createContext<CockpitActions | null>(null);
 /** Return the previous reference when `value` is deep-equal (by JSON), so a
  * derived object that recomputes every render but rarely CHANGES doesn't churn
  * memoized consumers. This is the canvas dedupe — `useMemo` keyed on the
- * serialized value (NOT the value's identity, which changes every render):
- * same key → React returns the cached reference. No ref is written during
- * render (conventions rule 8 / react.dev useRef pitfall — DAT-451). */
+ * serialized value (NOT the value's identity, which changes every render).
+ * React MAY discard the cache (Suspense initial mount; react.dev caveats) —
+ * the cost is one extra re-render of memoized consumers, never correctness
+ * (the old useRef version equally reset on unmount/remount). No ref is
+ * written during render (conventions rule 8 / react.dev useRef pitfall —
+ * DAT-451). */
 function useStableValue<T>(value: T): T {
 	const key = JSON.stringify(value);
 	// `key` IS the value's identity — depending on `value` (a fresh reference

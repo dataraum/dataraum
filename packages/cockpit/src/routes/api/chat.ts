@@ -103,8 +103,10 @@ export const Route = createFileRoute("/api/chat")({
 			// chatParamsFromRequest throws a 400 Response on a malformed AG-UI body,
 			// which TanStack Start surfaces to the client automatically.
 			POST: async ({ request }) => {
-				// The first SSE byte can take >10s (workspace read + Anthropic TTFB
-				// on a cache write) — exempt from Bun's first-byte idle timeout.
+				// The SSE stream goes quiet for >10s both before its first byte
+				// (workspace read + Anthropic TTFB on a cache write) and mid-stream
+				// while a server tool runs — exempt from Bun's idle timeout, which
+				// kills EITHER kind of silence (see lib/bun-request-timeout).
 				disableBunIdleTimeout(request);
 				const { messages } = await chatParamsFromRequest(request);
 				// The current sessions, so the agent knows where the user is (replay /

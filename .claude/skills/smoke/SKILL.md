@@ -61,7 +61,7 @@ docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
 **Smoking a branch (not `main`):** the compose `cockpit` build context is the canonical `packages/cockpit` (= `main`), so a fresh `up` smokes `main`'s cockpit, not your branch. To smoke a branch, build the image from THAT checkout/worktree and recreate the service with it — do NOT host-`dev` it (see the duckdb-neo note above):
 
 ```bash
-docker build -t infra-cockpit <checkout>/packages/cockpit --build-arg VITE_ENGINE_API_URL=http://localhost:8000
+docker build -t infra-cockpit <checkout>/packages/cockpit
 env -u ANTHROPIC_API_KEY docker compose -f packages/infra/docker-compose.yml up -d --no-build --force-recreate cockpit
 ```
 

@@ -53,8 +53,8 @@ COPY --from=build /app/.output ./.output
 # matching platform package must be present in node_modules at runtime. These
 # packages are pure binary (no transitive deps); `bun` resolves the runtime
 # `require('@duckdb/node-bindings-<plat>/duckdb.node')` from /app/node_modules.
-# The deps stage installs the binding for THIS image's platform/libc (alpine =
-# musl), which matches the runner — so the binary loads.
+# The deps stage installs the binding for THIS image's platform/libc (both
+# stages are Debian-based oven/bun images), so the binary loads in the runner.
 COPY --from=deps /app/node_modules/@duckdb ./node_modules/@duckdb
 
 # Pre-install the DuckDB extensions at image build time (mirror of the engine's

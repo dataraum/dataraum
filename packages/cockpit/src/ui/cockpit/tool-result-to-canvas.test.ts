@@ -207,18 +207,6 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("look_validation", null)).toBeNull();
 	});
 
-	it("the operating_model driver projects NOTHING — display-only chip (DAT-440)", () => {
-		// Like begin_session: the result is run ids, not a renderable surface —
-		// the outcome arrives via look_validation.
-		expect(
-			toolResultToCanvas("operating_model", {
-				workflow_id: "operatingmodel-ws-s1",
-				run_id: "r1",
-				session_id: "s1",
-			}),
-		).toBeNull();
-	});
-
 	it("maps connect to a schema-preview canvas", () => {
 		const schema = {
 			sourceKind: "file" as const,
@@ -385,6 +373,25 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("begin_session", null)).toBeNull();
 		expect(
 			toolResultToCanvas("begin_session", { error: "session row missing" }),
+		).toBeNull();
+	});
+
+	it("maps operating_model to the operating-model-progress canvas (DAT-440)", () => {
+		expect(
+			toolResultToCanvas("operating_model", {
+				workflow_id: "operatingmodel-ws-sess",
+				run_id: "run-om-1",
+				session_id: "sess-1",
+			}),
+		).toEqual({
+			kind: "operating-model-progress",
+			workflowId: "operatingmodel-ws-sess",
+			runId: "run-om-1",
+		});
+		// A failed start leaves the canvas unchanged (chat rail carries the error).
+		expect(toolResultToCanvas("operating_model", null)).toBeNull();
+		expect(
+			toolResultToCanvas("operating_model", { error: "workflow start failed" }),
 		).toBeNull();
 	});
 

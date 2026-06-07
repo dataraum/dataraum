@@ -46,8 +46,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 16 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(16);
+	it("marks the 17 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(17);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -62,6 +62,7 @@ describe("isCanvasTool", () => {
 			"frame",
 			"select",
 			"begin_session",
+			"operating_model",
 			"run_sql",
 			"replay",
 			"upload",
@@ -70,10 +71,11 @@ describe("isCanvasTool", () => {
 		}
 	});
 
-	it("marks probe / teach / operating_model display-only", () => {
-		// operating_model returns run ids, not a renderable surface (the
-		// begin_session pattern) — its chip must not be clickable.
-		for (const name of ["probe", "teach", "operating_model", "unknown"]) {
+	it("marks probe / teach display-only", () => {
+		// These return no renderable surface — their chips must not be clickable.
+		// (operating_model LEFT this list with the DAT-435 follow-on: its driver
+		// projects the live progress canvas, like begin_session.)
+		for (const name of ["probe", "teach", "unknown"]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
 	});

@@ -12,6 +12,7 @@ import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
+import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
@@ -46,4 +47,8 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "validation-why", component: ValidationWhyWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "session-progress", component: SessionProgressWidget })
+	.register({
+		kind: "operating-model-progress",
+		component: OperatingModelProgressWidget,
+	})
 	.register({ kind: "upload-area", component: UploadAreaWidget });

@@ -158,6 +158,18 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 				}
 			: null;
 	},
+	// operating_model STARTS the validation run and returns immediately — the
+	// canvas flips to the live progress widget (DAT-440, DAT-435 follow-on).
+	operating_model: (result) => {
+		const r = result as { workflow_id?: string; run_id?: string } | null;
+		return r?.workflow_id && r?.run_id
+			? {
+					kind: "operating-model-progress",
+					workflowId: r.workflow_id,
+					runId: r.run_id,
+				}
+			: null;
+	},
 	// The agent's run_sql returns a small sample for the LLM; the human grid
 	// re-issues the query against the stateless streaming endpoint, so it maps
 	// from the CALL INPUT (sql + bind params), not the result. No sql → unchanged.

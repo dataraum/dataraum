@@ -140,6 +140,9 @@ export async function whyValidation(
 			and(
 				eq(currentLifecycleArtifacts.sessionId, input.session_id),
 				eq(currentLifecycleArtifacts.artifactKey, input.validation_id),
+				// artifact_key is only unique WITHIN a type — cycles/metrics will
+				// share this view (DAT-441), so pin the type like look_validation.
+				eq(currentLifecycleArtifacts.artifactType, "validation"),
 			),
 		)
 		.limit(1);

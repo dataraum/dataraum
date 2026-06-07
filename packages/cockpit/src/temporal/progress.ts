@@ -7,7 +7,7 @@
 // FAILED/TERMINATED never reaches phase==="done", so phase alone can't tell a
 // stuck run from a finished one). `addSourceWorkflow` and `beginSessionWorkflow`
 // both serve the SAME query name + snapshot shape (one seam, no per-workflow
-// branch); a workflow without the query (operatingModelWorkflow) degrades to
+// branch); a workflow without the query (none today; forward-compat) degrades to
 // describe()-only.
 //
 // Targets the PRECISE run_id: the workflow id is reused per session under
@@ -119,7 +119,7 @@ export function isProgressDone(phase: string, status: string): boolean {
  * `beginSessionWorkflow` (DAT-435) both register a `get_progress`
  * @workflow.query serving the same snapshot shape (add_source with per-table
  * fan-out detail, begin_session sequential with empty fan-out fields). A
- * workflow without the query (`operatingModelWorkflow`) raises
+ * workflow without the query (none today; forward-compat) raises
  * `WorkflowQueryFailedError` — caught here to fall back to a `describe()`-only
  * status (no phase detail, but the authoritative run status + `done`). Any
  * OTHER query error is a real failure and rethrows.
@@ -140,7 +140,8 @@ export async function getWorkflowProgress(
 		try {
 			snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
 		} catch (err) {
-			// A workflow with no get_progress handler (operating_model) raises
+			// A workflow with no get_progress handler (none today; kept for
+			// forward-compat — all three parent workflows serve the query) raises
 			// WorkflowQueryFailedError — degrade to describe()-only. Match on the
 			// error name to avoid coupling to the SDK's class export.
 			if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {

@@ -614,10 +614,50 @@ class OperatingModelWorkflow:
     the terminal detect (cross_table_consistency) before promote. A re-run is
     a full re-run under a fresh ``run_id`` — declared artifacts and validation
     results supersede, never mutate (DAT-408).
+
+    Progress (DAT-435 follow-on): the body keeps a :class:`ProgressSnapshot`
+    in ``self._progress`` and advances ``phase`` before each stage; the
+    read-only :meth:`get_progress` query serves it under the same name + shape
+    as the other workflows, so the cockpit polls all of them through one seam.
     """
+
+    def __init__(self) -> None:
+        # Initialized to the pre-flight stage so a query that lands before the
+        # first activity still returns a well-formed snapshot (never None). The
+        # fan-out fields keep their empty defaults — operating_model has no
+        # children, which the cockpit widget reads as "no per-table tally".
+        self._progress = ProgressSnapshot(phase="operating_model_resolve")
+
+    @workflow.query
+    def get_progress(self) -> ProgressSnapshot:
+        """Return the current progress snapshot (DAT-435 follow-on).
+
+        Read-only, non-mutating → determinism-safe; same query name + shape as
+        :meth:`BeginSessionWorkflow.get_progress`, so the cockpit's progress
+        seam covers this workflow without a per-workflow branch.
+        """
+        return self._progress
 
     @workflow.run
     async def run(self, payload: OperatingModelInput) -> OperatingModelResult:
+        """Run the operating_model spine, recording any failure into the snapshot.
+
+        Thin wrapper over :meth:`_run_inner`, mirroring
+        :meth:`BeginSessionWorkflow.run`: on any stage failure it stamps
+        ``self._progress.failure`` (root-cause message + the phase in flight)
+        before re-raising. ``except Exception`` deliberately misses
+        ``CancelledError`` so cancellation still propagates clean.
+        """
+        try:
+            return await self._run_inner(payload)
+        except Exception as err:
+            self._progress.failure = ProgressFailure(
+                message=_failure_message(err),
+                phase=self._progress.phase,
+            )
+            raise
+
+    async def _run_inner(self, payload: OperatingModelInput) -> OperatingModelResult:
         run_id = str(workflow.uuid4())
         identity = payload.identity.model_copy(update={"run_id": run_id})
 
@@ -634,6 +674,7 @@ class OperatingModelWorkflow:
         # The lifecycle family: every declared validation (vertical ⊕ teach
         # rows) is declared for this run, bound (SQL vs workspace), executed.
         # Ungroundable specs surface as declared-with-reason, never silently.
+        self._progress.phase = "validation"
         outcome = await workflow.execute_activity(
             "validation",
             OperatingModelScopedInput(identity=identity, scope=scope),
@@ -643,6 +684,7 @@ class OperatingModelWorkflow:
         )
 
         # Terminal promote: flip (session:{id}, "operating_model") to this run.
+        self._progress.phase = "operating_model_promote"
         await workflow.execute_activity(
             "operating_model_promote",
             identity,
@@ -651,6 +693,7 @@ class OperatingModelWorkflow:
             retry_policy=_RETRY,
         )
 
+        self._progress.phase = "done"
         return OperatingModelResult(
             session_id=identity.session_id,
             table_ids=scope.table_ids,

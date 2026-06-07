@@ -68,6 +68,9 @@ export type CanvasState =
 	// add-source-progress. Same carry (the started run's ids; the widget polls
 	// `get_progress`), projected from the begin_session TOOL RESULT.
 	| { kind: "session-progress"; workflowId: string; runId: string }
+	// DAT-440 (DAT-435 follow-on): live operating_model workflow progress —
+	// same carry, projected from the operating_model TOOL RESULT.
+	| { kind: "operating-model-progress"; workflowId: string; runId: string }
 	// DAT-385 P2: the human-facing SQL grid. The P1 stream server is stateless
 	// (no queryId→SQL registry), so the grid re-issues the query — it carries the
 	// `sql` (+ optional bind `params`) the mapper lifts off the `run_sql` tool

@@ -16,6 +16,17 @@
 // real chat() → SSE → ChatClient pipeline on every suite run — an update that
 // changes either fails the suite loudly; re-verify this mapping then.
 //
+// DAT-452 — the AG-UI event layer was explored as a replacement and REJECTED:
+// the raw events (TOOL_CALL_RESULT, RUN_ERROR — consumable via the client's
+// `onChunk`/`onCustomEvent` hooks) are exactly what the SDK's StreamProcessor
+// already projects into the parts this module reads, so consuming them
+// directly adds NO authority — it only trades render-derived state for an
+// event-driven parallel store (against the derive-during-render convention).
+// The root gap is UPSTREAM: ToolCallState has no error terminal, so the same
+// inference is required at either layer — filed as
+// https://github.com/TanStack/ai/issues/718 (contract test as the repro).
+// Until that lands, this mapping + the contract test are the floor.
+//
 // WHY THIS EXISTS — the SDK's tool-call part state machine has NO error-terminal
 // state (verified against the installed @tanstack/ai — bun.lock owns the
 // version — by driving the real server chat() loop + client StreamProcessor

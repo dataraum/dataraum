@@ -127,8 +127,11 @@ jobs:
             - name: Biome check
               run: bun run check
 
+            # `bun run typecheck` (NOT bare `bunx tsc`): the script resolves the
+            # locked devDep and fails loudly if typescript ever leaves the
+            # lockfile — bare bunx would silently fetch latest instead.
             - name: Type check
-              run: bunx tsc --noEmit
+              run: bun run typecheck
 
             - name: Unit tests
               run: bun run test

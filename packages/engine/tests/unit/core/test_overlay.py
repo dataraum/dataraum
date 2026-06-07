@@ -386,6 +386,68 @@ class TestApplyConceptProperty:
 # ---------------------------------------------------------------------------
 
 
+class TestApplyValidation:
+    """``validation`` rows upsert into the logical ``verticals/<v>/validations`` collection."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    @staticmethod
+    def _row(validation_id: str, vertical: str = "finance", **extra: Any) -> OverlayRow:
+        payload: dict[str, Any] = {
+            "vertical": vertical,
+            "validation_id": validation_id,
+            "name": validation_id,
+            "description": "d",
+            "category": "financial",
+            "check_type": "balance",
+        }
+        payload.update(extra)
+        return OverlayRow(type="validation", payload=payload)
+
+    def test_adds_to_empty_collection(self) -> None:
+        # Framed vertical: empty base + rows IS the declared set.
+        set_overlay_resolver(lambda: [self._row("taught")])
+        merged = apply_overlay("verticals/finance/validations", {"validations": []})
+        assert [s["validation_id"] for s in merged["validations"]] == ["taught"]
+        assert "vertical" not in merged["validations"][0]  # stripped from payload
+
+    def test_replaces_base_spec_by_id_last_write_wins(self) -> None:
+        base = {"validations": [{"validation_id": "tb", "name": "shipped"}]}
+        set_overlay_resolver(
+            lambda: [
+                self._row("tb", parameters={"tolerance": 1.0}),
+                self._row("tb", parameters={"tolerance": 5.0}),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/validations", base)
+        assert len(merged["validations"]) == 1
+        assert merged["validations"][0]["parameters"] == {"tolerance": 5.0}
+        # Base dict untouched (no aliasing)
+        assert base["validations"][0]["name"] == "shipped"
+
+    def test_other_vertical_rows_filtered_by_dispatcher(self) -> None:
+        set_overlay_resolver(lambda: [self._row("x", vertical="marketing")])
+        base: dict[str, Any] = {"validations": []}
+        merged = apply_overlay("verticals/finance/validations", base)
+        assert merged is base  # no matching rows → identity short-circuit
+
+    def test_row_without_validation_id_ignored(self) -> None:
+        set_overlay_resolver(
+            lambda: [OverlayRow(type="validation", payload={"vertical": "finance", "name": "n"})]
+        )
+        merged = apply_overlay("verticals/finance/validations", {"validations": []})
+        assert merged["validations"] == []
+
+    def test_per_file_yaml_path_is_inert(self) -> None:
+        # The applier binds to the COLLECTION path; an individual spec file's
+        # path matches no applier and passes through unchanged.
+        set_overlay_resolver(lambda: [self._row("tb")])
+        base = {"validation_id": "tb", "name": "shipped"}
+        merged = apply_overlay("verticals/finance/validations/trial_balance.yaml", base)
+        assert merged == base
+
+
 class TestApplyOverlayDispatch:
     """``apply_overlay`` short-circuits when no resolver / no matching rows."""
 

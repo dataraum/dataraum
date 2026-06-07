@@ -21,6 +21,7 @@ import {
 	type StreamableResult,
 	streamNdjson,
 } from "../../duckdb/stream-sql";
+import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
 
 /** Request body for `POST /api/run-sql`. */
 interface RunSqlStreamBody {
@@ -94,7 +95,10 @@ function badRequest(message: string): Response {
 export const Route = createFileRoute("/api/run-sql")({
 	server: {
 		handlers: {
-			POST: async ({ request }: { request: Request }) => {
+			POST: async ({ request }) => {
+				// The first NDJSON byte waits on DuckDB's first batch — a heavy query
+				// can exceed Bun's 10s first-byte idle timeout. Exempt this request.
+				disableBunIdleTimeout(request);
 				let body: RunSqlStreamBody;
 				try {
 					body = (await request.json()) as RunSqlStreamBody;

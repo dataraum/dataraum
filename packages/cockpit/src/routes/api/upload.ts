@@ -127,7 +127,7 @@ export async function handleUpload(
 export const Route = createFileRoute("/api/upload")({
 	server: {
 		handlers: {
-			POST: ({ request }: { request: Request }) =>
+			POST: ({ request }) =>
 				handleUpload(request, {
 					bucket: config.s3Bucket,
 					put: putObject,

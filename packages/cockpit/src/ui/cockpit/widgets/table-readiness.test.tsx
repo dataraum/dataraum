@@ -93,11 +93,12 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		// Per-intent bands land in the right cells — this catches the intent-key
 		// mismatch (wrong keys would render every per-intent cell as a dash). The
 		// `amount` row is query=ready, aggregation=investigate, reporting=blocked,
-		// overall=investigate → "blocked" appears once (reporting), "ready" once.
+		// overall=investigate → "Blocked" appears once (reporting), "Ready" once.
+		// (Title-case: the shared BandBadge humanizes bands — DAT-451.)
 		const amountRow = within(screen.getByTestId("readiness-row-amount"));
-		expect(amountRow.getAllByText("blocked")).toHaveLength(1);
-		expect(amountRow.getAllByText("ready")).toHaveLength(1);
-		expect(amountRow.getAllByText("investigate")).toHaveLength(2);
+		expect(amountRow.getAllByText("Blocked")).toHaveLength(1);
+		expect(amountRow.getAllByText("Ready")).toHaveLength(1);
+		expect(amountRow.getAllByText("Investigate")).toHaveLength(2);
 	});
 
 	it("renders the whole-table band summary when table_readiness is present (DAT-415)", () => {
@@ -123,9 +124,10 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		).toBeTruthy();
 		expect(overall.getByText("Dimension Coverage")).toBeTruthy();
 		// Overall band + the populated per-intent badges (query=ready,
-		// reporting=investigate) — "investigate" twice (overall + reporting).
-		expect(overall.getAllByText("investigate")).toHaveLength(2);
-		expect(overall.getAllByText("ready")).toHaveLength(1);
+		// reporting=investigate) — "Investigate" twice (overall + reporting).
+		// (Title-case via the shared BandBadge — DAT-451.)
+		expect(overall.getAllByText("Investigate")).toHaveLength(2);
+		expect(overall.getAllByText("Ready")).toHaveLength(1);
 	});
 
 	it("omits the whole-table summary for a plain add_source view (no session)", () => {

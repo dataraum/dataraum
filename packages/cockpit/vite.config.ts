@@ -22,21 +22,15 @@ const config = defineConfig({
 		// `node-bindings` JS (and `detect-libc`) still get bundled, and the `.node`
 		// is `require`d at runtime. The runner image must therefore carry those
 		// binding packages in node_modules — see packages/cockpit/Dockerfile.
-		nitro({ rollupConfig: { external: [/^@duckdb\/node-bindings-/] } }),
+		// preset "bun": the runner serves with `bun .output/server/index.mjs`, so
+		// build the Bun-native server (Bun.serve via srvx) instead of the node
+		// default — the sanctioned shape for a Bun deployment (DAT-451).
+		nitro({
+			preset: "bun",
+			rollupConfig: { external: [/^@duckdb\/node-bindings-/] },
+		}),
 		viteReact(),
 	],
-	server: {
-		proxy: {
-			// Dev-only: same-origin /api requests on :3000 proxy to the Python
-			// engine REST at :8000. In production the cockpit talks cross-origin
-			// (CORS is configured on the engine side); the proxy is just to make
-			// dev hot-reload nicer.
-			"/api": {
-				target: "http://localhost:8000",
-				changeOrigin: true,
-			},
-		},
-	},
 });
 
 export default config;

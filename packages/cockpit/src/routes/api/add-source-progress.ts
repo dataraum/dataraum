@@ -24,7 +24,7 @@ function badRequest(message: string): Response {
 export const Route = createFileRoute("/api/add-source-progress")({
 	server: {
 		handlers: {
-			POST: async ({ request }: { request: Request }) => {
+			POST: async ({ request }) => {
 				let raw: unknown;
 				try {
 					raw = await request.json();

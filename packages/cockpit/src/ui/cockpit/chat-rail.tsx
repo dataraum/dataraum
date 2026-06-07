@@ -29,6 +29,7 @@ import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
 import {
 	lastUserMessageIndex,
+	type ToolCallPartLike,
 	toolChipStatus,
 	toolResultErrorsById,
 } from "#/ui/cockpit/tool-chip-state";
@@ -37,21 +38,6 @@ import {
 	toolChipSummary,
 	toolLabel,
 } from "#/ui/cockpit/tool-chip-summary";
-
-// The untyped tool-call part shape (we register tools server-side, so useChat
-// sees them untyped). Narrowed off `part.type === "tool-call"`. `arguments` is
-// the SDK's JSON-encoded call input, carried in EVERY state (incl. approval-
-// requested) — the chip summary reads it so teach/replay are readable before
-// they run.
-interface ToolCallPart {
-	type: "tool-call";
-	id: string;
-	name: string;
-	state: string;
-	approval?: { id: string; needsApproval: boolean; approved?: boolean };
-	arguments?: unknown;
-	output?: unknown;
-}
 
 /** Lift a tool-call's parsed input off the SDK part's JSON `arguments` string. */
 function parseArguments(raw: unknown): unknown {
@@ -93,7 +79,7 @@ function ToolCallCard({
 	onApprove,
 	onRehydrate,
 }: {
-	part: ToolCallPart;
+	part: ToolCallPartLike;
 	/** The correlated tool-result part's error, when one exists (state "error"). */
 	resultError?: string;
 	/** A later user message exists — an output-less call can never finish. */
@@ -305,7 +291,7 @@ export function ChatRail() {
 								return (
 									<ToolCallCard
 										key={part.id}
-										part={part as ToolCallPart}
+										part={part as ToolCallPartLike}
 										resultError={resultErrors.get(part.id)}
 										conversationMovedOn={mi < lastUserIdx}
 										streamIdle={streamIdle}

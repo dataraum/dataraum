@@ -25,41 +25,13 @@ import { turnWithRefs } from "#/lib/agent-refs";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
+import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
 import {
 	groupLogicalTables,
-	humanizeBand,
 	type LogicalTable,
 	type SourceGroup,
 	sourceGroup,
 } from "#/ui/cockpit/widgets/inventory-grouping";
-
-// Band → Mantine color. An absent band (table not analyzed) renders as a muted
-// dash, not a color, so "unknown" never reads as "ready".
-const BAND_COLOR: Record<string, string> = {
-	ready: "green",
-	investigate: "yellow",
-	blocked: "red",
-};
-
-function BandBadge({ band }: { band: string | null }) {
-	if (!band) {
-		return (
-			<Text span c="dimmed" size="xs">
-				—
-			</Text>
-		);
-	}
-	return (
-		<Badge
-			color={BAND_COLOR[band] ?? "gray"}
-			variant="light"
-			size="sm"
-			tt="none"
-		>
-			{humanizeBand(band)}
-		</Badge>
-	);
-}
 
 // Cap the rows rendered into the DOM (a DB source can register 100s of tables).
 // The inventory is a navigation surface, not a result set — past the cap we show

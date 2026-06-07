@@ -33,11 +33,11 @@ import { Client, Connection } from "@temporalio/client";
 import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { metadataDb } from "#/db/metadata/client";
+import { configOverlay } from "#/db/metadata/schema";
 import {
-	configOverlay,
-	investigationSessions,
-	sources,
-} from "#/db/metadata/schema";
+	investigationSessionsWrite,
+	sourcesWrite,
+} from "#/db/metadata/write-surface";
 import { replay } from "#/tools/replay";
 import { teach } from "#/tools/teach";
 import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
@@ -75,7 +75,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
 	await metadataDb
-		.insert(sources)
+		.insert(sourcesWrite)
 		.values({
 			sourceId,
 			name,
@@ -85,12 +85,12 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			createdAt: now,
 			updatedAt: now,
 		})
-		.onConflictDoNothing({ target: sources.sourceId });
+		.onConflictDoNothing({ target: sourcesWrite.sourceId });
 	// No source_id on the session (DAT-407): a session's source is derived from
 	// its linked tables. The add_source workflow writes the session_tables links
 	// once the per-table fan-out resolves typed ids.
 	await metadataDb
-		.insert(investigationSessions)
+		.insert(investigationSessionsWrite)
 		.values({
 			sessionId,
 			intent: "e4a drive",
@@ -98,7 +98,7 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			startedAt: now,
 			stepCount: 0,
 		})
-		.onConflictDoNothing({ target: investigationSessions.sessionId });
+		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
 }
 
 async function countOverlays(): Promise<number> {

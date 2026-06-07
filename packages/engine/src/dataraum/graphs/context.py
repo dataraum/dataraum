@@ -474,10 +474,20 @@ def build_execution_context(
                     }
                 )
 
-    # 10. Load slice definitions
+    # 10. Load slice definitions — run-versioned since DAT-448: scope to the
+    # session's promoted run (the begin_session run that derived them). These
+    # are SESSION-grain artifacts, so a named session with no promoted run
+    # fails CLOSED (a cross-run fallback would mix other sessions' definitions
+    # — the DAT-429 isolation discipline); only deliberate session-less use
+    # reads the cross-run set.
     slice_contexts: list[SliceContext] = []
     slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-    for slice_def in session.execute(slice_stmt).scalars().all():
+    if run_id is not None:
+        slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
+    slice_defs = (
+        [] if (session_id and run_id is None) else session.execute(slice_stmt).scalars().all()
+    )
+    for slice_def in slice_defs:
         slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
         slice_tbl = table_map.get(slice_def.table_id)
         if slice_col and slice_tbl:
@@ -500,10 +510,13 @@ def build_execution_context(
     )
     _source_id = source_id_result.scalar()
 
-    # 11. Load derived columns from correlation analysis
+    # 11. Load derived columns from correlation analysis — run-versioned since
+    # DAT-448, same fail-closed session-grain discipline as the slices above.
     derived_columns: dict[str, str] = {}  # column_id -> formula
-    if column_ids:
+    if column_ids and not (session_id and run_id is None):
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
+        if run_id is not None:
+            derived_stmt = derived_stmt.where(DerivedColumn.run_id == run_id)
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 

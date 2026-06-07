@@ -55,6 +55,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { sources } from "../db/metadata/schema";
+import { sourcesWrite } from "../db/metadata/write-surface";
 import { ConnectSchema } from "../duckdb/connect";
 import { SUPPORTED_BACKENDS } from "../duckdb/probe";
 import { enumeratePrefixUris } from "../select/enumerate";
@@ -219,7 +220,7 @@ async function upsertSource(values: {
 	now: Date;
 }): Promise<string> {
 	const [row] = await metadataDb
-		.insert(sources)
+		.insert(sourcesWrite)
 		.values({
 			sourceId: randomUUID(),
 			name: values.name,
@@ -232,7 +233,7 @@ async function upsertSource(values: {
 			updatedAt: values.now,
 		})
 		.onConflictDoUpdate({
-			target: sources.name,
+			target: sourcesWrite.name,
 			set: {
 				sourceType: values.sourceType,
 				connectionConfig: values.connectionConfig,
@@ -242,7 +243,7 @@ async function upsertSource(values: {
 				updatedAt: values.now,
 			},
 		})
-		.returning({ sourceId: sources.sourceId });
+		.returning({ sourceId: sourcesWrite.sourceId });
 	return row.sourceId;
 }
 

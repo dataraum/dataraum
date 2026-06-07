@@ -335,6 +335,25 @@ class ConnectionManager:
 
         Base.metadata.create_all(self._engine)
 
+        # Promoted-read surface (ADR-0008 / DAT-453): refresh the ws_<id>_read
+        # views + reader grants AFTER create_all on every boot, so the read
+        # schema tracks the models without migrations. Postgres-only — the
+        # SQLite test substrate has no read surface.
+        if self._engine.dialect.name == "postgresql":
+            from dataraum.core.settings import get_settings
+            from dataraum.storage.read_views import (
+                ensure_reader_role,
+                materialize_read_schema,
+            )
+
+            with self._engine.begin() as conn:
+                materialize_read_schema(conn, schema_name)
+                ensure_reader_role(
+                    conn,
+                    schema_name,
+                    get_settings().metadata_reader_password.get_secret_value(),
+                )
+
         # autoflush=False keeps writes batched; commit happens at scope close.
         self._session_factory = sessionmaker(
             self._engine,

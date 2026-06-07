@@ -69,10 +69,14 @@ class OutlierRateDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_semantic, load_statistics
 
-        stats = load_statistics(context.session, context.column_id, context.run_id)
+        stats = load_statistics(
+            context.session, context.column_id, context.run_id, base_runs=context.base_runs
+        )
         if stats is not None:
             context.analysis_results["statistics"] = stats
-        sem = load_semantic(context.session, context.column_id, context.run_id)
+        sem = load_semantic(
+            context.session, context.column_id, context.run_id, base_runs=context.base_runs
+        )
         if sem is not None:
             context.analysis_results["semantic"] = sem
 

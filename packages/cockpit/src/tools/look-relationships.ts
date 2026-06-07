@@ -30,7 +30,7 @@ import {
 } from "../db/metadata/relationship-target";
 import {
 	columns,
-	entropyReadiness,
+	currentEntropyReadiness,
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
@@ -153,9 +153,10 @@ export interface LookRelationshipsInput {
 export async function lookRelationships(
 	input: LookRelationshipsInput,
 ): Promise<LookRelationshipsResult> {
-	// Relationship readiness is sealed at session grain (DAT-408): resolve the
-	// PROMOTED begin_session detect run via the per-session head. No promoted run
-	// (never run / not sealed) → nothing to show, analyzed=false.
+	// `analyzed` = the session SEALED a detect run — distinct from "sealed but
+	// zero relationships" (single-table session), which must not read as
+	// never-ran. The head pass-through stays on the read surface for exactly
+	// this check; the rows themselves come from the current_* view.
 	const [head] = await metadataDb
 		.select({ runId: metadataSnapshotHead.runId })
 		.from(metadataSnapshotHead)
@@ -166,9 +167,7 @@ export async function lookRelationships(
 			),
 		)
 		.limit(1);
-	const headRunId = head?.runId ?? null;
-
-	if (!headRunId) {
+	if (!head?.runId) {
 		return {
 			session_id: input.session_id,
 			analyzed: false,
@@ -177,26 +176,31 @@ export async function lookRelationships(
 		};
 	}
 
-	// The session's relationship readiness rows for the promoted run. `target`
-	// carries the identity (relationship rows have null table_id/column_id), so
-	// filter by the `relationship:%` prefix + the run.
-	const readinessRows: RelationshipReadinessRow[] = await metadataDb
+	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
+	// lives in the database. `target` carries the identity (relationship rows
+	// have null table_id/column_id), so filter by the `relationship:%` prefix.
+	const rawRows = await metadataDb
 		.select({
-			target: entropyReadiness.target,
-			band: entropyReadiness.band,
-			worstIntentRisk: entropyReadiness.worstIntentRisk,
-			intents: entropyReadiness.intents,
-			topDrivers: entropyReadiness.topDrivers,
+			target: currentEntropyReadiness.target,
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+			topDrivers: currentEntropyReadiness.topDrivers,
 		})
-		.from(entropyReadiness)
+		.from(currentEntropyReadiness)
 		.where(
 			and(
-				eq(entropyReadiness.sessionId, input.session_id),
-				eq(entropyReadiness.runId, headRunId),
-				like(entropyReadiness.target, "relationship:%"),
+				eq(currentEntropyReadiness.sessionId, input.session_id),
+				like(currentEntropyReadiness.target, "relationship:%"),
 			),
 		)
-		.orderBy(asc(entropyReadiness.target));
+		.orderBy(asc(currentEntropyReadiness.target));
+	// View columns type as nullable (Postgres views carry no NOT NULL) —
+	// coalesce the identity fields the underlying table guarantees.
+	const readinessRows: RelationshipReadinessRow[] = rawRows.map((r) => ({
+		...r,
+		target: r.target ?? "",
+	}));
 
 	// Batch-resolve endpoint names: collect every column id the targets reference,
 	// then one join to columns⟕tables. Avoids an N+1 over relationships.
@@ -242,9 +246,10 @@ async function loadColumnNames(
 		.where(inArray(columns.columnId, [...ids]));
 
 	for (const n of nameRows) {
-		lookup.set(n.columnId, {
-			columnName: n.columnName,
-			tableName: n.tableName,
+		// View columns type as nullable — the underlying tables guarantee these.
+		lookup.set(n.columnId ?? "", {
+			columnName: n.columnName ?? "",
+			tableName: n.tableName ?? "",
 		});
 	}
 	return lookup;

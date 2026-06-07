@@ -18,7 +18,7 @@ import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
-import { configOverlay } from "../db/metadata/schema";
+import { configOverlayWrite } from "../db/metadata/write-surface";
 import {
 	TEACH_TYPES,
 	type TeachInput,
@@ -55,7 +55,7 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
 	// targets — the metadata client's connection already scopes to it via
 	// pgSchema. No explicit workspace_id column post-DAT-343 (multi-workspace
 	// shared-schema is DAT-357; bring the column back then).
-	await metadataDb.insert(configOverlay).values({
+	await metadataDb.insert(configOverlayWrite).values({
 		overlayId,
 		sessionId: input.session_id ?? null,
 		type: input.type,
@@ -76,12 +76,12 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
 export async function undoTeach(overlayId: string): Promise<void> {
 	const { eq, isNull, and } = await import("drizzle-orm");
 	await metadataDb
-		.update(configOverlay)
+		.update(configOverlayWrite)
 		.set({ supersededAt: new Date() })
 		.where(
 			and(
-				eq(configOverlay.overlayId, overlayId),
-				isNull(configOverlay.supersededAt),
+				eq(configOverlayWrite.overlayId, overlayId),
+				isNull(configOverlayWrite.supersededAt),
 			),
 		);
 }

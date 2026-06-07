@@ -118,13 +118,13 @@ def build_cycle_detection_context(
     context["tables"] = table_info
 
     # Resolve the session's current (promoted) run ONCE via the per-session head
-    # (DAT-409). Both run-versioned reads below — entity classifications AND the
-    # defined relationships (DAT-408/413: they coexist across runs) — scope to the
-    # SAME run. **Fail-closed (DAT-429, session isolation):** with no resolved run
-    # (no session_id, or the session hasn't promoted one yet) we MUST NOT fall back
-    # to a cross-run read — that would mix OTHER sessions' entities/relationships
-    # into this context. Leave both empty instead. The remaining reads (slices,
-    # temporal, enriched views) are keyed by table_id and are unaffected.
+    # (DAT-409). The run-versioned reads below — entity classifications, the
+    # defined relationships, AND slice definitions (run-versioned since DAT-448:
+    # table-scoped + immortal was the cross-session leak) — scope to the SAME
+    # run. **Fail-closed (DAT-429, session isolation):** with no resolved run
+    # (no session_id, or the session hasn't promoted one yet) we MUST NOT fall
+    # back to a cross-run read — that would mix OTHER sessions' rows into this
+    # context. Leave them empty instead.
     run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
     if session_id and run_id is None:
         logger.warning(
@@ -196,13 +196,20 @@ def build_cycle_detection_context(
     context["graph_topology"] = graph_structure
 
     # 5. Slice definitions (pre-identified categorical dimensions = status columns)
+    # Run-versioned (DAT-448): scope to the session's promoted run; fail-closed
+    # like entities/relationships when a named session has no promoted run.
     slice_stmt = (
         select(SliceDefinition)
         .where(SliceDefinition.table_id.in_(table_ids))
         .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
         .order_by(SliceDefinition.slice_priority)
     )
-    slices = session.execute(slice_stmt).scalars().all()
+    if run_id is not None:
+        slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
+    if session_id and run_id is None:
+        slices = []
+    else:
+        slices = list(session.execute(slice_stmt).scalars().all())
 
     slice_list = []
     for sd in slices:

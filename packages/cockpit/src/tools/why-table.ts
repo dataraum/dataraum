@@ -25,14 +25,10 @@ import {
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
+import { tableTargetKey } from "../db/metadata/relationship-target";
 import {
-	sessionHeadTarget,
-	tableTargetKey,
-} from "../db/metadata/relationship-target";
-import {
-	entropyObjects,
-	entropyReadiness,
-	metadataSnapshotHead,
+	currentEntropyObjects,
+	currentEntropyReadiness,
 	tables,
 } from "../db/metadata/schema";
 import { linkedAbortController } from "../lib/abort";
@@ -222,61 +218,53 @@ export async function whyTable(
 
 	const target = tableTargetKey(tableName);
 
-	// Table-grain readiness/evidence is sealed at session grain (DAT-415): pick the
-	// PROMOTED begin_session detect run via the per-session head, then read only
-	// that run's rows. No promoted run → unanalyzed.
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
+	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head
+	// join lives in the database, so no head resolution and no runId plumbing
+	// here. No promoted run → the views are empty for the session → unanalyzed.
+	const [readinessRow] = await metadataDb
+		.select({
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+		})
+		.from(currentEntropyReadiness)
 		.where(
 			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
-				eq(metadataSnapshotHead.stage, "detect"),
+				eq(currentEntropyReadiness.sessionId, input.session_id),
+				eq(currentEntropyReadiness.target, target),
 			),
 		)
 		.limit(1);
-	const headRunId = head?.runId ?? null;
 
-	const [readinessRow] = headRunId
-		? await metadataDb
-				.select({
-					band: entropyReadiness.band,
-					worstIntentRisk: entropyReadiness.worstIntentRisk,
-					intents: entropyReadiness.intents,
-				})
-				.from(entropyReadiness)
-				.where(
-					and(
-						eq(entropyReadiness.sessionId, input.session_id),
-						eq(entropyReadiness.target, target),
-						eq(entropyReadiness.runId, headRunId),
-					),
-				)
-				.limit(1)
-		: [];
-
-	// Evidence is keyed by the table target (table-grain rows have no column_id),
-	// scoped to the SAME promoted run so stale runs don't inflate signal_count.
-	const evidenceRows = headRunId
-		? await metadataDb
-				.select({
-					layer: entropyObjects.layer,
-					dimension: entropyObjects.dimension,
-					subDimension: entropyObjects.subDimension,
-					score: entropyObjects.score,
-					detectorId: entropyObjects.detectorId,
-					evidence: entropyObjects.evidence,
-				})
-				.from(entropyObjects)
-				.where(
-					and(
-						eq(entropyObjects.sessionId, input.session_id),
-						eq(entropyObjects.target, target),
-						eq(entropyObjects.runId, headRunId),
-					),
-				)
-				.orderBy(asc(entropyObjects.dimension))
-		: [];
+	// Evidence is keyed by the table target (table-grain rows have no column_id);
+	// the view scopes to the promoted run, so stale runs can't inflate signal_count.
+	const rawEvidence = await metadataDb
+		.select({
+			layer: currentEntropyObjects.layer,
+			dimension: currentEntropyObjects.dimension,
+			subDimension: currentEntropyObjects.subDimension,
+			score: currentEntropyObjects.score,
+			detectorId: currentEntropyObjects.detectorId,
+			evidence: currentEntropyObjects.evidence,
+		})
+		.from(currentEntropyObjects)
+		.where(
+			and(
+				eq(currentEntropyObjects.sessionId, input.session_id),
+				eq(currentEntropyObjects.target, target),
+			),
+		)
+		.orderBy(asc(currentEntropyObjects.dimension));
+	// View columns type as nullable (Postgres views carry no NOT NULL); the
+	// underlying table guarantees these — coalesce at the edge.
+	const evidenceRows: WhyTableEvidenceRow[] = rawEvidence.map((e) => ({
+		layer: e.layer ?? "",
+		dimension: e.dimension ?? "",
+		subDimension: e.subDimension ?? "",
+		score: e.score ?? 0,
+		detectorId: e.detectorId ?? "",
+		evidence: e.evidence,
+	}));
 
 	const pending = await getPendingOverlays();
 	const data = projectWhyTable(

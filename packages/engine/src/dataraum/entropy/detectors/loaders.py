@@ -13,27 +13,60 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from sqlalchemy.orm import Session
 
+# The add_source stages whose promoted heads a detect run pins as its base
+# snapshot (DAT-448): session detects read per-column rows these stages wrote.
+_BASE_RUN_STAGES = ("semantic_per_column", "statistics", "statistical_quality")
 
-def _table_head_run(session: Session, column_id: str, stage: str) -> str | None:
-    """The promoted head ``run_id`` for the column's table at ``stage`` (DAT-405).
+
+def resolve_base_runs(session: Session, table_ids: Sequence[str]) -> dict[tuple[str, str], str]:
+    """Pin the promoted base-run map for a detect run (DAT-448).
+
+    Resolves the ``(table:{id}, stage)`` ``MetadataSnapshotHead`` ONCE per
+    table × base stage at detect start. The detect orchestrator threads the
+    map onto every ``DetectorContext``, so all loader reads in the run resolve
+    to the same base runs regardless of concurrent promotes — per-call head
+    resolution allowed a mid-run promote to tear reads (column 1 from run A,
+    column 47 from run B). Unpromoted ``(table, stage)`` pairs are simply
+    absent: readers fail closed, never guess a run.
+    """
+    from dataraum.storage.snapshot_head import head_run_id
+
+    pinned: dict[tuple[str, str], str] = {}
+    for table_id in table_ids:
+        for stage in _BASE_RUN_STAGES:
+            rid = head_run_id(session, f"table:{table_id}", stage)
+            if rid is not None:
+                pinned[(table_id, stage)] = rid
+    return pinned
+
+
+def _pinned_base_run(
+    session: Session,
+    column_id: str,
+    stage: str,
+    base_runs: Mapping[tuple[str, str], str] | None,
+) -> str | None:
+    """The pinned base ``run_id`` for the column's table at ``stage`` (DAT-448).
 
     Session-detect reads carry the begin_session run's ``run_id``, but the
     per-column analysis rows (semantic, statistics, …) were written — and
-    promoted — by the add_source run that produced the typed table. When the
-    current run has no row, the ``(table:{id}, stage)`` head names the run whose
-    rows are current; resolving it keeps the read run-scoped instead of guessing
-    across coexisting runs. Returns ``None`` when nothing was promoted — the
-    caller keeps its no-data behaviour (fail closed, never guess).
+    promoted — by the add_source run that produced the typed table (DAT-405).
+    The fallback consults the run-start pin instead of re-resolving the moving
+    head per call. No pin → ``None`` — the caller keeps its no-data behaviour
+    (fail closed, never guess).
     """
+    if not base_runs:
+        return None
     from dataraum.storage import Column
-    from dataraum.storage.snapshot_head import head_run_id
 
     col = session.get(Column, column_id)
     if col is None:
         return None
-    return head_run_id(session, f"table:{col.table_id}", stage)
+    return base_runs.get((col.table_id, stage))
 
 
 def load_typing(
@@ -99,7 +132,10 @@ def load_typing(
 
 
 def load_statistics(
-    session: Session, column_id: str, run_id: str | None = None
+    session: Session,
+    column_id: str,
+    run_id: str | None = None,
+    base_runs: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, Any] | None:
     """Load statistical profile and quality metrics for a column.
 
@@ -109,10 +145,10 @@ def load_statistics(
     ``run_id`` (DAT-413): when set, restrict to THIS run's profile + quality
     metrics. ``None`` (non-detect / test callers) adds no filter.
 
-    Head fallback (DAT-405): like :func:`load_semantic` — session detects read
-    statistics the add_source run wrote, so a this-run miss falls back to the
-    promoted head (``statistics`` for the profile, ``statistical_quality`` for
-    the quality metrics — distinct stages, distinct heads).
+    Pinned fallback (DAT-405/448): like :func:`load_semantic` — session detects
+    read statistics the add_source run wrote, so a this-run miss falls back to
+    the run-start pin (``statistics`` for the profile, ``statistical_quality``
+    for the quality metrics — distinct stages, distinct pins).
     """
     from dataraum.analysis.statistics.db_models import StatisticalProfile
     from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
@@ -123,10 +159,10 @@ def load_statistics(
             sp_stmt.where(StatisticalProfile.run_id == run_id)
         ).scalar_one_or_none()
         if sp is None:
-            head = _table_head_run(session, column_id, "statistics")
-            if head is not None and head != run_id:
+            pinned = _pinned_base_run(session, column_id, "statistics", base_runs)
+            if pinned is not None and pinned != run_id:
                 sp = session.execute(
-                    sp_stmt.where(StatisticalProfile.run_id == head)
+                    sp_stmt.where(StatisticalProfile.run_id == pinned)
                 ).scalar_one_or_none()
     else:
         sp = session.execute(sp_stmt).scalar_one_or_none()
@@ -150,10 +186,10 @@ def load_statistics(
             qm_stmt.where(StatisticalQualityMetrics.run_id == run_id)
         ).scalar_one_or_none()
         if qm is None:
-            head = _table_head_run(session, column_id, "statistical_quality")
-            if head is not None and head != run_id:
+            pinned = _pinned_base_run(session, column_id, "statistical_quality", base_runs)
+            if pinned is not None and pinned != run_id:
                 qm = session.execute(
-                    qm_stmt.where(StatisticalQualityMetrics.run_id == head)
+                    qm_stmt.where(StatisticalQualityMetrics.run_id == pinned)
                 ).scalar_one_or_none()
     else:
         qm = session.execute(qm_stmt).scalar_one_or_none()
@@ -185,7 +221,10 @@ def load_statistics(
 
 
 def load_semantic(
-    session: Session, column_id: str, run_id: str | None = None
+    session: Session,
+    column_id: str,
+    run_id: str | None = None,
+    base_runs: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, Any] | None:
     """Load semantic annotation for a column.
 
@@ -195,13 +234,13 @@ def load_semantic(
     ``run_id`` (DAT-413): when set, restrict to THIS run's annotation. ``None``
     (non-detect / test callers) adds no filter.
 
-    Head fallback (DAT-405): a begin_session detect carries the SESSION run's
-    ``run_id``, but annotations are written by the add_source run — a strict
-    this-run read finds nothing and silently disabled every semantic-gated
-    session detector (temporal_drift scored 0 records; slice_variance lost its
-    role gate and over-fired on ID columns). When this run has no annotation,
-    read the run the ``semantic_per_column`` head promotes for the column's
-    table; no head → ``None`` as before.
+    Pinned fallback (DAT-405/448): a begin_session detect carries the SESSION
+    run's ``run_id``, but annotations are written by the add_source run — a
+    strict this-run read finds nothing and silently disabled every
+    semantic-gated session detector (temporal_drift scored 0 records;
+    slice_variance lost its role gate and over-fired on ID columns). When this
+    run has no annotation, read the run the orchestrator pinned for the
+    column's table at ``semantic_per_column``; no pin → ``None`` as before.
     """
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
@@ -211,10 +250,10 @@ def load_semantic(
             sa_stmt.where(SemanticAnnotation.run_id == run_id)
         ).scalar_one_or_none()
         if sa is None:
-            head = _table_head_run(session, column_id, "semantic_per_column")
-            if head is not None and head != run_id:
+            pinned = _pinned_base_run(session, column_id, "semantic_per_column", base_runs)
+            if pinned is not None and pinned != run_id:
                 sa = session.execute(
-                    sa_stmt.where(SemanticAnnotation.run_id == head)
+                    sa_stmt.where(SemanticAnnotation.run_id == pinned)
                 ).scalar_one_or_none()
     else:
         sa = session.execute(sa_stmt).scalar_one_or_none()
@@ -328,15 +367,27 @@ def load_session_relationships(
     return [_relationship_to_dict(rel, table_names) for rel in rels]
 
 
-def load_correlation(session: Session, column_id: str, column_name: str) -> dict[str, Any] | None:
+def load_correlation(
+    session: Session, column_id: str, column_name: str, run_id: str | None = None
+) -> dict[str, Any] | None:
     """Load derived column info for a column.
 
     Returns dict with derived_columns list or None if no derivations found.
+
+    ``run_id`` (DAT-448): ``DerivedColumn`` rows are run-versioned and written
+    by the SAME begin_session run that detects against them, so the read is a
+    plain this-run filter — coexisting prior-run rows must not double-count.
+    ``None`` (test callers) matches unstamped rows.
     """
     from dataraum.analysis.correlation.db_models import DerivedColumn
 
     dcs = (
-        session.execute(select(DerivedColumn).where(DerivedColumn.derived_column_id == column_id))
+        session.execute(
+            select(DerivedColumn).where(
+                DerivedColumn.derived_column_id == column_id,
+                DerivedColumn.run_id == run_id,
+            )
+        )
         .scalars()
         .all()
     )
@@ -361,10 +412,17 @@ def load_drift_summaries(
     session: Session,
     column_id: str,
     table_id: str,
+    run_id: str | None = None,
 ) -> list[Any] | None:
     """Load temporal drift summaries for a column across slice tables.
 
     Returns list of ColumnDriftSummary ORM objects or None if none found.
+
+    ``run_id`` (DAT-448): slice definitions AND drift summaries are
+    run-versioned and written by the SAME begin_session run that detects
+    against them — a plain this-run filter; the read was fully unscoped before
+    (stale definitions + duplicated append-only summaries leaked cross-run).
+    ``None`` (test callers) matches unstamped rows.
     """
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.slicing.naming import slice_table_name
@@ -377,9 +435,14 @@ def load_drift_summaries(
 
     col_name = col.column_name
 
-    # Find slice tables for this table
+    # Find THIS run's slice tables for this table (run-versioned, DAT-448)
     slice_defs = (
-        session.execute(select(SliceDefinition).where(SliceDefinition.table_id == table_id))
+        session.execute(
+            select(SliceDefinition).where(
+                SliceDefinition.table_id == table_id,
+                SliceDefinition.run_id == run_id,
+            )
+        )
         .scalars()
         .all()
     )
@@ -405,6 +468,7 @@ def load_drift_summaries(
     drift_stmt = select(ColumnDriftSummary).where(
         ColumnDriftSummary.slice_table_name.in_(slice_table_names),
         ColumnDriftSummary.column_name == col_name,
+        ColumnDriftSummary.run_id == run_id,
     )
     drift_summaries = session.execute(drift_stmt).scalars().all()
     return list(drift_summaries) if drift_summaries else None

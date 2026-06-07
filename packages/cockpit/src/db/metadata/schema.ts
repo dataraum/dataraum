@@ -1,646 +1,238 @@
+import { sql } from "drizzle-orm";
 import {
 	boolean,
 	date,
 	doublePrecision,
-	foreignKey,
-	index,
 	integer,
 	json,
 	jsonb,
 	pgSchema,
-	primaryKey,
 	text,
 	timestamp,
-	unique,
 	varchar,
 } from "drizzle-orm/pg-core";
 
 export const metadataSchema = pgSchema(
-	"ws_00000000_0000_0000_0000_000000000001",
+	"ws_00000000_0000_0000_0000_000000000001_read",
 );
 
-export const columnDriftSummaries = metadataSchema.table(
-	"column_drift_summaries",
-	{
-		id: varchar().primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sliceTableName: varchar("slice_table_name", { length: 255 }).notNull(),
-		columnName: varchar("column_name", { length: 255 }).notNull(),
-		timeColumn: varchar("time_column", { length: 255 }).notNull(),
-		maxJsDivergence: doublePrecision("max_js_divergence").notNull(),
-		meanJsDivergence: doublePrecision("mean_js_divergence").notNull(),
-		periodsAnalyzed: integer("periods_analyzed").notNull(),
-		periodsWithDrift: integer("periods_with_drift").notNull(),
-		driftEvidenceJson: json("drift_evidence_json"),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("ix_column_drift_summaries_column_name").using(
-			"btree",
-			table.columnName.asc().nullsLast(),
-		),
-		index("ix_column_drift_summaries_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_column_drift_summaries_slice_table_name").using(
-			"btree",
-			table.sliceTableName.asc().nullsLast(),
-		),
-	],
-);
-
-export const columnEligibility = metadataSchema.table(
-	"column_eligibility",
-	{
-		eligibilityId: varchar("eligibility_id", { length: 36 }).primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id", { length: 36 }).notNull(),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId, { onDelete: "cascade" }),
-		runId: varchar("run_id"),
-		columnName: varchar("column_name").notNull(),
-		tableName: varchar("table_name").notNull(),
-		resolvedType: varchar("resolved_type"),
-		status: varchar({ length: 20 }).notNull(),
-		triggeredRule: varchar("triggered_rule", { length: 50 }),
-		reason: text(),
-		metricsSnapshot: json("metrics_snapshot").notNull(),
-		configVersion: varchar("config_version", { length: 20 }).notNull(),
-		evaluatedAt: timestamp("evaluated_at").notNull(),
-	},
-	(table) => [
-		index("idx_eligibility_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("idx_eligibility_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-		index("idx_eligibility_status").using(
-			"btree",
-			table.status.asc().nullsLast(),
-		),
-		index("idx_eligibility_table").using(
-			"btree",
-			table.tableId.asc().nullsLast(),
-		),
-		index("ix_column_eligibility_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_column_eligibility_column_run").on(table.columnId, table.runId),
-	],
-);
-
-export const columnSliceProfiles = metadataSchema.table(
-	"column_slice_profiles",
-	{
-		profileId: varchar("profile_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceColumnId: varchar("source_column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
-		sliceColumnId: varchar("slice_column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
-		sourceTableName: varchar("source_table_name").notNull(),
-		columnName: varchar("column_name").notNull(),
-		sliceColumnName: varchar("slice_column_name").notNull(),
-		sliceValue: varchar("slice_value").notNull(),
-		rowCount: integer("row_count").notNull(),
+export const columnSliceProfiles = metadataSchema
+	.view("column_slice_profiles", {
+		profileId: varchar("profile_id"),
+		sessionId: varchar("session_id"),
+		sourceColumnId: varchar("source_column_id"),
+		sliceColumnId: varchar("slice_column_id"),
+		sourceTableName: varchar("source_table_name"),
+		columnName: varchar("column_name"),
+		sliceColumnName: varchar("slice_column_name"),
+		sliceValue: varchar("slice_value"),
+		rowCount: integer("row_count"),
 		nullRatio: doublePrecision("null_ratio"),
 		distinctCount: integer("distinct_count"),
 		qualityScore: doublePrecision("quality_score"),
-		hasIssues: integer("has_issues").notNull(),
-		issueCount: integer("issue_count").notNull(),
+		hasIssues: integer("has_issues"),
+		issueCount: integer("issue_count"),
 		profileData: json("profile_data"),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("idx_slice_profiles_lookup").using(
-			"btree",
-			table.sourceColumnId.asc().nullsLast(),
-			table.sliceColumnId.asc().nullsLast(),
-			table.sliceValue.asc().nullsLast(),
-		),
-		index("idx_slice_profiles_slice_column").using(
-			"btree",
-			table.sliceColumnId.asc().nullsLast(),
-		),
-		index("idx_slice_profiles_source_column").using(
-			"btree",
-			table.sourceColumnId.asc().nullsLast(),
-		),
-		index("ix_column_slice_profiles_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT profile_id, session_id, source_column_id, slice_column_id, source_table_name, column_name, slice_column_name, slice_value, row_count, null_ratio, distinct_count, quality_score, has_issues, issue_count, profile_data, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_slice_profiles`,
+	);
 
-export const columns = metadataSchema.table(
-	"columns",
-	{
-		columnId: varchar("column_id").primaryKey(),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		columnName: varchar("column_name").notNull(),
+export const columns = metadataSchema
+	.view("columns", {
+		columnId: varchar("column_id"),
+		tableId: varchar("table_id"),
+		columnName: varchar("column_name"),
 		originalName: varchar("original_name"),
-		columnPosition: integer("column_position").notNull(),
+		columnPosition: integer("column_position"),
 		rawType: varchar("raw_type"),
 		resolvedType: varchar("resolved_type"),
-	},
-	(table) => [
-		index("idx_columns_table").using("btree", table.tableId.asc().nullsLast()),
-		unique("uq_table_column").on(table.tableId, table.columnName),
-	],
-);
+	})
+	.as(
+		sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type FROM ws_00000000_0000_0000_0000_000000000001.columns`,
+	);
 
-export const configOverlay = metadataSchema.table(
-	"config_overlay",
-	{
-		overlayId: varchar("overlay_id").primaryKey(),
+export const configOverlay = metadataSchema
+	.view("config_overlay", {
+		overlayId: varchar("overlay_id"),
 		sessionId: varchar("session_id"),
-		type: varchar().notNull(),
-		payload: json().notNull(),
-		createdAt: timestamp("created_at").notNull(),
+		type: varchar(),
+		payload: json(),
+		createdAt: timestamp("created_at"),
 		supersededAt: timestamp("superseded_at"),
-	},
-	(table) => [
-		index("idx_config_overlay_active").using(
-			"btree",
-			table.supersededAt.asc().nullsLast(),
-			table.type.asc().nullsLast(),
-		),
-	],
-);
+	})
+	.as(
+		sql`SELECT overlay_id, session_id, type, payload, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.config_overlay`,
+	);
 
-export const derivedColumns = metadataSchema.table(
-	"derived_columns",
-	{
-		derivedId: varchar("derived_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		derivedColumnId: varchar("derived_column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
-		sourceColumnIds: json("source_column_ids").notNull(),
-		derivationType: varchar("derivation_type").notNull(),
-		formula: varchar().notNull(),
-		matchRate: doublePrecision("match_rate").notNull(),
-		computedAt: timestamp("computed_at").notNull(),
-		totalRows: integer("total_rows").notNull(),
-		matchingRows: integer("matching_rows").notNull(),
+export const currentColumnDriftSummaries = metadataSchema
+	.view("current_column_drift_summaries", {
+		id: varchar(),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		sliceTableName: varchar("slice_table_name", { length: 255 }),
+		columnName: varchar("column_name", { length: 255 }),
+		timeColumn: varchar("time_column", { length: 255 }),
+		maxJsDivergence: doublePrecision("max_js_divergence"),
+		meanJsDivergence: doublePrecision("mean_js_divergence"),
+		periodsAnalyzed: integer("periods_analyzed"),
+		periodsWithDrift: integer("periods_with_drift"),
+		driftEvidenceJson: json("drift_evidence_json"),
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT id, session_id, run_id, slice_table_name, column_name, time_column, max_js_divergence, mean_js_divergence, periods_analyzed, periods_with_drift, drift_evidence_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_drift_summaries r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
+export const currentColumnEligibility = metadataSchema
+	.view("current_column_eligibility", {
+		eligibilityId: varchar("eligibility_id", { length: 36 }),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id", { length: 36 }),
+		tableId: varchar("table_id"),
+		sourceId: varchar("source_id"),
+		runId: varchar("run_id"),
+		columnName: varchar("column_name"),
+		tableName: varchar("table_name"),
+		resolvedType: varchar("resolved_type"),
+		status: varchar({ length: 20 }),
+		triggeredRule: varchar("triggered_rule", { length: 50 }),
+		reason: text(),
+		metricsSnapshot: json("metrics_snapshot"),
+		configVersion: varchar("config_version", { length: 20 }),
+		evaluatedAt: timestamp("evaluated_at"),
+	})
+	.as(
+		sql`SELECT eligibility_id, session_id, column_id, table_id, source_id, run_id, column_name, table_name, resolved_type, status, triggered_rule, reason, metrics_snapshot, config_version, evaluated_at FROM ws_00000000_0000_0000_0000_000000000001.column_eligibility r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('table:'::text || r.table_id::text) AND h.stage::text = 'column_eligibility'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
+export const currentDerivedColumns = metadataSchema
+	.view("current_derived_columns", {
+		derivedId: varchar("derived_id"),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		tableId: varchar("table_id"),
+		derivedColumnId: varchar("derived_column_id"),
+		sourceColumnIds: json("source_column_ids"),
+		derivationType: varchar("derivation_type"),
+		formula: varchar(),
+		matchRate: doublePrecision("match_rate"),
+		computedAt: timestamp("computed_at"),
+		totalRows: integer("total_rows"),
+		matchingRows: integer("matching_rows"),
 		mismatchExamples: json("mismatch_examples"),
-	},
-	(table) => [
-		index("idx_derived_column").using(
-			"btree",
-			table.derivedColumnId.asc().nullsLast(),
-		),
-		index("idx_derived_table").using("btree", table.tableId.asc().nullsLast()),
-		index("ix_derived_columns_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+	})
+	.as(
+		sql`SELECT derived_id, session_id, run_id, table_id, derived_column_id, source_column_ids, derivation_type, formula, match_rate, computed_at, total_rows, matching_rows, mismatch_examples FROM ws_00000000_0000_0000_0000_000000000001.derived_columns r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const detectedBusinessCycles = metadataSchema.table(
-	"detected_business_cycles",
-	{
-		cycleId: varchar("cycle_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId, { onDelete: "cascade" }),
-		cycleName: varchar("cycle_name").notNull(),
-		cycleType: varchar("cycle_type").notNull(),
-		canonicalType: varchar("canonical_type"),
-		isKnownType: boolean("is_known_type").notNull(),
-		description: text(),
-		businessValue: varchar("business_value").notNull(),
-		confidence: doublePrecision().notNull(),
-		tablesInvolved: json("tables_involved").notNull(),
-		stages: json().notNull(),
-		entityFlows: json("entity_flows").notNull(),
-		statusTable: varchar("status_table"),
-		statusColumn: varchar("status_column"),
-		completionValue: varchar("completion_value"),
-		totalRecords: integer("total_records"),
-		completedCycles: integer("completed_cycles"),
-		completionRate: doublePrecision("completion_rate"),
-		evidence: json().notNull(),
-		detectedAt: timestamp("detected_at").notNull(),
-	},
-	(table) => [
-		index("idx_detected_cycles_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-		index("ix_detected_business_cycles_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
-
-export const enrichedViews = metadataSchema.table(
-	"enriched_views",
-	{
-		viewId: varchar("view_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		factTableId: varchar("fact_table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		viewTableId: varchar("view_table_id").references(() => tables.tableId, {
-			onDelete: "set null",
-		}),
-		viewName: varchar("view_name").notNull(),
+export const currentEnrichedViews = metadataSchema
+	.view("current_enriched_views", {
+		viewId: varchar("view_id"),
+		sessionId: varchar("session_id"),
+		factTableId: varchar("fact_table_id"),
+		viewTableId: varchar("view_table_id"),
+		viewName: varchar("view_name"),
 		runId: varchar("run_id"),
 		relationshipIds: json("relationship_ids"),
 		dimensionTableIds: json("dimension_table_ids"),
 		dimensionColumns: json("dimension_columns"),
-		isGrainVerified: boolean("is_grain_verified").notNull(),
+		isGrainVerified: boolean("is_grain_verified"),
 		evidence: json(),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("ix_enriched_views_run_id").using(
-			"btree",
-			table.runId.asc().nullsLast(),
-		),
-		index("ix_enriched_views_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_enriched_view_fact_table").on(table.factTableId),
-	],
-);
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT view_id, session_id, fact_table_id, view_table_id, view_name, run_id, relationship_ids, dimension_table_ids, dimension_columns, is_grain_verified, evidence, created_at FROM ws_00000000_0000_0000_0000_000000000001.enriched_views r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const entropyObjects = metadataSchema.table(
-	"entropy_objects",
-	{
-		objectId: varchar("object_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		layer: varchar().notNull(),
-		dimension: varchar().notNull(),
-		subDimension: varchar("sub_dimension").notNull(),
-		target: varchar().notNull(),
-		tableId: varchar("table_id").references(() => tables.tableId, {
-			onDelete: "cascade",
-		}),
-		columnId: varchar("column_id").references(() => columns.columnId, {
-			onDelete: "cascade",
-		}),
+export const currentEntropyObjects = metadataSchema
+	.view("current_entropy_objects", {
+		objectId: varchar("object_id"),
+		sessionId: varchar("session_id"),
+		layer: varchar(),
+		dimension: varchar(),
+		subDimension: varchar("sub_dimension"),
+		target: varchar(),
+		tableId: varchar("table_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		score: doublePrecision().notNull(),
+		score: doublePrecision(),
 		evidence: jsonb(),
-		detectorId: varchar("detector_id").notNull(),
+		detectorId: varchar("detector_id"),
 		sourceAnalysisIds: jsonb("source_analysis_ids"),
-		computedAt: timestamp("computed_at").notNull(),
-	},
-	(table) => [
-		index("idx_entropy_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("idx_entropy_layer_dimension").using(
-			"btree",
-			table.layer.asc().nullsLast(),
-			table.dimension.asc().nullsLast(),
-		),
-		index("idx_entropy_score").using("btree", table.score.asc().nullsLast()),
-		index("idx_entropy_table").using("btree", table.tableId.asc().nullsLast()),
-		index("idx_entropy_target").using("btree", table.target.asc().nullsLast()),
-		index("ix_entropy_objects_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
+	})
+	.as(
+		sql`SELECT object_id, session_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+	);
 
-export const entropyReadiness = metadataSchema.table(
-	"entropy_readiness",
-	{
-		readinessId: varchar("readiness_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		target: varchar().notNull(),
-		tableId: varchar("table_id").references(() => tables.tableId, {
-			onDelete: "cascade",
-		}),
-		columnId: varchar("column_id").references(() => columns.columnId, {
-			onDelete: "cascade",
-		}),
+export const currentEntropyReadiness = metadataSchema
+	.view("current_entropy_readiness", {
+		readinessId: varchar("readiness_id"),
+		sessionId: varchar("session_id"),
+		target: varchar(),
+		tableId: varchar("table_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		band: varchar().notNull(),
-		worstIntentRisk: doublePrecision("worst_intent_risk").notNull(),
+		band: varchar(),
+		worstIntentRisk: doublePrecision("worst_intent_risk"),
 		intents: jsonb(),
 		topDrivers: jsonb("top_drivers"),
-		computedAt: timestamp("computed_at").notNull(),
-	},
-	(table) => [
-		index("idx_readiness_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("idx_readiness_table").using(
-			"btree",
-			table.tableId.asc().nullsLast(),
-		),
-		index("idx_readiness_target").using(
-			"btree",
-			table.target.asc().nullsLast(),
-		),
-		index("ix_entropy_readiness_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
+	})
+	.as(
+		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+	);
 
-export const fixLedger = metadataSchema.table(
-	"fix_ledger",
-	{
-		fixId: varchar("fix_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId),
-		actionName: varchar("action_name").notNull(),
-		tableName: varchar("table_name").notNull(),
-		columnName: varchar("column_name"),
-		userInput: varchar("user_input").notNull(),
-		interpretation: varchar().notNull(),
-		status: varchar().notNull(),
-		createdAt: timestamp("created_at").notNull(),
-		supersededAt: timestamp("superseded_at"),
-		supersededBy: varchar("superseded_by"),
-	},
-	(table) => [
-		foreignKey({
-			columns: [table.supersededBy],
-			foreignColumns: [table.fixId],
-			name: "fk_fix_ledger_superseded_by_fix_ledger",
-		}),
-		index("idx_fix_ledger_scope").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-			table.actionName.asc().nullsLast(),
-			table.tableName.asc().nullsLast(),
-			table.columnName.asc().nullsLast(),
-		),
-		index("idx_fix_ledger_source").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-		index("ix_fix_ledger_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
-
-export const investigationSessions = metadataSchema.table(
-	"investigation_sessions",
-	{
-		sessionId: varchar("session_id").primaryKey(),
-		status: varchar().notNull(),
-		startedAt: timestamp("started_at").notNull(),
-		endedAt: timestamp("ended_at"),
-		durationSeconds: doublePrecision("duration_seconds"),
-		intent: varchar().notNull(),
-		contract: varchar(),
-		vertical: varchar(),
-		outcomeSummary: varchar("outcome_summary"),
-		outcomePayload: json("outcome_payload"),
-		stepCount: integer("step_count").notNull(),
-	},
-);
-
-export const investigationSteps = metadataSchema.table(
-	"investigation_steps",
-	{
-		stepId: varchar("step_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId, {
-				onDelete: "cascade",
-			}),
-		ordinal: integer().notNull(),
-		toolName: varchar("tool_name").notNull(),
-		arguments: json().notNull(),
-		status: varchar().notNull(),
-		resultSummary: varchar("result_summary"),
-		error: varchar(),
-		startedAt: timestamp("started_at").notNull(),
-		durationSeconds: doublePrecision("duration_seconds").notNull(),
-		target: varchar(),
-		dimension: varchar(),
-	},
-	(table) => [
-		index("idx_inv_step_target").using("btree", table.target.asc().nullsLast()),
-		index("idx_inv_step_tool").using("btree", table.toolName.asc().nullsLast()),
-		index("ix_investigation_steps_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
-
-export const materializationRecipes = metadataSchema.table(
-	"materialization_recipes",
-	{
-		recipeId: varchar("recipe_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		layer: varchar().notNull(),
+export const currentMaterializationRecipes = metadataSchema
+	.view("current_materialization_recipes", {
+		recipeId: varchar("recipe_id"),
+		sessionId: varchar("session_id"),
+		tableId: varchar("table_id"),
+		layer: varchar(),
 		runId: varchar("run_id"),
-		targetFqn: varchar("target_fqn").notNull(),
-		ddl: varchar().notNull(),
+		targetFqn: varchar("target_fqn"),
+		ddl: varchar(),
 		dependsOn: json("depends_on"),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("idx_materialization_recipes_table").using(
-			"btree",
-			table.tableId.asc().nullsLast(),
-		),
-		index("ix_materialization_recipes_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_materialization_recipe_table_layer_run").on(
-			table.tableId,
-			table.layer,
-			table.runId,
-		),
-	],
-);
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT recipe_id, session_id, table_id, layer, run_id, target_fqn, ddl, depends_on, created_at FROM ws_00000000_0000_0000_0000_000000000001.materialization_recipes r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('table:'::text || r.table_id::text) AND h.stage::text = 'typing'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const metadataSnapshotHead = metadataSchema.table(
-	"metadata_snapshot_head",
-	{
-		headId: varchar("head_id").primaryKey(),
-		target: varchar().notNull(),
-		stage: varchar().notNull(),
-		runId: varchar("run_id").notNull(),
-		promotedAt: timestamp("promoted_at").notNull(),
-		version: integer().notNull(),
-	},
-	(table) => [
-		unique("uq_snapshot_head_target_stage").on(table.target, table.stage),
-	],
-);
-
-export const queryExecutions = metadataSchema.table(
-	"query_executions",
-	{
-		executionId: varchar("execution_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId, { onDelete: "cascade" }),
-		question: text().notNull(),
-		sqlExecuted: text("sql_executed").notNull(),
-		executedAt: timestamp("executed_at").notNull(),
-		success: boolean().notNull(),
-		rowCount: integer("row_count"),
-		errorMessage: text("error_message"),
-		confidenceLevel: varchar("confidence_level").notNull(),
-		contractName: varchar("contract_name"),
-		entropyAction: varchar("entropy_action"),
-	},
-	(table) => [
-		index("ix_query_executions_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_query_executions_source_id").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-	],
-);
-
-export const relationships = metadataSchema.table(
-	"relationships",
-	{
-		relationshipId: varchar("relationship_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
+export const currentRelationships = metadataSchema
+	.view("current_relationships", {
+		relationshipId: varchar("relationship_id"),
+		sessionId: varchar("session_id"),
 		runId: varchar("run_id"),
-		fromTableId: varchar("from_table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		fromColumnId: varchar("from_column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
-		toTableId: varchar("to_table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		toColumnId: varchar("to_column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
-		relationshipType: varchar("relationship_type").notNull(),
+		fromTableId: varchar("from_table_id"),
+		fromColumnId: varchar("from_column_id"),
+		toTableId: varchar("to_table_id"),
+		toColumnId: varchar("to_column_id"),
+		relationshipType: varchar("relationship_type"),
 		cardinality: varchar(),
-		confidence: doublePrecision().notNull(),
+		confidence: doublePrecision(),
 		detectionMethod: varchar("detection_method"),
 		evidence: json(),
-		isConfirmed: boolean("is_confirmed").notNull(),
+		isConfirmed: boolean("is_confirmed"),
 		confirmedAt: timestamp("confirmed_at"),
 		confirmedBy: varchar("confirmed_by"),
-		detectedAt: timestamp("detected_at").notNull(),
-	},
-	(table) => [
-		index("idx_relationships_from").using(
-			"btree",
-			table.fromTableId.asc().nullsLast(),
-		),
-		index("idx_relationships_from_column").using(
-			"btree",
-			table.fromColumnId.asc().nullsLast(),
-		),
-		index("idx_relationships_from_table_column").using(
-			"btree",
-			table.fromTableId.asc().nullsLast(),
-			table.fromColumnId.asc().nullsLast(),
-		),
-		index("idx_relationships_to").using(
-			"btree",
-			table.toTableId.asc().nullsLast(),
-		),
-		index("idx_relationships_to_column").using(
-			"btree",
-			table.toColumnId.asc().nullsLast(),
-		),
-		index("idx_relationships_to_table_column").using(
-			"btree",
-			table.toTableId.asc().nullsLast(),
-			table.toColumnId.asc().nullsLast(),
-		),
-		index("ix_relationships_run_id").using(
-			"btree",
-			table.runId.asc().nullsLast(),
-		),
-		index("ix_relationships_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_relationship_columns_method").on(
-			table.sessionId,
-			table.runId,
-			table.fromColumnId,
-			table.toColumnId,
-			table.detectionMethod,
-		),
-	],
-);
+		detectedAt: timestamp("detected_at"),
+	})
+	.as(
+		sql`SELECT relationship_id, session_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, confirmed_at, confirmed_by, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const semanticAnnotations = metadataSchema.table(
-	"semantic_annotations",
-	{
-		annotationId: varchar("annotation_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentSemanticAnnotations = metadataSchema
+	.view("current_semantic_annotations", {
+		annotationId: varchar("annotation_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
 		semanticRole: varchar("semantic_role"),
 		entityType: varchar("entity_type"),
@@ -650,312 +242,98 @@ export const semanticAnnotations = metadataSchema.table(
 		temporalBehavior: varchar("temporal_behavior"),
 		unitSourceColumn: varchar("unit_source_column"),
 		annotationSource: varchar("annotation_source"),
-		annotatedAt: timestamp("annotated_at").notNull(),
+		annotatedAt: timestamp("annotated_at"),
 		annotatedBy: varchar("annotated_by"),
 		confidence: doublePrecision(),
-	},
-	(table) => [
-		index("ix_semantic_annotations_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_column_semantic_annotation").on(table.columnId, table.runId),
-	],
-);
+	})
+	.as(
+		sql`SELECT annotation_id, session_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, unit_source_column, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'semantic_per_column'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const sessionTables = metadataSchema.table(
-	"session_tables",
-	{
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId, {
-				onDelete: "cascade",
-			}),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-	},
-	(table) => [
-		primaryKey({
-			columns: [table.sessionId, table.tableId],
-			name: "pk_session_tables",
-		}),
-		index("idx_session_tables_table").using(
-			"btree",
-			table.tableId.asc().nullsLast(),
-		),
-	],
-);
-
-export const sliceDefinitions = metadataSchema.table(
-	"slice_definitions",
-	{
-		sliceId: varchar("slice_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentSliceDefinitions = metadataSchema
+	.view("current_slice_definitions", {
+		sliceId: varchar("slice_id"),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		tableId: varchar("table_id"),
+		columnId: varchar("column_id"),
 		columnName: varchar("column_name"),
-		slicePriority: integer("slice_priority").notNull(),
-		sliceType: varchar("slice_type").notNull(),
+		slicePriority: integer("slice_priority"),
+		sliceType: varchar("slice_type"),
 		distinctValues: json("distinct_values"),
 		valueCount: integer("value_count"),
 		reasoning: text(),
 		businessContext: text("business_context"),
 		confidence: doublePrecision(),
 		sqlTemplate: text("sql_template"),
-		detectionSource: varchar("detection_source").notNull(),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("idx_slice_definitions_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("idx_slice_definitions_table").using(
-			"btree",
-			table.tableId.asc().nullsLast(),
-		),
-		index("ix_slice_definitions_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+		detectionSource: varchar("detection_source"),
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT slice_id, session_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, sql_template, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const slicingViews = metadataSchema.table(
-	"slicing_views",
-	{
-		viewId: varchar("view_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		factTableId: varchar("fact_table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
-		viewName: varchar("view_name").notNull(),
+export const currentSlicingViews = metadataSchema
+	.view("current_slicing_views", {
+		viewId: varchar("view_id"),
+		sessionId: varchar("session_id"),
+		factTableId: varchar("fact_table_id"),
+		viewName: varchar("view_name"),
 		runId: varchar("run_id"),
 		sliceDefinitionIds: json("slice_definition_ids"),
 		sliceColumns: json("slice_columns"),
-		isGrainVerified: boolean("is_grain_verified").notNull(),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("ix_slicing_views_run_id").using(
-			"btree",
-			table.runId.asc().nullsLast(),
-		),
-		index("ix_slicing_views_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_slicing_view_fact_table").on(table.factTableId),
-	],
-);
+		isGrainVerified: boolean("is_grain_verified"),
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT view_id, session_id, fact_table_id, view_name, run_id, slice_definition_ids, slice_columns, is_grain_verified, created_at FROM ws_00000000_0000_0000_0000_000000000001.slicing_views r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const snippetUsage = metadataSchema.table(
-	"snippet_usage",
-	{
-		usageId: varchar("usage_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		executionId: varchar("execution_id").notNull(),
-		executionType: varchar("execution_type").notNull(),
-		snippetId: varchar("snippet_id").references(() => sqlSnippets.snippetId, {
-			onDelete: "cascade",
-		}),
-		usageType: varchar("usage_type").notNull(),
-		matchConfidence: doublePrecision("match_confidence").notNull(),
-		sqlMatchRatio: doublePrecision("sql_match_ratio").notNull(),
-		stepId: varchar("step_id"),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("ix_snippet_usage_execution_id").using(
-			"btree",
-			table.executionId.asc().nullsLast(),
-		),
-		index("ix_snippet_usage_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_snippet_usage_snippet_id").using(
-			"btree",
-			table.snippetId.asc().nullsLast(),
-		),
-	],
-);
-
-export const sources = metadataSchema.table(
-	"sources",
-	{
-		sourceId: varchar("source_id").primaryKey(),
-		name: varchar().notNull(),
-		sourceType: varchar("source_type").notNull(),
-		connectionConfig: json("connection_config"),
-		createdAt: timestamp("created_at").notNull(),
-		updatedAt: timestamp("updated_at").notNull(),
-		status: varchar(),
-		stage: varchar(),
-		backend: varchar(),
-		discoveredSchema: json("discovered_schema"),
-		archivedAt: timestamp("archived_at"),
-	},
-	(table) => [unique("uq_sources_name").on(table.name)],
-);
-
-export const sqlSnippets = metadataSchema.table(
-	"sql_snippets",
-	{
-		snippetId: varchar("snippet_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		snippetType: varchar("snippet_type").notNull(),
-		standardField: varchar("standard_field"),
-		statement: varchar(),
-		aggregation: varchar(),
-		schemaMappingId: varchar("schema_mapping_id").notNull(),
-		parameterValue: varchar("parameter_value"),
-		normalizedExpression: varchar("normalized_expression"),
-		inputFields: json("input_fields"),
-		sql: text().notNull(),
-		description: text().notNull(),
-		columnMappings: json("column_mappings").notNull(),
-		source: varchar().notNull(),
-		llmModel: varchar("llm_model"),
-		provenance: json(),
-		executionCount: integer("execution_count").notNull(),
-		failureCount: integer("failure_count").notNull(),
-		lastUsedAt: timestamp("last_used_at"),
-		columnHash: varchar("column_hash"),
-		createdAt: timestamp("created_at").notNull(),
-		updatedAt: timestamp("updated_at").notNull(),
-	},
-	(table) => [
-		index("ix_sql_snippets_normalized_expression").using(
-			"btree",
-			table.normalizedExpression.asc().nullsLast(),
-		),
-		index("ix_sql_snippets_schema_mapping_id").using(
-			"btree",
-			table.schemaMappingId.asc().nullsLast(),
-		),
-		index("ix_sql_snippets_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_sql_snippets_snippet_type").using(
-			"btree",
-			table.snippetType.asc().nullsLast(),
-		),
-		index("ix_sql_snippets_standard_field").using(
-			"btree",
-			table.standardField.asc().nullsLast(),
-		),
-		unique("uq_snippet_semantic_key").on(
-			table.snippetType,
-			table.standardField,
-			table.statement,
-			table.aggregation,
-			table.schemaMappingId,
-			table.parameterValue,
-		),
-	],
-);
-
-export const statisticalProfiles = metadataSchema.table(
-	"statistical_profiles",
-	{
-		profileId: varchar("profile_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentStatisticalProfiles = metadataSchema
+	.view("current_statistical_profiles", {
+		profileId: varchar("profile_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		profiledAt: timestamp("profiled_at").notNull(),
-		layer: varchar().notNull(),
-		totalCount: integer("total_count").notNull(),
-		nullCount: integer("null_count").notNull(),
+		profiledAt: timestamp("profiled_at"),
+		layer: varchar(),
+		totalCount: integer("total_count"),
+		nullCount: integer("null_count"),
 		distinctCount: integer("distinct_count"),
 		nullRatio: doublePrecision("null_ratio"),
 		cardinalityRatio: doublePrecision("cardinality_ratio"),
 		isUnique: integer("is_unique"),
 		isNumeric: integer("is_numeric"),
-		profileData: json("profile_data").notNull(),
-	},
-	(table) => [
-		index("idx_statistical_profiles_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-			table.profiledAt.desc().nullsFirst(),
-		),
-		index("ix_statistical_profiles_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_statistical_profiles_column_run").on(
-			table.columnId,
-			table.runId,
-		),
-	],
-);
+		profileData: json("profile_data"),
+	})
+	.as(
+		sql`SELECT profile_id, session_id, column_id, run_id, profiled_at, layer, total_count, null_count, distinct_count, null_ratio, cardinality_ratio, is_unique, is_numeric, profile_data FROM ws_00000000_0000_0000_0000_000000000001.statistical_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'statistics'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const statisticalQualityMetrics = metadataSchema.table(
-	"statistical_quality_metrics",
-	{
-		metricId: varchar("metric_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentStatisticalQualityMetrics = metadataSchema
+	.view("current_statistical_quality_metrics", {
+		metricId: varchar("metric_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		computedAt: timestamp("computed_at").notNull(),
+		computedAt: timestamp("computed_at"),
 		benfordCompliant: integer("benford_compliant"),
 		hasOutliers: integer("has_outliers"),
 		iqrOutlierRatio: doublePrecision("iqr_outlier_ratio"),
 		zscoreOutlierRatio: doublePrecision("zscore_outlier_ratio"),
-		qualityData: json("quality_data").notNull(),
-	},
-	(table) => [
-		index("idx_statistical_quality_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-			table.computedAt.desc().nullsFirst(),
-		),
-		index("ix_statistical_quality_metrics_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_statistical_quality_metrics_column_run").on(
-			table.columnId,
-			table.runId,
-		),
-	],
-);
+		qualityData: json("quality_data"),
+	})
+	.as(
+		sql`SELECT metric_id, session_id, column_id, run_id, computed_at, benford_compliant, has_outliers, iqr_outlier_ratio, zscore_outlier_ratio, quality_data FROM ws_00000000_0000_0000_0000_000000000001.statistical_quality_metrics r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'statistical_quality'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const tableEntities = metadataSchema.table(
-	"table_entities",
-	{
-		entityId: varchar("entity_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		tableId: varchar("table_id")
-			.notNull()
-			.references(() => tables.tableId, { onDelete: "cascade" }),
+export const currentTableEntities = metadataSchema
+	.view("current_table_entities", {
+		entityId: varchar("entity_id"),
+		sessionId: varchar("session_id"),
+		tableId: varchar("table_id"),
 		runId: varchar("run_id"),
-		detectedEntityType: varchar("detected_entity_type").notNull(),
+		detectedEntityType: varchar("detected_entity_type"),
 		description: text(),
 		confidence: doublePrecision(),
 		evidence: json(),
@@ -964,90 +342,42 @@ export const tableEntities = metadataSchema.table(
 		isDimensionTable: boolean("is_dimension_table"),
 		timeColumn: varchar("time_column"),
 		detectionSource: varchar("detection_source"),
-		detectedAt: timestamp("detected_at").notNull(),
-	},
-	(table) => [
-		index("ix_table_entities_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_table_entity_table_run").on(table.tableId, table.runId),
-	],
-);
+		detectedAt: timestamp("detected_at"),
+	})
+	.as(
+		sql`SELECT entity_id, session_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, is_fact_table, is_dimension_table, time_column, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const tables = metadataSchema.table(
-	"tables",
-	{
-		tableId: varchar("table_id").primaryKey(),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId),
-		tableName: varchar("table_name").notNull(),
-		layer: varchar().notNull(),
-		duckdbPath: varchar("duckdb_path"),
-		rowCount: integer("row_count"),
-		createdAt: timestamp("created_at").notNull(),
-		lastProfiledAt: timestamp("last_profiled_at"),
-	},
-	(table) => [
-		index("idx_tables_source").using("btree", table.sourceId.asc().nullsLast()),
-		unique("uq_source_table_layer").on(
-			table.sourceId,
-			table.tableName,
-			table.layer,
-		),
-	],
-);
-
-export const temporalColumnProfiles = metadataSchema.table(
-	"temporal_column_profiles",
-	{
-		profileId: varchar("profile_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentTemporalColumnProfiles = metadataSchema
+	.view("current_temporal_column_profiles", {
+		profileId: varchar("profile_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		profiledAt: timestamp("profiled_at").notNull(),
-		minTimestamp: timestamp("min_timestamp").notNull(),
-		maxTimestamp: timestamp("max_timestamp").notNull(),
-		detectedGranularity: varchar("detected_granularity").notNull(),
+		profiledAt: timestamp("profiled_at"),
+		minTimestamp: timestamp("min_timestamp"),
+		maxTimestamp: timestamp("max_timestamp"),
+		detectedGranularity: varchar("detected_granularity"),
 		completenessRatio: doublePrecision("completeness_ratio"),
 		hasSeasonality: boolean("has_seasonality"),
 		hasTrend: boolean("has_trend"),
 		isStale: boolean("is_stale"),
-		profileData: json("profile_data").notNull(),
-	},
-	(table) => [
-		index("idx_temporal_profiles_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("ix_temporal_column_profiles_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_temporal_column_profiles_column_run").on(
-			table.columnId,
-			table.runId,
-		),
-	],
-);
+		profileData: json("profile_data"),
+	})
+	.as(
+		sql`SELECT profile_id, session_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, has_seasonality, has_trend, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'temporal'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const temporalSliceAnalyses = metadataSchema.table(
-	"temporal_slice_analyses",
-	{
-		id: varchar().primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sliceTableName: varchar("slice_table_name", { length: 255 }).notNull(),
-		timeColumn: varchar("time_column", { length: 255 }).notNull(),
-		periodLabel: varchar("period_label", { length: 50 }).notNull(),
-		periodStart: date("period_start").notNull(),
-		periodEnd: date("period_end").notNull(),
+export const currentTemporalSliceAnalyses = metadataSchema
+	.view("current_temporal_slice_analyses", {
+		id: varchar(),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		sliceTableName: varchar("slice_table_name", { length: 255 }),
+		timeColumn: varchar("time_column", { length: 255 }),
+		periodLabel: varchar("period_label", { length: 50 }),
+		periodStart: date("period_start"),
+		periodEnd: date("period_end"),
 		rowCount: integer("row_count"),
 		expectedDays: integer("expected_days"),
 		observedDays: integer("observed_days"),
@@ -1063,38 +393,21 @@ export const temporalSliceAnalyses = metadataSchema.table(
 		anomalyType: varchar("anomaly_type", { length: 20 }),
 		periodOverPeriodChange: doublePrecision("period_over_period_change"),
 		issuesJson: json("issues_json"),
-		createdAt: timestamp("created_at").notNull(),
-	},
-	(table) => [
-		index("ix_temporal_slice_analyses_period_label").using(
-			"btree",
-			table.periodLabel.asc().nullsLast(),
-		),
-		index("ix_temporal_slice_analyses_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_temporal_slice_analyses_slice_table_name").using(
-			"btree",
-			table.sliceTableName.asc().nullsLast(),
-		),
-	],
-);
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT id, session_id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, expected_days, observed_days, coverage_ratio, is_complete, has_early_cutoff, days_missing_at_end, last_day_ratio, z_score, rolling_avg, rolling_std, is_volume_anomaly, anomaly_type, period_over_period_change, issues_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const typeCandidates = metadataSchema.table(
-	"type_candidates",
-	{
-		candidateId: varchar("candidate_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentTypeCandidates = metadataSchema
+	.view("current_type_candidates", {
+		candidateId: varchar("candidate_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		detectedAt: timestamp("detected_at").notNull(),
-		dataType: varchar("data_type").notNull(),
-		confidence: doublePrecision().notNull(),
+		detectedAt: timestamp("detected_at"),
+		dataType: varchar("data_type"),
+		confidence: doublePrecision(),
 		parseSuccessRate: doublePrecision("parse_success_rate"),
 		failedExamples: json("failed_examples"),
 		detectedPattern: varchar("detected_pattern"),
@@ -1103,75 +416,246 @@ export const typeCandidates = metadataSchema.table(
 		unitConfidence: doublePrecision("unit_confidence"),
 		quarantineCount: integer("quarantine_count"),
 		quarantineRate: doublePrecision("quarantine_rate"),
-	},
-	(table) => [
-		index("idx_type_candidates_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("ix_type_candidates_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
+	})
+	.as(
+		sql`SELECT candidate_id, session_id, column_id, run_id, detected_at, data_type, confidence, parse_success_rate, failed_examples, detected_pattern, pattern_match_rate, detected_unit, unit_confidence, quarantine_count, quarantine_rate FROM ws_00000000_0000_0000_0000_000000000001.type_candidates r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'typing'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const typeDecisions = metadataSchema.table(
-	"type_decisions",
-	{
-		decisionId: varchar("decision_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		columnId: varchar("column_id")
-			.notNull()
-			.references(() => columns.columnId, { onDelete: "cascade" }),
+export const currentTypeDecisions = metadataSchema
+	.view("current_type_decisions", {
+		decisionId: varchar("decision_id"),
+		sessionId: varchar("session_id"),
+		columnId: varchar("column_id"),
 		runId: varchar("run_id"),
-		decidedType: varchar("decided_type").notNull(),
-		decisionSource: varchar("decision_source").notNull(),
-		decidedAt: timestamp("decided_at").notNull(),
+		decidedType: varchar("decided_type"),
+		decisionSource: varchar("decision_source"),
+		decidedAt: timestamp("decided_at"),
 		decidedBy: varchar("decided_by"),
 		previousType: varchar("previous_type"),
 		decisionReason: varchar("decision_reason"),
-	},
-	(table) => [
-		index("idx_type_decisions_column").using(
-			"btree",
-			table.columnId.asc().nullsLast(),
-		),
-		index("ix_type_decisions_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		unique("uq_column_type_decision").on(table.columnId, table.runId),
-	],
-);
+	})
+	.as(
+		sql`SELECT decision_id, session_id, column_id, run_id, decided_type, decision_source, decided_at, decided_by, previous_type, decision_reason FROM ws_00000000_0000_0000_0000_000000000001.type_decisions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'typing'::text AND h.run_id::text = r.run_id::text))`,
+	);
 
-export const validationResults = metadataSchema.table(
-	"validation_results",
-	{
-		resultId: varchar("result_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		validationId: varchar("validation_id").notNull(),
-		tableIds: json("table_ids").notNull(),
-		status: varchar().notNull(),
-		severity: varchar().notNull(),
-		passed: boolean().notNull(),
+export const detectedBusinessCycles = metadataSchema
+	.view("detected_business_cycles", {
+		cycleId: varchar("cycle_id"),
+		sessionId: varchar("session_id"),
+		sourceId: varchar("source_id"),
+		cycleName: varchar("cycle_name"),
+		cycleType: varchar("cycle_type"),
+		canonicalType: varchar("canonical_type"),
+		isKnownType: boolean("is_known_type"),
+		description: text(),
+		businessValue: varchar("business_value"),
+		confidence: doublePrecision(),
+		tablesInvolved: json("tables_involved"),
+		stages: json(),
+		entityFlows: json("entity_flows"),
+		statusTable: varchar("status_table"),
+		statusColumn: varchar("status_column"),
+		completionValue: varchar("completion_value"),
+		totalRecords: integer("total_records"),
+		completedCycles: integer("completed_cycles"),
+		completionRate: doublePrecision("completion_rate"),
+		evidence: json(),
+		detectedAt: timestamp("detected_at"),
+	})
+	.as(
+		sql`SELECT cycle_id, session_id, source_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM ws_00000000_0000_0000_0000_000000000001.detected_business_cycles`,
+	);
+
+export const fixLedger = metadataSchema
+	.view("fix_ledger", {
+		fixId: varchar("fix_id"),
+		sessionId: varchar("session_id"),
+		sourceId: varchar("source_id"),
+		actionName: varchar("action_name"),
+		tableName: varchar("table_name"),
+		columnName: varchar("column_name"),
+		userInput: varchar("user_input"),
+		interpretation: varchar(),
+		status: varchar(),
+		createdAt: timestamp("created_at"),
+		supersededAt: timestamp("superseded_at"),
+		supersededBy: varchar("superseded_by"),
+	})
+	.as(
+		sql`SELECT fix_id, session_id, source_id, action_name, table_name, column_name, user_input, interpretation, status, created_at, superseded_at, superseded_by FROM ws_00000000_0000_0000_0000_000000000001.fix_ledger`,
+	);
+
+export const investigationSessions = metadataSchema
+	.view("investigation_sessions", {
+		sessionId: varchar("session_id"),
+		status: varchar(),
+		startedAt: timestamp("started_at"),
+		endedAt: timestamp("ended_at"),
+		durationSeconds: doublePrecision("duration_seconds"),
+		intent: varchar(),
+		contract: varchar(),
+		vertical: varchar(),
+		outcomeSummary: varchar("outcome_summary"),
+		outcomePayload: json("outcome_payload"),
+		stepCount: integer("step_count"),
+	})
+	.as(
+		sql`SELECT session_id, status, started_at, ended_at, duration_seconds, intent, contract, vertical, outcome_summary, outcome_payload, step_count FROM ws_00000000_0000_0000_0000_000000000001.investigation_sessions`,
+	);
+
+export const investigationSteps = metadataSchema
+	.view("investigation_steps", {
+		stepId: varchar("step_id"),
+		sessionId: varchar("session_id"),
+		ordinal: integer(),
+		toolName: varchar("tool_name"),
+		arguments: json(),
+		status: varchar(),
+		resultSummary: varchar("result_summary"),
+		error: varchar(),
+		startedAt: timestamp("started_at"),
+		durationSeconds: doublePrecision("duration_seconds"),
+		target: varchar(),
+		dimension: varchar(),
+	})
+	.as(
+		sql`SELECT step_id, session_id, ordinal, tool_name, arguments, status, result_summary, error, started_at, duration_seconds, target, dimension FROM ws_00000000_0000_0000_0000_000000000001.investigation_steps`,
+	);
+
+export const metadataSnapshotHead = metadataSchema
+	.view("metadata_snapshot_head", {
+		headId: varchar("head_id"),
+		target: varchar(),
+		stage: varchar(),
+		runId: varchar("run_id"),
+		promotedAt: timestamp("promoted_at"),
+		version: integer(),
+	})
+	.as(
+		sql`SELECT head_id, target, stage, run_id, promoted_at, version FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head`,
+	);
+
+export const queryExecutions = metadataSchema
+	.view("query_executions", {
+		executionId: varchar("execution_id"),
+		sessionId: varchar("session_id"),
+		sourceId: varchar("source_id"),
+		question: text(),
+		sqlExecuted: text("sql_executed"),
+		executedAt: timestamp("executed_at"),
+		success: boolean(),
+		rowCount: integer("row_count"),
+		errorMessage: text("error_message"),
+		confidenceLevel: varchar("confidence_level"),
+		contractName: varchar("contract_name"),
+		entropyAction: varchar("entropy_action"),
+	})
+	.as(
+		sql`SELECT execution_id, session_id, source_id, question, sql_executed, executed_at, success, row_count, error_message, confidence_level, contract_name, entropy_action FROM ws_00000000_0000_0000_0000_000000000001.query_executions`,
+	);
+
+export const sessionTables = metadataSchema
+	.view("session_tables", {
+		sessionId: varchar("session_id"),
+		tableId: varchar("table_id"),
+	})
+	.as(
+		sql`SELECT session_id, table_id FROM ws_00000000_0000_0000_0000_000000000001.session_tables`,
+	);
+
+export const snippetUsage = metadataSchema
+	.view("snippet_usage", {
+		usageId: varchar("usage_id"),
+		sessionId: varchar("session_id"),
+		executionId: varchar("execution_id"),
+		executionType: varchar("execution_type"),
+		snippetId: varchar("snippet_id"),
+		usageType: varchar("usage_type"),
+		matchConfidence: doublePrecision("match_confidence"),
+		sqlMatchRatio: doublePrecision("sql_match_ratio"),
+		stepId: varchar("step_id"),
+		createdAt: timestamp("created_at"),
+	})
+	.as(
+		sql`SELECT usage_id, session_id, execution_id, execution_type, snippet_id, usage_type, match_confidence, sql_match_ratio, step_id, created_at FROM ws_00000000_0000_0000_0000_000000000001.snippet_usage`,
+	);
+
+export const sources = metadataSchema
+	.view("sources", {
+		sourceId: varchar("source_id"),
+		name: varchar(),
+		sourceType: varchar("source_type"),
+		connectionConfig: json("connection_config"),
+		createdAt: timestamp("created_at"),
+		updatedAt: timestamp("updated_at"),
+		status: varchar(),
+		stage: varchar(),
+		backend: varchar(),
+		discoveredSchema: json("discovered_schema"),
+		archivedAt: timestamp("archived_at"),
+	})
+	.as(
+		sql`SELECT source_id, name, source_type, connection_config, created_at, updated_at, status, stage, backend, discovered_schema, archived_at FROM ws_00000000_0000_0000_0000_000000000001.sources`,
+	);
+
+export const sqlSnippets = metadataSchema
+	.view("sql_snippets", {
+		snippetId: varchar("snippet_id"),
+		sessionId: varchar("session_id"),
+		snippetType: varchar("snippet_type"),
+		standardField: varchar("standard_field"),
+		statement: varchar(),
+		aggregation: varchar(),
+		schemaMappingId: varchar("schema_mapping_id"),
+		parameterValue: varchar("parameter_value"),
+		normalizedExpression: varchar("normalized_expression"),
+		inputFields: json("input_fields"),
+		sql: text(),
+		description: text(),
+		columnMappings: json("column_mappings"),
+		source: varchar(),
+		llmModel: varchar("llm_model"),
+		provenance: json(),
+		executionCount: integer("execution_count"),
+		failureCount: integer("failure_count"),
+		lastUsedAt: timestamp("last_used_at"),
+		columnHash: varchar("column_hash"),
+		createdAt: timestamp("created_at"),
+		updatedAt: timestamp("updated_at"),
+	})
+	.as(
+		sql`SELECT snippet_id, session_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, column_mappings, source, llm_model, provenance, execution_count, failure_count, last_used_at, column_hash, created_at, updated_at FROM ws_00000000_0000_0000_0000_000000000001.sql_snippets`,
+	);
+
+export const tables = metadataSchema
+	.view("tables", {
+		tableId: varchar("table_id"),
+		sourceId: varchar("source_id"),
+		tableName: varchar("table_name"),
+		layer: varchar(),
+		duckdbPath: varchar("duckdb_path"),
+		rowCount: integer("row_count"),
+		createdAt: timestamp("created_at"),
+		lastProfiledAt: timestamp("last_profiled_at"),
+	})
+	.as(
+		sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM ws_00000000_0000_0000_0000_000000000001.tables`,
+	);
+
+export const validationResults = metadataSchema
+	.view("validation_results", {
+		resultId: varchar("result_id"),
+		sessionId: varchar("session_id"),
+		validationId: varchar("validation_id"),
+		tableIds: json("table_ids"),
+		status: varchar(),
+		severity: varchar(),
+		passed: boolean(),
 		message: text(),
-		executedAt: timestamp("executed_at").notNull(),
+		executedAt: timestamp("executed_at"),
 		sqlUsed: text("sql_used"),
 		details: json(),
-	},
-	(table) => [
-		index("ix_validation_results_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_validation_results_validation_id").using(
-			"btree",
-			table.validationId.asc().nullsLast(),
-		),
-	],
-);
+	})
+	.as(
+		sql`SELECT result_id, session_id, validation_id, table_ids, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results`,
+	);

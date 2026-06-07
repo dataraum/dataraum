@@ -30,6 +30,7 @@ def run_detector_post_step(
     session_id: str,
     table_ids: list[str],
     run_id: str | None = None,
+    base_runs: dict[tuple[str, str], str] | None = None,
 ) -> int:
     """Run a single detector as a phase post-step — source-free (DAT-408).
 
@@ -50,6 +51,9 @@ def run_detector_post_step(
         run_id: Snapshot version axis (DAT-413); stamped on each record and ALWAYS
             the delete scope, so a re-run clears only its OWN prior rows
             (non-destructive). ``None`` (tests) scopes to ``run_id IS NULL``.
+        base_runs: pinned ``(table_id, stage) → run_id`` map (DAT-448) resolved
+            once at detect start (``loaders.resolve_base_runs``); threaded onto
+            every snapshot so loader fallbacks read one consistent base.
 
     Returns:
         Number of records created.
@@ -101,6 +105,7 @@ def run_detector_post_step(
                     duckdb_conn=duckdb_conn,
                     dimensions=[detector.sub_dimension],
                     run_id=run_id,
+                    base_runs=base_runs,
                 )
                 for obj in snapshot.objects:
                     all_records.append(
@@ -123,6 +128,7 @@ def run_detector_post_step(
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
                 run_id=run_id,
+                base_runs=base_runs,
             )
             for obj in snapshot.objects:
                 resolved_table_id = _resolve_table_id_from_target(
@@ -190,6 +196,7 @@ def run_detector_post_step(
                 dimensions=[detector.sub_dimension],
                 run_id=run_id,
                 session_id=session_id,
+                base_runs=base_runs,
             )
             for obj in snapshot.objects:
                 all_records.append(
@@ -223,6 +230,7 @@ def run_detector_post_step(
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
                 run_id=run_id,
+                base_runs=base_runs,
             )
             for obj in snapshot.objects:
                 all_records.append(

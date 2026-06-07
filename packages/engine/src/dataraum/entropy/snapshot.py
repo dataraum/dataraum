@@ -225,6 +225,7 @@ def _run_detectors(
             to_column_id=context.to_column_id,
             duckdb_conn=context.duckdb_conn,
             run_id=context.run_id,
+            base_runs=context.base_runs,
             # Copy pre-populated analysis_results (for test/legacy paths)
             analysis_results=dict(context.analysis_results),
         )
@@ -262,6 +263,7 @@ def take_snapshot(
     dimensions: Sequence[str] | None = None,
     run_id: str | None = None,
     session_id: str | None = None,
+    base_runs: dict[tuple[str, str], str] | None = None,
 ) -> Snapshot:
     """Run detectors on a target and return canonical scores.
 
@@ -284,10 +286,13 @@ def take_snapshot(
         session_id: scopes a ``relationship:`` resolution to one session (DAT-408) —
             relationships are session-grain, so two sessions sharing a column pair
             must not cross-resolve. Ignored for other target kinds.
+        base_runs: pinned ``(table_id, stage) → run_id`` map (DAT-448), resolved
+            once at detect start; loaders consult it when this run has no row.
 
     Returns:
         Snapshot with scores from all applicable detectors
     """
+    pinned_base_runs = base_runs or {}
     registry = get_default_registry()
     is_view_target = target.startswith("view:")
     is_table_target = target.startswith("table:")
@@ -303,6 +308,7 @@ def take_snapshot(
             session=session,
             duckdb_conn=duckdb_conn,
             run_id=run_id,
+            base_runs=pinned_base_runs,
             **resolved_rel,
         )
         detectors = [d for d in registry.get_all_detectors() if d.scope == "relationship"]
@@ -320,6 +326,7 @@ def take_snapshot(
             view_name=view_name,
             duckdb_conn=duckdb_conn,
             run_id=run_id,
+            base_runs=pinned_base_runs,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "view"]
@@ -338,6 +345,7 @@ def take_snapshot(
             table_name=table_name,
             duckdb_conn=duckdb_conn,
             run_id=run_id,
+            base_runs=pinned_base_runs,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "table"]
@@ -357,6 +365,7 @@ def take_snapshot(
             column_name=column_name,
             duckdb_conn=duckdb_conn,
             run_id=run_id,
+            base_runs=pinned_base_runs,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "column"]

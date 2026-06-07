@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -19,11 +19,23 @@ class ColumnDriftSummary(Base):
     """
 
     __tablename__ = "column_drift_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "slice_table_name", "column_name", "run_id", name="uq_drift_slice_column_run"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    # Snapshot version axis (DAT-448): the begin_session run that computed this
+    # summary. The write path was append-only — a re-run within a session
+    # duplicated rows and load_drift_summaries read them all, cross-run. Nullable
+    # for pre-existing rows; the unique constraint guards the grain for stamped
+    # rows (NULL run_id rows are NULLS-DISTINCT — the run-scoped delete covers
+    # that legacy/test path).
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     column_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -66,6 +78,9 @@ class TemporalSliceAnalysis(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    # Snapshot version axis (DAT-448): the begin_session run that computed this
+    # period analysis — same append-only-duplication fix as ColumnDriftSummary.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     time_column: Mapped[str] = mapped_column(String(255), nullable=False)

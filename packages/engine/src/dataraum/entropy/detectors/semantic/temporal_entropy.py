@@ -46,7 +46,9 @@ class TemporalEntropyDetector(EntropyDetector):
         typing_result = load_typing(context.session, context.column_id, context.run_id)
         if typing_result is not None:
             context.analysis_results["typing"] = typing_result
-        sem = load_semantic(context.session, context.column_id, context.run_id)
+        sem = load_semantic(
+            context.session, context.column_id, context.run_id, base_runs=context.base_runs
+        )
         if sem is not None:
             context.analysis_results["semantic"] = sem
 

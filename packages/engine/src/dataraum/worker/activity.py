@@ -497,7 +497,14 @@ def run_detectors(
     set. It runs once, sequentially, after the per-table fan-out and the reduce — so
     the delete-before-insert is safe (no concurrency) and every detector's inputs are
     present. ``run_id`` stamps the snapshot version axis (DAT-413).
+
+    Base-run pinning (DAT-448): the promoted ``(table:{id}, stage)`` heads for the
+    add_source stages session detects read (semantic_per_column, statistics,
+    statistical_quality) are resolved ONCE here and threaded down — per-call head
+    resolution in the loaders let a concurrent promote tear reads mid-run.
     """
+    from dataraum.entropy.detectors.loaders import resolve_base_runs
+
     detector_ids = declared_detector_ids(detector_phases)
     if not detector_ids:
         return 0
@@ -511,6 +518,7 @@ def run_detectors(
             # nothing to detect. Log it: a populated source with no links is a bug.
             logger.warning("detect_no_session_tables", session_id=session_id)
             return 0
+        base_runs = resolve_base_runs(session, table_ids)
         for detector_id in detector_ids:
             # Scoped to the session's tables. The single terminal pass runs once,
             # sequentially after the fan-out — no concurrent writers to collide on
@@ -522,6 +530,7 @@ def run_detectors(
                 session_id=session_id,
                 table_ids=table_ids,
                 run_id=run_id,
+                base_runs=base_runs,
             )
         # Persist readiness from the freshly-written entropy objects, in the same
         # transaction (DAT-394). flush() makes the just-added rows visible to the

@@ -59,6 +59,7 @@ CREATE TABLE sources (
 CREATE TABLE column_drift_summaries (
 	id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
 	slice_table_name VARCHAR(255) NOT NULL, 
 	column_name VARCHAR(255) NOT NULL, 
 	time_column VARCHAR(255) NOT NULL, 
@@ -69,6 +70,7 @@ CREATE TABLE column_drift_summaries (
 	drift_evidence_json JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_column_drift_summaries PRIMARY KEY (id), 
+	CONSTRAINT uq_drift_slice_column_run UNIQUE (slice_table_name, column_name, run_id), 
 	CONSTRAINT fk_column_drift_summaries_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
 );
 
@@ -236,6 +238,7 @@ CREATE INDEX idx_tables_source ON tables (source_id);
 CREATE TABLE temporal_slice_analyses (
 	id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
 	slice_table_name VARCHAR(255) NOT NULL, 
 	time_column VARCHAR(255) NOT NULL, 
 	period_label VARCHAR(50) NOT NULL, 
@@ -488,6 +491,7 @@ CREATE INDEX ix_column_slice_profiles_session_id ON column_slice_profiles (sessi
 CREATE TABLE derived_columns (
 	derived_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
 	table_id VARCHAR NOT NULL, 
 	derived_column_id VARCHAR NOT NULL, 
 	source_column_ids JSON NOT NULL, 
@@ -638,6 +642,7 @@ CREATE INDEX ix_semantic_annotations_session_id ON semantic_annotations (session
 CREATE TABLE slice_definitions (
 	slice_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
 	table_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
 	column_name VARCHAR, 

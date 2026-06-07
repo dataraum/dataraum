@@ -24,15 +24,11 @@ import {
 	PersistedIntent,
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
-import {
-	relationshipTargetKey,
-	sessionHeadTarget,
-} from "../db/metadata/relationship-target";
+import { relationshipTargetKey } from "../db/metadata/relationship-target";
 import {
 	columns,
-	entropyObjects,
-	entropyReadiness,
-	metadataSnapshotHead,
+	currentEntropyObjects,
+	currentEntropyReadiness,
 	tables,
 } from "../db/metadata/schema";
 import { linkedAbortController } from "../lib/abort";
@@ -238,62 +234,53 @@ export async function whyRelationship(
 		input.to_column_id,
 	);
 
-	// Relationship readiness/evidence is sealed at session grain (DAT-408): pick
-	// the PROMOTED begin_session detect run via the per-session head, then read
-	// only that run's rows. No promoted run → unanalyzed.
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
+	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
+	// lives in the database — no head resolution, no runId plumbing. No promoted
+	// run → empty views → unanalyzed.
+	const [readinessRow] = await metadataDb
+		.select({
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+		})
+		.from(currentEntropyReadiness)
 		.where(
 			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
-				eq(metadataSnapshotHead.stage, "detect"),
+				eq(currentEntropyReadiness.sessionId, input.session_id),
+				eq(currentEntropyReadiness.target, target),
 			),
 		)
 		.limit(1);
-	const headRunId = head?.runId ?? null;
-
-	const [readinessRow] = headRunId
-		? await metadataDb
-				.select({
-					band: entropyReadiness.band,
-					worstIntentRisk: entropyReadiness.worstIntentRisk,
-					intents: entropyReadiness.intents,
-				})
-				.from(entropyReadiness)
-				.where(
-					and(
-						eq(entropyReadiness.sessionId, input.session_id),
-						eq(entropyReadiness.target, target),
-						eq(entropyReadiness.runId, headRunId),
-					),
-				)
-				.limit(1)
-		: [];
 
 	// Evidence is keyed by the relationship target (relationship rows have no
-	// column_id), scoped to the SAME promoted run so stale runs don't inflate
-	// signal_count.
-	const evidenceRows = headRunId
-		? await metadataDb
-				.select({
-					layer: entropyObjects.layer,
-					dimension: entropyObjects.dimension,
-					subDimension: entropyObjects.subDimension,
-					score: entropyObjects.score,
-					detectorId: entropyObjects.detectorId,
-					evidence: entropyObjects.evidence,
-				})
-				.from(entropyObjects)
-				.where(
-					and(
-						eq(entropyObjects.sessionId, input.session_id),
-						eq(entropyObjects.target, target),
-						eq(entropyObjects.runId, headRunId),
-					),
-				)
-				.orderBy(asc(entropyObjects.dimension))
-		: [];
+	// column_id); the view scopes to the promoted run, so stale runs can't
+	// inflate signal_count. View columns type as nullable (Postgres views carry
+	// no NOT NULL) — coalesce at the edge.
+	const rawEvidence = await metadataDb
+		.select({
+			layer: currentEntropyObjects.layer,
+			dimension: currentEntropyObjects.dimension,
+			subDimension: currentEntropyObjects.subDimension,
+			score: currentEntropyObjects.score,
+			detectorId: currentEntropyObjects.detectorId,
+			evidence: currentEntropyObjects.evidence,
+		})
+		.from(currentEntropyObjects)
+		.where(
+			and(
+				eq(currentEntropyObjects.sessionId, input.session_id),
+				eq(currentEntropyObjects.target, target),
+			),
+		)
+		.orderBy(asc(currentEntropyObjects.dimension));
+	const evidenceRows = rawEvidence.map((e) => ({
+		layer: e.layer ?? "",
+		dimension: e.dimension ?? "",
+		subDimension: e.subDimension ?? "",
+		score: e.score ?? 0,
+		detectorId: e.detectorId ?? "",
+		evidence: e.evidence,
+	}));
 
 	const pending = await getPendingOverlays();
 	const data = projectWhyRelationship(

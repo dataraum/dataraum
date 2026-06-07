@@ -121,10 +121,11 @@ class TestSlicingViewRunScopedFacts:
     ) -> None:
         """A fact row under run 'old' must not satisfy a run='new' build.
 
-        Deterministic flip on the same data: the only ``TableEntity`` marks the
-        table a fact under run 'old'. Scoped to 'old' the phase sees a sliceable
-        fact (does not skip); scoped to 'new' it sees none and skips. Without
-        run-scoping the 'old' fact leaks into both, so the 'new' assertion fails.
+        Deterministic flip on the same data: the ``TableEntity`` AND the
+        ``SliceDefinition`` (run-versioned since DAT-448) belong to run 'old'.
+        Scoped to 'old' the phase sees a sliceable fact (does not skip); scoped
+        to 'new' it sees none and skips. Without run-scoping the 'old' rows
+        leak into both, so the 'new' assertion fails.
         """
         src = _id()
         t = _typed_table(session, src, "orders")
@@ -135,6 +136,7 @@ class TestSlicingViewRunScopedFacts:
             SliceDefinition(
                 table_id=t,
                 column_id=col,
+                run_id="old",
                 slice_priority=1,
                 slice_type="categorical",
                 distinct_values=["us"],

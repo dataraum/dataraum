@@ -119,7 +119,7 @@ export async function buildWorkspaceContext(): Promise<string | null> {
 		.limit(RECENT_LIMIT);
 	if (recent.length === 0) return null;
 
-	const ids = recent.map((s) => s.sessionId);
+	const ids = recent.flatMap((s) => (s.sessionId ? [s.sessionId] : []));
 	const links = await metadataDb
 		.select({
 			sessionId: sessionTables.sessionId,
@@ -131,18 +131,21 @@ export async function buildWorkspaceContext(): Promise<string | null> {
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
 		.where(inArray(sessionTables.sessionId, ids));
 
+	// View columns type as nullable (Postgres views carry no NOT NULL) —
+	// coalesce the identity fields the underlying tables guarantee.
 	const namesBySession = new Map<string, Set<string>>();
 	for (const l of links) {
-		const set = namesBySession.get(l.sessionId) ?? new Set<string>();
-		set.add(displayTableName(l.tableName, l.sourceName));
-		namesBySession.set(l.sessionId, set);
+		const sessionId = l.sessionId ?? "";
+		const set = namesBySession.get(sessionId) ?? new Set<string>();
+		set.add(displayTableName(l.tableName ?? "", l.sourceName ?? ""));
+		namesBySession.set(sessionId, set);
 	}
 
 	return formatWorkspaceContext(
 		recent.map((s) => ({
-			sessionId: s.sessionId,
+			sessionId: s.sessionId ?? "",
 			vertical: s.vertical,
-			tableNames: [...(namesBySession.get(s.sessionId) ?? [])].sort(),
+			tableNames: [...(namesBySession.get(s.sessionId ?? "") ?? [])].sort(),
 		})),
 	);
 }

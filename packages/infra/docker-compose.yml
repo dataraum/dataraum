@@ -227,6 +227,10 @@ services:
       TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dataraum-pipeline}
+      # Password for the cockpit_reader role the bootstrap provisions with
+      # SELECT on ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's
+      # METADATA_DATABASE_URL below connects with it.
+      METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
     volumes:
       # No lake volume and no sources bind-mount — both the lake and the file
       # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
@@ -255,10 +259,11 @@ services:
       # postgres first-boot by init-databases.sh. Holds workspaces
       # registry + chat history + ui_state.
       COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
-      # Engine metadata DB — same Postgres instance, different database.
-      # The cockpit reads (Drizzle introspected schema) but never writes
-      # here; the engine's SQLAlchemy models own the schema.
-      METADATA_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Engine metadata — read through the cockpit_reader role, which the
+      # engine bootstrap grants SELECT on ws_<id>_read ONLY (ADR-0008/DAT-453):
+      # the promoted-read views are the cockpit's entire metadata surface; raw
+      # run-stamped tables are not even visible to this connection.
+      METADATA_DATABASE_URL: postgresql://cockpit_reader:${METADATA_READER_PASSWORD:-cockpit-reader-dev}@postgres:5432/${POSTGRES_DB}
       # Active workspace_id — same value the engine-worker bootstraps.
       # Drives `bun run db:pull:metadata` schemaFilter + the metadata
       # client's search_path resolution. Must match what the engine

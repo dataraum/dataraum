@@ -280,14 +280,16 @@ class TestLoaderRunIdFilter:
 
 
 class TestLoaderHeadFallback:
-    """DAT-405: session-detect reads fall back to the promoted head run.
+    """DAT-405/448: session-detect reads fall back to the PINNED base run.
 
     A begin_session detect carries the SESSION run's run_id, but per-column
     analysis rows (semantic, statistics) were written by the add_source run.
     A strict this-run read returned None and silently disabled the semantic-
-    gated session detectors. The loaders now resolve the column's
-    ``(table:{id}, stage)`` snapshot head and read that run's row; without a
-    promoted head they keep returning None (never guess a run).
+    gated session detectors (DAT-405). The orchestrator now resolves the
+    ``(table:{id}, stage)`` snapshot heads ONCE at detect start
+    (``resolve_base_runs``) and loaders consult that pin — per-call head
+    resolution let a concurrent promote tear reads mid-run (DAT-448). Without
+    a pin they keep returning None (never guess a run).
     """
 
     def _seed_column(self, session, column_id: str, table_id: str) -> None:
@@ -304,7 +306,9 @@ class TestLoaderHeadFallback:
         )
         session.flush()
 
-    def _seed_annotation(self, session, column_id: str, run_id: str) -> None:
+    def _seed_annotation(
+        self, session, column_id: str, run_id: str, role: str = "measure"
+    ) -> None:
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
         session.add(
@@ -313,7 +317,7 @@ class TestLoaderHeadFallback:
                 session_id="sess-1",
                 column_id=column_id,
                 run_id=run_id,
-                semantic_role="measure",
+                semantic_role=role,
             )
         )
         session.flush()
@@ -334,25 +338,39 @@ class TestLoaderHeadFallback:
         )
         session.flush()
 
-    def test_semantic_falls_back_to_promoted_head(self, real_session):
+    def test_semantic_falls_back_to_pinned_base_run(self, real_session):
+        from dataraum.entropy.detectors.loaders import resolve_base_runs
+
         self._seed_column(real_session, "col-h1", "tbl-h1")
         self._seed_annotation(real_session, "col-h1", "run-addsource")
         self._promote(real_session, "tbl-h1", "semantic_per_column", "run-addsource")
 
-        # Session run has no annotation; the head names the add_source run.
-        sem = load_semantic(real_session, "col-h1", run_id="run-session")
+        # The orchestrator pins the promoted heads once at detect start …
+        base_runs = resolve_base_runs(real_session, ["tbl-h1"])
+        assert base_runs == {("tbl-h1", "semantic_per_column"): "run-addsource"}
+
+        # … and the session run (no annotation of its own) reads the pinned run.
+        sem = load_semantic(real_session, "col-h1", run_id="run-session", base_runs=base_runs)
         assert sem is not None
         assert sem["semantic_role"] == "measure"
 
-    def test_semantic_without_head_stays_none(self, real_session):
+    def test_semantic_without_pin_stays_none(self, real_session):
+        from dataraum.entropy.detectors.loaders import resolve_base_runs
+
         self._seed_column(real_session, "col-h2", "tbl-h2")
         self._seed_annotation(real_session, "col-h2", "run-addsource")
 
-        # No promoted head → no fallback → None (never guess a run).
-        assert load_semantic(real_session, "col-h2", run_id="run-session") is None
+        # Nothing promoted → empty pin → no fallback → None (never guess a run).
+        base_runs = resolve_base_runs(real_session, ["tbl-h2"])
+        assert base_runs == {}
+        assert (
+            load_semantic(real_session, "col-h2", run_id="run-session", base_runs=base_runs)
+            is None
+        )
 
-    def test_statistics_falls_back_to_promoted_head(self, real_session):
+    def test_statistics_falls_back_to_pinned_base_run(self, real_session):
         from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.entropy.detectors.loaders import resolve_base_runs
 
         self._seed_column(real_session, "col-h3", "tbl-h3")
         real_session.add(
@@ -371,6 +389,30 @@ class TestLoaderHeadFallback:
         real_session.flush()
         self._promote(real_session, "tbl-h3", "statistics", "run-addsource")
 
-        stats = load_statistics(real_session, "col-h3", run_id="run-session")
+        base_runs = resolve_base_runs(real_session, ["tbl-h3"])
+        stats = load_statistics(real_session, "col-h3", run_id="run-session", base_runs=base_runs)
         assert stats is not None
         assert stats["cardinality_ratio"] == 0.9
+
+    def test_pin_is_immune_to_post_pin_promotes(self, real_session):
+        """The torn-read guard (DAT-448): a promote AFTER the pin is invisible."""
+        from dataraum.entropy.detectors.loaders import resolve_base_runs
+
+        self._seed_column(real_session, "col-h4", "tbl-h4")
+        self._seed_annotation(real_session, "col-h4", "run-a", role="measure")
+        self._seed_annotation(real_session, "col-h4", "run-b", role="identifier")
+        self._promote(real_session, "tbl-h4", "semantic_per_column", "run-a")
+
+        base_runs = resolve_base_runs(real_session, ["tbl-h4"])
+
+        # A concurrent add_source re-run flips the head mid-detect …
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+
+        head = real_session.query(MetadataSnapshotHead).filter_by(target="table:tbl-h4").one()
+        head.run_id = "run-b"
+        real_session.flush()
+
+        # … but the pinned read still resolves run-a: one consistent base.
+        sem = load_semantic(real_session, "col-h4", run_id="run-session", base_runs=base_runs)
+        assert sem is not None
+        assert sem["semantic_role"] == "measure"

@@ -4,6 +4,60 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-07: value artifacts run-versioned + promoted-read surface (DAT-448 + DAT-453)
+
+Branch `feat/dat-448-453-promoted-read-surface`. Two coupled changes.
+
+### DAT-448 — the value-layer artifacts joined the version axis
+
+- **`SliceDefinition`, `ColumnDriftSummary`, `TemporalSliceAnalysis`,
+  `DerivedColumn` now carry `run_id`** (nullable; new writes stamp `ctx.run_id`;
+  `uq_drift_slice_column_run` guards the drift grain). The drift/period persists
+  switched from append-only to run-scoped delete-then-insert — re-runs no longer
+  duplicate rows.
+- **`slicing` + `correlations` `should_skip` are run-scoped**: a fresh
+  begin_session run ALWAYS re-derives slice definitions (and their
+  `sql_template` DDL) + derived columns. The "skips itself on stale definitions"
+  replay hazard from the 2026-06-05 entry is FIXED — eval no longer needs to
+  wipe PG to avoid cross-run definition leakage (wiping is still fine).
+- **Slice-table profiles/quality are stamped with the run** — they upserted on
+  `(column_id, run_id=NULL)` before, which never conflicts, so re-runs
+  duplicated them and slice_variance read the pile unscoped.
+- **Pinned base-run map**: `run_detectors` resolves the promoted
+  `(table:{id}, stage)` heads ONCE (`loaders.resolve_base_runs`) and threads
+  them onto `DetectorContext.base_runs`; `load_semantic`/`load_statistics`
+  consult the pin instead of re-resolving the moving head per call (the
+  DAT-405 fallback semantics, now torn-read-proof). `_table_head_run` is gone.
+- **Detector input reads are run-scoped**: `load_drift_summaries` /
+  `load_correlation` take `run_id`; dimensional_entropy + slice_variance filter
+  their direct reads. Test callers passing `run_id=None` match unstamped rows —
+  existing unit-test fixtures keep working.
+
+**Eval impact**: recall/precision semantics unchanged on fresh runs (single
+run per session reads its own rows + the pinned add_source base). Run BOTH
+strategies' full sweeps; expect baseline-identical results. The teach re-run
+path (DAT-447) is now viable: second runs re-derive cleanly, no
+`slice_view_unbindable` / `drift_analysis_failed` stale leakage.
+
+**Testdata**: no changes needed.
+
+### DAT-453 — promoted reads enforced by the database (ADR-0008)
+
+- `storage/read_views.py` generates `current_*` head-joined views (+ pass-
+  throughs) into `ws_<id>_read`; `schema_read.sql` is the checked-in artifact
+  (CI drift gate covers it). Bootstrap materializes the views and provisions
+  `cockpit_reader` (SELECT on read schema; INSERT/UPDATE only on the three
+  control tables: sources, investigation_sessions, config_overlay).
+- The cockpit's Drizzle mirror narrowed to the read schema; its tools dropped
+  hand-rolled head joins.
+- Engine in-process readers deliberately stay on the `head_run_id()` helper
+  seam (grants can't bind the engine; view SQL would cost typed ORM reads).
+
+**Eval impact**: none on the calibration path (eval connects as the engine
+role and reads via `measure`-style queries). NOTE for DAT-447 step 0: the
+eval conftest score read can now alternatively go through
+`ws_<id>_read.current_entropy_objects` instead of hand-resolving heads.
+
 ## 2026-06-05: value-layer fixes from DAT-405 calibration (eval findings)
 
 Two fixes on `fix/dat-405-value-layer-eval-findings`, found by the first

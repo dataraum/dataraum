@@ -27,15 +27,17 @@ if (!workspaceId) {
 
 const flatId = workspaceId.replaceAll('-', '')
 
-const inWsPattern = new RegExp(`InWs${flatId}`, 'g')
-const wsConstPattern = new RegExp(`\\bws${flatId}\\b`, 'g')
+// The mirror introspects the READ schema ws_<id>_read (ADR-0008/DAT-453), so
+// drizzle's identifier suffix is InWs<id>Read and the schema const ws<id>Read.
+const inWsPattern = new RegExp(`InWs${flatId}Read`, 'g')
+const wsConstPattern = new RegExp(`\\bws${flatId}Read\\b`, 'g')
 
 const targets = [
   'src/db/metadata/schema.ts',
   'src/db/metadata/relations.ts',
 ]
 
-const UNMANGLED_DRIZZLE_OUTPUT = /InWs[0-9a-f]{32}/i
+const UNMANGLED_DRIZZLE_OUTPUT = /InWs[0-9a-f]{32}(Read)?/i
 
 let stalePullDetected = false
 for (const file of targets) {

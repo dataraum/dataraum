@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     ducklake_skip_install: bool = False
     duckdb_extension_directory: Path | None = None
 
+    # --- Promoted-read surface (ADR-0008 / DAT-453; defaulted for dev) ---
+    # Password for the cluster-global ``cockpit_reader`` role the bootstrap
+    # provisions with SELECT on ``ws_<id>_read`` ONLY — the cockpit's metadata
+    # connection uses it, so raw run-stamped tables are unreachable from there.
+    # Compose overrides this; managed-Postgres deployments pre-provision the
+    # role and the bootstrap's CREATE ROLE branch is skipped (role exists).
+    metadata_reader_password: SecretStr = SecretStr("cockpit-reader-dev")
+
     # --- Temporal (required: the engine process IS the Temporal activity
     # worker; it cannot start without a broker to poll. DAT-369 flipped these
     # from slice-1 optional now that the worker is the only Settings consumer

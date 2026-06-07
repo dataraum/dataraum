@@ -52,8 +52,11 @@ class SliceAnalysisPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check for slice definitions
-        slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+        # Check for THIS run's slice definitions (run-versioned, DAT-448)
+        slice_stmt = select(SliceDefinition).where(
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
+        )
         slice_result = ctx.session.execute(slice_stmt)
         slice_defs = slice_result.scalars().all()
 
@@ -88,10 +91,13 @@ class SliceAnalysisPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Get slice definitions
+        # Get THIS run's slice definitions (run-versioned, DAT-448)
         slice_stmt = (
             select(SliceDefinition)
-            .where(SliceDefinition.table_id.in_(table_ids))
+            .where(
+                SliceDefinition.table_id.in_(table_ids),
+                SliceDefinition.run_id == ctx.run_id,
+            )
             .order_by(SliceDefinition.slice_priority)
         )
         slice_result = ctx.session.execute(slice_stmt)
@@ -147,7 +153,10 @@ class SliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Run analysis on slice tables
+        # Run analysis on slice tables. ``run_id`` stamps the slice-table
+        # profiles/quality rows (DAT-448) — unstamped rows never ON CONFLICT
+        # (NULLs are distinct), so re-runs duplicated them and slice_variance
+        # read the pile unscoped.
         analysis_result = run_analysis_on_slices(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
@@ -155,6 +164,7 @@ class SliceAnalysisPhase(BasePhase):
             run_statistics=True,
             run_quality=True,
             session_id=ctx.require_session_id(),
+            run_id=ctx.run_id,
         )
 
         errors.extend(analysis_result.errors)

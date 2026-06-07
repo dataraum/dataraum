@@ -38,6 +38,7 @@ def analyze_correlations(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[CorrelationAnalysisResult]:
     """Run correlation analysis on a table.
 
@@ -47,6 +48,8 @@ def analyze_correlations(
         table_id: Table ID to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
+        session_id: Investigation session scope.
+        run_id: The begin_session run stamped onto ``DerivedColumn`` rows (DAT-448).
 
     Returns:
         Result containing CorrelationAnalysisResult
@@ -59,7 +62,9 @@ def analyze_correlations(
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
-        derived_result = detect_derived_columns(table, duckdb_conn, session, session_id=session_id)
+        derived_result = detect_derived_columns(
+            table, duckdb_conn, session, session_id=session_id, run_id=run_id
+        )
         derived_columns = derived_result.unwrap() if derived_result.success else []
 
         # Summary stats
@@ -95,6 +100,7 @@ def analyze_enriched_correlations(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[CorrelationAnalysisResult]:
     """Run correlation analysis on an enriched view (fact + dimension columns).
 
@@ -106,6 +112,8 @@ def analyze_enriched_correlations(
         fact_table: The fact Table this view is based on.
         duckdb_conn: DuckDB connection.
         session: SQLAlchemy session.
+        session_id: Investigation session scope.
+        run_id: The begin_session run stamped onto ``DerivedColumn`` rows (DAT-448).
 
     Returns:
         Result containing CorrelationAnalysisResult.
@@ -114,7 +122,7 @@ def analyze_enriched_correlations(
 
     try:
         derived_result = detect_enriched_derived_columns(
-            enriched_view, fact_table, duckdb_conn, session, session_id=session_id
+            enriched_view, fact_table, duckdb_conn, session, session_id=session_id, run_id=run_id
         )
         derived_columns = derived_result.unwrap() if derived_result.success else []
 

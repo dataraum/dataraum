@@ -32,7 +32,7 @@ import { WorkflowIdReusePolicy } from "@temporalio/common";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
-import { investigationSessions } from "../db/metadata/schema";
+import { investigationSessionsWrite } from "../db/metadata/write-surface";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
@@ -135,7 +135,7 @@ export async function triggerAddSource(
 	// harmless (nothing joins to it until a run links tables), and the next
 	// approval seeds a FRESH session_id rather than reusing it. No cleanup
 	// machinery — the select call surfaces the error and a re-approval recovers.
-	await metadataDb.insert(investigationSessions).values({
+	await metadataDb.insert(investigationSessionsWrite).values({
 		sessionId,
 		intent: SEED_INTENT,
 		status: SEED_STATUS,

@@ -40,6 +40,9 @@ def _score_validation_result(result: Any) -> float:
     Returns:
         Score between 0.0 (passed) and 1.0 (critical failure).
     """
+    # PASSED is the ONLY ``passed=True`` state — SKIPPED and ERROR both carry
+    # ``passed=False`` and so fall through to the explicit status branches
+    # below (which is why there is no ``status == "passed"`` branch).
     if result.passed:
         return 0.0
 

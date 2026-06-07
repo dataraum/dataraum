@@ -579,32 +579,38 @@ def build_execution_context(
             )
         )
 
-    # 13b. Load validation results
+    # 13b. Load validation results — run-versioned since DAT-438: scope to the
+    # session's promoted operating_model head. **Fail-closed (the DAT-429
+    # contract):** with no session_id or no promoted operating_model run there
+    # are no current validation results — never a cross-run read, which would
+    # mix superseded runs (and other sessions' results) into this context.
     from dataraum.analysis.validation.db_models import ValidationResultRecord
 
     validation_contexts: list[ValidationContext] = []
-    # ValidationResultRecord has no source_id — filter post-hoc by table_id overlap.
-    # This is correct because callers pre-filter table_ids to a single source.
-    val_stmt = select(ValidationResultRecord).order_by(ValidationResultRecord.executed_at.desc())
-    table_id_set = set(table_ids)
-    seen_validation_ids: set[str] = set()
-    for val_rec in session.execute(val_stmt).scalars().all():
-        if not (table_id_set & set(val_rec.table_ids)):
-            continue
-        # Deduplicate: keep only the most recent run per validation_id
-        if val_rec.validation_id in seen_validation_ids:
-            continue
-        seen_validation_ids.add(val_rec.validation_id)
-        validation_contexts.append(
-            ValidationContext(
-                validation_id=val_rec.validation_id,
-                status=val_rec.status,
-                severity=val_rec.severity,
-                passed=val_rec.passed,
-                message=val_rec.message or "",
-                details=val_rec.details,
+    om_run_id = (
+        head_run_id(session, session_head_target(session_id), "operating_model")
+        if session_id
+        else None
+    )
+    if om_run_id is not None:
+        # One row per validation_id per run (uq_validation_result_run) — no
+        # latest-wins dedup needed. ValidationResultRecord has no source_id;
+        # filter post-hoc by table_id overlap (table_ids is a JSON array).
+        val_stmt = select(ValidationResultRecord).where(ValidationResultRecord.run_id == om_run_id)
+        table_id_set = set(table_ids)
+        for val_rec in session.execute(val_stmt).scalars().all():
+            if not (table_id_set & set(val_rec.table_ids)):
+                continue
+            validation_contexts.append(
+                ValidationContext(
+                    validation_id=val_rec.validation_id,
+                    status=val_rec.status,
+                    severity=val_rec.severity,
+                    passed=val_rec.passed,
+                    message=val_rec.message or "",
+                    details=val_rec.details,
+                )
             )
-        )
 
     # 13c. Load enriched views
     from dataraum.analysis.views.db_models import EnrichedView
@@ -633,7 +639,11 @@ def build_execution_context(
         _vertical = bc_config.get("vertical")
         if _vertical:
             try:
-                cycle_health_report = compute_cycle_health(session, _source_id, vertical=_vertical)
+                # Same promoted operating_model run as 13b — health and the
+                # validation contexts must describe ONE run, never a mix.
+                cycle_health_report = compute_cycle_health(
+                    session, _source_id, vertical=_vertical, run_id=om_run_id
+                )
             except Exception as e:
                 logger.warning("cycle_health_failed", error=str(e))
 

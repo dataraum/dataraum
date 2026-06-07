@@ -76,6 +76,20 @@ class PhaseContext:
             "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
         )
 
+    def require_run_id(self) -> str:
+        """Return ``run_id`` or raise — for phases that stamp run-versioned rows.
+
+        A phase persisting rows with a NOT NULL ``run_id`` (DAT-408 versioned
+        metadata) must run under a workflow-minted run; calling this asserts
+        that instead of silently inserting an unversioned row.
+        """
+        if self.run_id is None:
+            raise RuntimeError(
+                "PhaseContext.run_id is unset — this phase persists run-versioned "
+                "rows and requires the workflow-minted run_id on its context."
+            )
+        return self.run_id
+
     def require_source_id(self) -> str:
         """Return ``source_id`` or raise — for add_source-lineage phases that need it.
 

@@ -11,6 +11,7 @@ from dataraum.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum.core.models.base import Result
+from dataraum.lifecycle import BaseRunMap
 from tests.conftest import baseline_session_id
 
 
@@ -398,6 +399,8 @@ class TestValidationAgentRunValidations:
             table_ids=["nonexistent-id"],
             vertical="finance",
             session_id=baseline_session_id(),
+            run_id="run-test",
+            base_runs=BaseRunMap(),
         )
 
         assert not result.success
@@ -419,6 +422,8 @@ class TestValidationAgentRunValidations:
                 table_ids=[table.table_id],
                 vertical="finance",
                 session_id=baseline_session_id(),
+                run_id="run-test",
+                base_runs=BaseRunMap(),
             )
 
         assert result.success
@@ -446,7 +451,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = get_multi_table_schema_for_llm(session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
         # Mock LLM to return valid SQL with tool call
         tool_input = {
@@ -489,7 +494,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = get_multi_table_schema_for_llm(session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
         # Mock LLM to indicate cannot validate
         tool_input = {

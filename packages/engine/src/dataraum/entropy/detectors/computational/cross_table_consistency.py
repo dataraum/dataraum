@@ -122,7 +122,13 @@ class CrossTableConsistencyDetector(EntropyDetector):
         # ValidationResultRecord.table_ids is a JSON list of table_ids involved.
         # We need results where our table_id appears in that list.
         # SQLAlchemy JSON containment varies by backend; load all and filter.
-        all_results = list(context.session.execute(select(ValidationResultRecord)).scalars().all())
+        # Run-versioned since DAT-438: on the detect path scope to THIS run's
+        # rows (the DetectorContext.run_id contract); ``None`` (test/legacy
+        # callers outside the workflow) adds no filter.
+        stmt = select(ValidationResultRecord)
+        if context.run_id is not None:
+            stmt = stmt.where(ValidationResultRecord.run_id == context.run_id)
+        all_results = list(context.session.execute(stmt).scalars().all())
 
         matching = [r for r in all_results if context.table_id in (r.table_ids or [])]
 

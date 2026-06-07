@@ -2,6 +2,12 @@
 
 Provides table schemas with semantic annotations and relationships for LLM context.
 Supports multi-table validation by fetching all related tables at once.
+
+The resolver is an **in-run reader** (ADR-0008): it never resolves snapshot
+heads itself — every run-versioned read (defined relationships, per-column
+semantic annotations) is scoped by the :class:`~dataraum.lifecycle.BaseRunMap`
+pinned once at run start and passed in. An absent pin reads EMPTY, never
+cross-run (fail-closed, DAT-429).
 """
 
 from __future__ import annotations
@@ -12,11 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.relationships.utils import load_defined_relationships
+from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
-from dataraum.storage import Column, Table
-from dataraum.storage.snapshot_head import head_run_id, session_head_target
+from dataraum.lifecycle import BaseRunMap
+from dataraum.storage import Table
 
 if TYPE_CHECKING:
     import duckdb
@@ -29,17 +36,22 @@ def get_multi_table_schema_for_llm(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
-    session_id: str | None = None,
+    base_runs: BaseRunMap,
 ) -> dict[str, Any]:
     """Get schemas for multiple tables with semantic annotations and relationships.
 
     This is the primary function for multi-table validation. It fetches all
-    table schemas along with detected relationships between them.
+    table schemas along with detected relationships between them, every
+    run-versioned read scoped by the pinned ``base_runs`` (ADR-0008 in-run
+    mode — the resolver never resolves heads itself).
 
     Args:
         session: Database session
         table_ids: List of table IDs to include
         duckdb_conn: Optional DuckDB connection for row counts
+        base_runs: The run's pinned upstream heads. An absent pin
+            (``relationship_run_id is None`` / table missing from
+            ``semantic_runs``) reads EMPTY — fail-closed, never cross-run.
 
     Returns:
         Dict with:
@@ -50,17 +62,21 @@ def get_multi_table_schema_for_llm(
     if not table_ids:
         return {"error": "No tables found"}
 
-    # Fetch all tables with their columns and annotations
+    # Fetch all tables with their columns. Annotations are NOT loaded through
+    # the ORM relationship: ``Column.semantic_annotation`` is one-to-one over a
+    # run-versioned table — under multi-run coexistence (two add_source runs of
+    # the same table) it silently picks one of N coexisting rows. The explicit
+    # run-scoped query below replaces it.
     table_query = (
-        select(Table)
-        .where(Table.table_id.in_(table_ids))
-        .options(selectinload(Table.columns).selectinload(Column.semantic_annotation))
+        select(Table).where(Table.table_id.in_(table_ids)).options(selectinload(Table.columns))
     )
     table_result = session.execute(table_query)
     tables = table_result.scalars().all()
 
     if not tables:
         return {"error": "No tables found"}
+
+    annotations = _load_pinned_annotations(session, tables, base_runs.semantic_runs)
 
     # Build table schemas
     table_schemas = []
@@ -85,7 +101,7 @@ def get_multi_table_schema_for_llm(
                     duckdb_path=table.duckdb_path,
                 )
 
-        schema = _format_table_schema(table, row_count=row_count)
+        schema = _format_table_schema(table, annotations, row_count=row_count)
         table_schemas.append(schema)
         table_id_to_name[table.table_id] = table.table_name
 
@@ -100,20 +116,13 @@ def get_multi_table_schema_for_llm(
     if not table_schemas:
         return {"error": "No tables with DuckDB paths found"}
 
-    # The defined relationships (not candidate) between these tables, scoped to the
-    # session's current (promoted) run via the per-session head (DAT-409).
-    # **Fail-closed (DAT-429, session isolation):** with no resolved run — no
-    # session_id, or the session hasn't promoted one yet — we MUST NOT fall back to
-    # a cross-run read (``run_id=None`` reads ALL runs), which would surface OTHER
-    # sessions' relationships into this schema. Leave relationships empty instead;
-    # the table schemas above are keyed by table_id and are unaffected.
-    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
-    if session_id and run_id is None:
-        logger.warning(
-            "session_run_unresolved",
-            session_id=session_id,
-            detail="no promoted run for this session; relationship context is empty",
-        )
+    # The defined relationships (not candidate) between these tables, scoped to
+    # the PINNED begin_session run (ADR-0008 in-run mode). **Fail-closed
+    # (DAT-429, session isolation):** with no pinned run we MUST NOT fall back
+    # to a cross-run read (``run_id=None`` reads ALL runs), which would surface
+    # OTHER sessions' relationships into this schema. Leave relationships empty
+    # instead; the table schemas above are keyed by table_id and are unaffected.
+    run_id = base_runs.relationship_run_id
     relationships = (
         load_defined_relationships(session, table_ids, run_id=run_id) if run_id is not None else []
     )
@@ -199,11 +208,52 @@ def get_multi_table_schema_for_llm(
     }
 
 
-def _format_table_schema(table: Table, *, row_count: int | None = None) -> dict[str, Any]:
+def _load_pinned_annotations(
+    session: Session,
+    tables: list[Table] | Any,
+    semantic_runs: dict[str, str],
+) -> dict[str, SemanticAnnotation]:
+    """Load each table's semantic annotations at its PINNED run, keyed by column_id.
+
+    Replaces the ``Column.semantic_annotation`` one-to-one ORM navigation,
+    which is broken under multi-run coexistence (the table is run-versioned
+    with a ``(column_id, run_id)`` UNIQUE — N runs leave N rows per column and
+    the one-to-one silently picks one). A table with no pinned semantic run
+    contributes nothing — fail-closed, never an arbitrary run's annotations.
+    """
+    annotations: dict[str, SemanticAnnotation] = {}
+    for table in tables:
+        run_id = semantic_runs.get(table.table_id)
+        if run_id is None:
+            continue
+        column_ids = [col.column_id for col in table.columns]
+        if not column_ids:
+            continue
+        rows = (
+            session.execute(
+                select(SemanticAnnotation).where(
+                    SemanticAnnotation.column_id.in_(column_ids),
+                    SemanticAnnotation.run_id == run_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        annotations.update({ann.column_id: ann for ann in rows})
+    return annotations
+
+
+def _format_table_schema(
+    table: Table,
+    annotations: dict[str, SemanticAnnotation],
+    *,
+    row_count: int | None = None,
+) -> dict[str, Any]:
     """Format a single table's schema.
 
     Args:
         table: Table ORM object with columns loaded
+        annotations: run-pinned semantic annotations keyed by column_id
         row_count: Optional row count from DuckDB
 
     Returns:
@@ -216,8 +266,8 @@ def _format_table_schema(table: Table, *, row_count: int | None = None) -> dict[
             "data_type": col.resolved_type or col.raw_type,
         }
 
-        if col.semantic_annotation:
-            ann = col.semantic_annotation
+        ann = annotations.get(col.column_id)
+        if ann is not None:
             col_info["semantic"] = {
                 "role": ann.semantic_role,
                 "entity_type": ann.entity_type,

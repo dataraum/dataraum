@@ -35,6 +35,7 @@ from dataraum.analysis.validation.resolver import (
 )
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
+from dataraum.lifecycle import BaseRunMap
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
     ConversationRequest,
@@ -72,6 +73,8 @@ class ValidationAgent(LLMFeature):
         *,
         vertical: str,
         session_id: str,
+        run_id: str,
+        base_runs: BaseRunMap,
     ) -> Result[ValidationRunResult]:
         """Run validation checks across multiple tables.
 
@@ -83,17 +86,21 @@ class ValidationAgent(LLMFeature):
             category: Filter by category (e.g., 'financial')
             persist: Whether to save results to the database (default True)
             vertical: Vertical name (e.g. 'finance')
+            session_id: The owning journey session (persisted on each record)
+            run_id: This workflow run's id (DAT-408) — stamped on every
+                persisted record; never minted here.
+            base_runs: The run's pinned upstream heads (ADR-0008 in-run mode),
+                scoping the resolver's run-versioned reads.
 
         Returns:
             Result containing ValidationRunResult
         """
-        run_id = str(uuid4())
         started_at = datetime.now(UTC)
         results: list[ValidationResult] = []
 
         # Get multi-table schema with relationships and row counts
         schema = get_multi_table_schema_for_llm(
-            session, table_ids, duckdb_conn=duckdb_conn, session_id=session_id
+            session, table_ids, duckdb_conn=duckdb_conn, base_runs=base_runs
         )
         if "error" in schema:
             return Result.fail(str(schema["error"]))
@@ -705,6 +712,7 @@ class ValidationAgent(LLMFeature):
             result_record = ValidationResultRecord(
                 result_id=str(uuid4()),
                 session_id=session_id,
+                run_id=run_result.run_id,
                 validation_id=result.validation_id,
                 table_ids=result.table_ids,
                 status=result.status.value,

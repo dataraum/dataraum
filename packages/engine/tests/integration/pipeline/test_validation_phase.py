@@ -123,6 +123,7 @@ class TestValidationPhase:
         # Add a validation result for this table
         result_record = ValidationResultRecord(
             result_id=str(uuid4()),
+            run_id="run-prior",
             validation_id=str(uuid4()),
             table_ids=[table_id],
             status="passed",

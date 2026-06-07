@@ -115,41 +115,15 @@ class ValidationPhase(BasePhase):
                 summary="No vertical configured — validation skipped",
             )
 
-        # --- Validation induction for cold start ---
-        if vertical == "_adhoc":
-            from dataraum.analysis.validation.config import load_all_validation_specs
-
-            existing_specs = load_all_validation_specs(vertical)
-            if not existing_specs:
-                from dataraum.analysis.validation.induction import (
-                    ValidationInductionAgent,
-                    save_validation_specs,
-                )
-
-                induction_agent = ValidationInductionAgent(
-                    config=config,
-                    provider=provider,
-                    prompt_renderer=renderer,
-                )
-                induction_result = induction_agent.induce(
-                    session=ctx.session,
-                    table_ids=table_ids,
-                )
-                if not induction_result.success:
-                    return PhaseResult.failed(
-                        f"Validation induction failed: {induction_result.error}"
-                    )
-                if not induction_result.value:
-                    return PhaseResult.failed(
-                        "Validation induction returned no specs. Cold-start "
-                        "requires at least one validation rule."
-                    )
-                save_validation_specs(vertical, induction_result.value)
-
         # Get optional category filter from config
         category = ctx.config.get("validation_category")
 
-        # Run validations
+        # Run validations, reads pinned to this run's resolved base heads
+        # (ADR-0008 in-run mode; the pin moves to the workflow's pre-flight
+        # resolve activity with OperatingModelWorkflow).
+        from dataraum.lifecycle import resolve_base_runs
+
+        session_id = ctx.require_session_id()
         validation_result = agent.run_validations(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
@@ -157,7 +131,9 @@ class ValidationPhase(BasePhase):
             category=category,
             persist=True,
             vertical=vertical,
-            session_id=ctx.require_session_id(),
+            session_id=session_id,
+            run_id=ctx.require_run_id(),
+            base_runs=resolve_base_runs(ctx.session, session_id, table_ids),
         )
 
         if not validation_result.success:

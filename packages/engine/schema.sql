@@ -294,6 +294,7 @@ CREATE INDEX ix_temporal_slice_analyses_slice_table_name ON temporal_slice_analy
 CREATE TABLE validation_results (
 	result_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
 	validation_id VARCHAR NOT NULL, 
 	table_ids JSON NOT NULL, 
 	status VARCHAR NOT NULL, 
@@ -304,6 +305,7 @@ CREATE TABLE validation_results (
 	sql_used TEXT, 
 	details JSON, 
 	CONSTRAINT pk_validation_results PRIMARY KEY (result_id), 
+	CONSTRAINT uq_validation_result_run UNIQUE (session_id, validation_id, run_id), 
 	CONSTRAINT fk_validation_results_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
 );
 

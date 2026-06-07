@@ -7,6 +7,7 @@ authorization. See :mod:`dataraum.lifecycle.db_models` for the versioning
 contract and :mod:`dataraum.lifecycle.transitions` for the state machine.
 """
 
+from dataraum.lifecycle.base_runs import BaseRunMap, resolve_base_runs
 from dataraum.lifecycle.db_models import LifecycleArtifact
 from dataraum.lifecycle.transitions import (
     ArtifactState,
@@ -20,11 +21,13 @@ from dataraum.lifecycle.transitions import (
 
 __all__ = [
     "ArtifactState",
+    "BaseRunMap",
     "IllegalTransitionError",
     "LifecycleArtifact",
     "LifecycleError",
     "StageNotAuthorizedError",
     "authorize",
     "declare_artifact",
+    "resolve_base_runs",
     "transition",
 ]

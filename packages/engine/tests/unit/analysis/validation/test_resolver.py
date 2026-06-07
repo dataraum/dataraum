@@ -1,4 +1,9 @@
-"""Tests for validation schema resolver."""
+"""Tests for the validation schema resolver.
+
+The resolver is an in-run reader (ADR-0008): every run-versioned read is
+scoped by the pinned :class:`BaseRunMap` passed in — it never resolves heads
+itself. Absent pins read EMPTY (fail-closed, DAT-429).
+"""
 
 import pytest
 
@@ -6,12 +11,15 @@ from dataraum.analysis.validation.resolver import (
     format_multi_table_schema_for_prompt,
     get_multi_table_schema_for_llm,
 )
+from dataraum.lifecycle import BaseRunMap
 from dataraum.storage import Column, Source, Table
+
+SEM_RUN = "sem-run-1"
 
 
 @pytest.fixture
 def table_with_columns(session):
-    """Create a test table with columns and semantic annotations."""
+    """Create a test table with columns and a run-stamped semantic annotation."""
     from dataraum.analysis.semantic.db_models import (
         SemanticAnnotation as SemanticAnnotationDB,
     )
@@ -56,9 +64,10 @@ def table_with_columns(session):
     session.add_all([col1, col2, col3])
     session.flush()
 
-    # Add semantic annotation to amount column
+    # Add semantic annotation to amount column, stamped with its run
     annotation = SemanticAnnotationDB(
         column_id=col2.column_id,
+        run_id=SEM_RUN,
         semantic_role="measure",
         entity_type="amount",
         business_name="Transaction Amount",
@@ -71,18 +80,18 @@ def table_with_columns(session):
 
 @pytest.fixture
 def two_tables_with_relationship(session):
-    """Create two tables with a relationship for multi-table tests."""
+    """Two tables + a run-stamped relationship under a seeded session."""
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.semantic.db_models import (
         SemanticAnnotation as SemanticAnnotationDB,
     )
+    from dataraum.investigation.db_models import InvestigationSession
 
-    # Create source
+    session.add(InvestigationSession(session_id="sess-resolver", intent="test"))
     source = Source(name="test_source", source_type="csv")
     session.add(source)
     session.flush()
 
-    # Create transactions table
     txn_table = Table(
         source_id=source.source_id,
         table_name="transactions",
@@ -90,10 +99,6 @@ def two_tables_with_relationship(session):
         row_count=1000,
         duckdb_path="typed_transactions",
     )
-    session.add(txn_table)
-    session.flush()
-
-    # Create accounts table
     acct_table = Table(
         source_id=source.source_id,
         table_name="accounts",
@@ -101,10 +106,9 @@ def two_tables_with_relationship(session):
         row_count=50,
         duckdb_path="typed_accounts",
     )
-    session.add(acct_table)
+    session.add_all([txn_table, acct_table])
     session.flush()
 
-    # Create columns for transactions
     txn_account_col = Column(
         table_id=txn_table.table_id,
         column_name="account_id",
@@ -119,10 +123,6 @@ def two_tables_with_relationship(session):
         raw_type="DECIMAL",
         resolved_type="DECIMAL(18,2)",
     )
-    session.add_all([txn_account_col, txn_amount_col])
-    session.flush()
-
-    # Create columns for accounts
     acct_id_col = Column(
         table_id=acct_table.table_id,
         column_name="account_id",
@@ -137,20 +137,21 @@ def two_tables_with_relationship(session):
         raw_type="VARCHAR",
         resolved_type="VARCHAR",
     )
-    session.add_all([acct_id_col, acct_type_col])
+    session.add_all([txn_account_col, txn_amount_col, acct_id_col, acct_type_col])
     session.flush()
 
-    # Add semantic annotation to amount column
     annotation = SemanticAnnotationDB(
         column_id=txn_amount_col.column_id,
+        run_id=SEM_RUN,
         semantic_role="measure",
         entity_type="amount",
         business_name="Transaction Amount",
     )
     session.add(annotation)
 
-    # Create LLM-confirmed relationship between tables
     relationship = Relationship(
+        session_id="sess-resolver",
+        run_id="run-current",
         from_table_id=txn_table.table_id,
         from_column_id=txn_account_col.column_id,
         to_table_id=acct_table.table_id,
@@ -166,31 +167,21 @@ def two_tables_with_relationship(session):
     return txn_table, acct_table
 
 
+def _pins(*tables: Table, relationship_run_id: str | None = "run-current") -> BaseRunMap:
+    return BaseRunMap(
+        relationship_run_id=relationship_run_id,
+        semantic_runs={t.table_id: SEM_RUN for t in tables},
+    )
+
+
 def test_get_multi_table_schema_for_llm(session, two_tables_with_relationship):
-    """Multi-table schema formats tables + the session's run-scoped relationships.
-
-    Fail-closed (DAT-429): relationships surface only for the session's promoted
-    run, so resolve the fixture relationship under one and pass the ``session_id``.
-    """
-    from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
-
+    """Multi-table schema formats tables + the PINNED run's relationships."""
     txn_table, acct_table = two_tables_with_relationship
 
-    session_id = "sess-fmt"
-    session.add(InvestigationSession(session_id=session_id, intent="test"))
-    session.flush()
-    rel = session.query(Relationship).one()
-    rel.session_id = session_id
-    rel.run_id = "run-1"
-    session.add(
-        MetadataSnapshotHead(target=session_head_target(session_id), stage="detect", run_id="run-1")
-    )
-    session.commit()
-
     schema = get_multi_table_schema_for_llm(
-        session, [txn_table.table_id, acct_table.table_id], session_id=session_id
+        session,
+        [txn_table.table_id, acct_table.table_id],
+        base_runs=_pins(txn_table, acct_table),
     )
 
     assert "error" not in schema
@@ -214,36 +205,22 @@ def test_get_multi_table_schema_for_llm(session, two_tables_with_relationship):
     assert rel["confidence"] == 0.95
 
 
-def test_get_multi_table_schema_for_llm_scopes_to_current_run(
-    session, two_tables_with_relationship
-):
-    """DAT-409: an agent-tier read scopes to the session's promoted run.
+def test_relationships_scope_to_pinned_run(session, two_tables_with_relationship):
+    """Only the pinned run's relationships surface; no pin reads NOTHING.
 
-    A multi-run session coexists two runs' relationship catalogs (DAT-408). When
-    ``session_id`` is passed, the builder resolves the per-session head and must
-    return ONLY the current (promoted) run's relationships — never the union that
-    leaks stale prior-run rows.
+    A multi-run session coexists two runs' relationship catalogs (DAT-408).
+    The resolver must return only the pinned run's rows — and with no pin,
+    fail closed (DAT-429): never the cross-run union that would leak stale
+    or foreign rows into the LLM schema.
     """
     from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
     txn_table, acct_table = two_tables_with_relationship
     table_ids = [txn_table.table_id, acct_table.table_id]
-    session_id = "sess-1"
-    session.add(InvestigationSession(session_id=session_id, intent="test"))
-    session.flush()
 
-    # Re-stamp the fixture's relationship onto the current run; add a stale prior-run
-    # row for the SAME column pair (distinguishable by confidence). The unique key
-    # (session_id, run_id, from, to, method) lets both coexist.
     current = session.query(Relationship).one()
-    current.session_id = session_id
-    current.run_id = "run-current"
-    current.confidence = 0.95
-
     stale = Relationship(
-        session_id=session_id,
+        session_id="sess-resolver",
         run_id="run-stale",
         from_table_id=current.from_table_id,
         from_column_id=current.from_column_id,
@@ -255,34 +232,75 @@ def test_get_multi_table_schema_for_llm_scopes_to_current_run(
         detection_method="llm",
     )
     session.add(stale)
+    session.commit()
+
+    pinned = get_multi_table_schema_for_llm(
+        session, table_ids, base_runs=_pins(txn_table, acct_table)
+    )
+    assert len(pinned["relationships"]) == 1
+    assert pinned["relationships"][0]["confidence"] == 0.95
+
+    unpinned = get_multi_table_schema_for_llm(
+        session, table_ids, base_runs=_pins(txn_table, acct_table, relationship_run_id=None)
+    )
+    assert unpinned["relationships"] == []
+
+
+def test_annotations_scope_to_pinned_run(session, table_with_columns):
+    """The multi-run annotation regression (DAT-438).
+
+    SemanticAnnotation is run-versioned ((column_id, run_id) UNIQUE) — after
+    a second add_source run two rows coexist per column. The resolver must
+    return exactly the PINNED run's annotation, not an arbitrary survivor of
+    the retired one-to-one ORM navigation.
+    """
+    from dataraum.analysis.semantic.db_models import (
+        SemanticAnnotation as SemanticAnnotationDB,
+    )
+
+    table = table_with_columns
+    amount_col_id = next(c.column_id for c in table.columns if c.column_name == "amount")
     session.add(
-        MetadataSnapshotHead(
-            target=session_head_target(session_id), stage="detect", run_id="run-current"
+        SemanticAnnotationDB(
+            column_id=amount_col_id,
+            run_id="sem-run-2",
+            semantic_role="dimension",
+            entity_type="category",
+            business_name="WRONG RUN",
         )
     )
     session.commit()
 
-    # With session_id: only the promoted run's relationship surfaces.
-    scoped = get_multi_table_schema_for_llm(session, table_ids, session_id=session_id)
-    assert len(scoped["relationships"]) == 1
-    assert scoped["relationships"][0]["confidence"] == 0.95
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
+    amount_col = next(c for c in schema["tables"][0]["columns"] if c["column_name"] == "amount")
+    assert amount_col["semantic"]["role"] == "measure"
+    assert amount_col["semantic"]["business_name"] == "Transaction Amount"
 
-    # Fail-closed (DAT-429): with no session_id the run is unresolved, so the read
-    # surfaces NOTHING — never the cross-run union that would leak other sessions'
-    # relationships into this schema.
-    unscoped = get_multi_table_schema_for_llm(session, table_ids)
-    assert unscoped["relationships"] == []
+    # Pin the OTHER run: its annotation surfaces instead.
+    other = get_multi_table_schema_for_llm(
+        session,
+        [table.table_id],
+        base_runs=BaseRunMap(semantic_runs={table.table_id: "sem-run-2"}),
+    )
+    amount_col = next(c for c in other["tables"][0]["columns"] if c["column_name"] == "amount")
+    assert amount_col["semantic"]["business_name"] == "WRONG RUN"
 
-    # A session_id whose head was never promoted is equally unresolved → still empty.
-    unpromoted = get_multi_table_schema_for_llm(session, table_ids, session_id="sess-no-head")
-    assert unpromoted["relationships"] == []
+
+def test_unpinned_table_has_no_annotations(session, table_with_columns):
+    """A table absent from semantic_runs contributes no annotations (fail-closed)."""
+    table = table_with_columns
+
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
+
+    amount_col = next(c for c in schema["tables"][0]["columns"] if c["column_name"] == "amount")
+    assert "semantic" not in amount_col
 
 
 def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns):
     """Test fetching multi-table schema with single table (no relationships)."""
     table = table_with_columns
 
-    schema = get_multi_table_schema_for_llm(session, [table.table_id])
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
 
     assert "error" not in schema
     assert "tables" in schema
@@ -299,7 +317,7 @@ def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns
 
 def test_get_multi_table_schema_for_llm_empty_list(session):
     """Test fetching multi-table schema with empty list."""
-    schema = get_multi_table_schema_for_llm(session, [])
+    schema = get_multi_table_schema_for_llm(session, [], base_runs=BaseRunMap())
 
     assert "error" in schema
     assert "No tables" in schema["error"]
@@ -307,7 +325,7 @@ def test_get_multi_table_schema_for_llm_empty_list(session):
 
 def test_get_multi_table_schema_for_llm_nonexistent_tables(session):
     """Test fetching multi-table schema with nonexistent table IDs."""
-    schema = get_multi_table_schema_for_llm(session, ["nonexistent-id"])
+    schema = get_multi_table_schema_for_llm(session, ["nonexistent-id"], base_runs=BaseRunMap())
 
     assert "error" in schema
 

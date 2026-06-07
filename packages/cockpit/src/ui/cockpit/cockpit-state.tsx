@@ -31,7 +31,6 @@ import {
 	useCallback,
 	useContext,
 	useMemo,
-	useRef,
 	useState,
 } from "react";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -98,15 +97,19 @@ const CockpitActionsContext = createContext<CockpitActions | null>(null);
 
 /** Return the previous reference when `value` is deep-equal (by JSON), so a
  * derived object that recomputes every render but rarely CHANGES doesn't churn
- * memoized consumers. This is the canvas dedupe — relocated out of an effect and
- * into the render-time derivation, where derived state belongs. */
+ * memoized consumers. This is the canvas dedupe — `useMemo` keyed on the
+ * serialized value (NOT the value's identity, which changes every render).
+ * React MAY discard the cache (Suspense initial mount; react.dev caveats) —
+ * the cost is one extra re-render of memoized consumers, never correctness
+ * (the old useRef version equally reset on unmount/remount). No ref is
+ * written during render (conventions rule 8 / react.dev useRef pitfall —
+ * DAT-451). */
 function useStableValue<T>(value: T): T {
-	const ref = useRef<{ key: string; value: T } | null>(null);
 	const key = JSON.stringify(value);
-	if (ref.current === null || ref.current.key !== key) {
-		ref.current = { key, value };
-	}
-	return ref.current.value;
+	// `key` IS the value's identity — depending on `value` (a fresh reference
+	// each render) would defeat the dedupe.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: key replaces value as the identity dep
+	return useMemo(() => value, [key]);
 }
 
 export function CockpitProvider({ children }: { children: ReactNode }) {

@@ -1,14 +1,16 @@
 // Typed, validated configuration for the cockpit server (DAT-363).
 //
 // SERVER-ONLY: reads non-prefixed `process.env` vars, which TanStack Start
-// keeps server-side. Only import this from server modules (db clients, API
-// route handlers, server functions) — never from a client component, or the
-// bundler would try to inline server secrets.
+// keeps server-side. The marker import below ENFORCES the boundary (DAT-451):
+// any client-side import of this module becomes a loud build error instead of
+// riding on compiler dead-code elimination to keep secrets out of the bundle.
 //
 // Parsed once at import; a missing or malformed var throws immediately, naming
 // the field, so the server fails loud at boot rather than silently at first
 // use. Mirror of the engine's `core/settings.py`; the two are coordinated via
 // the shared `.env` (no Python<->TS schema-sync tool — see DAT-363).
+
+import "@tanstack/react-start/server-only";
 
 import { z } from "zod";
 

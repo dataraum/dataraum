@@ -3,16 +3,10 @@
 # Multi-stage:
 #   1. deps   — install bun deps (cached when package.json/bun.lock unchanged)
 #   2. build  — vite build → Nitro emits a self-binding bundle at
-#               .output/server/index.mjs. The cockpit consumes engine
-#               metadata via Drizzle introspection (src/db/metadata/) and
-#               the engine kernel verbs over HTTP — no OpenAPI / codegen
-#               (retired in the DAT-339 pivot, Phase 0c).
+#               .output/server/index.mjs. The cockpit reads engine metadata
+#               via Drizzle (src/db/metadata/) and drives work as Temporal
+#               workflows — the engine has NO HTTP surface (DAT-339 pivot).
 #   3. runner — minimal bun image serving .output/server/index.mjs
-#
-# Build args:
-#   VITE_ENGINE_API_URL — baked into the client bundle for cross-origin
-#     fetches to the engine. Defaults to http://localhost:8000 for the
-#     standard docker-compose host-port mapping.
 #
 # Runtime env:
 #   PORT — server bind port (default 3000)
@@ -30,15 +24,11 @@ RUN bun install --frozen-lockfile
 FROM oven/bun:1 AS build
 WORKDIR /app
 
-ARG VITE_ENGINE_API_URL=http://localhost:8000
-ENV VITE_ENGINE_API_URL=$VITE_ENGINE_API_URL
-
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Cockpit consumes the engine's metadata schema via Drizzle introspection
-# (`bun run db:pull:metadata` writes src/db/metadata/), and the engine
-# kernel verbs over HTTP. No OpenAPI / codegen anymore (DAT-339 pivot 0c).
+# The engine's metadata schema arrives via Drizzle introspection
+# (`bun run db:pull:metadata` writes src/db/metadata/, checked in).
 RUN bun run build
 
 # ---------- 3. runner ----------
@@ -63,8 +53,8 @@ COPY --from=build /app/.output ./.output
 # matching platform package must be present in node_modules at runtime. These
 # packages are pure binary (no transitive deps); `bun` resolves the runtime
 # `require('@duckdb/node-bindings-<plat>/duckdb.node')` from /app/node_modules.
-# The deps stage installs the binding for THIS image's platform/libc (alpine =
-# musl), which matches the runner — so the binary loads.
+# The deps stage installs the binding for THIS image's platform/libc (both
+# stages are Debian-based oven/bun images), so the binary loads in the runner.
 COPY --from=deps /app/node_modules/@duckdb ./node_modules/@duckdb
 
 # Pre-install the DuckDB extensions at image build time (mirror of the engine's

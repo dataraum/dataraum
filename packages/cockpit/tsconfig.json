@@ -15,7 +15,13 @@
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
+    // verbatimModuleSyntax stays DISABLED per the start-core Intent skill
+    // (flagged HIGH): with it on, an import not marked `import type` is
+    // emitted verbatim even when only its types are used — a types-only use
+    // of a server module becomes a runtime import in the client bundle.
+    // Biome's importType rule keeps the `import type` hygiene at the source
+    // instead (DAT-451).
+    "verbatimModuleSyntax": false,
     "noEmit": true,
 
     /* Linting */

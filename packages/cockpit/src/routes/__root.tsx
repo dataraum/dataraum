@@ -8,10 +8,10 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
 	createRootRouteWithContext,
 	HeadContent,
-	Outlet,
 	Scripts,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import type { ReactNode } from "react";
 
 import "@mantine/core/styles.css";
 import "../styles.css";
@@ -39,7 +39,13 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 	shellComponent: RootDocument,
 });
 
-function RootDocument() {
+// The shell receives the ENTIRE root match chain as `children` (the installed
+// contract: `shellComponent?: ({ children }) => ReactNode`) — the root match
+// context provider, Suspense/CatchBoundary/CatchNotFound, and the matched
+// routes. Rendering `children` (NOT a bare <Outlet/>) is what makes a future
+// root errorComponent/notFoundComponent/pendingComponent actually render
+// (DAT-451; the old Outlet worked only by an implementation coincidence).
+function RootDocument({ children }: { children: ReactNode }) {
 	return (
 		<html lang="en" {...mantineHtmlProps}>
 			<head>
@@ -47,9 +53,7 @@ function RootDocument() {
 				<HeadContent />
 			</head>
 			<body>
-				<MantineProvider theme={theme}>
-					<Outlet />
-				</MantineProvider>
+				<MantineProvider theme={theme}>{children}</MantineProvider>
 				<TanStackDevtools
 					config={{
 						position: "bottom-right",

@@ -7,53 +7,16 @@
 // Reads theme/tokens only; the row type is a type-only import (erased — no server
 // code in the client bundle).
 
-import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { Alert, Anchor, Group, Stack, Table, Text } from "@mantine/core";
 import { turnWithRefs } from "#/lib/agent-refs";
 import type { TableReadiness } from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
-
-// The three intents, in the order the engine's network models them — fixed so
-// the grid columns are stable even if a row's `intents` array is ordered
-// differently or is missing an intent. These are the engine's intent-layer NODE
-// KEYS (what `entropy_readiness.intents[].intent` actually carries, from
-// `network.get_intent_nodes()`), not the bare words — matching on the wrong
-// string silently renders every per-intent cell as a dash.
-const INTENTS = [
-	"query_intent",
-	"aggregation_intent",
-	"reporting_intent",
-] as const;
-
-// Friendly column headers for the node keys above.
-const INTENT_LABEL: Record<(typeof INTENTS)[number], string> = {
-	query_intent: "Query",
-	aggregation_intent: "Aggregation",
-	reporting_intent: "Reporting",
-};
-
-// Band → Mantine color. An absent band (column not analyzed) renders as a muted
-// dash, not a color, so "unknown" never reads as "ready".
-const BAND_COLOR: Record<string, string> = {
-	ready: "green",
-	investigate: "yellow",
-	blocked: "red",
-};
-
-function BandBadge({ band }: { band: string | null | undefined }) {
-	if (!band) {
-		return (
-			<Text span c="dimmed" size="xs">
-				—
-			</Text>
-		);
-	}
-	return (
-		<Badge color={BAND_COLOR[band] ?? "gray"} variant="light" size="sm">
-			{band}
-		</Badge>
-	);
-}
+import {
+	BandBadge,
+	INTENT_LABEL,
+	INTENTS,
+} from "#/ui/cockpit/widgets/band-badge";
 
 // The begin_session whole-table band (DAT-415): the `dimension_coverage` rollup
 // for the table, sealed at the session head — distinct from, and shown above, the

@@ -17,6 +17,7 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
+import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
 import { buildWorkspaceContext } from "../../prompts/workspace-context";
@@ -36,34 +37,6 @@ type ChatMessages = Awaited<
 type ChatOptions = Parameters<
 	typeof chat<ReturnType<typeof createAnthropicChat>, undefined, true>
 >[0];
-
-type BunRuntimeRequest = Request & {
-	runtime?: {
-		name?: string;
-		bun?: {
-			server?: {
-				timeout?: (request: Request, seconds: number) => void;
-			};
-		};
-	};
-};
-
-function disableBunIdleTimeoutForSse(request: Request) {
-	const runtime = (request as BunRuntimeRequest).runtime;
-	const server = runtime?.bun?.server;
-
-	if (
-		runtime?.name !== "bun" ||
-		!server ||
-		typeof server.timeout !== "function"
-	) {
-		return;
-	}
-
-	// SSE streams are often quiet between events. Bun closes idle requests after
-	// a short default timeout; disable it for this request so the stream can stay open.
-	server.timeout(request, 0);
-}
 
 /**
  * Assemble the chat() options for a turn. Pure + side-effect-free (no network,
@@ -129,8 +102,12 @@ export const Route = createFileRoute("/api/chat")({
 		handlers: {
 			// chatParamsFromRequest throws a 400 Response on a malformed AG-UI body,
 			// which TanStack Start surfaces to the client automatically.
-			POST: async ({ request }: { request: Request }) => {
-				disableBunIdleTimeoutForSse(request);
+			POST: async ({ request }) => {
+				// The SSE stream goes quiet for >10s both before its first byte
+				// (workspace read + Anthropic TTFB on a cache write) and mid-stream
+				// while a server tool runs — exempt from Bun's idle timeout, which
+				// kills EITHER kind of silence (see lib/bun-request-timeout).
+				disableBunIdleTimeout(request);
 				const { messages } = await chatParamsFromRequest(request);
 				// The current sessions, so the agent knows where the user is (replay /
 				// teach / look_relationships resolve against the session without asking).

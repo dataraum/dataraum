@@ -237,8 +237,6 @@ services:
   cockpit:
     build:
       context: ../cockpit
-      args:
-        VITE_ENGINE_API_URL: http://localhost:8000
     depends_on:
       postgres:
         condition: service_healthy

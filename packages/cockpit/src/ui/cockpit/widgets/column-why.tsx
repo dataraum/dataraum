@@ -5,37 +5,11 @@
 //
 // Reads theme/tokens only; the row type is a type-only import (erased).
 
-import { Alert, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { Alert, Group, Stack, Table, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { BandBadge, INTENT_LABEL } from "#/ui/cockpit/widgets/band-badge";
 import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
-
-const INTENT_LABEL: Record<string, string> = {
-	query_intent: "Query",
-	aggregation_intent: "Aggregation",
-	reporting_intent: "Reporting",
-};
-
-const BAND_COLOR: Record<string, string> = {
-	ready: "green",
-	investigate: "yellow",
-	blocked: "red",
-};
-
-function BandBadge({ band }: { band: string | null | undefined }) {
-	if (!band) {
-		return (
-			<Text span c="dimmed" size="xs">
-				—
-			</Text>
-		);
-	}
-	return (
-		<Badge color={BAND_COLOR[band] ?? "gray"} variant="light" size="sm">
-			{band}
-		</Badge>
-	);
-}
 
 export function ColumnWhyWidget({
 	state,

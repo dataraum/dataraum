@@ -8,7 +8,10 @@ and re-implements the head join at every site. The map is also the artifact's
 ``grounded_against`` provenance (refine decision D2) — what the bind actually
 read from, recorded verbatim.
 
-:func:`resolve_base_runs` is the single implementation; its caller is the
+:func:`resolve_operating_model_base_runs` is the single implementation —
+distinct from the detect-tier ``entropy.detectors.loaders.resolve_base_runs``
+(per-table add_source stage pins for ONE detect pass); this map crosses the
+workflow's contracts. Its caller is the
 ``operating_model_resolve`` pre-flight activity, and the map travels with the
 workflow's contracts from there.
 """
@@ -45,7 +48,9 @@ class BaseRunMap(BaseModel):
     semantic_runs: dict[str, str] = Field(default_factory=dict)
 
 
-def resolve_base_runs(session: Session, session_id: str, table_ids: list[str]) -> BaseRunMap:
+def resolve_operating_model_base_runs(
+    session: Session, session_id: str, table_ids: list[str]
+) -> BaseRunMap:
     """Resolve the promoted upstream heads ONCE for this run.
 
     Args:

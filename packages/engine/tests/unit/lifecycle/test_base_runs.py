@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from dataraum.lifecycle import resolve_base_runs
+from dataraum.lifecycle import resolve_operating_model_base_runs
 from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
 _SESSION = "sess-pins"
@@ -22,7 +22,7 @@ def test_resolves_promoted_heads_once(session: Session) -> None:
     )
     session.flush()
 
-    pins = resolve_base_runs(session, _SESSION, ["t1", "t2"])
+    pins = resolve_operating_model_base_runs(session, _SESSION, ["t1", "t2"])
 
     assert pins.relationship_run_id == "run-bs"
     assert pins.semantic_runs == {"t1": "run-a", "t2": "run-b"}
@@ -36,7 +36,7 @@ def test_unresolved_heads_are_absent_not_guessed(session: Session) -> None:
     )
     session.flush()
 
-    pins = resolve_base_runs(session, _SESSION, ["t1", "t2"])
+    pins = resolve_operating_model_base_runs(session, _SESSION, ["t1", "t2"])
 
     assert pins.relationship_run_id is None  # fail-closed at the readers
     assert pins.semantic_runs == {"t1": "run-a"}  # t2 absent, never guessed
@@ -50,5 +50,5 @@ def test_map_is_json_round_trippable(session: Session) -> None:
     )
     session.flush()
 
-    pins = resolve_base_runs(session, _SESSION, [])
+    pins = resolve_operating_model_base_runs(session, _SESSION, [])
     assert pins.model_dump(mode="json") == {"relationship_run_id": "r", "semantic_runs": {}}

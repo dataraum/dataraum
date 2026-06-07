@@ -729,7 +729,7 @@ def resolve_operating_model_scope(
             no linked tables (begin_session must have run) — fail loud, the
             workflow has nothing to operate on.
     """
-    from dataraum.lifecycle import resolve_base_runs
+    from dataraum.lifecycle import resolve_operating_model_base_runs
 
     active_workspace_id = get_active_workspace_id()
     if identity.workspace_id != active_workspace_id:
@@ -750,7 +750,7 @@ def resolve_operating_model_scope(
                 f"Session '{identity.session_id}' has no linked tables — "
                 "begin_session must compose the workspace before operating_model runs."
             )
-        base_runs = resolve_base_runs(session, identity.session_id, table_ids)
+        base_runs = resolve_operating_model_base_runs(session, identity.session_id, table_ids)
 
     logger.info(
         "operating_model_scope_resolved",

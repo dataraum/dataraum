@@ -306,9 +306,7 @@ class TestLoaderHeadFallback:
         )
         session.flush()
 
-    def _seed_annotation(
-        self, session, column_id: str, run_id: str, role: str = "measure"
-    ) -> None:
+    def _seed_annotation(self, session, column_id: str, run_id: str, role: str = "measure") -> None:
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
         session.add(
@@ -364,8 +362,7 @@ class TestLoaderHeadFallback:
         base_runs = resolve_base_runs(real_session, ["tbl-h2"])
         assert base_runs == {}
         assert (
-            load_semantic(real_session, "col-h2", run_id="run-session", base_runs=base_runs)
-            is None
+            load_semantic(real_session, "col-h2", run_id="run-session", base_runs=base_runs) is None
         )
 
     def test_statistics_falls_back_to_pinned_base_run(self, real_session):

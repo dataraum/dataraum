@@ -189,6 +189,26 @@ export const currentEntropyReadiness = metadataSchema
 		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
 	);
 
+export const currentLifecycleArtifacts = metadataSchema
+	.view("current_lifecycle_artifacts", {
+		artifactId: varchar("artifact_id"),
+		sessionId: varchar("session_id"),
+		artifactType: varchar("artifact_type"),
+		artifactKey: varchar("artifact_key"),
+		runId: varchar("run_id"),
+		state: varchar(),
+		stateReason: text("state_reason"),
+		stage: varchar(),
+		strictness: doublePrecision(),
+		groundedAgainst: json("grounded_against"),
+		teaches: json(),
+		createdAt: timestamp("created_at"),
+		stateChangedAt: timestamp("state_changed_at"),
+	})
+	.as(
+		sql`SELECT artifact_id, session_id, artifact_type, artifact_key, run_id, state, state_reason, stage, strictness, grounded_against, teaches, created_at, state_changed_at FROM ws_00000000_0000_0000_0000_000000000001.lifecycle_artifacts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentMaterializationRecipes = metadataSchema
 	.view("current_materialization_recipes", {
 		recipeId: varchar("recipe_id"),
@@ -438,6 +458,25 @@ export const currentTypeDecisions = metadataSchema
 		sql`SELECT decision_id, session_id, column_id, run_id, decided_type, decision_source, decided_at, decided_by, previous_type, decision_reason FROM ws_00000000_0000_0000_0000_000000000001.type_decisions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'typing'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentValidationResults = metadataSchema
+	.view("current_validation_results", {
+		resultId: varchar("result_id"),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		validationId: varchar("validation_id"),
+		tableIds: json("table_ids"),
+		status: varchar(),
+		severity: varchar(),
+		passed: boolean(),
+		message: text(),
+		executedAt: timestamp("executed_at"),
+		sqlUsed: text("sql_used"),
+		details: json(),
+	})
+	.as(
+		sql`SELECT result_id, session_id, run_id, validation_id, table_ids, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const detectedBusinessCycles = metadataSchema
 	.view("detected_business_cycles", {
 		cycleId: varchar("cycle_id"),
@@ -640,22 +679,4 @@ export const tables = metadataSchema
 	})
 	.as(
 		sql`SELECT table_id, source_id, table_name, layer, duckdb_path, row_count, created_at, last_profiled_at FROM ws_00000000_0000_0000_0000_000000000001.tables`,
-	);
-
-export const validationResults = metadataSchema
-	.view("validation_results", {
-		resultId: varchar("result_id"),
-		sessionId: varchar("session_id"),
-		validationId: varchar("validation_id"),
-		tableIds: json("table_ids"),
-		status: varchar(),
-		severity: varchar(),
-		passed: boolean(),
-		message: text(),
-		executedAt: timestamp("executed_at"),
-		sqlUsed: text("sql_used"),
-		details: json(),
-	})
-	.as(
-		sql`SELECT result_id, session_id, validation_id, table_ids, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results`,
 	);

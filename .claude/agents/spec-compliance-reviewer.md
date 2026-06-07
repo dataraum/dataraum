@@ -83,6 +83,7 @@ Structure your output as:
 - **Check test coverage for each requirement**: A requirement without a test is incomplete per the project's Definition of Done.
 - **Don't review code quality in general**: Stay focused on spec compliance. Style, performance, and general code quality are out of scope unless the spec explicitly addresses them.
 - **Flag implicit assumptions**: If the implementation makes assumptions not stated in the spec, note them.
+- **TanStack code (packages/cockpit) — MANDATORY**: before judging any code that imports `@tanstack/*`, run `bunx @tanstack/intent@latest list` from `packages/cockpit` and `load` the matching skills (e.g. `@tanstack/ai#ai-core` + sub-skills). They are the OFFICIAL, version-pinned-to-installed authority for TanStack API claims — never assert SDK behavior from training data. Deps are `latest` by design and nothing freezes (bun.lock owns resolution) — never flag unpinned deps or propose pins.
 
 ## Workflow Context
 

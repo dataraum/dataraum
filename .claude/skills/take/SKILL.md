@@ -44,6 +44,8 @@ Before touching any code:
 
    Note: most of the original Platform Contracts inventory (Mcp-Session-Id, CP↔executor gRPC, TanStack AI wire format, OpenAPI for `/api/*`) was superseded or deferred by the v1 plan. Contract #5 (config storage shape) stays locked for future multi-user work. If the task names no contract, this step is a no-op.
 
+6. **Cockpit/TanStack tasks:** if the task touches `packages/cockpit` code importing `@tanstack/*`, the TanStack Intent skill check is MANDATORY at every stage — `/implement` runs it before writing code (its "Before you start" step), and any reviewer runs it before judging (the reviewer agent definitions carry the same mandate). A lane that writes or reviews TanStack code without loading the matching Intent skills is operating on stale training-data memory — that is how bogus findings and deprecated API usage get in.
+
 If anything is wrong, STOP and report. Don't "make it work."
 
 ## Step 2: Open the worktree and switch the session into it

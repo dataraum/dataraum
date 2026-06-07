@@ -12,7 +12,7 @@ import math
 from datetime import date, timedelta
 
 import duckdb
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary, TemporalSliceAnalysis
@@ -476,19 +476,36 @@ def persist_drift_results(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[int]:
     """Persist drift analysis results to database.
+
+    Run-versioned (DAT-448): rows are stamped with ``run_id`` and this run's
+    prior rows for the slice table are replaced first — the write was
+    append-only before, so a re-run within a session duplicated summaries.
+    The delete is run-scoped (idempotent under Temporal activity retry, prior
+    runs' rows untouched); ``uq_drift_slice_column_run`` guards the grain.
 
     Args:
         results: List of ColumnDriftResult from analyze_column_drift
         slice_table_name: Name of the slice table
         time_column: Name of the temporal column
         session: Database session
+        session_id: Investigation session scope.
+        run_id: The begin_session run stamped onto the rows.
 
     Returns:
         Result containing number of records created
     """
     try:
+        session.execute(
+            delete(ColumnDriftSummary).where(
+                ColumnDriftSummary.slice_table_name == slice_table_name,
+                ColumnDriftSummary.session_id == session_id,
+                ColumnDriftSummary.run_id == run_id,
+            )
+        )
+
         count = 0
         for result in results:
             evidence_json = None
@@ -497,6 +514,7 @@ def persist_drift_results(
 
             record = ColumnDriftSummary(
                 session_id=session_id,
+                run_id=run_id,
                 slice_table_name=slice_table_name,
                 column_name=result.column_name,
                 time_column=time_column,
@@ -777,17 +795,32 @@ def persist_period_results(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[int]:
     """Persist period analysis results to database.
+
+    Run-versioned (DAT-448): same discipline as :func:`persist_drift_results` —
+    rows stamped with ``run_id``, this run's prior rows for the slice table
+    replaced first (idempotent under Temporal retry, prior runs untouched).
 
     Args:
         result: PeriodAnalysisResult from analyze_period_metrics
         session: Database session
+        session_id: Investigation session scope.
+        run_id: The begin_session run stamped onto the rows.
 
     Returns:
         Result containing number of records created
     """
     try:
+        session.execute(
+            delete(TemporalSliceAnalysis).where(
+                TemporalSliceAnalysis.slice_table_name == result.slice_table_name,
+                TemporalSliceAnalysis.session_id == session_id,
+                TemporalSliceAnalysis.run_id == run_id,
+            )
+        )
+
         count = 0
         # Build lookup maps for completeness and anomaly results
         completeness_map = {c.period_label: c for c in result.completeness_results}
@@ -814,6 +847,7 @@ def persist_period_results(
 
             record = TemporalSliceAnalysis(
                 session_id=session_id,
+                run_id=run_id,
                 slice_table_name=result.slice_table_name,
                 time_column=result.time_column,
                 period_label=m.period_label,

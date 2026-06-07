@@ -69,8 +69,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check for slice definitions
-        slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+        # Check for THIS run's slice definitions (run-versioned, DAT-448)
+        slice_stmt = select(SliceDefinition).where(
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
+        )
         slice_defs = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_defs:
@@ -105,8 +108,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Get slice definitions
-        slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+        # Get THIS run's slice definitions (run-versioned, DAT-448)
+        slice_stmt = select(SliceDefinition).where(
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
+        )
         slice_definitions = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_definitions:
@@ -249,6 +255,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             time_column=time_column,
                             session=ctx.session,
                             session_id=ctx.require_session_id(),
+                            run_id=ctx.run_id,
                         )
                         if persist_result.success and persist_result.value is not None:
                             total_drift_summaries += persist_result.value
@@ -267,6 +274,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             result=period_result.value,
                             session=ctx.session,
                             session_id=ctx.require_session_id(),
+                            run_id=ctx.run_id,
                         )
                         if persist_count.success and persist_count.value is not None:
                             total_period_analyses += persist_count.value
@@ -285,7 +293,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
         from dataraum.analysis.slicing.profiling import build_slice_profiles
 
         slice_profiles_count = build_slice_profiles(
-            ctx.session, table_ids, session_id=ctx.require_session_id()
+            ctx.session, table_ids, session_id=ctx.require_session_id(), run_id=ctx.run_id
         )
 
         outputs: dict[str, object] = {

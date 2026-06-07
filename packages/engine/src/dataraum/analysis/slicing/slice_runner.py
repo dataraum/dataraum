@@ -51,6 +51,8 @@ def register_slice_tables(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_definitions: list[SliceDefinition] | None = None,
+    *,
+    run_id: str | None = None,
 ) -> Result[list[SliceTableInfo]]:
     """Register slice tables from DuckDB into metadata database.
 
@@ -62,14 +64,21 @@ def register_slice_tables(
         duckdb_conn: DuckDB connection
         slice_definitions: Optional list of slice definitions to use.
             If not provided, will query from database.
+        run_id: Run scope for the fallback query (DAT-448). Definitions are
+            run-versioned; pipeline callers pass ``slice_definitions`` already
+            run-scoped, so this only matters for direct callers.
 
     Returns:
         Result containing list of registered SliceTableInfo
     """
     try:
-        # Get slice definitions if not provided
+        # Get THIS run's slice definitions if not provided (run-versioned, DAT-448)
         if slice_definitions is None:
-            stmt = select(SliceDefinition).order_by(SliceDefinition.slice_priority)
+            stmt = (
+                select(SliceDefinition)
+                .where(SliceDefinition.run_id == run_id)
+                .order_by(SliceDefinition.slice_priority)
+            )
             result = session.execute(stmt)
             slice_definitions = list(result.scalars().all())
 
@@ -241,6 +250,7 @@ def run_statistics_on_slice(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[Any]:
     """Run statistical profiling on a slice table.
 
@@ -272,6 +282,7 @@ def run_statistics_on_slice(
                 duckdb_conn=duckdb_conn,
                 session=session,
                 session_id=session_id,
+                run_id=run_id,
             )
         return result
     finally:
@@ -284,6 +295,7 @@ def run_quality_on_slice(
     session: Session,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> Result[Any]:
     """Run statistical quality assessment on a slice table.
 
@@ -300,6 +312,7 @@ def run_quality_on_slice(
         duckdb_conn=duckdb_conn,
         session=session,
         session_id=session_id,
+        run_id=run_id,
     )
     return result
 
@@ -312,6 +325,7 @@ def run_analysis_on_slices(
     run_quality: bool = True,
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> SliceAnalysisResult:
     """Run analysis phases on slice tables.
 
@@ -335,7 +349,7 @@ def run_analysis_on_slices(
     if run_statistics:
         for slice_info in slice_infos:
             result = run_statistics_on_slice(
-                slice_info, duckdb_conn, session, session_id=session_id
+                slice_info, duckdb_conn, session, session_id=session_id, run_id=run_id
             )
             if result.success:
                 stats_count += 1
@@ -345,7 +359,9 @@ def run_analysis_on_slices(
     # Run quality on each slice
     if run_quality:
         for slice_info in slice_infos:
-            result = run_quality_on_slice(slice_info, duckdb_conn, session, session_id=session_id)
+            result = run_quality_on_slice(
+                slice_info, duckdb_conn, session, session_id=session_id, run_id=run_id
+            )
             if result.success:
                 quality_count += 1
             else:

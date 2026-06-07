@@ -56,7 +56,13 @@ class SlicingPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all fact tables already have slice definitions."""
+        """Skip only when THIS run already produced slice definitions (DAT-448).
+
+        Definitions (and their ``sql_template`` DDL) are run-versioned: a fresh
+        run always re-derives against its own enriched views — silent cross-run
+        reuse of stale definitions was the DAT-405 bug class. The run-scoped
+        check keeps the activity idempotent under Temporal retry.
+        """
         fact_tables = self._get_fact_tables(ctx)
 
         if not fact_tables:
@@ -64,14 +70,15 @@ class SlicingPhase(BasePhase):
 
         table_ids = [t.table_id for t in fact_tables]
 
-        # Check which tables already have slice definitions
+        # Check which tables this run already sliced
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
-            SliceDefinition.table_id.in_(table_ids)
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
         )
         sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
 
         if len(sliced_ids) >= len(table_ids):
-            return "All fact tables already have slice definitions"
+            return "All fact tables already have slice definitions in this run"
 
         return None
 
@@ -115,9 +122,10 @@ class SlicingPhase(BasePhase):
 
         table_ids = [t.table_id for t in fact_tables]
 
-        # Check which tables already have slice definitions
+        # Check which tables THIS run already sliced (run-versioned, DAT-448)
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
-            SliceDefinition.table_id.in_(table_ids)
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
         )
         sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
         unsliced_tables = [t for t in fact_tables if t.table_id not in sliced_ids]
@@ -127,7 +135,7 @@ class SlicingPhase(BasePhase):
                 outputs={
                     "slice_definitions": 0,
                     "slice_queries": 0,
-                    "message": "All tables already have slice definitions",
+                    "message": "All tables already have slice definitions in this run",
                 },
                 records_processed=0,
                 records_created=0,
@@ -210,6 +218,7 @@ class SlicingPhase(BasePhase):
         for rec in slicing.recommendations:
             slice_def = SliceDefinition(
                 session_id=sid,
+                run_id=ctx.run_id,
                 table_id=rec.table_id,
                 column_id=rec.column_id,
                 column_name=rec.column_name,

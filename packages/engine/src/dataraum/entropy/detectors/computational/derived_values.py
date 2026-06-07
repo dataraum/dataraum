@@ -60,7 +60,9 @@ class DerivedValueDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_correlation
 
-        result = load_correlation(context.session, context.column_id, context.column_name)
+        result = load_correlation(
+            context.session, context.column_id, context.column_name, run_id=context.run_id
+        )
         if result is not None:
             context.analysis_results["correlation"] = result
 

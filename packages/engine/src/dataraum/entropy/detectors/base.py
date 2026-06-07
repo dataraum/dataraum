@@ -55,6 +55,13 @@ class DetectorContext:
     # workflow (test/legacy callers) → loaders add no run_id filter.
     run_id: str | None = None
 
+    # Pinned base-run map (DAT-448): ``(table_id, stage) → run_id`` resolved
+    # ONCE at detect start (loaders.resolve_base_runs). Session detects read
+    # per-column rows the add_source run wrote; the pin replaces per-call head
+    # resolution so a concurrent promote cannot tear reads mid-run. Empty for
+    # non-detect callers.
+    base_runs: dict[tuple[str, str], str] = field(default_factory=dict)
+
     # SQLAlchemy session for detector-driven data loading
     session: Session | None = None
 

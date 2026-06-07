@@ -40,6 +40,11 @@ class DerivedColumn(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    # Snapshot version axis (DAT-448): the begin_session run that detected this
+    # derivation. No unique constraint — several formulas may legitimately share
+    # one derived column. Nullable for pre-existing rows; new writes stamp
+    # ``ctx.run_id``.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )

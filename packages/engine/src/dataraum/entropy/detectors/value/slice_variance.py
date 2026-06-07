@@ -125,11 +125,15 @@ class SliceVarianceDetector(EntropyDetector):
         slice_col_ids = [c.column_id for c in slice_columns]
         col_to_table = {c.column_id: c.table_id for c in slice_columns}
 
-        # 3. Load StatisticalProfile for each slice column
+        # 3. Load THIS run's StatisticalProfile for each slice column — slice-table
+        # profiles are stamped with the begin_session run that computed them
+        # (DAT-448); unscoped reads picked an arbitrary run's row once re-runs
+        # coexist.
         profiles = (
             context.session.execute(
                 select(StatisticalProfile).where(
                     StatisticalProfile.column_id.in_(slice_col_ids),
+                    StatisticalProfile.run_id == context.run_id,
                 )
             )
             .scalars()
@@ -137,11 +141,12 @@ class SliceVarianceDetector(EntropyDetector):
         )
         profile_by_col: dict[str, StatisticalProfile] = {p.column_id: p for p in profiles}
 
-        # 4. Load StatisticalQualityMetrics for each slice column
+        # 4. Load THIS run's StatisticalQualityMetrics for each slice column
         quality_metrics = (
             context.session.execute(
                 select(StatisticalQualityMetrics).where(
                     StatisticalQualityMetrics.column_id.in_(slice_col_ids),
+                    StatisticalQualityMetrics.run_id == context.run_id,
                 )
             )
             .scalars()
@@ -200,7 +205,9 @@ class SliceVarianceDetector(EntropyDetector):
         if semantic_role is None and context.session is not None and context.column_id is not None:
             from dataraum.entropy.detectors.loaders import load_semantic
 
-            sem = load_semantic(context.session, context.column_id, context.run_id)
+            sem = load_semantic(
+                context.session, context.column_id, context.run_id, base_runs=context.base_runs
+            )
             if sem is not None:
                 semantic_role = sem.get("semantic_role")
                 context.analysis_results["semantic_role"] = semantic_role

@@ -33,7 +33,9 @@ class NullRatioDetector(EntropyDetector):
             return
         from dataraum.entropy.detectors.loaders import load_statistics
 
-        result = load_statistics(context.session, context.column_id, context.run_id)
+        result = load_statistics(
+            context.session, context.column_id, context.run_id, base_runs=context.base_runs
+        )
         if result is not None:
             context.analysis_results["statistics"] = result
 

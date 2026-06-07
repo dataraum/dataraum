@@ -28,6 +28,7 @@ def build_slice_profiles(
     table_ids: list[str],
     *,
     session_id: str,
+    run_id: str | None = None,
 ) -> int:
     """Build ColumnSliceProfile records from per-slice statistical profiles.
 
@@ -45,6 +46,8 @@ def build_slice_profiles(
         session: Database session.
         table_ids: The session's selected typed table ids to process.
         session_id: Investigation session id stamped on the profiles.
+        run_id: The begin_session run whose slice definitions to profile
+            (run-versioned, DAT-448).
 
     Returns:
         Number of profiles created.
@@ -63,10 +66,13 @@ def build_slice_profiles(
     # them by the session's source set.
     source_ids = {t.source_id for t in typed_tables}
 
-    # Get slice definitions
+    # Get THIS run's slice definitions (run-versioned, DAT-448)
     slice_defs = list(
         session.execute(
-            select(SliceDefinition).where(SliceDefinition.table_id.in_(typed_table_ids))
+            select(SliceDefinition).where(
+                SliceDefinition.table_id.in_(typed_table_ids),
+                SliceDefinition.run_id == run_id,
+            )
         )
         .scalars()
         .all()
@@ -126,7 +132,8 @@ def build_slice_profiles(
         slice_def_col_ids = set(
             session.execute(
                 select(SliceDefinition.column_id).where(
-                    SliceDefinition.table_id == source_table.table_id
+                    SliceDefinition.table_id == source_table.table_id,
+                    SliceDefinition.run_id == run_id,
                 )
             )
             .scalars()

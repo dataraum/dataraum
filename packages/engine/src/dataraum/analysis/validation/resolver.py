@@ -137,11 +137,18 @@ def get_multi_table_schema_for_llm(
                 }
             )
 
-    # Fetch slice definitions (categorical value distributions) for these tables
+    # Fetch slice definitions (categorical value distributions) for these tables.
+    # Run-versioned (DAT-448): same fail-closed discipline as the relationships
+    # above — scope to the session's promoted run, empty when none resolved.
     slice_stmt = select(SliceDefinition).where(
         SliceDefinition.table_id.in_(table_ids),
     )
-    slices = session.execute(slice_stmt).scalars().all()
+    if run_id is not None:
+        slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
+    if session_id and run_id is None:
+        slices = []
+    else:
+        slices = list(session.execute(slice_stmt).scalars().all())
 
     # Build column_id → distinct_values lookup
     column_slices: dict[str, list[str]] = {}

@@ -44,6 +44,11 @@ class SliceDefinition(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    # Snapshot version axis (DAT-448): the begin_session run that derived this
+    # definition (and its sql_template DDL). Definitions were table-scoped and
+    # immortal before — stale cross-run reuse was the DAT-405 bug class. Nullable
+    # for pre-existing rows; every new write stamps ``ctx.run_id``.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )

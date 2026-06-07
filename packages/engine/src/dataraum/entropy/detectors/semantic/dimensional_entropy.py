@@ -203,7 +203,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         if context.session is None or context.table_id is None:
             return
 
-        result = self._load_slice_variance(context.session, context.table_id)
+        result = self._load_slice_variance(context.session, context.table_id, context.run_id)
         if result is not None:
             context.analysis_results["slice_variance"] = result["slice_variance"]
             context.analysis_results["drift_summaries"] = result["drift_summaries"]
@@ -212,11 +212,16 @@ class DimensionalEntropyDetector(EntropyDetector):
     def _load_slice_variance(
         session: Session,
         table_id: str,
+        run_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Load table-scoped slice variance data.
 
         Returns dict with slice_variance and drift_summaries keys,
         or None if no slice profiles exist.
+
+        ``run_id`` (DAT-448): slice definitions + drift summaries are
+        run-versioned and written by the SAME begin_session run that detects —
+        plain this-run filters keep coexisting prior-run rows out.
         """
         from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
         from dataraum.analysis.slicing.naming import slice_table_name, slicing_view_name
@@ -316,10 +321,15 @@ class DimensionalEntropyDetector(EntropyDetector):
             if col_metrics["distinct_ratio"] > 2.0:
                 col_metrics["exceeded_thresholds"].append("distinct_ratio")
 
-        # Load drift summaries for slice tables
+        # Load THIS run's drift summaries for slice tables (run-versioned, DAT-448)
         col_name_by_id = {c.column_id: c.column_name for c in table_columns}
         slice_defs = list(
-            session.execute(select(SliceDefinition).where(SliceDefinition.table_id == table_id))
+            session.execute(
+                select(SliceDefinition).where(
+                    SliceDefinition.table_id == table_id,
+                    SliceDefinition.run_id == run_id,
+                )
+            )
             .scalars()
             .all()
         )
@@ -336,7 +346,8 @@ class DimensionalEntropyDetector(EntropyDetector):
             drift_summaries = list(
                 session.execute(
                     select(ColumnDriftSummary).where(
-                        ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+                        ColumnDriftSummary.slice_table_name.in_(slice_table_names),
+                        ColumnDriftSummary.run_id == run_id,
                     )
                 )
                 .scalars()
@@ -370,7 +381,8 @@ class DimensionalEntropyDetector(EntropyDetector):
             period_analyses = list(
                 session.execute(
                     select(TemporalSliceAnalysis).where(
-                        TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
+                        TemporalSliceAnalysis.slice_table_name.in_(slice_table_names),
+                        TemporalSliceAnalysis.run_id == run_id,
                     )
                 )
                 .scalars()

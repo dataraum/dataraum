@@ -98,6 +98,8 @@ class SlicingViewPhase(BasePhase):
             .join(TableEntity, TableEntity.table_id == SliceDefinition.table_id)
             .where(
                 SliceDefinition.table_id.in_(table_ids),
+                # Run-versioned (DAT-448): only THIS run's definitions count.
+                SliceDefinition.run_id == ctx.run_id,
                 TableEntity.is_fact_table.is_(True),
             )
         )
@@ -121,8 +123,11 @@ class SlicingViewPhase(BasePhase):
         table_ids = [t.table_id for t in typed_tables]
         tables_by_id = {t.table_id: t for t in typed_tables}
 
-        # Load all slice definitions for these tables
-        slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+        # Load THIS run's slice definitions for these tables (run-versioned, DAT-448)
+        slice_stmt = select(SliceDefinition).where(
+            SliceDefinition.table_id.in_(table_ids),
+            SliceDefinition.run_id == ctx.run_id,
+        )
         all_slice_defs = ctx.session.execute(slice_stmt).scalars().all()
 
         if not all_slice_defs:

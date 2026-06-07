@@ -48,7 +48,13 @@ class CorrelationsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all tables already have derived column analysis."""
+        """Skip only when THIS run already analyzed every table (DAT-448).
+
+        ``DerivedColumn`` rows are run-versioned: a fresh run always re-derives
+        against its own enriched views — the unscoped existence check silently
+        reused stale cross-run results. The run-scoped check keeps the activity
+        idempotent under Temporal retry.
+        """
         # Source-free: the session's selected typed tables (DAT-403), which may
         # span sources — never ``source_id`` (feedback-source-dies-at-addsource).
         typed_tables = self._typed_tables(ctx)
@@ -58,15 +64,16 @@ class CorrelationsPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check which tables already have derived column results
+        # Check which tables THIS run already analyzed
         derived_stmt = select(DerivedColumn.table_id.distinct()).where(
-            DerivedColumn.table_id.in_(table_ids)
+            DerivedColumn.table_id.in_(table_ids),
+            DerivedColumn.run_id == ctx.run_id,
         )
         analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
         unanalyzed = [t for t in typed_tables if t.table_id not in analyzed_ids]
         if not unanalyzed:
-            return "All tables already have correlation analysis"
+            return "All tables already have correlation analysis in this run"
 
         return None
 
@@ -80,9 +87,10 @@ class CorrelationsPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check which tables already have derived column results
+        # Check which tables THIS run already analyzed (run-versioned, DAT-448)
         derived_stmt = select(DerivedColumn.table_id.distinct()).where(
-            DerivedColumn.table_id.in_(table_ids)
+            DerivedColumn.table_id.in_(table_ids),
+            DerivedColumn.run_id == ctx.run_id,
         )
         analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
@@ -116,6 +124,7 @@ class CorrelationsPhase(BasePhase):
                     duckdb_conn=ctx.duckdb_conn,
                     session=ctx.session,
                     session_id=ctx.require_session_id(),
+                    run_id=ctx.run_id,
                 )
             else:
                 # No enriched view — fallback to typed table only
@@ -124,6 +133,7 @@ class CorrelationsPhase(BasePhase):
                     duckdb_conn=ctx.duckdb_conn,
                     session=ctx.session,
                     session_id=ctx.require_session_id(),
+                    run_id=ctx.run_id,
                 )
 
             if not corr_result.success:

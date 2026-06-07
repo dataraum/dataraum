@@ -11,10 +11,10 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiWorkflowProgressRouteImport } from './routes/api/workflow-progress'
 import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
-import { Route as ApiAddSourceProgressRouteImport } from './routes/api/add-source-progress'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
@@ -32,6 +32,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiWorkflowProgressRoute = ApiWorkflowProgressRouteImport.update({
+  id: '/api/workflow-progress',
+  path: '/api/workflow-progress',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiUploadRoute = ApiUploadRouteImport.update({
   id: '/api/upload',
   path: '/api/upload',
@@ -45,11 +50,6 @@ const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
 const ApiChatRoute = ApiChatRouteImport.update({
   id: '/api/chat',
   path: '/api/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAddSourceProgressRoute = ApiAddSourceProgressRouteImport.update({
-  id: '/api/add-source-progress',
-  path: '/api/add-source-progress',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appSettingsRoute = appSettingsRouteImport.update({
@@ -94,10 +94,10 @@ const appWorkspaceWsIdCockpitRoute = appWorkspaceWsIdCockpitRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
-  '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/upload': typeof ApiUploadRoute
+  '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -108,10 +108,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
-  '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/upload': typeof ApiUploadRoute
+  '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -124,10 +124,10 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
   '/(app)/settings': typeof appSettingsRoute
-  '/api/add-source-progress': typeof ApiAddSourceProgressRoute
   '/api/chat': typeof ApiChatRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/upload': typeof ApiUploadRoute
+  '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
   '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -140,10 +140,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/settings'
-    | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
     | '/api/upload'
+    | '/api/workflow-progress'
     | '/workspace/$wsId'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -154,10 +154,10 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/settings'
-    | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
     | '/api/upload'
+    | '/api/workflow-progress'
     | '/workspace/$wsId'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -169,10 +169,10 @@ export interface FileRouteTypes {
     | '/'
     | '/(app)'
     | '/(app)/settings'
-    | '/api/add-source-progress'
     | '/api/chat'
     | '/api/run-sql'
     | '/api/upload'
+    | '/api/workflow-progress'
     | '/(app)/workspace/$wsId'
     | '/(app)/workspace/$wsId/cockpit'
     | '/(app)/workspace/$wsId/governance'
@@ -184,10 +184,10 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
-  ApiAddSourceProgressRoute: typeof ApiAddSourceProgressRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
   ApiUploadRoute: typeof ApiUploadRoute
+  ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -204,6 +204,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/workflow-progress': {
+      id: '/api/workflow-progress'
+      path: '/api/workflow-progress'
+      fullPath: '/api/workflow-progress'
+      preLoaderRoute: typeof ApiWorkflowProgressRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/upload': {
@@ -225,13 +232,6 @@ declare module '@tanstack/react-router' {
       path: '/api/chat'
       fullPath: '/api/chat'
       preLoaderRoute: typeof ApiChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/add-source-progress': {
-      id: '/api/add-source-progress'
-      path: '/api/add-source-progress'
-      fullPath: '/api/add-source-progress'
-      preLoaderRoute: typeof ApiAddSourceProgressRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/settings': {
@@ -324,10 +324,10 @@ const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
-  ApiAddSourceProgressRoute: ApiAddSourceProgressRoute,
   ApiChatRoute: ApiChatRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
   ApiUploadRoute: ApiUploadRoute,
+  ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

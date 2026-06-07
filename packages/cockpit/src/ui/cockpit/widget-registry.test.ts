@@ -50,6 +50,10 @@ describe("WidgetRegistry (DAT-347)", () => {
 		expect(canvasRegistry.has("add-source-progress")).toBe(true);
 	});
 
+	it("the shared canvas registry has the session-progress widget (DAT-435)", () => {
+		expect(canvasRegistry.has("session-progress")).toBe(true);
+	});
+
 	it("the shared canvas registry has the upload-area widget (redesign)", () => {
 		expect(canvasRegistry.has("upload-area")).toBe(true);
 	});

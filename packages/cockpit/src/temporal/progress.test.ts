@@ -1,7 +1,7 @@
 // Unit tests for the add_source progress poll (DAT-352).
 //
 // Mocked seams: `#/config` (Temporal config) + `@temporalio/client` (a handle
-// whose query/describe the test scripts). We assert: getAddSourceProgress queries
+// whose query/describe the test scripts). We assert: getWorkflowProgress queries
 // `get_progress` on getHandle(id, runId) and maps to the mirrored snake_case
 // shape; `done` is true on phase==="done" OR a terminal describe() status; and
 // the unconfigured guard throws like replay.ts.
@@ -24,7 +24,7 @@ const h = vi.hoisted(() => ({
 		tables_total: number;
 		tables_completed: number;
 		// Optional so the done/terminal-status tests can omit them and exercise
-		// the `?? []` / `?? null` defaults in getAddSourceProgress.
+		// the `?? []` / `?? null` defaults in getWorkflowProgress.
 		tables?: { raw_table_id: string; status: string }[];
 		failure?: {
 			message: string;
@@ -89,7 +89,7 @@ vi.mock("@temporalio/client", () => ({
 	}),
 }));
 
-import { getAddSourceProgress, isProgressDone } from "./progress";
+import { getWorkflowProgress, isProgressDone } from "./progress";
 
 beforeEach(() => {
 	h.config = { temporalHost: "localhost:7233", temporalNamespace: "default" };
@@ -112,14 +112,14 @@ beforeEach(() => {
 	whereMock.mockClear();
 });
 
-describe("getAddSourceProgress (DAT-352)", () => {
+describe("getWorkflowProgress (DAT-352)", () => {
 	it("queries get_progress on the precise (workflowId, runId) and maps the shape", async () => {
 		h.snapshot = {
 			phase: "processing_tables",
 			tables_total: 4,
 			tables_completed: 2,
 		};
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "addsource-ws-src",
 			run_id: "run-1",
 		});
@@ -157,7 +157,7 @@ describe("getAddSourceProgress (DAT-352)", () => {
 			{ tableId: "r1", tableName: "orders" },
 			{ tableId: "r2", tableName: "customers" },
 		];
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "w",
 			run_id: "r",
 		});
@@ -183,7 +183,7 @@ describe("getAddSourceProgress (DAT-352)", () => {
 			failure: null,
 		};
 		h.tableNameRows = [];
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "w",
 			run_id: "r",
 		});
@@ -199,7 +199,7 @@ describe("getAddSourceProgress (DAT-352)", () => {
 	it("reports done when phase reaches the terminal 'done'", async () => {
 		h.snapshot = { phase: "done", tables_total: 4, tables_completed: 4 };
 		h.status = "COMPLETED";
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "w",
 			run_id: "r",
 		});
@@ -215,7 +215,7 @@ describe("getAddSourceProgress (DAT-352)", () => {
 			tables_completed: 1,
 		};
 		h.status = "FAILED";
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "w",
 			run_id: "r",
 		});
@@ -224,16 +224,17 @@ describe("getAddSourceProgress (DAT-352)", () => {
 		expect(result.phase).toBe("processing_tables");
 	});
 
-	it("falls back to describe()-only when the workflow has no get_progress query (begin_session)", async () => {
-		// beginSessionWorkflow registers no get_progress — the query raises
-		// WorkflowQueryFailedError; the poll degrades to status + done, no phase detail.
+	it("falls back to describe()-only when the workflow has no get_progress query (operating_model)", async () => {
+		// operatingModelWorkflow registers no get_progress (begin_session does
+		// since DAT-435) — the query raises WorkflowQueryFailedError; the poll
+		// degrades to status + done, no phase detail.
 		const err = new Error("query not registered: get_progress");
 		err.name = "WorkflowQueryFailedError";
 		h.queryError = err;
 		h.status = "RUNNING";
 
-		const result = await getAddSourceProgress({
-			workflow_id: "beginsession-ws-sess",
+		const result = await getWorkflowProgress({
+			workflow_id: "operatingmodel-ws-sess",
 			run_id: "run-1",
 		});
 		expect(result).toEqual({
@@ -253,7 +254,7 @@ describe("getAddSourceProgress (DAT-352)", () => {
 		h.queryError = err;
 		h.status = "COMPLETED";
 
-		const result = await getAddSourceProgress({
+		const result = await getWorkflowProgress({
 			workflow_id: "w",
 			run_id: "r",
 		});
@@ -265,14 +266,14 @@ describe("getAddSourceProgress (DAT-352)", () => {
 	it("rethrows a non-query-handler query failure (a real error is not swallowed)", async () => {
 		h.queryError = new Error("connection reset"); // name !== WorkflowQueryFailedError
 		await expect(
-			getAddSourceProgress({ workflow_id: "w", run_id: "r" }),
+			getWorkflowProgress({ workflow_id: "w", run_id: "r" }),
 		).rejects.toThrow(/connection reset/);
 	});
 
 	it("throws when Temporal is unconfigured (like replay.ts)", async () => {
 		h.config = {};
 		await expect(
-			getAddSourceProgress({ workflow_id: "w", run_id: "r" }),
+			getWorkflowProgress({ workflow_id: "w", run_id: "r" }),
 		).rejects.toThrow(/Temporal client is not configured/);
 		expect(getHandleMock).not.toHaveBeenCalled();
 	});

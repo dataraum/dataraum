@@ -429,10 +429,60 @@ class BeginSessionWorkflow:
     The run mints a ``run_id`` (DAT-408) threaded through every activity; a teach
     re-run is a full re-run under a fresh ``run_id`` (candidates re-derive,
     llm/manual/keeper survive, readiness is non-destructive + promoted to the new run).
+
+    Progress (DAT-435): mirrors add_source's DAT-406 pattern — the body keeps a
+    :class:`ProgressSnapshot` in ``self._progress`` and advances ``phase``
+    before each stage; the read-only :meth:`get_progress` query serves it under
+    the SAME query name and snapshot shape as ``AddSourceWorkflow``, so the
+    cockpit's existing poll (``getWorkflowProgress``) and ``workflow_status``
+    tool report real phases with no contract change. Sequential chain, no
+    fan-out → the per-table fields stay at their empty defaults. Every mutation
+    sits between awaited, history-recorded activity completions, so a replay
+    reconstructs the identical snapshot — determinism is preserved.
     """
+
+    def __init__(self) -> None:
+        # Initialized to the pre-flight stage so a query that lands before the
+        # first activity still returns a well-formed snapshot (never None). The
+        # fan-out fields keep their empty defaults — begin_session has no
+        # children, which the cockpit widget reads as "no per-table tally".
+        self._progress = ProgressSnapshot(phase="begin_session_select")
+
+    @workflow.query
+    def get_progress(self) -> ProgressSnapshot:
+        """Return the current progress snapshot (DAT-435).
+
+        Read-only, non-mutating → determinism-safe; Temporal answers it against
+        current state even while :meth:`run` is blocked awaiting a stage (and on
+        a CLOSED run by replaying history, so the cockpit can read the final
+        snapshot — including ``failure`` — off a failed run). Same query name +
+        shape as :meth:`AddSourceWorkflow.get_progress`, so the cockpit polls
+        both workflows through one seam.
+        """
+        return self._progress
 
     @workflow.run
     async def run(self, payload: BeginSessionInput) -> BeginSessionResult:
+        """Run the begin_session spine, recording any failure into the snapshot.
+
+        Thin wrapper over :meth:`_run_inner`: on any stage failure it stamps
+        ``self._progress.failure`` (root-cause message + the phase in flight)
+        before re-raising, so a polling cockpit sees WHY the run ended, not
+        just a FAILED status. Unconditional stamp — unlike add_source there is
+        no fanned-out child that could have stamped a table-scoped failure
+        first. ``except Exception`` deliberately misses ``CancelledError`` (a
+        ``BaseException``) so cancellation still propagates clean.
+        """
+        try:
+            return await self._run_inner(payload)
+        except Exception as err:
+            self._progress.failure = ProgressFailure(
+                message=_failure_message(err),
+                phase=self._progress.phase,
+            )
+            raise
+
+    async def _run_inner(self, payload: BeginSessionInput) -> BeginSessionResult:
         # Mint the run's ``run_id`` once (DAT-408), mirroring AddSourceWorkflow, and
         # thread it through every activity so all of this run's metadata shares it
         # and the terminal promote can flip the relationship-readiness heads.
@@ -454,7 +504,10 @@ class BeginSessionWorkflow:
             retry_policy=_RETRY,
         )
 
+        # Advance the snapshot before each stage (DAT-435) so a failure is
+        # attributed to the stage in flight and a poll names what is running now.
         for phase in _SESSION_PHASE_ORDER:
+            self._progress.phase = phase
             await workflow.execute_activity(
                 phase,
                 scoped,
@@ -467,6 +520,7 @@ class BeginSessionWorkflow:
         # the user's add/keep overlays into this run as manual/keeper rows (skipping
         # pairs already produced as llm) so the defined catalog detect measures next
         # carries them.
+        self._progress.phase = "session_materialize_overlays"
         await workflow.execute_activity(
             "session_materialize_overlays",
             identity,
@@ -480,6 +534,7 @@ class BeginSessionWorkflow:
         # manual/keeper teaches), versioning each view's DDL on the recipe substrate.
         # Scoped (needs the selection's table_ids); runs before detect so the
         # table-grain readiness it feeds (DAT-402) measures the enriched substrate.
+        self._progress.phase = "enriched_views"
         await workflow.execute_activity(
             "enriched_views",
             scoped,
@@ -494,6 +549,7 @@ class BeginSessionWorkflow:
         # the terminal ``session_detect`` measures. Each is idempotent on its
         # CREATE-OR-REPLACE / reconcile, so a re-run under a fresh run_id re-derives.
         for phase in _SESSION_VALUE_PHASE_ORDER:
+            self._progress.phase = phase
             await workflow.execute_activity(
                 phase,
                 scoped,
@@ -505,6 +561,7 @@ class BeginSessionWorkflow:
         # Terminal relationship detect (DAT-408): runs the relationship detectors
         # over the session's tables, persisting relationship-granularity readiness
         # stamped with ``run_id`` — then promote flips the heads to this run.
+        self._progress.phase = "session_detect"
         await workflow.execute_activity(
             "session_detect",
             identity,
@@ -516,6 +573,7 @@ class BeginSessionWorkflow:
         # Silent-accept keepers (DAT-409): BEFORE promote, while the head still names
         # the prior run — lift each promoted llm this run didn't reproduce (and the
         # user didn't reject) into a keep overlay for the next run to materialize.
+        self._progress.phase = "session_write_keepers"
         await workflow.execute_activity(
             "session_write_keepers",
             identity,
@@ -524,6 +582,7 @@ class BeginSessionWorkflow:
             retry_policy=_RETRY,
         )
 
+        self._progress.phase = "session_promote_to_latest"
         await workflow.execute_activity(
             "session_promote_to_latest",
             identity,
@@ -532,6 +591,7 @@ class BeginSessionWorkflow:
             retry_policy=_RETRY,
         )
 
+        self._progress.phase = "done"
         return BeginSessionResult(session_id=identity.session_id, table_ids=payload.tables)
 
 

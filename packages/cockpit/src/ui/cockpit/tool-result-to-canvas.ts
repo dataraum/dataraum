@@ -127,6 +127,20 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 				}
 			: null;
 	},
+	// begin_session STARTS the session workflow and returns immediately
+	// (DAT-435): the result carries the started run's ids, so project the live
+	// session-progress widget — the session analogue of select/replay above. A
+	// failed start (no ids) leaves the canvas unchanged.
+	begin_session: (result) => {
+		const r = result as { workflow_id?: string; run_id?: string } | null;
+		return r?.workflow_id && r?.run_id
+			? {
+					kind: "session-progress",
+					workflowId: r.workflow_id,
+					runId: r.run_id,
+				}
+			: null;
+	},
 	// The agent's run_sql returns a small sample for the LLM; the human grid
 	// re-issues the query against the stateless streaming endpoint, so it maps
 	// from the CALL INPUT (sql + bind params), not the result. No sql → unchanged.

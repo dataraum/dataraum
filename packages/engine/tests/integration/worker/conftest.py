@@ -3,7 +3,7 @@
 A single-container Temporal CLI dev server (``server start-dev``) + a client
 bound to it with the worker's pydantic data converter. Used by the workflow
 exec + offline-``Replayer`` determinism tests (``test_progress_query`` for
-add_source, ``test_begin_session_workflow_replay`` for begin_session).
+add_source, ``test_begin_session_progress_query`` for begin_session).
 
 We use the CLI dev server (in-memory SQLite, one container) instead of
 ``WorkflowEnvironment.start_time_skipping()`` — that downloads a test-server

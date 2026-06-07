@@ -26,7 +26,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import type { AddSourceProgress } from "../temporal/progress";
+import type { WorkflowProgress } from "../temporal/progress";
 import { buildInventory, type InventoryTableRow } from "./list-tables";
 import {
 	type ColumnNameLookup,
@@ -237,7 +237,7 @@ describe("agent name-leak property (DAT-433)", () => {
 	});
 
 	it("workflow_status: full result is digest-free, failure surfaced sanitized", () => {
-		const progress: AddSourceProgress = {
+		const progress: WorkflowProgress = {
 			phase: "typing",
 			tables_total: 2,
 			tables_completed: 1,
@@ -270,7 +270,7 @@ describe("agent name-leak property (DAT-433)", () => {
 		// the digest appears BARE (`uploads/<digest>/`, no `src_` prefix), so the
 		// generic /src_<40hex>/ property regex is blind to it. Assert on the
 		// fixture's specific digest instead.
-		const progress: AddSourceProgress = {
+		const progress: WorkflowProgress = {
 			phase: "import",
 			tables_total: 0,
 			tables_completed: 0,

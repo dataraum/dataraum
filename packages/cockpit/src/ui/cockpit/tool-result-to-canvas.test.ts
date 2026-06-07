@@ -309,6 +309,27 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("replay", {})).toBeNull();
 	});
 
+	it("maps begin_session to the session-progress canvas (DAT-435)", () => {
+		expect(
+			toolResultToCanvas("begin_session", {
+				workflow_id: "beginsession-ws-sess",
+				run_id: "run-1",
+				session_id: "sess-1",
+				table_ids: ["t1", "t2"],
+			}),
+		).toEqual({
+			kind: "session-progress",
+			workflowId: "beginsession-ws-sess",
+			runId: "run-1",
+		});
+		// A failed start (no ids — e.g. the SDK's `{error}` output) leaves the
+		// canvas unchanged; the failure surfaces in the chat rail.
+		expect(toolResultToCanvas("begin_session", null)).toBeNull();
+		expect(
+			toolResultToCanvas("begin_session", { error: "session row missing" }),
+		).toBeNull();
+	});
+
 	it("returns null for a missing or NON-array list result (no .filter/.reduce crash)", () => {
 		// A partial/streaming or errored output can be undefined or a truthy
 		// NON-array; projecting it crashed SourceList/Inventory on .filter/.reduce/

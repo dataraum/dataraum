@@ -31,6 +31,8 @@ describe("toolLabel", () => {
 		expect(toolLabel("connect", true)).toBe("Source schema");
 		expect(toolLabel("teach", true)).toBe("Taught");
 		expect(toolLabel("replay", true)).toBe("Re-ran");
+		expect(toolLabel("begin_session")).toBe("Starting session");
+		expect(toolLabel("begin_session", true)).toBe("Session started");
 	});
 
 	it("leaves already-settled noun titles unchanged when done", () => {
@@ -41,8 +43,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 13 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(13);
+	it("marks the 14 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(14);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -54,6 +56,7 @@ describe("isCanvasTool", () => {
 			"connect",
 			"frame",
 			"select",
+			"begin_session",
 			"run_sql",
 			"replay",
 			"upload",
@@ -272,6 +275,27 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		expect(
 			toolChipSummary("select", {}, { name: "orders", source_type: "file" }),
 		).toBe("orders (file)");
+	});
+
+	it("begin_session counts the selection and never leaks run/session ids (DAT-435)", () => {
+		const input = { table_ids: ["t-1", "t-2", "t-3"] };
+		const output = {
+			workflow_id: "beginsession-ws-abc",
+			run_id: "5f6e7d8c-0000-0000-0000-000000000000",
+			session_id: "9a8b7c6d-0000-0000-0000-000000000000",
+			table_ids: ["t-1", "t-2", "t-3"],
+		};
+		expect(toolChipSummary("begin_session", input, undefined)).toBe(
+			"starting the session…",
+		);
+		const done = toolChipSummary("begin_session", input, output);
+		expect(done).toBe("analyzing 3 tables");
+		expect(done).not.toContain("beginsession-ws-abc");
+		expect(done).not.toContain("5f6e7d8c");
+		// No input selection yet (arguments still streaming) → neutral line.
+		expect(toolChipSummary("begin_session", undefined, output)).toBe(
+			"analysis running",
+		);
 	});
 
 	it("run_sql shows the SQL from the call input (truncated, flattened)", () => {

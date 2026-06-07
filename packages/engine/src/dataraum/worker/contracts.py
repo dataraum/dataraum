@@ -43,19 +43,21 @@ class TableProgress:
 
 @dataclass
 class ProgressFailure:
-    """Why an add_source run ended badly — surfaced in the cockpit, not buried.
+    """Why a workflow run ended badly — surfaced in the cockpit, not buried.
 
     A polling cockpit reads this off the snapshot instead of opening the Temporal
-    UI for the failure detail.
+    UI for the failure detail. Served by both progress-bearing workflows
+    (add_source DAT-406, begin_session DAT-435).
 
     Attributes:
         message: The root-cause message — Temporal's Activity/ChildWorkflow
             error chain unwrapped to the phase's own non-retryable failure text.
         phase: The stage in flight when it failed (the snapshot's ``phase``).
         table_id: The raw table whose child failed, when the failure is
-            table-scoped; ``None`` for run-level stages (``import`` /
-            ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
-            ``promote``).
+            table-scoped; ``None`` for add_source's run-level stages (``import``
+            / ``check_column_limit`` / ``semantic_per_column`` / ``detect`` /
+            ``promote``) and ALWAYS ``None`` for begin_session (sequential, no
+            table-scoped stages).
     """
 
     message: str
@@ -65,14 +67,19 @@ class ProgressFailure:
 
 @dataclass
 class ProgressSnapshot:
-    """Parent-level progress for ``addSourceWorkflow``, served by ``get_progress`` (DAT-406).
+    """Workflow progress served by a ``get_progress`` query (DAT-406, DAT-435).
 
+    One shape for every cockpit-polled workflow — ``addSourceWorkflow`` (the
+    original, DAT-406) and ``beginSessionWorkflow`` (DAT-435) serve it from the
+    same query name, so the cockpit's poll/types need no per-workflow branch.
     Read-only snapshot the cockpit polls via the Temporal Client's
-    ``query`` API while the parent runs (queries answer against current
-    state even while ``@workflow.run`` is blocked awaiting the fan-out).
-    The workflow body advances ``phase`` before each stage, seeds the
-    per-table ``tables`` list once the fan-out set is known, and flips each
-    entry (plus ``tables_completed``) as its child resolves.
+    ``query`` API while the workflow runs (queries answer against current
+    state even while ``@workflow.run`` is blocked awaiting a stage).
+    The workflow body advances ``phase`` before each stage; add_source
+    additionally seeds the per-table ``tables`` list once the fan-out set is
+    known and flips each entry (plus ``tables_completed``) as its child
+    resolves — a sequential workflow (begin_session) leaves the fan-out
+    fields at their empty defaults.
 
     Deliberately a plain stdlib ``@dataclass`` (NOT a Pydantic engine
     type): it carries only primitives + nested dataclasses, and the worker's
@@ -83,14 +90,18 @@ class ProgressSnapshot:
     (a field rename/retype here is a cross-PACKAGE change).
 
     Attributes:
-        phase: The stage the parent is currently in. Advances
+        phase: The stage the workflow is currently in. add_source advances
             ``"import"`` → ``"check_column_limit"`` → ``"processing_tables"``
             → ``"semantic_per_column"`` → ``"detect"`` → ``"promote"`` →
-            ``"done"``. A plain string (not an enum) so the wire value stays a
-            bare JSON string for the cockpit.
+            ``"done"``; begin_session walks its sequential chain
+            (``"begin_session_select"`` → … → ``"session_promote_to_latest"``
+            → ``"done"`` — the authoritative order is the workflow body). A
+            plain string (not an enum) so the wire value stays a bare JSON
+            string for the cockpit and a new phase is not a contract change.
         tables_total: The number of child ``ProcessTableWorkflow``s fanned
             out. ``0`` until ``import`` enumerates the raw tables (or a
             replay narrows the set); set once before the fan-out awaits.
+            Stays ``0`` for begin_session (sequential, no children).
         tables_completed: How many children have resolved so far —
             monotonically increasing toward ``tables_total`` during the
             ``"processing_tables"`` phase.

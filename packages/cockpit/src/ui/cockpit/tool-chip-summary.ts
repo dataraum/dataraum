@@ -231,8 +231,11 @@ export function toolChipSummary(
 			// The validation key is a snake_case identifier — humanize it (the
 			// naming rule: never surface code-shaped tokens in chip text).
 			const label = humanizeIdentifier(r.validation_id) || "validation";
+			// Loose `== null` on purpose: a partial/streaming output can lack
+			// `passed` entirely (undefined) — that must read as the lifecycle
+			// state, never as a "failed" verdict.
 			const verdict =
-				r.passed === null
+				r.passed == null
 					? (r.state ?? "not run")
 					: r.passed
 						? "passed"

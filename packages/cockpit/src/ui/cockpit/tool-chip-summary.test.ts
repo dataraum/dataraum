@@ -305,6 +305,15 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 				},
 			),
 		).toBe("Gl invoice match — declared");
+		// A partial/streaming output can LACK `passed` (undefined) — that must
+		// never read as a "failed" verdict.
+		expect(
+			toolChipSummary(
+				"why_validation",
+				{},
+				{ validation_id: "gl_invoice_match", found: true, state: "executed" },
+			),
+		).toBe("Gl invoice match — executed");
 		expect(toolChipSummary("why_validation", {}, { found: false })).toBe(
 			"validation not found",
 		);

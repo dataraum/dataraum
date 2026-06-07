@@ -33,6 +33,9 @@ describe("toolLabel", () => {
 		expect(toolLabel("replay", true)).toBe("Re-ran");
 		expect(toolLabel("begin_session")).toBe("Starting session");
 		expect(toolLabel("begin_session", true)).toBe("Session started");
+		// "Started", not "done" — the driver is non-blocking (DAT-440).
+		expect(toolLabel("operating_model")).toBe("Starting validation run");
+		expect(toolLabel("operating_model", true)).toBe("Validation run started");
 	});
 
 	it("leaves already-settled noun titles unchanged when done", () => {
@@ -43,8 +46,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 14 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(14);
+	it("marks the 16 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(16);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -53,6 +56,8 @@ describe("isCanvasTool", () => {
 			"why_table",
 			"why_relationship",
 			"look_relationships",
+			"look_validation",
+			"why_validation",
 			"connect",
 			"frame",
 			"select",
@@ -65,8 +70,10 @@ describe("isCanvasTool", () => {
 		}
 	});
 
-	it("marks probe / teach display-only", () => {
-		for (const name of ["probe", "teach", "unknown"]) {
+	it("marks probe / teach / operating_model display-only", () => {
+		// operating_model returns run ids, not a renderable surface (the
+		// begin_session pattern) — its chip must not be clickable.
+		for (const name of ["probe", "teach", "operating_model", "unknown"]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
 	});
@@ -239,6 +246,81 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 				{ analyzed: false, relationships: [] },
 			),
 		).toBe("not yet analyzed");
+	});
+
+	it("look_validation counts validations + executed (DAT-440)", () => {
+		expect(
+			toolChipSummary(
+				"look_validation",
+				{},
+				{
+					analyzed: true,
+					validations: [
+						{ state: "executed" },
+						{ state: "executed" },
+						{ state: "declared" },
+					],
+				},
+			),
+		).toBe("3 validations (2 executed)");
+		expect(
+			toolChipSummary(
+				"look_validation",
+				{},
+				{ analyzed: true, validations: [] },
+			),
+		).toBe("no validations declared");
+		expect(
+			toolChipSummary(
+				"look_validation",
+				{},
+				{ analyzed: false, validations: [] },
+			),
+		).toBe("not yet run");
+	});
+
+	it("why_validation humanizes the key + verdict — never the snake_case id (DAT-440)", () => {
+		expect(
+			toolChipSummary(
+				"why_validation",
+				{},
+				{
+					validation_id: "gl_invoice_match",
+					found: true,
+					state: "executed",
+					passed: false,
+				},
+			),
+		).toBe("Gl invoice match — failed");
+		// Not executed → the lifecycle state stands in for the verdict.
+		expect(
+			toolChipSummary(
+				"why_validation",
+				{},
+				{
+					validation_id: "gl_invoice_match",
+					found: true,
+					state: "declared",
+					passed: null,
+				},
+			),
+		).toBe("Gl invoice match — declared");
+		expect(toolChipSummary("why_validation", {}, { found: false })).toBe(
+			"validation not found",
+		);
+	});
+
+	it("operating_model reads as a started background run (DAT-440)", () => {
+		expect(
+			toolChipSummary("operating_model", { session_id: "s1" }, undefined),
+		).toBe("starting the validation run…");
+		expect(
+			toolChipSummary(
+				"operating_model",
+				{ session_id: "s1" },
+				{ workflow_id: "w", run_id: "r", session_id: "s1" },
+			),
+		).toBe("validation run started — outcomes via the validations view");
 	});
 
 	it("connect names the source + table count", () => {

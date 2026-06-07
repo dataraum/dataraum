@@ -11,9 +11,11 @@ import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
+import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
+import type { WhyValidationResult } from "#/tools/why-validation";
 
 export type CanvasState =
 	| { kind: "empty" }
@@ -46,6 +48,14 @@ export type CanvasState =
 	// DAT-434: the begin_session relationship-readiness list — one row per
 	// relationship pair with its band; rows drill down to relationship-why.
 	| { kind: "relationship-list"; look: LookRelationshipsResult }
+	// DAT-440: the operating_model validation list — one row per declared
+	// validation with its lifecycle state + executed verdict; rows drill down
+	// to validation-why. Carries the look_validation result.
+	| { kind: "validation-list"; look: LookValidationResult }
+	// DAT-440: per-validation drill-down — state with its blocked reason
+	// first-class, the executed result, SQL + grounding detail. Carries the
+	// why_validation result.
+	| { kind: "validation-why"; why: WhyValidationResult }
 	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused

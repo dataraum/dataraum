@@ -18,6 +18,7 @@
 // is the part's `output` (undefined until the call completes).
 
 import type { ConnectSchema } from "#/duckdb/connect";
+import { humanizeIdentifier } from "#/lib/display-names";
 import { fileName } from "#/lib/file-uri";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
@@ -25,11 +26,13 @@ import type { InventoryTable } from "#/tools/list-tables";
 import type { Vertical } from "#/tools/list-verticals";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
+import type { LookValidationResult } from "#/tools/look-validation";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
+import type { WhyValidationResult } from "#/tools/why-validation";
 import { groupLogicalTables } from "#/ui/cockpit/widgets/inventory-grouping";
 
 // Re-exported from the canvas bridge: defined ONCE there (derived from the
@@ -60,6 +63,9 @@ const TOOL_LABELS: Record<string, string> = {
 	why_table: "Table detail",
 	why_relationship: "Relationship detail",
 	look_relationships: "Relationships",
+	look_validation: "Validations",
+	why_validation: "Validation detail",
+	operating_model: "Starting validation run",
 	connect: "Reading source",
 	frame: "Concepts",
 	select: "Registering source",
@@ -81,6 +87,9 @@ const TOOL_LABELS_DONE: Record<string, string> = {
 	begin_session: "Session started",
 	teach: "Taught",
 	replay: "Re-ran",
+	// "Started", not "done" — the driver returns as soon as the durable run
+	// kicks off (non-blocking, the begin_session pattern).
+	operating_model: "Validation run started",
 };
 
 /**
@@ -204,6 +213,39 @@ export function toolChipSummary(
 			return r.analyzed
 				? plural(r.relationships.length, "relationship")
 				: "not yet analyzed";
+		}
+		case "look_validation": {
+			const r = output as LookValidationResult | undefined;
+			if (!r || !Array.isArray(r.validations)) return "reading validations…";
+			if (!r.analyzed) return "not yet run";
+			if (r.validations.length === 0) return "no validations declared";
+			const executed = r.validations.filter(
+				(v) => v.state === "executed",
+			).length;
+			return `${plural(r.validations.length, "validation")} (${executed} executed)`;
+		}
+		case "why_validation": {
+			const r = output as WhyValidationResult | undefined;
+			if (!r) return "explaining validation…";
+			if (!r.found) return "validation not found";
+			// The validation key is a snake_case identifier — humanize it (the
+			// naming rule: never surface code-shaped tokens in chip text).
+			const label = humanizeIdentifier(r.validation_id) || "validation";
+			const verdict =
+				r.passed === null
+					? (r.state ?? "not run")
+					: r.passed
+						? "passed"
+						: "failed";
+			return `${label} — ${verdict}`;
+		}
+		case "operating_model": {
+			// Non-blocking driver: done = the durable run STARTED (ids in the
+			// output), not finished — completion arrives via workflow_status /
+			// look_validation.
+			return done
+				? "validation run started — outcomes via the validations view"
+				: "starting the validation run…";
 		}
 		case "connect": {
 			const s = output as ConnectSchema | undefined;

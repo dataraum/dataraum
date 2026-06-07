@@ -111,6 +111,26 @@ def register_slice_tables(
                 if slice_name not in slice_tables_in_duckdb:
                     continue
 
+                # Stale-definition guard (DAT-405): slice VIEWS bind lazily, so a
+                # definition whose column the CURRENT slicing view no longer
+                # carries (e.g. an enriched join column on a run whose enriched
+                # view is a passthrough) surfaces only here, as a Binder Error on
+                # COUNT. Skip that slice with a warning — one stale definition
+                # must not fail the phase and kill the whole begin_session run.
+                try:
+                    count_result = duckdb_conn.execute(
+                        f'SELECT COUNT(*) FROM "{slice_name}"'
+                    ).fetchone()
+                except duckdb.Error as e:
+                    logger.warning(
+                        "slice_view_unbindable",
+                        slice_name=slice_name,
+                        slice_column=effective_column_name,
+                        error=str(e),
+                    )
+                    continue
+                row_count = count_result[0] if count_result else 0
+
                 # Check if already registered (include source_id in query for correct uniqueness).
                 # Earlier iterations flush before they fall through, so this query sees them.
                 existing_stmt = select(Table).where(
@@ -122,10 +142,6 @@ def register_slice_tables(
 
                 if existing_table:
                     # Already registered
-                    count_result = duckdb_conn.execute(
-                        f'SELECT COUNT(*) FROM "{slice_name}"'
-                    ).fetchone()
-                    row_count = count_result[0] if count_result else 0
                     registered.append(
                         SliceTableInfo(
                             slice_table_id=existing_table.table_id,
@@ -138,12 +154,6 @@ def register_slice_tables(
                         )
                     )
                     continue
-
-                # Get row count from DuckDB
-                count_result = duckdb_conn.execute(
-                    f'SELECT COUNT(*) FROM "{slice_name}"'
-                ).fetchone()
-                row_count = count_result[0] if count_result else 0
 
                 # Create Table entry for slice
                 # Generate table_id explicitly since SQLAlchemy defaults only apply at INSERT time

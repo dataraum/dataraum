@@ -16,6 +16,26 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+def _table_head_run(session: Session, column_id: str, stage: str) -> str | None:
+    """The promoted head ``run_id`` for the column's table at ``stage`` (DAT-405).
+
+    Session-detect reads carry the begin_session run's ``run_id``, but the
+    per-column analysis rows (semantic, statistics, …) were written — and
+    promoted — by the add_source run that produced the typed table. When the
+    current run has no row, the ``(table:{id}, stage)`` head names the run whose
+    rows are current; resolving it keeps the read run-scoped instead of guessing
+    across coexisting runs. Returns ``None`` when nothing was promoted — the
+    caller keeps its no-data behaviour (fail closed, never guess).
+    """
+    from dataraum.storage import Column
+    from dataraum.storage.snapshot_head import head_run_id
+
+    col = session.get(Column, column_id)
+    if col is None:
+        return None
+    return head_run_id(session, f"table:{col.table_id}", stage)
+
+
 def load_typing(
     session: Session, column_id: str, run_id: str | None = None
 ) -> dict[str, Any] | None:
@@ -88,14 +108,28 @@ def load_statistics(
 
     ``run_id`` (DAT-413): when set, restrict to THIS run's profile + quality
     metrics. ``None`` (non-detect / test callers) adds no filter.
+
+    Head fallback (DAT-405): like :func:`load_semantic` — session detects read
+    statistics the add_source run wrote, so a this-run miss falls back to the
+    promoted head (``statistics`` for the profile, ``statistical_quality`` for
+    the quality metrics — distinct stages, distinct heads).
     """
     from dataraum.analysis.statistics.db_models import StatisticalProfile
     from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
 
     sp_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id == column_id)
     if run_id is not None:
-        sp_stmt = sp_stmt.where(StatisticalProfile.run_id == run_id)
-    sp = session.execute(sp_stmt).scalar_one_or_none()
+        sp = session.execute(
+            sp_stmt.where(StatisticalProfile.run_id == run_id)
+        ).scalar_one_or_none()
+        if sp is None:
+            head = _table_head_run(session, column_id, "statistics")
+            if head is not None and head != run_id:
+                sp = session.execute(
+                    sp_stmt.where(StatisticalProfile.run_id == head)
+                ).scalar_one_or_none()
+    else:
+        sp = session.execute(sp_stmt).scalar_one_or_none()
 
     if not sp:
         return None
@@ -112,8 +146,17 @@ def load_statistics(
         StatisticalQualityMetrics.column_id == column_id
     )
     if run_id is not None:
-        qm_stmt = qm_stmt.where(StatisticalQualityMetrics.run_id == run_id)
-    qm = session.execute(qm_stmt).scalar_one_or_none()
+        qm = session.execute(
+            qm_stmt.where(StatisticalQualityMetrics.run_id == run_id)
+        ).scalar_one_or_none()
+        if qm is None:
+            head = _table_head_run(session, column_id, "statistical_quality")
+            if head is not None and head != run_id:
+                qm = session.execute(
+                    qm_stmt.where(StatisticalQualityMetrics.run_id == head)
+                ).scalar_one_or_none()
+    else:
+        qm = session.execute(qm_stmt).scalar_one_or_none()
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
@@ -151,13 +194,30 @@ def load_semantic(
 
     ``run_id`` (DAT-413): when set, restrict to THIS run's annotation. ``None``
     (non-detect / test callers) adds no filter.
+
+    Head fallback (DAT-405): a begin_session detect carries the SESSION run's
+    ``run_id``, but annotations are written by the add_source run — a strict
+    this-run read finds nothing and silently disabled every semantic-gated
+    session detector (temporal_drift scored 0 records; slice_variance lost its
+    role gate and over-fired on ID columns). When this run has no annotation,
+    read the run the ``semantic_per_column`` head promotes for the column's
+    table; no head → ``None`` as before.
     """
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
     sa_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id == column_id)
     if run_id is not None:
-        sa_stmt = sa_stmt.where(SemanticAnnotation.run_id == run_id)
-    sa = session.execute(sa_stmt).scalar_one_or_none()
+        sa = session.execute(
+            sa_stmt.where(SemanticAnnotation.run_id == run_id)
+        ).scalar_one_or_none()
+        if sa is None:
+            head = _table_head_run(session, column_id, "semantic_per_column")
+            if head is not None and head != run_id:
+                sa = session.execute(
+                    sa_stmt.where(SemanticAnnotation.run_id == head)
+                ).scalar_one_or_none()
+    else:
+        sa = session.execute(sa_stmt).scalar_one_or_none()
     if not sa:
         return None
 

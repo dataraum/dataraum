@@ -4,6 +4,63 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-05: value-layer fixes from DAT-405 calibration (eval findings)
+
+Two fixes on `fix/dat-405-value-layer-eval-findings`, found by the first
+post-DAT-403 calibration runs in dataraum-eval (findings list on DAT-405):
+
+- **Enriched dim-column profiling repaired** — `enriched_views_phase` passed the
+  pre-quoted `view_fqn` as the profiler's `table_duckdb_path`, which the profiler
+  re-quotes as ONE identifier → DuckDB `zero-length delimited identifier` → every
+  enriched join-column profile failed (`dim_columns_profiled … profiles: 0` on
+  every run). Now passes the bare view name (== the persisted `Table.duckdb_path`).
+  Enriched join columns (`account_id__account_type`, …) now HAVE statistics —
+  dimension_coverage / slice detector inputs change accordingly.
+- **`slice_analysis` no longer dies on stale slice definitions** — a slice VIEW
+  whose definition references a column the current slicing view doesn't carry
+  (e.g. an enriched join column on a run whose enriched view is a passthrough)
+  binder-failed at COUNT and killed the whole begin_session run (both
+  detection-typing-v1 runs). `register_slice_tables` now probes the COUNT, warns
+  `slice_view_unbindable`, and skips that slice. The underlying replay hazard —
+  `slicing` skips itself when "all fact tables already have slice definitions",
+  freezing stale definitions across runs — is documented on DAT-405, not yet fixed.
+- **Loaders head-fallback (second commit)** — `load_semantic`/`load_statistics`
+  fall back to the promoted `(table:{id}, stage)` snapshot head when the current
+  run has no row. Session detects carried the SESSION run's run_id while the
+  per-column rows were written by the add_source run, so strict this-run reads
+  silently broke `temporal_drift` (0 records ever — fail closed) and
+  `slice_variance`'s role gate (1.000 on ID columns on clean data — fail open).
+- **temporal_drift gates on `temporal_behavior` (third commit)** — point-in-time
+  measures (period balances: clean trial_balance debit/credit_balance scored
+  0.45–0.54) drift by data-model design; the detector now skips them next to the
+  existing role gate. Additive measures (transaction amounts) keep drift
+  detection. Decision: DAT-405 hybrid (accept slice_variance's clean scores as
+  accurate heterogeneity; gate drift on periodic snapshots).
+- **network.yaml edge calibration (DAT-405, two edges)** —
+  `temporal_drift → query_intent` 0.3→0.45 (at 0.3 even a maximal drift score
+  rolled to ≤ the 0.3 clean-band floor — query_intent could never leave "ready"
+  on drift evidence); `relationship_quality → reporting_intent` 0.5→0.75 (at
+  relationship grain it is the only observed parent, and the sqrt-boosted
+  20%-orphan fixture scores ≈0.45 — 0.5 could never band past "ready").
+  Eval floor expectations now assert relationship problems at RELATIONSHIP grain
+  (per-endpoint), per the DAT-405 decision: the column's own band stays blind to
+  relationship problems by design.
+- **Systemic (not yet fixed): slice definitions are table-scoped + immortal**
+  while enriched/slicing views are run-versioned and LLM-shaped. Third
+  manifestation observed same day: `drift_analysis_failed` GROUP BY on a stale
+  dim column after a re-run's enriched view picked different dims. Content-keyed
+  sources (DAT-422) widen this to CROSS-strategy leakage in eval (same bytes →
+  same table_id). Proposed: run-version slice definitions (stamp run_id, promote
+  via MetadataSnapshotHead, re-derive instead of skip on column-set change).
+  Full mechanics on DAT-405.
+
+### dataraum-eval
+- Re-run value-layer calibration; detection-typing-v1 completes begin_session
+  end-to-end now (verified 2026-06-05, recall 2/2).
+- Known residue: temporal slice profiling still warns `column_profile_failed`
+  (Binder) for stale-definition columns on period slices — non-fatal, same
+  stale-definitions family.
+
 ## 2026-06-05: DAT-403 value layer revived + wired into begin_session
 
 The 5 dormant value-layer phases (`slicing` → `slicing_view` → `slice_analysis` →

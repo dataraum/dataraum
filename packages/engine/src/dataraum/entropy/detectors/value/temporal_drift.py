@@ -78,6 +78,18 @@ class TemporalDriftDetector(EntropyDetector):
         if role not in self._APPLICABLE_ROLES:
             return []
 
+        # Skip point-in-time measures (period balances, snapshot levels) — their
+        # per-period distribution shifts BY THE DATA MODEL as the business moves
+        # (DAT-405: clean trial_balance debit/credit_balance scored 0.45–0.54).
+        # Drift detection is meaningful for additive measures (transaction
+        # amounts), where the generating process should be period-stationary.
+        if hasattr(semantic, "temporal_behavior"):
+            behavior = semantic.temporal_behavior
+        else:
+            behavior = semantic.get("temporal_behavior")
+        if behavior == "point_in_time":
+            return []
+
         # Skip high-cardinality columns — near-unique values (references, codes)
         # produce max JS divergence by construction, not from real drift
         stats = context.get_analysis("statistics", {})

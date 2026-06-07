@@ -446,10 +446,16 @@ class EnrichedViewsPhase(BasePhase):
             profiled_at = datetime.now(UTC)
             profiled_count = 0
             for col in registered_columns:
+                # Bare name, NOT view_fqn: the profiler interpolates the path as
+                # ONE quoted identifier, so a pre-quoted catalog.schema."name"
+                # FQN parses as a zero-length identifier and every dim-column
+                # profile fails (eval DAT-405 finding). Bare lake-view names
+                # resolve on ctx.duckdb_conn (same as DESCRIBE in slicing_view),
+                # and match the Table.duckdb_path the row persists.
                 profile = _profile_column_stats_parallel(
                     duckdb_conn=ctx.duckdb_conn,
                     table_name=view_name,
-                    table_duckdb_path=view_fqn,
+                    table_duckdb_path=view_name,
                     column_id=col.column_id,
                     column_name=col.column_name,
                     resolved_type=col.resolved_type or "VARCHAR",

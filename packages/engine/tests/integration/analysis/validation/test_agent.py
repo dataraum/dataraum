@@ -1,6 +1,6 @@
 """Tests for the validation agent."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,7 +11,7 @@ from dataraum.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum.core.models.base import Result
-from tests.conftest import baseline_session_id
+from dataraum.lifecycle import BaseRunMap
 
 
 @pytest.fixture
@@ -387,45 +387,14 @@ class TestValidationAgentGenerateSQL:
         assert "disabled" in result.error
 
 
-class TestValidationAgentRunValidations:
-    """Tests for running full validation flows (multi-table)."""
+class TestValidationAgentBindExecute:
+    """Tests for the bind/execute lifecycle operations (DAT-438).
 
-    def test_run_validations_tables_not_found(self, session, duckdb_conn, validation_agent):
-        """Test running validations on nonexistent tables."""
-        result = validation_agent.run_validations(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            table_ids=["nonexistent-id"],
-            vertical="finance",
-            session_id=baseline_session_id(),
-        )
+    The phase-level concerns the old run_validations covered — schema errors,
+    zero-spec outcomes, persistence — live in test_validation_phase.py now.
+    """
 
-        assert not result.success
-        assert "not found" in result.error.lower() or "No tables" in result.error
-
-    def test_run_validations_no_specs(
-        self, session, duckdb_conn, validation_agent, table_with_data
-    ):
-        """Test running validations with no matching specs."""
-        table = table_with_data
-
-        # Patch to return empty specs
-        with patch("dataraum.analysis.validation.agent.load_all_validation_specs") as mock_load:
-            mock_load.return_value = {}
-
-            result = validation_agent.run_validations(
-                session=session,
-                duckdb_conn=duckdb_conn,
-                table_ids=[table.table_id],
-                vertical="finance",
-                session_id=baseline_session_id(),
-            )
-
-        assert result.success
-        run_result = result.value
-        assert run_result.total_checks == 0
-
-    def test_run_single_validation_success(
+    def test_bind_and_execute_success(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
         """Test running a single validation that passes."""
@@ -446,7 +415,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = get_multi_table_schema_for_llm(session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
         # Mock LLM to return valid SQL with tool call
         tool_input = {
@@ -460,18 +429,22 @@ class TestValidationAgentRunValidations:
         mock_response = _make_tool_response(tool_input)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
-        result = validation_agent._run_single_validation(
-            duckdb_conn=duckdb_conn,
-            table_ids=[table.table_id],
-            spec=spec,
-            schema=schema,
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
+        )
+        assert bind_failure is None
+        assert generated is not None
+        assert generated.sql_query
+
+        result = validation_agent.execute_validation(
+            duckdb_conn, [table.table_id], spec, schema, generated
         )
 
         assert result.status == ValidationStatus.PASSED
         assert result.passed is True
         assert result.sql_used is not None
 
-    def test_run_single_validation_skipped(
+    def test_bind_ungroundable_returns_skip_failure(
         self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
         """Test running a validation that gets skipped."""
@@ -489,7 +462,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = get_multi_table_schema_for_llm(session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
 
         # Mock LLM to indicate cannot validate
         tool_input = {
@@ -503,12 +476,13 @@ class TestValidationAgentRunValidations:
         mock_response = _make_tool_response(tool_input)
         mock_provider.converse.return_value = Result.ok(mock_response)
 
-        result = validation_agent._run_single_validation(
-            duckdb_conn=duckdb_conn,
-            table_ids=[table.table_id],
-            spec=spec,
-            schema=schema,
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
         )
 
-        assert result.status == ValidationStatus.SKIPPED
-        assert "Missing account_type" in result.message
+        # Ungroundable: no generated SQL; the failure result carries the
+        # reason the phase records on the still-declared artifact.
+        assert generated is None
+        assert bind_failure is not None
+        assert bind_failure.status == ValidationStatus.SKIPPED
+        assert "Missing account_type" in bind_failure.message

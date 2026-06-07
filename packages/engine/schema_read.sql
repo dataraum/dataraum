@@ -116,6 +116,16 @@ DROP VIEW IF EXISTS __READ__.investigation_steps;
 CREATE VIEW __READ__.investigation_steps AS
 SELECT * FROM __WS__.investigation_steps;
 
+DROP VIEW IF EXISTS __READ__.current_lifecycle_artifacts;
+CREATE VIEW __READ__.current_lifecycle_artifacts AS
+SELECT r.* FROM __WS__.lifecycle_artifacts r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'session:' || r.session_id
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_materialization_recipes;
 CREATE VIEW __READ__.current_materialization_recipes AS
 SELECT r.* FROM __WS__.materialization_recipes r
@@ -276,6 +286,12 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-DROP VIEW IF EXISTS __READ__.validation_results;
-CREATE VIEW __READ__.validation_results AS
-SELECT * FROM __WS__.validation_results;
+DROP VIEW IF EXISTS __READ__.current_validation_results;
+CREATE VIEW __READ__.current_validation_results AS
+SELECT r.* FROM __WS__.validation_results r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'session:' || r.session_id
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);

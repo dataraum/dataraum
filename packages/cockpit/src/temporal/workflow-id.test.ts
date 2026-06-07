@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addSourceWorkflowId } from "./workflow-id";
+import { addSourceWorkflowId, operatingModelWorkflowId } from "./workflow-id";
 
 // The parent workflow ID encodes workspace_id as its first segment (DAT-364) and
 // is keyed by the run's session_id (DAT-422 — a run is over a SET of objects from
@@ -23,6 +23,20 @@ describe("addSourceWorkflowId (DAT-364, DAT-422)", () => {
 	it("does not collide across workspaces sharing a session_id", () => {
 		expect(addSourceWorkflowId(WS_A, SESSION)).not.toBe(
 			addSourceWorkflowId(WS_B, SESSION),
+		);
+	});
+});
+
+describe("operatingModelWorkflowId (DAT-438)", () => {
+	it("encodes workspace then session", () => {
+		expect(operatingModelWorkflowId(WS_A, SESSION)).toBe(
+			`operatingmodel-${WS_A}-${SESSION}`,
+		);
+	});
+
+	it("does not collide across workspaces sharing a session_id", () => {
+		expect(operatingModelWorkflowId(WS_A, SESSION)).not.toBe(
+			operatingModelWorkflowId(WS_B, SESSION),
 		);
 	});
 });

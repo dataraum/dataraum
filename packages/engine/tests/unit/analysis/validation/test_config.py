@@ -1,6 +1,4 @@
-"""Tests for validation config loading."""
-
-import pytest
+"""Tests for validation config loading (overlay-aware since DAT-438)."""
 
 from dataraum.analysis.validation.config import (
     get_validation_spec,
@@ -8,6 +6,11 @@ from dataraum.analysis.validation.config import (
     get_validation_specs_by_tags,
     get_validation_specs_for_cycles,
     load_all_validation_specs,
+)
+from dataraum.core.overlay import (
+    OverlayRow,
+    reset_overlay_resolver_for_tests,
+    set_overlay_resolver,
 )
 
 VERTICAL = "finance"
@@ -36,10 +39,104 @@ class TestLoadAllValidationSpecs:
         assert specs1 is not specs2
         assert specs1.keys() == specs2.keys()
 
-    def test_nonexistent_vertical_raises(self):
-        """Test that a nonexistent vertical raises FileNotFoundError."""
-        with pytest.raises(FileNotFoundError, match="not found"):
-            load_all_validation_specs("nonexistent_vertical_xyz")
+    def test_unknown_vertical_resolves_empty(self):
+        """An unknown / framed vertical resolves to no specs, never raises.
+
+        The framed-vertical contract (DAT-438): no on-disk directory means
+        the overlay rows ARE the declared set; with none active the result
+        is empty. "No declared validations" is the phase tier's loud
+        outcome, not a loader crash.
+        """
+        assert load_all_validation_specs("nonexistent_vertical_xyz") == {}
+
+
+def _spec_payload(validation_id: str, **overrides) -> dict:
+    """A minimal valid ``validation`` overlay payload for VERTICAL."""
+    payload = {
+        "vertical": VERTICAL,
+        "validation_id": validation_id,
+        "name": validation_id.replace("_", " ").title(),
+        "description": "taught via overlay",
+        "category": "financial",
+        "check_type": "balance",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestOverlayAwareLoading:
+    """``validation`` overlay rows merge over the shipped vertical (DAT-438)."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_overlay_row_adds_a_spec(self):
+        set_overlay_resolver(
+            lambda: [OverlayRow(type="validation", payload=_spec_payload("taught_check"))]
+        )
+        specs = load_all_validation_specs(VERTICAL)
+
+        assert "taught_check" in specs
+        assert specs["taught_check"].description == "taught via overlay"
+        # Shipped specs survive alongside the teach
+        assert "double_entry_balance" in specs
+
+    def test_overlay_row_replaces_shipped_spec_by_id(self):
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="validation",
+                    payload=_spec_payload("double_entry_balance", parameters={"tolerance": 5.0}),
+                )
+            ]
+        )
+        specs = load_all_validation_specs(VERTICAL)
+
+        assert specs["double_entry_balance"].parameters == {"tolerance": 5.0}
+        assert specs["double_entry_balance"].description == "taught via overlay"
+
+    def test_framed_vertical_resolves_overlay_only(self):
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="validation",
+                    payload=_spec_payload("framed_check", vertical="framed_v"),
+                )
+            ]
+        )
+        specs = load_all_validation_specs("framed_v")
+
+        assert list(specs) == ["framed_check"]
+
+    def test_rows_for_other_verticals_ignored(self):
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="validation",
+                    payload=_spec_payload("other_check", vertical="some_other_vertical"),
+                )
+            ]
+        )
+        specs = load_all_validation_specs(VERTICAL)
+
+        assert "other_check" not in specs
+
+    def test_test_path_bypasses_overlay(self, tmp_path):
+        set_overlay_resolver(
+            lambda: [OverlayRow(type="validation", payload=_spec_payload("taught_check"))]
+        )
+        spec_dir = tmp_path / VERTICAL / "validations"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "on_disk.yaml").write_text(
+            "validation_id: on_disk_check\n"
+            "name: On Disk\n"
+            "description: from the fixture dir\n"
+            "category: financial\n"
+            "check_type: balance\n"
+        )
+        specs = load_all_validation_specs(VERTICAL, verticals_dir=tmp_path)
+
+        assert list(specs) == ["on_disk_check"]
 
 
 class TestGetValidationSpecsByCategory:

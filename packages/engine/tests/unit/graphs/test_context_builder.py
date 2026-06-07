@@ -279,16 +279,27 @@ class TestBuilderExtractsTableEntity:
 
 
 class TestBuilderExtractsValidationDetails:
-    """Verify builder reads ValidationResultRecord.details."""
+    """Verify builder reads ValidationResultRecord.details.
+
+    Run-versioned since DAT-438: the builder reads validation results only at
+    the session's promoted operating_model head — the test seeds the head and
+    passes the session_id. Without either, the read is fail-closed empty.
+    """
 
     def test_validation_details(self, session: Session) -> None:
         from dataraum.analysis.validation.db_models import ValidationResultRecord
+        from dataraum.investigation.db_models import InvestigationSession
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
+        sess_id = "sess-validation-details"
+        session.add(InvestigationSession(session_id=sess_id, intent="test"))
         session.add(
             ValidationResultRecord(
                 result_id=_id(),
+                session_id=sess_id,
+                run_id="run-om",
                 validation_id="balance_check",
                 table_ids=[table_id],
                 status="failed",
@@ -298,12 +309,21 @@ class TestBuilderExtractsValidationDetails:
                 details={"summary": "Off by 42.50", "affected_rows": 3},
             )
         )
+        session.add(
+            MetadataSnapshotHead(
+                target=session_head_target(sess_id), stage="operating_model", run_id="run-om"
+            )
+        )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id])
+        ctx = build_execution_context(session, [table_id], session_id=sess_id)
 
         assert len(ctx.validations) == 1
         assert ctx.validations[0].details == {"summary": "Off by 42.50", "affected_rows": 3}
+
+        # Fail-closed: no session_id → no promoted head to read at → empty.
+        unscoped = build_execution_context(session, [table_id])
+        assert unscoped.validations == []
 
 
 class TestBuilderExtractsCycleVolume:

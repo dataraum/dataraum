@@ -34,11 +34,17 @@ Registered teach types
   :func:`apply_overlay`'s vertical-path detection. Concept rows are
   applied first (define / replace), then concept_property rows patch on
   top.
+* ``validation`` — the logical collection ``verticals/<vertical>/validations``
+  (a *directory* of per-id YAML files, merged to a ``validations:`` list by
+  ``load_all_validation_specs`` before the overlay applies); upsert-replace
+  by ``validation_id``, routed via :func:`apply_overlay`'s vertical-path
+  detection (DAT-438). This is the declared-validation teach surface
+  frame-2 (DAT-441) writes into.
 
-The 5 still-deferred types (``validation``, ``cycle``, ``metric``,
-``relationship``, ``explanation``) have no applier in slice 1 — the
-cockpit may still write their rows, but the layered read is a no-op
-until slice 2+ wires their consumers.
+The 4 still-deferred types (``cycle``, ``metric``, ``relationship``,
+``explanation``) have no applier — the cockpit may still write their
+rows, but the layered read is a no-op until later slices wire their
+consumers.
 """
 
 from __future__ import annotations
@@ -208,6 +214,37 @@ def _apply_concept_property(base: dict[str, Any], rows: list[OverlayRow]) -> dic
     return out
 
 
+def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
+    """Upsert-replace validation rows into a vertical's ``validations:`` list.
+
+    Payload shape mirrors :class:`ValidationSpec`:
+    ``{vertical, validation_id, name, description, category, severity,
+    check_type, parameters?, sql_hints?, expected_outcome?, tags?,
+    relevant_cycles?, version?}``. ``vertical`` is matched by the caller
+    (this applier only sees rows already filtered to the loading vertical).
+
+    Merge semantics mirror ``concept``: one row = one whole spec. Same
+    ``validation_id`` replaces — the last row for a given id wins (rows are
+    pre-sorted ASC by ``created_at``). A framed vertical resolves
+    overlay-only: an empty base list plus rows IS the declared set.
+    """
+    out = dict(base)
+    specs = [dict(s) for s in (out.get("validations") or [])]
+    by_id = {s.get("validation_id"): i for i, s in enumerate(specs) if s.get("validation_id")}
+    for row in rows:
+        payload = {k: v for k, v in row.payload.items() if k != "vertical"}
+        validation_id = payload.get("validation_id")
+        if not validation_id:
+            continue
+        if validation_id in by_id:
+            specs[by_id[validation_id]] = payload
+        else:
+            by_id[validation_id] = len(specs)
+            specs.append(payload)
+    out["validations"] = specs
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registry + dispatcher.
 # ---------------------------------------------------------------------------
@@ -234,10 +271,13 @@ _REGISTRY: Final[dict[str, _ApplierSpec]] = {
 }
 
 
-# Vertical ontology files live at ``verticals/<vertical>/ontology.yaml``.
-# These constants keep the path-parsing in one place.
+# Vertical ontology files live at ``verticals/<vertical>/ontology.yaml``;
+# the validation collection is the logical path ``verticals/<vertical>/validations``
+# (a directory merged to one dict by its loader, not a single file). These
+# constants keep the path-parsing in one place.
 _VERTICAL_ONTOLOGY_PREFIX = "verticals/"
 _VERTICAL_ONTOLOGY_SUFFIX = "/ontology.yaml"
+_VERTICAL_VALIDATIONS_SUFFIX = "/validations"
 
 
 def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
@@ -254,6 +294,9 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
           top. The order matters: concept defines / replaces a whole
           concept entry; concept_property patches one field on the
           (possibly just-replaced) concept.
+        * ``verticals/<v>/validations`` — the logical validation collection
+          (DAT-438): apply ``validation`` rows whose payload ``vertical``
+          matches ``<v>`` (upsert-replace by ``validation_id``).
         * everything else — look up ``relative_path`` in the registry;
           apply each matching teach type's rows.
     """
@@ -286,6 +329,17 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
         if property_rows:
             merged = _apply_concept_property(merged, property_rows)
         return merged
+
+    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
+        _VERTICAL_VALIDATIONS_SUFFIX
+    ):
+        vertical = relative_path[
+            len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_VALIDATIONS_SUFFIX)
+        ]
+        validation_rows = [
+            r for r in rows if r.type == "validation" and r.payload.get("vertical") == vertical
+        ]
+        return _apply_validation(base, validation_rows) if validation_rows else base
 
     merged = base
     for teach_type, spec in _REGISTRY.items():

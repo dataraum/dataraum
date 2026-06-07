@@ -41,6 +41,7 @@ def load_all_models() -> None:
     from dataraum.documentation import db_models as _fix_ledger  # noqa: F401
     from dataraum.entropy import db_models as _entropy  # noqa: F401
     from dataraum.investigation import db_models as _investigation  # noqa: F401
+    from dataraum.lifecycle import db_models as _lifecycle  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry
     from dataraum.pipeline.registry import import_all_phase_models

@@ -154,6 +154,45 @@ class ValidationRunResult(BaseModel):
     overall_status: ValidationStatus = ValidationStatus.PASSED
     has_critical_failures: bool = False
 
+    @classmethod
+    def from_results(
+        cls,
+        *,
+        run_id: str,
+        table_ids: list[str],
+        table_name: str,
+        started_at: datetime,
+        results: list[ValidationResult],
+    ) -> ValidationRunResult:
+        """Summarize a run's individual results into the aggregate.
+
+        ``run_id`` is the workflow-minted run (DAT-408), never minted here.
+        """
+        passed = sum(1 for r in results if r.status == ValidationStatus.PASSED)
+        failed = sum(1 for r in results if r.status == ValidationStatus.FAILED)
+        skipped = sum(1 for r in results if r.status == ValidationStatus.SKIPPED)
+        errors = sum(1 for r in results if r.status == ValidationStatus.ERROR)
+        return cls(
+            run_id=run_id,
+            table_ids=table_ids,
+            table_name=table_name,
+            started_at=started_at,
+            completed_at=_utc_now(),
+            results=results,
+            total_checks=len(results),
+            passed_checks=passed,
+            failed_checks=failed,
+            skipped_checks=skipped,
+            error_checks=errors,
+            overall_status=(
+                ValidationStatus.FAILED if (failed or errors) else ValidationStatus.PASSED
+            ),
+            has_critical_failures=any(
+                r.status == ValidationStatus.FAILED and r.severity == ValidationSeverity.CRITICAL
+                for r in results
+            ),
+        )
+
 
 __all__ = [
     "ValidationSeverity",

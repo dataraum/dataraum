@@ -42,6 +42,10 @@ with workflow.unsafe.imports_passed_through():
         BeginSessionInput,
         BeginSessionResult,
         ImportResult,
+        OperatingModelInput,
+        OperatingModelResult,
+        OperatingModelScope,
+        OperatingModelScopedInput,
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
@@ -529,3 +533,66 @@ class BeginSessionWorkflow:
         )
 
         return BeginSessionResult(session_id=identity.session_id, table_ids=payload.tables)
+
+
+@workflow.defn(name="operatingModelWorkflow")
+class OperatingModelWorkflow:
+    """The journey's third stage — executable knowledge over the workspace (DAT-438).
+
+    Mirrors ``BeginSessionWorkflow``'s shape (source-free, session-scoped,
+    sequential, run-versioned) with one structural difference: the input is the
+    ``SessionIdentity`` ONLY. begin_session ESTABLISHES the table set; this
+    stage operates on the set the session already anchors, so the pre-flight
+    ``operating_model_resolve`` re-reads ``session_tables`` AND pins the
+    ADR-0008 base-run map (begin_session's promoted detect head + per-table
+    semantic heads) once — every downstream read scopes to those pins, no
+    per-phase head resolution.
+
+    Slice-1 spine: resolve → validation (declare → bind → execute through the
+    typed artifact lifecycle) → promote ``(session:{id}, "operating_model")``.
+    Later slices insert their families (cycles, metrics) and DAT-432 inserts
+    the terminal detect (cross_table_consistency) before promote. A re-run is
+    a full re-run under a fresh ``run_id`` — declared artifacts and validation
+    results supersede, never mutate (DAT-408).
+    """
+
+    @workflow.run
+    async def run(self, payload: OperatingModelInput) -> OperatingModelResult:
+        run_id = str(workflow.uuid4())
+        identity = payload.identity.model_copy(update={"run_id": run_id})
+
+        # Pre-flight: the session's table set + the run's pinned base heads.
+        # Fails loud (no linked tables / unknown session) — nothing to model.
+        scope = await workflow.execute_activity(
+            "operating_model_resolve",
+            identity,
+            result_type=OperatingModelScope,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # The lifecycle family: every declared validation (vertical ⊕ teach
+        # rows) is declared for this run, bound (SQL vs workspace), executed.
+        # Ungroundable specs surface as declared-with-reason, never silently.
+        outcome = await workflow.execute_activity(
+            "validation",
+            OperatingModelScopedInput(identity=identity, scope=scope),
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Terminal promote: flip (session:{id}, "operating_model") to this run.
+        await workflow.execute_activity(
+            "operating_model_promote",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        return OperatingModelResult(
+            session_id=identity.session_id,
+            table_ids=scope.table_ids,
+            validation_summary=outcome.summary,
+        )

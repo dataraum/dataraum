@@ -42,7 +42,9 @@ class HealthReport:
     overall_health: float | None = None
 
 
-def compute_cycle_health(session: Session, source_id: str, *, vertical: str) -> HealthReport:
+def compute_cycle_health(
+    session: Session, source_id: str, *, vertical: str, run_id: str | None
+) -> HealthReport:
     """Compute health scores for all detected cycles in a source.
 
     Combines cycle completion rates (from LLM detection) with validation
@@ -52,6 +54,10 @@ def compute_cycle_health(session: Session, source_id: str, *, vertical: str) -> 
         session: SQLAlchemy session
         source_id: Source to compute health for
         vertical: Vertical name (e.g. 'finance')
+        run_id: The promoted operating_model run to read validation results
+            at. ValidationResultRecord is run-versioned (DAT-438); ``None``
+            (no promoted run) reads NO validation evidence — fail-closed,
+            never a cross-run read that would double-count superseded runs.
 
     Returns:
         HealthReport with per-cycle scores and overall health
@@ -69,10 +75,14 @@ def compute_cycle_health(session: Session, source_id: str, *, vertical: str) -> 
     for cycle in cycles:
         all_table_ids.update(cycle.tables_involved or [])
 
-    # 3. Query validation results for those tables
+    # 3. Query validation results for those tables, scoped to the promoted run
     validation_results: list[ValidationResultRecord] = []
-    if all_table_ids:
-        validation_results = list(session.scalars(select(ValidationResultRecord)).all())
+    if all_table_ids and run_id is not None:
+        validation_results = list(
+            session.scalars(
+                select(ValidationResultRecord).where(ValidationResultRecord.run_id == run_id)
+            ).all()
+        )
         # Filter to results that share table_ids with our cycles
         validation_results = [
             vr for vr in validation_results if set(vr.table_ids or []) & all_table_ids

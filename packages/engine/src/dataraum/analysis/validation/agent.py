@@ -11,27 +11,18 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import duckdb
-from sqlalchemy.orm import Session
 
-from dataraum.analysis.validation.config import load_all_validation_specs
-from dataraum.analysis.validation.db_models import (
-    ValidationResultRecord,
-)
 from dataraum.analysis.validation.models import (
     GeneratedSQL,
     ValidationResult,
-    ValidationRunResult,
-    ValidationSeverity,
     ValidationSpec,
     ValidationSQLOutput,
     ValidationStatus,
 )
 from dataraum.analysis.validation.resolver import (
     format_multi_table_schema_for_prompt,
-    get_multi_table_schema_for_llm,
 )
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -61,115 +52,7 @@ class ValidationAgent(LLMFeature):
     MAX_STORED_ROWS = 10
     DEFAULT_TOLERANCE = 0.01
 
-    def run_validations(
-        self,
-        session: Session,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        table_ids: list[str],
-        validation_ids: list[str] | None = None,
-        category: str | None = None,
-        persist: bool = True,
-        *,
-        vertical: str,
-        session_id: str,
-    ) -> Result[ValidationRunResult]:
-        """Run validation checks across multiple tables.
-
-        Args:
-            session: Database session
-            duckdb_conn: DuckDB connection for executing SQL
-            table_ids: Tables to validate (all schemas passed to LLM)
-            validation_ids: Specific validations to run (None = all applicable)
-            category: Filter by category (e.g., 'financial')
-            persist: Whether to save results to the database (default True)
-            vertical: Vertical name (e.g. 'finance')
-
-        Returns:
-            Result containing ValidationRunResult
-        """
-        run_id = str(uuid4())
-        started_at = datetime.now(UTC)
-        results: list[ValidationResult] = []
-
-        # Get multi-table schema with relationships and row counts
-        schema = get_multi_table_schema_for_llm(
-            session, table_ids, duckdb_conn=duckdb_conn, session_id=session_id
-        )
-        if "error" in schema:
-            return Result.fail(str(schema["error"]))
-
-        # Validate context - fail early if missing critical information
-        context_issues = self._validate_context(schema)
-        if context_issues:
-            return Result.fail(f"Insufficient context for validation: {'; '.join(context_issues)}")
-
-        # Get table names for result
-        table_names = [t["table_name"] for t in schema.get("tables", [])]
-        combined_table_name = ", ".join(table_names)
-
-        # Determine which validations to run
-        specs = self._get_applicable_specs(validation_ids, category, vertical)
-
-        if not specs:
-            return Result.ok(
-                ValidationRunResult(
-                    run_id=run_id,
-                    table_ids=table_ids,
-                    table_name=combined_table_name,
-                    started_at=started_at,
-                    completed_at=datetime.now(UTC),
-                    total_checks=0,
-                )
-            )
-
-        # Run each validation
-        for spec in specs:
-            result = self._run_single_validation(
-                duckdb_conn=duckdb_conn,
-                table_ids=table_ids,
-                spec=spec,
-                schema=schema,
-            )
-            results.append(result)
-
-        # Summarize results
-        passed = sum(1 for r in results if r.status == ValidationStatus.PASSED)
-        failed = sum(1 for r in results if r.status == ValidationStatus.FAILED)
-        skipped = sum(1 for r in results if r.status == ValidationStatus.SKIPPED)
-        errors = sum(1 for r in results if r.status == ValidationStatus.ERROR)
-
-        has_critical = any(
-            r.status == ValidationStatus.FAILED and r.severity == ValidationSeverity.CRITICAL
-            for r in results
-        )
-
-        overall = ValidationStatus.PASSED
-        if failed > 0 or errors > 0:
-            overall = ValidationStatus.FAILED
-
-        run_result = ValidationRunResult(
-            run_id=run_id,
-            table_ids=table_ids,
-            table_name=combined_table_name,
-            started_at=started_at,
-            completed_at=datetime.now(UTC),
-            results=results,
-            total_checks=len(results),
-            passed_checks=passed,
-            failed_checks=failed,
-            skipped_checks=skipped,
-            error_checks=errors,
-            overall_status=overall,
-            has_critical_failures=has_critical,
-        )
-
-        # Persist results to database
-        if persist:
-            self._persist_results(session, run_result, session_id=session_id)
-
-        return Result.ok(run_result)
-
-    def _validate_context(self, schema: dict[str, Any]) -> list[str]:
+    def validate_context(self, schema: dict[str, Any]) -> list[str]:
         """Validate that the schema has sufficient context for validation.
 
         Args:
@@ -202,32 +85,6 @@ class ValidationAgent(LLMFeature):
             )
 
         return issues
-
-    def _get_applicable_specs(
-        self,
-        validation_ids: list[str] | None,
-        category: str | None,
-        vertical: str,
-    ) -> list[ValidationSpec]:
-        """Get validation specs to run.
-
-        Args:
-            validation_ids: Specific IDs to run
-            category: Category filter
-            vertical: Vertical name (e.g. 'finance')
-
-        Returns:
-            List of ValidationSpecs
-        """
-        all_specs = load_all_validation_specs(vertical)
-
-        if validation_ids:
-            return [all_specs[vid] for vid in validation_ids if vid in all_specs]
-
-        if category:
-            return [s for s in all_specs.values() if s.category == category]
-
-        return list(all_specs.values())
 
     @staticmethod
     def _scope_table_ids_from_sql(
@@ -267,23 +124,24 @@ class ValidationAgent(LLMFeature):
 
         return scoped_ids
 
-    def _run_single_validation(
+    def bind_validation(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         spec: ValidationSpec,
         schema: dict[str, Any],
-    ) -> ValidationResult:
-        """Run a single validation check.
+    ) -> tuple[GeneratedSQL | None, ValidationResult | None]:
+        """``validation.bind`` — ground a declared spec against the workspace.
 
-        Args:
-            duckdb_conn: DuckDB connection
-            table_ids: Table IDs being validated
-            spec: Validation spec to run
-            schema: Multi-table schema
+        Generates SQL via the LLM and proves it binds (EXPLAIN). Exactly one
+        element of the returned tuple is set:
 
-        Returns:
-            ValidationResult
+        * ``(generated, None)`` — the spec grounds: SQL exists and plans.
+        * ``(None, failure)`` — ungroundable: SQL generation failed (ERROR),
+          the LLM declared it inapplicable to this workspace (SKIPPED), or
+          the SQL doesn't plan (ERROR). The failure result carries the reason
+          the caller records on the artifact (visibly impossible, never
+          silently absent).
         """
         table_names = [t["table_name"] for t in schema.get("tables", [])]
         combined_table_name = ", ".join(table_names)
@@ -292,7 +150,7 @@ class ValidationAgent(LLMFeature):
         sql_result = self._generate_sql(spec, schema)
 
         if not sql_result.success or not sql_result.value:
-            return ValidationResult(
+            return None, ValidationResult(
                 validation_id=spec.validation_id,
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
@@ -313,9 +171,9 @@ class ValidationAgent(LLMFeature):
         else:
             scoped_table_ids = []
 
-        # Check if validation can be performed
+        # The LLM declared the validation inapplicable to this workspace
         if not generated.is_valid:
-            return ValidationResult(
+            return None, ValidationResult(
                 validation_id=spec.validation_id,
                 spec_name=spec.name,
                 status=ValidationStatus.SKIPPED,
@@ -327,12 +185,12 @@ class ValidationAgent(LLMFeature):
                 columns_used=generated.columns_used,
             )
 
-        # Validate SQL with EXPLAIN before execution
+        # Prove the binding: the SQL must plan before the spec counts as grounded
         try:
             duckdb_conn.execute(f"EXPLAIN {generated.sql_query}")
         except Exception as e:
             logger.error("sql_validation_failed", validation_id=spec.validation_id, error=str(e))
-            return ValidationResult(
+            return None, ValidationResult(
                 validation_id=spec.validation_id,
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
@@ -345,7 +203,31 @@ class ValidationAgent(LLMFeature):
                 columns_used=generated.columns_used,
             )
 
-        # Execute SQL
+        return generated, None
+
+    def execute_validation(
+        self,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        table_ids: list[str],
+        spec: ValidationSpec,
+        schema: dict[str, Any],
+        generated: GeneratedSQL,
+    ) -> ValidationResult:
+        """``validation.execute`` — run a grounded spec's SQL and evaluate it.
+
+        PASSED/FAILED is the *measurement* (the data's quality), not the
+        lifecycle outcome — a grounded validation that fails its check still
+        executed cleanly. Only an execution ERROR means the artifact did not
+        reach ``executed``.
+        """
+        table_names = [t["table_name"] for t in schema.get("tables", [])]
+        combined_table_name = ", ".join(table_names)
+        scoped_table_ids = (
+            self._scope_table_ids_from_sql(generated.sql_query, schema, table_ids)
+            if generated.sql_query
+            else []
+        )
+
         try:
             result_obj = duckdb_conn.execute(generated.sql_query)
             col_names = [desc[0] for desc in result_obj.description]
@@ -684,44 +566,6 @@ class ValidationAgent(LLMFeature):
                 f"Custom check returned {row_count} rows",
                 {"check_type": check_type, "row_count": row_count},
             )
-
-    def _persist_results(
-        self,
-        session: Session,
-        run_result: ValidationRunResult,
-        *,
-        session_id: str,
-    ) -> None:
-        """Persist validation results to the database.
-
-        Args:
-            session: Database session
-            run_result: Validation run result to persist
-        """
-        # Create individual result records with client-side IDs
-        for result in run_result.results:
-            # Serialize details to ensure JSON compatibility
-            result_data = result.model_dump(mode="json")
-            result_record = ValidationResultRecord(
-                result_id=str(uuid4()),
-                session_id=session_id,
-                validation_id=result.validation_id,
-                table_ids=result.table_ids,
-                status=result.status.value,
-                severity=result.severity.value,
-                passed=result.passed,
-                message=result.message,
-                executed_at=result.executed_at,
-                sql_used=result.sql_used,
-                details=result_data.get("details"),
-            )
-            session.add(result_record)
-
-        logger.debug(
-            "validation_results_persisted",
-            run_id=run_result.run_id,
-            count=len(run_result.results),
-        )
 
 
 __all__ = ["ValidationAgent"]

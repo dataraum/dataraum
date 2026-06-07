@@ -59,18 +59,23 @@ _TABLE_GRAIN: dict[str, str] = {
     "materialization_recipes": "typing",
 }
 
-# Run-stamped tables sealed at SESSION grain — begin_session promotes one
-# (session:{id}, "detect") head for the whole atomic run (DAT-408/448).
-_SESSION_GRAIN: tuple[str, ...] = (
-    "relationships",
-    "table_entities",
-    "enriched_views",
-    "slicing_views",
-    "slice_definitions",
-    "column_drift_summaries",
-    "temporal_slice_analyses",
-    "derived_columns",
-)
+# Run-stamped tables sealed at SESSION grain, mapped to their promoting stage:
+# begin_session promotes one (session:{id}, "detect") head for its atomic run
+# (DAT-408/448); operating_model promotes (session:{id}, "operating_model")
+# for the lifecycle family (DAT-438). Same target, distinct stages — the two
+# stages' runs coexist on one session.
+_SESSION_GRAIN: dict[str, str] = {
+    "relationships": "detect",
+    "table_entities": "detect",
+    "enriched_views": "detect",
+    "slicing_views": "detect",
+    "slice_definitions": "detect",
+    "column_drift_summaries": "detect",
+    "temporal_slice_analyses": "detect",
+    "derived_columns": "detect",
+    "lifecycle_artifacts": "operating_model",
+    "validation_results": "operating_model",
+}
 
 # Written by BOTH detect paths: add_source seals per (table:{id}, "detect"),
 # begin_session per (session:{id}, "detect") — a row is current when its run
@@ -143,13 +148,14 @@ def _current_view_sql(table: str) -> str:
             f");"
         )
     if table in _SESSION_GRAIN:
+        stage = _SESSION_GRAIN[table]
         return (
             f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"  WHERE h.target = 'session:' || r.session_id\n"
-            f"    AND h.stage = 'detect'\n"
+            f"    AND h.stage = '{stage}'\n"
             f"    AND h.run_id = r.run_id\n"
             f");"
         )

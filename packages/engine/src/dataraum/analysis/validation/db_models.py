@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
@@ -17,15 +17,23 @@ from dataraum.storage import Base
 class ValidationResultRecord(Base):
     """Record of a single validation check result.
 
-    Stores individual check results for analysis and reporting.
+    Run-versioned (DAT-438): one row per ``(session, validation, run)`` —
+    the schema axis of the versioned-model consumer contract. A re-run
+    supersedes by writing rows under its fresh ``run_id``; readers scope to
+    the promoted ``operating_model`` head (or, in-run, to this run's id),
+    never read across runs.
     """
 
     __tablename__ = "validation_results"
+    __table_args__ = (
+        UniqueConstraint("session_id", "validation_id", "run_id", name="uq_validation_result_run"),
+    )
 
     result_id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 

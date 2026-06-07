@@ -139,52 +139,7 @@ class TestBusinessCyclesInduction:
         assert result.success
 
 
-class TestValidationInduction:
-    @patch("dataraum.analysis.validation.agent.ValidationAgent.run_validations")
-    @patch("dataraum.analysis.validation.induction.save_validation_specs")
-    @patch("dataraum.analysis.validation.induction.ValidationInductionAgent.induce")
-    @patch("dataraum.analysis.validation.config.load_all_validation_specs")
-    def test_induction_triggered_when_empty(
-        self,
-        mock_load_specs: MagicMock,
-        mock_induce: MagicMock,
-        mock_save: MagicMock,
-        mock_run: MagicMock,
-        _mock_llm: None,
-    ) -> None:
-        mock_load_specs.return_value = {}
-        mock_induce.return_value = Result.ok([{"validation_id": "test", "name": "Test"}])
-        mock_run.return_value = Result.ok(
-            MagicMock(total_checks=0, passed=0, failed=0, skipped=0, errors=0, results=[])
-        )
-
-        from dataraum.pipeline.phases.validation_phase import ValidationPhase
-
-        result = ValidationPhase()._run(_make_ctx("_adhoc"))
-
-        mock_induce.assert_called_once()
-        mock_save.assert_called_once()
-        assert result.success
-
-    @patch("dataraum.analysis.validation.agent.ValidationAgent.run_validations")
-    @patch("dataraum.analysis.validation.config.load_all_validation_specs")
-    def test_induction_skipped_when_specs_exist(
-        self,
-        mock_load_specs: MagicMock,
-        mock_run: MagicMock,
-        _mock_llm: None,
-    ) -> None:
-        mock_load_specs.return_value = {"existing": MagicMock()}
-        mock_run.return_value = Result.ok(
-            MagicMock(total_checks=1, passed=1, failed=0, skipped=0, errors=0, results=[])
-        )
-
-        from dataraum.pipeline.phases.validation_phase import ValidationPhase
-
-        with patch(
-            "dataraum.analysis.validation.induction.ValidationInductionAgent.induce"
-        ) as mock_induce:
-            result = ValidationPhase()._run(_make_ctx("_adhoc"))
-
-        mock_induce.assert_not_called()
-        assert result.success
+# NOTE: validation induction was removed in DAT-438 — the engine no longer
+# induces validations (declared-only from the vertical + overlay teach rows;
+# user declares relocate to the cockpit's frame-2, DAT-441). Cycle induction
+# above is untouched (cycles revival is a later operating_model slice).

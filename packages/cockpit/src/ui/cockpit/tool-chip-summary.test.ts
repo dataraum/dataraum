@@ -4,6 +4,7 @@ import {
 	CANVAS_TOOLS,
 	isCanvasTool,
 	teachChipSummary,
+	teachValidationChipSummary,
 	toolChipSummary,
 	toolLabel,
 } from "./tool-chip-summary";
@@ -71,11 +72,13 @@ describe("isCanvasTool", () => {
 		}
 	});
 
-	it("marks probe / teach display-only", () => {
+	it("marks probe / teach / teach_validation display-only", () => {
 		// These return no renderable surface — their chips must not be clickable.
 		// (operating_model LEFT this list with the DAT-435 follow-on: its driver
-		// projects the live progress canvas, like begin_session.)
-		for (const name of ["probe", "teach", "unknown"]) {
+		// projects the live progress canvas, like begin_session.) teach_validation
+		// (DAT-441) writes an overlay row; its outcome lands in look_validation
+		// after a re-run, not the canvas directly.
+		for (const name of ["probe", "teach", "teach_validation", "unknown"]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
 	});
@@ -479,6 +482,60 @@ describe("teachChipSummary (display-only, readable at every state)", () => {
 
 	it("degrades to a neutral label with no arguments yet", () => {
 		expect(teachChipSummary(undefined, undefined)).toBe("teach…");
+	});
+});
+
+describe("teachValidationChipSummary (DAT-441, visible override)", () => {
+	it("reads the proposed check from arguments at approval time", () => {
+		expect(
+			teachValidationChipSummary(
+				{ validation_id: "invoice_reconciliation", check_type: "aggregate" },
+				undefined,
+			),
+		).toBe("declare Invoice reconciliation (aggregate)");
+	});
+
+	it("shows a fresh declaration once complete", () => {
+		expect(
+			teachValidationChipSummary(
+				{ validation_id: "invoice_reconciliation" },
+				{
+					overlay_id: "ov-1",
+					validation_id: "invoice_reconciliation",
+					vertical: "finance",
+					override: false,
+					shadowed_spec: null,
+				},
+			),
+		).toBe("declared Invoice reconciliation");
+	});
+
+	it("makes an override VISIBLE — names the shadowed shipped spec", () => {
+		expect(
+			teachValidationChipSummary(
+				{ validation_id: "trial_balance" },
+				{
+					overlay_id: "ov-2",
+					validation_id: "trial_balance",
+					vertical: "finance",
+					override: true,
+					shadowed_spec: {
+						validation_id: "trial_balance",
+						name: "Trial Balance (Accounting Equation)",
+						description: null,
+						check_type: "balance",
+						severity: "critical",
+						parameters: { tolerance: 0.01 },
+					},
+				},
+			),
+		).toBe("overrode Trial balance (was Trial Balance (Accounting Equat…)");
+	});
+
+	it("degrades to a neutral label with no arguments yet", () => {
+		expect(teachValidationChipSummary(undefined, undefined)).toBe(
+			"declaring validation…",
+		);
 	});
 });
 

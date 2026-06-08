@@ -186,6 +186,14 @@ def load_quarantine_tokens(
     resolved_type = (typing or {}).get("resolved_type")
     if not resolved_type or str(resolved_type).upper() in _TEXT_RESOLVED_TYPES:
         return {"rejected_tokens": [], "total_rejected": 0}
+    # Typing is the authority on rejection. When it quarantined NOTHING for this
+    # column, a plain TRY_CAST below would still over-reject formats typing's
+    # pattern parser accepts — a DATE column of "2025-02" parses for typing but
+    # not a bare CAST — minting phantom null tokens on a clean column. No typing
+    # rejects → no candidates. (Live-run finding, DAT-457: trial_balance.period
+    # typed cleanly as DATE, quarantine_rate 0, yet the bare cast "found" rejects.)
+    if not (typing or {}).get("quarantine_rate"):
+        return {"rejected_tokens": [], "total_rejected": 0}
 
     raw_fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{table.duckdb_path}"'
     counts = rejected_token_counts(duckdb_conn, raw_fqn, col.column_name, str(resolved_type))

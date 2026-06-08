@@ -65,3 +65,11 @@ def test_compute_loss_risk_takes_worst_across_objects() -> None:
 
 def test_empty_objects_no_risk() -> None:
     assert compute_loss_risk([], _CONFIG) == {}
+
+
+def test_scores_a_statistical_detector_via_surprise_alias() -> None:
+    # Second-wave generalization: a statistical detector's loss table weights
+    # "surprise" (its KL score) — same loss layer, no (C, U), no network node.
+    config = LossConfig(measurements={"benford": {"aggregation_intent": {"surprise": 0.8}}})
+    obj = EntropyObject(detector_id="benford", score=0.5, evidence=[])
+    assert loss_risk_for_object(obj, config)["aggregation_intent"] == pytest.approx(0.4)

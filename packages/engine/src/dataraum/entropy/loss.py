@@ -1,14 +1,19 @@
 """Loss layer — severity as expected loss per intent (ADR-0009, DAT-442/457).
 
-For a pooled (adjudication) measurement, readiness per intent is EXPECTED LOSS,
-not the detector score:
+For a modeled measurement, readiness per intent is EXPECTED LOSS, not the detector
+score:
 
-    risk(intent) = clamp01( w_conflict·C + w_ignorance·U )
+    risk(intent) = clamp01( Σ_signal  weight[signal] · value(signal) )
 
-with the per-intent weights in ``dataraum-config/entropy/loss.yaml``. Severity
-moves OUT of the score and INTO the loss table — the same conflict ``C`` is
-catastrophic for aggregation (you would aggregate values that might be mishandled
-nulls) but mild for an exploratory query that can hedge on a caveat.
+with the per-intent weights in ``dataraum-config/entropy/loss.yaml``. A weight
+named ``conflict`` / ``surprise`` / ``score`` scores the measurement's PRIMARY
+value (``obj.score`` — the pooled conflict ``C`` for an adjudication measurement,
+a KL surprise ``D_KL(observed ‖ reference)`` for a statistical one); any other
+name scores a secondary signal from evidence (e.g. ``ignorance``). One generic
+rule, so the SAME loss layer scores both paradigms (DAT-442 second wave). Severity
+moves OUT of the score and INTO the loss table — the same value is catastrophic
+for aggregation (you'd aggregate mishandled values) but mild for an exploratory
+query that can hedge on a caveat.
 
 The loss is driven by the DISAGREEMENT (conflict ``C`` + ignorance ``U``), NOT
 the point belief: the log-linear posterior stays confident even under conflict
@@ -77,27 +82,31 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def _conflict_ignorance(obj: EntropyObject) -> tuple[float, float]:
-    """A pooled object's column-level ``(conflict, ignorance)``.
+# A loss weight named one of these scores the object's PRIMARY measure
+# (``obj.score``) — "conflict" for an adjudication (pooled) measurement, "surprise"
+# (a KL divergence) for a statistical one, "score" the neutral alias. Any OTHER
+# weight name scores the worst value of that key across the object's per-token /
+# per-row evidence (e.g. "ignorance"). The worst signal drives the column's risk.
+_PRIMARY_SIGNALS = frozenset({"score", "conflict", "surprise"})
 
-    Conflict is the object's score (the per-column worst-token conflict); the
-    ignorance is the worst per-token ignorance carried in evidence — the worst
-    problem drives the column's risk.
-    """
-    conflict = obj.score
-    ignorance = max((float(e.get("ignorance", 0.0)) for e in obj.evidence), default=0.0)
-    return conflict, ignorance
+
+def _signal_value(obj: EntropyObject, signal: str) -> float:
+    """The measurement's value for one named loss signal."""
+    if signal in _PRIMARY_SIGNALS:
+        return obj.score
+    return max((float(e.get(signal, 0.0)) for e in obj.evidence), default=0.0)
 
 
 def loss_risk_for_object(obj: EntropyObject, config: LossConfig) -> dict[str, float]:
-    """Per-intent expected-loss risk for one pooled measurement object."""
+    """Per-intent expected-loss risk for one measurement object."""
     table = config.measurements.get(obj.detector_id)
     if not table:
         return {}
-    conflict, ignorance = _conflict_ignorance(obj)
     return {
-        intent: _clamp01(w.get("conflict", 0.0) * conflict + w.get("ignorance", 0.0) * ignorance)
-        for intent, w in table.items()
+        intent: _clamp01(
+            sum(weight * _signal_value(obj, signal) for signal, weight in weights.items())
+        )
+        for intent, weights in table.items()
     }
 
 

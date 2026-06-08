@@ -24,6 +24,13 @@ import type { ConnectSchema } from "#/duckdb/connect";
 
 vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 
+// select → triggerAddSource imports the cockpit control plane (DAT-461); mock
+// the seam so importing select.ts never loads the live cockpit_db client.
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: async () => "ws-test",
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
+
 // Pre-flight effective-concept count (relocated into select by DAT-436).
 // Default >0 so the gate's happy path passes; the refusal test flips it to 0.
 const preflight = vi.hoisted(() => ({

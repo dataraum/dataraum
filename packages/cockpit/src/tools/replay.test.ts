@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
 	verticalRows: [] as Array<{ vertical: string | null }>,
 	// The current session currentSessionId() resolves (null = none — replay rejects).
 	currentSession: null as string | null,
+	recordRun: vi.fn(async () => {}),
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -37,6 +38,13 @@ vi.mock("#/config", () => ({
 		return h.config;
 	},
 }));
+
+// cockpit_db control plane (DAT-461): workspace via the registry, run recorded
+// after start — both mocked at the seam (no DB in units).
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 
 // Metadata client. The NEW session is seeded via insert(...).values(row) — a fresh
 // id, so no onConflict handling. `sourcesForSession` reads via
@@ -120,6 +128,7 @@ beforeEach(() => {
 	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
+	h.recordRun.mockClear();
 });
 
 describe("replay (DAT-422)", () => {
@@ -205,6 +214,21 @@ describe("replay (DAT-422)", () => {
 		expect(h.calls).toEqual([]); // the guard is first — nothing ran
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
+	});
+
+	it("records the new replay session + run after starting (DAT-461)", async () => {
+		await replay({ session_id: "old-sess", vertical: "finance" });
+		const newSessionId = h.seededRow?.sessionId as string;
+		expect(h.recordRun).toHaveBeenCalledTimes(1);
+		expect(h.recordRun).toHaveBeenCalledWith({
+			workspaceId: WS,
+			engineSessionId: newSessionId,
+			kind: "replay",
+			stage: "add_source",
+			workflowId: `addsource-${WS}-${newSessionId}`,
+			runId: "run-xyz",
+		});
 	});
 
 	it("resolves the session's framed vertical when vertical is OMITTED", async () => {

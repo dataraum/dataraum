@@ -23,6 +23,8 @@ import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { z } from "zod";
 
 import { config } from "../config";
+import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { recordRun } from "../db/cockpit/runs";
 import type {
 	OperatingModelInput,
 	OperatingModelResult,
@@ -61,16 +63,15 @@ export async function operatingModel(
 		);
 	}
 
+	const workspaceId = await resolveActiveWorkspace();
+
 	const identity: SessionIdentity = {
-		workspace_id: config.dataraumWorkspaceId,
+		workspace_id: workspaceId,
 		session_id: input.session_id,
 	};
 	const payload: OperatingModelInput = { identity };
 
-	const workflowId = operatingModelWorkflowId(
-		config.dataraumWorkspaceId,
-		input.session_id,
-	);
+	const workflowId = operatingModelWorkflowId(workspaceId, input.session_id);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {
@@ -85,6 +86,17 @@ export async function operatingModel(
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
+		});
+
+		// Append an operating_model run to the session begin_session created
+		// (DAT-461) — best-effort; the session row is reused by engine session id.
+		await recordRun({
+			workspaceId,
+			engineSessionId: input.session_id,
+			kind: "begin_session",
+			stage: "operating_model",
+			workflowId,
+			runId: handle.firstExecutionRunId,
 		});
 
 		return {

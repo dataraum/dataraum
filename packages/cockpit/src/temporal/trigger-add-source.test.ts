@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
 	calls: [] as string[],
 	startArgs: null as unknown,
 	seededRow: null as Record<string, unknown> | null,
+	recordRun: vi.fn(async () => {}),
 }));
 
 // A live getter, not a snapshot: the unconfigured-guard test reassigns
@@ -37,6 +38,13 @@ vi.mock("#/config", () => ({
 		return h.config;
 	},
 }));
+
+// cockpit_db control plane (DAT-461): workspace via the registry, run recorded
+// after start — both mocked at the seam (no DB in units).
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 
 // Metadata client: record the seeded row + that the insert ran (and when).
 const valuesMock = vi.fn((row: Record<string, unknown>) => {
@@ -83,6 +91,7 @@ beforeEach(() => {
 	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
+	h.recordRun.mockClear();
 });
 
 describe("triggerAddSource (DAT-352, one-gate DAT-436)", () => {
@@ -160,6 +169,21 @@ describe("triggerAddSource (DAT-352, one-gate DAT-436)", () => {
 		// The guard runs first — no orphan session row, no workflow start.
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
+	});
+
+	it("records the cockpit session + run after starting (DAT-461)", async () => {
+		await triggerAddSource({ source_ids: ["src-1"] });
+		const sessionId = h.seededRow?.sessionId as string;
+		expect(h.recordRun).toHaveBeenCalledTimes(1);
+		expect(h.recordRun).toHaveBeenCalledWith({
+			workspaceId: WS,
+			engineSessionId: sessionId,
+			kind: "onboarding",
+			stage: "add_source",
+			workflowId: `addsource-${WS}-${sessionId}`,
+			runId: "run-abc",
+		});
 	});
 });
 

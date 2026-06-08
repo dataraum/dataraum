@@ -31,6 +31,8 @@ import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
 
 import { config } from "../config";
+import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessionsWrite } from "../db/metadata/write-surface";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
@@ -154,17 +156,21 @@ export async function triggerAddSource(
 			"if no run follows, this row is an orphan from a failed approval",
 	);
 
+	// The active workspace, from the cockpit_db registry (DAT-461) rather than the
+	// raw env var — same value in Phase 1, source of truth for the recorded run.
+	const workspaceId = await resolveActiveWorkspace();
+
 	// Source-free identity (DAT-422): the per-source ids ride in `source_ids`; the
 	// engine scopes each `import` to one of them and the run-level reduce/detect are
 	// session-scoped. The run is keyed by `session_id`, not a source.
 	const identity: SourceIdentity = {
-		workspace_id: config.dataraumWorkspaceId,
+		workspace_id: workspaceId,
 		session_id: sessionId,
 		vertical,
 	};
 	const payload: AddSourceInput = { identity, source_ids: input.source_ids };
 
-	const workflowId = addSourceWorkflowId(config.dataraumWorkspaceId, sessionId);
+	const workflowId = addSourceWorkflowId(workspaceId, sessionId);
 
 	const connection = await Connection.connect({ address: host });
 	try {
@@ -187,6 +193,16 @@ export async function triggerAddSource(
 			// approval the user can deny. Deliberately NO idempotency key and NO
 			// in-flight check here.
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
+		});
+
+		// Record the cockpit-side session + run (DAT-461) — best-effort.
+		await recordRun({
+			workspaceId,
+			engineSessionId: sessionId,
+			kind: "onboarding",
+			stage: "add_source",
+			workflowId,
+			runId: handle.firstExecutionRunId,
 		});
 
 		return {

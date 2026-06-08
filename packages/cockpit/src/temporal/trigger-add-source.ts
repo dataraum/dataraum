@@ -35,6 +35,7 @@ import { resolveActiveWorkspace } from "../db/cockpit/registry";
 import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessionsWrite } from "../db/metadata/write-surface";
+import { AgentActionableError } from "../tools/agent-error";
 import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
@@ -51,7 +52,7 @@ const SEED_STATUS = "active";
  * not a server fault: `select` raises it BEFORE any source write, so a refused
  * vertical leaves no half-state and never starts the doomed workflow.
  */
-export class NoConceptsError extends Error {
+export class NoConceptsError extends AgentActionableError {
 	constructor(public readonly vertical: string) {
 		super(
 			vertical === "_adhoc"

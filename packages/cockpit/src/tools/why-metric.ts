@@ -35,7 +35,10 @@ const MAX_STEPS = 40;
 // metric's graph_id).
 
 const MetricStep = z.object({
-	// The snippet kind: extract | constant | formula | query.
+	// The snippet's stable id — a unique key for ordering/rendering (two formula
+	// steps can reduce to the same label, so the label alone is not unique).
+	snippet_id: z.string().nullable(),
+	// The snippet kind the graph agent writes: extract | constant | formula.
 	type: z.string().nullable(),
 	// A readable label for the step — the standard_field (extract), the
 	// normalized expression (formula), or the step kind when neither applies.
@@ -81,6 +84,7 @@ export type WhyMetricArtifactRow = LifecycleArtifactDetail;
 
 /** One sql_snippets row for a metric's step (a fragment of the DAG). */
 export interface MetricSnippetRow {
+	snippetId: string | null;
 	snippetType: string | null;
 	standardField: string | null;
 	statement: string | null;
@@ -117,6 +121,7 @@ export function projectWhyMetric(
 	pendingTeaches: number,
 ): WhyMetricResult {
 	const steps: MetricStep[] = snippets.slice(0, MAX_STEPS).map((s) => ({
+		snippet_id: s.snippetId,
 		type: s.snippetType,
 		label: stepLabel(s),
 		sql: s.sql == null ? null : stripSrcDigests(s.sql),
@@ -165,6 +170,7 @@ export async function whyMetric(
 	// `source='graph:<graph_id>'` (NOT run-versioned; the cross-run reuse base).
 	const snippetRows: MetricSnippetRow[] = await metadataDb
 		.select({
+			snippetId: sqlSnippets.snippetId,
 			snippetType: sqlSnippets.snippetType,
 			standardField: sqlSnippets.standardField,
 			statement: sqlSnippets.statement,
@@ -177,7 +183,15 @@ export async function whyMetric(
 		})
 		.from(sqlSnippets)
 		.where(eq(sqlSnippets.source, metricSnippetSource(input.graph_id)))
-		.orderBy(asc(sqlSnippets.snippetType), asc(sqlSnippets.standardField));
+		// Fully deterministic order: extracts sort by field, formulas by their
+		// expression, and snippet_id breaks any remaining tie (formula rows have a
+		// null standard_field — without this their order would flicker per fetch).
+		.orderBy(
+			asc(sqlSnippets.snippetType),
+			asc(sqlSnippets.standardField),
+			asc(sqlSnippets.normalizedExpression),
+			asc(sqlSnippets.snippetId),
+		);
 
 	const pending = await getPendingOverlays();
 

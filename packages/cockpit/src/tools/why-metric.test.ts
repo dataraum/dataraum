@@ -29,6 +29,7 @@ const executedArtifact: WhyMetricArtifactRow = {
 };
 
 const extractSnippet: MetricSnippetRow = {
+	snippetId: "snip-extract",
 	snippetType: "extract",
 	standardField: "revenue",
 	statement: "income_statement",
@@ -41,6 +42,7 @@ const extractSnippet: MetricSnippetRow = {
 };
 
 const formulaSnippet: MetricSnippetRow = {
+	snippetId: "snip-formula",
 	snippetType: "formula",
 	standardField: null,
 	statement: null,
@@ -71,6 +73,7 @@ describe("projectWhyMetric (DAT-466)", () => {
 			snippet_count: 2,
 			steps: [
 				{
+					snippet_id: "snip-extract",
 					type: "extract",
 					label: "revenue",
 					sql: "SELECT sum(amount) FROM lake.typed.income WHERE field = 'revenue'",
@@ -79,6 +82,7 @@ describe("projectWhyMetric (DAT-466)", () => {
 					failure_count: 0,
 				},
 				{
+					snippet_id: "snip-formula",
 					type: "formula",
 					label: "revenue - cost_of_goods_sold",
 					sql: "SELECT revenue - cogs AS result",
@@ -131,6 +135,7 @@ describe("projectWhyMetric (DAT-466)", () => {
 
 	it("labels a step by type when neither field nor expression is present", () => {
 		const constantSnippet: MetricSnippetRow = {
+			snippetId: "snip-const",
 			snippetType: "constant",
 			standardField: null,
 			statement: null,
@@ -152,6 +157,7 @@ describe("projectWhyMetric (DAT-466)", () => {
 
 	it("strips content-keyed digests from the SQL, description, and labels", () => {
 		const dirty: MetricSnippetRow = {
+			snippetId: "snip-dirty",
 			snippetType: "extract",
 			standardField: `src_${D1}__revenue`,
 			statement: null,

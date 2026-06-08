@@ -4,6 +4,22 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-08: cockpit metric teach loop — `teach_metric` / `look_metric` / `why_metric` are live (DAT-466)
+
+**Cockpit-only; NO calibration impact, NO engine change, NO schema change.** Logged
+only so a full-loop smoke uses the right tool names. The METRIC family now has the
+same cockpit teach loop validation/cycles got: `teach_metric` writes a `metric`-typed
+`config_overlay` row (declare a new metric graph by `graph_id`, or override a shipped
+one — `_apply_metric` upsert-replaces into the vertical's `metrics` collection,
+DAT-456); the next `operating_model` run composes + executes it; `look_metric` /
+`why_metric` read the promoted `current_lifecycle_artifacts` (`artifact_type='metric'`)
+plus the `sql_snippets` (`source='graph:<graph_id>'`) for the per-step SQL composition.
+**The metric's numeric VALUE is deliberately NOT shown and NOT stored** — it is
+ephemeral (the engine discards it; `metrics_phase.py` transitions to executed and
+drops `output_value`), and re-computing it is a future live "run metric" query action.
+A full-loop smoke: declare a metric via `teach_metric`, run `operating_model`, verify
+`look_metric` shows declared→grounded→executed (or the born-loud ungroundable reason).
+
 ## 2026-06-08: cockpit cycle teach loop — `teach_cycle` / `look_cycle` / `why_cycle` are live (DAT-465)
 
 **Cockpit-only; NO calibration impact, NO engine change, NO schema change.** Logged

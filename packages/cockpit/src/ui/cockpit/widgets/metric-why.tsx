@@ -139,7 +139,7 @@ export function MetricWhyWidget({
 					</Text>
 					{why.steps.map((step) => (
 						<StepBlock
-							key={`${step.type ?? "step"}-${step.label}`}
+							key={step.snippet_id ?? `${step.type ?? "step"}-${step.label}`}
 							step={step}
 						/>
 					))}

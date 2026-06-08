@@ -32,6 +32,7 @@ const EXECUTED: WhyMetricResult = {
 	snippet_count: 2,
 	steps: [
 		{
+			snippet_id: "s1",
 			type: "extract",
 			label: "revenue",
 			sql: "SELECT sum(amount) FROM lake.typed.income",
@@ -40,6 +41,7 @@ const EXECUTED: WhyMetricResult = {
 			failure_count: 0,
 		},
 		{
+			snippet_id: "s2",
 			type: "formula",
 			label: "revenue - cost_of_goods_sold",
 			sql: "SELECT revenue - cogs AS result",

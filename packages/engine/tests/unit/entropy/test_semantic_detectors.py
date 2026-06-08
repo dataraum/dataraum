@@ -16,6 +16,50 @@ from dataraum.entropy.detectors import (
     DetectorContext,
 )
 from dataraum.entropy.detectors.semantic.dimensional_entropy import DimensionalEntropyDetector
+from dataraum.entropy.detectors.semantic.temporal_entropy import TemporalEntropyDetector
+
+
+class TestTemporalEntropyDetector:
+    """Binary time-role mismatch via stats.time_role_mismatch (DAT-442 two-table)."""
+
+    @pytest.fixture
+    def detector(self) -> TemporalEntropyDetector:
+        return TemporalEntropyDetector()
+
+    def _context(self, data_type: str, semantic_role: str | None) -> DetectorContext:
+        return DetectorContext(
+            table_name="payments",
+            column_name="date",
+            analysis_results={
+                "typing": {"data_type": data_type},
+                "semantic": {"semantic_role": semantic_role},
+            },
+        )
+
+    def test_timestamp_role_on_varchar_is_mismatch(self, detector: TemporalEntropyDetector) -> None:
+        """A timestamp role on a non-temporal type (corrupt dates → VARCHAR) → 1.0."""
+        results = detector.detect(self._context("VARCHAR", "timestamp"))
+        assert len(results) == 1
+        assert results[0].score == 1.0
+        assert results[0].evidence[0]["temporal_status"] == "mismatch"
+
+    def test_aligned_temporal_column_is_zero(self, detector: TemporalEntropyDetector) -> None:
+        """A DATE-typed column marked as a timestamp role is aligned → 0.0."""
+        results = detector.detect(self._context("DATE", "timestamp"))
+        assert len(results) == 1
+        assert results[0].score == 0.0
+        assert results[0].evidence[0]["temporal_status"] == "aligned"
+
+    def test_unmarked_date_is_no_longer_a_misfire(self, detector: TemporalEntropyDetector) -> None:
+        """A DATE column merely not marked as the time axis → 0.0 (was a 0.6 misfire)."""
+        results = detector.detect(self._context("DATE", "dimension"))
+        assert len(results) == 1
+        assert results[0].score == 0.0
+        assert results[0].evidence[0]["temporal_status"] == "unmarked"
+
+    def test_non_temporal_column_is_skipped(self, detector: TemporalEntropyDetector) -> None:
+        """Neither a temporal type nor a timestamp role → nothing to measure."""
+        assert detector.detect(self._context("BIGINT", "measure")) == []
 
 
 class TestBusinessMeaningDetector:

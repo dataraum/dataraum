@@ -8,7 +8,7 @@ in time-based analysis.
 Source: semantic.semantic_role, typing.data_type
 """
 
-from dataraum.entropy.config import get_entropy_config
+from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
@@ -68,14 +68,6 @@ class TemporalEntropyDetector(EntropyDetector):
             List with single EntropyObject for temporal entropy,
             or empty list if not applicable (non-temporal column)
         """
-        config = get_entropy_config()
-        detector_config = config.detector("temporal_entropy")
-
-        # Configurable scores
-        score_unmarked = detector_config.get("score_unmarked", 0.6)
-        score_mismatch = detector_config.get("score_mismatch", 0.8)
-        score_aligned = detector_config.get("score_aligned", 0.1)
-
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
 
@@ -91,10 +83,8 @@ class TemporalEntropyDetector(EntropyDetector):
         else:
             semantic_role = semantic.get("semantic_role")
 
-        # Check if column is date/time type
-        is_datetime_type = any(dt in data_type for dt in self.DATETIME_TYPES)
-
-        # Check if column has temporal_behavior from semantic analysis
+        # temporal_behavior (evidence only) — aggregation semantics ("additive",
+        # "point_in_time") backfilled from the ontology, NOT a temporal role indicator.
         if hasattr(semantic, "temporal_behavior"):
             temporal_behavior = semantic.temporal_behavior
         else:
@@ -102,42 +92,26 @@ class TemporalEntropyDetector(EntropyDetector):
                 semantic.get("temporal_behavior") if isinstance(semantic, dict) else None
             )
 
-        # Check if column is marked as timestamp via semantic_role only.
-        # temporal_behavior is NOT used here — it contains aggregation semantics
-        # ("additive", "point_in_time") backfilled from the ontology for measures,
-        # not temporal role indicators.
+        is_datetime_type = any(dt in data_type for dt in self.DATETIME_TYPES)
         is_marked_timestamp = semantic_role == "timestamp"
 
-        # Get semantic confidence (if available) for score modulation
-        semantic_confidence: float | None = None
-        if hasattr(semantic, "confidence"):
-            semantic_confidence = semantic.confidence
-        elif isinstance(semantic, dict):
-            semantic_confidence = semantic.get("confidence")
+        # Not a temporal column at all → nothing to measure.
+        if not is_datetime_type and not is_marked_timestamp:
+            return []
 
-        # Determine status and score
-        if is_datetime_type and not is_marked_timestamp:
-            # Date column not marked as timestamp - may confuse time-based queries
-            score = score_unmarked
-            # Modulate by semantic confidence: high-confidence "not timestamp"
-            # analysis deserves lower entropy than low-confidence.
-            if semantic_confidence is not None and isinstance(semantic_confidence, (int, float)):
-                # Higher confidence that role is NOT timestamp → lower entropy
-                # score_unmarked * (1 - confidence * 0.5): at confidence=1.0, reduce by 50%
-                score = score_unmarked * (1.0 - semantic_confidence * 0.5)
-                score = max(score_aligned, score)  # Never below aligned score
-            temporal_status = "unmarked"
-        elif not is_datetime_type and is_marked_timestamp:
-            # Marked as timestamp but not date type - data type mismatch
-            score = score_mismatch
+        # Structural time-role entropy (binary): a timestamp role on a NON-temporal type
+        # (unparseable dates fell back to VARCHAR) is the broken case → 1.0; aligned, or a
+        # date merely not marked as the time axis → 0.0. No 0.6/0.8/0.1 constants, no
+        # (1 - confidence·0.5) modulation (DAT-442 two-table). Teach: re-type / mark role.
+        score = stats.time_role_mismatch(
+            is_temporal_type=is_datetime_type, is_timestamp_role=is_marked_timestamp
+        )
+        if score >= 1.0:
             temporal_status = "mismatch"
         elif is_datetime_type and is_marked_timestamp:
-            # Properly identified temporal column
-            score = score_aligned
             temporal_status = "aligned"
         else:
-            # Not a temporal column - N/A
-            return []
+            temporal_status = "unmarked"
 
         # Build evidence
         evidence_entry: dict[str, object] = {

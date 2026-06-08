@@ -47,8 +47,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 17 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(17);
+	it("marks the 19 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(19);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -59,6 +59,8 @@ describe("isCanvasTool", () => {
 			"look_relationships",
 			"look_validation",
 			"why_validation",
+			"look_cycle",
+			"why_cycle",
 			"connect",
 			"frame",
 			"select",
@@ -72,13 +74,19 @@ describe("isCanvasTool", () => {
 		}
 	});
 
-	it("marks probe / teach / teach_validation display-only", () => {
+	it("marks probe / teach / teach_validation / teach_cycle display-only", () => {
 		// These return no renderable surface — their chips must not be clickable.
 		// (operating_model LEFT this list with the DAT-435 follow-on: its driver
 		// projects the live progress canvas, like begin_session.) teach_validation
-		// (DAT-441) writes an overlay row; its outcome lands in look_validation
-		// after a re-run, not the canvas directly.
-		for (const name of ["probe", "teach", "teach_validation", "unknown"]) {
+		// (DAT-441) / teach_cycle (DAT-465) write an overlay row; their outcome
+		// lands in look_validation / look_cycle after a re-run, not the canvas.
+		for (const name of [
+			"probe",
+			"teach",
+			"teach_validation",
+			"teach_cycle",
+			"unknown",
+		]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
 	});

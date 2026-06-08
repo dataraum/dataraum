@@ -8,6 +8,8 @@
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { ConceptFrameWidget } from "#/ui/cockpit/widgets/concept-frame";
+import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
+import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
@@ -45,6 +47,8 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "relationship-list", component: RelationshipListWidget })
 	.register({ kind: "validation-list", component: ValidationListWidget })
 	.register({ kind: "validation-why", component: ValidationWhyWidget })
+	.register({ kind: "cycle-list", component: CycleListWidget })
+	.register({ kind: "cycle-why", component: CycleWhyWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "session-progress", component: SessionProgressWidget })
 	.register({

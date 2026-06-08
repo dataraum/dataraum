@@ -16,10 +16,12 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookCycleResult } from "#/tools/look-cycle";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyCycleResult } from "#/tools/why-cycle";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -101,6 +103,19 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	why_validation: (result) =>
 		isWhyResult(result)
 			? { kind: "validation-why", why: result as WhyValidationResult }
+			: null,
+	// The operating_model business-cycle list (DAT-465). Project only a complete
+	// result (a `cycles` array) — same partial/errored-output guard as
+	// look_validation.
+	look_cycle: (result) =>
+		Array.isArray((result as { cycles?: unknown } | null)?.cycles)
+			? { kind: "cycle-list", look: result as LookCycleResult }
+			: null,
+	// The per-cycle drill-down (DAT-465) — same `found` guard as the other why_*
+	// tools.
+	why_cycle: (result) =>
+		isWhyResult(result)
+			? { kind: "cycle-why", why: result as WhyCycleResult }
 			: null,
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and

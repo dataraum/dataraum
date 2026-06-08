@@ -20,16 +20,12 @@
 // the SDK pauses for the user to confirm before `.server` runs, exactly like
 // `teach`/`replay`.
 
-import { chat, toolDefinition } from "@tanstack/ai";
-import { createAnthropicChat } from "@tanstack/ai-anthropic";
+import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
-import { config } from "../config";
 import { ConnectSchema } from "../duckdb/connect";
-import { linkedAbortController } from "../lib/abort";
-import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getFrameInstructions } from "../prompts";
-import { teach } from "./teach";
+import { frameFamily, induceStructured, stripUndefined } from "./frame-family";
 
 // The fallback vertical when frame isn't given a name — the cold-start ontology
 // the engine resolves against when nothing else is declared.
@@ -139,23 +135,16 @@ export async function induceConcepts(
 	schema: ConnectSchema,
 	signal?: AbortSignal,
 ): Promise<ProposedConcept[]> {
-	const result = await chat({
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		abortController: linkedAbortController(signal),
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-		systemPrompts: [getFrameInstructions()],
-		messages: [
-			{
-				role: "user",
-				content:
-					"Propose a domain ontology for the following source. " +
-					"Return concepts that cover every table.\n\n" +
-					JSON.stringify(schema, null, 2),
-			},
-		],
+	const { concepts } = await induceStructured({
+		instructions: getFrameInstructions(),
+		userMessage:
+			"Propose a domain ontology for the following source. " +
+			"Return concepts that cover every table.\n\n" +
+			JSON.stringify(schema, null, 2),
 		outputSchema: InducedFrame,
+		signal,
 	});
-	return result.concepts;
+	return concepts;
 }
 
 /**
@@ -170,41 +159,28 @@ export async function frame(
 ): Promise<FrameResult> {
 	const schema = ConnectSchema.parse(input.schema);
 	const vertical = resolveVertical(input.vertical_name);
-	const concepts =
-		input.concepts && input.concepts.length > 0
-			? input.concepts.map((c) => ProposedConcept.parse(c))
-			: await induceConcepts(schema, signal);
 
-	if (concepts.length === 0) {
+	// Concepts are the vocabulary the rest of the model is framed over, so they
+	// resolve first. Mirror teach's concept write: type="concept", vertical-tagged
+	// payload — the engine's _apply_concept (core/overlay.py) materializes these
+	// onto the named vertical's ontology, keyed/replaced by `name`.
+	const concepts = await frameFamily<ProposedConcept>({
+		teachType: "concept",
+		itemSchema: ProposedConcept,
+		induce: (sig) => induceConcepts(schema, sig),
+		toPayload: (c) => ({ vertical, ...stripUndefined(c) }),
+		edited: input.concepts,
+		sessionId: input.session_id,
+		signal,
+	});
+
+	if (concepts.items.length === 0) {
 		throw new Error(
 			"Frame induction returned no concepts — nothing to declare.",
 		);
 	}
 
-	const written: FrameConceptResult[] = [];
-	for (const concept of concepts) {
-		// Mirror teach's concept write: type="concept", vertical-tagged payload.
-		// The engine's _apply_concept (core/overlay.py) materializes these onto
-		// the named vertical's ontology, keyed/replaced by `name`.
-		const { overlay_id } = await teach({
-			type: "concept",
-			payload: { vertical, ...stripUndefined(concept) },
-			session_id: input.session_id ?? null,
-		});
-		written.push({ ...concept, overlay_id });
-	}
-
-	return { vertical, concepts: written };
-}
-
-/** Drop undefined-valued keys so the overlay payload mirrors the engine's
- * `model_dump(exclude_none=True)` — no null spray into the JSONB row. */
-function stripUndefined(obj: ProposedConcept): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
-	for (const [k, v] of Object.entries(obj)) {
-		if (v !== undefined) out[k] = v;
-	}
-	return out;
+	return { vertical, concepts: concepts.written };
 }
 
 /**

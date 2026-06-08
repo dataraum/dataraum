@@ -482,3 +482,33 @@ def load_correlation(
 
 # load_drift_summaries removed with the temporal_drift detector (DAT-442 reset).
 # dimensional_entropy reads ColumnDriftSummary directly; real drift moves to DAT-445.
+
+
+def load_documented_dependencies(session: Session) -> set[frozenset[str]]:
+    """Undirected column pairs a ``document_business_rule`` teach marked EXPECTED.
+
+    A documented cross-column dependency (e.g. the debit/credit double-entry mutex) is
+    expected structure, NOT undocumented entropy — ``dimensional_entropy`` excludes these
+    pairs from its NMI score, so a teach closes the measurement. Mirrors
+    ``load_confirmed_relationship_pairs`` (DAT-409): one overlay type, undirected, and
+    ``superseded_at IS NULL`` filters undone teaches out.
+
+    Overlay shape: ``ConfigOverlay(type='expected_dependency',
+    payload={'column_ids': [col_a, col_b], 'rule': <text>})``.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "expected_dependency",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+    out: set[frozenset[str]] = set()
+    for row in rows:
+        cols = (row.payload or {}).get("column_ids") or []
+        if len(cols) == 2 and all(cols):
+            out.add(frozenset(cols))
+    return out

@@ -417,6 +417,34 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "business_cycles")
 
+    @activity.defn(name="metrics")
+    def run_metrics(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
+        """Metrics activity — the third lifecycle family: declare → compose → execute.
+
+        Mirrors ``run_validation``/``run_business_cycles``: threads the resolved
+        scope's base-run pin into ``ctx.config["base_runs"]`` (the phase does NO
+        head resolution itself). ALSO threads ``workspace_id`` — the metrics
+        phase keys the SQL snippet base by workspace (source-free,
+        workspace-stable), so the cross-run reuse cache shared with the query
+        agent survives the source-free cut. Makes real Anthropic calls (per-metric
+        SQL composition). Runs after ``business_cycles`` so the graph context can
+        read this run's cycle + validation evidence (DAT-456).
+        """
+        run = run_session_phase(
+            self._manager,
+            "metrics",
+            payload.identity,
+            payload.scope.table_ids,
+            extra_config={
+                "base_runs": {
+                    "relationship_run_id": payload.scope.relationship_run_id,
+                    "semantic_runs": payload.scope.semantic_runs,
+                },
+                "workspace_id": payload.identity.workspace_id,
+            },
+        )
+        return self._outcome_or_raise(run, "metrics")
+
     @activity.defn(name="operating_model_promote")
     def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:
         """Terminal promote for operating_model — flip the session's stage head.

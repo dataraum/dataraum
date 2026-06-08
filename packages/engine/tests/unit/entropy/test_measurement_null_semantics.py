@@ -122,6 +122,22 @@ class TestMeasureNullSemantics:
         # Two reliable witnesses still carry the posterior toward is-null.
         assert novel_adj.result.posterior[_NULL] > 0.5
 
+    def test_teaching_the_token_collapses_conflict(self) -> None:
+        # The teach-delta at the measurement layer: adding the contested token to
+        # the vocabulary — exactly what a null_value teach does — flips the
+        # vocabulary witness to agreement, so conflict collapses while the
+        # posterior stays confidently is-null. The teach enters as a WITNESS, never
+        # an override. (Proven end-to-end live: DAT-457 teach-closure, C 0.255→0.019.)
+        quarantine = {
+            "rejected_tokens": [{"token": "PENDING_REVIEW", "count": 95}],
+            "total_rejected": 100,
+        }
+        (before,) = measure_null_semantics(quarantine, TYPED, VOCAB)  # not in vocab
+        (after,) = measure_null_semantics(quarantine, TYPED, [*VOCAB, "PENDING_REVIEW"])  # taught
+        assert after.result.conflict < before.result.conflict  # teach drops conflict
+        assert after.result.conflict < 0.05  # resolved — the three witnesses now agree
+        assert after.result.posterior[_NULL] > 0.9  # still confidently a null marker
+
     def test_thin_one_off_value_is_ignorant_not_confident(self) -> None:
         # A single junk value, VARCHAR column (type abstains), not in vocab:
         # nobody informative weighed in → high ignorance.

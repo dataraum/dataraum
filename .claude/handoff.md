@@ -4,6 +4,57 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-08: metrics revived through the operating_model lifecycle — `can_execute_metric` is now a born-loud gate (DAT-456)
+
+Branch `feat/dat-456-metrics-lifecycle`. The dormant graph-execution phase is
+revived source-free through the DAT-438 typed-artifact lifecycle (the **third**
+family after validation + cycles): `graph_execution_phase` → `metrics_phase`,
+registered phase/activity name **`metrics`**, slotted into
+`OperatingModelWorkflow` after `business_cycles`, before promote. Each declared
+metric graph flows declare → **compose** → execute. **`formula_match` calibration
+is DAT-442's lane** and lands after this — note (don't wire) that executed
+metrics feed the computational `formula_match` detector via derived-formula
+metadata; band wiring stays with the eval epic.
+
+What changed that calibration must account for:
+
+- **`can_execute_metric` is now a hard grounding gate, not an advisory.** Before,
+  a metric with unresolvable required `standard_field` mappings logged
+  `metric_missing_direct_mappings` (INFO) and **still executed** — the graph
+  agent inferred SQL over enriched views (a silent best-effort number). Now an
+  unmappable required input leaves the metric **`declared` with a `state_reason`**
+  (visibly impossible), and it never reaches the LLM. So the set of metrics that
+  *execute* shrinks to those whose inputs genuinely ground in the workspace. A
+  metric that previously produced a (possibly wrong) value may now be
+  blocked-with-reason. This is the born-loud principle applied to the graph.
+- **The no-tool-call → JSON-parse fallback in the graph agent is deleted.** When
+  the composition LLM returns no tool call, that is a bind ERROR (the metric stays
+  `grounded` with the reason) — never a guessed SQL parsed from free text. Mirrors
+  DAT-439's validation cut.
+- **Field mappings are run-pinned.** `load_semantic_mappings(..., semantic_runs=)`
+  pins each table's annotations to its begin_session run (the operating_model
+  compose gate threads the pinned base-run map) — multi-run isolation, fail-closed.
+- **No schema change.** Unlike validation (`ValidationResultRecord`) and cycles
+  (`DetectedBusinessCycle`), the metrics family persists **no new run-versioned
+  table**: the only run-versioned metric artifact is the existing
+  `LifecycleArtifact` (state + reason), and the durable executable knowledge is
+  the **cross-run SQL snippet base** (`sql_snippets`, shared with the query
+  agent — NOT run-versioned). The metric value is re-derived by re-running the
+  promoted snippet, never snapshotted. `schema.sql` is unchanged.
+- **Induction dropped.** `MetricInductionAgent` / `save_metrics_config`
+  (`graphs/induction.py`) are DELETED — declares come from the vertical's
+  `metrics/` graphs ⊕ `metric` overlay teach rows; no cold-start induction
+  (agent-tier boundary).
+
+### dataraum-testdata
+
+The 8-table finance set (invoices, payments, journal_entries/lines,
+chart_of_accounts, trial_balance, bank_transactions, fx_rates) is the workspace
+where the finance metrics actually compose (DSO, DPO, cash_conversion_cycle,
+current_ratio); a thin 2-table workspace leaves most *visibly impossible* (the
+adversarial proof). No new ground truth needed for this slice — `formula_match`
+recall/precision against the existing derived-formula injections is DAT-442.
+
 ## 2026-06-08: cycles revived through the operating_model lifecycle — `business_cycle_health` inputs changed (DAT-455)
 
 Branch `feat/dat-455-cycles-lifecycle`. The dormant business-cycles phase is

@@ -68,7 +68,7 @@ const TOOL_LABELS: Record<string, string> = {
 	why_validation: "Validation detail",
 	operating_model: "Starting validation run",
 	connect: "Reading source",
-	frame: "Concepts",
+	frame: "Framing the model",
 	select: "Registering source",
 	begin_session: "Starting session",
 	run_sql: "Query",
@@ -267,8 +267,12 @@ export function toolChipSummary(
 		}
 		case "frame": {
 			const f = output as FrameResult | undefined;
-			if (!f || !Array.isArray(f.concepts)) return "framing concepts…";
-			return `${f.vertical} — ${plural(f.concepts.length, "concept")}`;
+			if (!f || !Array.isArray(f.concepts)) return "framing the model…";
+			const parts = [plural(f.concepts.length, "concept")];
+			if (Array.isArray(f.validations) && f.validations.length > 0) {
+				parts.push(plural(f.validations.length, "validation"));
+			}
+			return `${f.vertical} — ${parts.join(", ")}`;
 		}
 		case "select": {
 			const s = output as SelectResult | undefined;

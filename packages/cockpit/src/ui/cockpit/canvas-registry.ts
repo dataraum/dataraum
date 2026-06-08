@@ -7,7 +7,6 @@
 
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
-import { ConceptFrameWidget } from "#/ui/cockpit/widgets/concept-frame";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
 import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
@@ -16,6 +15,7 @@ import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
 import { MetricListWidget } from "#/ui/cockpit/widgets/metric-list";
 import { MetricWhyWidget } from "#/ui/cockpit/widgets/metric-why";
+import { ModelFrameWidget } from "#/ui/cockpit/widgets/model-frame";
 import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
@@ -40,7 +40,7 @@ export const canvasRegistry = new WidgetRegistry()
 		component: WorkspaceInventoryWidget,
 	})
 	.register({ kind: "schema-preview", component: SchemaPreviewWidget })
-	.register({ kind: "concept-frame", component: ConceptFrameWidget })
+	.register({ kind: "model-frame", component: ModelFrameWidget })
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
 	.register({ kind: "column-why", component: ColumnWhyWidget })

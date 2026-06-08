@@ -30,8 +30,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 		expect(canvasRegistry.has("schema-preview")).toBe(true);
 	});
 
-	it("the shared canvas registry has the concept-frame widget (DAT-382)", () => {
-		expect(canvasRegistry.has("concept-frame")).toBe(true);
+	it("the shared canvas registry has the model-frame widget (DAT-382, DAT-469)", () => {
+		expect(canvasRegistry.has("model-frame")).toBe(true);
 	});
 
 	it("the shared canvas registry has the result-grid widget (DAT-385)", () => {

@@ -35,7 +35,10 @@ export type CanvasState =
 	// result; the widget derives the per-source SourceCard drill-in locally.
 	| { kind: "workspace-inventory"; tables: InventoryTable[] }
 	| { kind: "schema-preview"; schema: ConnectSchema }
-	| { kind: "concept-frame"; frame: FrameResult }
+	// DAT-382/DAT-469: the frame-stage co-design surface — the user's framed model
+	// (business concepts + the validations over them). Carries the frame tool
+	// result; the widget renders both families read-only for accept/edit.
+	| { kind: "model-frame"; frame: FrameResult }
 	// DAT-350: per-table readiness traffic-light grid. Carries the look_table
 	// tool result (calibrated bands per column × intent, read from the persisted
 	// entropy_readiness rows — the cockpit never re-derives the band).

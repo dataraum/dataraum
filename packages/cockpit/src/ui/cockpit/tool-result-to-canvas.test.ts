@@ -245,7 +245,7 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("connect", {})).toBeNull();
 	});
 
-	it("maps frame to a concept-frame canvas (DAT-382)", () => {
+	it("maps frame to a model-frame canvas (DAT-382, DAT-469)", () => {
 		const frame = {
 			vertical: "_adhoc",
 			concepts: [
@@ -257,9 +257,20 @@ describe("toolResultToCanvas", () => {
 					overlay_id: "o1",
 				},
 			],
+			validations: [
+				{
+					validation_id: "non_negative_amounts",
+					name: "Non-negative amounts",
+					description: "Every amount must be >= 0.",
+					category: "data_quality",
+					severity: "error",
+					check_type: "constraint",
+					overlay_id: "v1",
+				},
+			],
 		};
 		expect(toolResultToCanvas("frame", frame)).toEqual({
-			kind: "concept-frame",
+			kind: "model-frame",
 			frame,
 		});
 	});

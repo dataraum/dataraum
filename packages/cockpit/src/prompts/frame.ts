@@ -9,7 +9,7 @@
 // House style mirrors the engine pipeline prompts and the orchestrator:
 // second-person, `<tag>`-structured sections. The frame agent forces a single
 // structured-output call (a Zod `outputSchema`) so the model returns proposed
-// concepts directly; the user accepts/edits them in the ConceptFrame widget
+// concepts directly; the user accepts/edits them in the ModelFrame widget
 // before they are written as `concept` overlay rows.
 
 /**
@@ -43,5 +43,47 @@ Identify the business domain and propose concepts that capture what exists in th
 - If monetary columns exist alongside a currency column, set unit_from_concept
 - Use domain-appropriate terminology (financial data gets financial terms, etc.)
 - Do NOT propose concepts for columns that are clearly system metadata (created_at, updated_at, id) unless they have business meaning
+</guidelines>`;
+}
+
+/**
+ * The frame VALIDATION induction instructions (DAT-469) — sibling to
+ * `getFrameInstructions`. Describes the ValidationSpec field set + the CLOSED
+ * `check_type` vocabulary the model must produce. Kept byte-stable so it ships as
+ * a cached system block; the per-turn schema + framed concepts + the shipped
+ * library's structural few-shot go in the user/context turn, never here.
+ */
+export function getFrameValidationsInstructions(): string {
+	return `You are a data-quality expert helping a data practitioner frame the validations for their data. Given a source's tables (column names, types, sample values), the business concepts already framed over it, and example validation specs from a related vertical, you propose a set of validations — data-quality and business-rule checks the data should satisfy.
+
+<goal>
+Propose validations that fit THIS source's concepts and schema. A validation declares a check the engine grounds into SQL and executes later — it does not run here. Frame the INTENT (what rule, over which concepts), not the SQL. Only propose checks the data can plausibly support: a validation the data can never satisfy is noise.
+</goal>
+
+<validation_fields>
+- validation_id: lowercase_snake_case identifier for the check (e.g. "trial_balance", "non_negative_amounts")
+- name: human-readable check name (e.g. "Trial Balance (Accounting Equation)")
+- description: what the check verifies, in business terms — the engine grounds SQL from this + sql_hints, so be specific about the rule
+- category: free-form grouping label (e.g. "financial", "data_quality", "business_rule")
+- severity: how bad a failure is — one of info | warning | error | critical (drives scoring weight)
+- check_type: the evaluator branch — a CLOSED vocabulary; pick the one whose semantics match:
+    - "balance": two values must net to ~zero within a tolerance
+    - "comparison": two computed values must agree
+    - "constraint": a query must return zero violating rows
+    - "aggregate": an aggregate must fall within bounds
+- parameters: free-form check parameters the engine reads when grounding SQL (e.g. { tolerance: 0.01 }), otherwise omit
+- sql_hints: free-form guidance for grounding the SQL — join paths, columns to sum, how to classify rows — otherwise omit
+- expected_outcome: what a passing result looks like, in prose, otherwise omit
+- tags: optional free-form tags for grouping/search
+- relevant_cycles: optional process/accounting cycle types this applies to; empty = universal
+</validation_fields>
+
+<guidelines>
+- Propose validations OVER the framed concepts — anchor descriptions to the concept vocabulary, not raw column names you guess at
+- Pick the check_type whose semantics match the rule; never invent a type — the four branches are exhaustive
+- The description + sql_hints shape WHAT is checked; the check_type is HOW the result is scored — keep them consistent
+- Propose 3-12 validations depending on the data; quality over quantity — every validation should be one the data can support
+- Use any example specs only as a STRUCTURAL template (the field shape and the kind of rule); never copy their ids, names, or parameters
+- Do NOT propose validations that need data the schema doesn't surface
 </guidelines>`;
 }

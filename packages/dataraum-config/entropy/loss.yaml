@@ -67,11 +67,11 @@ measurements:
     query_intent: { score: 0.5 }
     aggregation_intent: { score: 0.7 }
     reporting_intent: { score: 0.5 }
-  outlier_rate:
-    # Outlier fraction (distribution-shape-adjusted). Same intent profile as nulls.
-    query_intent: { score: 0.4 }
-    aggregation_intent: { score: 0.6 }
-    reporting_intent: { score: 0.5 }
+  # outlier_rate CUT (DAT-442): absolute single-column IQR/z-score can't separate an
+  # injected outlier burst from clean financial heavy tails (log-IQR absorbs the burst,
+  # linear IQR flags 25%+ legitimate long-tail values) — same wall as temporal_drift /
+  # slice_variance. The profiler's outlier statistics stay; the detector + this loss
+  # entry are gone. See dataraum-eval test_outlier_rate_recorded.py.
   derived_value:
     # A within-table formula no longer holds (e.g. net ≠ debit − credit). Worst for
     # aggregation (you'd sum a broken derivation) and reporting. Was formula_match →

@@ -11,7 +11,6 @@ ALL_DETECTOR_IDS = {
     "relationship_entropy",
     "null_ratio",
     "null_semantics",
-    "outlier_rate",
     "benford",
     "derived_value",
     "business_meaning",

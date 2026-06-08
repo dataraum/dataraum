@@ -105,6 +105,5 @@ def test_terminal_detect_step_runs_every_wired_detector() -> None:
         "business_meaning",
         "unit_entropy",
         "temporal_entropy",
-        "outlier_rate",
         "benford",
     }

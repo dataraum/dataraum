@@ -36,8 +36,7 @@ phases:
 
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
-    detectors: [business_meaning, unit_entropy, temporal_entropy,
-                outlier_rate, benford]
+    detectors: [business_meaning, unit_entropy, temporal_entropy, benford]
 
   semantic_per_table:
     description: Per-table LLM synthesis (entities, relationships) over annotations

@@ -6,7 +6,7 @@ Pooling several witnesses yields a posterior and two *orthogonal* entropy
 outputs — conflict and ignorance. See :mod:`dataraum.entropy.pooling.pool`.
 
 This is adjudication-entropy substrate only. The statistical detectors
-(``null_ratio``/``outlier_rate``/``benford``) are surprise entropy
+(``null_ratio``/``benford``) are surprise entropy
 (``D_KL(observed || reference)``) and never enter the pool.
 """
 

@@ -164,8 +164,8 @@ class ClaimWitnessRecord(Base):
     rows are the provenance behind it — loud, not buried in evidence JSON.
 
     Adjudication entropy only. The statistical/surprise detectors
-    (``null_ratio``/``outlier_rate``/``benford``) measure
-    ``D_KL(observed || reference)`` and never write here.
+    (``null_ratio``/``benford``) measure ``D_KL(observed || reference)`` and
+    never write here.
 
     Dual-grain like :class:`EntropyObjectRecord`: written by both detect paths
     (add_source per ``table:{id}``, begin_session per ``session:{id}``), so it

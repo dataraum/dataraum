@@ -18,8 +18,10 @@ nodes:
     dimension: types
     sub_dimension: type_fidelity
 
-  # null_ratio + outlier_rate: moved off the network onto the loss path (DAT-442)
-  # — plain rates, their {score} feeds risk(intent) via entropy/loss.yaml.
+  # null_ratio: moved off the network onto the loss path (DAT-442) — a plain rate,
+  # its {score} feeds risk(intent) via entropy/loss.yaml. (outlier_rate was also moved
+  # to the loss path, then CUT entirely — absolute IQR can't separate an injected burst
+  # from clean financial heavy tails; same wall as temporal_drift / slice_variance.)
 
   naming_clarity:
     layer: semantic
@@ -101,8 +103,8 @@ edges:
   # Structural -> children
   - [type_fidelity, join_path_determinism, 0.5]
   - [type_fidelity, relationship_quality, 0.6]
-  # null_ratio / outlier_rate / derived_value (formula_match) → loss path;
-  # aggregation_safety dissolved (DAT-442). The computational composites are gone.
+  # null_ratio / derived_value (formula_match) → loss path; aggregation_safety
+  # dissolved (DAT-442). The computational composites are gone. (outlier_rate CUT.)
   # dimension_coverage -> intent leaves
   - [dimension_coverage, query_intent, 0.5]
   - [dimension_coverage, reporting_intent, 0.6]

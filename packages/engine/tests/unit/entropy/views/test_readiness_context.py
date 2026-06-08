@@ -472,9 +472,9 @@ class TestAssembleFullNetwork:
     ) -> list[EntropyObject]:
         """Create objects for 4 network root nodes targeting a single column.
 
-        (The statistical fleet — null_ratio, outlier_rate, benford — moved off the
-        network onto the loss path, DAT-442; temporal_drift + slice_variance were
-        cut in the same reset.)
+        (The statistical fleet — null_ratio, benford — moved off the network onto
+        the loss path, DAT-442; temporal_drift, slice_variance, and outlier_rate
+        were cut in the same reset.)
         """
         roots = [
             ("structural", "types", "type_fidelity"),
@@ -561,7 +561,7 @@ class TestAssembleFullNetwork:
         partial_roots = [
             ("structural", "types", "type_fidelity"),
             ("value", "nulls", "null_ratio"),
-            ("value", "outliers", "outlier_rate"),
+            ("value", "distribution", "benford"),
             ("semantic", "business_meaning", "naming_clarity"),
         ]
         objects = [

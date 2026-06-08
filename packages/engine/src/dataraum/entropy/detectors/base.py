@@ -305,11 +305,9 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     from dataraum.entropy.detectors.value.benford import BenfordDetector
     from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
     from dataraum.entropy.detectors.value.null_token_adjudication import NullSemanticsDetector
-    from dataraum.entropy.detectors.value.outliers import OutlierRateDetector
 
     registry.register(NullRatioDetector())
     registry.register(NullSemanticsDetector())
-    registry.register(OutlierRateDetector())
     registry.register(BenfordDetector())
 
     # Semantic layer detectors

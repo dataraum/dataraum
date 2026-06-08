@@ -142,7 +142,7 @@ def test_ducklake_tuning_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_required(monkeypatch)
     settings = get_settings()
 
-    assert settings.ducklake_pg_pool_max == 64
+    assert settings.ducklake_pg_pool_max == 16
     assert settings.ducklake_skip_install is False
     assert settings.duckdb_extension_directory is None
 

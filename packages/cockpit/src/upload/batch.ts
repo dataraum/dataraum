@@ -8,14 +8,15 @@
 //   2. every file an extension `connect` can sniff,
 //   3. HOMOGENEOUS source_type — a `file_uris` source is one `source_type`, so a
 //      batch must be all-csv / all-parquet / all-json (csv+tsv+txt all map to
-//      csv, etc.). We reuse the select stage's `sourceTypeForUri` so this gate
-//      and the eventual `select` write agree on the ext→type mapping (no drift).
+//      csv, etc.). We reuse the shared `sourceTypeForUri` (upload/policy, also
+//      re-exported by select/mappers) so this gate and the eventual `select`
+//      write agree on the ext→type mapping (no drift).
 
-import { sourceTypeForUri } from "../select/mappers";
 import {
 	ALLOWED_EXTENSIONS,
 	isAllowedExtension,
 	MAX_UPLOAD_FILES,
+	sourceTypeForUri,
 } from "./policy";
 
 /**

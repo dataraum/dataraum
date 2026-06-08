@@ -57,6 +57,44 @@ export function isAllowedExtension(filename: string): boolean {
 	);
 }
 
+// Extension → `file_uris` source_type (csv/tsv/txt → csv, parquet/pq → parquet,
+// json/jsonl/ndjson → json). A file source's `source_type` is this derived value,
+// NEVER the literal "file" — the engine import dispatch keys off it. THE single
+// authority both the upload batch gate (upload/batch.ts) and the select write
+// (select/mappers.ts re-exports `sourceTypeForUri`) key off, so the two can't
+// drift. Lives HERE (the pure, crypto-free upload policy) rather than in
+// select/mappers so the CLIENT dropzone can import it without dragging
+// select/mappers' `node:crypto` into the browser bundle.
+const EXTENSION_TO_SOURCE_TYPE: Record<string, "csv" | "parquet" | "json"> = {
+	csv: "csv",
+	tsv: "csv",
+	txt: "csv",
+	parquet: "parquet",
+	pq: "parquet",
+	json: "json",
+	jsonl: "json",
+	ndjson: "json",
+};
+
+/**
+ * The engine `source_type` for a single file URI, derived from its suffix.
+ *
+ * Throws on an unsupported / extensionless URI — a select that can't name the
+ * source_type is a loud error, not a silently-mislabelled row the engine import
+ * would reject.
+ */
+export function sourceTypeForUri(uri: string): "csv" | "parquet" | "json" {
+	const ext = fileExtension(uri);
+	const type = ext ? EXTENSION_TO_SOURCE_TYPE[ext] : undefined;
+	if (!type) {
+		throw new Error(
+			`Cannot derive source_type for '${uri}' — unsupported or missing extension ` +
+				`(supported: ${ALLOWED_EXTENSIONS.join(", ")}).`,
+		);
+	}
+	return type;
+}
+
 // A filename can carry path separators or control bytes (a malicious or sloppy
 // client); the object key must be a single safe leaf so it can't escape the
 // `uploads/<uuid>/` directory or break the S3 path. Strip directory parts, then

@@ -18,7 +18,7 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import "highlight.js/styles/github.css";
 import "./markdown.css";
 
@@ -76,12 +76,21 @@ export const MarkdownMessage = memo(function MarkdownMessage({
 }: {
 	content: string;
 }) {
+	// Sanitized markdown is CLIENT-ONLY (DOMPurify needs a DOM). The server and the
+	// FIRST client render must agree, or React leaves the server's empty HTML in
+	// place — which silently blanked RESTORED messages once reload hydration began
+	// SSR-ing the transcript (DAT-462; only a real-browser smoke catches it). So
+	// gate the HTML behind a mount flag: SSR + first paint render nothing (they
+	// match → no hydration mismatch), then the client fills it post-mount. This
+	// effect is justified — it synchronizes with a browser-only external system
+	// (DOMPurify), the sanctioned reason for an effect.
+	const [mounted, setMounted] = useState(false);
+	useEffect(() => setMounted(true), []);
+
 	const html = useMemo(() => {
-		// Client-only: no purifier on the server (no DOM). Returning "" guarantees
-		// raw LLM HTML can never exit the server even if the chat ever SSRs content.
-		if (!purifier) return "";
+		if (!mounted || !purifier) return "";
 		return purifier.sanitize(marked.parse(content, { async: false }));
-	}, [content]);
+	}, [content, mounted]);
 
 	return (
 		<div

@@ -81,7 +81,16 @@ class Settings(BaseSettings):
     s3_bucket: str
 
     # --- DuckLake tuning (defaulted; see server/storage.py) ---
-    ducklake_pg_pool_max: int = 64
+    # Postgres connection-pool ceiling for the (singleton, process-wide) DuckLake
+    # catalog ATTACH. Small + static on purpose: with thread-local caching
+    # DISABLED (storage.py) connections recycle to the pool promptly, so the pool
+    # only needs to cover peak concurrent catalog ops (~_MAX_CONCURRENT_METRICS),
+    # NOT total churn. 16 covers the operating_model concurrency with headroom and
+    # stays well under Postgres max_connections — which the engine ORM pool,
+    # temporal, and cockpit share. (Was 64: an over-correction stacked on top of
+    # the thread-local-cache disable that actually fixed DuckLake's exhaustion,
+    # and 64 alone tipped a 100-connection Postgres over once metrics ran.)
+    ducklake_pg_pool_max: int = 16
     ducklake_skip_install: bool = False
     duckdb_extension_directory: Path | None = None
 

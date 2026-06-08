@@ -255,8 +255,13 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             keeps the runtime ``LOAD`` aligned with that path so it does
             not fall back to ``$HOME/.duckdb/`` (which the system user has
             no access to).
-        DUCKLAKE_PG_POOL_MAX: Postgres extension pool ceiling (default 64).
-            DuckDB's default is 8, which exhausts under multi-session churn.
+        DUCKLAKE_PG_POOL_MAX: Postgres extension pool ceiling for the shared
+            catalog ATTACH (default 16). Kept small + static: the real fix for
+            DuckLake's pool exhaustion is disabling thread-local caching (below),
+            which lets connections recycle — so the pool only needs to cover peak
+            concurrent catalog ops, not total churn, and must stay well under
+            Postgres ``max_connections`` (shared with the ORM pool / temporal /
+            cockpit). DuckDB's own default (8) is too small under that concurrency.
         DUCKLAKE_SKIP_INSTALL: Set to ``1`` to skip the network ``INSTALL
             ducklake`` step. Container builds should pre-install the extension
             at image build time and set this to avoid the cold-start round
@@ -287,13 +292,17 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             if not settings.ducklake_skip_install:
                 conn.execute("INSTALL ducklake")
             conn.execute("LOAD ducklake")
-            # Raise the Postgres pool ceiling and unpin connections from
-            # threads — DuckLake routes every catalog op through the postgres
-            # extension's pool, and the defaults (max=8, thread-local pinning
-            # ON) exhaust under multi-session churn. Must be ``SET GLOBAL`` and
+            # Unpin catalog connections from threads, then bound the pool. The
+            # REAL fix is disabling thread-local caching: DuckLake routes every
+            # catalog op through the postgres extension's pool, and with the
+            # default thread-local pinning ON those connections stay "in use"
+            # while idle and exhaust the pool (duckdb/ducklake#1031). With it OFF
+            # connections recycle, so the pool stays SMALL + static
+            # (``pool_max``) — just enough for peak concurrent catalog ops, well
+            # under Postgres ``max_connections``. Must be ``SET GLOBAL`` and
             # ``BEFORE`` the ATTACH for the lake's pool to inherit the values.
-            conn.execute(f"SET GLOBAL pg_pool_max_connections = {pool_max}")
             conn.execute("SET GLOBAL pg_pool_enable_thread_local_cache = false")
+            conn.execute(f"SET GLOBAL pg_pool_max_connections = {pool_max}")
             # The lake DATA_PATH is an ``s3://`` URI: register the object-store
             # secret + httpfs before the ATTACH (DuckLake resolves DATA_PATH
             # eagerly).

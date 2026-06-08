@@ -10,7 +10,6 @@ from sqlalchemy.pool import StaticPool
 
 from dataraum.entropy.detectors.loaders import (
     load_correlation,
-    load_drift_summaries,
     load_semantic,
     load_statistics,
     load_typing,
@@ -188,32 +187,6 @@ class TestLoadCorrelation:
         assert len(result["derived_columns"]) == 1
         assert result["derived_columns"][0]["derived_column_name"] == "total"
         assert result["derived_columns"][0]["match_rate"] == 0.98
-
-
-class TestLoadDriftSummaries:
-    def test_returns_none_when_no_column(self):
-        session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
-        assert load_drift_summaries(session, "col1", "tbl1") is None
-
-    def test_returns_none_when_no_slice_tables(self):
-        session = MagicMock()
-        col = MagicMock()
-        col.column_name = "amount"
-
-        col_result = MagicMock()
-        col_result.scalar_one_or_none.return_value = col
-
-        slice_result = MagicMock()
-        slice_result.scalars.return_value.all.return_value = []
-
-        cols_result = MagicMock()
-        cols_result.scalars.return_value.all.return_value = []
-
-        session.execute.side_effect = [col_result, slice_result, cols_result]
-
-        assert load_drift_summaries(session, "col1", "tbl1") is None
-
 
 @pytest.fixture
 def real_session():

@@ -17,7 +17,6 @@ from dataraum.entropy.detectors import (
     OutlierRateDetector,
     RelationshipEntropyDetector,
     SliceVarianceDetector,
-    TemporalDriftDetector,
     TemporalEntropyDetector,
     TypeFidelityDetector,
     UnitEntropyDetector,
@@ -38,7 +37,6 @@ class TestBuiltinDetectors:
             # Value
             NullRatioDetector,
             OutlierRateDetector,
-            TemporalDriftDetector,
             BenfordDetector,
             SliceVarianceDetector,
             # Semantic (column-scoped)
@@ -71,7 +69,6 @@ class TestBuiltinDetectors:
         assert "relationship_entropy" in detector_ids
         assert "null_ratio" in detector_ids
         assert "outlier_rate" in detector_ids
-        assert "temporal_drift" in detector_ids
         assert "benford" in detector_ids
         assert "slice_variance" in detector_ids
         assert "business_meaning" in detector_ids
@@ -122,11 +119,10 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         value_detectors = [d for d in registry.get_all_detectors() if d.layer.value == "value"]
-        assert len(value_detectors) == 5
+        assert len(value_detectors) == 4  # temporal_drift cut (DAT-442 reset)
         detector_ids = [d.detector_id for d in value_detectors]
         assert "null_ratio" in detector_ids
         assert "outlier_rate" in detector_ids
-        assert "temporal_drift" in detector_ids
         assert "benford" in detector_ids
         assert "slice_variance" in detector_ids
 

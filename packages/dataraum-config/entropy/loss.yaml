@@ -40,15 +40,10 @@ measurements:
     aggregation_intent: { surprise: 0.6 }
     reporting_intent: { surprise: 0.5 }
 
-  temporal_drift:
-    # The value distribution disagrees across time periods (generalized JSD vs the
-    # pooled distribution). Worst for aggregation (summing across non-stationary
-    # periods) and reporting (a drifting metric presented as stable); a query that
-    # filters/sorts on time is less exposed. Old network edges were query 0.45 /
-    # aggregation 0.5 — placeholder priors, calibrated later (DAT-450).
-    query_intent: { surprise: 0.4 }
-    aggregation_intent: { surprise: 0.6 }
-    reporting_intent: { surprise: 0.5 }
+  # temporal_drift was CUT (DAT-442 reset, proven in eval): distribution drift
+  # cannot separate a 1.35× shift from natural month-to-month volatility on the
+  # additive-flow columns it applied to (clean KS ≈ injected ≈ 0.53). Real drift
+  # moves to DAT-445's expected-variation model.
 
   slice_variance:
     # A column behaves differently across slices (max normalized spread of null /

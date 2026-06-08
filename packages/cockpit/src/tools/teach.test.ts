@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	AGENT_TEACH_TYPES,
 	TEACH_TYPES,
 	TeachValidationError,
 	validateTeach,
@@ -279,12 +280,14 @@ describe("validateTeach", () => {
 		});
 	});
 
-	describe("deferred types (generic passthrough)", () => {
+	// validation/cycle/metric are internal-only dispatch targets (the typed
+	// teach_validation/teach_cycle/teach_metric tools write through them with an
+	// already-validated payload), so the primitive still passthrough-accepts them.
+	describe("internal delegated types (generic passthrough)", () => {
 		it.each([
 			"validation",
 			"cycle",
 			"metric",
-			"explanation",
 		] as const)("%s accepts an arbitrary object", (type) => {
 			const out = validateTeach({
 				type,
@@ -295,7 +298,7 @@ describe("validateTeach", () => {
 	});
 
 	describe("dispatch", () => {
-		it("TEACH_TYPES exposes every wired type", () => {
+		it("TEACH_TYPES exposes every wired type (incl. internal-only delegated types)", () => {
 			expect(new Set(TEACH_TYPES)).toEqual(
 				new Set([
 					"type_pattern",
@@ -306,9 +309,26 @@ describe("validateTeach", () => {
 					"validation",
 					"cycle",
 					"metric",
-					"explanation",
 				]),
 			);
+		});
+
+		it("AGENT_TEACH_TYPES advertises only the grounding-layer corrections", () => {
+			// The agent-facing teach surface excludes the operating-model
+			// declarations (validation/cycle/metric — owned by the typed teach_*
+			// tools) and the removed `explanation` stub. One way to teach each thing.
+			expect(new Set(AGENT_TEACH_TYPES)).toEqual(
+				new Set([
+					"type_pattern",
+					"null_value",
+					"concept",
+					"concept_property",
+					"relationship",
+				]),
+			);
+			for (const t of ["validation", "cycle", "metric", "explanation"]) {
+				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
+			}
 		});
 
 		it("rejects an unknown type", () => {

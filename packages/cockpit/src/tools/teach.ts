@@ -20,7 +20,7 @@ import { z } from "zod";
 import { metadataDb } from "../db/metadata/client";
 import { configOverlayWrite } from "../db/metadata/write-surface";
 import {
-	TEACH_TYPES,
+	AGENT_TEACH_TYPES,
 	type TeachInput,
 	TeachPayloadSchema,
 	type TeachType,
@@ -96,12 +96,16 @@ export async function undoTeach(overlayId: string): Promise<void> {
 export const teachTool = toolDefinition({
 	name: "teach",
 	description:
-		"Record a correction or declaration about the data (a type pattern, null value, concept, etc.). Writes a config_overlay row; requires user approval. Follow with `replay` to apply it to the source.",
+		"Record a grounding-layer correction about the data — a typing pattern, " +
+		"null token, ontology concept/property, or a column relationship. Writes a " +
+		"config_overlay row (requires user approval); follow with `replay` to apply " +
+		"it to the source. For operating-model declarations use the dedicated tools " +
+		"instead: teach_validation, teach_cycle, teach_metric.",
 	inputSchema: z.object({
 		type: z
-			.enum(TEACH_TYPES as readonly [TeachType, ...TeachType[]])
+			.enum(AGENT_TEACH_TYPES as readonly [TeachType, ...TeachType[]])
 			.describe(
-				"The kind of correction/declaration to record; it determines which payload fields are required (see payload).",
+				"The kind of grounding-layer correction to record; it determines which payload fields are required (see payload).",
 			),
 		payload: TeachPayloadSchema,
 		session_id: z.string().nullish(),

@@ -13,6 +13,7 @@ import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
 import { listVerticalsTool } from "./list-verticals";
 import { lookCycleTool } from "./look-cycle";
+import { lookMetricTool } from "./look-metric";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
@@ -23,10 +24,12 @@ import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
 import { teachCycleTool } from "./teach-cycle";
+import { teachMetricTool } from "./teach-metric";
 import { teachValidationTool } from "./teach-validation";
 import { uploadTool } from "./upload";
 import { whyColumnTool } from "./why-column";
 import { whyCycleTool } from "./why-cycle";
+import { whyMetricTool } from "./why-metric";
 import { whyRelationshipTool } from "./why-relationship";
 import { whyTableTool } from "./why-table";
 import { whyValidationTool } from "./why-validation";
@@ -51,11 +54,14 @@ export const tools = [
 	beginSessionTool,
 	teachValidationTool,
 	teachCycleTool,
+	teachMetricTool,
 	operatingModelTool,
 	lookValidationTool,
 	whyValidationTool,
 	lookCycleTool,
 	whyCycleTool,
+	lookMetricTool,
+	whyMetricTool,
 	replayTool,
 	workflowStatusTool,
 ] as const;

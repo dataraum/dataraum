@@ -10,11 +10,13 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyCycleResult } from "#/tools/why-cycle";
+import type { WhyMetricResult } from "#/tools/why-metric";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -66,6 +68,14 @@ export type CanvasState =
 	// the measured completion, the status column + detected stages/flows/evidence.
 	// Carries the why_cycle result.
 	| { kind: "cycle-why"; why: WhyCycleResult }
+	// DAT-466: the operating_model metric list — one row per declared metric with
+	// its lifecycle state + SQL-step count (no value — ephemeral by design); rows
+	// drill down to metric-why. Carries the look_metric result.
+	| { kind: "metric-list"; look: LookMetricResult }
+	// DAT-466: per-metric drill-down — state with its ungroundable reason
+	// first-class + the per-step SQL fragments (how it computes). Carries the
+	// why_metric result.
+	| { kind: "metric-why"; why: WhyMetricResult }
 	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused

@@ -36,6 +36,7 @@ describe("tool registry (DAT-353)", () => {
 				"frame",
 				"select",
 				"teach",
+				"teach_validation",
 				"begin_session",
 				"operating_model",
 				"look_validation",
@@ -52,6 +53,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("frame")?.needsApproval).toBe(true);
 		expect(byName.get("select")?.needsApproval).toBe(true);
 		expect(byName.get("teach")?.needsApproval).toBe(true);
+		expect(byName.get("teach_validation")?.needsApproval).toBe(true);
 		expect(byName.get("begin_session")?.needsApproval).toBe(true);
 		expect(byName.get("operating_model")?.needsApproval).toBe(true);
 		expect(byName.get("replay")?.needsApproval).toBe(true);

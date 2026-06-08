@@ -21,6 +21,7 @@ import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
 import { teachTool } from "./teach";
+import { teachValidationTool } from "./teach-validation";
 import { uploadTool } from "./upload";
 import { whyColumnTool } from "./why-column";
 import { whyRelationshipTool } from "./why-relationship";
@@ -45,6 +46,7 @@ export const tools = [
 	selectTool,
 	teachTool,
 	beginSessionTool,
+	teachValidationTool,
 	operatingModelTool,
 	lookValidationTool,
 	whyValidationTool,

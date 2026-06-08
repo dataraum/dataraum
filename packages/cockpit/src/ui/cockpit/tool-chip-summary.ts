@@ -29,6 +29,7 @@ import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
+import type { TeachValidationResult } from "#/tools/teach-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
@@ -73,6 +74,7 @@ const TOOL_LABELS: Record<string, string> = {
 	run_sql: "Query",
 	probe: "Data check",
 	teach: "Teaching",
+	teach_validation: "Declaring validation",
 	replay: "Re-running",
 	upload: "File upload",
 };
@@ -86,6 +88,7 @@ const TOOL_LABELS_DONE: Record<string, string> = {
 	select: "Registered source",
 	begin_session: "Session started",
 	teach: "Taught",
+	teach_validation: "Validation declared",
 	replay: "Re-ran",
 	// "Started", not "done" — the driver returns as soon as the durable run
 	// kicks off (non-blocking, the begin_session pattern).
@@ -303,6 +306,8 @@ export function toolChipSummary(
 		}
 		case "teach":
 			return teachChipSummary(input, output);
+		case "teach_validation":
+			return teachValidationChipSummary(input, output);
 		case "replay": {
 			const args = input as { source_id?: string } | undefined;
 			const out = output as { run_id?: string } | undefined;
@@ -343,4 +348,47 @@ export function teachChipSummary(input: unknown, output: unknown): string {
 		return `teach ${args.type}${fields}`;
 	}
 	return "teach…";
+}
+
+/**
+ * The teach_validation chip (DAT-441). At approval time it shows the proposed
+ * check ("declare <id> (<check_type>)" off `arguments`); once complete it flips
+ * to "declared <id>" or — when the id shadows a shipped spec — "overrode <id>
+ * (was <shadowed name>)", making the upsert-replace VISIBLE in the rail, never
+ * silent. Display-only — like teach it maps to no canvas member (the outcome
+ * lands in look_validation after a re-run).
+ */
+export function teachValidationChipSummary(
+	input: unknown,
+	output: unknown,
+): string {
+	const result = output as
+		| TeachValidationResult
+		| { error?: string }
+		| undefined;
+	if (result && "error" in result && result.error) {
+		return `validation rejected: ${truncate(result.error)}`;
+	}
+	if (result && "validation_id" in result && result.validation_id) {
+		const label =
+			humanizeIdentifier(result.validation_id) || result.validation_id;
+		if (result.override) {
+			const shadowed =
+				result.shadowed_spec?.name ?? result.shadowed_spec?.validation_id;
+			return shadowed
+				? `overrode ${label} (was ${truncate(shadowed, 32)})`
+				: `overrode ${label}`;
+		}
+		return `declared ${label}`;
+	}
+	const args = input as
+		| { validation_id?: string; check_type?: string }
+		| undefined;
+	if (args?.validation_id) {
+		const label = humanizeIdentifier(args.validation_id) || args.validation_id;
+		return args.check_type
+			? `declare ${label} (${args.check_type})`
+			: `declare ${label}`;
+	}
+	return "declaring validation…";
 }

@@ -208,7 +208,9 @@ class MetricsPhase(BasePhase):
         # declared with the reason, NEVER a best-effort LLM execution over a
         # missing input (the silent-wrong-number path is gone). Composed metrics
         # are queued for execution.
-        field_mappings = load_semantic_mappings(ctx.session, table_ids)
+        field_mappings = load_semantic_mappings(
+            ctx.session, table_ids, semantic_runs=base_runs.semantic_runs
+        )
         grounded_against = base_runs.model_dump(mode="json")
         prep: list[MetricPrep] = []
         for graph_id, graph in graphs.items():

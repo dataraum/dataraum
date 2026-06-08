@@ -633,14 +633,18 @@ def build_execution_context(
                 )
             )
 
-    # 13d. Compute cycle health
+    # 13d. Compute cycle health. The runtime vertical comes from the session row
+    # (the same source the phases read via ``inv_session.vertical``), NOT static
+    # phase config — ``business_cycles.yaml`` has no ``vertical`` key, so the old
+    # ``load_phase_config(...).get("vertical")`` was always None and the health
+    # was silently never computed (DAT-456 graphs-migration fix).
     from dataraum.analysis.cycles.health import compute_cycle_health
-    from dataraum.core.config import load_phase_config
+    from dataraum.investigation.db_models import InvestigationSession
 
     cycle_health_report: HealthReport | None = None
     if session_id and om_run_id is not None:
-        bc_config = load_phase_config("business_cycles")
-        _vertical = bc_config.get("vertical")
+        inv = session.get(InvestigationSession, session_id)
+        _vertical = inv.vertical if inv else None
         if _vertical:
             try:
                 # Same promoted operating_model run as 13/13b — cycles, their

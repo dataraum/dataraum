@@ -2,7 +2,7 @@
 
 Tests cover:
 - SQL generation from graph specifications
-- Caching (in-memory and database)
+- Snippet-based SQL reuse (the database snippet library)
 - SQL execution
 - Error handling
 """
@@ -184,26 +184,6 @@ class TestDescribeTable:
         assert result is None
 
 
-class TestGraphAgentCaching:
-    """Tests for GraphAgent caching behavior."""
-
-    def test_cache_key_generation(self, sample_graph):
-        """Test that cache keys are generated correctly."""
-        # Create agent with mocked dependencies
-        agent = GraphAgent(
-            config=MagicMock(),
-            provider=MagicMock(),
-            prompt_renderer=MagicMock(),
-        )
-
-        key1 = agent._cache_key(sample_graph, "mapping-1")
-        key2 = agent._cache_key(sample_graph, "mapping-2")
-
-        assert key1 == "test_metric:1.0:mapping-1"
-        assert key2 == "test_metric:1.0:mapping-2"
-        assert key1 != key2
-
-
 class TestGraphAgentExecution:
     """Tests for GraphAgent SQL execution."""
 
@@ -304,66 +284,6 @@ class TestGraphAgentIntegration:
         execution = result.value
         assert execution.graph_id == "test_metric"
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
-
-    def test_execute_uses_cache_on_second_call(
-        self,
-        session: Session,
-        duckdb_with_data,
-        sample_graph,
-    ):
-        """Test that second execution uses cached code."""
-        # Setup mocks
-        mock_provider = MagicMock()
-        mock_provider.get_model_for_tier.return_value = "test-model"
-
-        mock_config = MagicMock()
-        mock_config.limits.max_output_tokens_per_request = 4000
-        mock_config.limits.cache_ttl_seconds = 3600
-
-        mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
-
-        agent = GraphAgent(
-            config=mock_config,
-            provider=mock_provider,
-            prompt_renderer=mock_renderer,
-        )
-
-        # Mock the LLM converse call with tool response
-        mock_tool_call = MagicMock()
-        mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
-        mock_tool_call.input = {
-            "summary": "Calculates the sum of all amounts in the test data.",
-            "steps": [
-                {
-                    "step_id": "sum",
-                    "sql": "SELECT SUM(amount) FROM test_data",
-                    "description": "Sum amounts",
-                }
-            ],
-            "final_sql": "SELECT SUM(amount) AS total FROM test_data",
-            "column_mappings": {"amount": "amount"},
-        }
-
-        mock_tool_response = MagicMock()
-        mock_tool_response.tool_calls = [mock_tool_call]
-        mock_tool_response.content = None
-        agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
-
-        context = _make_execution_context(duckdb_with_data)
-
-        # First execution - should call LLM
-        result1 = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
-        assert result1.success
-        assert agent.provider.converse.call_count == 1
-
-        # Second execution - should use in-memory cache
-        result2 = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
-        assert result2.success
-        assert agent.provider.converse.call_count == 1  # No additional call
-
-        # Both should produce same result
-        assert result1.value.output_value == result2.value.output_value
 
 
 class TestGraphAgentSnippets:

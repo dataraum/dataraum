@@ -149,14 +149,7 @@ class GraphAgent(LLMFeature):
         prompt_renderer: PromptRenderer,
     ):
         """Initialize the graph agent."""
-        import threading
-
         super().__init__(config, provider, prompt_renderer)
-        self._code_cache: dict[str, GeneratedCode] = {}  # In-memory cache
-        # Cache is read+written from concurrent metrics_phase workers (the phase
-        # dispatches per-metric agent.execute calls on a ThreadPoolExecutor). The
-        # check-then-set pattern at lines 182/244 is not atomic, so guard with a lock.
-        self._code_cache_lock = threading.Lock()
 
     def execute(
         self,
@@ -164,7 +157,6 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         context: ExecutionContext,
         parameters: dict[str, Any] | None = None,
-        force_regenerate: bool = False,
         inspiration_sql: str | None = None,
         *,
         session_id: str,
@@ -176,7 +168,6 @@ class GraphAgent(LLMFeature):
             graph: The graph specification to execute
             context: Execution context with data connection
             parameters: Parameter values for the graph
-            force_regenerate: If True, regenerate SQL even if cached
             inspiration_sql: SQL hint from a promoted snippet (injected as cached_step)
 
         Returns:
@@ -187,82 +178,74 @@ class GraphAgent(LLMFeature):
         # Resolve parameters with defaults
         resolved_params = self._resolve_parameters(graph, parameters)
 
-        # Generate cache key
         schema_mapping_id = context.schema_mapping_id or "default"
-        cache_key = self._cache_key(graph, schema_mapping_id)
 
-        # Check in-memory cache for generated code
-        generated_code: GeneratedCode | None = None
+        # Check the snippet library for cached individual steps. The DB-backed
+        # snippet base IS the cache (cross-run, shared with the query agent) —
+        # there is no in-memory assembled-code cache: assembly without the LLM is
+        # cheap, and a per-instance cache would mask the snippet self-heal on a
+        # stale-snippet retry (and never hit anyway — one agent, one run, one
+        # execution per graph_id).
+        cached_snippets = self._lookup_snippets(
+            session,
+            graph,
+            schema_mapping_id,
+            resolved_params,
+        )
 
-        if not force_regenerate:
-            # Check in-memory cache (lock guards concurrent worker reads)
-            with self._code_cache_lock:
-                generated_code = self._code_cache.get(cache_key)
+        # Inject inspiration SQL as a hint (from snippet promotion path)
+        if inspiration_sql and not cached_snippets:
+            cached_snippets["_inspiration"] = {
+                "sql": inspiration_sql,
+                "description": "SQL hint from promoted ad-hoc query",
+                "snippet_id": None,
+            }
 
-        if generated_code is None:
-            # Check snippet library for cached individual steps
-            cached_snippets = self._lookup_snippets(
-                session,
-                graph,
-                schema_mapping_id,
-                resolved_params,
+        # If ALL steps have cached snippets, assemble without LLM
+        generated_code: GeneratedCode | None
+        if cached_snippets and len(cached_snippets) == len(graph.steps):
+            generated_code = self._assemble_from_snippets(
+                graph, context, cached_snippets, resolved_params
             )
-
-            # Inject inspiration SQL as a hint (from snippet promotion path)
-            if inspiration_sql and not cached_snippets:
-                cached_snippets["_inspiration"] = {
-                    "sql": inspiration_sql,
-                    "description": "SQL hint from promoted ad-hoc query",
-                    "snippet_id": None,
-                }
-
-            # If ALL steps have cached snippets, assemble without LLM
-            if cached_snippets and len(cached_snippets) == len(graph.steps):
-                generated_code = self._assemble_from_snippets(
-                    graph, context, cached_snippets, resolved_params
+            if generated_code:
+                logger.debug(
+                    "assembled_from_snippets",
+                    graph_id=graph.graph_id,
+                    snippet_count=len(cached_snippets),
                 )
-                if generated_code:
-                    logger.debug(
-                        "assembled_from_snippets",
-                        graph_id=graph.graph_id,
-                        snippet_count=len(cached_snippets),
-                    )
-                    # Track usage: all steps were exact reuses
-                    self._track_snippet_usage(
-                        session=session,
-                        execution_id=generated_code.code_id,
-                        cached_snippets=cached_snippets,
-                        generated_steps=generated_code.steps,
-                        session_id=session_id,
-                    )
-            else:
-                # Generate SQL using LLM (with cached snippet hints)
-                gen_result = self._generate_sql(
-                    session,
-                    graph,
-                    context,
-                    resolved_params,
-                    cached_snippets=cached_snippets if cached_snippets else None,
-                )
-                if not gen_result.success or not gen_result.value:
-                    return Result.fail(gen_result.error or "SQL generation failed")
-
-                generated_code = gen_result.value
-
-                # Track usage: compare generated steps against provided snippets
+                # Track usage: all steps were exact reuses
                 self._track_snippet_usage(
                     session=session,
                     execution_id=generated_code.code_id,
-                    cached_snippets=cached_snippets or {},
+                    cached_snippets=cached_snippets,
                     generated_steps=generated_code.steps,
                     session_id=session_id,
                 )
+        else:
+            # Generate SQL using LLM (with cached snippet hints)
+            gen_result = self._generate_sql(
+                session,
+                graph,
+                context,
+                resolved_params,
+                cached_snippets=cached_snippets if cached_snippets else None,
+            )
+            if not gen_result.success or not gen_result.value:
+                return Result.fail(gen_result.error or "SQL generation failed")
 
-            if generated_code is None:
-                return Result.fail("Failed to generate or assemble SQL code")
+            generated_code = gen_result.value
 
-            with self._code_cache_lock:
-                self._code_cache[cache_key] = generated_code
+            # Track usage: compare generated steps against provided snippets
+            self._track_snippet_usage(
+                session=session,
+                execution_id=generated_code.code_id,
+                cached_snippets=cached_snippets or {},
+                generated_steps=generated_code.steps,
+                session_id=session_id,
+            )
+
+        if generated_code is None:
+            return Result.fail("Failed to generate or assemble SQL code")
 
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph)
@@ -456,27 +439,20 @@ class GraphAgent(LLMFeature):
 
         response = result.value
 
-        # Extract tool call result
+        # Extract tool call result. No tool call is a bind ERROR — never guess by
+        # parsing free text as JSON (DAT-439's born-loud cut): a metric that can't
+        # be composed stays grounded with the reason, it does not get a guessed SQL.
         if not response.tool_calls:
-            # LLM didn't use the tool - try to parse text as fallback
-            if response.content:
-                try:
-                    response_data = json.loads(response.content)
-                    output = GraphSQLGenerationOutput.model_validate(response_data)
-                except Exception:
-                    return Result.fail(f"LLM did not use tool. Response: {response.content[:500]}")
-            else:
-                return Result.fail("LLM did not use the generate_sql tool")
-        else:
-            # Parse tool response using Pydantic model
-            tool_call = response.tool_calls[0]
-            if tool_call.name != "generate_sql":
-                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+            return Result.fail("LLM did not call the generate_sql tool")
 
-            try:
-                output = GraphSQLGenerationOutput.model_validate(tool_call.input)
-            except Exception as e:
-                return Result.fail(f"Failed to validate tool response: {e}")
+        tool_call = response.tool_calls[0]
+        if tool_call.name != "generate_sql":
+            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+        try:
+            output = GraphSQLGenerationOutput.model_validate(tool_call.input)
+        except Exception as e:
+            return Result.fail(f"Failed to validate tool response: {e}")
 
         # Create GeneratedCode from Pydantic output
         generated_code = GeneratedCode(
@@ -844,10 +820,6 @@ class GraphAgent(LLMFeature):
                 return range_def.label
 
         return None
-
-    def _cache_key(self, graph: TransformationGraph, schema_mapping_id: str) -> str:
-        """Generate cache key for generated code."""
-        return f"{graph.graph_id}:{graph.version}:{schema_mapping_id}"
 
     def _track_snippet_usage(
         self,

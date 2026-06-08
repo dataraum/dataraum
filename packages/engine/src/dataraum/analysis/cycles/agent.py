@@ -1,9 +1,17 @@
-"""Business Cycle Detection Agent.
+"""Business Cycle Detection Agent — the lifecycle family's grounding step (DAT-455).
 
-Single-call LLM agent that synthesizes pre-computed pipeline metadata
-into business cycle analysis. No exploration tools — the context is
-rich enough (slice definitions, statistical profiles, temporal profiles,
-enriched views, quality signals) for direct synthesis.
+Single-call LLM agent that synthesizes pre-computed pipeline metadata into
+business cycle analysis. No exploration tools — the context is rich enough
+(slice definitions, statistical profiles, temporal profiles, enriched views,
+quality signals) for direct synthesis.
+
+The cycle lifecycle family grounds + measures in ONE synthesis call (unlike
+validation, where each artifact's bind and execute are two distinct SQL
+operations — see the DAT-455 substrate-generality note). :meth:`ground_cycles`
+runs that call and returns the detected cycles keyed by canonical type; the
+phase reconciles each against its declared artifact (grounded vs ungroundable,
+measured vs not). Persistence lives in the phase (mirrors validation's
+``_persist_results``), not here — the agent is source-free and stateless.
 """
 
 from __future__ import annotations
@@ -17,7 +25,6 @@ from dataraum.analysis.cycles.context import (
     build_cycle_detection_context,
     format_context_for_prompt,
 )
-from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.cycles.models import (
     BusinessCycleAnalysis,
     BusinessCycleAnalysisOutput,
@@ -38,6 +45,8 @@ if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
 
+    from dataraum.lifecycle import BaseRunMap
+
 logger = get_logger(__name__)
 
 # Prompt template name (loaded from config/llm/prompts/business_cycles.yaml)
@@ -55,27 +64,34 @@ class BusinessCycleAgent(LLMFeature):
 
     MAX_TOKENS = 4096
 
-    def analyze(
+    def ground_cycles(
         self,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         *,
-        source_id: str,
         vertical: str,
         session_id: str,
+        base_runs: BaseRunMap,
     ) -> Result[BusinessCycleAnalysis]:
-        """Analyze tables for business cycles.
+        """Ground the declared cycle vocabulary against the workspace (DAT-455).
 
-        Args:
-            session: SQLAlchemy session
-            duckdb_conn: DuckDB connection
-            table_ids: Tables to analyze
-            source_id: Source ID for persisting results
-            vertical: Vertical name (e.g. 'finance')
+        The single synthesis call: assemble the workspace context (every
+        run-versioned read pinned to ``base_runs``, ADR-0008 in-run mode),
+        let the LLM detect which declared cycle types ground to real
+        columns/flows, and return them with completion measurements. The
+        phase then reconciles each detected cycle against its declared
+        artifact — no per-cycle bind/execute calls (the substrate-generality
+        difference from validation; see module docstring).
+
+        Source-free: scopes purely to ``table_ids`` (the session's typed
+        selection), never a ``source_id``.
 
         Returns:
-            Result containing BusinessCycleAnalysis
+            ``Result.ok(BusinessCycleAnalysis)`` with the detected cycles, or
+            ``Result.fail(reason)`` when the synthesis call fails (no tool
+            call, LLM error) — a hard failure the phase surfaces, distinct from
+            a declared cycle that simply did not ground.
         """
         start_time = time.time()
 
@@ -84,79 +100,74 @@ class BusinessCycleAgent(LLMFeature):
         if not feature_config or not feature_config.enabled:
             return Result.fail("Business cycles feature is disabled in config")
 
+        # 1. Build rich context from all pipeline metadata, run-pinned (ADR-0008).
+        context = build_cycle_detection_context(
+            session,
+            duckdb_conn,
+            table_ids,
+            vertical=vertical,
+            session_id=session_id,
+            base_runs=base_runs,
+        )
+        context_str = format_context_for_prompt(context)
+
+        # 2. Render prompt from template
         try:
-            # 1. Build rich context from all pipeline metadata
-            context = build_cycle_detection_context(
-                session,
-                duckdb_conn,
-                table_ids,
-                vertical=vertical,
-                session_id=session_id,
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                CYCLE_DETECTION_TEMPLATE_NAME, {"context": context_str}
             )
-            context_str = format_context_for_prompt(context)
-
-            # 2. Render prompt from template
-            try:
-                system_prompt, user_prompt, temperature = self.renderer.render_split(
-                    CYCLE_DETECTION_TEMPLATE_NAME, {"context": context_str}
-                )
-            except Exception as e:
-                return Result.fail(f"Failed to render business cycles prompt: {e}")
-
-            # 3. Single LLM call with structured output
-            tool = ToolDefinition(
-                name="submit_analysis",
-                description=(
-                    "Submit your final business cycle analysis. "
-                    "Call this tool with your structured findings."
-                ),
-                input_schema=BusinessCycleAnalysisOutput.model_json_schema(),
-            )
-
-            model = self.provider.get_model_for_tier(feature_config.model_tier)
-
-            request = ConversationRequest(
-                messages=[Message(role="user", content=user_prompt)],
-                system=system_prompt,
-                tools=[tool],
-                tool_choice={"type": "tool", "name": "submit_analysis"},
-                max_tokens=self.MAX_TOKENS,
-                temperature=temperature,
-                model=model,
-            )
-
-            result = self.provider.converse(request)
-
-            if not result.success:
-                return Result.fail(f"LLM call failed: {result.error}")
-
-            response = result.unwrap()
-
-            # 4. Parse structured output
-            if not response.tool_calls:
-                return Result.fail(
-                    "LLM did not call submit_analysis tool. No structured output received."
-                )
-
-            tool_call = response.tool_calls[0]
-            if tool_call.name != "submit_analysis":
-                return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
-            analysis = self._parse_output(
-                tool_call.input,
-                context,
-                start_time,
-                model=model,
-                vertical=vertical,
-            )
-
-            # 5. Persist to database
-            self._persist_results(session, analysis, source_id=source_id, session_id=session_id)
-
-            return Result.ok(analysis)
-
         except Exception as e:
-            return Result.fail(f"Business cycle analysis failed: {e}")
+            return Result.fail(f"Failed to render business cycles prompt: {e}")
+
+        # 3. Single LLM call with structured output
+        tool = ToolDefinition(
+            name="submit_analysis",
+            description=(
+                "Submit your final business cycle analysis. "
+                "Call this tool with your structured findings."
+            ),
+            input_schema=BusinessCycleAnalysisOutput.model_json_schema(),
+        )
+
+        model = self.provider.get_model_for_tier(feature_config.model_tier)
+
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "submit_analysis"},
+            max_tokens=self.MAX_TOKENS,
+            temperature=temperature,
+            model=model,
+        )
+
+        result = self.provider.converse(request)
+
+        if not result.success or not result.value:
+            return Result.fail(f"LLM call failed: {result.error}")
+
+        response = result.unwrap()
+
+        # 4. Parse structured output. No tool call = degraded generation — a
+        # hard failure for the synthesis (DAT-439 standard: no silent rescue).
+        if not response.tool_calls:
+            return Result.fail(
+                "LLM did not call submit_analysis tool. No structured output received."
+            )
+
+        tool_call = response.tool_calls[0]
+        if tool_call.name != "submit_analysis":
+            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+        analysis = self._parse_output(
+            tool_call.input,
+            context,
+            start_time,
+            model=model,
+            vertical=vertical,
+        )
+
+        return Result.ok(analysis)
 
     def _parse_output(
         self,
@@ -310,42 +321,5 @@ class BusinessCycleAgent(LLMFeature):
 
         return analysis
 
-    def _persist_results(
-        self,
-        session: Session,
-        analysis: BusinessCycleAnalysis,
-        *,
-        source_id: str,
-        session_id: str,
-    ) -> None:
-        """Persist analysis results to database.
 
-        Args:
-            session: SQLAlchemy session
-            analysis: The analysis results to persist
-            source_id: Source ID to associate cycles with
-        """
-        for cycle in analysis.cycles:
-            db_cycle = DetectedBusinessCycle(
-                cycle_id=cycle.cycle_id,
-                session_id=session_id,
-                source_id=source_id,
-                cycle_name=cycle.cycle_name,
-                cycle_type=cycle.cycle_type,
-                canonical_type=cycle.canonical_type,
-                is_known_type=cycle.is_known_type,
-                description=cycle.description,
-                business_value=cycle.business_value,
-                confidence=cycle.confidence,
-                tables_involved=cycle.tables_involved,
-                stages=[s.model_dump() for s in cycle.stages],
-                entity_flows=[ef.model_dump() for ef in cycle.entity_flows],
-                status_table=cycle.status_table,
-                status_column=cycle.status_column,
-                completion_value=cycle.completion_value,
-                total_records=cycle.total_records,
-                completed_cycles=cycle.completed_cycles,
-                completion_rate=cycle.completion_rate,
-                evidence=cycle.evidence,
-            )
-            session.add(db_cycle)
+__all__ = ["BusinessCycleAgent"]

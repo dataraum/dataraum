@@ -155,8 +155,6 @@ class MetricInductionAgent(LLMFeature):
         Returns:
             Result containing list of metric config dicts (one per metric YAML file).
         """
-        from dataraum.analysis.cycles.induction import _build_induction_context
-
         tables_json, annotations_summary, relationships_summary = _build_induction_context(
             session, table_ids
         )
@@ -257,3 +255,89 @@ def save_metrics_config(vertical: str, metrics: list[dict[str, Any]]) -> None:
             yaml.dump(yaml_content, f, default_flow_style=False, sort_keys=False)
 
         logger.info("metric_saved", graph_id=graph_id, path=str(file_path))
+
+
+def _build_induction_context(
+    session: Session,
+    table_ids: list[str],
+) -> tuple[list[dict[str, Any]], str, str]:
+    """Build induction context from semantic annotations and relationships.
+
+    Relocated here from the deleted cycle-induction module (DAT-455 dropped
+    ``CycleInductionAgent``); metric induction is now its sole consumer.
+
+    Returns:
+        Tuple of (tables_json, annotations_summary, relationships_summary).
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from dataraum.analysis.relationships.utils import load_defined_relationships
+    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+    from dataraum.storage import Column, Table
+
+    # Load tables with annotations
+    tables_stmt = (
+        select(Table)
+        .where(Table.table_id.in_(table_ids))
+        .options(selectinload(Table.columns).selectinload(Column.semantic_annotation))
+    )
+    tables = session.execute(tables_stmt).scalars().all()
+
+    # Build tables JSON (lightweight — names, roles, concepts)
+    tables_json: list[dict[str, Any]] = []
+    annotation_lines: list[str] = []
+
+    for table in tables:
+        cols = []
+        for col in table.columns:
+            col_info: dict[str, Any] = {"column_name": col.column_name}
+            ann: SemanticAnnotation | None = col.semantic_annotation
+            if ann:
+                if ann.semantic_role:
+                    col_info["role"] = ann.semantic_role
+                if ann.business_concept:
+                    col_info["concept"] = ann.business_concept
+                if ann.entity_type:
+                    col_info["entity_type"] = ann.entity_type
+                if ann.temporal_behavior:
+                    col_info["temporal_behavior"] = ann.temporal_behavior
+                annotation_lines.append(
+                    f"  {table.table_name}.{col.column_name}: "
+                    f"role={ann.semantic_role or '?'}, "
+                    f"concept={ann.business_concept or '?'}, "
+                    f"entity={ann.entity_type or '?'}"
+                )
+            cols.append(col_info)
+        tables_json.append(
+            {
+                "table_name": table.table_name,
+                "row_count": table.row_count,
+                "columns": cols,
+            }
+        )
+
+    annotations_summary = (
+        "\n".join(annotation_lines) if annotation_lines else "No annotations available."
+    )
+
+    # The defined relationships (not candidate) within the selection, columns eager.
+    # Run-agnostic by design (DAT-408): induction authors a vertical's rules from
+    # sample tables, not a session run — there is no run_id to scope to, so it reads
+    # the catalog as-is.
+    relationships = load_defined_relationships(session, table_ids, eager_columns=True)
+
+    rel_lines: list[str] = []
+    for rel in relationships:
+        from_col = rel.from_column
+        to_col = rel.to_column
+        if from_col and to_col and from_col.table and to_col.table:
+            rel_lines.append(
+                f"  {from_col.table.table_name}.{from_col.column_name} → "
+                f"{to_col.table.table_name}.{to_col.column_name} "
+                f"({rel.relationship_type}, {rel.cardinality or '?'})"
+            )
+
+    relationships_summary = "\n".join(rel_lines) if rel_lines else "No relationships detected."
+
+    return tables_json, annotations_summary, relationships_summary

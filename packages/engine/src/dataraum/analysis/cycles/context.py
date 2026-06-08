@@ -7,6 +7,13 @@ entity classifications, and confirmed relationships.
 
 The LLM receives pre-computed signals and synthesizes them
 into business cycle analysis — no exploration tools needed.
+
+In-run reader (ADR-0008, DAT-455): the builder never resolves snapshot heads
+itself. Every run-versioned read (defined relationships, entity
+classifications, slice definitions, per-column semantic annotations) is scoped
+by the :class:`~dataraum.lifecycle.BaseRunMap` pinned once at run start by the
+operating_model resolve activity and passed in. An absent pin reads EMPTY,
+never cross-run (fail-closed, DAT-429).
 """
 
 from __future__ import annotations
@@ -22,19 +29,20 @@ from dataraum.analysis.relationships.graph_topology import (
     format_graph_structure_for_context,
 )
 from dataraum.analysis.relationships.utils import load_defined_relationships
-from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
-from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import duckdb
+
+    from dataraum.lifecycle import BaseRunMap
 
 
 def build_cycle_detection_context(
@@ -44,6 +52,7 @@ def build_cycle_detection_context(
     *,
     vertical: str,
     session_id: str | None = None,
+    base_runs: BaseRunMap,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -56,17 +65,24 @@ def build_cycle_detection_context(
         duckdb_conn: DuckDB connection for row counts
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
+        session_id: the owning journey session (provenance / logging only).
+        base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
+            ``relationship_run_id`` scopes the defined relationships, entity
+            classifications, and slice definitions; ``semantic_runs`` scopes
+            each table's per-column annotations. An absent pin reads EMPTY —
+            fail-closed (DAT-429), never a cross-run read.
 
     Returns:
         Context dictionary with all pipeline metadata for cycle detection.
     """
     context: dict[str, Any] = {}
 
-    # 1. Tables + columns (with eager-loaded semantic annotations)
+    # 1. Tables + columns. Semantic annotations are NOT loaded through the ORM
+    # ``Column.semantic_annotation`` one-to-one — under multi-run coexistence
+    # that silently picks one of N coexisting rows. The explicit run-pinned
+    # query below (mirrors the validation resolver) replaces it.
     tables_stmt = (
-        select(Table)
-        .where(Table.table_id.in_(table_ids))
-        .options(selectinload(Table.columns).selectinload(Column.semantic_annotation))
+        select(Table).where(Table.table_id.in_(table_ids)).options(selectinload(Table.columns))
     )
     tables = session.execute(tables_stmt).scalars().all()
 
@@ -76,6 +92,8 @@ def build_cycle_detection_context(
     for t in tables:
         for c in t.columns:
             column_by_id[c.column_id] = c
+
+    annotations = _load_pinned_annotations(session, tables, base_runs.semantic_runs)
 
     # Row counts from DuckDB
     row_counts: dict[str, int | None] = {}
@@ -96,8 +114,8 @@ def build_cycle_detection_context(
                 "name": c.column_name,
                 "type": c.resolved_type or c.raw_type,
             }
-            if c.semantic_annotation:
-                ann = c.semantic_annotation
+            ann = annotations.get(c.column_id)
+            if ann is not None:
                 col_info["semantic_role"] = ann.semantic_role
                 col_info["entity_type"] = ann.entity_type
                 col_info["business_concept"] = ann.business_concept
@@ -117,20 +135,19 @@ def build_cycle_detection_context(
 
     context["tables"] = table_info
 
-    # Resolve the session's current (promoted) run ONCE via the per-session head
-    # (DAT-409). The run-versioned reads below — entity classifications, the
-    # defined relationships, AND slice definitions (run-versioned since DAT-448:
-    # table-scoped + immortal was the cross-session leak) — scope to the SAME
-    # run. **Fail-closed (DAT-429, session isolation):** with no resolved run
-    # (no session_id, or the session hasn't promoted one yet) we MUST NOT fall
-    # back to a cross-run read — that would mix OTHER sessions' rows into this
-    # context. Leave them empty instead.
-    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    # The pinned begin_session run (ADR-0008 in-run mode): the run-versioned
+    # reads below — entity classifications, the defined relationships, AND slice
+    # definitions (run-versioned since DAT-448: table-scoped + immortal was the
+    # cross-session leak) — scope to the SAME run. **Fail-closed (DAT-429,
+    # session isolation):** with no pinned run we MUST NOT fall back to a
+    # cross-run read — that would mix OTHER sessions' rows into this context.
+    # Leave them empty instead.
+    run_id = base_runs.relationship_run_id
     if session_id and run_id is None:
         logger.warning(
             "session_run_unresolved",
             session_id=session_id,
-            detail="no promoted run for this session; entity/relationship context is empty",
+            detail="no pinned begin_session run; entity/relationship context is empty",
         )
 
     # 2. Entity classifications (fact vs dimension) — run-scoped (fail-closed above).
@@ -196,19 +213,20 @@ def build_cycle_detection_context(
     context["graph_topology"] = graph_structure
 
     # 5. Slice definitions (pre-identified categorical dimensions = status columns)
-    # Run-versioned (DAT-448): scope to the session's promoted run; fail-closed
-    # like entities/relationships when a named session has no promoted run.
-    slice_stmt = (
-        select(SliceDefinition)
-        .where(SliceDefinition.table_id.in_(table_ids))
-        .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
-        .order_by(SliceDefinition.slice_priority)
-    )
+    # Run-versioned (DAT-448): scope to the pinned begin_session run; fail-closed
+    # like entities/relationships when the session has no pinned run (empty,
+    # never a cross-run read).
+    slices: list[SliceDefinition] = []
     if run_id is not None:
-        slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
-    if session_id and run_id is None:
-        slices = []
-    else:
+        slice_stmt = (
+            select(SliceDefinition)
+            .where(
+                SliceDefinition.table_id.in_(table_ids),
+                SliceDefinition.run_id == run_id,
+            )
+            .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
+            .order_by(SliceDefinition.slice_priority)
+        )
         slices = list(session.execute(slice_stmt).scalars().all())
 
     slice_list = []
@@ -296,6 +314,42 @@ def build_cycle_detection_context(
     context["domain_vocabulary"] = vocabulary
 
     return context
+
+
+def _load_pinned_annotations(
+    session: Session,
+    tables: list[Table] | Any,
+    semantic_runs: dict[str, str],
+) -> dict[str, SemanticAnnotation]:
+    """Load each table's semantic annotations at its PINNED run, keyed by column_id.
+
+    Replaces the ``Column.semantic_annotation`` one-to-one ORM navigation,
+    broken under multi-run coexistence (the table is run-versioned with a
+    ``(column_id, run_id)`` UNIQUE — N runs leave N rows per column and the
+    one-to-one silently picks one). A table with no pinned semantic run
+    contributes nothing — fail-closed, never an arbitrary run's annotations.
+    Mirrors the validation resolver's loader of the same name (DAT-455).
+    """
+    annotations: dict[str, SemanticAnnotation] = {}
+    for table in tables:
+        run_id = semantic_runs.get(table.table_id)
+        if run_id is None:
+            continue
+        column_ids = [col.column_id for col in table.columns]
+        if not column_ids:
+            continue
+        rows = (
+            session.execute(
+                select(SemanticAnnotation).where(
+                    SemanticAnnotation.column_id.in_(column_ids),
+                    SemanticAnnotation.run_id == run_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        annotations.update({ann.column_id: ann for ann in rows})
+    return annotations
 
 
 def _get_value_counts_for_column(

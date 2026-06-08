@@ -25,7 +25,15 @@
 
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18
+    # max_connections raised from the default 100: this single instance backs
+    # ~four pooled consumers — Temporal (server + visibility ≈ 40 at rest),
+    # cockpit_db, the engine ORM, and the DuckLake catalog pool. A live
+    # operating_model run peaked at 103 against the default 100 (DAT-456 smoke),
+    # surviving only on the 3 superuser-reserved slots. 200 restores real
+    # headroom; it is provisioning for the legitimate consumer count, NOT a
+    # band-aid for the (already right-sized, =16) DuckLake pool.
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

@@ -1,38 +1,18 @@
 """Derived value entropy detector.
 
-Measures uncertainty in derived/computed columns.
-Low match rate indicates the detected formula may not be correct.
-
-Uses non-linear scoring: a 5% formula mismatch rate is a real problem,
-not 0.05 severity. The boost function maps small mismatch rates to scores
-that reflect actual severity (same approach as type_fidelity).
+Measures uncertainty in derived/computed columns as the honest formula-mismatch
+rate (1 − match_rate) — the fraction of rows where the detected formula does not
+hold. No boost curve (DAT-442 reset): a 10% mismatch scores 0.10, not an
+amplified 0.71. Severity per intent lives in the loss table; recall is the
+ordering "injected separates from clean" (eval ORDERING_DETECTORS).
 """
 
-import math
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
-
-
-def _boost_mismatch_rate(rate: float) -> float:
-    """Amplify small but significant formula mismatch rates.
-
-    5% of rows failing a formula check is a real problem, not noise.
-    Same log-based boost as type_fidelity._boost_rate():
-
-        0.01 → 0.01  (noise — rounding errors)
-        0.03 → 0.20  (notable — worth investigating)
-        0.05 → 0.35  (fires at 0.3 threshold)
-        0.08 → 0.56  (clearly broken)
-        0.15 → 1.00  (severe)
-    """
-    if rate <= 0:
-        return 0.0
-    boosted = ((1 + rate) ** 2 / -math.log10(rate)) - 0.5
-    return max(0.0, min(1.0, boosted))
 
 
 class DerivedValueDetector(EntropyDetector):
@@ -123,9 +103,10 @@ class DerivedValueDetector(EntropyDetector):
                 formula = current_derived.get("formula")
                 source_columns = current_derived.get("source_column_names", [])
 
-            # Calculate entropy from mismatch rate with non-linear boost
+            # Honest mismatch rate — fraction of rows the formula fails. No boost
+            # (DAT-442); the eval asserts the ordering vs clean, severity in loss.
             mismatch_rate = 1.0 - match_rate
-            score = _boost_mismatch_rate(mismatch_rate)
+            score = max(0.0, min(1.0, mismatch_rate))
 
             # Classify match quality using configurable thresholds
             if match_rate >= match_exact:

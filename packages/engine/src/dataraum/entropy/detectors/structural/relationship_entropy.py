@@ -1,18 +1,18 @@
 """Relationship quality entropy detector.
 
 Measures uncertainty in relationships based on actual evaluation metrics:
-- Referential integrity (orphan ratio) — primary signal, sqrt-boosted
+- Referential integrity (orphan ratio) — primary signal, honest rate
 - Cardinality verification
 - Semantic clarity (relationship type, confirmation status)
 
-Uses max aggregation (not weighted average) so the worst component drives
-the score. RI is sqrt-boosted because orphan rates >5% are genuinely bad
-for FK relationships, not noise.
+Uses max aggregation (not weighted average) so the worst component drives the
+score. RI is the raw orphan rate — no sqrt boost (DAT-442 reset): 20% orphans
+scores 0.20, not an amplified 0.45. The eval asserts the ordering vs clean;
+severity per intent lives in the loss table.
 
 Source: relationships.Relationship.evidence (contains JoinCandidate metrics)
 """
 
-import math
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
@@ -94,9 +94,6 @@ class RelationshipEntropyDetector(EntropyDetector):
         score_unconfirmed = detector_config.get("score_unconfirmed", 0.3)
         score_unknown_type = detector_config.get("score_unknown_type", 0.6)
 
-        # RI boost factor: sqrt amplifies small orphan rates
-        ri_boost = detector_config.get("ri_boost", True)
-
         rel = context.get_analysis(AnalysisKey.RELATIONSHIPS, None)
         if not rel:
             return []
@@ -126,10 +123,7 @@ class RelationshipEntropyDetector(EntropyDetector):
         else:
             ri_entropy = score_unknown_ri
 
-        # Boost RI: sqrt amplifies small-but-real orphan rates.
-        # 5% orphans → 0.22, 10% → 0.32, 20% → 0.45, 50% → 0.71
-        if ri_boost and ri_entropy > 0:
-            ri_entropy = min(1.0, math.sqrt(ri_entropy))
+        # ri_entropy is the honest orphan rate — no boost (DAT-442 reset).
 
         # 2. Compute cardinality entropy
         if cardinality_verified is True:
@@ -166,7 +160,6 @@ class RelationshipEntropyDetector(EntropyDetector):
             "card_entropy": round(card_entropy, 3),
             "semantic_entropy": round(semantic_entropy, 3),
             "aggregation_method": "max",
-            "ri_boosted": ri_boost,
             "evaluation_metrics": {
                 "left_referential_integrity": left_ri,
                 "orphan_count": orphan_count,

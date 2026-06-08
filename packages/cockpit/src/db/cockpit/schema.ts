@@ -14,12 +14,13 @@
 // Source of truth: this file. Migrations land in ../../../drizzle/cockpit/ via
 // `bun run db:generate:cockpit`, applied by `bun run db:migrate:cockpit` (the
 // compose `cockpit-migrate` init service on the stack; manual for host dev).
-//
-// Still to land here (later phases of DAT-460): conversations /
-// conversation_messages (chat persistence, DAT-462) · ui_state (DAT-462).
 
+import type { UIMessage } from "@tanstack/ai-react";
 import {
+	boolean,
 	index,
+	integer,
+	jsonb,
 	pgTable,
 	timestamp,
 	uniqueIndex,
@@ -116,3 +117,66 @@ export const sessionRuns = pgTable(
 		index("session_runs_session_idx").on(t.sessionId),
 	],
 );
+
+/**
+ * A server-owned chat thread — the DAT-462 flip. The conversation belongs to a
+ * WORKSPACE, not a single session: one thread spans many workflow sessions (you
+ * chat, trigger add_source → session 1, chat more, trigger begin_session →
+ * session 2, all in one transcript). Its `id` is the AG-UI `threadId` the client
+ * hydrates on reload. cockpit_db is the source of truth; the client is a view
+ * seeded via `initialMessages` and updated by the stream. One active conversation
+ * per workspace for now (multi-conversation history is a later concern).
+ */
+export const conversations = pgTable(
+	"conversations",
+	{
+		id: varchar("id").primaryKey(),
+		workspaceId: varchar("workspace_id")
+			.notNull()
+			.references(() => workspaces.id),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [index("conversations_workspace_idx").on(t.workspaceId)],
+);
+
+/**
+ * One persisted message per row (server appends; no blob rewrite). `message` is
+ * the `UIMessage` verbatim so the transcript restores exactly; `id` is the
+ * message's own id (PK → idempotent append by message id). `seq` orders within
+ * the conversation. `modelOnly` rows are the refs channel (DAT-452 flip): fed to
+ * the model via `buildModelMessages` but NEVER returned to the display transcript
+ * — the leak the `agent-refs` text-marker convention used to prevent, now
+ * impossible by construction. `role` is denormalized off `message` for filtering.
+ */
+export const conversationMessages = pgTable(
+	"conversation_messages",
+	{
+		id: varchar("id").primaryKey(),
+		conversationId: varchar("conversation_id")
+			.notNull()
+			.references(() => conversations.id),
+		seq: integer("seq").notNull(),
+		role: varchar("role").notNull(),
+		message: jsonb("message").$type<UIMessage>().notNull(),
+		modelOnly: boolean("model_only").notNull().default(false),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+	},
+	(t) => [
+		index("conversation_messages_conversation_idx").on(t.conversationId, t.seq),
+	],
+);
+
+/**
+ * Per-conversation UI state restored on reload — the canvas "viewing history"
+ * pin (DAT-354 `pinnedCallId`) so a refresh returns to the same focus rather
+ * than snapping back to live. 1:1 with a conversation (its id is the PK). Kept
+ * deliberately thin; more prefs join as columns when a surface needs them.
+ */
+export const uiState = pgTable("ui_state", {
+	conversationId: varchar("conversation_id")
+		.primaryKey()
+		.references(() => conversations.id),
+	pinnedCallId: varchar("pinned_call_id"),
+	updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+});

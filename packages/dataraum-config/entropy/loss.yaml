@@ -36,18 +36,12 @@ measurements:
     aggregation_intent: { conflict: 0.9, ignorance: 0.5 }
     reporting_intent: { conflict: 0.8, ignorance: 0.4 }
 
-  # Statistical (surprise) measurement: a "surprise" weight scores the detector's
-  # KL score D_KL(observed ‖ reference). No (conflict, ignorance) split — a
-  # statistical detector has a reference, not witnesses. DAT-442 second wave moved
-  # benford off its network node onto this loss path (the n-inflating chi-square
-  # boost curve is gone; clean financial columns now score ~0, not 0.7).
-  benford:
-    # Leading-digit-law violation — fabricated or systematically-rounded measures.
-    # Worst for aggregation (you'd sum fabricated values) and reporting (present
-    # them as real); a mild caveat for an exploratory query that can hedge.
-    query_intent: { surprise: 0.2 }
-    aggregation_intent: { surprise: 0.6 }
-    reporting_intent: { surprise: 0.5 }
+  # benford is NOT in the loss table: it is an INFORMATIVE SIGNAL, not tunable entropy
+  # (DAT-442). Leading-digit law is a forensic/compliance statistic, not an ERP data-
+  # quality fact a teach can close — and it doesn't map to ERP measures (prices aren't
+  # Benford-distributed). The benford detector still computes its KL surprise per column
+  # as context (a DirectSignal), but it does not drive intent readiness. Same lane as
+  # outliers / drift / variance: interesting per-column data, never a teach trigger.
 
   # temporal_drift was CUT (DAT-442 reset, proven in eval): distribution drift
   # cannot separate a 1.35× shift from natural month-to-month volatility on the
@@ -87,3 +81,45 @@ measurements:
     # aggregation_intent 0.7 in the network.
     aggregation_intent: { score: 0.7 }
     reporting_intent: { score: 0.6 }
+
+  # --- Relocated from network.yaml (DAT-442): this loss table is now the WHOLE rollup.
+  # The noisy-OR DAG + intent-word nodes are deleted; each measurement maps DIRECTLY to
+  # per-intent loss via {score} weights (the raw [0,1] detector score). The weights are
+  # the OLD network edge strengths carried over as PLACEHOLDER priors (DAT-450 calibrates
+  # them); relationship_entropy's 0.75 in particular was tuned to the old sqrt-boosted
+  # fixture and is a known calibration question. ---
+  type_fidelity:
+    # Type-cast failures break joins/filters (query) more than sums; some reporting risk.
+    query_intent: { score: 0.7 }
+    reporting_intent: { score: 0.4 }
+  relationship_entropy:
+    # Orphan joins corrupt reports the most. (network: relationship_quality→reporting 0.75.)
+    reporting_intent: { score: 0.75 }
+  temporal_entropy:
+    # A broken time role breaks time filtering (query), time-bucketed aggregations, reports.
+    query_intent: { score: 0.5 }
+    aggregation_intent: { score: 0.4 }
+    reporting_intent: { score: 0.4 }
+  unit_entropy:
+    # Undeclared/ambiguous units are worst for aggregation (summing mixed units) + reports.
+    aggregation_intent: { score: 0.8 }
+    reporting_intent: { score: 0.6 }
+  business_meaning:
+    # Garbage column names hurt reporting (labels) most; some query ambiguity.
+    query_intent: { score: 0.3 }
+    reporting_intent: { score: 0.7 }
+  cross_table_consistency:
+    # Cross-table reconciliation breaks: worst for aggregation + reporting.
+    aggregation_intent: { score: 0.8 }
+    reporting_intent: { score: 0.7 }
+  dimensional_entropy:
+    # Undocumented cross-column dependency (NMI). Context for query + aggregation.
+    query_intent: { score: 0.3 }
+    aggregation_intent: { score: 0.4 }
+  dimension_coverage:
+    # Fact-table dimension gaps affect query slicing + reporting completeness. (deferred)
+    query_intent: { score: 0.5 }
+    reporting_intent: { score: 0.6 }
+  join_path_determinism:
+    # Ambiguous join paths break query correctness. (deferred — recall fixture pending)
+    query_intent: { score: 0.8 }

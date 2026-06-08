@@ -43,7 +43,9 @@ describe("run_sql tool outputSchema (DAT-400)", () => {
 		});
 		expect(ok.success).toBe(true);
 		if (ok.success) {
-			expect(ok.data.truncated).toBe(true);
+			// outputSchema is now `QueryResult | { error }` (pass 2) — assert via a
+			// matcher rather than dot-access so the error branch doesn't break tsc.
+			expect(ok.data).toHaveProperty("truncated", true);
 		}
 	});
 });

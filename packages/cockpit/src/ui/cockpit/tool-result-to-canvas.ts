@@ -13,6 +13,7 @@
 
 import type { UIMessage } from "@tanstack/ai-react";
 import type { ConnectSchema } from "#/duckdb/connect";
+import { isAgentError } from "#/tools/agent-error";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -203,7 +204,10 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The agent's run_sql returns a small sample for the LLM; the human grid
 	// re-issues the query against the stateless streaming endpoint, so it maps
 	// from the CALL INPUT (sql + bind params), not the result. No sql → unchanged.
-	run_sql: (_result, input) => {
+	run_sql: (result, input) => {
+		// A query the agent couldn't run came back as `{ error }` (pass 2) — don't
+		// drive the human grid with SQL we already know fails.
+		if (isAgentError(result)) return null;
 		const args = (input ?? {}) as { sql?: unknown; params?: unknown };
 		if (typeof args.sql !== "string" || args.sql.length === 0) return null;
 		// Carry params ONLY when there are bind values: an empty array and

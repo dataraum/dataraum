@@ -141,10 +141,16 @@ export async function probe(input: ProbeInput): Promise<QueryResult> {
 			}
 		}
 	} catch (err) {
+		// SECURITY: a failed ATTACH can echo the connection DSN (which carries the
+		// credential) in the driver message. Redact the resolved URL before the
+		// message leaves this function — it reaches the agent (now as a `{ error }`
+		// result) and the persisted transcript.
+		const raw = err instanceof Error ? err.message : String(err);
+		const safe = credential.url
+			? raw.split(credential.url).join("<source url redacted>")
+			: raw;
 		throw new Error(
-			`Probe of source '${input.source_name}' (${backend}) failed: ${
-				err instanceof Error ? err.message : String(err)
-			}`,
+			`Probe of source '${input.source_name}' (${backend}) failed: ${safe}`,
 		);
 	} finally {
 		conn.closeSync();

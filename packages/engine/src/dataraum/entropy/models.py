@@ -15,6 +15,23 @@ from uuid import uuid4
 
 
 @dataclass
+class WitnessClaim:
+    """One witness's opinion on one claim slot (ADR-0009, DAT-457).
+
+    Adjudication (pooling) detectors attach these to an :class:`EntropyObject`;
+    the engine persists them as run-versioned ``ClaimWitnessRecord`` rows. They
+    are the provenance behind a pooled ``(conflict, ignorance)``. ``claim_field``
+    is the claim-slot identity (e.g. ``"null_token:TBD"``); ``distribution`` is
+    label → probability over the canonical claim space.
+    """
+
+    claim_field: str
+    witness_id: str
+    distribution: dict[str, float]
+    reliability: float
+
+
+@dataclass
 class EntropyObject:
     """Core entropy measurement object.
 
@@ -35,6 +52,11 @@ class EntropyObject:
 
     # Evidence (dimension-specific)
     evidence: list[dict[str, Any]] = field(default_factory=list)
+
+    # Witness provenance for adjudication (pooled) measurements (ADR-0009).
+    # The engine persists these to claim_witnesses, run-versioned, with the same
+    # scoping as this object's record. Empty for non-pooled detectors.
+    witnesses: list[WitnessClaim] = field(default_factory=list)
 
     # Metadata
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))

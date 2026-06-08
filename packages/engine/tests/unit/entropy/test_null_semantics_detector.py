@@ -59,16 +59,24 @@ def test_score_is_worst_token_conflict_driven_by_novel_sentinel() -> None:
     assert obj.score > 0.2
 
 
-def test_evidence_carries_witness_breakdown() -> None:
+def test_evidence_is_the_per_token_summary() -> None:
+    ctx = _context({"rejected_tokens": [{"token": "N/A", "count": 95}], "total_rejected": 100})
+    (entry,) = NullSemanticsDetector().detect(ctx)[0].evidence
+    assert set(entry["posterior"]) == {"is-null", "is-value"}
+    assert {"token", "claim_field", "conflict", "ignorance"} <= set(entry)
+    assert "witnesses" not in entry  # witnesses live on obj.witnesses → claim_witnesses
+
+
+def test_witnesses_carried_for_persistence() -> None:
     ctx = _context({"rejected_tokens": [{"token": "N/A", "count": 95}], "total_rejected": 100})
     obj = NullSemanticsDetector().detect(ctx)[0]
-    (entry,) = obj.evidence
-    assert set(entry["posterior"]) == {"is-null", "is-value"}
-    assert {w["witness_id"] for w in entry["witnesses"]} == {
+    assert {w.witness_id for w in obj.witnesses} == {
         "quarantine_clustering",
         "type_claim",
         "null_vocabulary",
     }
+    assert all(w.claim_field == "null_token:N/A" for w in obj.witnesses)
+    assert all(set(w.distribution) == {"is-null", "is-value"} for w in obj.witnesses)
 
 
 def test_no_rejected_tokens_emits_nothing() -> None:

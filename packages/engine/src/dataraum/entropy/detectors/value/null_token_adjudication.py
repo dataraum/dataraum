@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.measurements.null_semantics import CLAIM_SPACE, measure_null_semantics
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.models import EntropyObject, WitnessClaim
 
 _EMPTY_QUARANTINE = {"rejected_tokens": [], "total_rejected": 0}
 
@@ -61,6 +61,9 @@ class NullSemanticsDetector(EntropyDetector):
             return []
 
         score = max(a.result.conflict for a in adjudications)
+        # Evidence is the per-token pooled SUMMARY; the witness distributions go
+        # to the claim_witnesses table via obj.witnesses (engine-persisted) — not
+        # duplicated here.
         evidence = [
             {
                 "token": a.token,
@@ -68,15 +71,18 @@ class NullSemanticsDetector(EntropyDetector):
                 "conflict": a.result.conflict,
                 "ignorance": a.result.ignorance,
                 "posterior": dict(zip(CLAIM_SPACE, a.result.posterior, strict=True)),
-                "witnesses": [
-                    {
-                        "witness_id": w.witness_id,
-                        "distribution": dict(zip(CLAIM_SPACE, w.distribution, strict=True)),
-                        "reliability": w.reliability,
-                    }
-                    for w in a.witnesses
-                ],
             }
             for a in adjudications
         ]
-        return [self.create_entropy_object(context=context, score=score, evidence=evidence)]
+        obj = self.create_entropy_object(context=context, score=score, evidence=evidence)
+        obj.witnesses = [
+            WitnessClaim(
+                claim_field=a.claim_field,
+                witness_id=w.witness_id,
+                distribution=dict(zip(CLAIM_SPACE, w.distribution, strict=True)),
+                reliability=w.reliability,
+            )
+            for a in adjudications
+            for w in a.witnesses
+        ]
+        return [obj]

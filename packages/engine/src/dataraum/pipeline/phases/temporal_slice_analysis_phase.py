@@ -303,20 +303,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 except Exception as e:
                     errors.append(f"Analysis error for {si.slice_table_name}: {e}")
 
-        # Build ColumnSliceProfile records for dimensional_entropy detector.
-        # Source-free (DAT-403): scope by the session's typed table ids, not a
-        # single source — ``build_slice_profiles`` derives slice/slicing_view
-        # tables from them.
-        from dataraum.analysis.slicing.profiling import build_slice_profiles
-
-        slice_profiles_count = build_slice_profiles(
-            ctx.session, table_ids, session_id=ctx.require_session_id(), run_id=ctx.run_id
-        )
-
         outputs: dict[str, object] = {
             "drift_summaries": total_drift_summaries,
             "period_analyses": total_period_analyses,
-            "slice_profiles": slice_profiles_count,
             "time_columns": sorted(time_columns_used),
             "time_grain": time_grain,
         }
@@ -327,11 +316,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
         return PhaseResult.success(
             outputs=outputs,
             records_processed=len(slice_definitions),
-            records_created=total_drift_summaries + total_period_analyses + slice_profiles_count,
+            records_created=total_drift_summaries + total_period_analyses,
             summary=(
-                f"{total_drift_summaries} drift summaries, "
-                f"{total_period_analyses} period analyses, "
-                f"{slice_profiles_count} slice profiles"
+                f"{total_drift_summaries} drift summaries, {total_period_analyses} period analyses"
             ),
         )
 

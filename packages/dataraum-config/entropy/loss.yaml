@@ -46,7 +46,7 @@ measurements:
   # temporal_drift was CUT (DAT-442 reset, proven in eval): distribution drift
   # cannot separate a 1.35× shift from natural month-to-month volatility on the
   # additive-flow columns it applied to (clean KS ≈ injected ≈ 0.53). Real drift
-  # moves to DAT-445's expected-variation model.
+  # moves to DAT-276 (numeric drift for temporal slices), expected-variation-grounded.
 
   # slice_variance was CUT (DAT-442 reset, proven in eval): a between-slice
   # k-sample test (Kruskal–Wallis η²) is structurally blind to the slice-GLOBAL
@@ -57,7 +57,8 @@ measurements:
   # spreads also fired only on non-injected columns (distinct-ratio artifacts on
   # categorical dimensions). The null-rate-across-slices sliver — the one defensible
   # signal — is a proportions question (Cramér's V on null×slice), deferred to
-  # DAT-184 + a slice-conditional-null injection.
+  # DAT-473 (grounded, teach-closeable loss measurement) + a slice-conditional-null
+  # injection.
 
   # Rates / magnitudes (not divergences): the "score" weight scores the detector's
   # existing [0,1] score directly. These three left the network with the dissolved

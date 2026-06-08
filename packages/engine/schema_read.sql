@@ -46,10 +46,6 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-DROP VIEW IF EXISTS __READ__.column_slice_profiles;
-CREATE VIEW __READ__.column_slice_profiles AS
-SELECT * FROM __WS__.column_slice_profiles;
-
 DROP VIEW IF EXISTS __READ__.columns;
 CREATE VIEW __READ__.columns AS
 SELECT * FROM __WS__.columns;

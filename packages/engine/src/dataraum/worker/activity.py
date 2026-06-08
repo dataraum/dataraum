@@ -113,9 +113,9 @@ _PROMOTE_STAGES = (
 # (temporal_slice_analysis) and ``derived_value`` (correlations) — column/table-grain
 # value-readiness signals over the slices + enriched views the begin_session spine
 # just built. (slice_analysis still runs — temporal_slice_analysis + validation read
-# its slice tables — but its per-column ColumnSliceProfile output is now orphaned:
-# dimensional_entropy reads typed values directly via NMI (DAT-442/472), no longer
-# slice profiles. slice_variance / temporal_drift were cut in the DAT-442 reset.) Distinct from the
+# its slice tables — but it produces no entropy detector now: dimensional_entropy reads
+# typed values directly via NMI (DAT-442/472), and slice_variance / temporal_drift / the
+# per-column ColumnSliceProfile production were cut in the DAT-442 reset.) Distinct from the
 # source-scoped ``_DETECTOR_PHASES`` so add_source never runs these and begin_session
 # never runs the column-profiling ones. A declared detector whose inputs are absent
 # (no slice profiles / drift / derived columns) simply produces no objects — the

@@ -485,37 +485,6 @@ CREATE INDEX idx_claim_witness_target ON claim_witnesses (target);
 
 CREATE INDEX ix_claim_witnesses_session_id ON claim_witnesses (session_id);
 
-CREATE TABLE column_slice_profiles (
-	profile_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	source_column_id VARCHAR NOT NULL, 
-	slice_column_id VARCHAR NOT NULL, 
-	source_table_name VARCHAR NOT NULL, 
-	column_name VARCHAR NOT NULL, 
-	slice_column_name VARCHAR NOT NULL, 
-	slice_value VARCHAR NOT NULL, 
-	row_count INTEGER NOT NULL, 
-	null_ratio FLOAT, 
-	distinct_count INTEGER, 
-	quality_score FLOAT, 
-	has_issues INTEGER NOT NULL, 
-	issue_count INTEGER NOT NULL, 
-	profile_data JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_column_slice_profiles PRIMARY KEY (profile_id), 
-	CONSTRAINT fk_column_slice_profiles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_column_slice_profiles_source_column_id_columns FOREIGN KEY(source_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_column_slice_profiles_slice_column_id_columns FOREIGN KEY(slice_column_id) REFERENCES columns (column_id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_slice_profiles_lookup ON column_slice_profiles (source_column_id, slice_column_id, slice_value);
-
-CREATE INDEX idx_slice_profiles_slice_column ON column_slice_profiles (slice_column_id);
-
-CREATE INDEX idx_slice_profiles_source_column ON column_slice_profiles (source_column_id);
-
-CREATE INDEX ix_column_slice_profiles_session_id ON column_slice_profiles (session_id);
-
 CREATE TABLE derived_columns (
 	derived_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 

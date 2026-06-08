@@ -280,8 +280,8 @@ class PhaseActivities:
         """Temporal-slice-analysis activity — drift/period metrics on the slice tables.
 
         Runs JS-divergence drift detection and period completeness/anomaly analysis
-        per slice, and builds the ``ColumnSliceProfile`` records the
-        ``dimensional_entropy`` detector consumes. No LLM call.
+        per slice. No LLM call. (Per-column ColumnSliceProfile production was cut in
+        the DAT-442 reset; dimensional_entropy reads typed values directly via NMI.)
         """
         run = run_session_phase(
             self._manager, "temporal_slice_analysis", payload.identity, payload.table_ids

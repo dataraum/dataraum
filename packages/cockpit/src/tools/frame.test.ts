@@ -1,14 +1,19 @@
-// Unit tests for the frame tool (DAT-382) — the agent-tier induction step.
+// Unit tests for the frame tool (DAT-382, DAT-469) — the agent-tier model
+// induction step.
 //
 // Two mocked seams (the AC): the Anthropic adapter (`@tanstack/ai-anthropic`)
 // + the SDK `chat()` structured-output call stand in for the induction LLM, and
 // the Drizzle metadata client stands in for the `config_overlay` write `teach`
-// performs. We assert the proposed concepts are written as `concept` overlay
-// rows whose payload matches the engine's OntologyConcept field set (vertical
-// "_adhoc"), and that an explicit edited concept set skips induction entirely.
+// performs. We assert the proposed concepts + validations are written as overlay
+// rows whose payloads match the engine's shapes, and that an explicit edited set
+// skips induction entirely. `frame` now frames the WHOLE model: concepts AND the
+// validations over them, in one call — so the induce path makes TWO chat calls
+// (concepts, then validations over those concepts).
 //
 // Importing frame.ts transitively pulls config.ts + the Postgres metadata
-// client (via teach.ts). We mock both — same approach as registry.test.ts.
+// client (via teach.ts). We mock both — same approach as registry.test.ts. The
+// nearest-shipped-vertical seed read uses a nonexistent config path so it
+// degrades to an empty seed (no fs, no `bun` import in the node worker).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,7 +32,10 @@ vi.mock("@tanstack/ai-anthropic", () => ({
 }));
 
 vi.mock("#/config", () => ({
-	config: { anthropicApiKey: "sk-ant-test" },
+	config: {
+		anthropicApiKey: "sk-ant-test",
+		dataraumConfigPath: "/nonexistent",
+	},
 }));
 
 // Capture the inserted overlay rows. teach() calls
@@ -40,7 +48,12 @@ vi.mock("#/db/metadata/client", () => ({
 	metadataDb: { insert: vi.fn(() => ({ values: valuesMock })) },
 }));
 
-import { frame, induceConcepts } from "./frame";
+import {
+	frame,
+	induceConcepts,
+	induceValidations,
+	type ProposedValidation,
+} from "./frame";
 
 const SCHEMA: ConnectSchema = {
 	sourceKind: "file",
@@ -62,62 +75,126 @@ const SCHEMA: ConnectSchema = {
 	],
 };
 
+// A minimal well-formed validation the induction LLM "returns" (ProposedValidation
+// = ValidationSpec minus `vertical`, which frame fixes on write).
+const PROPOSED_VALIDATION: ProposedValidation = {
+	validation_id: "non_negative_amounts",
+	name: "Non-negative amounts",
+	description: "Every amount must be >= 0.",
+	category: "data_quality",
+	severity: "error",
+	check_type: "constraint",
+};
+
+const rowsOfType = (type: string) =>
+	insertedRows.filter((r) => r.type === type);
+
 beforeEach(() => {
 	insertedRows.length = 0;
 	chatMock.mockReset();
 	valuesMock.mockClear();
 });
 
-describe("frame (DAT-382)", () => {
-	it("induces concepts from a ConnectSchema and writes them as concept overlay rows", async () => {
-		chatMock.mockResolvedValue({
-			concepts: [
-				{
-					name: "revenue",
-					description: "Total income",
-					indicators: ["amount", "revenue"],
-					typical_role: "measure",
-				},
-				{ name: "order_id", typical_role: "key" },
-			],
-		});
+describe("frame (DAT-382, DAT-469)", () => {
+	it("induces concepts AND validations and writes them as overlay rows", async () => {
+		// Concepts induce first, then validations over them — two chat calls.
+		chatMock
+			.mockResolvedValueOnce({
+				concepts: [
+					{
+						name: "revenue",
+						description: "Total income",
+						indicators: ["amount", "revenue"],
+						typical_role: "measure",
+					},
+					{ name: "order_id", typical_role: "key" },
+				],
+			})
+			.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] });
 
 		const result = await frame({ schema: SCHEMA });
 
-		// Induction call happened with the schema in the user turn.
-		expect(chatMock).toHaveBeenCalledTimes(1);
+		// Both families induced: one concept call, one validation call.
+		expect(chatMock).toHaveBeenCalledTimes(2);
 
 		// One `concept` overlay row per induced concept, vertical-tagged "_adhoc".
-		expect(insertedRows).toHaveLength(2);
-		for (const row of insertedRows) {
-			expect(row.type).toBe("concept");
+		const conceptRows = rowsOfType("concept");
+		expect(conceptRows).toHaveLength(2);
+		for (const row of conceptRows) {
 			expect((row.payload as { vertical: string }).vertical).toBe("_adhoc");
 			expect(row.sessionId).toBeNull();
 		}
-		const revenue = insertedRows[0].payload as Record<string, unknown>;
+		const revenue = conceptRows[0].payload as Record<string, unknown>;
 		expect(revenue.name).toBe("revenue");
 		expect(revenue.indicators).toEqual(["amount", "revenue"]);
-		expect(revenue.typical_role).toBe("measure");
 		// exclude_none parity: optional fields the model omitted are not sprayed.
 		expect(revenue).not.toHaveProperty("exclude_patterns");
 
-		// The tool result carries the written concepts + their overlay ids.
+		// One `validation` overlay row, vertical-tagged + carrying the full spec.
+		const validationRows = rowsOfType("validation");
+		expect(validationRows).toHaveLength(1);
+		const v = validationRows[0].payload as Record<string, unknown>;
+		expect(validationRows[0].type).toBe("validation");
+		expect(v.vertical).toBe("_adhoc");
+		expect(v.validation_id).toBe("non_negative_amounts");
+		expect(v.check_type).toBe("constraint");
+
+		// The tool result carries the written model (concepts + validations + ids).
 		expect(result.vertical).toBe("_adhoc");
 		expect(result.concepts).toHaveLength(2);
-		expect(result.concepts[0].name).toBe("revenue");
 		expect(result.concepts[0].overlay_id).toEqual(expect.any(String));
+		expect(result.validations).toHaveLength(1);
+		expect(result.validations[0].validation_id).toBe("non_negative_amounts");
+		expect(result.validations[0].overlay_id).toEqual(expect.any(String));
 	});
 
-	it("declares concepts under a named vertical and returns it", async () => {
+	it("declares an edited concept + validation model verbatim, skipping all induction", async () => {
 		const result = await frame({
 			schema: SCHEMA,
 			vertical_name: "sales",
 			concepts: [{ name: "deal_value", typical_role: "measure" }],
+			validations: [PROPOSED_VALIDATION],
 		});
-		expect((insertedRows[0].payload as { vertical: string }).vertical).toBe(
-			"sales",
-		);
+
+		// No LLM call on the full declare path.
+		expect(chatMock).not.toHaveBeenCalled();
+		expect(
+			(rowsOfType("concept")[0].payload as { vertical: string }).vertical,
+		).toBe("sales");
+		expect(
+			(rowsOfType("validation")[0].payload as { vertical: string }).vertical,
+		).toBe("sales");
 		expect(result.vertical).toBe("sales");
+		expect(result.concepts[0].name).toBe("deal_value");
+		expect(result.validations[0].validation_id).toBe("non_negative_amounts");
+	});
+
+	it("declares edited concepts but INDUCES validations over them (mixed path)", async () => {
+		chatMock.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] });
+
+		const result = await frame({
+			schema: SCHEMA,
+			concepts: [{ name: "gross_margin", typical_role: "measure" }],
+			// validations absent → induce over the declared concepts.
+		});
+
+		// Only the validation induction ran (concepts were declared verbatim).
+		expect(chatMock).toHaveBeenCalledTimes(1);
+		expect(rowsOfType("concept")).toHaveLength(1);
+		expect(rowsOfType("validation")).toHaveLength(1);
+		expect(result.concepts[0].name).toBe("gross_margin");
+		expect(result.validations).toHaveLength(1);
+	});
+
+	it("declares zero validations when given an empty edited set (no induction)", async () => {
+		const result = await frame({
+			schema: SCHEMA,
+			concepts: [{ name: "gross_margin", typical_role: "measure" }],
+			validations: [],
+		});
+		expect(chatMock).not.toHaveBeenCalled();
+		expect(rowsOfType("validation")).toHaveLength(0);
+		expect(result.validations).toEqual([]);
 	});
 
 	it("rejects an unsafe vertical name", async () => {
@@ -126,6 +203,7 @@ describe("frame (DAT-382)", () => {
 				schema: SCHEMA,
 				vertical_name: "../etc",
 				concepts: [{ name: "x" }],
+				validations: [],
 			}),
 		).rejects.toThrow(/Invalid vertical name/);
 	});
@@ -135,28 +213,16 @@ describe("frame (DAT-382)", () => {
 			schema: SCHEMA,
 			vertical_name: "_adhoc",
 			concepts: [{ name: "x" }],
+			validations: [],
 		});
 		expect(result.vertical).toBe("_adhoc");
 	});
 
-	it("declares a user-edited concept set verbatim, skipping induction", async () => {
-		const result = await frame({
-			schema: SCHEMA,
-			concepts: [{ name: "gross_margin", typical_role: "measure" }],
-		});
-
-		// No LLM call on the edit/declare path.
-		expect(chatMock).not.toHaveBeenCalled();
-		expect(insertedRows).toHaveLength(1);
-		expect((insertedRows[0].payload as { name: string }).name).toBe(
-			"gross_margin",
-		);
-		expect(result.concepts[0].name).toBe("gross_margin");
-	});
-
-	it("rejects an induction that returns no concepts", async () => {
+	it("rejects an induction that returns no concepts (before inducing validations)", async () => {
 		chatMock.mockResolvedValue({ concepts: [] });
 		await expect(frame({ schema: SCHEMA })).rejects.toThrow(/no concepts/i);
+		// Threw after the concept call, before any validation induction or write.
+		expect(chatMock).toHaveBeenCalledTimes(1);
 		expect(insertedRows).toHaveLength(0);
 	});
 
@@ -169,11 +235,53 @@ describe("frame (DAT-382)", () => {
 		expect(insertedRows).toHaveLength(0);
 	});
 
+	it("induceValidations induces over the concepts + seed, returns the set, writes nothing", async () => {
+		chatMock.mockResolvedValue({ validations: [PROPOSED_VALIDATION] });
+		// Inject a shipped-spec reader so the seed wiring is exercised without fs.
+		const readSeed = vi.fn(async (v: string) =>
+			v === "finance"
+				? [
+						{
+							validation_id: "trial_balance",
+							name: "Trial Balance",
+							description: null,
+							check_type: "balance",
+							severity: "critical",
+							parameters: null,
+						},
+					]
+				: [],
+		);
+		// Frame ON TOP of finance so the seed reader's own-vertical specs feed the
+		// few-shot (the fallback scan over the config tree is covered in
+		// frame-family.test.ts).
+		const validations = await induceValidations(
+			SCHEMA,
+			[{ name: "amount", typical_role: "measure" }],
+			"finance",
+			undefined,
+			readSeed,
+		);
+
+		expect(validations).toEqual([PROPOSED_VALIDATION]);
+		expect(insertedRows).toHaveLength(0);
+
+		// The induce call used the validation instructions + carried the concepts
+		// and the structural few-shot from the seed reader.
+		const call = chatMock.mock.calls[0]?.[0] as {
+			systemPrompts: string[];
+			messages: { content: string }[];
+		};
+		expect(call.systemPrompts[0]).toMatch(/data-quality expert/);
+		expect(call.messages[0].content).toContain("amount");
+		expect(call.messages[0].content).toContain("trial_balance");
+		expect(call.messages[0].content).toMatch(/EXAMPLE/);
+	});
+
 	it("forwards the tool-context abort into the nested induction chat() (DAT-449)", async () => {
-		// The pattern shared by all four nested-synthesis sites (frame induction +
-		// the three why_* narratives): the .server() context's abortSignal is
-		// bridged into the abortController chat() expects, so a user stop()
-		// cancels the in-flight nested Anthropic call instead of billing it out.
+		// The pattern shared by all the nested-synthesis sites: the .server()
+		// context's abortSignal is bridged into the abortController chat() expects,
+		// so a user stop() cancels the in-flight nested Anthropic call.
 		chatMock.mockResolvedValue({ concepts: [] });
 		const source = new AbortController();
 		await induceConcepts(SCHEMA, source.signal);
@@ -183,7 +291,6 @@ describe("frame (DAT-382)", () => {
 		};
 		expect(options.abortController).toBeDefined();
 		expect(options.abortController?.signal.aborted).toBe(false);
-		// Stopping the run (the tool context's signal) aborts the nested call.
 		source.abort();
 		expect(options.abortController?.signal.aborted).toBe(true);
 	});

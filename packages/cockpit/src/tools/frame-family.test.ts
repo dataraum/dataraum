@@ -10,7 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 // client (via teach.ts). The pure helpers under test touch neither, so mock both
 // so the module imports cleanly (the cockpit unit-test convention).
 vi.mock("#/config", () => ({
-	config: { anthropicApiKey: "sk-ant-test", dataraumConfigPath: "/nonexistent" },
+	config: {
+		anthropicApiKey: "sk-ant-test",
+		dataraumConfigPath: "/nonexistent",
+	},
 }));
 vi.mock("#/db/metadata/client", () => ({
 	metadataDb: { insert: vi.fn(() => ({ values: vi.fn() })) },

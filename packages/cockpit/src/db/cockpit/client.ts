@@ -10,6 +10,9 @@ import { config } from "../../config";
 
 const client = new SQL(config.cockpitDatabaseUrl);
 
-// schema is intentionally not passed yet — ./schema.ts is a placeholder. Once
-// real tables land (e.g. workspaces registry), pass `{ client, schema }`.
+// The control-plane tables (DAT-461) live in ./schema.ts; callers import the
+// table objects directly and use `cockpitDb.insert(...)` / `.select(...)`. We do
+// NOT pass `schema` to drizzle() — that only enables the relational query API
+// (`db.query.*`), which nothing here uses, and the drizzle 1.0 relations rewrite
+// makes the bun-sql `{ client, schema }` overload awkward to type.
 export const cockpitDb = drizzle({ client });

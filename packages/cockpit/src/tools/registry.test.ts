@@ -44,12 +44,15 @@ describe("tool registry (DAT-353)", () => {
 				"teach",
 				"teach_validation",
 				"teach_cycle",
+				"teach_metric",
 				"begin_session",
 				"operating_model",
 				"look_validation",
 				"why_validation",
 				"look_cycle",
 				"why_cycle",
+				"look_metric",
+				"why_metric",
 				"replay",
 				"workflow_status",
 				"upload",
@@ -64,6 +67,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("teach")?.needsApproval).toBe(true);
 		expect(byName.get("teach_validation")?.needsApproval).toBe(true);
 		expect(byName.get("teach_cycle")?.needsApproval).toBe(true);
+		expect(byName.get("teach_metric")?.needsApproval).toBe(true);
 		expect(byName.get("begin_session")?.needsApproval).toBe(true);
 		expect(byName.get("operating_model")?.needsApproval).toBe(true);
 		expect(byName.get("replay")?.needsApproval).toBe(true);
@@ -82,6 +86,8 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("why_validation")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("look_cycle")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("why_cycle")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("look_metric")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("why_metric")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);

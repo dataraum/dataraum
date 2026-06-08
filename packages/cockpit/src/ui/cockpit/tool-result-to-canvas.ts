@@ -17,11 +17,13 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyCycleResult } from "#/tools/why-cycle";
+import type { WhyMetricResult } from "#/tools/why-metric";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -116,6 +118,18 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	why_cycle: (result) =>
 		isWhyResult(result)
 			? { kind: "cycle-why", why: result as WhyCycleResult }
+			: null,
+	// The operating_model metric list (DAT-466). Project only a complete result
+	// (a `metrics` array) — same partial/errored-output guard as look_validation.
+	look_metric: (result) =>
+		Array.isArray((result as { metrics?: unknown } | null)?.metrics)
+			? { kind: "metric-list", look: result as LookMetricResult }
+			: null,
+	// The per-metric drill-down (DAT-466) — same `found` guard as the other why_*
+	// tools.
+	why_metric: (result) =>
+		isWhyResult(result)
+			? { kind: "metric-why", why: result as WhyMetricResult }
 			: null,
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and

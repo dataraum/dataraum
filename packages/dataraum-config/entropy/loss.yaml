@@ -39,3 +39,13 @@ measurements:
     query_intent: { surprise: 0.2 }
     aggregation_intent: { surprise: 0.6 }
     reporting_intent: { surprise: 0.5 }
+
+  temporal_drift:
+    # The value distribution disagrees across time periods (generalized JSD vs the
+    # pooled distribution). Worst for aggregation (summing across non-stationary
+    # periods) and reporting (a drifting metric presented as stable); a query that
+    # filters/sorts on time is less exposed. Old network edges were query 0.45 /
+    # aggregation 0.5 — placeholder priors, calibrated later (DAT-450).
+    query_intent: { surprise: 0.4 }
+    aggregation_intent: { surprise: 0.6 }
+    reporting_intent: { surprise: 0.5 }

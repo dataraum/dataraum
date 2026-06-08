@@ -65,6 +65,7 @@ CREATE TABLE column_drift_summaries (
 	time_column VARCHAR(255) NOT NULL, 
 	max_js_divergence FLOAT NOT NULL, 
 	mean_js_divergence FLOAT NOT NULL, 
+	drift_divergence FLOAT, 
 	periods_analyzed INTEGER NOT NULL, 
 	periods_with_drift INTEGER NOT NULL, 
 	drift_evidence_json JSON, 

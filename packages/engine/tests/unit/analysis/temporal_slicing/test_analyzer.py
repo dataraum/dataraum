@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from datetime import date
 
+import duckdb
 import pytest
 
 from dataraum.analysis.temporal_slicing.analyzer import (
+    _bin_case,
     _build_drift_evidence,
+    _generalized_drift,
     _generate_periods,
+    _get_binned_distribution,
     _jensen_shannon_divergence,
+    _pooled_quantile_edges,
 )
 from dataraum.analysis.temporal_slicing.models import TemporalSliceConfig, TimeGrain
 
@@ -53,6 +58,127 @@ class TestJensenShannonDivergence:
     def test_empty_distributions(self):
         """Empty distributions produce 0 divergence."""
         assert _jensen_shannon_divergence({}, {}) == pytest.approx(0.0)
+
+
+class TestGeneralizedDrift:
+    """Tests for _generalized_drift — drift as periods' disagreement (DAT-442).
+
+    The size-weighted generalized JSD of per-period distributions vs the pooled
+    mixture, normalized by the weight entropy to [0, 1] (= conflict C with periods
+    as witnesses). Severity is NOT here — it's in the loss table.
+    """
+
+    def test_stationary_periods_zero(self):
+        """Identical period distributions → no drift."""
+        d = {"a": 0.5, "b": 0.5}
+        assert _generalized_drift([d, d, d], [1.0, 1.0, 1.0]) == pytest.approx(0.0, abs=1e-12)
+
+    def test_single_period_zero(self):
+        """One period can't disagree with itself."""
+        assert _generalized_drift([{"a": 1.0}], [1.0]) == 0.0
+
+    def test_two_disjoint_periods_is_one(self):
+        """Two equally-weighted disjoint periods → maximal disagreement."""
+        assert _generalized_drift([{"a": 1.0}, {"b": 1.0}], [1.0, 1.0]) == pytest.approx(1.0)
+
+    def test_two_clusters_normalized_by_weight_entropy(self):
+        """4 periods in 2 disjoint clusters: 1 bit of value-disagreement over 2
+        bits of period-entropy → 0.5 (the weight-entropy normalization)."""
+        dists = [{"a": 1.0}, {"a": 1.0}, {"b": 1.0}, {"b": 1.0}]
+        assert _generalized_drift(dists, [1.0] * 4) == pytest.approx(0.5)
+
+    def test_partial_overlap_between_zero_and_one(self):
+        """Periods that shift but overlap → strictly between 0 and 1."""
+        result = _generalized_drift([{"a": 0.7, "b": 0.3}, {"a": 0.3, "b": 0.7}], [1.0, 1.0])
+        assert 0.0 < result < 1.0
+
+    def test_size_weights_downweight_a_small_divergent_period(self):
+        """A divergent period that is tiny by row count drifts the column less."""
+        dists = [{"a": 1.0}, {"a": 1.0}, {"b": 1.0}]
+        equal = _generalized_drift(dists, [1.0, 1.0, 1.0])
+        skewed = _generalized_drift(dists, [10.0, 10.0, 1.0])
+        assert skewed < equal
+
+    def test_clamped_to_unit_interval(self):
+        """All results stay within [0, 1]."""
+        for weights in ([1.0, 1.0], [100.0, 1.0], [1.0, 1.0, 1.0, 1.0]):
+            dists = [{"a": 1.0}, {"b": 1.0}] * (len(weights) // 2)
+            assert 0.0 <= _generalized_drift(dists, weights) <= 1.0
+
+
+class TestBinCase:
+    """Tests for _bin_case — the SQL CASE that maps a value to a bin index."""
+
+    def test_edges_produce_sequential_bins(self):
+        case = _bin_case("v", [10.0, 20.0, 30.0])
+        assert case == "CASE WHEN v < 10 THEN 0 WHEN v < 20 THEN 1 WHEN v < 30 THEN 2 ELSE 3 END"
+
+    def test_no_edges_is_single_bin(self):
+        assert _bin_case("v", []) == "CASE  ELSE 0 END"
+
+
+class TestNumericBinning:
+    """In-memory DuckDB tests for the numeric drift binning SQL (DAT-442).
+
+    Exercises the real ``quantile_cont`` / CASE-bin SQL (DuckDB is embedded, no
+    docker) end-to-end into ``_generalized_drift``.
+    """
+
+    def _conn(self, rows: list[tuple[date, float]]) -> duckdb.DuckDBPyConnection:
+        conn = duckdb.connect(":memory:")
+        conn.execute("CREATE TABLE t (ts DATE, amount DOUBLE)")
+        conn.executemany("INSERT INTO t VALUES (?, ?)", rows)
+        return conn
+
+    def _shift_rows(self) -> list[tuple[date, float]]:
+        # Jan amounts 10–19, Feb amounts 100–190 (a disjoint 10× level shift).
+        rows: list[tuple[date, float]] = []
+        for i in range(50):
+            rows.append((date(2024, 1, 15), 10.0 + (i % 10)))
+            rows.append((date(2024, 2, 15), 100.0 + (i % 10) * 10))
+        return rows
+
+    def test_pooled_edges_sorted_and_unique(self):
+        edges = _pooled_quantile_edges(self._conn(self._shift_rows()), "t", "amount")
+        assert edges == sorted(edges)
+        assert len(set(edges)) == len(edges)
+        assert len(edges) >= 1
+
+    def test_binned_distribution_sums_to_one(self):
+        conn = self._conn(self._shift_rows())
+        edges = _pooled_quantile_edges(conn, "t", "amount")
+        res = _get_binned_distribution(
+            conn, "t", "amount", "ts", date(2024, 1, 1), date(2024, 2, 1), edges
+        )
+        assert res is not None
+        dist, n = res
+        assert n == 50
+        assert sum(dist.values()) == pytest.approx(1.0)
+
+    def test_level_shift_drifts_high(self):
+        conn = self._conn(self._shift_rows())
+        edges = _pooled_quantile_edges(conn, "t", "amount")
+        jan, n_jan = _get_binned_distribution(
+            conn, "t", "amount", "ts", date(2024, 1, 1), date(2024, 2, 1), edges
+        )
+        feb, n_feb = _get_binned_distribution(
+            conn, "t", "amount", "ts", date(2024, 2, 1), date(2024, 3, 1), edges
+        )
+        drift = _generalized_drift([jan, feb], [float(n_jan), float(n_feb)])
+        assert drift > 0.5  # disjoint level shift → strong period disagreement
+
+    def test_stationary_drifts_low(self):
+        rows = [(date(2024, m, 15), 10.0 + (i % 10)) for m in (1, 2) for i in range(50)]
+        conn = self._conn(rows)
+        edges = _pooled_quantile_edges(conn, "t", "amount")
+        jan, n_jan = _get_binned_distribution(
+            conn, "t", "amount", "ts", date(2024, 1, 1), date(2024, 2, 1), edges
+        )
+        feb, n_feb = _get_binned_distribution(
+            conn, "t", "amount", "ts", date(2024, 2, 1), date(2024, 3, 1), edges
+        )
+        drift = _generalized_drift([jan, feb], [float(n_jan), float(n_feb)])
+        assert drift < 0.1  # same distribution each period → ~no drift
 
 
 class TestGeneratePeriods:

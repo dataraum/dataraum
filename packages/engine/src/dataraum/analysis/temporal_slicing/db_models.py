@@ -44,6 +44,9 @@ class ColumnDriftSummary(Base):
     # Core metrics
     max_js_divergence: Mapped[float] = mapped_column(Float, nullable=False)
     mean_js_divergence: Mapped[float] = mapped_column(Float, nullable=False)
+    # Drift score (DAT-442): periods-as-witnesses generalized JSD vs the pooled
+    # distribution, normalized to [0, 1]. Nullable for pre-existing rows.
+    drift_divergence: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
     periods_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
     periods_with_drift: Mapped[int] = mapped_column(Integer, nullable=False)
 

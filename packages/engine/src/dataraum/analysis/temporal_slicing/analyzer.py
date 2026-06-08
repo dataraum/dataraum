@@ -96,8 +96,8 @@ def _get_distribution(
     time_column: str,
     start: date,
     end: date,
-) -> dict[str, float] | None:
-    """Get value distribution for a column in a time period."""
+) -> tuple[dict[str, float], int] | None:
+    """Get the value distribution (proportions) + row count for a time period."""
     sql = f"""
         SELECT
             "{col_name}" as value,
@@ -112,7 +112,107 @@ def _get_distribution(
         return None
 
     total = sum(r[1] for r in results)
-    return {str(r[0]) if r[0] is not None else "_NULL_": r[1] / total for r in results}
+    if total <= 0:
+        return None
+    dist = {str(r[0]) if r[0] is not None else "_NULL_": r[1] / total for r in results}
+    return dist, total
+
+
+# Shared histogram resolution for numeric drift. Quantile (equal-count) bins are
+# robust to the heavy tails of financial measures; equal-width bins would dump
+# everything into one bucket.
+_DRIFT_BINS = 10
+
+
+def _generalized_drift(
+    period_dists: list[dict[str, float]],
+    weights: list[float],
+) -> float:
+    """Drift as the periods' disagreement about the value distribution.
+
+    The size-weighted generalized Jensen–Shannon divergence of the per-period
+    distributions from their pooled mixture, normalized by the weight entropy to
+    ``[0, 1]``. This is the SAME quantity as the pooling engine's conflict ``C``
+    with time periods as the witnesses — the reference is the *pooled*
+    distribution, not the previous period. ``0`` = stationary across periods,
+    ``1`` = maximal period-disagreement. Catches slow ramps and permanent level
+    shifts that consecutive-pair divergence dilutes.
+    """
+    # Lazy import: entropy/__init__ pulls views → analysis, so a module-level
+    # import would cycle. By call time both packages are fully loaded.
+    from dataraum.entropy.pooling.pool import jensen_shannon_divergence, shannon_entropy
+
+    if len(period_dists) < 2:
+        return 0.0
+    total_w = math.fsum(weights)
+    if total_w <= 0.0:
+        return 0.0
+    norm_w = [w / total_w for w in weights]
+    keys = sorted(set().union(*(d.keys() for d in period_dists)))
+    if not keys:
+        return 0.0
+    aligned = [[d.get(k, 0.0) for k in keys] for d in period_dists]
+    jsd = jensen_shannon_divergence(aligned, norm_w)
+    h_w = shannon_entropy(norm_w)
+    if h_w <= 1e-12:
+        return 0.0
+    return min(1.0, jsd / h_w)
+
+
+def _bin_case(value_expr: str, edges: list[float]) -> str:
+    """SQL CASE mapping ``value_expr`` to a bin index in ``[0, len(edges)]``."""
+    whens = " ".join(f"WHEN {value_expr} < {edge:.17g} THEN {i}" for i, edge in enumerate(edges))
+    return f"CASE {whens} ELSE {len(edges)} END"
+
+
+def _pooled_quantile_edges(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    col_name: str,
+    *,
+    n_bins: int = _DRIFT_BINS,
+) -> list[float]:
+    """Interior quantile edges of the column over the whole slice window.
+
+    These shared edges give every period one comparable histogram support, so a
+    period whose values shift reweights the bins and shows as drift. The pooled
+    (all-period) quantiles are the reference distribution.
+    """
+    quantiles = [i / n_bins for i in range(1, n_bins)]
+    row = duckdb_conn.execute(
+        f'SELECT quantile_cont(TRY_CAST("{col_name}" AS DOUBLE), ?::DOUBLE[]) '
+        f'FROM "{table_name}" WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL',
+        [quantiles],
+    ).fetchone()
+    if not row or row[0] is None:
+        return []
+    return sorted({float(e) for e in row[0] if e is not None})
+
+
+def _get_binned_distribution(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    col_name: str,
+    time_column: str,
+    start: date,
+    end: date,
+    edges: list[float],
+) -> tuple[dict[str, float], int] | None:
+    """Per-period histogram (proportions + row count) over the shared ``edges``."""
+    case = _bin_case("v", edges)
+    rows = duckdb_conn.execute(
+        f"SELECT {case} AS bin, COUNT(*) AS c FROM "
+        f'(SELECT TRY_CAST("{col_name}" AS DOUBLE) AS v FROM "{table_name}" '
+        f'WHERE CAST("{time_column}" AS DATE) >= ? AND CAST("{time_column}" AS DATE) < ?) sub '
+        f"WHERE v IS NOT NULL GROUP BY bin",
+        [start, end],
+    ).fetchall()
+    if not rows:
+        return None
+    total = sum(int(c) for _, c in rows)
+    if total <= 0:
+        return None
+    return {str(int(b)): int(c) / total for b, c in rows}, total
 
 
 def _build_drift_evidence(
@@ -329,26 +429,28 @@ def analyze_column_drift(
             if col_name == time_column:
                 continue
 
-            # Collect distributions per period
-            distributions: list[tuple[str, dict[str, float]]] = []
+            # Collect distributions (+ row counts) per period
+            distributions: list[tuple[str, dict[str, float], int]] = []
             for start, end, label in periods:
-                dist = _get_distribution(
+                res = _get_distribution(
                     duckdb_conn, slice_table_name, col_name, time_column, start, end
                 )
-                if dist:
-                    distributions.append((label, dist))
+                if res:
+                    dist, count = res
+                    distributions.append((label, dist, count))
 
             if len(distributions) < 2:
                 continue
 
             # Compare consecutive periods and collect per-period JS divergence
+            # (kept for evidence: worst transition, change points).
             baseline = distributions[0][1]
             js_values: list[float] = []
             per_period: list[tuple[str, float, dict[str, float], dict[str, float]]] = []
 
             for i in range(1, len(distributions)):
-                _, prev_dist = distributions[i - 1]
-                curr_label, curr_dist = distributions[i]
+                prev_dist = distributions[i - 1][1]
+                curr_label, curr_dist = distributions[i][0], distributions[i][1]
                 js_div = _jensen_shannon_divergence(prev_dist, curr_dist)
                 js_values.append(js_div)
                 per_period.append((curr_label, js_div, prev_dist, curr_dist))
@@ -356,6 +458,12 @@ def analyze_column_drift(
             max_js = max(js_values)
             mean_js = sum(js_values) / len(js_values)
             periods_with_drift = sum(1 for js in js_values if js > config.drift_threshold)
+
+            # Drift score: periods-as-witnesses generalized JSD vs the pooled
+            # mixture (size-weighted), normalized to [0, 1].
+            drift_divergence = _generalized_drift(
+                [d[1] for d in distributions], [float(d[2]) for d in distributions]
+            )
 
             # Build evidence if any drift detected
             evidence = None
@@ -367,6 +475,7 @@ def analyze_column_drift(
                     column_name=col_name,
                     max_js_divergence=round(max_js, 6),
                     mean_js_divergence=round(mean_js, 6),
+                    drift_divergence=round(drift_divergence, 6),
                     periods_analyzed=len(js_values),
                     periods_with_drift=periods_with_drift,
                     drift_evidence=evidence,
@@ -389,6 +498,24 @@ def analyze_column_drift(
 
             if len(stats_list) < 2:
                 continue
+
+            # Drift score: periods-as-witnesses generalized JSD over shared-bin
+            # histograms vs the pooled distribution. Captures variance/shape
+            # drift the mean-shift proxy below (kept for evidence) misses.
+            edges = _pooled_quantile_edges(duckdb_conn, slice_table_name, col_name)
+            binned: list[tuple[dict[str, float], int]] = []
+            if edges:
+                for start, end, _label in periods:
+                    res = _get_binned_distribution(
+                        duckdb_conn, slice_table_name, col_name, time_column, start, end, edges
+                    )
+                    if res:
+                        binned.append(res)
+            drift_divergence = (
+                _generalized_drift([b[0] for b in binned], [float(b[1]) for b in binned])
+                if len(binned) >= 2
+                else 0.0
+            )
 
             # Compute relative mean shift between consecutive periods
             shift_values: list[float] = []
@@ -449,6 +576,7 @@ def analyze_column_drift(
                     column_name=col_name,
                     max_js_divergence=round(js_equiv_max, 6),
                     mean_js_divergence=round(js_equiv_mean, 6),
+                    drift_divergence=round(drift_divergence, 6),
                     periods_analyzed=len(shift_values),
                     periods_with_drift=periods_with_drift,
                     drift_evidence=evidence,
@@ -520,6 +648,7 @@ def persist_drift_results(
                 time_column=time_column,
                 max_js_divergence=result.max_js_divergence,
                 mean_js_divergence=result.mean_js_divergence,
+                drift_divergence=result.drift_divergence,
                 periods_analyzed=result.periods_analyzed,
                 periods_with_drift=result.periods_with_drift,
                 drift_evidence_json=evidence_json,

@@ -427,10 +427,13 @@ class _MockDriftSummary:
         periods_analyzed: int,
         periods_with_drift: int,
         drift_evidence_json: dict | None = None,
+        drift_divergence: float = 0.0,
     ):
         self.column_name = column_name
         self.max_js_divergence = max_js_divergence
         self.mean_js_divergence = mean_js_divergence
+        # The drift SCORE (DAT-442): periods-as-witnesses generalized JSD in [0,1].
+        self.drift_divergence = drift_divergence
         self.periods_analyzed = periods_analyzed
         self.periods_with_drift = periods_with_drift
         self.drift_evidence_json = drift_evidence_json
@@ -480,8 +483,8 @@ class TestTemporalDriftDetector:
         assert results[0].score == pytest.approx(0.0, abs=0.01)
 
     def test_mild_drift(self, detector: TemporalDriftDetector):
-        """Score ~0.3 for mean JS 0.1 (scoring uses mean, not max)."""
-        summary = _MockDriftSummary("amount", 0.2, 0.1, 5, 1)
+        """Score = drift_divergence directly (no boost curve)."""
+        summary = _MockDriftSummary("amount", 0.2, 0.1, 5, 1, drift_divergence=0.3)
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -495,8 +498,8 @@ class TestTemporalDriftDetector:
         assert results[0].score == pytest.approx(0.3, abs=0.01)
 
     def test_moderate_drift(self, detector: TemporalDriftDetector):
-        """Score ~0.7 for mean JS 0.3."""
-        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2)
+        """Score = drift_divergence (0.7)."""
+        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2, drift_divergence=0.7)
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -510,8 +513,8 @@ class TestTemporalDriftDetector:
         assert results[0].score == pytest.approx(0.7, abs=0.01)
 
     def test_severe_drift(self, detector: TemporalDriftDetector):
-        """Score 1.0 for mean JS 0.5+."""
-        summary = _MockDriftSummary("amount", 0.7, 0.6, 5, 4)
+        """Score = drift_divergence (1.0 — maximal period disagreement)."""
+        summary = _MockDriftSummary("amount", 0.7, 0.6, 5, 4, drift_divergence=1.0)
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -594,7 +597,7 @@ class TestTemporalDriftDetector:
 
     def test_additive_measure_keeps_drift_detection(self, detector: TemporalDriftDetector):
         """Additive measures (transaction amounts) are still scored."""
-        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2)
+        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2, drift_divergence=0.7)
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -640,7 +643,7 @@ class TestTemporalDriftDetector:
 
     def test_runs_for_measure_column(self, detector: TemporalDriftDetector):
         """Drift detection runs normally for measure columns."""
-        summary = _MockDriftSummary("amount", 0.3, 0.15, 5, 2)
+        summary = _MockDriftSummary("amount", 0.3, 0.15, 5, 2, drift_divergence=0.3)
         context = DetectorContext(
             table_name="orders",
             column_name="amount",

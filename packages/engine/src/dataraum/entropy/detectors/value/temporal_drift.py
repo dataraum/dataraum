@@ -1,7 +1,11 @@
 """Temporal drift entropy detector.
 
-Measures uncertainty from distribution drift over time.
-Uses max Jensen-Shannon divergence from ColumnDriftSummary records.
+Scores distribution drift as the periods' DISAGREEMENT about the value
+distribution: the generalized Jensen–Shannon divergence of the per-period
+distributions from their pooled mixture (``ColumnDriftSummary.drift_divergence``,
+already normalized to [0, 1] — the same quantity as the pooling engine's conflict
+``C`` with time periods as the witnesses). Severity per intent lives in the loss
+table (entropy/loss.yaml); this detector feeds the loss path, not a network node.
 """
 
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
@@ -12,14 +16,10 @@ from dataraum.entropy.models import EntropyObject
 class TemporalDriftDetector(EntropyDetector):
     """Detector for temporal distribution drift uncertainty.
 
-    Uses drift summaries (ColumnDriftSummary) to score columns based on
-    their max JS divergence across time periods.
-
-    Score mapping (max_js_divergence):
-    - 0.0       -> 0.0  (no drift)
-    - 0.1       -> 0.3  (mild drift)
-    - 0.3       -> 0.7  (moderate drift)
-    - 0.5+      -> 1.0  (severe drift)
+    Scores ``drift_divergence`` (the normalized generalized JSD across periods)
+    directly — no boost curve. The reference is the pooled distribution, so a
+    permanent level shift or a slow ramp both register; the old consecutive-pair
+    score diluted them.
     """
 
     detector_id = "temporal_drift"
@@ -119,32 +119,15 @@ class TemporalDriftDetector(EntropyDetector):
         if col_summary is None:
             return []
 
-        max_js = col_summary.max_js_divergence
-        mean_js = col_summary.mean_js_divergence
+        # Score = the normalized generalized JSD across periods (already [0, 1]).
+        # Nullable for pre-existing rows written before the field existed → 0.
+        drift_divergence = getattr(col_summary, "drift_divergence", None)
+        score = max(0.0, min(1.0, float(drift_divergence))) if drift_divergence is not None else 0.0
 
-        # Use mean JS divergence for scoring. Mean reflects the average
-        # drift across all periods, which distinguishes natural temporal
-        # change (low mean, high max — one bad period) from genuine
-        # distribution shift (high mean — consistent change).
-        js = mean_js
-
-        # Score mapping: piecewise linear
-        if js <= 0.0:
-            score = 0.0
-        elif js <= 0.1:
-            score = js * 3.0  # 0->0, 0.1->0.3
-        elif js <= 0.3:
-            score = 0.3 + (js - 0.1) * 2.0  # 0.1->0.3, 0.3->0.7
-        elif js <= 0.5:
-            score = 0.7 + (js - 0.3) * 1.5  # 0.3->0.7, 0.5->1.0
-        else:
-            score = 1.0
-
-        score = min(score, 1.0)
-
-        # Build evidence
+        # Build evidence (max/mean consecutive JS kept for interpretation)
         evidence_data: dict[str, object] = {
-            "max_js_divergence": max_js,
+            "drift_divergence": drift_divergence,
+            "max_js_divergence": col_summary.max_js_divergence,
             "mean_js_divergence": col_summary.mean_js_divergence,
             "periods_analyzed": col_summary.periods_analyzed,
             "periods_with_drift": col_summary.periods_with_drift,

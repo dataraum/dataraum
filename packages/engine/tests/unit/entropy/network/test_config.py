@@ -11,12 +11,12 @@ class TestNetworkConfigLoading:
         assert len(full_config.states) == 3
 
     def test_node_count(self, full_config: NetworkConfig):
-        # benford moved off the network onto the loss path (DAT-442): 20 → 19.
-        assert len(full_config.nodes) == 19
+        # benford + temporal_drift moved to the loss path (DAT-442): 20 → 18.
+        assert len(full_config.nodes) == 18
 
     def test_edge_count(self, full_config: NetworkConfig):
-        # Count edges in the YAML (benford_compliance → aggregation_intent removed).
-        assert len(full_config.edges) == 35
+        # Removed: benford→aggregation, temporal_drift→query, temporal_drift→aggregation.
+        assert len(full_config.edges) == 33
 
     def test_states_are_low_medium_high(self, full_config: NetworkConfig):
         assert full_config.states == ["low", "medium", "high"]

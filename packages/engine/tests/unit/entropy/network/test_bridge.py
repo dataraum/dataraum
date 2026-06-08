@@ -41,8 +41,8 @@ class TestBuildDimensionPathToNodeMap:
 
     def test_all_nodes_have_paths(self, full_network: EntropyNetwork):
         path_map = build_dimension_path_to_node_map(full_network)
-        # benford moved off the network onto the loss path (DAT-442): 20 → 19.
-        assert len(path_map) == 19
+        # benford + temporal_drift moved to the loss path (DAT-442): 20 → 18.
+        assert len(path_map) == 18
 
     def test_correct_mapping(self, full_network: EntropyNetwork):
         path_map = build_dimension_path_to_node_map(full_network)

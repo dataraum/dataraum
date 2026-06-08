@@ -37,13 +37,10 @@ nodes:
     layer: semantic
     dimension: temporal
     sub_dimension: time_role
-  temporal_drift:
-    layer: value
-    dimension: temporal
-    sub_dimension: temporal_drift
 
-  # benford: moved off the network onto the loss path (DAT-442) — its KL surprise
-  # feeds risk(intent) via entropy/loss.yaml, not a node + hand-set edge.
+  # benford + temporal_drift: moved off the network onto the loss path (DAT-442)
+  # — their surprise scores feed risk(intent) via entropy/loss.yaml, not a node +
+  # hand-set edge.
 
   slice_stability:
     layer: value
@@ -134,18 +131,13 @@ edges:
   - [null_ratio, query_intent, 0.5]
   - [outlier_rate, query_intent, 0.4]
   - [naming_clarity, query_intent, 0.3]
-  # 0.3 → 0.45 (DAT-405 calibration): at 0.3 even a MAXIMAL drift score rolls to
-  # risk ≤ 0.3 (the clean-band floor) — query_intent could never leave "ready" on
-  # drift evidence alone. 0.45 puts the detection-v1 injected shift (score 0.93)
-  # at "investigate" while clean trial_balance period drift (≈0.53) stays "ready".
-  - [temporal_drift, query_intent, 0.45]
+  # temporal_drift → query/aggregation moved to the loss path (DAT-442).
   # A broken time role (unparseable dates) makes time-filtering/ordering
   # unreliable — more severe than drift, hence the higher strength.
   - [time_role, query_intent, 0.5]
-  # -> aggregation_intent (4 parents; benford now feeds via the loss path)
+  # -> aggregation_intent (3 parents; benford + temporal_drift via the loss path)
   - [aggregation_safety, aggregation_intent, 0.9]
   - [formula_match, aggregation_intent, 0.7]
-  - [temporal_drift, aggregation_intent, 0.5]
   # Time-bucketed aggregations (monthly revenue, …) break on a bad time role.
   - [time_role, aggregation_intent, 0.4]
   # -> reporting_intent (6+1 parents)

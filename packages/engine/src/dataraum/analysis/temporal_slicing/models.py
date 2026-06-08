@@ -73,6 +73,9 @@ class ColumnDriftResult(BaseModel):
     column_name: str
     max_js_divergence: float
     mean_js_divergence: float
+    # Periods-as-witnesses generalized JSD vs the pooled distribution, in [0, 1]
+    # (the drift score; max/mean_js above are kept for evidence). DAT-442.
+    drift_divergence: float = 0.0
     periods_analyzed: int
     periods_with_drift: int
     drift_evidence: DriftEvidence | None = None

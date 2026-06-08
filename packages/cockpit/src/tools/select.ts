@@ -72,6 +72,11 @@ import {
 	NoConceptsError,
 	triggerAddSource,
 } from "../temporal/trigger-add-source";
+import {
+	AgentActionableError,
+	catchActionable,
+	withAgentError,
+} from "./agent-error";
 import { verticalConceptCount } from "./list-verticals";
 
 // The onboarding stage `select` leaves the source(s) at. The cockpit drives a
@@ -99,7 +104,7 @@ function resolveVertical(name?: string | null): string {
 	const trimmed = name?.trim();
 	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
 	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Invalid vertical '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +
 				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]) or be '_adhoc'.",
 		);
@@ -348,7 +353,7 @@ export async function persistSelection(
 	// database — ONE source, named by the user (files are content-keyed instead).
 	const name = input.source_name;
 	if (!name || !SOURCE_NAME_PATTERN.test(name)) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Database select requires a valid source_name (got '${name ?? ""}'). ` +
 				`Must match ${SOURCE_NAME_PATTERN.source} (lowercase, start with a ` +
 				"letter, 2–49 chars of [a-z0-9_]).",
@@ -360,7 +365,7 @@ export async function persistSelection(
 	// source rows, so this check IS the reservation.
 	const reserved = reservedSourceNamePrefix(name);
 	if (reserved !== null) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Source name '${name}' starts with the reserved prefix '${reserved}' — ` +
 				`${RESERVED_SOURCE_NAME_PREFIXES.join("/")} name the derived-table ` +
 				"families (content-keyed uploads, enriched views, slice tables), and a " +
@@ -369,7 +374,7 @@ export async function persistSelection(
 		);
 	}
 	if (!input.backend || !SUPPORTED_BACKENDS.includes(input.backend)) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Database select requires a supported backend (got '${input.backend ?? ""}'; ` +
 				`supported: ${SUPPORTED_BACKENDS.join(", ")}). The engine import fails ` +
 				"loud on a db_recipe source with no backend.",
@@ -380,7 +385,7 @@ export async function persistSelection(
 			? schema.tables.filter((t) => input.table_names?.includes(t.name))
 			: schema.tables;
 	if (picked.length === 0) {
-		throw new Error(
+		throw new AgentActionableError(
 			`None of the requested tables (${(input.table_names ?? []).join(", ")}) ` +
 				"are in the connected schema.",
 		);
@@ -538,7 +543,12 @@ export const selectTool = toolDefinition({
 			),
 		session_id: z.string().nullish(),
 	}),
-	outputSchema: SelectResult,
+	// Success OR `{ error }`: the actionable pre-flight failures (bad vertical /
+	// source_name / reserved prefix / unsupported backend / no matching tables /
+	// NoConceptsError) come back as data so the model fixes the input and retries.
+	// They all raise BEFORE any write, so there's no half-state. A Temporal
+	// workflow.start failure is infra → still throws (re-approval recovers).
+	outputSchema: withAgentError(SelectResult),
 	needsApproval: true,
 	// The lambda is load-bearing: .server() calls its handler as (input, context)
 	// — passing `select` bare would shove the SDK's context object into select's
@@ -548,4 +558,4 @@ export const selectTool = toolDefinition({
 	// can't un-start the Temporal workflow and would only orphan the seeded
 	// investigation_sessions row (the exact failure seam trigger-add-source.ts
 	// guards against).
-}).server((input) => select(input));
+}).server((input) => catchActionable(() => select(input)));

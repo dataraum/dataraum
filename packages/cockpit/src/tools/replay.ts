@@ -49,6 +49,11 @@ import type {
 	SourceIdentity,
 } from "../temporal/types";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
+import {
+	AgentActionableError,
+	catchActionable,
+	withAgentError,
+} from "./agent-error";
 
 /**
  * The distinct sources a session was built from — its linked tables' `source_id`s.
@@ -128,7 +133,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// the one the user is in / has been teaching). So a bare "replay" just works.
 	const sessionId = input.session_id ?? (await currentSessionId());
 	if (!sessionId) {
-		throw new Error(
+		throw new AgentActionableError(
 			"No session to replay — add a source or begin a session first.",
 		);
 	}
@@ -136,7 +141,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// Resolve what to replay FROM the session — the sources it was built on.
 	const sourceIds = await sourcesForSession(sessionId);
 	if (sourceIds.length === 0) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Session '${sessionId}' has no sources to replay — it has no ` +
 				"linked tables yet (nothing was added to it).",
 		);
@@ -233,11 +238,16 @@ export const replayTool = toolDefinition({
 				"Optional. Omit to re-run on the session's own framed vertical (resolved automatically); pass one only to override.",
 			),
 	}),
-	outputSchema: z.object({
-		workflow_id: z.string(),
-		run_id: z.string(),
-		source_ids: z.array(z.string()),
-		session_id: z.string(),
-	}),
+	// Success OR `{ error }`: "no session to replay" / "session has no sources"
+	// are the agent's to fix (add a source / begin a session first), so they come
+	// back as data. A missing Temporal config is infra → still throws (pass 2b).
+	outputSchema: withAgentError(
+		z.object({
+			workflow_id: z.string(),
+			run_id: z.string(),
+			source_ids: z.array(z.string()),
+			session_id: z.string(),
+		}),
+	),
 	needsApproval: true,
-}).server((input) => replay(input));
+}).server((input) => catchActionable(() => replay(input)));

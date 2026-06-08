@@ -33,6 +33,11 @@ import {
 	getFrameValidationsInstructions,
 } from "../prompts";
 import {
+	AgentActionableError,
+	catchActionable,
+	withAgentError,
+} from "./agent-error";
+import {
 	formatSeedExamples,
 	frameFamily,
 	induceStructured,
@@ -64,7 +69,7 @@ function resolveVertical(name?: string | null): string {
 	// select's resolveVertical; `_adhoc`'s leading underscore fails the pattern).
 	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
 	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
-		throw new Error(
+		throw new AgentActionableError(
 			`Invalid vertical name '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +
 				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]).",
 		);
@@ -258,7 +263,7 @@ export async function frame(
 	});
 
 	if (concepts.items.length === 0) {
-		throw new Error(
+		throw new AgentActionableError(
 			"Frame induction returned no concepts — nothing to declare.",
 		);
 	}
@@ -329,6 +334,11 @@ export const frameTool = toolDefinition({
 			),
 		session_id: z.string().nullish(),
 	}),
-	outputSchema: FrameResult,
+	// Success OR `{ error }`: an invalid vertical name or an induction that
+	// returned no concepts is the agent's to fix (rephrase / pick a vertical), so
+	// it's returned as data, not an opaque throw (consistency pass 2b).
+	outputSchema: withAgentError(FrameResult),
 	needsApproval: true,
-}).server((input, ctx) => frame(input, ctx?.abortSignal));
+}).server((input, ctx) =>
+	catchActionable(() => frame(input, ctx?.abortSignal)),
+);

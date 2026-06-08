@@ -10,7 +10,6 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 
 // The widget drives the connect flow via the stable actions context; mock it so
@@ -61,16 +60,15 @@ describe("UploadAreaWidget", () => {
 		});
 
 		await waitFor(() => expect(sendMessage).toHaveBeenCalled());
-		// The upload turn is multimodal: a CLEAN text part (rendered, no path) plus a
-		// model-only refs part (carries the s3:// uri; the rail skips it).
-		const content = sendMessage.mock.calls[0][0] as {
-			content: Array<{ type: string; content: string }>;
-		};
-		const [bubble, refs] = content.content;
-		expect(bubble.content).toContain("people.csv");
-		expect(bubble.content).not.toContain("s3://");
-		expect(refs.content).toContain("s3://dataraum-lake/uploads/u/people.csv");
-		expect(isAgentRefsPart(refs.content)).toBe(true);
+		// The upload turn is a CLEAN bubble (filenames, no path) + model-only refs
+		// via forwardedProps (the s3:// uris) — never in the visible message.
+		const [bubble, opts] = sendMessage.mock.calls[0] as [
+			string,
+			{ refs?: string },
+		];
+		expect(bubble).toContain("people.csv");
+		expect(bubble).not.toContain("s3://");
+		expect(opts.refs).toContain("s3://dataraum-lake/uploads/u/people.csv");
 
 		vi.unstubAllGlobals();
 	});

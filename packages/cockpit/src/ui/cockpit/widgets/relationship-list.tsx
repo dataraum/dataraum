@@ -1,14 +1,13 @@
 // Relationship-list widget (DAT-434) — renders the `look_relationships` result
 // as one row per relationship pair: endpoints (display names), readiness band,
 // top drivers. A row click drives the why_relationship drill-down through the
-// chat loop — the column ids ride in a model-only refs part (lib/agent-refs),
-// never in the visible bubble (the table-readiness → why_column precedent).
+// chat loop — the column ids ride as model-only refs (forwardedProps), never in
+// the visible bubble (the DAT-462 flip; the table-readiness → why_column precedent).
 //
 // Endpoint names arrive in DISPLAY form (`src_<digest>__` stripped, DAT-431);
 // the band is the engine's persisted value — never recomputed here.
 
 import { Alert, Anchor, Stack, Table, Text } from "@mantine/core";
-import { turnWithRefs } from "#/lib/agent-refs";
 import type { RelationshipReadiness } from "#/tools/look-relationships";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -43,13 +42,14 @@ export function RelationshipListWidget({
 			rel.to_column_name,
 		);
 		sendMessage(
-			turnWithRefs(
-				`Explain the readiness for the relationship "${fromLabel}" → "${toLabel}" using the why_relationship tool.`,
-				`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+			`Explain the readiness for the relationship "${fromLabel}" → "${toLabel}" using the why_relationship tool.`,
+			{
+				refs:
+					`Internal only — do not quote in prose: session_id=${look.session_id} ` +
 					`from_column_id=${rel.from_column_id} to_column_id=${rel.to_column_id} ` +
 					`(use as the arguments to the why_relationship tool).`,
-			),
-			{ label: "Explaining the relationship…" },
+				label: "Explaining the relationship…",
+			},
 		);
 	};
 

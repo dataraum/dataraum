@@ -8,7 +8,7 @@ import { Stack, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions, useCockpitState } from "#/ui/cockpit/cockpit-state";
 import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
-import { uploadTurn } from "#/ui/cockpit/upload-handoff";
+import { uploadBubbleText, uploadRefs } from "#/ui/cockpit/upload-handoff";
 
 export function UploadAreaWidget(_props: {
 	state: Extract<CanvasState, { kind: "upload-area" }>;
@@ -28,7 +28,10 @@ export function UploadAreaWidget(_props: {
 	// provider's derivation — no canvas wiring here.
 	const onUploaded = (s3Paths: string[]) => {
 		if (s3Paths.length === 0) return;
-		sendMessage(uploadTurn(s3Paths), {
+		// Clean bubble (filenames) + model-only refs (the s3:// uris) via
+		// forwardedProps — the uris never enter the visible message (DAT-462 flip).
+		sendMessage(uploadBubbleText(s3Paths), {
+			refs: uploadRefs(s3Paths),
 			label: s3Paths.length === 1 ? "Reading the file…" : "Reading the files…",
 		});
 	};

@@ -21,7 +21,6 @@ import {
 	Text,
 } from "@mantine/core";
 import { useState } from "react";
-import { turnWithRefs } from "#/lib/agent-refs";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -262,11 +261,12 @@ export function WorkspaceInventoryWidget({
 	// name only.
 	const inspectTable = (tableId: string, tableName: string) =>
 		sendMessage(
-			turnWithRefs(
-				`Show the readiness for table "${tableName}" using the look_table tool.`,
-				`Internal only — do not quote in prose: table_id=${tableId} ` +
+			`Show the readiness for table "${tableName}" using the look_table tool.`,
+			{
+				refs:
+					`Internal only — do not quote in prose: table_id=${tableId} ` +
 					`(use as the table_id argument to the look_table tool).`,
-			),
+			},
 		);
 
 	const logical = groupLogicalTables(tables);

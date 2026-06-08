@@ -18,6 +18,13 @@ vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspace: async () => "ws-test",
 }));
 vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
+// The server-owned chat loop (DAT-462) persists via the conversations seam —
+// mock it so the route import never loads the cockpit_db (bun:sql) client.
+vi.mock("#/db/cockpit/conversations", () => ({
+	ensureConversation: async () => {},
+	appendMessages: async () => {},
+	loadModelTranscript: async () => [],
+}));
 
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS } from "../../llm";
 import { buildChatOptions } from "./chat";

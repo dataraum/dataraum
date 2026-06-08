@@ -23,7 +23,6 @@ import {
 	Text,
 } from "@mantine/core";
 import { useEffect, useRef } from "react";
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
@@ -252,10 +251,10 @@ export function ChatRail() {
 								// text renders as sanitized markdown so snippets / SQL / lists
 								// stop showing as raw `**` and ``` fences.
 								if (m.role === "user") {
-									// DAT-423/DAT-437: a turn's model-only refs part carries raw
-									// internals (s3:// uris, table/column ids) — the model reads
-									// it, the bubble never shows it.
-									if (isAgentRefsPart(part.content)) return null;
+									// User content is always purely the visible bubble — since the
+									// DAT-462 flip, model-only refs ride as forwardedProps and
+									// persist as a separate model-only row — they never enter
+									// message content, so there's nothing to skip here.
 									return (
 										<Text
 											// biome-ignore lint/suspicious/noArrayIndexKey: append-only parts

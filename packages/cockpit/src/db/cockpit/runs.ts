@@ -14,7 +14,7 @@
 // no-op.
 
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
 import { sessionRuns, sessions } from "./schema";
@@ -105,4 +105,37 @@ export async function markRunStatus(
 			`[cockpit] markRunStatus failed for run ${runId} (${workflowId}): ${err}`,
 		);
 	}
+}
+
+/** One in-flight run to reconcile on reload. */
+export interface ActiveRun {
+	workflowId: string;
+	runId: string;
+}
+
+/**
+ * The workspace's non-terminal (`running`) runs, newest first, BOUNDED by
+ * `limit` — the reload reconcile (DAT-462) sweeps these against Temporal so a run
+ * that finished while the tab was closed doesn't linger as in-flight. Bounded so
+ * a stale backlog can't turn reconcile-on-load into an unbounded fan-out.
+ */
+export async function listNonTerminalRuns(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<ActiveRun>> {
+	return cockpitDb
+		.select({
+			workflowId: sessionRuns.workflowId,
+			runId: sessionRuns.runId,
+		})
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(
+			and(
+				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.status, "running"),
+			),
+		)
+		.orderBy(desc(sessionRuns.startedAt))
+		.limit(limit);
 }

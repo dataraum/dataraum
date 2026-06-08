@@ -111,6 +111,23 @@ export function isProgressDone(phase: string, status: string): boolean {
 }
 
 /**
+ * The terminal cockpit `session_runs.status` for a DONE run. "completed" covers
+ * the clean exits — phase=="done" (the workflow finished even if describe()
+ * hasn't flipped yet), an actual COMPLETED, and CONTINUED_AS_NEW (a handoff, not
+ * a failure); everything else terminal (FAILED / TERMINATED / CANCELED /
+ * TIMED_OUT) is "failed". Shared by the progress poll (/api/workflow-progress)
+ * and the reload reconcile so the two can't classify a run differently. */
+export function terminalRunStatus(
+	progress: WorkflowProgress,
+): "completed" | "failed" {
+	return progress.phase === PROGRESS_DONE_PHASE ||
+		progress.status === "COMPLETED" ||
+		progress.status === "CONTINUED_AS_NEW"
+		? "completed"
+		: "failed";
+}
+
+/**
  * Query one workflow run for its progress snapshot + status. Pins the precise
  * (workflowId, runId) so a replay/re-run iteration sharing the workflow id is
  * never confused for the run being watched.

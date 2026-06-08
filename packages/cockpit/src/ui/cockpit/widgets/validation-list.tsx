@@ -3,14 +3,13 @@
 // verdict, and the readable detail ("visibly impossible" = a blocked
 // validation's state_reason is first-class row content, not a hover). A row
 // click drives the why_validation drill-down through the chat loop — the
-// validation_id rides in a model-only refs part (lib/agent-refs), never in the
-// visible bubble (the relationship-list precedent).
+// validation_id rides as model-only refs (forwardedProps), never in the visible
+// bubble (the DAT-462 refs flip; the relationship-list precedent).
 //
 // State / reason / message are the engine's persisted values verbatim
 // (digest-sanitized in the tool projection) — never recomputed here.
 
 import { Alert, Anchor, Stack, Table, Text } from "@mantine/core";
-import { turnWithRefs } from "#/lib/agent-refs";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { ValidationOverview } from "#/tools/look-validation";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -43,13 +42,14 @@ export function ValidationListWidget({
 	const explainValidation = (v: ValidationOverview) => {
 		const label = humanizeIdentifier(v.validation_id) || v.validation_id;
 		sendMessage(
-			turnWithRefs(
-				`Explain the "${label}" validation using the why_validation tool.`,
-				`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+			`Explain the "${label}" validation using the why_validation tool.`,
+			{
+				refs:
+					`Internal only — do not quote in prose: session_id=${look.session_id} ` +
 					`validation_id=${v.validation_id} ` +
 					`(use as the arguments to the why_validation tool).`,
-			),
-			{ label: "Explaining the validation…" },
+				label: "Explaining the validation…",
+			},
 		);
 	};
 

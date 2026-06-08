@@ -45,7 +45,6 @@ class Dimension(_StrValueMixin):
     COVERAGE = "coverage"
     DERIVED_VALUES = "derived_values"
     RECONCILIATION = "reconciliation"
-    CYCLES = "cycles"
     VARIANCE = "variance"
 
 
@@ -81,5 +80,4 @@ class SubDimension(_StrValueMixin):
     CROSS_COLUMN_PATTERNS = "cross_column_patterns"
     DIMENSION_COVERAGE = "dimension_coverage"
     CROSS_TABLE_CONSISTENCY = "cross_table_consistency"
-    BUSINESS_CYCLE_HEALTH = "business_cycle_health"
     SLICE_STABILITY = "slice_stability"

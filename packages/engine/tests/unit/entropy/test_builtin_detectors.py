@@ -5,7 +5,6 @@ import pytest
 from dataraum.entropy.detectors import (
     BUILTIN_DETECTORS,
     BenfordDetector,
-    BusinessCycleHealthDetector,
     BusinessMeaningDetector,
     CrossTableConsistencyDetector,
     DerivedValueDetector,
@@ -41,7 +40,6 @@ class TestBuiltinDetectors:
             TemporalEntropyDetector,
             # Semantic (table-scoped)
             DimensionalEntropyDetector,
-            BusinessCycleHealthDetector,
             # Semantic (view-scoped)
             DimensionCoverageDetector,
             # Computational
@@ -129,7 +127,7 @@ class TestBuiltinDetectors:
         semantic_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "semantic"
         ]
-        assert len(semantic_detectors) == 6
+        assert len(semantic_detectors) == 5
         detector_ids = [d.detector_id for d in semantic_detectors]
         assert "business_meaning" in detector_ids
         assert "unit_entropy" in detector_ids

@@ -237,7 +237,7 @@ class GraphExecutionContext:
     # Entropy summary (from entropy layer)
     entropy_summary: dict[str, Any] | None = None  # Overall entropy and readiness
 
-    # Column summaries for contract evaluation (from entropy network)
+    # Column summaries for contract evaluation (from entropy readiness)
     column_summaries: dict[str, Any] = field(default_factory=dict)
 
     # Overall entropy score (average from snapshot)

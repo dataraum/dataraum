@@ -325,13 +325,6 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
 
     registry.register(DimensionCoverageDetector())
 
-    # Semantic layer detectors (table-scoped, Zone 3)
-    from dataraum.entropy.detectors.semantic.business_cycle_health import (
-        BusinessCycleHealthDetector,
-    )
-
-    registry.register(BusinessCycleHealthDetector())
-
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.cross_table_consistency import (
         CrossTableConsistencyDetector,

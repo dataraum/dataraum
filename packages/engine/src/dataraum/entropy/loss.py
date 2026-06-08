@@ -87,7 +87,7 @@ _cache: LossConfig | None = None
 
 
 def get_loss_config() -> LossConfig:
-    """Load + cache the loss table from config (mirrors get_network_config)."""
+    """Load + cache the loss table from config."""
     global _cache  # noqa: PLW0603
     if _cache is None:
         raw = yaml.safe_load(get_config_file(LOSS_CONFIG_PATH).read_text()) or {}

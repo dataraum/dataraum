@@ -74,7 +74,7 @@ phases:
   # =========================================================================
   business_cycles:
     description: Expert LLM cycle detection
-    detectors: [business_cycle_health]
+    detectors: []  # business_cycle_health cut (DAT-442); the cycle analysis stays
 
   validation:
     description: LLM-powered validation checks

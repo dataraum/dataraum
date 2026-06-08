@@ -1,11 +1,13 @@
-"""Unit tests for graph_execution_phase dispatch helpers (DAT-299).
+"""Unit tests for metrics_phase dispatch helpers (DAT-456).
 
 Focused on the three module-level helpers — `_execute_metrics_serial`,
 `_execute_metrics_parallel`, `_execute_isolated` — and the concurrency
 contract (semaphore cap, per-call resource isolation).
 
-The full phase `_run()` path is exercised by the integration suite and
-the MCP smoke; here we lock the dispatch contract in isolation.
+The full phase `_run()` path (declare → compose → execute) is exercised by
+`test_metrics_phase.py` and the integration suite; here we lock the dispatch
+contract in isolation. The parallel/isolated helpers' positional id argument is
+the snippet base's `schema_mapping_id` (workspace-stable, source-free).
 """
 
 # Tests pass MagicMock / stub objects where the helpers expect concrete
@@ -27,7 +29,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dataraum.core.models.base import Result
-from dataraum.pipeline.phases import graph_execution_phase as gep
+from dataraum.pipeline.phases import metrics_phase as gep
 from tests.conftest import baseline_session_id
 
 

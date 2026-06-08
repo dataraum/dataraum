@@ -153,9 +153,9 @@ class GraphAgent(LLMFeature):
 
         super().__init__(config, provider, prompt_renderer)
         self._code_cache: dict[str, GeneratedCode] = {}  # In-memory cache
-        # Cache is read+written from concurrent graph_execution_phase workers
-        # under free-threading (Python 3.14t, PYTHON_GIL=0). The check-then-set
-        # pattern at lines 182/244 is not atomic, so guard with a lock.
+        # Cache is read+written from concurrent metrics_phase workers (the phase
+        # dispatches per-metric agent.execute calls on a ThreadPoolExecutor). The
+        # check-then-set pattern at lines 182/244 is not atomic, so guard with a lock.
         self._code_cache_lock = threading.Lock()
 
     def execute(

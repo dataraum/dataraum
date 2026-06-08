@@ -79,8 +79,8 @@ phases:
     description: LLM-powered validation checks
     detectors: [cross_table_consistency]
 
-  graph_execution:
-    description: Compute business metrics via graph agent
+  metrics:
+    description: Compute metric graphs through the lifecycle (declare → compose → execute)
 
 # Limits
 limits:

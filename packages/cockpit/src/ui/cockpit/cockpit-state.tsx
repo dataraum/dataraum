@@ -33,6 +33,9 @@ import {
 	useMemo,
 	useState,
 } from "react";
+// Type-only: erased at build, so the cockpit_db (bun:sql) client never enters
+// the client bundle — only the UiState shape rides along.
+import type { UiState } from "#/db/cockpit/ui-state";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import {
 	canvasFromCallId,
@@ -118,10 +121,30 @@ function useStableValue<T>(value: T): T {
 	return useMemo(() => value, [key]);
 }
 
-export function CockpitProvider({ children }: { children: ReactNode }) {
+export function CockpitProvider({
+	children,
+	conversationId,
+	initialMessages,
+	initialUiState,
+	onPersistPin,
+}: {
+	children: ReactNode;
+	// Server-owned conversation hydration (DAT-462): the persisted thread id +
+	// its display transcript + restored UI state, from the route loader. Optional
+	// so the provider still mounts (a fresh, unhydrated chat) without a loader —
+	// the degraded path and the unit tests.
+	conversationId?: string;
+	initialMessages?: Array<UIMessage>;
+	initialUiState?: UiState | null;
+	/** Persist a canvas-pin change (server fn from the route); fire-and-forget. */
+	onPersistPin?: (pinnedCallId: string | null) => void;
+}) {
 	// The agentic chat loop + SSE transport. The connection is memoized: a fresh
 	// connection object each render would recreate the underlying ChatClient (per
-	// the SDK contract), dropping the conversation.
+	// the SDK contract), dropping the conversation. `threadId` pins the persisted
+	// conversation so a reload re-attaches to it; `initialMessages` seeds the
+	// restored transcript (the canvas re-derives from it — incl. any in-flight
+	// progress widget, which re-polls to done).
 	const connection = useMemo(() => fetchServerSentEvents("/api/chat"), []);
 	// Per-turn model-only refs (DAT-462 flip) ride on AG-UI `forwardedProps`. The
 	// react `useChat` hook drops sendMessage's 2nd (per-call body) arg, so we use
@@ -138,9 +161,16 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 		sendMessage,
 		stop,
 		addToolApprovalResponse,
-	} = useChat({ connection, forwardedProps: refsHolder });
+	} = useChat({
+		connection,
+		forwardedProps: refsHolder,
+		threadId: conversationId,
+		initialMessages,
+	});
 
-	const [pinnedCallId, setPinnedCallId] = useState<string | null>(null);
+	const [pinnedCallId, setPinnedCallId] = useState<string | null>(
+		initialUiState?.pinnedCallId ?? null,
+	);
 	// The pending loading caption for the next turn.
 	const [pendingLabel, setPendingLabel] = useState<string | undefined>(
 		undefined,
@@ -163,11 +193,20 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 		[sendMessage, refsHolder],
 	);
 
+	// Pin/unpin also persists the canvas focus (DAT-462) so a reload returns to
+	// the same view. Fire-and-forget through the route's server fn — a failed
+	// write must never block the interaction (saveUiState is best-effort too).
 	const pinCanvas = useCallback(
-		(callId: string) => setPinnedCallId(callId),
-		[],
+		(callId: string) => {
+			setPinnedCallId(callId);
+			onPersistPin?.(callId);
+		},
+		[onPersistPin],
 	);
-	const returnToLive = useCallback(() => setPinnedCallId(null), []);
+	const returnToLive = useCallback(() => {
+		setPinnedCallId(null);
+		onPersistPin?.(null);
+	}, [onPersistPin]);
 
 	// Derive the canvas from the stream. canvasFromMessages / canvasFromCallId
 	// are pure; the precedence is the whole state machine:

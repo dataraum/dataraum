@@ -50,6 +50,38 @@ DEFAULT_RELIABILITIES: dict[str, float] = {
     "null_vocabulary": 0.6,
 }
 
+# Resolved-layer threshold: a token is a column null marker when its pooled
+# posterior leans is-null past this. NOT a calibrated detection threshold — it
+# reads the resolved BELIEF (conflict is carried separately as the open-conflict
+# signal; a contested token still belongs here when the pool believes is-null).
+RESOLVED_IS_NULL_THRESHOLD = 0.7
+
+
+def resolved_null_tokens(
+    evidence: Sequence[Mapping[str, Any]],
+    *,
+    is_null_threshold: float = RESOLVED_IS_NULL_THRESHOLD,
+) -> list[str]:
+    """The rejected tokens an adjudication resolved to is-null (ADR-0009 resolved layer).
+
+    From a null_semantics EntropyObject's per-token ``evidence`` (each entry a
+    ``{token, posterior: {is-null, is-value}, conflict, ignorance}`` summary),
+    return the tokens whose pooled posterior leans is-null — the column's null
+    markers the query agent should treat as NULL. Order-preserving; deduped.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for entry in evidence:
+        posterior = entry.get("posterior") or {}
+        token = entry.get("token")
+        if token is None or float(posterior.get("is-null", 0.0)) <= is_null_threshold:
+            continue
+        token_str = str(token)
+        if token_str not in seen:
+            seen.add(token_str)
+            tokens.append(token_str)
+    return tokens
+
 
 @dataclass(frozen=True)
 class TokenAdjudication:

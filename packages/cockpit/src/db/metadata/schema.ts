@@ -310,13 +310,14 @@ export const currentSemanticAnnotations = metadataSchema
 		businessConcept: varchar("business_concept"),
 		temporalBehavior: varchar("temporal_behavior"),
 		unitSourceColumn: varchar("unit_source_column"),
+		nullTokens: json("null_tokens"),
 		annotationSource: varchar("annotation_source"),
 		annotatedAt: timestamp("annotated_at"),
 		annotatedBy: varchar("annotated_by"),
 		confidence: doublePrecision(),
 	})
 	.as(
-		sql`SELECT annotation_id, session_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, unit_source_column, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'semantic_per_column'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT annotation_id, session_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, unit_source_column, null_tokens, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'semantic_per_column'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSliceDefinitions = metadataSchema

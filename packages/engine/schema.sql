@@ -654,6 +654,7 @@ CREATE TABLE semantic_annotations (
 	business_concept VARCHAR, 
 	temporal_behavior VARCHAR, 
 	unit_source_column VARCHAR, 
+	null_tokens JSON, 
 	annotation_source VARCHAR, 
 	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	annotated_by VARCHAR, 

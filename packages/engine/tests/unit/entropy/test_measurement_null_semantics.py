@@ -12,6 +12,7 @@ from dataraum.entropy.measurements.null_semantics import (
     CLAIM_SPACE,
     measure_null_semantics,
     quarantine_distribution,
+    resolved_null_tokens,
     type_distribution,
     vocabulary_distribution,
 )
@@ -156,3 +157,32 @@ class TestMeasureNullSemantics:
             "type_claim",
             "null_vocabulary",
         }
+
+
+# --- resolved layer: evidence → null_tokens (3b) -----------------------------
+class TestResolvedNullTokens:
+    @staticmethod
+    def _entry(token: str, is_null: float) -> dict:
+        return {"token": token, "posterior": {"is-null": is_null, "is-value": 1.0 - is_null}}
+
+    def test_keeps_is_null_tokens_drops_is_value(self) -> None:
+        evidence = [self._entry("#ERR", 0.95), self._entry("12.5", 0.2), self._entry("TBD", 0.8)]
+        assert resolved_null_tokens(evidence) == ["#ERR", "TBD"]
+
+    def test_contested_token_still_resolves_is_null(self) -> None:
+        # Novel sentinel: high conflict, but the pooled posterior is is-null → it
+        # IS a null marker. The teach resolves the conflict, not the membership.
+        evidence = [
+            {
+                "token": "PENDING",
+                "posterior": {"is-null": 0.998, "is-value": 0.002},
+                "conflict": 0.25,
+            }
+        ]
+        assert resolved_null_tokens(evidence) == ["PENDING"]
+
+    def test_empty_and_threshold_edges(self) -> None:
+        assert resolved_null_tokens([]) == []
+        # exactly at threshold is not "past" it
+        assert resolved_null_tokens([self._entry("x", 0.7)]) == []
+        assert resolved_null_tokens([self._entry("x", 0.71)]) == ["x"]

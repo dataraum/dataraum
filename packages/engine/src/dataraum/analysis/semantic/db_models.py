@@ -79,6 +79,13 @@ class SemanticAnnotation(Base):
     # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
     unit_source_column: Mapped[str | None] = mapped_column(String)
 
+    # Resolved null-marker tokens (ADR-0009 / DAT-457): the rejected tokens the
+    # null_semantics adjudication resolved to is-null (pooled posterior past
+    # threshold). Written by the resolved-layer pass inside the terminal detect
+    # (dataraum.entropy.resolve), updating THIS run's annotation. The query agent
+    # treats these as NULL in generated SQL. None = not resolved / no rejects.
+    null_tokens: Mapped[list[str] | None] = mapped_column(JSON)
+
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(
         String

@@ -4,32 +4,37 @@
 // validations with their lifecycle state and executed result.
 //
 // Pure read via the Drizzle metadata client over the promoted-read surface
-// (ADR-0008/DAT-453): `current_lifecycle_artifacts` carries every declared
-// validation's lifecycle row (state declared/grounded/executed + the
-// "visibly impossible" state_reason when it could not run), and
-// `current_validation_results` the executed outcome (status/passed/message) —
-// both head-joined in the database to the session's promoted `operating_model`
-// run. The join key between them is `artifact_key == validation_id` (the
-// engine writes BOTH rows per declared spec). State, reason, and message are
-// the engine's persisted values verbatim — never re-derived here (only
-// digest-sanitized). Read-only → no approval.
+// (ADR-0008/DAT-453): the shared lifecycle-artifacts reader
+// (`db/metadata/lifecycle-artifacts.ts`) carries every declared validation's
+// lifecycle row (state declared/grounded/executed + the "visibly impossible"
+// state_reason when it could not run), pinned to `artifact_type = 'validation'`;
+// `current_validation_results` carries the executed outcome
+// (status/passed/message) — both head-joined in the database to the session's
+// promoted `operating_model` run. The join key between them is
+// `artifact_key == validation_id` (the engine writes BOTH rows per declared
+// spec). State, reason, and message are the engine's persisted values verbatim —
+// never re-derived here (only digest-sanitized). Read-only → no approval.
 //
 // The DB read is integration-smoke-covered (scripts/smoke-operating-model.ts);
 // the pure row→shape projection is unit-tested via `projectValidationOverview`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
-import { getPendingOverlays } from "../db/metadata/pending-overlays";
-import { sessionHeadTarget } from "../db/metadata/relationship-target";
 import {
-	currentLifecycleArtifacts,
-	currentValidationResults,
-	metadataSnapshotHead,
-} from "../db/metadata/schema";
+	type LifecycleArtifactRow,
+	readLifecycleArtifactRows,
+	readOperatingModelHead,
+} from "../db/metadata/lifecycle-artifacts";
+import { getPendingOverlays } from "../db/metadata/pending-overlays";
+import { currentValidationResults } from "../db/metadata/schema";
 import { stripSrcDigests } from "../lib/display-names";
+
+// Re-exported for the projection's callers/tests — the row shape now lives in
+// the shared lifecycle-artifacts substrate (one definition across families).
+export type { LifecycleArtifactRow } from "../db/metadata/lifecycle-artifacts";
 
 // --- The tool's output: one row per declared validation.
 
@@ -61,13 +66,6 @@ const LookValidationResult = z.object({
 	validations: z.array(ValidationOverview),
 });
 export type LookValidationResult = z.infer<typeof LookValidationResult>;
-
-/** One current_lifecycle_artifacts row, as Drizzle returns it. */
-export interface LifecycleArtifactRow {
-	artifactKey: string;
-	state: string | null;
-	stateReason: string | null;
-}
 
 /** One current_validation_results row, keyed by its validation_id. */
 export interface ValidationResultRow {
@@ -114,17 +112,8 @@ export async function lookValidation(
 	// "promoted but zero declared validations" (a vertical with none), which must
 	// not read as never-ran. The head pass-through stays on the read surface for
 	// exactly this check; the rows themselves come from the current_* views.
-	const [head] = await metadataDb
-		.select({ runId: metadataSnapshotHead.runId })
-		.from(metadataSnapshotHead)
-		.where(
-			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
-				eq(metadataSnapshotHead.stage, "operating_model"),
-			),
-		)
-		.limit(1);
-	if (!head?.runId) {
+	const head = await readOperatingModelHead(input.session_id);
+	if (!head) {
 		return {
 			session_id: input.session_id,
 			analyzed: false,
@@ -134,29 +123,12 @@ export async function lookValidation(
 	}
 
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
-	// lives in the database. Scope to validation artifacts explicitly — the
-	// lifecycle substrate is typed and later slices add cycles/metrics artifacts.
-	const rawArtifacts = await metadataDb
-		.select({
-			artifactKey: currentLifecycleArtifacts.artifactKey,
-			state: currentLifecycleArtifacts.state,
-			stateReason: currentLifecycleArtifacts.stateReason,
-		})
-		.from(currentLifecycleArtifacts)
-		.where(
-			and(
-				eq(currentLifecycleArtifacts.sessionId, input.session_id),
-				eq(currentLifecycleArtifacts.artifactType, "validation"),
-			),
-		)
-		.orderBy(asc(currentLifecycleArtifacts.artifactKey));
-	// View columns type as nullable (Postgres views carry no NOT NULL) —
-	// coalesce the identity field the underlying table guarantees.
-	const artifacts: LifecycleArtifactRow[] = rawArtifacts.map((a) => ({
-		artifactKey: a.artifactKey ?? "",
-		state: a.state,
-		stateReason: a.stateReason,
-	}));
+	// lives in the database. The shared reader scopes to validation artifacts —
+	// the lifecycle substrate is typed and shared with cycles/metrics.
+	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
+		input.session_id,
+		"validation",
+	);
 
 	const rawResults = await metadataDb
 		.select({

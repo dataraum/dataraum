@@ -45,26 +45,36 @@ class BusinessCycleHealthDetector(EntropyDetector):
     description = "Business cycle detection quality: completion rates, confidence"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load detected business cycles involving this table."""
-        if context.session is None or not context.table_id:
+        """Load detected business cycles involving this table (DAT-455).
+
+        Cycles are run-versioned and session-scoped, written by the
+        operating_model stage — a *later* stage than the begin_session/add_source
+        ``detect`` pass this detector runs in. So this reader resolves the
+        session's PROMOTED ``operating_model`` head and reads cycles at that run,
+        rather than the current detect run (``context.run_id``, which names this
+        relationship-detect run, not the cycle run). With no promoted
+        operating_model run — the common case, since this detector usually runs
+        before operating_model exists — it reads NOTHING: fail-closed, never a
+        cross-run read (DAT-429).
+        """
+        if context.session is None or not context.table_id or not context.session_id:
             return
 
         from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-        from dataraum.storage import Table
+        from dataraum.storage.snapshot_head import head_run_id, session_head_target
 
-        # Look up source_id from the table
-        table = context.session.execute(
-            select(Table).where(Table.table_id == context.table_id)
-        ).scalar_one_or_none()
-
-        if table is None:
+        om_run_id = head_run_id(
+            context.session, session_head_target(context.session_id), "operating_model"
+        )
+        if om_run_id is None:
             return
 
-        # Get all cycles for this source
+        # Get all cycles for the session's promoted operating_model run
         cycles = list(
             context.session.execute(
                 select(DetectedBusinessCycle).where(
-                    DetectedBusinessCycle.source_id == table.source_id
+                    DetectedBusinessCycle.session_id == context.session_id,
+                    DetectedBusinessCycle.run_id == om_run_id,
                 )
             )
             .scalars()

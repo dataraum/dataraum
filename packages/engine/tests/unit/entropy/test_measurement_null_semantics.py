@@ -29,22 +29,33 @@ VOCAB = ["", "NULL", "N/A", "NA", "MISSING"]
 
 # --- individual witnesses ----------------------------------------------------
 class TestQuarantineWitness:
-    def test_dominant_token_leans_null(self) -> None:
-        assert quarantine_distribution(90, 100)["is-null"] > 0.7
+    def test_dominant_repeated_token_leans_null(self) -> None:
+        # one token, 90 of 100 rejects, 2 distinct → concentrated + repeated
+        assert quarantine_distribution(90, 100, 2)["is-null"] > 0.7
 
-    def test_share_is_monotonic(self) -> None:
-        low = quarantine_distribution(10, 100)["is-null"]
-        high = quarantine_distribution(80, 100)["is-null"]
+    def test_repetition_is_monotonic(self) -> None:
+        # same cluster shape; a more-repeated token reads more strongly null
+        low = quarantine_distribution(5, 100, 10)["is-null"]
+        high = quarantine_distribution(50, 100, 10)["is-null"]
         assert high > low
 
+    def test_co_occurring_sentinels_stay_strong_via_clustering(self) -> None:
+        # the live-run case: 5 distinct sentinels, ~8 each over 40 rejects.
+        # SHARE would dilute each to ~0.6; CLUSTERING keeps them strong.
+        assert quarantine_distribution(8, 40, 5)["is-null"] > 0.7
+
+    def test_high_cardinality_smear_is_not_a_cluster(self) -> None:
+        # 50 distinct one-off rejects = corruption smear, not sentinels
+        assert quarantine_distribution(1, 50, 50)["is-null"] < 0.55
+
     def test_thin_quarantine_is_damped(self) -> None:
-        # Same 100% share, but 1 rejection is not a sentinel like 200 are.
-        thin = quarantine_distribution(1, 1)["is-null"]
-        thick = quarantine_distribution(200, 200)["is-null"]
+        # a single rejected value is not a sentinel like 200 repeats are
+        thin = quarantine_distribution(1, 1, 1)["is-null"]
+        thick = quarantine_distribution(200, 200, 1)["is-null"]
         assert thin < thick
 
     def test_no_quarantine_is_neutral(self) -> None:
-        assert quarantine_distribution(0, 0)["is-null"] == 0.5
+        assert quarantine_distribution(0, 0, 0)["is-null"] == 0.5
 
 
 class TestTypeWitness:

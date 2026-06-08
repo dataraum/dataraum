@@ -76,20 +76,35 @@ def _witness(witness_id: str, distribution: Mapping[str, float], reliability: fl
 
 
 def quarantine_distribution(
-    token_count: int, total_rejected: int, *, volume_floor: float = 5.0
+    token_count: int,
+    total_rejected: int,
+    unique_tokens: int,
+    *,
+    volume_floor: float = 5.0,
 ) -> dict[str, float]:
-    """How strongly the quarantine implies a token is a null marker.
+    """How strongly the quarantine implies a token is a null marker — by clustering.
 
-    ``share`` (the token's fraction of all rejections) drives ``is-null``;
-    ``volume_floor`` damps a high share computed over a thin quarantine (one
-    rejected value is not a sentinel). The witness never argues ``is-value`` —
-    being rejected is one-directional evidence.
+    A column's rejects cluster into a FEW distinct, repeated tokens when those
+    are sentinels (``#ERR``, ``TBD``), and smear across MANY one-off values when
+    they are just corruption. So ``is-null`` rises with:
+
+    * ``concentration = 1 - unique_tokens/total_rejected`` — few distinct tokens
+      dominating. NOT per-token *share*, which dilutes when several sentinels
+      co-occur (5 sentinels at ~20% share each read as weak — the live-run
+      finding, DAT-457); the cluster is the signal, not one token's slice of it.
+    * ``repetition = 1 - 1/token_count`` — this token recurs (a one-off is a
+      typo, not a sentinel).
+    * ``volume_confidence`` — enough rejections to trust the shape.
+
+    The witness never argues ``is-value``: being rejected is one-directional
+    evidence; absent a cluster it abstains at ``0.5``.
     """
-    if total_rejected <= 0:
+    if total_rejected <= 0 or unique_tokens <= 0 or token_count <= 0:
         return _distribution(0.5)
-    share = token_count / total_rejected
+    concentration = max(0.0, 1.0 - unique_tokens / total_rejected)
+    repetition = 1.0 - 1.0 / token_count
     volume_confidence = total_rejected / (total_rejected + volume_floor)
-    return _distribution(0.5 + 0.5 * share * volume_confidence)
+    return _distribution(0.5 + 0.5 * concentration * repetition * volume_confidence)
 
 
 def type_distribution(token: str, typing_data: Mapping[str, Any]) -> dict[str, float]:
@@ -154,6 +169,7 @@ def measure_null_semantics(
     total_rejected = int(
         quarantine_data.get("total_rejected") or sum(int(t.get("count", 0)) for t in rejected)
     )
+    unique_tokens = len(rejected)
 
     adjudications: list[TokenAdjudication] = []
     for entry in rejected:
@@ -162,7 +178,7 @@ def measure_null_semantics(
         witnesses = (
             _witness(
                 "quarantine_clustering",
-                quarantine_distribution(count, total_rejected),
+                quarantine_distribution(count, total_rejected, unique_tokens),
                 rel["quarantine_clustering"],
             ),
             _witness("type_claim", type_distribution(token, typing_data), rel["type_claim"]),

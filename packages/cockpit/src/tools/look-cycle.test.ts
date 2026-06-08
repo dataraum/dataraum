@@ -15,8 +15,8 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
+import type { LifecycleArtifactRow } from "../db/metadata/lifecycle-artifacts";
 import { type CycleDetectionRow, projectCycleOverview } from "./look-cycle";
-import type { LifecycleArtifactRow } from "./look-validation";
 
 const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
 

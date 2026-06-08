@@ -4,6 +4,21 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-08: cockpit cycle teach loop — `teach_cycle` / `look_cycle` / `why_cycle` are live (DAT-465)
+
+**Cockpit-only; NO calibration impact, NO engine change, NO schema change.** Logged
+only so a full-loop smoke uses the right tool names. The CYCLE family now has the
+same cockpit teach loop validation got in DAT-440/441: `teach_cycle` writes a
+`cycle`-typed `config_overlay` row (declare a new cycle by free-form name, or
+override a shipped one by name — `_apply_cycle` upsert-replaces into the vertical's
+`cycle_types` mapping, DAT-455); the next `operating_model` run grounds + measures
+it; `look_cycle` / `why_cycle` read the promoted `current_lifecycle_artifacts`
+(`artifact_type='cycle'`) joined with `current_detected_business_cycles` on
+`canonical_type`. The declared→grounded→executed states + the visibly-impossible
+"not detected in this workspace" reason come straight from `business_cycles_phase`
+(DAT-455) — this slice only reads + writes them, it does not change detection or
+the `business_cycle_health` inputs DAT-455 already described.
+
 ## 2026-06-08: metrics revived through the operating_model lifecycle — `can_execute_metric` is now a born-loud gate (DAT-456)
 
 Branch `feat/dat-456-metrics-lifecycle`. The dormant graph-execution phase is

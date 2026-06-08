@@ -139,7 +139,10 @@ export function projectWhyCycle(
 			detected?.statusColumn == null
 				? null
 				: stripSrcDigests(detected.statusColumn),
-		completion_value: detected?.completionValue ?? null,
+		completion_value:
+			detected?.completionValue == null
+				? null
+				: stripSrcDigests(detected.completionValue),
 		stages: renderEvidenceDetail(detected?.stages),
 		entity_flows: renderEvidenceDetail(detected?.entityFlows),
 		tables_involved: renderEvidenceDetail(detected?.tablesInvolved),

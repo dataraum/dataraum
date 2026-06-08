@@ -42,10 +42,8 @@ nodes:
   # — their surprise scores feed risk(intent) via entropy/loss.yaml, not a node +
   # hand-set edge.
 
-  slice_stability:
-    layer: value
-    dimension: variance
-    sub_dimension: slice_stability
+  # slice_variance (slice_stability): moved off the network onto the loss path
+  # (DAT-442) — its cross-slice spread feeds risk(intent) via entropy/loss.yaml.
 
   dimension_coverage:
     layer: semantic
@@ -119,9 +117,6 @@ edges:
   # dimension_coverage -> intent leaves
   - [dimension_coverage, query_intent, 0.5]
   - [dimension_coverage, reporting_intent, 0.6]
-  # slice_stability -> intents
-  - [slice_stability, query_intent, 0.4]
-  - [slice_stability, aggregation_intent, 0.5]
   # cross_column_patterns -> intents (DAT-403; initial strengths, eval-calibrated)
   - [cross_column_patterns, query_intent, 0.3]
   - [cross_column_patterns, aggregation_intent, 0.4]

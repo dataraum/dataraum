@@ -49,3 +49,11 @@ measurements:
     query_intent: { surprise: 0.4 }
     aggregation_intent: { surprise: 0.6 }
     reporting_intent: { surprise: 0.5 }
+
+  slice_variance:
+    # A column behaves differently across slices (max normalized spread of null /
+    # distinct / outlier / benford metrics). The "score" weight scores that spread
+    # magnitude directly — it's a disagreement measure, not a divergence vs a
+    # reference. Old network edges were query 0.4 / aggregation 0.5 (placeholders).
+    query_intent: { score: 0.4 }
+    aggregation_intent: { score: 0.5 }

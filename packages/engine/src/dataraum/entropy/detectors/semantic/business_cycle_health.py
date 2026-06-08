@@ -33,7 +33,7 @@ class BusinessCycleHealthDetector(EntropyDetector):
 
     Table-scoped detector that scores cycle completion rates and
     detection confidence. Poor cycle detection means downstream
-    metrics (graph_execution) may be unreliable.
+    metrics (the metrics phase) may be unreliable.
     """
 
     detector_id = "business_cycle_health"

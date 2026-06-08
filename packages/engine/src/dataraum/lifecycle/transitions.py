@@ -4,9 +4,13 @@ Operations are typed by state transition (``architecture-future.md``): each
 teach type exposes operations that move artifacts through
 ``declared`` → ``grounded`` → ``executed`` → ``canonical``, and each operation
 is restricted to specific journey stages — the Goodhart firewall enforced at
-the operation level. The maps below register two families so far —
-``validation`` (DAT-438) and ``cycle`` (DAT-455); metrics add their rows in a
-later operating_model slice.
+the operation level. The maps below register three families —
+``validation`` (DAT-438), ``cycle`` (DAT-455), and ``metric`` (DAT-456).
+Validation and cycles ground via ``bind``; metrics ground via ``compose``
+(the architecture-future name for a metric's declared → grounded move — its
+graph's inputs resolve to real columns/concepts of the workspace). Both are
+the same ``declared`` → ``grounded`` transition; the distinct verb keeps the
+audit trail faithful to the operation vocabulary.
 
 Authorization notes:
 
@@ -60,6 +64,7 @@ class IllegalTransitionError(LifecycleError):
 _OPERATIONS: Final[dict[str, tuple[ArtifactState | None, ArtifactState]]] = {
     "declare": (None, ArtifactState.DECLARED),
     "bind": (ArtifactState.DECLARED, ArtifactState.GROUNDED),
+    "compose": (ArtifactState.DECLARED, ArtifactState.GROUNDED),  # metrics' bind (DAT-456)
     "execute": (ArtifactState.GROUNDED, ArtifactState.EXECUTED),
     "endorse": (ArtifactState.EXECUTED, ArtifactState.CANONICAL),
 }
@@ -80,6 +85,16 @@ _STAGE_AUTHORIZATIONS: Final[dict[tuple[str, str], frozenset[str]]] = {
     ("cycle", "bind"): frozenset({"operating_model"}),
     ("cycle", "execute"): frozenset({"operating_model"}),
     ("cycle", "endorse"): frozenset(),  # defined; no endorsement workflow yet
+    # metrics — the third lifecycle family (DAT-456), mirroring validation/cycles
+    # 1:1 except the declared→grounded verb is ``compose`` (a metric grounds when
+    # its graph's inputs resolve to real columns/concepts of the workspace). The
+    # declared set is the vertical's ``metrics/`` graphs ⊕ ``metric`` overlay teach
+    # rows; declare authority is the vertical (the stage records it; frame-2 takes
+    # over user declares); ``endorse`` is defined with no authorized stage.
+    ("metric", "declare"): frozenset({"operating_model"}),
+    ("metric", "compose"): frozenset({"operating_model"}),
+    ("metric", "execute"): frozenset({"operating_model"}),
+    ("metric", "endorse"): frozenset(),  # defined; no endorsement workflow yet
 }
 
 

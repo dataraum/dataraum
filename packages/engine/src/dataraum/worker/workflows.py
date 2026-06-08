@@ -608,14 +608,15 @@ class OperatingModelWorkflow:
     semantic heads) once — every downstream read scopes to those pins, no
     per-phase head resolution.
 
-    Spine: resolve → validation → business_cycles (each declare → bind →
-    execute through the typed artifact lifecycle) → promote ``(session:{id},
-    "operating_model")``. ``business_cycles`` (DAT-455) is the second lifecycle
-    family, running after validation so cycle health reads this run's validation
-    results; a later slice inserts metrics, and DAT-432 inserts the terminal
-    detect (cross_table_consistency) before promote. A re-run is a full re-run
-    under a fresh ``run_id`` — declared artifacts, validation results, and
-    detected cycles supersede, never mutate (DAT-408).
+    Spine: resolve → validation → business_cycles → metrics (each declare →
+    bind/compose → execute through the typed artifact lifecycle) → promote
+    ``(session:{id}, "operating_model")``. ``business_cycles`` (DAT-455) is the
+    second family and ``metrics`` (DAT-456) the third, each running after the
+    prior so the later families' graph context can read this run's evidence;
+    DAT-432 inserts the terminal detect (cross_table_consistency) before promote.
+    A re-run is a full re-run under a fresh ``run_id`` — declared artifacts,
+    validation results, detected cycles, and composed metrics supersede, never
+    mutate (DAT-408).
 
     Progress (DAT-435 follow-on): the body keeps a :class:`ProgressSnapshot`
     in ``self._progress`` and advances ``phase`` before each stage; the
@@ -693,6 +694,21 @@ class OperatingModelWorkflow:
         self._progress.phase = "business_cycles"
         await workflow.execute_activity(
             "business_cycles",
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Third lifecycle family (DAT-456): the declared metric graphs (vertical
+        # ⊕ teach rows) are declared, composed against the workspace (inputs
+        # resolve to real columns/concepts), and executed (the composed SQL runs
+        # cleanly). Runs AFTER business_cycles so the graph context can read this
+        # run's cycle + validation evidence. Ungroundable metrics stay
+        # declared-with-reason; composed-but-unexecutable stay grounded-with-reason.
+        self._progress.phase = "metrics"
+        await workflow.execute_activity(
+            "metrics",
             scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,

@@ -108,6 +108,8 @@ class FieldMappings:
 def load_semantic_mappings(
     session: Session,
     table_ids: list[str],
+    *,
+    semantic_runs: dict[str, str] | None = None,
 ) -> FieldMappings:
     """Load business_concept → column mappings from semantic annotations.
 
@@ -117,6 +119,15 @@ def load_semantic_mappings(
     Args:
         session: Database session
         table_ids: Table IDs to load mappings for
+        semantic_runs: Optional ``table_id → begin_session run_id`` pin. When
+            given (the operating_model compose gate threads the run's pinned
+            base-run map), each table contributes ONLY annotations from its
+            pinned run — multi-run isolation, fail-closed: a table absent from
+            the pin contributes nothing, never an arbitrary run's annotations
+            (the ``SemanticAnnotation`` table is run-versioned with a
+            ``(column_id, run_id)`` UNIQUE, so N coexisting runs leave N rows
+            per column). When ``None``, all runs' annotations are read (the
+            legacy cross-run behavior, still used by the graph-context builder).
 
     Returns:
         FieldMappings with business_concept → column mappings
@@ -141,6 +152,10 @@ def load_semantic_mappings(
     mappings: dict[str, list[ColumnCandidate]] = {}
 
     for annotation, column, table in rows:
+        # Pin to the table's begin_session run when a pin is provided — drop any
+        # annotation from another run (fail-closed for an unpinned table).
+        if semantic_runs is not None and annotation.run_id != semantic_runs.get(table.table_id):
+            continue
         concept = annotation.business_concept
         if not concept:
             continue

@@ -377,3 +377,45 @@ class TestBuilderExtractsCycleVolume:
         # Fail-closed: no session_id → no promoted head to read at → empty.
         unscoped = build_execution_context(session, [table_id])
         assert unscoped.business_cycles == []
+
+
+class TestBuilderOmRunIdOverride:
+    """The in-run metrics phase (DAT-456) passes ``om_run_id`` so the graph
+    context reads THIS operating_model run's cycle/validation evidence — written
+    by the earlier validation + business_cycles activities in the same run —
+    BEFORE the run is promoted. Without the override the read scopes to the
+    promoted head, which does not exist yet mid-run.
+    """
+
+    def test_explicit_run_reads_in_run_cycles_without_a_promoted_head(
+        self, session: Session
+    ) -> None:
+        from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+        from dataraum.investigation.db_models import InvestigationSession
+
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        sess_id = "sess-om-inrun"
+        session.add(InvestigationSession(session_id=sess_id, intent="test"))
+        session.add(
+            DetectedBusinessCycle(
+                cycle_id=_id(),
+                session_id=sess_id,
+                run_id="run-current",
+                cycle_name="Order to Cash",
+                cycle_type="order_to_cash",
+                canonical_type="order_to_cash",
+                tables_involved=["invoices"],
+            )
+        )
+        session.flush()  # NB: no promoted operating_model head seeded.
+
+        # Default derivation: no promoted operating_model head → reads nothing.
+        ctx_default = build_execution_context(session, [table_id], session_id=sess_id)
+        assert ctx_default.business_cycles == []
+
+        # In-run override: read this run's cycle directly, head or not.
+        ctx_override = build_execution_context(
+            session, [table_id], session_id=sess_id, om_run_id="run-current"
+        )
+        assert len(ctx_override.business_cycles) == 1
+        assert ctx_override.business_cycles[0].cycle_name == "Order to Cash"

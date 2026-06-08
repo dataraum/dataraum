@@ -282,6 +282,7 @@ def build_execution_context(
     slice_column: str | None = None,
     slice_value: str | None = None,
     session_id: str | None = None,
+    om_run_id: str | None = None,
 ) -> GraphExecutionContext:
     """Build execution context from all analysis modules.
 
@@ -298,6 +299,11 @@ def build_execution_context(
         duckdb_conn: Optional DuckDB connection for row counts
         slice_column: Optional column to filter by (for slice metrics)
         slice_value: Optional value to filter on (for slice metrics)
+        session_id: Analytical session — scopes the relationship + operating_model
+            reads to that session (fail-closed without it).
+        om_run_id: Explicit operating_model run for the cycle/validation/health
+            reads (the in-run metrics phase passes its current run). Omitted ⇒ the
+            session's promoted operating_model head.
 
     Returns:
         GraphExecutionContext with all relevant metadata
@@ -514,17 +520,22 @@ def build_execution_context(
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 
-    # The session's promoted operating_model run — the version axis BOTH cycles
-    # (13) and validation results (13b) and cycle health (13d) scope to (they
-    # must all describe ONE run). Run-versioned since DAT-455/438. **Fail-closed
-    # (DAT-429):** with no session_id or no promoted operating_model run there is
-    # no current operating_model state — never a cross-run read, which would mix
-    # superseded runs (and other sessions') into this context.
-    om_run_id = (
-        head_run_id(session, session_head_target(session_id), "operating_model")
-        if session_id
-        else None
-    )
+    # The operating_model run — the version axis BOTH cycles (13), validation
+    # results (13b), and cycle health (13d) scope to (they must all describe ONE
+    # run). An explicit ``om_run_id`` wins: the in-run metrics phase passes its
+    # CURRENT run so the graph context sees this run's evidence (the validation +
+    # business_cycles activities ran earlier in the same run and committed). With
+    # no override, fall back to the session's PROMOTED operating_model head — the
+    # post-promote current-state read (the query agent's path). **Fail-closed
+    # (DAT-429):** no session_id / no promoted run ⇒ no current operating_model
+    # state, never a cross-run read that would mix superseded (or other sessions')
+    # runs into this context.
+    if om_run_id is None:
+        om_run_id = (
+            head_run_id(session, session_head_target(session_id), "operating_model")
+            if session_id
+            else None
+        )
 
     # 13. Load business cycles — run-versioned + session-scoped (DAT-455),
     # scoped to the promoted operating_model run (fail-closed above).
@@ -633,14 +644,18 @@ def build_execution_context(
                 )
             )
 
-    # 13d. Compute cycle health
+    # 13d. Compute cycle health. The runtime vertical comes from the session row
+    # (the same source the phases read via ``inv_session.vertical``), NOT static
+    # phase config — ``business_cycles.yaml`` has no ``vertical`` key, so the old
+    # ``load_phase_config(...).get("vertical")`` was always None and the health
+    # was silently never computed (DAT-456 graphs-migration fix).
     from dataraum.analysis.cycles.health import compute_cycle_health
-    from dataraum.core.config import load_phase_config
+    from dataraum.investigation.db_models import InvestigationSession
 
     cycle_health_report: HealthReport | None = None
     if session_id and om_run_id is not None:
-        bc_config = load_phase_config("business_cycles")
-        _vertical = bc_config.get("vertical")
+        inv = session.get(InvestigationSession, session_id)
+        _vertical = inv.vertical if inv else None
         if _vertical:
             try:
                 # Same promoted operating_model run as 13/13b — cycles, their

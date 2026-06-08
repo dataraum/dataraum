@@ -96,6 +96,31 @@ class GraphLoader:
 
         return self.graphs
 
+    def graphs_from_definitions(
+        self, definitions: dict[str, dict[str, Any]]
+    ) -> dict[str, TransformationGraph]:
+        """Parse already-merged graph definition dicts into graphs.
+
+        The overlay-aware counterpart of :meth:`load_all`: the metrics phase
+        loads its declared set via
+        :func:`dataraum.graphs.config.get_metric_definitions` (shipped graphs ⊕
+        ``metric`` overlay teach rows) and parses them here, so a taught metric
+        is executable exactly like a shipped one. ``load_all`` stays file-only —
+        the add_source semantic phase's field-discovery path is unchanged.
+
+        Raises:
+            GraphLoadError: a definition is malformed (missing ``graph_id`` /
+                ``metadata.name`` / invalid enum). The metrics phase catches this
+                per metric and records the artifact as declared-with-reason, so a
+                broken definition is visibly impossible, never silently dropped.
+        """
+        graphs: dict[str, TransformationGraph] = {}
+        for graph_id, data in definitions.items():
+            # A sentinel "path" — these dicts come from the overlay-merged
+            # collection, not a file on disk; it only labels parse errors.
+            graphs[graph_id] = self._parse_graph(Path(f"<overlay:{graph_id}>"), data)
+        return graphs
+
     def _load_directory(self, directory: Path) -> None:
         """Recursively load graphs from a directory.
 

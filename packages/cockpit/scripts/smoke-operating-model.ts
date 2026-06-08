@@ -214,11 +214,18 @@ async function main(): Promise<void> {
 					(r.message ? `  ${r.message.slice(0, 90)}` : ""),
 			);
 		}
-		if (results.length !== artifacts.length) {
+		// current_lifecycle_artifacts now holds all three families (validation +
+		// cycle + metric); the result-parity contract is validation-only — cycles
+		// and metrics don't emit validation_results — so compare against the
+		// validation-typed artifacts, not the whole set.
+		const validationArtifacts = artifacts.filter(
+			(a) => a.artifactType === "validation",
+		);
+		if (results.length !== validationArtifacts.length) {
 			throw new Error(
 				`result/artifact count mismatch: ${results.length} validation results vs ` +
-					`${artifacts.length} lifecycle artifacts — every declared spec must ` +
-					`leave BOTH a lifecycle row and a result row.`,
+					`${validationArtifacts.length} validation lifecycle artifacts — every ` +
+					`declared validation must leave BOTH a lifecycle row and a result row.`,
 			);
 		}
 

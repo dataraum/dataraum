@@ -66,6 +66,27 @@ export const configOverlay = metadataSchema
 		sql`SELECT overlay_id, session_id, type, payload, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.config_overlay`,
 	);
 
+export const currentClaimWitnesses = metadataSchema
+	.view("current_claim_witnesses", {
+		claimWitnessId: varchar("claim_witness_id"),
+		sessionId: varchar("session_id"),
+		tableId: varchar("table_id"),
+		columnId: varchar("column_id"),
+		runId: varchar("run_id"),
+		target: varchar(),
+		claimField: varchar("claim_field"),
+		witnessId: varchar("witness_id"),
+		distribution: jsonb(),
+		reliability: doublePrecision(),
+		detectorId: varchar("detector_id"),
+		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
+	})
+	.as(
+		sql`SELECT claim_witness_id, session_id, table_id, column_id, run_id, target, claim_field, witness_id, distribution, reliability, detector_id, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.claim_witnesses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+	);
+
 export const currentColumnDriftSummaries = metadataSchema
 	.view("current_column_drift_summaries", {
 		id: varchar(),

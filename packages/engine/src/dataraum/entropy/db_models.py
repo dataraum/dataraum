@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, String
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -151,3 +151,78 @@ class EntropyReadinessRecord(Base):
 Index("idx_readiness_table", EntropyReadinessRecord.table_id)
 Index("idx_readiness_column", EntropyReadinessRecord.column_id)
 Index("idx_readiness_target", EntropyReadinessRecord.target)
+
+
+class ClaimWitnessRecord(Base):
+    """One witness's opinion on a single canonical claim (ADR-0009, DAT-457).
+
+    The persisted, run-versioned substrate the pooling engine
+    (:mod:`dataraum.entropy.pooling`) reads: one row per
+    ``(target, claim_field, witness_id)`` holding that witness's probability
+    distribution over the claim space plus its measured reliability. The pooled
+    ``(conflict, ignorance)`` outcome is an :class:`EntropyObjectRecord`; these
+    rows are the provenance behind it — loud, not buried in evidence JSON.
+
+    Adjudication entropy only. The statistical/surprise detectors
+    (``null_ratio``/``outlier_rate``/``benford``/``temporal_drift``/
+    ``slice_variance``) measure ``D_KL(observed || reference)`` and never write
+    here.
+
+    Dual-grain like :class:`EntropyObjectRecord`: written by both detect paths
+    (add_source per ``table:{id}``, begin_session per ``session:{id}``), so it
+    carries ``session_id`` + ``table_id`` and is classified ``_DUAL_GRAIN`` on
+    the promoted-read surface (ADR-0008).
+    """
+
+    __tablename__ = "claim_witnesses"
+    __table_args__ = (
+        UniqueConstraint(
+            "target",
+            "claim_field",
+            "witness_id",
+            "run_id",
+            name="uq_claim_witness_target_field_witness_run",
+        ),
+    )
+
+    claim_witness_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    # Mirrors EntropyObjectRecord scoping: session_id is the via_session_head
+    # grain key (NOT NULL), table_id the via_table_head key.
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
+    column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE")
+    )
+
+    # Snapshot version axis (DAT-448): the run that wrote this witness opinion.
+    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Identity: what is being witnessed, and by whom.
+    target: Mapped[str] = mapped_column(String, nullable=False)  # column:{t}.{c}, table:{t}, ...
+    claim_field: Mapped[str] = mapped_column(String, nullable=False)  # e.g. unit, temporal_behavior
+    witness_id: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # e.g. quarantine_clustering, teach
+
+    # The opinion: a distribution over the canonical claim space, stored
+    # label -> probability so the claim space is self-describing.
+    distribution: Mapped[dict[str, float] | None] = mapped_column(JSON_TYPE)
+    # Measured trust in [0, 1] — the log-linear pooling exponent / evidence weight.
+    reliability: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    # Which measurement produced this row — the delete-before-insert scope key,
+    # mirroring EntropyObjectRecord.detector_id.
+    detector_id: Mapped[str] = mapped_column(String, nullable=False)
+
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+Index("idx_claim_witness_target", ClaimWitnessRecord.target)
+Index("idx_claim_witness_table", ClaimWitnessRecord.table_id)
+Index("idx_claim_witness_column", ClaimWitnessRecord.column_id)

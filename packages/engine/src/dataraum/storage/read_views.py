@@ -84,6 +84,7 @@ _SESSION_GRAIN: dict[str, str] = {
 _DUAL_GRAIN: dict[str, str] = {
     "entropy_objects": "detect",
     "entropy_readiness": "detect",
+    "claim_witnesses": "detect",
 }
 
 # The head pointer itself is exposed read-only (it IS the promoted state).

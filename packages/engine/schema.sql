@@ -456,6 +456,34 @@ CREATE TABLE table_entities (
 
 CREATE INDEX ix_table_entities_session_id ON table_entities (session_id);
 
+CREATE TABLE claim_witnesses (
+	claim_witness_id VARCHAR NOT NULL, 
+	session_id VARCHAR NOT NULL, 
+	table_id VARCHAR, 
+	column_id VARCHAR, 
+	run_id VARCHAR, 
+	target VARCHAR NOT NULL, 
+	claim_field VARCHAR NOT NULL, 
+	witness_id VARCHAR NOT NULL, 
+	distribution JSONB, 
+	reliability FLOAT NOT NULL, 
+	detector_id VARCHAR NOT NULL, 
+	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_claim_witnesses PRIMARY KEY (claim_witness_id), 
+	CONSTRAINT uq_claim_witness_target_field_witness_run UNIQUE (target, claim_field, witness_id, run_id), 
+	CONSTRAINT fk_claim_witnesses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
+	CONSTRAINT fk_claim_witnesses_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_claim_witnesses_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_claim_witness_column ON claim_witnesses (column_id);
+
+CREATE INDEX idx_claim_witness_table ON claim_witnesses (table_id);
+
+CREATE INDEX idx_claim_witness_target ON claim_witnesses (target);
+
+CREATE INDEX ix_claim_witnesses_session_id ON claim_witnesses (session_id);
+
 CREATE TABLE column_slice_profiles (
 	profile_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 

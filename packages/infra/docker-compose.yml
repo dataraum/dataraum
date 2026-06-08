@@ -238,12 +238,31 @@ services:
       # only mount left is the read-only config tree.
       - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
 
+  # One-shot: apply the cockpit_db migrations (DAT-461) before the cockpit
+  # serves. Uses the cockpit image's `build` stage — it carries drizzle-kit + the
+  # source + the committed migrations under drizzle/cockpit/ (the slim runner
+  # does not). The cockpit waits on its successful completion. Registry/actor
+  # seeding is lazy in the app (resolveActiveWorkspace), so this is schema-only.
+  cockpit-migrate:
+    build:
+      context: ../cockpit
+      target: build
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
+    command: ["bun", "run", "db:migrate:cockpit"]
+
   cockpit:
     build:
       context: ../cockpit
     depends_on:
       postgres:
         condition: service_healthy
+      cockpit-migrate:
+        condition: service_completed_successfully
       # engine-worker bootstraps the ws_<id> metadata schema the cockpit reads
       # via Drizzle. No healthcheck on the worker (its health is the Temporal
       # heartbeat), so gate on service_started; the smoke additionally waits for

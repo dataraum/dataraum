@@ -47,6 +47,7 @@ The dev server runs **outside Docker** (for hot reload) against the compose back
 docker compose -f ../infra/docker-compose.yml up -d --wait postgres seaweedfs   # backend deps
 cp .env.example .env        # host-dev defaults (localhost URLs); fill ANTHROPIC_API_KEY
 bun install
+bun run db:migrate:cockpit  # apply cockpit_db migrations (control plane: workspaces/sessions/…)
 bun --bun run dev           # → http://localhost:3000  (the --bun flag is required)
 ```
 
@@ -69,15 +70,16 @@ bun run check             # biome check (lint + format)
 bun run lint              # biome lint
 bun run format            # biome format
 bun run db:pull:metadata  # introspect engine's ws_<id> schema → src/db/metadata/
-bun run db:generate:cockpit  # cockpit_db migration SQL from src/db/cockpit/schema.ts
-bun run db:push:cockpit   # push schema directly to cockpit_db
+bun run db:generate:cockpit  # generate a cockpit_db migration from src/db/cockpit/schema.ts
+bun run db:migrate:cockpit   # apply committed cockpit_db migrations (drizzle/cockpit/)
+bun run db:push:cockpit   # push schema directly (quick local iteration; no migration file)
 ```
 
 ## Drizzle layout
 
 Two clients in one package:
 
-- `src/db/cockpit/{schema,client}.ts` — hand-written cockpit_db (push/generate target)
+- `src/db/cockpit/{schema,client,registry,runs}.ts` — hand-written cockpit_db (generate/migrate target); committed migrations in `drizzle/cockpit/`
 - `src/db/metadata/{schema,relations,client}.ts` — generated from the engine substrate by `bun run db:pull:metadata`; the cockpit reads, never pushes
 
-Cockpit_db tables land as they're needed (conversations + conversation_messages are the next addition).
+cockpit_db is the cockpit's control plane (DAT-461): `workspaces` / `sessions` / `session_runs` / `actors` — additive to the engine's `investigation_sessions` run anchor. Migrations apply on the compose stack via the `cockpit-migrate` one-shot service; registry/actor rows seed lazily on first resolve. More tables land as needed (conversations + conversation_messages are the next addition, DAT-462).

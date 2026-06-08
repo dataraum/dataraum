@@ -20,11 +20,12 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
-import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import {
-	currentLifecycleArtifacts,
-	currentValidationResults,
-} from "../db/metadata/schema";
+	type LifecycleArtifactDetail,
+	readLifecycleArtifact,
+} from "../db/metadata/lifecycle-artifacts";
+import { getPendingOverlays } from "../db/metadata/pending-overlays";
+import { currentValidationResults } from "../db/metadata/schema";
 import { renderEvidenceDetail, stripSrcDigests } from "../lib/display-names";
 
 // --- Tool output (mirrors the why_* found/anatomy conventions, keyed on the
@@ -61,13 +62,9 @@ const WhyValidationResult = z.object({
 });
 export type WhyValidationResult = z.infer<typeof WhyValidationResult>;
 
-/** The validation's lifecycle artifact row (null = no such artifact). */
-export interface WhyValidationArtifactRow {
-	state: string | null;
-	stateReason: string | null;
-	strictness: number | null;
-	groundedAgainst: unknown;
-}
+/** The validation's lifecycle artifact row (null = no such artifact) — the
+ * shared lifecycle-detail shape, aliased here for the projection's callers. */
+export type WhyValidationArtifactRow = LifecycleArtifactDetail;
 
 /** The validation's result row (null = not executed / no row). */
 export interface WhyValidationResultRow {
@@ -127,25 +124,14 @@ export async function whyValidation(
 ): Promise<WhyValidationResult> {
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
-	// run → empty views → not found.
-	const [artifactRow] = await metadataDb
-		.select({
-			state: currentLifecycleArtifacts.state,
-			stateReason: currentLifecycleArtifacts.stateReason,
-			strictness: currentLifecycleArtifacts.strictness,
-			groundedAgainst: currentLifecycleArtifacts.groundedAgainst,
-		})
-		.from(currentLifecycleArtifacts)
-		.where(
-			and(
-				eq(currentLifecycleArtifacts.sessionId, input.session_id),
-				eq(currentLifecycleArtifacts.artifactKey, input.validation_id),
-				// artifact_key is only unique WITHIN a type — cycles/metrics will
-				// share this view (DAT-441), so pin the type like look_validation.
-				eq(currentLifecycleArtifacts.artifactType, "validation"),
-			),
-		)
-		.limit(1);
+	// run → empty views → not found. The shared reader pins artifact_type =
+	// 'validation' (the key is unique only WITHIN a type — cycles/metrics share
+	// this view).
+	const artifactRow = await readLifecycleArtifact(
+		input.session_id,
+		"validation",
+		input.validation_id,
+	);
 
 	const [resultRow] = await metadataDb
 		.select({

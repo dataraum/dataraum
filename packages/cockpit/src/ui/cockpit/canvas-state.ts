@@ -9,10 +9,12 @@ import type { ConnectSchema } from "#/duckdb/connect";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookCycleResult } from "#/tools/look-cycle";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyCycleResult } from "#/tools/why-cycle";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -56,6 +58,14 @@ export type CanvasState =
 	// first-class, the executed result, SQL + grounding detail. Carries the
 	// why_validation result.
 	| { kind: "validation-why"; why: WhyValidationResult }
+	// DAT-465: the operating_model business-cycle list — one row per declared
+	// cycle with its lifecycle state + structural completion; rows drill down to
+	// cycle-why. Carries the look_cycle result.
+	| { kind: "cycle-list"; look: LookCycleResult }
+	// DAT-465: per-cycle drill-down — state with its blocked reason first-class,
+	// the measured completion, the status column + detected stages/flows/evidence.
+	// Carries the why_cycle result.
+	| { kind: "cycle-why"; why: WhyCycleResult }
 	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused

@@ -116,14 +116,13 @@ detectors:
     confidence_threshold: 0.5 # Below this = low confidence
 
   # --------------------------------------------------------------------------
-  # BENFORD DETECTOR (value.distribution.benford_compliance)
+  # BENFORD DETECTOR (KL surprise → loss path, DAT-442)
   # --------------------------------------------------------------------------
-  # Measures deviation from Benford's Law for numeric measure columns
+  # Score = D_KL(observed leading digits ‖ Benford); see entropy/surprise.py. The
+  # chi-square / Cramér's-V boost knobs are gone (KL is sample-size invariant, so
+  # there is no n-inflation to undo). Only the small-sample guard remains.
   benford:
-    score_compliant: 0.1       # Benford-compliant = low entropy
-    score_non_compliant: 0.7   # Non-compliant = high entropy
-    chi_sq_escalation_threshold: 0.01  # p-value below this → use chi-sq severity
-    chi_sq_log_max: 3.0        # log10(chi_sq) at which score reaches 1.0 (chi_sq=1000)
+    min_sample_size: 100       # below this, leading-digit frequencies are too noisy
 
   # --------------------------------------------------------------------------
   # DIMENSIONAL ENTROPY DETECTOR (semantic.dimensional.cross_column_patterns)

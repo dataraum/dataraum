@@ -26,3 +26,16 @@ measurements:
     query_intent: { conflict: 0.4, ignorance: 0.2 }
     aggregation_intent: { conflict: 0.9, ignorance: 0.5 }
     reporting_intent: { conflict: 0.8, ignorance: 0.4 }
+
+  # Statistical (surprise) measurement: a "surprise" weight scores the detector's
+  # KL score D_KL(observed ‖ reference). No (conflict, ignorance) split — a
+  # statistical detector has a reference, not witnesses. DAT-442 second wave moved
+  # benford off its network node onto this loss path (the n-inflating chi-square
+  # boost curve is gone; clean financial columns now score ~0, not 0.7).
+  benford:
+    # Leading-digit-law violation — fabricated or systematically-rounded measures.
+    # Worst for aggregation (you'd sum fabricated values) and reporting (present
+    # them as real); a mild caveat for an exploratory query that can hedge.
+    query_intent: { surprise: 0.2 }
+    aggregation_intent: { surprise: 0.6 }
+    reporting_intent: { surprise: 0.5 }

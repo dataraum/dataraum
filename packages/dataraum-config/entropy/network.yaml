@@ -41,10 +41,9 @@ nodes:
     layer: value
     dimension: temporal
     sub_dimension: temporal_drift
-  benford_compliance:
-    layer: value
-    dimension: distribution
-    sub_dimension: benford_compliance
+
+  # benford: moved off the network onto the loss path (DAT-442) — its KL surprise
+  # feeds risk(intent) via entropy/loss.yaml, not a node + hand-set edge.
 
   slice_stability:
     layer: value
@@ -143,11 +142,10 @@ edges:
   # A broken time role (unparseable dates) makes time-filtering/ordering
   # unreliable — more severe than drift, hence the higher strength.
   - [time_role, query_intent, 0.5]
-  # -> aggregation_intent (5 parents)
+  # -> aggregation_intent (4 parents; benford now feeds via the loss path)
   - [aggregation_safety, aggregation_intent, 0.9]
   - [formula_match, aggregation_intent, 0.7]
   - [temporal_drift, aggregation_intent, 0.5]
-  - [benford_compliance, aggregation_intent, 0.4]
   # Time-bucketed aggregations (monthly revenue, …) break on a bad time role.
   - [time_role, aggregation_intent, 0.4]
   # -> reporting_intent (6+1 parents)

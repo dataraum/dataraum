@@ -45,7 +45,7 @@ def test_no_prior_leakage_for_unobserved_nodes(config):
     # Only null_ratio and its reachable descendants appear.
     assert "null_ratio" in risk
     assert "type_fidelity" not in risk  # unobserved root, no evidence
-    assert "benford_compliance" not in risk
+    assert "outlier_rate" not in risk  # unobserved sibling root, not reachable
     # query_intent has null_ratio as a parent, so it resolves.
     assert "query_intent" in risk
 

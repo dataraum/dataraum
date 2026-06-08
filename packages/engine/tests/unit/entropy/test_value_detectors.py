@@ -662,34 +662,70 @@ class TestTemporalDriftDetector:
 
 
 class TestBenfordDetector:
-    """Tests for BenfordDetector."""
+    """Tests for BenfordDetector — KL-surprise scoring (DAT-442).
+
+    Score = ``surprise_score(observed leading digits, Benford)``: ~0 when the
+    distribution follows Benford, high when it departs. Sample-size invariant, so
+    no chi-square / Cramér's-V machinery (clean data no longer floors at 0.7).
+    """
+
+    # Production digit_distribution shape: a dict keyed by string digit "1".."9".
+    _BENFORD_DIST = {
+        "1": 0.301,
+        "2": 0.176,
+        "3": 0.125,
+        "4": 0.097,
+        "5": 0.079,
+        "6": 0.067,
+        "7": 0.058,
+        "8": 0.051,
+        "9": 0.046,
+    }
+    # Mass piled where Benford expects little (digit 5, digit 9) → high surprise.
+    _SKEWED_DIST = {
+        "1": 0.05,
+        "2": 0.05,
+        "3": 0.05,
+        "4": 0.05,
+        "5": 0.45,
+        "6": 0.05,
+        "7": 0.05,
+        "8": 0.05,
+        "9": 0.20,
+    }
 
     @pytest.fixture
     def detector(self) -> BenfordDetector:
         """Create detector instance."""
         return BenfordDetector()
 
-    def test_skip_non_measure_column(self, detector: BenfordDetector):
-        """Benford only applies to measure columns."""
-        context = DetectorContext(
+    def _context(
+        self,
+        digit_distribution: dict[str, float] | None,
+        *,
+        total_count: int = 1000,
+        role: str = "measure",
+    ) -> DetectorContext:
+        """Build a detector context with the given observed digit distribution."""
+        analysis: dict[str, object] = {"is_compliant": True, "chi_square": 5.0, "p_value": 0.8}
+        if digit_distribution is not None:
+            analysis["digit_distribution"] = digit_distribution
+        return DetectorContext(
             table_name="orders",
-            column_name="order_id",
+            column_name="amount",
             analysis_results={
                 "statistics": {
-                    "quality": {
-                        "benford_compliant": True,
-                        "benford_analysis": {
-                            "is_compliant": True,
-                            "chi_square": 5.0,
-                            "p_value": 0.8,
-                        },
-                    },
+                    "total_count": total_count,
+                    "quality": {"benford_analysis": analysis},
                 },
-                "semantic": {"semantic_role": "key"},
+                "semantic": {"semantic_role": role},
             },
         )
-        results = detector.detect(context)
-        assert len(results) == 0
+
+    def test_skip_non_measure_column(self, detector: BenfordDetector):
+        """Benford only applies to measure columns."""
+        ctx = self._context(self._BENFORD_DIST, role="key")
+        assert detector.detect(ctx) == []
 
     def test_skip_no_benford_data(self, detector: BenfordDetector):
         """Skip if no Benford analysis available."""
@@ -701,140 +737,43 @@ class TestBenfordDetector:
                 "semantic": {"semantic_role": "measure"},
             },
         )
-        results = detector.detect(context)
-        assert len(results) == 0
+        assert detector.detect(context) == []
 
-    def test_compliant(self, detector: BenfordDetector):
-        """Compliant column with high p-value gets low entropy (gradient)."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "statistics": {
-                    "total_count": 1000,
-                    "quality": {
-                        "benford_compliant": True,
-                        "benford_analysis": {
-                            "is_compliant": True,
-                            "chi_square": 5.0,
-                            "p_value": 0.8,
-                            "digit_distribution": [0.301, 0.176, 0.125],
-                            "interpretation": "Data follows Benford's Law",
-                        },
-                    },
-                },
-                "semantic": {"semantic_role": "measure"},
-            },
-        )
-        results = detector.detect(context)
+    def test_skip_without_digit_distribution(self, detector: BenfordDetector):
+        """The observed digit distribution is required for a surprise score.
+
+        The old boolean/p-value scoring path is gone: a benford_analysis without
+        ``digit_distribution`` carries no observed distribution to score against.
+        """
+        assert detector.detect(self._context(None)) == []
+
+    def test_skip_small_sample(self, detector: BenfordDetector):
+        """Below min_sample_size the leading-digit frequencies are too noisy."""
+        assert detector.detect(self._context(self._BENFORD_DIST, total_count=50)) == []
+
+    def test_compliant_scores_near_zero(self, detector: BenfordDetector):
+        """A Benford-following distribution is unsurprising → score ~0.
+
+        This is the precision fix: clean financial data scores ~0, not the 0.7
+        the chi-square boost curve produced at large n.
+        """
+        results = detector.detect(self._context(self._BENFORD_DIST))
         assert len(results) == 1
-        # p_value=0.8 → score = 0.1 + (0.7 - 0.1) * (1 - 0.8) = 0.22
-        assert results[0].score == pytest.approx(0.22, abs=0.01)
+        assert results[0].score < 0.02
+        assert results[0].evidence[0]["kl_bits"] < 0.05
         assert results[0].evidence[0]["is_compliant"] is True
 
-    def test_non_compliant_mild(self, detector: BenfordDetector):
-        """Non-compliant column with p_value above escalation threshold uses p-value gradient."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "statistics": {
-                    "total_count": 1000,
-                    "quality": {
-                        "benford_compliant": False,
-                        "benford_analysis": {
-                            "is_compliant": False,
-                            "chi_square": 20.0,
-                            "p_value": 0.02,
-                            "digit_distribution": [0.11, 0.11, 0.11],
-                            "interpretation": "Mild deviation from Benford's Law",
-                        },
-                    },
-                },
-                "semantic": {"semantic_role": "measure"},
-            },
-        )
-        results = detector.detect(context)
+    def test_skewed_distribution_is_high_surprise(self, detector: BenfordDetector):
+        """A distribution that departs Benford hard → high surprise."""
+        results = detector.detect(self._context(self._SKEWED_DIST))
         assert len(results) == 1
-        # p_value=0.02 > 0.01 threshold → p-value gradient
-        # score = 0.1 + 0.6 * (1 - 0.02) = 0.688
-        assert results[0].score == pytest.approx(0.688, abs=0.01)
+        assert results[0].score > 0.4
 
-    def test_non_compliant_severe_chi_square(self, detector: BenfordDetector):
-        """Non-compliant column with very low p-value uses Cramér's V severity."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "statistics": {
-                    "total_count": 1000,
-                    "quality": {
-                        "benford_compliant": False,
-                        "benford_analysis": {
-                            "is_compliant": False,
-                            "chi_square": 50.0,
-                            "p_value": 0.001,
-                            "digit_distribution": [0.11, 0.11, 0.11],
-                            "interpretation": "Significant deviation from Benford's Law",
-                        },
-                    },
-                },
-                "semantic": {"semantic_role": "measure"},
-            },
-        )
-        results = detector.detect(context)
-        assert len(results) == 1
-        # p_value=0.001 < 0.01 → Cramér's V severity
-        # V = sqrt(50 / (1000 * 8)) = 0.0791, severity = 0.0791 / 0.5 = 0.158
-        # score = 0.7 + 0.3 * 0.158 = 0.747
-        assert results[0].score == pytest.approx(0.747, abs=0.01)
-
-    def test_extreme_chi_square_caps_at_1(self, detector: BenfordDetector):
-        """Extreme chi-square values cap score at 1.0."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "statistics": {
-                    "total_count": 1000,
-                    "quality": {
-                        "benford_compliant": False,
-                        "benford_analysis": {
-                            "is_compliant": False,
-                            "chi_square": 2000.0,
-                            "p_value": 0.0,
-                            "digit_distribution": [0.11, 0.11, 0.11],
-                            "interpretation": "Extreme deviation",
-                        },
-                    },
-                },
-                "semantic": {"semantic_role": "measure"},
-            },
-        )
-        results = detector.detect(context)
-        assert len(results) == 1
-        # V = sqrt(2000 / (1000 * 8)) = 0.5 → severity = 0.5/0.5 = 1.0
-        # score = 0.7 + 0.3 * 1.0 = 1.0
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-
-    def test_boolean_only_fallback(self, detector: BenfordDetector):
-        """Works with only benford_compliant boolean (no full analysis)."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "statistics": {
-                    "total_count": 1000,
-                    "quality": {
-                        "benford_compliant": False,
-                    },
-                },
-                "semantic": {"semantic_role": "measure"},
-            },
-        )
-        results = detector.detect(context)
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(0.7, abs=0.01)
+    def test_surprise_orders_skewed_above_compliant(self, detector: BenfordDetector):
+        """The score discriminates: skewed > compliant (real recall signal)."""
+        compliant = detector.detect(self._context(self._BENFORD_DIST))[0].score
+        skewed = detector.detect(self._context(self._SKEWED_DIST))[0].score
+        assert skewed > compliant
 
     def test_detector_properties(self, detector: BenfordDetector):
         """Test detector has correct properties."""

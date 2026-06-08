@@ -7,7 +7,7 @@ per intent lives in the loss table; recall is the ordering "injected separates
 from clean", not a point threshold (eval test_detector_recall ORDERING_DETECTORS).
 """
 
-from dataraum.entropy.config import get_entropy_config
+from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
@@ -20,15 +20,12 @@ class TypeFidelityDetector(EntropyDetector):
     the detected type fits the actual data.
 
     Source: typing/TypeCandidate.parse_success_rate
-    Formula: entropy = 1.0 - parse_success_rate
+    Formula: entropy = max(1 - parse_success_rate, quarantine_rate)  (stats.type_fidelity)
 
-    Special case: when the typing phase falls back to VARCHAR because no
-    candidate passed min_confidence (decision_source="fallback"), the
-    parse_success_rate is 1.0 (VARCHAR parses everything). This is
-    misleading — the column couldn't be typed. In this case we use a
-    configurable fallback score (default 0.5) instead.
-
-    Thresholds configurable in config/entropy/thresholds.yaml.
+    A VARCHAR fallback (decision_source="fallback") means typing couldn't determine a
+    type (parse_success_rate=1.0 is meaningless — VARCHAR parses everything). That is
+    IGNORANCE about the column's type, flagged as an evidence signal, NOT a fabricated
+    0.5 mid-score (DAT-442 two-table).
     """
 
     detector_id = "type_fidelity"
@@ -57,12 +54,6 @@ class TypeFidelityDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for type fidelity
         """
-        # Load configuration
-        config = get_entropy_config()
-        detector_config = config.detector("type_fidelity")
-
-        # Get configurable thresholds
-        score_fallback = detector_config.get("score_fallback", 0.5)
         typing_result = context.get_analysis("typing", {})
 
         # Extract parse success rate and decision metadata
@@ -79,18 +70,13 @@ class TypeFidelityDetector(EntropyDetector):
             decision_source = typing_result.get("decision_source")
             quarantine_rate = typing_result.get("quarantine_rate")
 
-        # Calculate entropy
+        # The measurement is the honest type-cast failure rate: the worse of the
+        # parse-failure fraction and the quarantine fraction (rows that failed
+        # TRY_CAST). No boost (DAT-442) — 8% broken is 0.08, eval asserts the ordering.
+        # A VARCHAR fallback yields parse_success_rate=1.0 → score ~ quarantine_rate;
+        # the undetermined type is IGNORANCE (evidence signal below), not a 0.5 score.
         is_fallback = decision_source == "fallback"
-        if is_fallback:
-            # VARCHAR fallback: typing couldn't determine the type.
-            # parse_success_rate=1.0 is meaningless — use configurable score.
-            score = score_fallback
-        else:
-            # Honest rates: parse-failure fraction and quarantine fraction (rows
-            # that failed TRY_CAST). The worse of the two; no boost (DAT-442) —
-            # 8% broken is 0.08, and the eval asserts the ordering vs clean.
-            parse_score = 1.0 - parse_success_rate
-            score = max(parse_score, quarantine_rate or 0.0)
+        score = stats.type_fidelity(parse_success_rate, quarantine_rate or 0.0)
 
         # Build evidence
         evidence = [
@@ -101,6 +87,8 @@ class TypeFidelityDetector(EntropyDetector):
                 "failure_count": len(failed_examples) if failed_examples else 0,
                 "decision_source": decision_source,
                 "is_fallback": is_fallback,
+                # Type undetermined → ignorance about the column's type (future loss U).
+                "ignorance": 1.0 if is_fallback else 0.0,
             }
         ]
 

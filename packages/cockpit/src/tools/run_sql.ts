@@ -12,6 +12,7 @@ import { z } from "zod";
 import { AGENT_SAMPLE_ROWS } from "../duckdb/agent-sample";
 import { HARD_ROW_CEILING } from "../duckdb/limit";
 import { runSql } from "../duckdb/run-sql";
+import { asAgentError, withAgentError } from "./agent-error";
 
 // Agent-result shape ({columns, rows, rowCount, truncated}). `rows` is
 // intentionally permissive — `runSql` returns `Record<string, Json>[]`
@@ -68,11 +69,15 @@ export const runSqlTool = toolDefinition({
 			.optional()
 			.describe("Max rows to return (default 1000, capped at 200000)."),
 	}),
-	outputSchema: QueryResultSchema,
+	// Success OR `{ error }`: a bad query (syntax, unknown table/column) is the
+	// agent's to fix, so a thrown driver error is returned as data — the model
+	// reads it and rewrites the SQL in-loop instead of the turn dying on an
+	// opaque "Error executing tool: …" string (consistency pass 2).
+	outputSchema: withAgentError(QueryResultSchema),
 	// ctx.abortSignal deliberately NOT forwarded (DAT-449): duckdb-neo has no
 	// per-query cancellation — its only primitive is connection-level
 	// `interrupt()`, and the lake connection is process-wide memoized
 	// (duckdb/lake.ts), so interrupting would kill CONCURRENT queries (the
 	// grid's /api/run-sql, other tool calls), not just this one. Revisit only
 	// with a per-query connection or a driver-level signal API.
-}).server((input) => runSql(input));
+}).server((input) => asAgentError(() => runSql(input)));

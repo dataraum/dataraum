@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import { HARD_ROW_CEILING } from "../duckdb/limit";
 import { probe, SUPPORTED_BACKENDS } from "../duckdb/probe";
+import { asAgentError, withAgentError } from "./agent-error";
 
 // QueryResult shape ({columns, rows, rowCount}). `rows` is intentionally
 // permissive — `probe` returns `Record<string, Json>[]` (arbitrary JSON-safe
@@ -49,5 +50,9 @@ export const probeTool = toolDefinition({
 			.optional()
 			.describe("Max rows to return (default 1000, capped at 200000)."),
 	}),
-	outputSchema: QueryResultSchema,
-}).server((input) => probe(input));
+	// Success OR `{ error }`: a bad query or unreachable-by-the-agent issue (bad
+	// SQL, wrong source_name, unsupported shape) comes back as data so the model
+	// can correct and retry in-loop, not as an opaque turn-killing string
+	// (consistency pass 2). Credentials never appear in the message.
+	outputSchema: withAgentError(QueryResultSchema),
+}).server((input) => asAgentError(() => probe(input)));

@@ -1,22 +1,18 @@
 """Business meaning entropy detector.
 
-Measures uncertainty in business meaning/description.
-Columns without clear business descriptions are harder to interpret correctly.
+The measurement is the LLM's NAMING CONFIDENCE alone: score = 1 - confidence
+(``stats.confidence_entropy``). The LLM is instructed to lower confidence when a
+column name is meaningless/random even if it can guess meaning from the data — that
+confidence is the naming entropy, and a teach (name the column) closes it.
 
-Scoring formula (additive):
-  score = base_score + confidence_weight * (1 - confidence) - concept_bonus
-
-- base_score: from presence of description/metadata fields (0.0 to 1.0)
-- confidence_weight * (1 - confidence): low LLM confidence adds entropy independently
-- concept_bonus: business_concept presence reduces entropy (ontology alignment)
-
-The confidence penalty is the primary mechanism for catching unclear column
-names. The LLM is instructed to lower confidence when column names are
-meaningless/random, even if it can infer meaning from data values. This lets
-humans decide whether the inferred meaning is trustworthy.
+ADR-0009 hard rule: NO deterministic semantic override. The old additive formula
+(``base_score`` from description/metadata presence + ``confidence_weight·(1-conf)`` −
+``ontology_bonus``) is GONE (DAT-442 two-table): documentation presence and ontology
+alignment are CONTEXT carried in evidence, never the score — a confident annotation of
+a well-named column is low entropy whether or not someone wrote a description for it.
 """
 
-from dataraum.entropy.config import get_entropy_config
+from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
@@ -25,15 +21,11 @@ from dataraum.entropy.models import EntropyObject
 class BusinessMeaningDetector(EntropyDetector):
     """Detector for business meaning clarity.
 
-    Measures semantic clarity using an additive formula:
-      score = base_score + confidence_weight * (1 - confidence) - concept_bonus
-
-    - base_score: from presence of description, business_name, entity_type
-    - confidence_weight: how much LLM confidence affects score (additive penalty)
-    - concept_bonus: business_concept presence reduces entropy (ontology alignment)
+    The score is the LLM's naming confidence alone (score = 1 - confidence). No
+    deterministic metadata override (ADR-0009): description / business_name /
+    entity_type / business_concept are evidence CONTEXT, not score.
 
     Source: semantic/SemanticAnnotation
-    Scores configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "business_meaning"
@@ -58,12 +50,9 @@ class BusinessMeaningDetector(EntropyDetector):
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect business meaning entropy.
 
-        Score calculation (additive):
-        1. Base score from presence of description/metadata (0.0 to 1.0)
-        2. Confidence penalty: confidence_weight * (1 - confidence)
-        3. Ontology bonus: business_concept presence reduces entropy
-
-        Final: score = base_score + confidence_penalty - concept_bonus
+        score = 1 - confidence (``stats.confidence_entropy``) — the LLM's naming
+        confidence alone. Documentation / ontology presence are evidence context, not
+        score (ADR-0009 hard rule, no deterministic semantic override).
 
         Args:
             context: Detector context with semantic analysis results
@@ -71,22 +60,6 @@ class BusinessMeaningDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for business meaning
         """
-        # Load configuration
-        config = get_entropy_config()
-        detector_config = config.detector("business_meaning")
-
-        # Get configurable scores and reductions
-        score_missing = detector_config.get("score_missing", 1.0)
-        score_partial = detector_config.get("score_partial", 0.6)
-        score_documented = detector_config.get("score_documented", 0.2)
-        score_fully_documented = detector_config.get("score_fully_documented", 0.0)
-
-        # Confidence weighting and ontology bonus.
-        # confidence_weight=0.5 so a confidence of 0.4 (garbage name) gives
-        # penalty = 0.5 * 0.6 = 0.30, crossing the 0.3 detection threshold.
-        confidence_weight = detector_config.get("confidence_weight", 0.5)
-        ontology_bonus = detector_config.get("ontology_bonus", 0.1)
-
         semantic = context.get_analysis("semantic", {})
 
         # Extract raw metrics from semantic annotation
@@ -120,36 +93,17 @@ class BusinessMeaningDetector(EntropyDetector):
             "has_business_concept": bool(business_concept),
         }
 
-        # 1. Base score from documentation presence
-        if not raw_metrics["has_description"]:
-            base_score = score_missing  # No description = high entropy
-        elif not raw_metrics["has_business_name"] and not raw_metrics["has_entity_type"]:
-            base_score = score_partial  # Description but no other context
-        elif raw_metrics["has_business_name"] and raw_metrics["has_entity_type"]:
-            base_score = score_fully_documented  # All metadata present
-        else:
-            base_score = score_documented  # Has description + one of the two
-
-        # 2. Confidence penalty: low confidence adds entropy independently
-        # When confidence=1.0, penalty=0; when confidence=0.0, penalty=confidence_weight
-        confidence_penalty = confidence_weight * max(0.0, 1.0 - confidence)
-
-        # 3. Ontology bonus: having business_concept = ontology alignment = lower entropy
-        concept_bonus = ontology_bonus if business_concept else 0.0
-
-        # Calculate final score (additive: base + penalty - bonus)
-        # This avoids the multiplicative bug where 0.0 * anything = 0.0
-        score = base_score + confidence_penalty - concept_bonus
-        score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
+        # The measurement is the LLM's naming confidence ALONE (ADR-0009 hard rule:
+        # no deterministic semantic override). score = 1 - confidence. Documentation
+        # presence + ontology alignment in raw_metrics below are CONTEXT, not score.
+        score = stats.confidence_entropy(confidence)
 
         # Build evidence with raw metrics and score components
         evidence = [
             {
                 "raw_metrics": raw_metrics,
                 "score_components": {
-                    "base_score": round(base_score, 3),
-                    "confidence_penalty": round(confidence_penalty, 3),
-                    "ontology_bonus": round(concept_bonus, 3),
+                    "naming_confidence": round(confidence, 3),
                     "final_score": round(score, 3),
                 },
                 "assessment": (

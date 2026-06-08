@@ -141,126 +141,168 @@ def table_with_data(session, duckdb_conn):
     return table
 
 
+def _eval_spec(check_type: str, **parameters) -> ValidationSpec:
+    return ValidationSpec(
+        validation_id="test",
+        name="Test",
+        description="Test",
+        category="test",
+        check_type=check_type,
+        parameters=parameters,
+    )
+
+
 class TestValidationAgentEvaluateResult:
-    """Tests for the _evaluate_result method."""
+    """Tests for the _evaluate_result method.
+
+    Returns (status, message, details): PASSED/FAILED is a judged
+    measurement; ERROR means INCONCLUSIVE — the result shape could not be
+    judged. Inconclusive must never surface as FAILED (DAT-439).
+    """
 
     def test_evaluate_balance_check_passed(self, validation_agent):
         """Test balance check evaluation when balanced."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="balance",
-            parameters={"tolerance": 0.01},
-        )
-
+        spec = _eval_spec("balance", tolerance=0.01)
         result_rows = [{"total_debits": 150.00, "total_credits": 150.00, "difference": 0.00}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+        status, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
 
-        assert passed is True
+        assert status == ValidationStatus.PASSED
         assert "0.00" in message
 
     def test_evaluate_balance_check_failed(self, validation_agent):
         """Test balance check evaluation when not balanced."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="balance",
-            parameters={"tolerance": 0.01},
-        )
-
+        spec = _eval_spec("balance", tolerance=0.01)
         result_rows = [{"total_debits": 150.00, "total_credits": 100.00, "difference": 50.00}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+        status, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
 
-        assert passed is False
+        assert status == ValidationStatus.FAILED
         assert details["difference"] == 50.0
 
+    def test_evaluate_balance_unrecognizable_columns_is_error_not_failed(self, validation_agent):
+        """A balance result without judgeable columns is inconclusive → ERROR."""
+        spec = _eval_spec("balance")
+        result_rows = [{"some_col": 1, "other_col": 2}]
+
+        status, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+
+        assert status == ValidationStatus.ERROR
+        assert "inconclusive" in message
+        assert "some_col" in message
+
+    def test_evaluate_balance_zero_rows_is_error(self, validation_agent):
+        """A balance summary query returning no rows cannot be judged → ERROR."""
+        status, message, _ = validation_agent._evaluate_result(_eval_spec("balance"), [], 0)
+
+        assert status == ValidationStatus.ERROR
+        assert "inconclusive" in message
+
     def test_evaluate_constraint_check_no_violations(self, validation_agent):
-        """Test constraint check with no violations."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="constraint",
+        """Constraint: an empty result IS the judgement (no violations) → PASSED."""
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("constraint"), [], 0
         )
 
-        passed, message, details = validation_agent._evaluate_result(spec, [], 0)
-
-        assert passed is True
+        assert status == ValidationStatus.PASSED
         assert "No constraint violations" in message
 
     def test_evaluate_constraint_check_with_violations(self, validation_agent):
         """Test constraint check with violations."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="constraint",
-        )
-
         result_rows = [{"id": 1, "violation": "negative amount"}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("constraint"), result_rows, 1
+        )
 
-        assert passed is False
+        assert status == ValidationStatus.FAILED
         assert "1 constraint violations" in message
 
     def test_evaluate_comparison_check_equation_holds(self, validation_agent):
         """Test comparison check with equation_holds column."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="comparison",
-        )
-
         result_rows = [{"assets": 1000, "liabilities": 600, "equity": 400, "equation_holds": True}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("comparison"), result_rows, 1
+        )
 
-        assert passed is True
+        assert status == ValidationStatus.PASSED
         assert "passed" in message
 
     def test_evaluate_comparison_check_equation_fails(self, validation_agent):
         """Test comparison check when equation doesn't hold."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="comparison",
-        )
-
         result_rows = [{"assets": 1000, "liabilities": 600, "equity": 300, "equation_holds": False}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
-
-        assert passed is False
-
-    def test_evaluate_aggregate_check(self, validation_agent):
-        """Test aggregate check evaluation."""
-        spec = ValidationSpec(
-            validation_id="test",
-            name="Test",
-            description="Test",
-            category="test",
-            check_type="aggregate",
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("comparison"), result_rows, 1
         )
 
+        assert status == ValidationStatus.FAILED
+
+    def test_evaluate_comparison_inconclusive_is_error_not_failed(self, validation_agent):
+        """The smoke-proven three_way_match shape (DAT-439): a comparison
+        result without equation_holds/is_valid/difference columns is
+        inconclusive — it must be ERROR, never FAILED."""
+        result_rows = [{"po_count": 5, "invoice_count": 3, "receipt_count": 4}]
+
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("comparison"), result_rows, 1
+        )
+
+        assert status == ValidationStatus.ERROR
+        assert "Comparison check inconclusive" in message
+        assert "could not identify comparison columns" in message
+        assert details["check_type"] == "comparison"
+
+    def test_evaluate_comparison_zero_rows_is_error(self, validation_agent):
+        """A comparison query returning no rows cannot be judged → ERROR."""
+        status, message, _ = validation_agent._evaluate_result(_eval_spec("comparison"), [], 0)
+
+        assert status == ValidationStatus.ERROR
+        assert "inconclusive" in message
+
+    def test_evaluate_aggregate_check(self, validation_agent):
+        """DAT-439 decision pin: aggregate without a rate metric stays PASSED —
+        the prompt contract is 'summary values for review' (no rate required);
+        the rate judgement is opportunistic."""
         result_rows = [{"min_date": "2024-01-01", "max_date": "2024-12-31", "total_records": 1000}]
 
-        passed, message, details = validation_agent._evaluate_result(spec, result_rows, 1)
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("aggregate"), result_rows, 1
+        )
 
-        assert passed is True
+        assert status == ValidationStatus.PASSED
         assert "Aggregate check completed" in message
+
+    def test_evaluate_aggregate_rate_above_tolerance_fails(self, validation_agent):
+        """An aggregate WITH a rate metric is judged against tolerance."""
+        result_rows = [{"orphan_rate": 0.5, "total": 100}]
+
+        status, message, _ = validation_agent._evaluate_result(
+            _eval_spec("aggregate", tolerance=0.01), result_rows, 1
+        )
+
+        assert status == ValidationStatus.FAILED
+
+    def test_evaluate_aggregate_zero_rows_is_error(self, validation_agent):
+        """An aggregate summary query returning no rows cannot be judged → ERROR."""
+        status, message, _ = validation_agent._evaluate_result(_eval_spec("aggregate"), [], 0)
+
+        assert status == ValidationStatus.ERROR
+        assert "inconclusive" in message
+
+    def test_evaluate_unknown_check_type_is_error(self, validation_agent):
+        """An unrecognized check type has no evaluation semantics — ERROR,
+        never the old row_count>0 guess (DAT-439 sweep)."""
+        result_rows = [{"anything": 1}]
+
+        status, message, details = validation_agent._evaluate_result(
+            _eval_spec("referential"), result_rows, 1
+        )
+
+        assert status == ValidationStatus.ERROR
+        assert "Cannot evaluate check_type 'referential'" in message
+        assert details["row_count"] == 1
 
 
 class TestValidationAgentGenerateSQL:
@@ -386,6 +428,47 @@ class TestValidationAgentGenerateSQL:
         assert not result.success
         assert "disabled" in result.error
 
+    def test_generate_sql_no_tool_call_fails(self, validation_agent, mock_provider):
+        """No tool call = bind ERROR with reason — the JSON-parse-from-text
+        fallback is deleted (DAT-439): even parseable text content must NOT
+        be rescued into a GeneratedSQL."""
+        spec = _eval_spec("balance")
+        schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
+
+        response = MagicMock()
+        response.tool_calls = []
+        # Valid JSON the old fallback would have silently rescued.
+        response.content = (
+            '{"sql": "SELECT 1", "can_validate": true, "columns_used": [], "skip_reason": null}'
+        )
+        mock_provider.converse.return_value = Result.ok(response)
+
+        result = validation_agent._generate_sql(spec, schema)
+
+        assert not result.success
+        assert "did not use the generate_validation_sql tool" in result.error
+
+    def test_generate_sql_can_validate_without_sql_fails(self, validation_agent, mock_provider):
+        """can_validate=true with no SQL is a degraded generation, not a
+        legitimate skip — it must fail the bind, never surface as SKIPPED
+        (DAT-439 sweep)."""
+        spec = _eval_spec("balance")
+        schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
+
+        tool_input = {
+            "sql": None,
+            "explanation": "confused response",
+            "columns_used": [],
+            "can_validate": True,
+            "skip_reason": None,
+        }
+        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+
+        result = validation_agent._generate_sql(spec, schema)
+
+        assert not result.success
+        assert "returned no SQL" in result.error
+
 
 class TestValidationAgentBindExecute:
     """Tests for the bind/execute lifecycle operations (DAT-438).
@@ -486,3 +569,88 @@ class TestValidationAgentBindExecute:
         assert bind_failure is not None
         assert bind_failure.status == ValidationStatus.SKIPPED
         assert "Missing account_type" in bind_failure.message
+
+    def test_bind_missing_lake_table_fails_explain(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    ):
+        """Pins the downstream catch behind the resolver's row-count swallow
+        (DAT-439 item 4): a table missing from the lake surfaces at bind —
+        EXPLAIN fails → bind ERROR with reason, never a silent half-context
+        run."""
+        table = table_with_data
+
+        spec = ValidationSpec(
+            validation_id="missing_table_check",
+            name="Missing Table Check",
+            description="References a table that is not in the lake",
+            category="test",
+            check_type="balance",
+        )
+
+        from dataraum.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
+
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
+
+        tool_input = {
+            "sql": "SELECT SUM(debit) AS total_debits FROM typed_table_not_in_lake",
+            "explanation": "Sums debits from a table that does not exist",
+            "columns_used": ["debit"],
+            "can_validate": True,
+            "skip_reason": None,
+        }
+        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
+        )
+
+        assert generated is None
+        assert bind_failure is not None
+        assert bind_failure.status == ValidationStatus.ERROR
+        assert "Generated SQL is invalid" in bind_failure.message
+
+    def test_execute_inconclusive_result_is_error(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    ):
+        """End-to-end execute pin: SQL runs but returns an unjudgeable shape
+        → status ERROR (inconclusive), never FAILED (DAT-439 item 1)."""
+        table = table_with_data
+
+        spec = ValidationSpec(
+            validation_id="three_way_match",
+            name="Three Way Match",
+            description="PO = invoice = receipt",
+            category="financial",
+            check_type="comparison",
+        )
+
+        from dataraum.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
+
+        schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=BaseRunMap())
+
+        tool_input = {
+            "sql": "SELECT 5 AS po_count, 3 AS invoice_count FROM typed_journal_entries LIMIT 1",
+            "explanation": "Counts without a judgeable comparison column",
+            "columns_used": [],
+            "can_validate": True,
+            "skip_reason": None,
+        }
+        mock_provider.converse.return_value = Result.ok(_make_tool_response(tool_input))
+
+        generated, bind_failure = validation_agent.bind_validation(
+            duckdb_conn, [table.table_id], spec, schema
+        )
+        assert bind_failure is None
+        assert generated is not None
+
+        result = validation_agent.execute_validation(
+            duckdb_conn, [table.table_id], spec, schema, generated
+        )
+
+        assert result.status == ValidationStatus.ERROR
+        assert result.passed is False
+        assert "Comparison check inconclusive" in result.message

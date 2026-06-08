@@ -264,6 +264,45 @@ class TestValidationLifecycleFlow:
     @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
     @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
     @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_inconclusive_evaluation_stays_grounded_never_failed(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        mock_execute: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """The smoke-proven three_way_match shape (DAT-439): an evaluation
+        that could not judge the data arrives as status ERROR — the artifact
+        stays grounded with the reason, and the persisted record is never
+        ``failed``."""
+        mock_load.return_value = {"three_way_match": _spec("three_way_match")}
+        mock_bind.return_value = (MagicMock(sql_query="SELECT 1"), None)
+        inconclusive_msg = (
+            "Comparison check inconclusive: could not identify comparison columns in result. "
+            "Columns returned: ['po_count', 'invoice_count']"
+        )
+        mock_execute.return_value = _result(
+            "three_way_match", ValidationStatus.ERROR, inconclusive_msg
+        )
+
+        result = ValidationPhase()._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id]))
+        session.flush()
+
+        artifact = _artifacts(session, "run-om-1")["three_way_match"]
+        assert artifact.state == ArtifactState.GROUNDED.value
+        assert "inconclusive" in (artifact.state_reason or "")
+
+        records = session.execute(select(ValidationResultRecord)).scalars().all()
+        assert [(r.validation_id, r.status) for r in records] == [("three_way_match", "error")]
+        assert result.outputs["failed_checks"] == 0
+        assert result.outputs["error_checks"] == 1
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
     def test_rerun_supersedes_under_fresh_run_id(
         self,
         mock_load: MagicMock,

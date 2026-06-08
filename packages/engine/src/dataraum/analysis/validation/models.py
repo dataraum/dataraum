@@ -184,6 +184,14 @@ class ValidationRunResult(BaseModel):
             failed_checks=failed,
             skipped_checks=skipped,
             error_checks=errors,
+            # ``overall_status`` collapses to FAILED on either a judged data
+            # failure OR an inconclusive/errored check (``errors`` now
+            # includes inconclusive evaluations, DAT-439) — it is a coarse
+            # "not all-clean" flag, NOT a pure data-failure signal. A
+            # cockpit/readiness consumer that needs to distinguish "data is
+            # wrong" from "couldn't judge" must read the per-check
+            # ``failed_checks`` vs ``error_checks`` axes, not this rollup
+            # (a DEGRADED/INCONCLUSIVE overall state is DAT-440+).
             overall_status=(
                 ValidationStatus.FAILED if (failed or errors) else ValidationStatus.PASSED
             ),

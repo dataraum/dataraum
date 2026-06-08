@@ -109,8 +109,14 @@ def compute_cycle_health(
             if vr.validation_id in relevant_spec_ids and set(vr.table_ids or []) & cycle_table_ids
         ]
 
-        validations_run = len(matched_results)
-        validations_passed = sum(1 for vr in matched_results if vr.passed)
+        # Pass rate counts JUDGED measurements only (DAT-439): error =
+        # inconclusive evaluation and skipped = never executed — neither is an
+        # assessment of the data, so both stay out of numerator AND
+        # denominator. Counting them (passed=False) would silently deflate
+        # cycle health for runs the system merely failed to judge.
+        assessed = [vr for vr in matched_results if vr.status not in ("error", "skipped")]
+        validations_run = len(assessed)
+        validations_passed = sum(1 for vr in assessed if vr.passed)
 
         validation_pass_rate: float | None = None
         if validations_run > 0:

@@ -57,8 +57,18 @@ class TestScoreValidationResult:
         assert _score_validation_result(r) == 0.0
 
     def test_error_returns_moderate(self):
+        """Execution errors AND inconclusive evaluations land here (DAT-439):
+        the check could not assess the data — moderate uncertainty, never a
+        failure measurement."""
         r = _make_result(status="error")
         assert _score_validation_result(r) == 0.5
+
+    def test_skipped_returns_zero(self):
+        """A bind-time skip (LLM declared the validation inapplicable) is not
+        a data measurement — without the explicit branch it would fall into
+        check-type scoring and a comparison skip would score 1.0 (DAT-439)."""
+        r = _make_result(status="skipped", details={"check_type": "comparison"})
+        assert _score_validation_result(r) == 0.0
 
     def test_comparison_failure_returns_one(self):
         r = _make_result(details={"check_type": "comparison"})

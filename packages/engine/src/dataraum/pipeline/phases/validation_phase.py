@@ -11,8 +11,10 @@ lifecycle:
   reason on the row — visibly impossible, never silently absent.
 * **execute** (``validation.execute``) — the grounded SQL runs and is
   evaluated; the artifact reaches ``executed``. PASSED/FAILED is the
-  *measurement*, not the lifecycle outcome; only an execution ERROR keeps the
-  artifact at ``grounded`` (with the reason recorded).
+  *measurement*, not the lifecycle outcome; an execution ERROR **or an
+  inconclusive evaluation** (the SQL ran but its result shape cannot be
+  judged — DAT-439) keeps the artifact at ``grounded`` with the reason
+  recorded. Inconclusive is never reported as FAILED.
 
 A re-run supersedes: everything is re-declared and re-flowed under the fresh
 ``run_id`` (no skip-if-already-ran — the prior run's rows coexist untouched,
@@ -192,7 +194,9 @@ class ValidationPhase(BasePhase):
 
             result = agent.execute_validation(ctx.duckdb_conn, table_ids, spec, schema, generated)
             if result.status == ValidationStatus.ERROR:
-                # Execution didn't complete cleanly: stays grounded, with reason.
+                # Execution error OR inconclusive evaluation (the SQL ran but
+                # its result shape cannot be judged, DAT-439): stays grounded,
+                # with the reason on the row.
                 artifact.state_reason = result.message
             else:
                 transition(artifact, operation="execute", stage=_STAGE)
@@ -241,7 +245,7 @@ class ValidationPhase(BasePhase):
             summary=(
                 f"{executed}/{len(artifacts)} validations executed "
                 f"({run_result.passed_checks} passed, {run_result.failed_checks} failed); "
-                f"{declared_stuck} ungroundable, {grounded_stuck} execution errors"
+                f"{declared_stuck} ungroundable, {grounded_stuck} unresolved (execution error or inconclusive)"
             ),
         )
 

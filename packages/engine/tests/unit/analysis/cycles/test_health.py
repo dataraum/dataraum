@@ -32,11 +32,13 @@ def _make_validation_result(
     validation_id: str = "double_entry_balance",
     table_ids: list[str] | None = None,
     passed: bool = True,
+    status: str | None = None,
 ) -> MagicMock:
     vr = MagicMock()
     vr.validation_id = validation_id
     vr.table_ids = table_ids or ["t1"]
     vr.passed = passed
+    vr.status = status if status is not None else ("passed" if passed else "failed")
     return vr
 
 
@@ -120,6 +122,42 @@ class TestComputeCycleHealth:
         assert score.completion_rate is None
         assert score.validation_pass_rate == 1.0
         assert score.composite_score == pytest.approx(1.0)
+
+    @patch("dataraum.analysis.cycles.health.get_validation_specs_for_cycles")
+    def test_unjudged_results_stay_out_of_the_pass_rate(self, mock_get_specs: MagicMock) -> None:
+        """DAT-439: error = inconclusive and skipped = never executed.
+
+        Neither is an assessment of the data — they leave the pass-rate
+        numerator AND denominator, instead of silently deflating cycle
+        health as passed=False rows.
+        """
+        mock_get_specs.return_value = [
+            _make_validation_spec("double_entry_balance"),
+            _make_validation_spec("three_way_match"),
+            _make_validation_spec("sign_conventions"),
+        ]
+
+        cycle = _make_cycle(completion_rate=None)
+        judged = _make_validation_result("double_entry_balance", ["t1"], passed=True)
+        inconclusive = _make_validation_result(
+            "three_way_match", ["t1"], passed=False, status="error"
+        )
+        never_ran = _make_validation_result(
+            "sign_conventions", ["t1"], passed=False, status="skipped"
+        )
+
+        session = MagicMock()
+        session.scalars.side_effect = [
+            MagicMock(all=MagicMock(return_value=[cycle])),
+            MagicMock(all=MagicMock(return_value=[judged, inconclusive, never_ran])),
+        ]
+
+        report = compute_cycle_health(session, "src1", vertical="finance", run_id="run-om")
+
+        score = report.cycle_scores[0]
+        assert score.validations_run == 1  # only the judged measurement
+        assert score.validations_passed == 1
+        assert score.validation_pass_rate == 1.0  # NOT 1/3
 
     @patch("dataraum.analysis.cycles.health.get_validation_specs_for_cycles")
     def test_no_run_reads_no_validation_evidence(self, mock_get_specs: MagicMock) -> None:

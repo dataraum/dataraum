@@ -330,6 +330,72 @@ def test_get_multi_table_schema_for_llm_nonexistent_tables(session):
     assert "error" in schema
 
 
+def test_missing_lake_table_keeps_schema_without_row_count(
+    session, duckdb_conn, table_with_columns
+):
+    """DAT-439 item-4 pin: the row-count swallow holds.
+
+    The table's ``duckdb_path`` does not exist in the lake — COUNT(*) raises,
+    the resolver swallows it (row counts are LLM-context garnish) and still
+    assembles the schema, just without ``row_count``. The REAL failure
+    surfaces downstream at bind: EXPLAIN fails → bind ERROR → the artifact
+    stays declared with the reason (pinned by
+    test_bind_missing_lake_table_fails_explain in the agent tests).
+    """
+    table = table_with_columns  # duckdb_path="typed_transactions", not in duckdb_conn
+
+    schema = get_multi_table_schema_for_llm(
+        session, [table.table_id], duckdb_conn=duckdb_conn, base_runs=_pins(table)
+    )
+
+    assert "error" not in schema
+    assert len(schema["tables"]) == 1
+    assert "row_count" not in schema["tables"][0]
+    # The schema is otherwise complete — columns intact for the LLM prompt.
+    assert {c["column_name"] for c in schema["tables"][0]["columns"]} == {
+        "transaction_id",
+        "amount",
+        "account_type",
+    }
+
+
+def test_partially_missing_table_ids_returns_existing(session, table_with_columns):
+    """A requested-but-missing table id shrinks the schema loudly (warning),
+    never silently: the existing tables still resolve (DAT-439 sweep)."""
+    table = table_with_columns
+
+    schema = get_multi_table_schema_for_llm(
+        session, [table.table_id, "nonexistent-id"], base_runs=_pins(table)
+    )
+
+    assert "error" not in schema
+    assert [t["table_id"] for t in schema["tables"]] == [table.table_id]
+
+
+def test_table_without_duckdb_path_is_excluded(session, table_with_columns):
+    """A table with no lake path cannot be validated against — it is excluded
+    from the LLM schema (with a warning, DAT-439 sweep); the rest survive."""
+    from dataraum.storage import Source, Table
+
+    good = table_with_columns
+    source = session.query(Source).first()
+    pathless = Table(
+        source_id=source.source_id,
+        table_name="pathless",
+        layer="typed",
+        duckdb_path=None,
+    )
+    session.add(pathless)
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(
+        session, [good.table_id, pathless.table_id], base_runs=_pins(good)
+    )
+
+    assert "error" not in schema
+    assert [t["table_name"] for t in schema["tables"]] == ["transactions"]
+
+
 class TestFormatMultiTableSchemaForPrompt:
     """Tests for formatting multi-table schema as prompt text."""
 

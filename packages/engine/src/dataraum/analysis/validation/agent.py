@@ -74,7 +74,13 @@ class ValidationAgent(LLMFeature):
             issues.append("No columns found in any table")
             return issues
 
-        # Check for semantic annotations (warning only, not blocking)
+        # DAT-439 decision: zero semantic annotations stays a WARNING, never a
+        # blocking issue. The absence is already durably visible — bind records
+        # the pinned base-run map (including its empty ``semantic_runs``) into
+        # every artifact's ``grounded_against`` provenance, and the workflow's
+        # resolve activity warns on unresolved heads. Blocking here would
+        # forbid validating legitimately annotation-free workspaces; the LLM
+        # degrades gracefully to bare column names/types.
         columns_with_semantic = sum(
             1 for t in tables for c in t.get("columns", []) if c.get("semantic")
         )
@@ -237,8 +243,11 @@ class ValidationAgent(LLMFeature):
             ]
             row_count = len(result_rows)
 
-            # Evaluate results based on check type
-            passed, message, details = self._evaluate_result(
+            # Evaluate results based on check type. ERROR = the evaluation is
+            # INCONCLUSIVE (ran, but the result shape cannot be judged) — the
+            # phase keeps the artifact at ``grounded`` with the reason, and
+            # the result never pollutes the FAILED measurements (DAT-439).
+            status, message, details = self._evaluate_result(
                 spec=spec,
                 result_rows=result_rows,
                 row_count=row_count,
@@ -247,11 +256,11 @@ class ValidationAgent(LLMFeature):
             return ValidationResult(
                 validation_id=spec.validation_id,
                 spec_name=spec.name,
-                status=ValidationStatus.PASSED if passed else ValidationStatus.FAILED,
+                status=status,
                 severity=spec.severity,
                 table_ids=scoped_table_ids,
                 table_name=combined_table_name,
-                passed=passed,
+                passed=status == ValidationStatus.PASSED,
                 message=message,
                 details=details,
                 sql_used=generated.sql_query,
@@ -354,37 +363,37 @@ class ValidationAgent(LLMFeature):
 
         response = result.value
 
-        # Extract tool call result
+        # No tool call = degraded generation. There is no rescue: under the
+        # lifecycle this is a bind ERROR — the artifact stays ``declared``
+        # with the reason. (DAT-439 deleted the JSON-parse-from-text fallback
+        # that silently rescued unstructured responses.)
         if not response.tool_calls:
-            # LLM didn't use the tool - try to parse text as fallback
             logger.warning(
                 "validation_llm_no_tool_call",
                 validation_id=spec.validation_id,
                 has_content=bool(response.content),
             )
-            if response.content:
-                try:
-                    response_data = json.loads(response.content)
-                    output = ValidationSQLOutput.model_validate(response_data)
-                except Exception as e:
-                    logger.warning(
-                        "validation_json_fallback_failed",
-                        validation_id=spec.validation_id,
-                        error=str(e),
-                    )
-                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
-            else:
-                return Result.fail("LLM did not use the generate_validation_sql tool")
-        else:
-            # Parse tool response using Pydantic model
-            tool_call = response.tool_calls[0]
-            if tool_call.name != "generate_validation_sql":
-                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+            return Result.fail(
+                "LLM did not use the generate_validation_sql tool — no structured output"
+            )
 
-            try:
-                output = ValidationSQLOutput.model_validate(tool_call.input)
-            except Exception as e:
-                return Result.fail(f"Failed to validate tool response: {e}")
+        # Parse tool response using Pydantic model
+        tool_call = response.tool_calls[0]
+        if tool_call.name != "generate_validation_sql":
+            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+        try:
+            output = ValidationSQLOutput.model_validate(tool_call.input)
+        except Exception as e:
+            return Result.fail(f"Failed to validate tool response: {e}")
+
+        # can_validate without SQL is a degraded generation, not a skip —
+        # labeling it SKIPPED would mislabel the degradation as legitimate
+        # inapplicability (DAT-439 sweep). Bind ERROR instead.
+        if output.can_validate and not output.sql:
+            return Result.fail(
+                "LLM declared the validation feasible (can_validate=true) but returned no SQL"
+            )
 
         # Convert to GeneratedSQL
         generated = GeneratedSQL(
@@ -394,7 +403,7 @@ class ValidationAgent(LLMFeature):
             columns_used=output.columns_used,
             generated_at=datetime.now(UTC),
             model_used=model,
-            is_valid=output.can_validate and output.sql is not None,
+            is_valid=output.can_validate,
             validation_error=output.skip_reason,
         )
 
@@ -405,8 +414,16 @@ class ValidationAgent(LLMFeature):
         spec: ValidationSpec,
         result_rows: list[dict[str, Any]],
         row_count: int,
-    ) -> tuple[bool, str, dict[str, Any]]:
+    ) -> tuple[ValidationStatus, str, dict[str, Any]]:
         """Evaluate validation result based on check type.
+
+        PASSED/FAILED is a *judged measurement* of the data. ERROR means the
+        evaluation is INCONCLUSIVE: the SQL ran, but the result shape cannot
+        be judged (no recognizable columns, zero rows on a summary check, an
+        unrecognized check type). An inconclusive evaluation is not a data
+        failure — reporting it FAILED would pollute the failure measurements
+        ``cross_table_consistency`` scores, so it must never reach FAILED
+        (DAT-439; the artifact stays ``grounded`` with the reason).
 
         Args:
             spec: Validation spec
@@ -414,28 +431,34 @@ class ValidationAgent(LLMFeature):
             row_count: Total row count
 
         Returns:
-            Tuple of (passed, message, details)
+            Tuple of (status, message, details) with status PASSED/FAILED/ERROR
         """
         check_type = spec.check_type
         params = spec.parameters
         tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
+        def measured(passed: bool) -> ValidationStatus:
+            return ValidationStatus.PASSED if passed else ValidationStatus.FAILED
+
         if check_type == "balance":
             # Balance checks compare two values
             if row_count == 0:
-                return (False, "No results returned", {"check_type": check_type})
+                return (
+                    ValidationStatus.ERROR,
+                    "Balance check inconclusive: query returned no rows",
+                    {"check_type": check_type},
+                )
 
             row = result_rows[0]
 
             # Look for difference column first (preferred: LLM computes the diff)
             if "difference" in row or "diff" in row:
                 diff = abs(float(row.get("difference", row.get("diff", 0)) or 0))
-                passed = diff <= tolerance
                 # Promote magnitude into flat details so the scorer can
                 # read it directly (it expects details["magnitude"]).
                 mag = abs(float(row.get("magnitude") or 0)) or abs(diff) or 1
                 return (
-                    passed,
+                    measured(diff <= tolerance),
                     f"Balance difference: {diff:.2f} (tolerance: {tolerance})",
                     {
                         "check_type": check_type,
@@ -452,9 +475,8 @@ class ValidationAgent(LLMFeature):
                 val1 = float(row[value_cols[0]] or 0)
                 val2 = float(row[value_cols[1]] or 0)
                 diff = abs(val1 - val2)
-                passed = diff <= tolerance
                 return (
-                    passed,
+                    measured(diff <= tolerance),
                     f"Balance check: {value_cols[0]}={val1:.2f}, {value_cols[1]}={val2:.2f}, diff={diff:.2f}",
                     {
                         "check_type": check_type,
@@ -464,18 +486,23 @@ class ValidationAgent(LLMFeature):
                     },
                 )
 
-            # No recognizable columns — fail explicitly rather than silently pass
+            # No recognizable columns — inconclusive, never FAILED
             return (
-                False,
+                ValidationStatus.ERROR,
                 f"Balance check inconclusive: could not identify balance columns in result. "
                 f"Columns returned: {list(row.keys())}",
                 {"check_type": check_type, "row": row},
             )
 
         elif check_type == "constraint":
-            # Constraint checks return violating rows.
+            # Constraint checks return violating rows; an empty result IS the
+            # judgement (no violations), unlike the summary checks above.
             if row_count == 0:
-                return (True, "No constraint violations found", {"check_type": check_type})
+                return (
+                    ValidationStatus.PASSED,
+                    "No constraint violations found",
+                    {"check_type": check_type},
+                )
             # Extract total_rows from result columns if the LLM included it
             details: dict[str, Any] = {"check_type": check_type, "violation_count": row_count}
             if result_rows:
@@ -490,7 +517,7 @@ class ValidationAgent(LLMFeature):
                     # Single row with violation_count → summary, not raw violations
                     details["violation_count"] = int(vc)
             return (
-                False,
+                ValidationStatus.FAILED,
                 f"Found {details['violation_count']} constraint violations",
                 details,
             )
@@ -498,7 +525,11 @@ class ValidationAgent(LLMFeature):
         elif check_type == "comparison":
             # Comparison checks (e.g., Assets = Liabilities + Equity)
             if row_count == 0:
-                return (False, "No results returned", {"check_type": check_type})
+                return (
+                    ValidationStatus.ERROR,
+                    "Comparison check inconclusive: query returned no rows",
+                    {"check_type": check_type},
+                )
 
             row = result_rows[0]
             tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
@@ -507,7 +538,7 @@ class ValidationAgent(LLMFeature):
             if "equation_holds" in row:
                 passed = bool(row["equation_holds"])
                 return (
-                    passed,
+                    measured(passed),
                     f"Equation check: {'passed' if passed else 'failed'}",
                     {**row, "check_type": check_type},
                 )
@@ -515,7 +546,7 @@ class ValidationAgent(LLMFeature):
             if "is_valid" in row:
                 passed = bool(row["is_valid"])
                 return (
-                    passed,
+                    measured(passed),
                     f"Comparison check: {'passed' if passed else 'failed'}",
                     {**row, "check_type": check_type},
                 )
@@ -523,15 +554,16 @@ class ValidationAgent(LLMFeature):
             # Check for difference column
             if "difference" in row:
                 diff = abs(float(row["difference"] or 0))
-                passed = diff <= tolerance
                 return (
-                    passed,
+                    measured(diff <= tolerance),
                     f"Comparison difference: {diff:.2f}",
                     {"check_type": check_type, "difference": diff},
                 )
 
+            # No recognizable columns — inconclusive, never FAILED (the
+            # smoke-proven three_way_match shape, DAT-439).
             return (
-                False,
+                ValidationStatus.ERROR,
                 f"Comparison check inconclusive: could not identify comparison columns in result. "
                 f"Columns returned: {list(row.keys())}",
                 {"check_type": check_type, "row": row},
@@ -540,7 +572,11 @@ class ValidationAgent(LLMFeature):
         elif check_type == "aggregate":
             # Aggregate checks return summary values with a rate metric
             if row_count == 0:
-                return (False, "No results returned", {"check_type": check_type})
+                return (
+                    ValidationStatus.ERROR,
+                    "Aggregate check inconclusive: query returned no rows",
+                    {"check_type": check_type},
+                )
 
             row = result_rows[0]
             details = {**row, "check_type": check_type}
@@ -554,16 +590,21 @@ class ValidationAgent(LLMFeature):
                     break
 
             if rate is not None:
-                passed = rate <= tolerance
-                return (passed, f"Aggregate rate: {rate:.4f}", details)
+                return (measured(rate <= tolerance), f"Aggregate rate: {rate:.4f}", details)
 
-            return (True, "Aggregate check completed", details)
+            # DAT-439 decision: no rate metric stays PASSED — the prompt
+            # contract for aggregate checks is "summary values for review"
+            # (no rate required); the rate judgement above is opportunistic.
+            return (ValidationStatus.PASSED, "Aggregate check completed", details)
 
         else:
-            # Custom check - assume passing if any results
+            # Unrecognized check type: the evaluator has no semantics to
+            # judge with — inconclusive, never a row_count>0 guess (DAT-439
+            # sweep; previously "assume passing if any results").
             return (
-                row_count > 0,
-                f"Custom check returned {row_count} rows",
+                ValidationStatus.ERROR,
+                f"Cannot evaluate check_type {check_type!r}: no evaluation semantics defined "
+                f"(query returned {row_count} rows)",
                 {"check_type": check_type, "row_count": row_count},
             )
 

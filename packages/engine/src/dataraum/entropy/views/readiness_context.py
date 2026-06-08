@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from dataraum.core.logging import get_logger
 from dataraum.entropy.core.storage import EntropyRepository
 from dataraum.entropy.db_models import EntropyReadinessRecord
+from dataraum.entropy.loss import compute_loss_risk, get_loss_config
 from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import (
     build_dimension_path_to_node_map,
@@ -198,25 +199,34 @@ def _build_column_result(
         Returns None for the result if no objects map to network nodes.
     """
     disc = network.config.discretization
+    loss_config = get_loss_config()
 
-    # Split into mapped vs unmapped
+    # Split into network-mapped, loss-path (pooled measurements, ADR-0009), and
+    # truly-unmapped direct signals. A loss-path object feeds risk(intent)=E[loss]
+    # directly — it has no network node (the hand-set edge weights it would need
+    # are replaced by the per-intent loss table).
     mapped: list[EntropyObject] = []
+    loss_objects: list[EntropyObject] = []
     direct_signals: list[DirectSignal] = []
 
     for obj in objects:
         if obj.dimension_path in path_map:
             mapped.append(obj)
+        elif loss_config.is_loss_measurement(obj.detector_id):
+            loss_objects.append(obj)
         else:
             direct_signals.append(_object_to_direct_signal(obj))
 
-    if not mapped:
+    # Loss risk only matters at rollup time (the terminal detect step), same as
+    # the network rollup; the cheap query-time path skips both.
+    loss_risk = compute_loss_risk(loss_objects, loss_config) if compute_rollup else {}
+
+    if not mapped and not loss_risk:
         return None, direct_signals
 
     # Per-column: no collisions within a target, safe to use bridge directly.
     # The rollup consumes raw scores; states are derived only for display.
-    scores = entropy_objects_to_scores(mapped, network)
-    if not scores:
-        return None, direct_signals
+    scores = entropy_objects_to_scores(mapped, network) if mapped else {}
 
     states = {
         node: discretize_score(score, disc.low_upper, disc.medium_upper)
@@ -233,7 +243,7 @@ def _build_column_result(
     risk: dict[str, float] = {}
     priorities: list[Any] = []
     node_to_delta: dict[str, float] = {}
-    if compute_rollup:
+    if compute_rollup and scores:
         # Roll observed scores up the DAG. Unobserved nodes with no resolved
         # parents are simply absent — no prior leakage, so no subgraph pruning.
         risk = roll_up(network.config, scores, _pmap=network.parent_map, _order=network.topo_order)
@@ -261,10 +271,14 @@ def _build_column_result(
     intents: list[IntentReadiness] = []
 
     for intent_name in network.get_intent_nodes():
-        if intent_name not in risk:
+        network_risk = risk.get(intent_name, 0.0)
+        loss_r = loss_risk.get(intent_name, 0.0)
+        if intent_name not in risk and intent_name not in loss_risk:
             continue
 
-        intent_risk = risk[intent_name]
+        # The intent's risk is the worst of the two parallel paths: the network
+        # rollup (statistical detectors) and the loss layer (pooled measurements).
+        intent_risk = max(network_risk, loss_r)
         readiness = _readiness_from_risk(intent_risk, disc.medium_upper, disc.low_upper)
         # Per-intent drivers: nodes that lower THIS intent's risk, ranked by how
         # much. ``affected_intents`` carries the per-intent split that the
@@ -283,6 +297,21 @@ def _build_column_result(
             if intent_name in pr.affected_intents
         ]
         drivers.sort(key=lambda d: d.impact_delta, reverse=True)
+        # Loss-path driver: when a pooled measurement drives this intent at least
+        # as hard as the network, surface it (the contested-claim cause) so the
+        # cockpit can explain the band without a network node for it.
+        if loss_r >= network_risk and loss_objects:
+            dominant = max(loss_objects, key=lambda o: o.score)
+            drivers.insert(
+                0,
+                IntentDriver(
+                    node=dominant.detector_id,
+                    dimension_path=dominant.dimension_path,
+                    label=dominant.detector_id,
+                    state=discretize_score(dominant.score, disc.low_upper, disc.medium_upper),
+                    impact_delta=loss_r,
+                ),
+            )
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,

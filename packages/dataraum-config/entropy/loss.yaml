@@ -1,0 +1,28 @@
+# Loss layer — severity as expected loss per intent (ADR-0009 / DAT-457).
+#
+# For a POOLED (adjudication) measurement, readiness per intent is expected loss,
+# NOT the detector score:
+#
+#     risk(intent) = clamp01( conflict_weight · C + ignorance_weight · U )
+#
+# where C is the measurement's conflict (witnesses disagree about the claim) and
+# U its ignorance (thin evidence) for the column. Severity lives HERE, not in the
+# score: the SAME conflict C is catastrophic for aggregation (you'd aggregate
+# values that might be mishandled nulls) but mild for an exploratory query that
+# can hedge on a caveat. The loss is driven by the DISAGREEMENT, not the point
+# belief — the log-linear posterior stays confident even under conflict.
+#
+# A detector listed here is a loss-path measurement: its risk(intent) feeds the
+# readiness assembler in parallel to the network rollup (statistical detectors
+# keep their network.yaml nodes/edges). Weights are PLACEHOLDER priors, calibrated
+# later from generative families (DAT-450); they are NOT tuned to pass a metric.
+#
+# Intents: query_intent, aggregation_intent, reporting_intent (network.yaml).
+
+measurements:
+  null_semantics:
+    # Contested null markers: safe to surface as a caveat in a query, dangerous
+    # to silently sum, and wrong to report on without resolution.
+    query_intent: { conflict: 0.4, ignorance: 0.2 }
+    aggregation_intent: { conflict: 0.9, ignorance: 0.5 }
+    reporting_intent: { conflict: 0.8, ignorance: 0.4 }

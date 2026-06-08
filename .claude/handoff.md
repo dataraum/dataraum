@@ -4,6 +4,58 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-08: cycles revived through the operating_model lifecycle — `business_cycle_health` inputs changed (DAT-455)
+
+Branch `feat/dat-455-cycles-lifecycle`. The dormant business-cycles phase is
+revived source-free through the DAT-438 typed-artifact lifecycle (the second
+family after validation). **DAT-442's `business_cycle_health` calibration must
+land AFTER this** — both *when* cycles exist and *how* they are scoped changed:
+
+- **`DetectedBusinessCycle` is now run-versioned + session-scoped, NOT
+  source-scoped.** The `source_id` column (+ its FK and `idx_detected_cycles_source`)
+  is GONE; the row now carries `run_id` (NOT NULL) and a
+  `uq_detected_cycle_run` UNIQUE on `(session_id, canonical_type, run_id)`.
+  `canonical_type` is now NOT NULL (it IS the declared-artifact identity). Any
+  eval code that read cycles by `source_id` must read by `(session_id, run_id)`
+  at the promoted `operating_model` head instead. Schema changed → `down -v` for
+  a fresh workspace.
+- **Cycles are now written in the `operating_model` stage, NOT the
+  begin_session/add_source `detect` pass.** The `business_cycle_health` detector
+  (`entropy/detectors/semantic/business_cycle_health.py`) still runs during the
+  *detect* pass, but now resolves the session's PROMOTED `operating_model` head
+  and reads cycles at that run — so on a workspace where operating_model has not
+  run yet (the common case at detect time) it reads NOTHING and scores 0.0
+  (`no_cycles_involving_table`). The detector's `load_data` inputs changed from
+  "all cycles for this table's source" to "cycles at the promoted operating_model
+  run for this session"; `context.session_id` is now required (returns early
+  without it). This is the substrate-generality finding (see PR): the detector's
+  cross-stage read is the seam the lifecycle did NOT make seamless.
+- **`compute_cycle_health` signature changed**: `compute_cycle_health(session,
+  session_id, *, vertical, run_id)` (was `source_id`). `run_id=None` now reads
+  NOTHING (both cycles and validation results are run-versioned) and returns an
+  empty report — fail-closed, never a cross-run read. `HealthReport.source_id` →
+  `HealthReport.session_id`.
+- **Cycle detection is now declared, not induced.** `CycleInductionAgent` and
+  `induce_adhoc`/`save_cycles_config` are DELETED. The declared set is the
+  vertical's `cycles.yaml` `cycle_types` ⊕ `cycle` overlay teach rows — each
+  canonical cycle type becomes one `cycle` lifecycle artifact (declare → bind →
+  execute). Ungroundable declared cycles stay `declared` with `state_reason`
+  ("not detected in this workspace"); detected-but-unmeasured cycles stay
+  `grounded`. The `BusinessCycleAgent.analyze()` all-in-one method is replaced
+  by `ground_cycles()` (returns a `BusinessCycleAnalysis`; the phase persists).
+- **Calibrate**: `business_cycle_health` recall/precision against `clean_eval` —
+  but only AFTER an `operating_model` run has detected + promoted cycles for the
+  session. Key scenarios:
+  1. A finance workspace where order_to_cash / accounts_receivable / period_close
+     ground and measure → the detector scores their tables off the promoted
+     operating_model run.
+  2. A workspace where operating_model has NOT run → the detector reads no cycles
+     and scores 0.0 everywhere (no false alarms from a stale source-wide read).
+  3. Multi-run: re-running operating_model supersedes cycles under a fresh
+     `run_id`; the detector must read only the promoted run's cycles, never the
+     union (the run-versioned consumer contract).
+- **Status**: pending
+
 ## 2026-06-07: validation agent-tier honesty pass — `status=failed` semantics changed (DAT-439)
 
 Branch `feat/dat-439-fail-loud-sweep`. **DAT-442's cross_table_consistency

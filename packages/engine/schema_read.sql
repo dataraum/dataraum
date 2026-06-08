@@ -46,9 +46,15 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-DROP VIEW IF EXISTS __READ__.detected_business_cycles;
-CREATE VIEW __READ__.detected_business_cycles AS
-SELECT * FROM __WS__.detected_business_cycles;
+DROP VIEW IF EXISTS __READ__.current_detected_business_cycles;
+CREATE VIEW __READ__.current_detected_business_cycles AS
+SELECT r.* FROM __WS__.detected_business_cycles r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'session:' || r.session_id
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
 
 DROP VIEW IF EXISTS __READ__.current_enriched_views;
 CREATE VIEW __READ__.current_enriched_views AS

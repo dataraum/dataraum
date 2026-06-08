@@ -14,6 +14,7 @@ from sqlalchemy import select
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.analysis.validation.config import get_validation_specs_for_cycles
 from dataraum.analysis.validation.db_models import ValidationResultRecord
+from dataraum.storage import Table
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -35,63 +36,77 @@ class CycleHealthScore:
 
 @dataclass
 class HealthReport:
-    """Aggregate health report for all cycles in a source."""
+    """Aggregate health report for all cycles in a session run."""
 
-    source_id: str
+    session_id: str
     cycle_scores: list[CycleHealthScore] = field(default_factory=list)
     overall_health: float | None = None
 
 
 def compute_cycle_health(
-    session: Session, source_id: str, *, vertical: str, run_id: str | None
+    session: Session, session_id: str, *, vertical: str, run_id: str | None
 ) -> HealthReport:
-    """Compute health scores for all detected cycles in a source.
+    """Compute health scores for all detected cycles in a session run (DAT-455).
 
     Combines cycle completion rates (from LLM detection) with validation
     pass rates (from validation results) into a weighted composite score.
 
     Args:
         session: SQLAlchemy session
-        source_id: Source to compute health for
+        session_id: The journey session to compute health for.
         vertical: Vertical name (e.g. 'finance')
-        run_id: The promoted operating_model run to read validation results
-            at. ValidationResultRecord is run-versioned (DAT-438); ``None``
-            (no promoted run) reads NO validation evidence — fail-closed,
-            never a cross-run read that would double-count superseded runs.
+        run_id: The promoted operating_model run to read BOTH the detected
+            cycles AND the validation results at. Both are run-versioned
+            (DAT-455 / DAT-438); ``None`` (no promoted run) reads NOTHING —
+            fail-closed, never a cross-run read that would mix superseded runs
+            (or other sessions') into this report.
 
     Returns:
-        HealthReport with per-cycle scores and overall health
+        HealthReport with per-cycle scores and overall health.
     """
-    # 1. Query detected cycles for this source
+    # 1. Query detected cycles for this session run. Both cycles and validation
+    # results are run-versioned and coexist across runs (DAT-455) — fail-closed
+    # on a missing run, never a cross-run read.
+    if run_id is None:
+        return HealthReport(session_id=session_id)
+
     cycles = session.scalars(
-        select(DetectedBusinessCycle).where(DetectedBusinessCycle.source_id == source_id)
+        select(DetectedBusinessCycle).where(
+            DetectedBusinessCycle.session_id == session_id,
+            DetectedBusinessCycle.run_id == run_id,
+        )
     ).all()
 
     if not cycles:
-        return HealthReport(source_id=source_id)
+        return HealthReport(session_id=session_id)
 
-    # 2. Collect all table_ids across cycles for validation lookup
-    all_table_ids: set[str] = set()
-    for cycle in cycles:
-        all_table_ids.update(cycle.tables_involved or [])
-
-    # 3. Query validation results for those tables, scoped to the promoted run
-    validation_results: list[ValidationResultRecord] = []
-    if all_table_ids and run_id is not None:
-        validation_results = list(
-            session.scalars(
-                select(ValidationResultRecord).where(ValidationResultRecord.run_id == run_id)
+    # 2. Load this run's validation results (run-scoped, same operating_model run
+    # as the cycles — their evidence describes one run, never a mix). Cycles
+    # reference their tables by NAME (``tables_involved`` is the LLM's
+    # ``table_name`` form — the same the per-table detector matches on), while
+    # validation results store table_ids (UUIDs). Resolve the results' table_ids
+    # → names by PK (bounded + unambiguous) so cycles and results are matched in
+    # ONE namespace; comparing names against ids never intersects and would
+    # silently null every validation_pass_rate.
+    validation_results = list(
+        session.scalars(
+            select(ValidationResultRecord).where(ValidationResultRecord.run_id == run_id)
+        ).all()
+    )
+    result_table_ids = {tid for vr in validation_results for tid in (vr.table_ids or [])}
+    id_to_name: dict[str, str] = {}
+    if result_table_ids:
+        id_to_name = {
+            t.table_id: t.table_name
+            for t in session.scalars(
+                select(Table).where(Table.table_id.in_(result_table_ids))
             ).all()
-        )
-        # Filter to results that share table_ids with our cycles
-        validation_results = [
-            vr for vr in validation_results if set(vr.table_ids or []) & all_table_ids
-        ]
+        }
 
-    # 4. Compute per-cycle health scores
+    # 3. Compute per-cycle health scores
     scores: list[CycleHealthScore] = []
     for cycle in cycles:
-        cycle_table_ids = set(cycle.tables_involved or [])
+        cycle_table_names = set(cycle.tables_involved or [])
         canonical = cycle.canonical_type
 
         # Find relevant validation spec IDs for this cycle type.
@@ -102,11 +117,13 @@ def compute_cycle_health(
             relevant_specs = get_validation_specs_for_cycles([canonical], vertical)
             relevant_spec_ids = {s.validation_id for s in relevant_specs}
 
-        # Match validation results: must overlap on table_ids AND be a relevant spec
+        # Match validation results: must share a table with the cycle (compared
+        # in NAME space via the id→name map) AND be a relevant spec.
         matched_results = [
             vr
             for vr in validation_results
-            if vr.validation_id in relevant_spec_ids and set(vr.table_ids or []) & cycle_table_ids
+            if vr.validation_id in relevant_spec_ids
+            and _result_table_names(vr, id_to_name) & cycle_table_names
         ]
 
         # Pass rate counts JUDGED measurements only (DAT-439): error =
@@ -144,15 +161,24 @@ def compute_cycle_health(
             )
         )
 
-    # 5. Overall health = mean of non-None composite scores
+    # 4. Overall health = mean of non-None composite scores
     composites = [s.composite_score for s in scores if s.composite_score is not None]
     overall = sum(composites) / len(composites) if composites else None
 
     return HealthReport(
-        source_id=source_id,
+        session_id=session_id,
         cycle_scores=scores,
         overall_health=overall,
     )
+
+
+def _result_table_names(vr: ValidationResultRecord, id_to_name: dict[str, str]) -> set[str]:
+    """Resolve a validation result's table_ids (UUIDs) to the table NAMES it touches.
+
+    Uses ``id_to_name`` so results (id-keyed) can be matched against cycles
+    (name-keyed); ids absent from the map are dropped.
+    """
+    return {id_to_name[tid] for tid in (vr.table_ids or []) if tid in id_to_name}
 
 
 def _compute_composite(

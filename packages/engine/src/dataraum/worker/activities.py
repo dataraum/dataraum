@@ -393,6 +393,30 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "validation")
 
+    @activity.defn(name="business_cycles")
+    def run_business_cycles(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
+        """Business-cycles activity — the second lifecycle family: declare → bind → execute.
+
+        Mirrors ``run_validation``: threads the resolved scope's base-run pin
+        into the phase config (``ctx.config["base_runs"]``); the phase performs
+        NO head resolution itself. Makes real Anthropic calls (one cycle
+        synthesis call over the declared vocabulary). Runs after ``validation``
+        so cycle health can read this run's validation results (DAT-455).
+        """
+        run = run_session_phase(
+            self._manager,
+            "business_cycles",
+            payload.identity,
+            payload.scope.table_ids,
+            extra_config={
+                "base_runs": {
+                    "relationship_run_id": payload.scope.relationship_run_id,
+                    "semantic_runs": payload.scope.semantic_runs,
+                }
+            },
+        )
+        return self._outcome_or_raise(run, "business_cycles")
+
     @activity.defn(name="operating_model_promote")
     def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:
         """Terminal promote for operating_model — flip the session's stage head.

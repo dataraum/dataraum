@@ -127,6 +127,34 @@ export const currentDerivedColumns = metadataSchema
 		sql`SELECT derived_id, session_id, run_id, table_id, derived_column_id, source_column_ids, derivation_type, formula, match_rate, computed_at, total_rows, matching_rows, mismatch_examples FROM ws_00000000_0000_0000_0000_000000000001.derived_columns r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentDetectedBusinessCycles = metadataSchema
+	.view("current_detected_business_cycles", {
+		cycleId: varchar("cycle_id"),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		cycleName: varchar("cycle_name"),
+		cycleType: varchar("cycle_type"),
+		canonicalType: varchar("canonical_type"),
+		isKnownType: boolean("is_known_type"),
+		description: text(),
+		businessValue: varchar("business_value"),
+		confidence: doublePrecision(),
+		tablesInvolved: json("tables_involved"),
+		stages: json(),
+		entityFlows: json("entity_flows"),
+		statusTable: varchar("status_table"),
+		statusColumn: varchar("status_column"),
+		completionValue: varchar("completion_value"),
+		totalRecords: integer("total_records"),
+		completedCycles: integer("completed_cycles"),
+		completionRate: doublePrecision("completion_rate"),
+		evidence: json(),
+		detectedAt: timestamp("detected_at"),
+	})
+	.as(
+		sql`SELECT cycle_id, session_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM ws_00000000_0000_0000_0000_000000000001.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentEnrichedViews = metadataSchema
 	.view("current_enriched_views", {
 		viewId: varchar("view_id"),
@@ -475,34 +503,6 @@ export const currentValidationResults = metadataSchema
 	})
 	.as(
 		sql`SELECT result_id, session_id, run_id, validation_id, table_ids, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
-	);
-
-export const detectedBusinessCycles = metadataSchema
-	.view("detected_business_cycles", {
-		cycleId: varchar("cycle_id"),
-		sessionId: varchar("session_id"),
-		sourceId: varchar("source_id"),
-		cycleName: varchar("cycle_name"),
-		cycleType: varchar("cycle_type"),
-		canonicalType: varchar("canonical_type"),
-		isKnownType: boolean("is_known_type"),
-		description: text(),
-		businessValue: varchar("business_value"),
-		confidence: doublePrecision(),
-		tablesInvolved: json("tables_involved"),
-		stages: json(),
-		entityFlows: json("entity_flows"),
-		statusTable: varchar("status_table"),
-		statusColumn: varchar("status_column"),
-		completionValue: varchar("completion_value"),
-		totalRecords: integer("total_records"),
-		completedCycles: integer("completed_cycles"),
-		completionRate: doublePrecision("completion_rate"),
-		evidence: json(),
-		detectedAt: timestamp("detected_at"),
-	})
-	.as(
-		sql`SELECT cycle_id, session_id, source_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM ws_00000000_0000_0000_0000_000000000001.detected_business_cycles`,
 	);
 
 export const fixLedger = metadataSchema

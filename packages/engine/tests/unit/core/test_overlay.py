@@ -448,6 +448,67 @@ class TestApplyValidation:
         assert merged == base
 
 
+class TestApplyCycle:
+    """``cycle`` rows upsert into the ``cycle_types`` MAPPING of ``cycles.yaml``."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    @staticmethod
+    def _row(name: str, vertical: str = "finance", **extra: Any) -> OverlayRow:
+        payload: dict[str, Any] = {
+            "vertical": vertical,
+            "name": name,
+            "description": "d",
+            "business_value": "high",
+        }
+        payload.update(extra)
+        return OverlayRow(type="cycle", payload=payload)
+
+    def test_adds_to_empty_mapping(self) -> None:
+        # Framed vertical: empty base + rows IS the declared set.
+        set_overlay_resolver(lambda: [self._row("order_to_cash")])
+        merged = apply_overlay("verticals/finance/cycles.yaml", {"cycle_types": {}})
+        assert list(merged["cycle_types"]) == ["order_to_cash"]
+        # name keys the mapping, but is dropped from the value; vertical stripped.
+        entry = merged["cycle_types"]["order_to_cash"]
+        assert "vertical" not in entry
+        assert "name" not in entry
+        assert entry["business_value"] == "high"
+
+    def test_replaces_base_cycle_by_name_last_write_wins(self) -> None:
+        base = {"cycle_types": {"period_close": {"description": "shipped"}}}
+        set_overlay_resolver(
+            lambda: [
+                self._row("period_close", description="first"),
+                self._row("period_close", description="second"),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/cycles.yaml", base)
+        assert merged["cycle_types"]["period_close"]["description"] == "second"
+        # Base dict untouched (no aliasing)
+        assert base["cycle_types"]["period_close"]["description"] == "shipped"
+
+    def test_adds_alongside_existing_cycle_types(self) -> None:
+        base = {"cycle_types": {"order_to_cash": {"description": "shipped"}}}
+        set_overlay_resolver(lambda: [self._row("custom_cycle")])
+        merged = apply_overlay("verticals/finance/cycles.yaml", base)
+        assert set(merged["cycle_types"]) == {"order_to_cash", "custom_cycle"}
+
+    def test_other_vertical_rows_filtered_by_dispatcher(self) -> None:
+        set_overlay_resolver(lambda: [self._row("x", vertical="marketing")])
+        base: dict[str, Any] = {"cycle_types": {}}
+        merged = apply_overlay("verticals/finance/cycles.yaml", base)
+        assert merged is base  # no matching rows → identity short-circuit
+
+    def test_row_without_name_ignored(self) -> None:
+        set_overlay_resolver(
+            lambda: [OverlayRow(type="cycle", payload={"vertical": "finance", "description": "d"})]
+        )
+        merged = apply_overlay("verticals/finance/cycles.yaml", {"cycle_types": {}})
+        assert merged["cycle_types"] == {}
+
+
 class TestApplyOverlayDispatch:
     """``apply_overlay`` short-circuits when no resolver / no matching rows."""
 

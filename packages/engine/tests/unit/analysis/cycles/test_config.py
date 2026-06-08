@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from dataraum.analysis.cycles.config import (
     format_cycle_vocabulary_for_context,
     get_cycle_types,
@@ -149,6 +147,8 @@ class TestFormatCycleVocabulary:
         output = format_cycle_vocabulary_for_context(vertical="finance")
         assert "Feeds into: accounts_receivable, journal_entry_cycle" in output
 
-    def test_raises_for_unknown_vertical(self) -> None:
-        with pytest.raises(FileNotFoundError):
-            format_cycle_vocabulary_for_context(vertical="nonexistent")
+    def test_unknown_vertical_is_empty_not_an_error(self) -> None:
+        # Overlay-aware loader (DAT-455): an unknown vertical resolves to an
+        # EMPTY config, never raises — "no declared cycles" is a loud phase-tier
+        # outcome, not a loader crash.
+        assert format_cycle_vocabulary_for_context(vertical="nonexistent") == ""

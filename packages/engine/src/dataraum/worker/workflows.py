@@ -608,12 +608,14 @@ class OperatingModelWorkflow:
     semantic heads) once — every downstream read scopes to those pins, no
     per-phase head resolution.
 
-    Slice-1 spine: resolve → validation (declare → bind → execute through the
-    typed artifact lifecycle) → promote ``(session:{id}, "operating_model")``.
-    Later slices insert their families (cycles, metrics) and DAT-432 inserts
-    the terminal detect (cross_table_consistency) before promote. A re-run is
-    a full re-run under a fresh ``run_id`` — declared artifacts and validation
-    results supersede, never mutate (DAT-408).
+    Spine: resolve → validation → business_cycles (each declare → bind →
+    execute through the typed artifact lifecycle) → promote ``(session:{id},
+    "operating_model")``. ``business_cycles`` (DAT-455) is the second lifecycle
+    family, running after validation so cycle health reads this run's validation
+    results; a later slice inserts metrics, and DAT-432 inserts the terminal
+    detect (cross_table_consistency) before promote. A re-run is a full re-run
+    under a fresh ``run_id`` — declared artifacts, validation results, and
+    detected cycles supersede, never mutate (DAT-408).
 
     Progress (DAT-435 follow-on): the body keeps a :class:`ProgressSnapshot`
     in ``self._progress`` and advances ``phase`` before each stage; the
@@ -671,13 +673,27 @@ class OperatingModelWorkflow:
             retry_policy=_RETRY,
         )
 
-        # The lifecycle family: every declared validation (vertical ⊕ teach
-        # rows) is declared for this run, bound (SQL vs workspace), executed.
-        # Ungroundable specs surface as declared-with-reason, never silently.
+        # First lifecycle family (DAT-438): every declared validation (vertical
+        # ⊕ teach rows) is declared for this run, bound (SQL vs workspace),
+        # executed. Ungroundable specs surface as declared-with-reason.
+        scoped = OperatingModelScopedInput(identity=identity, scope=scope)
         self._progress.phase = "validation"
         outcome = await workflow.execute_activity(
             "validation",
-            OperatingModelScopedInput(identity=identity, scope=scope),
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Second lifecycle family (DAT-455): the declared cycle vocabulary
+        # (vertical ⊕ teach rows) is declared, grounded against the workspace,
+        # and measured. Runs AFTER validation so cycle health reads this run's
+        # validation results. Ungroundable cycles stay declared-with-reason.
+        self._progress.phase = "business_cycles"
+        await workflow.execute_activity(
+            "business_cycles",
+            scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

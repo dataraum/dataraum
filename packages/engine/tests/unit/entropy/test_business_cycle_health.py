@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from dataraum.entropy.detectors.base import DetectorContext
 from dataraum.entropy.detectors.semantic.business_cycle_health import (
     BusinessCycleHealthDetector,
 )
+from dataraum.storage import init_database
 
 
 @pytest.fixture
@@ -150,3 +156,166 @@ class TestDetectorProperties:
 
     def test_required_analyses(self, detector: BusinessCycleHealthDetector):
         assert str(detector.required_analyses[0]) == "business_cycles"
+
+
+@pytest.fixture
+def db_session() -> Iterator[Session]:
+    """In-memory SQLite session with all tables created — for the real-DB
+    load_data path (StaticPool + explicit dispose, mirrors the context-builder
+    test fixture)."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_pragma(dbapi_conn, _record):  # noqa: ANN001, ANN202
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=OFF")
+        cur.close()
+
+    init_database(engine)
+    sess = sessionmaker(bind=engine)()
+    try:
+        yield sess
+    finally:
+        sess.close()
+        engine.dispose()
+
+
+def _seed_cycle(
+    session: Session,
+    *,
+    sess_id: str,
+    run_id: str,
+    tables_involved: list[str],
+    cycle_name: str = "order_to_cash",
+) -> None:
+    from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+
+    session.add(
+        DetectedBusinessCycle(
+            cycle_id=str(uuid4()),
+            session_id=sess_id,
+            run_id=run_id,
+            cycle_name=cycle_name,
+            cycle_type="revenue",
+            canonical_type="order_to_cash",
+            confidence=0.9,
+            completion_rate=0.85,
+            tables_involved=tables_involved,
+            total_records=1000,
+            completed_cycles=850,
+        )
+    )
+
+
+def _promote_om_head(session: Session, sess_id: str, run_id: str) -> None:
+    from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+
+    session.add(
+        MetadataSnapshotHead(
+            target=session_head_target(sess_id), stage="operating_model", run_id=run_id
+        )
+    )
+
+
+def _seed_investigation(session: Session, sess_id: str) -> None:
+    from dataraum.investigation.db_models import InvestigationSession
+
+    session.add(InvestigationSession(session_id=sess_id, intent="test"))
+
+
+class TestLoadData:
+    """The cross-stage promoted-head resolution in load_data (DAT-455).
+
+    The detector runs in the *detect* pass — BEFORE the operating_model stage
+    writes cycles — so it must resolve the session's promoted operating_model
+    head and fail closed when there isn't one. The detect() tests above pre-seed
+    ``analysis_results`` and never exercise this path; the handoff itself names it
+    the trickiest seam, so it gets real-DB coverage here.
+    """
+
+    def test_reads_cycles_at_the_promoted_operating_model_head(
+        self, detector: BusinessCycleHealthDetector, db_session: Session
+    ) -> None:
+        sess_id = "sess-load"
+        _seed_investigation(db_session, sess_id)
+        _seed_cycle(db_session, sess_id=sess_id, run_id="run-om", tables_involved=["orders"])
+        _promote_om_head(db_session, sess_id, "run-om")
+        db_session.flush()
+
+        ctx = DetectorContext(
+            table_id="t1", table_name="orders", session_id=sess_id, session=db_session
+        )
+        detector.load_data(ctx)
+
+        loaded = ctx.analysis_results.get("business_cycles", [])
+        assert len(loaded) == 1
+        assert loaded[0].cycle_name == "order_to_cash"
+
+    def test_no_promoted_head_reads_nothing(
+        self, detector: BusinessCycleHealthDetector, db_session: Session
+    ) -> None:
+        """The common case: the detector runs before operating_model exists."""
+        sess_id = "sess-nohead"
+        _seed_investigation(db_session, sess_id)
+        _seed_cycle(db_session, sess_id=sess_id, run_id="run-om", tables_involved=["orders"])
+        # No MetadataSnapshotHead promoted → head_run_id returns None.
+        db_session.flush()
+
+        ctx = DetectorContext(
+            table_id="t1", table_name="orders", session_id=sess_id, session=db_session
+        )
+        detector.load_data(ctx)
+
+        assert ctx.analysis_results.get("business_cycles") is None
+
+    def test_cross_run_isolation_reads_only_the_promoted_run(
+        self, detector: BusinessCycleHealthDetector, db_session: Session
+    ) -> None:
+        """A superseded run's cycle must not bleed into the promoted-head read."""
+        sess_id = "sess-xrun"
+        _seed_investigation(db_session, sess_id)
+        _seed_cycle(
+            db_session,
+            sess_id=sess_id,
+            run_id="run-om",
+            tables_involved=["orders"],
+            cycle_name="current",
+        )
+        _seed_cycle(
+            db_session,
+            sess_id=sess_id,
+            run_id="run-old",
+            tables_involved=["orders"],
+            cycle_name="superseded",
+        )
+        _promote_om_head(db_session, sess_id, "run-om")
+        db_session.flush()
+
+        ctx = DetectorContext(
+            table_id="t1", table_name="orders", session_id=sess_id, session=db_session
+        )
+        detector.load_data(ctx)
+
+        loaded = ctx.analysis_results.get("business_cycles", [])
+        assert [c.cycle_name for c in loaded] == ["current"]
+
+    def test_table_not_in_cycle_is_not_loaded(
+        self, detector: BusinessCycleHealthDetector, db_session: Session
+    ) -> None:
+        sess_id = "sess-othertable"
+        _seed_investigation(db_session, sess_id)
+        _seed_cycle(db_session, sess_id=sess_id, run_id="run-om", tables_involved=["invoices"])
+        _promote_om_head(db_session, sess_id, "run-om")
+        db_session.flush()
+
+        ctx = DetectorContext(
+            table_id="t1", table_name="orders", session_id=sess_id, session=db_session
+        )
+        detector.load_data(ctx)
+
+        assert ctx.analysis_results.get("business_cycles") is None

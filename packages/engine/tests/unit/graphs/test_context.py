@@ -457,7 +457,7 @@ class TestFormatMetadataDocument:
             tables_involved=["invoices"],
         )
         health = HealthReport(
-            source_id="src-1",
+            session_id="sess-1",
             cycle_scores=[
                 CycleHealthScore(
                     cycle_id="c1",

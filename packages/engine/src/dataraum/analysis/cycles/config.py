@@ -1,43 +1,92 @@
 """Configuration loader for business cycle detection.
 
-Loads domain vocabulary from config/verticals/<vertical>/cycles.yaml
-to enhance cycle detection.
+Loads the cycle vocabulary from ``config/verticals/<vertical>/cycles.yaml``,
+layered with workspace ``cycle`` overlay teach rows (DAT-455) — the same
+OntologyLoader dual-path pattern validation uses: the production path is
+overlay-aware (teach rows upsert over the shipped vertical's ``cycle_types``;
+a *framed* vertical with no on-disk file resolves overlay-only), while an
+explicit ``verticals_dir`` (tests / fixtures) reads raw YAML and bypasses the
+overlay.
+
+The vocabulary IS the declared set for the cycle lifecycle family: each
+``cycle_types`` key (canonical name + stages/aliases/completion indicators) is
+declared as one ``cycle`` lifecycle artifact, then bound + executed against the
+workspace. The engine induces nothing — declares come from the vertical now;
+user declares arrive via frame-2 teach rows.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import yaml
 
+from dataraum.core.logging import get_logger
 
-def get_cycles_config(vertical: str) -> dict[str, Any]:
-    """Load the cycles configuration for a vertical.
+logger = get_logger(__name__)
+
+
+def get_cycles_config(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:
+    """Load a vertical's cycles config, layered with ``cycle`` overlay rows.
+
+    Production path (``verticals_dir`` is ``None``): read the shipped vertical's
+    ``cycles.yaml`` (empty base when the vertical is framed — declared via the
+    cockpit, no on-disk file), then merge active ``cycle`` overlay rows via
+    :func:`dataraum.core.overlay.apply_overlay` (upsert by cycle name into
+    ``cycle_types``). An unknown vertical resolves to an EMPTY dict, never
+    raises — "no declared cycles" is a loud, explicit outcome at the phase
+    tier, not a loader crash.
+
+    Test path (explicit ``verticals_dir``): read
+    ``<verticals_dir>/<vertical>/cycles.yaml`` raw, bypassing the overlay —
+    deterministic for unit tests (mirrors ``OntologyLoader`` /
+    ``load_all_validation_specs``).
 
     Args:
-        vertical: Vertical name (e.g. 'finance')
+        vertical: Vertical name (e.g. ``'finance'``).
+        verticals_dir: Root verticals directory override (tests only).
 
     Returns:
-        Configuration dictionary, or empty dict if not found
+        The cycles config dict (``{"cycle_types": {...}, "analysis_hints": ...}``),
+        or an empty dict when neither file nor overlay declares anything.
     """
-    from dataraum.core.vertical import VerticalConfig
+    if verticals_dir is not None:
+        config_path = verticals_dir / vertical / "cycles.yaml"
+        if not config_path.is_file():
+            return {}
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
 
-    config_path = VerticalConfig(vertical).cycles_path
-    with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+    from dataraum.core.config import get_config_file
+    from dataraum.core.overlay import apply_overlay
+
+    relative_path = f"verticals/{vertical}/cycles.yaml"
+    base: dict[str, Any] = {}
+    try:
+        path = get_config_file(relative_path)
+    except FileNotFoundError:
+        # Framed vertical (no on-disk file) or a vertical without a shipped
+        # cycle vocabulary — the overlay rows ARE the declared set.
+        path = None
+    if path is not None:
+        with open(path) as f:
+            base = yaml.safe_load(f) or {}
+    return apply_overlay(relative_path, base)
 
 
-def get_cycle_types(vertical: str) -> dict[str, Any]:
-    """Get cycle type definitions.
+def get_cycle_types(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:
+    """Get cycle type definitions (overlay-aware).
 
     Args:
-        vertical: Vertical name (e.g. 'finance')
+        vertical: Vertical name (e.g. 'finance').
+        verticals_dir: Root verticals directory override (tests only).
 
     Returns:
-        Dictionary of cycle_type_name -> cycle definition
+        Dictionary of cycle_type_name -> cycle definition.
     """
-    config = get_cycles_config(vertical)
-    result: dict[str, Any] = config.get("cycle_types", {})
+    config = get_cycles_config(vertical, verticals_dir)
+    result: dict[str, Any] = config.get("cycle_types") or {}
     return result
 
 

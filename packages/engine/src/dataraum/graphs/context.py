@@ -504,12 +504,6 @@ def build_execution_context(
     # Sort by priority descending
     slice_contexts.sort(key=lambda s: s.priority, reverse=True)
 
-    # Derive source_id from table_ids — reused by quality reports, cycles, entropy
-    source_id_result = session.execute(
-        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
-    )
-    _source_id = source_id_result.scalar()
-
     # 11. Load derived columns from correlation analysis — run-versioned since
     # DAT-448, same fail-closed session-grain discipline as the slices above.
     derived_columns: dict[str, str] = {}  # column_id -> formula
@@ -520,19 +514,36 @@ def build_execution_context(
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 
-    # 13. Load business cycles (filtered to current source)
+    # The session's promoted operating_model run — the version axis BOTH cycles
+    # (13) and validation results (13b) and cycle health (13d) scope to (they
+    # must all describe ONE run). Run-versioned since DAT-455/438. **Fail-closed
+    # (DAT-429):** with no session_id or no promoted operating_model run there is
+    # no current operating_model state — never a cross-run read, which would mix
+    # superseded runs (and other sessions') into this context.
+    om_run_id = (
+        head_run_id(session, session_head_target(session_id), "operating_model")
+        if session_id
+        else None
+    )
+
+    # 13. Load business cycles — run-versioned + session-scoped (DAT-455),
+    # scoped to the promoted operating_model run (fail-closed above).
     business_cycle_contexts: list[BusinessCycleContext] = []
-    if _source_id:
-        cycles_stmt = (
+    cycles_iter = (
+        session.execute(
             select(DetectedBusinessCycle)
-            .where(DetectedBusinessCycle.source_id == _source_id)
+            .where(
+                DetectedBusinessCycle.session_id == session_id,
+                DetectedBusinessCycle.run_id == om_run_id,
+            )
             .order_by(DetectedBusinessCycle.detected_at.desc())
         )
-    else:
-        cycles_stmt = select(DetectedBusinessCycle).order_by(
-            DetectedBusinessCycle.detected_at.desc()
-        )
-    for cycle in session.execute(cycles_stmt).scalars().all():
+        .scalars()
+        .all()
+        if om_run_id is not None
+        else []
+    )
+    for cycle in cycles_iter:
         stages = [
             CycleStageContext(
                 stage_name=s.get("stage_name", ""),
@@ -580,18 +591,11 @@ def build_execution_context(
         )
 
     # 13b. Load validation results — run-versioned since DAT-438: scope to the
-    # session's promoted operating_model head. **Fail-closed (the DAT-429
-    # contract):** with no session_id or no promoted operating_model run there
-    # are no current validation results — never a cross-run read, which would
-    # mix superseded runs (and other sessions' results) into this context.
+    # SAME promoted operating_model head as the cycles above (resolved once at
+    # 13). Fail-closed (DAT-429): no run ⇒ no current validation results.
     from dataraum.analysis.validation.db_models import ValidationResultRecord
 
     validation_contexts: list[ValidationContext] = []
-    om_run_id = (
-        head_run_id(session, session_head_target(session_id), "operating_model")
-        if session_id
-        else None
-    )
     if om_run_id is not None:
         # One row per validation_id per run (uq_validation_result_run) — no
         # latest-wins dedup needed. ValidationResultRecord has no source_id;
@@ -634,15 +638,15 @@ def build_execution_context(
     from dataraum.core.config import load_phase_config
 
     cycle_health_report: HealthReport | None = None
-    if _source_id:
+    if session_id and om_run_id is not None:
         bc_config = load_phase_config("business_cycles")
         _vertical = bc_config.get("vertical")
         if _vertical:
             try:
-                # Same promoted operating_model run as 13b — health and the
-                # validation contexts must describe ONE run, never a mix.
+                # Same promoted operating_model run as 13/13b — cycles, their
+                # validation evidence, and health all describe ONE run.
                 cycle_health_report = compute_cycle_health(
-                    session, _source_id, vertical=_vertical, run_id=om_run_id
+                    session, session_id, vertical=_vertical, run_id=om_run_id
                 )
             except Exception as e:
                 logger.warning("cycle_health_failed", error=str(e))

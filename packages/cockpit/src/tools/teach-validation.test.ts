@@ -8,8 +8,10 @@
 //     null when it isn't a validation spec;
 //   - findShadowedSpec is an exact id match → the override flag is honest.
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { teach } from "./teach";
+import { teachValidation } from "./teach-validation";
 import {
 	CHECK_TYPES,
 	findShadowedSpec,
@@ -18,6 +20,13 @@ import {
 	type ShippedValidationSpec,
 	ValidationSpecSchema,
 } from "./validation-spec";
+
+// Mock the shared overlay-write path and the env config so importing the tool
+// (which evals `../config` + `./teach` at load) doesn't pull the DB/boot. vitest
+// hoists these above the imports above. The shipped-spec reader is injected per
+// call (no fs/bun mock needed).
+vi.mock("#/config", () => ({ config: { dataraumConfigPath: "/unused" } }));
+vi.mock("#/tools/teach", () => ({ teach: vi.fn() }));
 
 const MINIMAL = {
 	vertical: "finance",
@@ -186,5 +195,71 @@ describe("findShadowedSpec (DAT-441)", () => {
 
 	it("returns null against an empty shipped set", () => {
 		expect(findShadowedSpec([], "trial_balance")).toBeNull();
+	});
+});
+
+// The load-bearing composition: read shipped → detect shadow → funnel the
+// stripped spec through the shared teach() overlay-write path. teach() is mocked;
+// the shipped-spec reader is injected so no config tree / fs is touched.
+describe("teachValidation wiring (DAT-441)", () => {
+	beforeEach(() => {
+		vi.mocked(teach).mockReset();
+		vi.mocked(teach).mockResolvedValue({
+			overlay_id: "ov-x",
+			type: "validation",
+		});
+	});
+
+	it("writes teach({type:'validation', payload}) with undefined optionals stripped — fresh declaration", async () => {
+		const input = ValidationSpecSchema.parse(MINIMAL);
+		const result = await teachValidation(input, async () => []);
+
+		expect(teach).toHaveBeenCalledTimes(1);
+		const arg = vi.mocked(teach).mock.calls[0][0];
+		expect(arg.type).toBe("validation");
+		// stripUndefined dropped the optionals the user never declared.
+		expect(arg.payload).not.toHaveProperty("parameters");
+		expect(arg.payload).not.toHaveProperty("sql_hints");
+		expect(arg.payload).toMatchObject({
+			validation_id: "invoice_reconciliation",
+			vertical: "finance",
+			check_type: "aggregate",
+		});
+		expect(result).toEqual({
+			overlay_id: "ov-x",
+			validation_id: "invoice_reconciliation",
+			vertical: "finance",
+			override: false,
+			shadowed_spec: null,
+		});
+	});
+
+	it("flags an override, echoes the shadowed shipped spec, and writes the user's new params", async () => {
+		const shipped: ShippedValidationSpec[] = [
+			{
+				validation_id: "trial_balance",
+				name: "Trial Balance",
+				description: "…",
+				check_type: "balance",
+				severity: "critical",
+				parameters: { tolerance: 0.01 },
+			},
+		];
+		const input = ValidationSpecSchema.parse({
+			...MINIMAL,
+			validation_id: "trial_balance",
+			check_type: "balance",
+			parameters: { tolerance: 5.0 },
+		});
+		const result = await teachValidation(input, async () => shipped);
+
+		expect(result.override).toBe(true);
+		expect(result.shadowed_spec?.parameters).toEqual({ tolerance: 0.01 });
+		// The WRITTEN payload carries the user's override value, not the shipped one.
+		const arg = vi.mocked(teach).mock.calls[0][0];
+		expect(
+			(arg.payload as { parameters?: { tolerance?: number } }).parameters
+				?.tolerance,
+		).toBe(5.0);
 	});
 });

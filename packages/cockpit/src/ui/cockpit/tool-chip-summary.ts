@@ -362,13 +362,11 @@ export function teachValidationChipSummary(
 	input: unknown,
 	output: unknown,
 ): string {
-	const result = output as
-		| TeachValidationResult
-		| { error?: string }
-		| undefined;
-	if (result && "error" in result && result.error) {
-		return `validation rejected: ${truncate(result.error)}`;
-	}
+	// No `{error}` branch: unlike the generic `teach` (which validates per-type
+	// inside its handler and returns a structured error), this tool's closed enums
+	// + required fields are enforced by zod at the SDK boundary and a DB write
+	// failure propagates — so the output is always the success shape.
+	const result = output as TeachValidationResult | undefined;
 	if (result && "validation_id" in result && result.validation_id) {
 		const label =
 			humanizeIdentifier(result.validation_id) || result.validation_id;

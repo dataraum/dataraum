@@ -532,15 +532,6 @@ describe("teachValidationChipSummary (DAT-441, visible override)", () => {
 		).toBe("overrode Trial balance (was Trial Balance (Accounting Equat…)");
 	});
 
-	it("surfaces a structured error", () => {
-		expect(
-			teachValidationChipSummary(
-				{ validation_id: "x" },
-				{ error: "config_overlay write failed" },
-			),
-		).toContain("validation rejected");
-	});
-
 	it("degrades to a neutral label with no arguments yet", () => {
 		expect(teachValidationChipSummary(undefined, undefined)).toBe(
 			"declaring validation…",

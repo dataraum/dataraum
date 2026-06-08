@@ -51,7 +51,14 @@ export interface TeachValidationResult {
  * *.yaml), narrowed to the shadow-summary fields. Mirrors `list_verticals`'
  * config-tree read: Bun's YAML, imported lazily so merely importing this tool
  * doesn't pull "bun" into the node-run test workers. A missing/unreadable
- * directory (no shipped validations, or the tree isn't mounted) yields []. */
+ * directory (no shipped validations, or the tree isn't mounted) yields [].
+ *
+ * Degradation note: a swallowed read failure makes an actual override LOOK like a
+ * fresh declaration in the rail hint (`override:false`) — but the override itself
+ * is unaffected (the engine applier upsert-replaces by `validation_id` regardless;
+ * it is the source of truth). Only the visible-override label degrades, and only
+ * when the config tree is unreadable — which in the live stack it never is (it's
+ * bind-mounted read-only). */
 export async function readShippedValidations(
 	vertical: string,
 ): Promise<ShippedValidationSpec[]> {
@@ -90,10 +97,15 @@ export async function readShippedValidations(
  */
 export async function teachValidation(
 	input: z.infer<typeof ValidationSpecSchema>,
+	// The shipped-spec reader is injectable so the composition (read → shadow →
+	// write) is unit-testable without the config tree; production uses the default.
+	readShipped: (
+		vertical: string,
+	) => Promise<ShippedValidationSpec[]> = readShippedValidations,
 ): Promise<TeachValidationResult> {
 	// Detect the override BEFORE the write so the result can echo the shadowed
 	// shipped spec. A new id (no match) → a brand-new declaration.
-	const shipped = await readShippedValidations(input.vertical);
+	const shipped = await readShipped(input.vertical);
 	const shadowed = findShadowedSpec(shipped, input.validation_id);
 
 	// Funnel the FULL spec through the shared overlay-write path. The payload IS

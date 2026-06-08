@@ -75,7 +75,7 @@ class TestScoreValidationResult:
         assert _score_validation_result(r) == 1.0
 
     def test_balance_small_difference(self):
-        """$50k difference on $50M total → small raw ratio, sqrt-boosted."""
+        """$50k difference on $50M total → honest relative discrepancy 0.001 (no boost)."""
         r = _make_result(
             details={
                 "check_type": "balance",
@@ -84,25 +84,25 @@ class TestScoreValidationResult:
             }
         )
         score = _score_validation_result(r)
-        assert 0.02 < score < 0.05  # sqrt(0.001) ≈ 0.032
+        assert score == pytest.approx(0.001, abs=1e-4)
 
     def test_balance_zero_magnitude(self):
         r = _make_result(details={"check_type": "balance", "difference": 100, "magnitude": 0})
         assert _score_validation_result(r) == 1.0
 
     def test_aggregate_orphan_rate(self):
-        """5% orphans → sqrt(0.05) ≈ 0.224."""
+        """5% orphans → honest rate 0.05 (no boost, DAT-442)."""
         r = _make_result(details={"check_type": "aggregate", "orphan_rate": 0.05})
         score = _score_validation_result(r)
-        assert 0.20 < score < 0.25
+        assert score == pytest.approx(0.05, abs=1e-6)
 
     def test_constraint_violations(self):
-        """10 violations in 1000 rows → sqrt(0.01) ≈ 0.1."""
+        """10 violations in 1000 rows → honest rate 0.01 (no boost, DAT-442)."""
         r = _make_result(
             details={"check_type": "constraint", "violation_count": 10, "total_rows": 1000}
         )
         score = _score_validation_result(r)
-        assert 0.09 < score < 0.11
+        assert score == pytest.approx(0.01, abs=1e-6)
 
     def test_unknown_check_type_uses_severity(self):
         r = _make_result(severity="medium", details={"check_type": "exotic"})
@@ -131,7 +131,7 @@ class TestDetectFailures:
         assert objects[0].score == 1.0
 
     def test_max_aggregation(self, detector: CrossTableConsistencyDetector):
-        """Worst failure drives the score."""
+        """Worst failure drives the score (honest orphan rate, no boost)."""
         ctx = _make_context(
             validations=[
                 _make_result(passed=True, status="passed", validation_id="v1"),
@@ -142,7 +142,7 @@ class TestDetectFailures:
             ]
         )
         objects = detector.detect(ctx)
-        assert objects[0].score == pytest.approx(0.2236, abs=1e-3)
+        assert objects[0].score == pytest.approx(0.05, abs=1e-6)
 
     def test_evidence_per_check(self, detector: CrossTableConsistencyDetector):
         ctx = _make_context(

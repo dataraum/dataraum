@@ -7,18 +7,18 @@ only scores the results.
 Scope: table-level. Each validation check spans multiple tables; the
 score attaches to every table involved in the check.
 
-Score conversion by check type:
-- balance: min(1.0, |difference| / magnitude) with sqrt boost
+Score conversion by check type (honest rate, no boost — DAT-442; severity
+lives in loss.yaml, recall is the separation from clean):
+- balance: min(1.0, |difference| / magnitude) — relative discrepancy
 - comparison: 1.0 if failed, 0.0 if passed (binary for critical checks)
-- aggregate: violation_rate with sqrt boost
-- constraint: min(1.0, violation_count / total_rows) with sqrt boost
+- aggregate: violation_rate (already a rate)
+- constraint: min(1.0, violation_count / total_rows) — raw violation rate
 
 Aggregation: max() — worst validation failure drives the table's score.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from sqlalchemy import select
@@ -68,8 +68,8 @@ def _score_validation_result(result: Any) -> float:
         magnitude = abs(float(details.get("magnitude", 1)))
         if magnitude == 0:
             return 1.0
-        raw = min(1.0, difference / magnitude)
-        return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
+        # Honest relative discrepancy (no boost, DAT-442).
+        return min(1.0, difference / magnitude)
 
     if check_type == "comparison":
         # If the comparison has numeric difference, score proportionally
@@ -84,25 +84,23 @@ def _score_validation_result(result: Any) -> float:
             magnitude = abs(float(details.get("left_side", details.get("magnitude", 1))))
             if magnitude == 0:
                 return 1.0
-            raw = min(1.0, diff / magnitude)
-            return min(1.0, math.sqrt(raw))
+            return min(1.0, diff / magnitude)
         # Binary: critical checks either hold or don't
         return 1.0
 
     if check_type == "aggregate":
         rate = float(details.get("violation_rate", details.get("orphan_rate", 0)))
-        return min(1.0, math.sqrt(rate)) if rate > 0 else 0.0
+        return min(1.0, rate) if rate > 0 else 0.0
 
     if check_type == "constraint":
         count = float(details.get("violation_count", 0))
         total = float(details.get("total_rows", 0))
         if total > 0:
-            raw = min(1.0, count / total)
-            return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
-        # No total_rows available — score based on violation count alone.
-        # 1 violation ~ 0.1, 10 ~ 0.32, 100+ ~ 1.0
-        raw = min(1.0, count / 100.0)
-        return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
+            # Honest violation rate (no boost, DAT-442).
+            return min(1.0, count / total)
+        # No total_rows available — rough magnitude proxy on raw count
+        # (no boost): 1 violation ~ 0.01, 10 ~ 0.1, 100+ ~ 1.0.
+        return min(1.0, count / 100.0)
 
     # Unknown check type — use severity as fallback
     severity_scores = {"critical": 1.0, "high": 0.7, "medium": 0.4, "low": 0.1}

@@ -125,9 +125,12 @@ edges:
   - [naming_clarity, reporting_intent, 0.7]
   # 0.5 → 0.75 (DAT-405 calibration): at relationship grain the ONLY observed
   # parent is relationship_quality itself, so the edge alone must carry a real
-  # RI problem past the 0.3 band. The sqrt-boosted 20%-orphan fixture scores
-  # ≈0.45 → 0.75 puts it at "investigate" with margin; clean relationships
-  # score ≈0.1 (below the clean-band floor) and are unaffected.
+  # RI problem past the 0.3 band. NOTE: this 0.75 was tuned to the old
+  # sqrt-boosted 20%-orphan fixture (≈0.45). DAT-442 removed that boost — RI is
+  # now the honest raw orphan rate (20% → ≈0.20), so whether this weight still
+  # lands the fixture at "investigate" is a loss-weight calibration question for
+  # the integration gate (DAT-450), not a settled value. Clean relationships
+  # score ≈0.0 and stay below the clean-band floor regardless.
   - [relationship_quality, reporting_intent, 0.75]
   - [unit_declaration, reporting_intent, 0.6]
   - [time_role, reporting_intent, 0.4]

@@ -17,7 +17,6 @@ from __future__ import annotations
 import duckdb
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.entropy.detectors.base import DetectorContext
 from dataraum.entropy.detectors.semantic.dimensional_entropy import DimensionalEntropyDetector
 from dataraum.storage import Column, ConfigOverlay, Source, Table
@@ -190,39 +189,31 @@ def test_identifier_columns_are_not_candidates(session: Session) -> None:
     assert obj.score > 0.9  # debit/credit still detected
 
 
-def test_derived_columns_are_not_candidates(session: Session) -> None:
+def test_always_present_derived_column_self_excludes(session: Session) -> None:
+    """A derived column that is never zero has a constant indicator → NMI 0.
+
+    Derived columns are NOT special-cased (excluding them dropped the debit/credit
+    mutex, since the correlations dedup flags debit = net_amount + credit). A signed
+    net_amount that is never 0 self-excludes: its non-zero indicator is constant, so
+    NMI with anything is 0 — orthogonal to the value formula derived_value owns.
+    """
     _make_table(session)
     _add_column(session, "c_debit", "debit", "DOUBLE", 0)
     _add_column(session, "c_credit", "credit", "DOUBLE", 1)
-    _add_column(session, "c_net", "net_amount", "DOUBLE", 2)  # derived from debit/credit
-    session.add(
-        DerivedColumn(
-            run_id=None,
-            table_id=_TABLE_ID,
-            derived_column_id="c_net",
-            source_column_ids=["c_debit", "c_credit"],
-            derivation_type="difference",
-            formula="net_amount = debit - credit",
-            match_rate=1.0,
-            total_rows=60,
-            matching_rows=60,
-        )
-    )
-    session.flush()
-    # net_amount's zero pattern mirrors credit → NMI 1.0 with credit if it were a candidate.
+    _add_column(session, "c_net", "net_amount", "DOUBLE", 2)  # debit - credit, never 0
     rows: list[tuple] = []
     for i in range(60):
-        if i % 2 == 0:
-            rows.append((100.0, 0.0, 0.0))
-        else:
-            rows.append((0.0, 75.0, 75.0))
+        # double-entry mutex; net_amount = debit - credit is always non-zero.
+        rows.append((100.0, 0.0, 100.0) if i % 2 == 0 else (0.0, 75.0, -75.0))
     conn = _typed_conn([("debit", "DOUBLE"), ("credit", "DOUBLE"), ("net_amount", "DOUBLE")], rows)
 
     obj = DimensionalEntropyDetector().detect(_context(session, conn))[0]
 
-    scored_columns = {name for ev in obj.evidence for name in ev["columns"]}
-    assert "net_amount" not in scored_columns  # derived ⇒ its dependency is the formula
-    assert obj.score > 0.9  # debit/credit still detected
+    # debit/credit mutex is the top pair; net_amount (constant indicator) scores 0.
+    assert set(obj.evidence[0]["columns"]) == {"debit", "credit"}
+    assert obj.score > 0.9
+    net_pairs = [ev for ev in obj.evidence if "net_amount" in ev["columns"] and ev["nmi"] > 0.0]
+    assert net_pairs == []
 
 
 def test_no_candidate_pairs_returns_nothing(session: Session) -> None:

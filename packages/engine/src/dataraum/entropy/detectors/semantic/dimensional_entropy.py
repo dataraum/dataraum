@@ -14,9 +14,11 @@ discrete label sequence — numerics as a non-zero indicator (the structural car
 mutex / conditional-presence dependency lives in the zero pattern, not the magnitude),
 low-cardinality categoricals as their raw value — and NMI runs over the aligned
 sequences. The detector emits ONE table-scoped object whose score is the max NMI over
-*undocumented* pairs. Identifiers, derived columns, and near-unique / high-cardinality
-columns are excluded: finite-sample NMI inflates on near-unique labels, and a derived
-column's dependency is the formula the ``derived_value`` measurement already owns.
+*undocumented* pairs. Identifiers and near-unique / high-cardinality columns are excluded
+(finite-sample NMI inflates on near-unique labels). Derived columns are NOT excluded:
+the indicator measures structural co-presence, orthogonal to the value formula
+``derived_value`` owns, and an always-present derived column self-excludes (constant
+indicator → NMI 0).
 
 This measures INTRINSIC structure — the mutex is real in clean data too — so its
 calibration bar is teach-closure (documenting the pair drops the score), not injection
@@ -34,7 +36,6 @@ from dataraum.core.logging import get_logger
 from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.detectors.loaders import (
-    load_correlation,
     load_documented_dependencies,
     load_semantic,
     load_statistics,
@@ -151,7 +152,7 @@ class DimensionalEntropyDetector(EntropyDetector):
             stats_row = (
                 load_statistics(session, col.column_id, context.run_id, context.base_runs) or {}
             )
-            if self._is_excluded(context, session, col, semantic, stats_row):
+            if self._is_excluded(col, semantic, stats_row):
                 continue
             resolved = (col.resolved_type or "").upper()
             if resolved.startswith(_NUMERIC_TYPES):
@@ -165,13 +166,20 @@ class DimensionalEntropyDetector(EntropyDetector):
 
     def _is_excluded(
         self,
-        context: DetectorContext,
-        session: Session,
         col: Column,
         semantic: dict[str, Any],
         stats_row: dict[str, Any],
     ) -> bool:
-        """Identifiers and derived columns carry no *undocumented* dependency to score."""
+        """Identifiers carry no cross-column dependency to score.
+
+        Derived columns are NOT excluded: NMI runs on non-zero INDICATORS, which
+        measure structural co-presence (a mutex / conditional presence), orthogonal
+        to the *value* formula derived_value owns. An always-present derived column
+        (e.g. a signed net_amount that is never 0) has a constant indicator → NMI 0,
+        so it self-excludes; one with a real zero-pattern dependency is a genuine
+        signal a teach can close. (Excluding them dropped the debit/credit mutex,
+        since the correlations dedup flags debit = net_amount + credit.)
+        """
         name = (col.column_name or "").lower()
         if name == "id" or name.endswith("_id"):
             return True
@@ -180,8 +188,6 @@ class DimensionalEntropyDetector(EntropyDetector):
         cardinality = stats_row.get("cardinality_ratio")
         if cardinality is not None and cardinality > _NEAR_UNIQUE_RATIO:
             return True  # distinct ≈ rowcount ⇒ an identifier
-        if load_correlation(session, col.column_id, col.column_name, context.run_id):
-            return True  # derived ⇒ its dependency is the formula derived_value owns
         return False
 
     def _read_labels(

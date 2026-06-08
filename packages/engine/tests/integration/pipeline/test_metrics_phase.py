@@ -1,11 +1,12 @@
 """Tests for the metrics phase — the third lifecycle family (DAT-456).
 
 Mirrors the cycles/validation lifecycle tests: the LLM machinery (the graph
-agent's compose+execute call) and the field-mapping load are mocked at their
-boundaries; everything else — the declared-set load, the born-loud compose
-grounding gate, lifecycle artifacts, supersession — runs against the real
-session fixture. ``can_execute_metric`` runs for real against a controlled
-``FieldMappings`` so the grounding gate itself is exercised, not stubbed.
+agent's compose+execute call) is mocked at its boundary; everything else — the
+declared-set load, the parse gate, lifecycle artifacts, supersession — runs
+against the real session fixture. There is NO field-mapping pre-gate: every
+parseable metric is handed to the agent, which is mocked here to model the two
+real outcomes (executes cleanly → executed / cannot materialize runnable SQL →
+grounded with the reason). Born-loud lives at the agent, not in a heuristic skip.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
-from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
 from dataraum.investigation.db_models import InvestigationSession
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
@@ -120,17 +120,6 @@ def _metric_def(graph_id: str, field: str = "accounts_receivable") -> dict[str, 
     }
 
 
-def _mappings(*concepts: str) -> FieldMappings:
-    """A FieldMappings that grounds exactly the given standard fields."""
-    return FieldMappings(
-        mappings={
-            c: [ColumnCandidate(column_id=f"c-{c}", column_name=c, table_name="typed_invoices")]
-            for c in concepts
-        },
-        table_ids=["t1"],
-    )
-
-
 def _artifacts(session: Session, run_id: str) -> dict[str, LifecycleArtifact]:
     rows = (
         session.execute(select(LifecycleArtifact).where(LifecycleArtifact.run_id == run_id))
@@ -228,12 +217,10 @@ def _fake_execute(fail_ids: set[str]):
 class TestMetricLifecycleFlow:
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
-    @patch("dataraum.graphs.field_mapping.load_semantic_mappings")
     @patch("dataraum.graphs.config.get_metric_definitions")
     def test_declare_compose_execute_flow(
         self,
         mock_defs: MagicMock,
-        mock_load_mappings: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
         session: Session,
@@ -241,14 +228,13 @@ class TestMetricLifecycleFlow:
         workspace_table: Table,
         _mock_llm: None,
     ) -> None:
-        """One metric executes; one composes but fails to run; one is ungroundable."""
+        """Every parseable metric is composed by the agent: one executes cleanly,
+        one cannot materialize runnable SQL and stays grounded with the reason.
+        No pre-gate — the agent's outcome decides, not a field-mapping check."""
         mock_defs.return_value = {
             "m_exec": _metric_def("m_exec", field="accounts_receivable"),
             "m_unexec": _metric_def("m_unexec", field="revenue"),
-            "m_ungrounded": _metric_def("m_ungrounded", field="inventory"),
         }
-        # accounts_receivable + revenue ground; inventory does not.
-        mock_load_mappings.return_value = _mappings("accounts_receivable", "revenue")
         mock_execute.side_effect = _fake_execute(fail_ids={"m_unexec"})
         mock_ctx.return_value = MagicMock()
 
@@ -258,30 +244,26 @@ class TestMetricLifecycleFlow:
         assert result.status == PhaseStatus.COMPLETED
         artifacts = _artifacts(session, "run-om-1")
 
-        # Executed: grounded + ran cleanly.
+        # Executed: composed + ran cleanly.
         assert artifacts["m_exec"].state == ArtifactState.EXECUTED.value
         assert artifacts["m_exec"].grounded_against is not None
-        # Composed but unexecutable: stays grounded with the reason.
+        assert artifacts["m_exec"].teaches["vertical"] == "finance"
+        # Composed but unexecutable: the agent could not materialize runnable SQL,
+        # so it stays grounded with the reason — born-loud at the agent.
         assert artifacts["m_unexec"].state == ArtifactState.GROUNDED.value
         assert "execution failed" in (artifacts["m_unexec"].state_reason or "")
-        # Ungroundable: never composed — stays declared, visibly impossible.
-        assert artifacts["m_ungrounded"].state == ArtifactState.DECLARED.value
-        assert "ungroundable" in (artifacts["m_ungrounded"].state_reason or "")
-        assert "inventory" in (artifacts["m_ungrounded"].state_reason or "")
-        assert artifacts["m_exec"].teaches["vertical"] == "finance"
 
         assert result.outputs["executed"] == 1
         assert result.outputs["stuck_grounded"] == 1
-        assert result.outputs["stuck_declared"] == 1
+        # No metric stays declared via a heuristic gate — declared is parse-only.
+        assert result.outputs["stuck_declared"] == 0
 
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
-    @patch("dataraum.graphs.field_mapping.load_semantic_mappings")
     @patch("dataraum.graphs.config.get_metric_definitions")
     def test_malformed_definition_stays_declared(
         self,
         mock_defs: MagicMock,
-        mock_load_mappings: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
         session: Session,
@@ -289,12 +271,12 @@ class TestMetricLifecycleFlow:
         workspace_table: Table,
         _mock_llm: None,
     ) -> None:
-        """A definition that won't parse stays declared with the parse error — never dropped."""
+        """A definition that won't parse stays declared with the parse error — the
+        one legitimate pre-gate — never dropped."""
         mock_defs.return_value = {
             "ok_metric": _metric_def("ok_metric", field="accounts_receivable"),
             "broken": {"graph_id": "broken", "output": {"type": "scalar"}},  # missing metadata.name
         }
-        mock_load_mappings.return_value = _mappings("accounts_receivable")
         mock_execute.side_effect = _fake_execute(fail_ids=set())
         mock_ctx.return_value = MagicMock()
 
@@ -309,12 +291,10 @@ class TestMetricLifecycleFlow:
 
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
-    @patch("dataraum.graphs.field_mapping.load_semantic_mappings")
     @patch("dataraum.graphs.config.get_metric_definitions")
     def test_rerun_supersedes_under_fresh_run_id(
         self,
         mock_defs: MagicMock,
-        mock_load_mappings: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
         session: Session,
@@ -324,7 +304,6 @@ class TestMetricLifecycleFlow:
     ) -> None:
         """No skip-if-already-ran: the re-run re-flows everything; runs coexist."""
         mock_defs.return_value = {"dso": _metric_def("dso", field="accounts_receivable")}
-        mock_load_mappings.return_value = _mappings("accounts_receivable")
         mock_execute.side_effect = _fake_execute(fail_ids=set())
         mock_ctx.return_value = MagicMock()
 

@@ -46,7 +46,12 @@ services:
       # engine's metadata schema.
       COCKPIT_DB: ${COCKPIT_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PG18 stores data in a major-version-specific subdir and now declares its
+      # VOLUME at /var/lib/postgresql (NOT .../data). The image refuses to boot
+      # if a volume is mounted at the old .../data path (docker-library #1259),
+      # so the mount is the parent and PGDATA defaults to .../18/docker. A future
+      # major bump lands in .../19/docker beside it (we sweep with `down -v`).
+      - postgres_data:/var/lib/postgresql
       - ../engine/docker/postgres-init/:/docker-entrypoint-initdb.d/:ro
     ports:
       - "5432:5432"

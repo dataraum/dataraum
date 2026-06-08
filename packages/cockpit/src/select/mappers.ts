@@ -29,11 +29,7 @@
 import { createHash } from "node:crypto";
 
 import type { ConnectSchema } from "../duckdb/connect";
-import {
-	ALLOWED_EXTENSIONS,
-	fileExtension,
-	UPLOAD_PREFIX,
-} from "../upload/policy";
+import { UPLOAD_PREFIX } from "../upload/policy";
 
 // THE source-name rule — this pattern is the authority (DAT-430 deleted the
 // engine's legacy `SourceManager` and its `_NAME_PATTERN`; `select` is the only
@@ -75,43 +71,11 @@ export function reservedSourceNamePrefix(name: string): string | null {
 
 // --- source_type from a file URI suffix -------------------------------------
 
-// Suffix → engine `source_type`. MIRRORS the engine's import-dispatch suffix map
-// (`pipeline/phases/import_phase.py` `_PARQUET_EXTENSIONS`/`_JSON_EXTENSIONS` +
-// CSV default) + the cockpit connect/upload contract: csv/tsv/txt → csv,
-// parquet/pq → parquet, json/jsonl/ndjson → json. A file source's `source_type`
-// is this derived value, NEVER the literal "file" — the engine import dispatch
-// keys off it.
-const EXTENSION_TO_SOURCE_TYPE: Record<string, "csv" | "parquet" | "json"> = {
-	csv: "csv",
-	tsv: "csv",
-	txt: "csv",
-	parquet: "parquet",
-	pq: "parquet",
-	json: "json",
-	jsonl: "json",
-	ndjson: "json",
-};
-
-/**
- * The engine `source_type` for a single file URI, derived from its suffix.
- *
- * Throws on an unsupported / extensionless URI — a select that can't name the
- * source_type is a loud error, not a silently-mislabelled row the engine import
- * would reject. Each content-keyed file source carries one file, so this single
- * value is its declared `source_type` (the loader still dispatches per-URI by
- * suffix at import time).
- */
-export function sourceTypeForUri(uri: string): "csv" | "parquet" | "json" {
-	const ext = fileExtension(uri);
-	const type = ext ? EXTENSION_TO_SOURCE_TYPE[ext] : undefined;
-	if (!type) {
-		throw new Error(
-			`Cannot derive source_type for '${uri}' — unsupported or missing extension ` +
-				`(supported: ${ALLOWED_EXTENSIONS.join(", ")}).`,
-		);
-	}
-	return type;
-}
+// `sourceTypeForUri` (suffix → engine `source_type`) moved to the crypto-free
+// upload/policy so the CLIENT upload dropzone can import it (via upload/batch)
+// without dragging this module's `node:crypto` into the browser bundle. Re-
+// exported here so select-stage callers keep importing it from `select/mappers`.
+export { sourceTypeForUri } from "../upload/policy";
 
 // --- content-keyed file sources (DAT-422) ------------------------------------
 

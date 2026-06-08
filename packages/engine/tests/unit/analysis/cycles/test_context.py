@@ -1,11 +1,13 @@
-"""Fail-closed session isolation for the cycle-detection context (DAT-429).
+"""Fail-closed session isolation for the cycle-detection context (DAT-429/455).
 
 ``build_cycle_detection_context`` assembles two run-versioned reads — entity
 classifications and the defined relationships — both of which coexist across runs
-(DAT-408/413). With no resolved run (no ``session_id``, or a session whose head was
-never promoted) the builder must surface NEITHER: a cross-run read here would mix
-other sessions' entities/relationships into this context. These pin that contract,
-mirroring ``graphs/test_context_builder`` for the cycles reader.
+(DAT-408/413). The builder is an in-run reader (ADR-0008): it scopes by the
+:class:`BaseRunMap` pinned once at run start and passed in, never resolving a head
+itself. With no pinned run (``relationship_run_id is None``) it must surface
+NEITHER: a cross-run read here would mix other sessions' entities/relationships
+into this context. These pin that contract, mirroring ``graphs/test_context_builder``
+for the cycles reader.
 """
 
 from __future__ import annotations
@@ -19,8 +21,8 @@ from dataraum.analysis.cycles.context import build_cycle_detection_context
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.investigation.db_models import InvestigationSession
+from dataraum.lifecycle import BaseRunMap
 from dataraum.storage import Column, Source, Table
-from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
 
 def _id() -> str:
@@ -112,45 +114,44 @@ def two_tables_two_runs(session):
     return [txn.table_id, acct.table_id], session_id
 
 
-def _build(session, table_ids, **kwargs):
+def _build(session, table_ids, *, base_runs: BaseRunMap, **kwargs):
     """Build the cycle context against an ephemeral DuckDB (row counts → None)."""
     return build_cycle_detection_context(
         session,
         duckdb.connect(),
         table_ids,
         vertical="finance",
+        base_runs=base_runs,
         **kwargs,
     )
 
 
-def test_unresolved_session_reads_no_run_versioned_data(session, two_tables_two_runs) -> None:
-    """No resolved run ⇒ no entities, no relationships — never the cross-run union."""
+def test_unpinned_run_reads_no_run_versioned_data(session, two_tables_two_runs) -> None:
+    """No pinned run ⇒ no entities, no relationships — never the cross-run union."""
     table_ids, session_id = two_tables_two_runs
 
-    # No session_id ⇒ unresolved run.
-    ctx_none = _build(session, table_ids)
+    # An empty base-run map (relationship_run_id is None) is the unresolved case
+    # — the operating_model resolve activity pins nothing when begin_session has
+    # no promoted run. Both with and without a session_id, the read is empty.
+    ctx_none = _build(session, table_ids, base_runs=BaseRunMap())
     assert ctx_none["entity_classifications"] == []
     assert ctx_none["relationships"] == []
 
-    # A recognized session whose head was never promoted is equally unresolved
-    # (``session_id`` is seeded as an InvestigationSession by the fixture, but no
-    # detect head was ever promoted for it).
-    ctx_unpromoted = _build(session, table_ids, session_id=session_id)
-    assert ctx_unpromoted["entity_classifications"] == []
-    assert ctx_unpromoted["relationships"] == []
+    ctx_unpinned = _build(session, table_ids, base_runs=BaseRunMap(), session_id=session_id)
+    assert ctx_unpinned["entity_classifications"] == []
+    assert ctx_unpinned["relationships"] == []
 
 
-def test_scopes_to_promoted_head(session, two_tables_two_runs) -> None:
-    """With a promoted head, only that run's entity + relationship surface."""
+def test_scopes_to_pinned_run(session, two_tables_two_runs) -> None:
+    """With a pinned relationship run, only that run's entity + relationship surface."""
     table_ids, session_id = two_tables_two_runs
-    session.add(
-        MetadataSnapshotHead(
-            target=session_head_target(session_id), stage="detect", run_id="run-current"
-        )
-    )
-    session.commit()
 
-    ctx = _build(session, table_ids, session_id=session_id)
+    ctx = _build(
+        session,
+        table_ids,
+        base_runs=BaseRunMap(relationship_run_id="run-current"),
+        session_id=session_id,
+    )
 
     rels = ctx["relationships"]
     assert len(rels) == 1

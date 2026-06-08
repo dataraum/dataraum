@@ -327,19 +327,31 @@ class TestBuilderExtractsValidationDetails:
 
 
 class TestBuilderExtractsCycleVolume:
-    """Verify builder reads total_records, completed_cycles, evidence."""
+    """Verify builder reads total_records, completed_cycles, evidence.
+
+    Run-versioned + session-scoped since DAT-455: the builder reads detected
+    cycles only at the session's promoted operating_model head — the test seeds
+    the head and passes the session_id. Without either, the read is fail-closed
+    empty (mirrors the validation-details test).
+    """
 
     def test_cycle_volume_fields(self, session: Session) -> None:
         from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+        from dataraum.investigation.db_models import InvestigationSession
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
+        sess_id = "sess-cycle-volume"
+        session.add(InvestigationSession(session_id=sess_id, intent="test"))
         session.add(
             DetectedBusinessCycle(
                 cycle_id=_id(),
-                source_id=source_id,
+                session_id=sess_id,
+                run_id="run-om",
                 cycle_name="Accounts Receivable",
                 cycle_type="accounts_receivable",
+                canonical_type="accounts_receivable",
                 tables_involved=["invoices"],
                 total_records=10000,
                 completed_cycles=8500,
@@ -347,12 +359,21 @@ class TestBuilderExtractsCycleVolume:
                 evidence=["Status column tracks lifecycle", "Payment dates correlate"],
             )
         )
+        session.add(
+            MetadataSnapshotHead(
+                target=session_head_target(sess_id), stage="operating_model", run_id="run-om"
+            )
+        )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id])
+        ctx = build_execution_context(session, [table_id], session_id=sess_id)
 
         assert len(ctx.business_cycles) == 1
         cycle = ctx.business_cycles[0]
         assert cycle.total_records == 10000
         assert cycle.completed_cycles == 8500
         assert cycle.evidence == ["Status column tracks lifecycle", "Payment dates correlate"]
+
+        # Fail-closed: no session_id → no promoted head to read at → empty.
+        unscoped = build_execution_context(session, [table_id])
+        assert unscoped.business_cycles == []

@@ -13,7 +13,6 @@ ALL_DETECTOR_IDS = {
     "null_semantics",
     "outlier_rate",
     "benford",
-    "slice_variance",
     "derived_value",
     "business_meaning",
     "unit_entropy",

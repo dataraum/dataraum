@@ -309,10 +309,10 @@ def load_semantic(
     Pinned fallback (DAT-405/448): a begin_session detect carries the SESSION
     run's ``run_id``, but annotations are written by the add_source run — a
     strict this-run read finds nothing and silently disabled every
-    semantic-gated session detector (temporal_drift scored 0 records;
-    slice_variance lost its role gate and over-fired on ID columns). When this
-    run has no annotation, read the run the orchestrator pinned for the
-    column's table at ``semantic_per_column``; no pin → ``None`` as before.
+    semantic-gated session detector (dimensional_entropy and derived_value lose
+    the role/semantic context their detect step needs). When this run has no
+    annotation, read the run the orchestrator pinned for the column's table at
+    ``semantic_per_column``; no pin → ``None`` as before.
     """
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 

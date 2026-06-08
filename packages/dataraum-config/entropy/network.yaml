@@ -34,12 +34,14 @@ nodes:
     dimension: temporal
     sub_dimension: time_role
 
-  # benford + temporal_drift: moved off the network onto the loss path (DAT-442)
-  # — their surprise scores feed risk(intent) via entropy/loss.yaml, not a node +
-  # hand-set edge.
+  # benford: moved off the network onto the loss path (DAT-442) — its surprise
+  # score feeds risk(intent) via entropy/loss.yaml, not a node + hand-set edge.
 
-  # slice_variance (slice_stability): moved off the network onto the loss path
-  # (DAT-442) — its cross-slice spread feeds risk(intent) via entropy/loss.yaml.
+  # temporal_drift + slice_variance: CUT entirely (DAT-442 reset) — neither could
+  # separate an injection from natural variation on real financial data (drift vs
+  # month-end volatility; slice_variance vs legitimate cross-slice heterogeneity,
+  # and it's blind to the slice-global injections the eval creates). Not on the
+  # network, not on the loss path. See entropy/loss.yaml for the full rationale.
 
   dimension_coverage:
     layer: semantic

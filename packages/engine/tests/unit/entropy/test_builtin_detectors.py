@@ -16,7 +16,6 @@ from dataraum.entropy.detectors import (
     NullRatioDetector,
     OutlierRateDetector,
     RelationshipEntropyDetector,
-    SliceVarianceDetector,
     TemporalEntropyDetector,
     TypeFidelityDetector,
     UnitEntropyDetector,
@@ -38,7 +37,6 @@ class TestBuiltinDetectors:
             NullRatioDetector,
             OutlierRateDetector,
             BenfordDetector,
-            SliceVarianceDetector,
             # Semantic (column-scoped)
             BusinessMeaningDetector,
             UnitEntropyDetector,
@@ -70,7 +68,6 @@ class TestBuiltinDetectors:
         assert "null_ratio" in detector_ids
         assert "outlier_rate" in detector_ids
         assert "benford" in detector_ids
-        assert "slice_variance" in detector_ids
         assert "business_meaning" in detector_ids
         assert "unit_entropy" in detector_ids
         assert "temporal_entropy" in detector_ids
@@ -119,12 +116,14 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         value_detectors = [d for d in registry.get_all_detectors() if d.layer.value == "value"]
-        assert len(value_detectors) == 4  # temporal_drift cut (DAT-442 reset)
+        # BUILTIN_DETECTORS value layer: null_ratio, outlier_rate, benford —
+        # temporal_drift + slice_variance cut (DAT-442 reset). (null_semantics is
+        # registered via the default registry, not BUILTIN_DETECTORS.)
+        assert len(value_detectors) == 3
         detector_ids = [d.detector_id for d in value_detectors]
         assert "null_ratio" in detector_ids
         assert "outlier_rate" in detector_ids
         assert "benford" in detector_ids
-        assert "slice_variance" in detector_ids
 
     def test_semantic_detectors(self):
         """Test semantic layer detectors."""

@@ -45,13 +45,16 @@ measurements:
   # additive-flow columns it applied to (clean KS ≈ injected ≈ 0.53). Real drift
   # moves to DAT-445's expected-variation model.
 
-  slice_variance:
-    # A column behaves differently across slices (max normalized spread of null /
-    # distinct / outlier / benford metrics). The "score" weight scores that spread
-    # magnitude directly — it's a disagreement measure, not a divergence vs a
-    # reference. Old network edges were query 0.4 / aggregation 0.5 (placeholders).
-    query_intent: { score: 0.4 }
-    aggregation_intent: { score: 0.5 }
+  # slice_variance was CUT (DAT-442 reset, proven in eval): a between-slice
+  # k-sample test (Kruskal–Wallis η²) is structurally blind to the slice-GLOBAL
+  # injections the eval creates — corruption sprayed uniformly across slices leaves
+  # between-group η² at ~0 (Δη² ≈ 0.00 vs clean) — and saturates on the legitimate
+  # cross-slice heterogeneity of real financial data (clean η² ≈ 0.78 on naturally-
+  # varying columns). No grounded statistic rescues it; the old max-of-normalized-
+  # spreads also fired only on non-injected columns (distinct-ratio artifacts on
+  # categorical dimensions). The null-rate-across-slices sliver — the one defensible
+  # signal — is a proportions question (Cramér's V on null×slice), deferred to
+  # DAT-184 + a slice-conditional-null injection.
 
   # Rates / magnitudes (not divergences): the "score" weight scores the detector's
   # existing [0,1] score directly. These three left the network with the dissolved

@@ -109,10 +109,12 @@ _PROMOTE_STAGES = (
 # ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
 # declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
-# DAT-415); the value layer (DAT-403) declares ``slice_variance`` (slice_analysis),
-# ``temporal_drift`` + ``dimensional_entropy`` (temporal_slice_analysis), and
-# ``derived_value`` (correlations) — column/table-grain value-readiness signals over
-# the slices + enriched views the begin_session spine just built. Distinct from the
+# DAT-415); the value layer (DAT-403) declares ``dimensional_entropy``
+# (temporal_slice_analysis) and ``derived_value`` (correlations) — column/table-grain
+# value-readiness signals over the slices + enriched views the begin_session spine
+# just built. (slice_analysis still runs to build the slice profiles
+# dimensional_entropy reads, but declares no detector of its own: slice_variance and
+# temporal_drift were cut in the DAT-442 reset.) Distinct from the
 # source-scoped ``_DETECTOR_PHASES`` so add_source never runs these and begin_session
 # never runs the column-profiling ones. A declared detector whose inputs are absent
 # (no slice profiles / drift / derived columns) simply produces no objects — the

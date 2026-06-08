@@ -155,8 +155,8 @@ class SliceAnalysisPhase(BasePhase):
 
         # Run analysis on slice tables. ``run_id`` stamps the slice-table
         # profiles/quality rows (DAT-448) — unstamped rows never ON CONFLICT
-        # (NULLs are distinct), so re-runs duplicated them and slice_variance
-        # read the pile unscoped.
+        # (NULLs are distinct), so re-runs duplicated them and the slice-profile
+        # consumer (dimensional_entropy) read the pile unscoped.
         analysis_result = run_analysis_on_slices(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,

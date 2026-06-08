@@ -14,10 +14,8 @@ import { humanizeIdentifier } from "#/lib/display-names";
 import type { ValidationOverview } from "#/tools/look-validation";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
-import {
-	ValidationStateBadge,
-	ValidationVerdictBadge,
-} from "#/ui/cockpit/widgets/validation-badges";
+import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import { ValidationVerdictBadge } from "#/ui/cockpit/widgets/validation-badges";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
 // Cap the rows rendered into the DOM (rule 15). A vertical ships single-digit
@@ -129,7 +127,7 @@ export function ValidationListWidget({
 										</Anchor>
 									</Table.Td>
 									<Table.Td>
-										<ValidationStateBadge state={v.state} />
+										<LifecycleStateBadge state={v.state} />
 									</Table.Td>
 									<Table.Td>
 										<ValidationVerdictBadge passed={v.passed} />

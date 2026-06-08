@@ -13,10 +13,8 @@ import { Alert, Code, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
-import {
-	ValidationStateBadge,
-	ValidationVerdictBadge,
-} from "#/ui/cockpit/widgets/validation-badges";
+import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import { ValidationVerdictBadge } from "#/ui/cockpit/widgets/validation-badges";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
 // Bound the SQL surface — a generated validation query is normally short, but
@@ -51,7 +49,7 @@ export function ValidationWhyWidget({
 					{label}
 				</Text>
 				<Group gap="xs" wrap="nowrap">
-					<ValidationStateBadge state={why.state} />
+					<LifecycleStateBadge state={why.state} />
 					<ValidationVerdictBadge passed={why.passed} />
 				</Group>
 			</Group>

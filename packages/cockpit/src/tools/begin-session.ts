@@ -27,6 +27,8 @@ import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
+import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessions, sessionTables } from "../db/metadata/schema";
 import { investigationSessionsWrite } from "../db/metadata/write-surface";
@@ -136,16 +138,18 @@ export async function beginSession(
 		})
 		.onConflictDoNothing({ target: investigationSessions.sessionId });
 
+	// The active workspace, from the cockpit_db registry (DAT-461) rather than the
+	// raw env var — same value in Phase 1, but the source of truth for the
+	// sessions.workspaceId FK recorded below.
+	const workspaceId = await resolveActiveWorkspace();
+
 	const identity: SessionIdentity = {
-		workspace_id: config.dataraumWorkspaceId,
+		workspace_id: workspaceId,
 		session_id: sessionId,
 	};
 	const payload: BeginSessionInput = { identity, tables: input.table_ids };
 
-	const workflowId = beginSessionWorkflowId(
-		config.dataraumWorkspaceId,
-		sessionId,
-	);
+	const workflowId = beginSessionWorkflowId(workspaceId, sessionId);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {
@@ -160,6 +164,17 @@ export async function beginSession(
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
+		});
+
+		// Record the cockpit-side session + run (DAT-461) — best-effort, never
+		// fails the started workflow.
+		await recordRun({
+			workspaceId,
+			engineSessionId: sessionId,
+			kind: "begin_session",
+			stage: "begin_session",
+			workflowId,
+			runId: handle.firstExecutionRunId,
 		});
 
 		return {

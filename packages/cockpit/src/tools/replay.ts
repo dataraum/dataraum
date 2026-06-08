@@ -33,6 +33,8 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
+import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import {
 	investigationSessions,
@@ -159,19 +161,18 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		vertical,
 	});
 
+	const workspaceId = await resolveActiveWorkspace();
+
 	// Source-free identity (DAT-422): the sources ride in `source_ids`; the engine
 	// scopes each `import` to one and the run-level reduce/detect are session-scoped.
 	const identity: SourceIdentity = {
-		workspace_id: config.dataraumWorkspaceId,
+		workspace_id: workspaceId,
 		session_id: newSessionId,
 		vertical,
 	};
 	const payload: AddSourceInput = { identity, source_ids: sourceIds };
 
-	const workflowId = addSourceWorkflowId(
-		config.dataraumWorkspaceId,
-		newSessionId,
-	);
+	const workflowId = addSourceWorkflowId(workspaceId, newSessionId);
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {
@@ -186,6 +187,16 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
+		});
+
+		// Record the new replay session + its run (DAT-461) — best-effort.
+		await recordRun({
+			workspaceId,
+			engineSessionId: newSessionId,
+			kind: "replay",
+			stage: "add_source",
+			workflowId,
+			runId: handle.firstExecutionRunId,
 		});
 
 		return {

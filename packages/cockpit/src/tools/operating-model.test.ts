@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 		temporalTaskQueue: "dataraum-pipeline",
 	} as Record<string, unknown>,
+	recordRun: vi.fn(async () => {}),
 }));
 
 vi.mock("#/config", () => ({
@@ -25,6 +26,13 @@ vi.mock("#/config", () => ({
 		return h.config;
 	},
 }));
+
+// cockpit_db control plane (DAT-461): the active workspace resolves through the
+// registry, and the run is recorded after start. Both mocked at the seam.
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 
 const startMock = vi.fn(async (_name: string, _opts: unknown) => ({
 	firstExecutionRunId: "run-xyz",
@@ -51,6 +59,7 @@ beforeEach(() => {
 	};
 	startMock.mockClear();
 	closeMock.mockClear();
+	h.recordRun.mockClear();
 });
 
 describe("operatingModel (DAT-440)", () => {
@@ -89,5 +98,20 @@ describe("operatingModel (DAT-440)", () => {
 			/Temporal client is not configured/,
 		);
 		expect(startMock).not.toHaveBeenCalled();
+		// The guard runs before any cockpit write.
+		expect(h.recordRun).not.toHaveBeenCalled();
+	});
+
+	it("records an operating_model run on the begin_session session (DAT-461)", async () => {
+		await operatingModel({ session_id: "sess-1" });
+		expect(h.recordRun).toHaveBeenCalledTimes(1);
+		expect(h.recordRun).toHaveBeenCalledWith({
+			workspaceId: WS,
+			engineSessionId: "sess-1",
+			kind: "begin_session",
+			stage: "operating_model",
+			workflowId: `operatingmodel-${WS}-sess-1`,
+			runId: "run-xyz",
+		});
 	});
 });

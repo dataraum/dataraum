@@ -13,6 +13,12 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
+// The driver tools import the cockpit control plane (DAT-461); mock the seam so
+// the registry import never loads the live cockpit_db client.
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: async () => "ws-test",
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
 
 import { tools } from "./registry";
 

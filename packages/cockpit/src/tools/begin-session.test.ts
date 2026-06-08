@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
 	calls: [] as string[],
 	seededRow: null as Record<string, unknown> | null,
 	verticalRows: [] as Array<{ vertical: string }>,
+	recordRun: vi.fn(async () => {}),
 }));
 
 vi.mock("#/config", () => ({
@@ -28,6 +29,13 @@ vi.mock("#/config", () => ({
 		return h.config;
 	},
 }));
+
+// cockpit_db control plane (DAT-461): workspace via the registry, run recorded
+// after start — both mocked at the seam (no DB in units).
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+}));
+vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 
 const onConflictMock = vi.fn(async () => {});
 const valuesMock = vi.fn((row: Record<string, unknown>) => {
@@ -99,6 +107,7 @@ beforeEach(() => {
 	onConflictMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
+	h.recordRun.mockClear();
 });
 
 describe("beginSession (DAT-409)", () => {
@@ -157,6 +166,21 @@ describe("beginSession (DAT-409)", () => {
 		);
 		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
+	});
+
+	it("records the cockpit session + run after starting (DAT-461)", async () => {
+		await beginSession({ table_ids: ["t1", "t2"], vertical: "finance" });
+		const sessionId = h.seededRow?.sessionId as string;
+		expect(h.recordRun).toHaveBeenCalledTimes(1);
+		expect(h.recordRun).toHaveBeenCalledWith({
+			workspaceId: WS,
+			engineSessionId: sessionId,
+			kind: "begin_session",
+			stage: "begin_session",
+			workflowId: `beginsession-${WS}-${sessionId}`,
+			runId: "run-xyz",
+		});
 	});
 
 	it("resolves the selection's framed vertical when vertical is OMITTED", async () => {

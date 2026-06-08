@@ -9,10 +9,12 @@
 // the client bundle, same as `/api/run-sql`.
 
 import { createFileRoute } from "@tanstack/react-router";
+import { markRunStatus } from "../../db/cockpit/runs";
 import {
 	getWorkflowProgress,
 	WorkflowProgressInputSchema,
 } from "../../temporal/progress";
+import { PROGRESS_DONE_PHASE } from "../../temporal/types";
 
 function badRequest(message: string): Response {
 	return new Response(JSON.stringify({ error: message }), {
@@ -40,6 +42,29 @@ export const Route = createFileRoute("/api/workflow-progress")({
 
 				try {
 					const result = await getWorkflowProgress(parsed.data);
+					// The poll is the observation point for run completion — mark the
+					// recorded session_run terminal so the reload-recovery substrate
+					// (DAT-461 / DAT-462) stops treating it as in-flight. Best-effort
+					// (markRunStatus swallows): a control-plane write never affects the
+					// progress the widget renders.
+					if (result.done) {
+						// "completed" covers the clean exits: phase=="done" (the
+						// workflow finished even if describe() hasn't flipped to
+						// COMPLETED yet), an actual COMPLETED, and CONTINUED_AS_NEW (a
+						// handoff, not a failure). Everything else terminal — FAILED /
+						// TERMINATED / CANCELED / TIMED_OUT — is "failed".
+						const status =
+							result.phase === PROGRESS_DONE_PHASE ||
+							result.status === "COMPLETED" ||
+							result.status === "CONTINUED_AS_NEW"
+								? "completed"
+								: "failed";
+						await markRunStatus(
+							parsed.data.workflow_id,
+							parsed.data.run_id,
+							status,
+						);
+					}
 					return Response.json(result);
 				} catch (err) {
 					console.error("workflow-progress query failed", err);

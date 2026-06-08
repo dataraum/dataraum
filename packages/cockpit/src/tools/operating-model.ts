@@ -93,6 +93,8 @@ export async function operatingModel(
 		await recordRun({
 			workspaceId,
 			engineSessionId: input.session_id,
+			// Ignored on conflict — the row already exists from begin_session, which
+			// set kind. Passed only for the (unreachable) first-write case.
 			kind: "begin_session",
 			stage: "operating_model",
 			workflowId,

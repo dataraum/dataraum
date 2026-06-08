@@ -243,6 +243,8 @@ services:
   # source + the committed migrations under drizzle/cockpit/ (the slim runner
   # does not). The cockpit waits on its successful completion. Registry/actor
   # seeding is lazy in the app (resolveActiveWorkspace), so this is schema-only.
+  # If this fails (after 5 retries), the cockpit blocks on
+  # service_completed_successfully — check COCKPIT_DATABASE_URL / COCKPIT_DB.
   cockpit-migrate:
     build:
       context: ../cockpit

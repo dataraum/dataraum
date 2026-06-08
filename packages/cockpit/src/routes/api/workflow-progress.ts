@@ -48,9 +48,15 @@ export const Route = createFileRoute("/api/workflow-progress")({
 					// (markRunStatus swallows): a control-plane write never affects the
 					// progress the widget renders.
 					if (result.done) {
+						// "completed" covers the clean exits: phase=="done" (the
+						// workflow finished even if describe() hasn't flipped to
+						// COMPLETED yet), an actual COMPLETED, and CONTINUED_AS_NEW (a
+						// handoff, not a failure). Everything else terminal — FAILED /
+						// TERMINATED / CANCELED / TIMED_OUT — is "failed".
 						const status =
 							result.phase === PROGRESS_DONE_PHASE ||
-							result.status === "COMPLETED"
+							result.status === "COMPLETED" ||
+							result.status === "CONTINUED_AS_NEW"
 								? "completed"
 								: "failed";
 						await markRunStatus(

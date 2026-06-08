@@ -509,6 +509,65 @@ class TestApplyCycle:
         assert merged["cycle_types"] == {}
 
 
+class TestApplyMetric:
+    """``metric`` rows upsert into the ``metrics:`` LIST of the metrics dir, keyed by graph_id."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    @staticmethod
+    def _row(graph_id: str, vertical: str = "finance", **extra: Any) -> OverlayRow:
+        payload: dict[str, Any] = {
+            "vertical": vertical,
+            "graph_id": graph_id,
+            "metadata": {"name": graph_id, "category": "custom"},
+            "output": {"type": "scalar"},
+        }
+        payload.update(extra)
+        return OverlayRow(type="metric", payload=payload)
+
+    def test_adds_to_empty_list(self) -> None:
+        # Framed vertical: empty base + rows IS the declared set.
+        set_overlay_resolver(lambda: [self._row("dso")])
+        merged = apply_overlay("verticals/finance/metrics", {"metrics": []})
+        assert [m["graph_id"] for m in merged["metrics"]] == ["dso"]
+        # vertical is stripped from the stored definition.
+        assert "vertical" not in merged["metrics"][0]
+
+    def test_replaces_base_metric_by_graph_id_last_write_wins(self) -> None:
+        base = {"metrics": [{"graph_id": "dso", "version": "shipped"}]}
+        set_overlay_resolver(
+            lambda: [
+                self._row("dso", version="first"),
+                self._row("dso", version="second"),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/metrics", base)
+        assert [m["graph_id"] for m in merged["metrics"]] == ["dso"]
+        assert merged["metrics"][0]["version"] == "second"
+        # Base dict untouched (no aliasing).
+        assert base["metrics"][0]["version"] == "shipped"
+
+    def test_adds_alongside_existing_metrics(self) -> None:
+        base = {"metrics": [{"graph_id": "ebitda", "version": "shipped"}]}
+        set_overlay_resolver(lambda: [self._row("custom_metric")])
+        merged = apply_overlay("verticals/finance/metrics", base)
+        assert {m["graph_id"] for m in merged["metrics"]} == {"ebitda", "custom_metric"}
+
+    def test_other_vertical_rows_filtered_by_dispatcher(self) -> None:
+        set_overlay_resolver(lambda: [self._row("x", vertical="marketing")])
+        base: dict[str, Any] = {"metrics": []}
+        merged = apply_overlay("verticals/finance/metrics", base)
+        assert merged is base  # no matching rows → identity short-circuit
+
+    def test_row_without_graph_id_ignored(self) -> None:
+        set_overlay_resolver(
+            lambda: [OverlayRow(type="metric", payload={"vertical": "finance", "output": {}})]
+        )
+        merged = apply_overlay("verticals/finance/metrics", {"metrics": []})
+        assert merged["metrics"] == []
+
+
 class TestApplyOverlayDispatch:
     """``apply_overlay`` short-circuits when no resolver / no matching rows."""
 

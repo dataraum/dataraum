@@ -133,14 +133,65 @@ class TestStageAuthorization:
         assert artifact.state == ArtifactState.EXECUTED.value
 
     def test_unknown_artifact_type_fails_closed(self) -> None:
-        # metrics is a later slice — no authorization rows yet.
+        # relationship/explanation are still-deferred types — no authorization
+        # rows yet, so any declare fails closed.
         with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
             declare_artifact(
                 session_id=_SESSION,
-                artifact_type="metric",
-                artifact_key="ebitda",
+                artifact_type="relationship",
+                artifact_key="journal_to_ledger",
                 run_id="run-1",
                 stage=_STAGE,
+            )
+
+    def test_metric_family_flows_through_the_lifecycle(self) -> None:
+        # metrics are the third lifecycle family (DAT-456): declare → compose →
+        # execute are all authorized for operating_model. The grounding verb is
+        # ``compose`` (not ``bind``), per architecture-future.
+        artifact = declare_artifact(
+            session_id=_SESSION,
+            artifact_type="metric",
+            artifact_key="dso",
+            run_id="run-1",
+            stage=_STAGE,
+        )
+        assert artifact.state == ArtifactState.DECLARED.value
+        transition(artifact, operation="compose", stage=_STAGE)
+        assert artifact.state == ArtifactState.GROUNDED.value
+        transition(artifact, operation="execute", stage=_STAGE)
+        assert artifact.state == ArtifactState.EXECUTED.value
+        # endorse is defined but has no authority workflow yet.
+        with pytest.raises(StageNotAuthorizedError, match="no authority workflow"):
+            transition(artifact, operation="endorse", stage=_STAGE)
+
+    def test_metric_grounds_via_compose_not_bind(self) -> None:
+        # The verbs are family-specific: a metric grounds via ``compose`` and a
+        # validation/cycle via ``bind`` — the cross verbs are unauthorized, so
+        # the audit trail can't lie about which operation grounded an artifact.
+        metric = declare_artifact(
+            session_id=_SESSION,
+            artifact_type="metric",
+            artifact_key="dso",
+            run_id="run-1",
+            stage=_STAGE,
+        )
+        # ("metric", "bind") is not an authorized pair at all → fail closed.
+        with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
+            transition(metric, operation="bind", stage=_STAGE)
+        assert metric.state == ArtifactState.DECLARED.value  # unchanged on rejection
+
+        validation = _declare()
+        with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
+            transition(validation, operation="compose", stage=_STAGE)
+
+    def test_metric_declare_from_foreign_stage_rejected(self) -> None:
+        with pytest.raises(StageNotAuthorizedError, match="not authorized"):
+            declare_artifact(
+                session_id=_SESSION,
+                artifact_type="metric",
+                artifact_key="dso",
+                run_id="run-1",
+                stage="begin_session",
             )
 
     def test_cycle_family_flows_through_the_lifecycle(self) -> None:

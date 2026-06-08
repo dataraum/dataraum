@@ -44,10 +44,17 @@ Registered teach types
   name into the ``cycle_types`` MAPPING (not a list — cycles.yaml keys cycles
   by name); routed via :func:`apply_overlay`'s vertical-path detection
   (DAT-455). This is the declared-cycle teach surface frame-2 writes into.
+* ``metric`` — the logical collection ``verticals/<vertical>/metrics`` (a
+  *directory* of per-``graph_id`` transformation-graph YAML files, merged to a
+  ``metrics:`` list by ``graphs.config.get_metrics_config`` before the overlay
+  applies); upsert-replace by ``graph_id``, routed via :func:`apply_overlay`'s
+  vertical-path detection (DAT-456). This is the declared-metric teach surface
+  frame-2 writes into. Mirrors ``validation`` (a list keyed by an id), not
+  ``cycle`` (a mapping keyed by name).
 
-The 3 still-deferred types (``metric``, ``relationship``, ``explanation``)
-have no applier — the cockpit may still write their rows, but the layered
-read is a no-op until later slices wire their consumers.
+The 2 still-deferred types (``relationship``, ``explanation``) have no applier
+— the cockpit may still write their rows, but the layered read is a no-op until
+later slices wire their consumers.
 """
 
 from __future__ import annotations
@@ -276,6 +283,38 @@ def _apply_cycle(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]
     return out
 
 
+def _apply_metric(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
+    """Upsert-replace metric rows into a vertical's ``metrics:`` list.
+
+    Payload shape mirrors a transformation-graph definition plus its key:
+    ``{vertical, graph_id, version?, metadata, output, parameters?,
+    dependencies, interpretation?}`` — the same shape
+    ``graphs.loader.GraphLoader`` parses from an on-disk metric YAML.
+    ``vertical`` is matched by the caller (this applier only sees rows already
+    filtered to the loading vertical); ``graph_id`` is the identity.
+
+    Merge semantics mirror ``validation``: one row = one whole graph definition.
+    Same ``graph_id`` replaces — the last row for a given id wins (rows are
+    pre-sorted ASC by ``created_at``). A framed vertical resolves overlay-only:
+    an empty base list plus rows IS the declared set.
+    """
+    out = dict(base)
+    metrics = [dict(m) for m in (out.get("metrics") or [])]
+    by_id = {m.get("graph_id"): i for i, m in enumerate(metrics) if m.get("graph_id")}
+    for row in rows:
+        payload = {k: v for k, v in row.payload.items() if k != "vertical"}
+        graph_id = payload.get("graph_id")
+        if not graph_id:
+            continue
+        if graph_id in by_id:
+            metrics[by_id[graph_id]] = payload
+        else:
+            by_id[graph_id] = len(metrics)
+            metrics.append(payload)
+    out["metrics"] = metrics
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registry + dispatcher.
 # ---------------------------------------------------------------------------
@@ -310,6 +349,7 @@ _VERTICAL_ONTOLOGY_PREFIX = "verticals/"
 _VERTICAL_ONTOLOGY_SUFFIX = "/ontology.yaml"
 _VERTICAL_VALIDATIONS_SUFFIX = "/validations"
 _VERTICAL_CYCLES_SUFFIX = "/cycles.yaml"
+_VERTICAL_METRICS_SUFFIX = "/metrics"
 
 
 def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
@@ -332,6 +372,9 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
         * ``verticals/<v>/cycles.yaml`` — the cycle vocabulary (DAT-455):
           apply ``cycle`` rows whose payload ``vertical`` matches ``<v>``
           (upsert-replace by cycle name into ``cycle_types``).
+        * ``verticals/<v>/metrics`` — the logical metric collection (DAT-456):
+          apply ``metric`` rows whose payload ``vertical`` matches ``<v>``
+          (upsert-replace by ``graph_id`` into ``metrics``).
         * everything else — look up ``relative_path`` in the registry;
           apply each matching teach type's rows.
     """
@@ -384,6 +427,15 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
             r for r in rows if r.type == "cycle" and r.payload.get("vertical") == vertical
         ]
         return _apply_cycle(base, cycle_rows) if cycle_rows else base
+
+    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
+        _VERTICAL_METRICS_SUFFIX
+    ):
+        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_METRICS_SUFFIX)]
+        metric_rows = [
+            r for r in rows if r.type == "metric" and r.payload.get("vertical") == vertical
+        ]
+        return _apply_metric(base, metric_rows) if metric_rows else base
 
     merged = base
     for teach_type, spec in _REGISTRY.items():

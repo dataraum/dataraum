@@ -22,7 +22,7 @@ class DerivedValueDetector(EntropyDetector):
     how reliably a column matches its detected formula.
 
     Source: correlation/DerivedColumn.formula, match_rate
-    Formula: entropy = boost(1.0 - match_rate) with log-based amplification
+    Formula: entropy = 1.0 - match_rate (honest mismatch rate; no boost, DAT-442)
 
     Thresholds configurable in config/entropy/thresholds.yaml.
     """

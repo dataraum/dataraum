@@ -9,7 +9,7 @@
 // House style mirrors the engine pipeline prompts and the orchestrator:
 // second-person, `<tag>`-structured sections. The frame agent forces a single
 // structured-output call (a Zod `outputSchema`) so the model returns proposed
-// concepts directly; the user accepts/edits them in the ConceptFrame widget
+// concepts directly; the user accepts/edits them in the ModelFrame widget
 // before they are written as `concept` overlay rows.
 
 /**

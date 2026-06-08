@@ -140,11 +140,12 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		Array.isArray((result as { tables?: unknown } | null)?.tables)
 			? { kind: "schema-preview", schema: result as ConnectSchema }
 			: null,
-	// Declared concepts render as the ConceptFrame widget; only once the result
-	// carries a `concepts` array (same partial-output guard as connect).
+	// The framed model (concepts + validations) renders as the ModelFrame widget;
+	// only once the result carries a `concepts` array (the model's foundation —
+	// same partial-output guard as connect; validations may be an empty array).
 	frame: (result) =>
 		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
-			? { kind: "concept-frame", frame: result as FrameResult }
+			? { kind: "model-frame", frame: result as FrameResult }
 			: null,
 	// Approving select STARTS the import (DAT-436): the result carries the
 	// started run's workflow_id + run_id, so project the live add-source-progress

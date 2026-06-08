@@ -374,9 +374,23 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 			toolChipSummary(
 				"frame",
 				{},
-				{ vertical: "ecommerce", concepts: [{}, {}] },
+				{ vertical: "ecommerce", concepts: [{}, {}], validations: [] },
 			),
 		).toBe("ecommerce — 2 concepts");
+	});
+
+	it("frame appends the validation count when validations were framed", () => {
+		expect(
+			toolChipSummary(
+				"frame",
+				{},
+				{
+					vertical: "ecommerce",
+					concepts: [{}, {}],
+					validations: [{}, {}, {}],
+				},
+			),
+		).toBe("ecommerce — 2 concepts, 3 validations");
 	});
 
 	it("select names the source + type", () => {
@@ -448,7 +462,7 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 			"connecting…",
 		);
 		expect(toolChipSummary("frame", {}, { vertical: "finance" })).toBe(
-			"framing concepts…",
+			"framing the model…",
 		);
 		expect(toolChipSummary("look_table", {}, { table_name: "orders" })).toBe(
 			"reading table readiness…",

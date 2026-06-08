@@ -62,8 +62,8 @@ _TABLE_GRAIN: dict[str, str] = {
 # Run-stamped tables sealed at SESSION grain, mapped to their promoting stage:
 # begin_session promotes one (session:{id}, "detect") head for its atomic run
 # (DAT-408/448); operating_model promotes (session:{id}, "operating_model")
-# for the lifecycle family (DAT-438). Same target, distinct stages — the two
-# stages' runs coexist on one session.
+# for the lifecycle families (validation + cycles, DAT-438/455). Same target,
+# distinct stages — the two stages' runs coexist on one session.
 _SESSION_GRAIN: dict[str, str] = {
     "relationships": "detect",
     "table_entities": "detect",
@@ -75,6 +75,7 @@ _SESSION_GRAIN: dict[str, str] = {
     "derived_columns": "detect",
     "lifecycle_artifacts": "operating_model",
     "validation_results": "operating_model",
+    "detected_business_cycles": "operating_model",
 }
 
 # Written by BOTH detect paths: add_source seals per (table:{id}, "detect"),

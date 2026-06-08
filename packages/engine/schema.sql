@@ -83,10 +83,10 @@ CREATE INDEX ix_column_drift_summaries_slice_table_name ON column_drift_summarie
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
-	source_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
 	cycle_name VARCHAR NOT NULL, 
 	cycle_type VARCHAR NOT NULL, 
-	canonical_type VARCHAR, 
+	canonical_type VARCHAR NOT NULL, 
 	is_known_type BOOLEAN NOT NULL, 
 	description TEXT, 
 	business_value VARCHAR NOT NULL, 
@@ -103,11 +103,9 @@ CREATE TABLE detected_business_cycles (
 	evidence JSON NOT NULL, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
-	CONSTRAINT fk_detected_business_cycles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_detected_business_cycles_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id) ON DELETE CASCADE
+	CONSTRAINT uq_detected_cycle_run UNIQUE (session_id, canonical_type, run_id), 
+	CONSTRAINT fk_detected_business_cycles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
 );
-
-CREATE INDEX idx_detected_cycles_source ON detected_business_cycles (source_id);
 
 CREATE INDEX ix_detected_business_cycles_session_id ON detected_business_cycles (session_id);
 

@@ -117,10 +117,12 @@ async def run_worker() -> None:
                     phase_activities.run_session_detect,
                     phase_activities.run_session_write_keepers,
                     phase_activities.run_session_promote_to_latest,
-                    # DAT-438 operating_model spine — resolve (pins) →
-                    # validation lifecycle → promote the stage head.
+                    # DAT-438/455 operating_model spine — resolve (pins) →
+                    # validation lifecycle → business_cycles lifecycle → promote
+                    # the stage head.
                     phase_activities.run_operating_model_resolve,
                     phase_activities.run_validation,
+                    phase_activities.run_business_cycles,
                     phase_activities.run_operating_model_promote,
                 ],
                 activity_executor=executor,
@@ -175,6 +177,7 @@ async def run_worker() -> None:
                     "session_promote_to_latest",
                     "operating_model_resolve",
                     "validation",
+                    "business_cycles",
                     "operating_model_promote",
                 ],
             )

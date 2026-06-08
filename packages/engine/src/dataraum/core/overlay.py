@@ -40,11 +40,14 @@ Registered teach types
   by ``validation_id``, routed via :func:`apply_overlay`'s vertical-path
   detection (DAT-438). This is the declared-validation teach surface
   frame-2 (DAT-441) writes into.
+* ``cycle`` — ``verticals/<vertical>/cycles.yaml``, upsert-replace by cycle
+  name into the ``cycle_types`` MAPPING (not a list — cycles.yaml keys cycles
+  by name); routed via :func:`apply_overlay`'s vertical-path detection
+  (DAT-455). This is the declared-cycle teach surface frame-2 writes into.
 
-The 4 still-deferred types (``cycle``, ``metric``, ``relationship``,
-``explanation``) have no applier — the cockpit may still write their
-rows, but the layered read is a no-op until later slices wire their
-consumers.
+The 3 still-deferred types (``metric``, ``relationship``, ``explanation``)
+have no applier — the cockpit may still write their rows, but the layered
+read is a no-op until later slices wire their consumers.
 """
 
 from __future__ import annotations
@@ -245,6 +248,34 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     return out
 
 
+def _apply_cycle(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
+    """Upsert-replace cycle rows into a vertical's ``cycle_types`` mapping.
+
+    Payload shape mirrors one ``cycles.yaml`` ``cycle_types`` entry plus its
+    key: ``{vertical, name, description?, business_value?, aliases?,
+    typical_stages?, participating_entities?, completion_indicators?,
+    feeds_into?}``. ``vertical`` is matched by the caller (this applier only
+    sees rows already filtered to the loading vertical); ``name`` is the
+    ``cycle_types`` key — unlike validations (a list keyed by ``validation_id``)
+    the cycle vocabulary is a MAPPING.
+
+    Merge semantics mirror ``validation``: one row = one whole cycle entry.
+    Same ``name`` replaces — the last row for a given name wins (rows are
+    pre-sorted ASC by ``created_at``). A framed vertical resolves overlay-only:
+    an empty base mapping plus rows IS the declared set.
+    """
+    out = dict(base)
+    cycle_types = {k: dict(v) for k, v in (out.get("cycle_types") or {}).items()}
+    for row in rows:
+        payload = {k: v for k, v in row.payload.items() if k != "vertical"}
+        name = payload.pop("name", None)
+        if not name:
+            continue
+        cycle_types[name] = payload
+    out["cycle_types"] = cycle_types
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Registry + dispatcher.
 # ---------------------------------------------------------------------------
@@ -278,6 +309,7 @@ _REGISTRY: Final[dict[str, _ApplierSpec]] = {
 _VERTICAL_ONTOLOGY_PREFIX = "verticals/"
 _VERTICAL_ONTOLOGY_SUFFIX = "/ontology.yaml"
 _VERTICAL_VALIDATIONS_SUFFIX = "/validations"
+_VERTICAL_CYCLES_SUFFIX = "/cycles.yaml"
 
 
 def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +329,9 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
         * ``verticals/<v>/validations`` — the logical validation collection
           (DAT-438): apply ``validation`` rows whose payload ``vertical``
           matches ``<v>`` (upsert-replace by ``validation_id``).
+        * ``verticals/<v>/cycles.yaml`` — the cycle vocabulary (DAT-455):
+          apply ``cycle`` rows whose payload ``vertical`` matches ``<v>``
+          (upsert-replace by cycle name into ``cycle_types``).
         * everything else — look up ``relative_path`` in the registry;
           apply each matching teach type's rows.
     """
@@ -340,6 +375,15 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
             r for r in rows if r.type == "validation" and r.payload.get("vertical") == vertical
         ]
         return _apply_validation(base, validation_rows) if validation_rows else base
+
+    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
+        _VERTICAL_CYCLES_SUFFIX
+    ):
+        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_CYCLES_SUFFIX)]
+        cycle_rows = [
+            r for r in rows if r.type == "cycle" and r.payload.get("vertical") == vertical
+        ]
+        return _apply_cycle(base, cycle_rows) if cycle_rows else base
 
     merged = base
     for teach_type, spec in _REGISTRY.items():

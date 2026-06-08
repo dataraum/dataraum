@@ -4,16 +4,18 @@ Operations are typed by state transition (``architecture-future.md``): each
 teach type exposes operations that move artifacts through
 ``declared`` → ``grounded`` → ``executed`` → ``canonical``, and each operation
 is restricted to specific journey stages — the Goodhart firewall enforced at
-the operation level. The maps below are the slice-1 registry (validation
-only); cycles and metrics add their rows in later operating_model slices.
+the operation level. The maps below register two families so far —
+``validation`` (DAT-438) and ``cycle`` (DAT-455); metrics add their rows in a
+later operating_model slice.
 
 Authorization notes:
 
-* ``validation.declare`` is authorized for ``operating_model`` as the slice-1
-  bootstrap: the engine materializes the *vertical's* declared validations as
-  ``declared`` artifacts — the declare authority is the vertical, the stage
-  just records it. frame-2 (DAT-441) takes over user declares.
-* ``validation.endorse`` (``executed`` → ``canonical``) is **defined with no
+* ``<type>.declare`` is authorized for ``operating_model`` as the bootstrap:
+  the engine materializes the *vertical's* declared set (validation specs /
+  cycle vocabulary) as ``declared`` artifacts — the declare authority is the
+  vertical, the stage just records it. frame-2 (DAT-441/DAT-457) takes over
+  user declares.
+* ``<type>.endorse`` (``executed`` → ``canonical``) is **defined with no
   authorized stage**: the transition exists in the state machine, but no
   endorsement workflow exists yet, so every caller is rejected.
 """
@@ -69,6 +71,15 @@ _STAGE_AUTHORIZATIONS: Final[dict[tuple[str, str], frozenset[str]]] = {
     ("validation", "bind"): frozenset({"operating_model"}),
     ("validation", "execute"): frozenset({"operating_model"}),
     ("validation", "endorse"): frozenset(),  # defined; no endorsement workflow yet
+    # cycles — the second lifecycle family (DAT-455), mirroring validation 1:1:
+    # the vertical's ``cycles.yaml`` cycle_types ⊕ ``cycle`` overlay teach rows
+    # are the declared set, declare authority is the vertical (the stage just
+    # records it; frame-2 takes over user declares), and ``endorse`` is defined
+    # with no authorized stage (no endorsement workflow exists yet).
+    ("cycle", "declare"): frozenset({"operating_model"}),
+    ("cycle", "bind"): frozenset({"operating_model"}),
+    ("cycle", "execute"): frozenset({"operating_model"}),
+    ("cycle", "endorse"): frozenset(),  # defined; no endorsement workflow yet
 }
 
 

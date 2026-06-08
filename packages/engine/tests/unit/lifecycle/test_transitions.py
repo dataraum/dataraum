@@ -133,7 +133,7 @@ class TestStageAuthorization:
         assert artifact.state == ArtifactState.EXECUTED.value
 
     def test_unknown_artifact_type_fails_closed(self) -> None:
-        # cycles/metrics are later slices — no authorization rows yet.
+        # metrics is a later slice — no authorization rows yet.
         with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
             declare_artifact(
                 session_id=_SESSION,
@@ -141,6 +141,35 @@ class TestStageAuthorization:
                 artifact_key="ebitda",
                 run_id="run-1",
                 stage=_STAGE,
+            )
+
+    def test_cycle_family_flows_through_the_lifecycle(self) -> None:
+        # cycles are the second lifecycle family (DAT-455): declare → bind →
+        # execute are all authorized for operating_model, mirroring validation.
+        artifact = declare_artifact(
+            session_id=_SESSION,
+            artifact_type="cycle",
+            artifact_key="order_to_cash",
+            run_id="run-1",
+            stage=_STAGE,
+        )
+        assert artifact.state == ArtifactState.DECLARED.value
+        transition(artifact, operation="bind", stage=_STAGE)
+        assert artifact.state == ArtifactState.GROUNDED.value
+        transition(artifact, operation="execute", stage=_STAGE)
+        assert artifact.state == ArtifactState.EXECUTED.value
+        # endorse is defined but has no authority workflow yet.
+        with pytest.raises(StageNotAuthorizedError, match="no authority workflow"):
+            transition(artifact, operation="endorse", stage=_STAGE)
+
+    def test_cycle_declare_from_foreign_stage_rejected(self) -> None:
+        with pytest.raises(StageNotAuthorizedError, match="not authorized"):
+            declare_artifact(
+                session_id=_SESSION,
+                artifact_type="cycle",
+                artifact_key="order_to_cash",
+                run_id="run-1",
+                stage="begin_session",
             )
 
 

@@ -79,6 +79,19 @@ describe("ModelFrameWidget (DAT-382, DAT-469)", () => {
 		expect(screen.getByTestId("canvas-model-frame-empty")).toBeTruthy();
 	});
 
+	it("tolerates a pre-DAT-469 frame result with no validations key (reload recovery)", () => {
+		// A `frame` result persisted before DAT-469 (server-owned conversations)
+		// has no `validations` array; the projector still routes it here, so the
+		// widget must not crash on `.slice` of undefined.
+		const legacy = {
+			vertical: "_adhoc",
+			concepts: [CONCEPT],
+		} as unknown as FrameResult;
+		renderWidget(legacy);
+		expect(screen.getByTestId("concept-row-revenue")).toBeTruthy();
+		expect(screen.queryByText("VALIDATIONS")).toBeNull();
+	});
+
 	it("caps rendered validation rows and shows the overflow tail (rule 15)", () => {
 		const many = Array.from({ length: 120 }, (_, i) => ({
 			...VALIDATION,

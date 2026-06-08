@@ -46,8 +46,12 @@ export function ModelFrameWidget({
 
 	const concepts = frame.concepts.slice(0, MAX_VISIBLE_ROWS);
 	const conceptOverflow = frame.concepts.length - concepts.length;
-	const validations = frame.validations.slice(0, MAX_VISIBLE_ROWS);
-	const validationOverflow = frame.validations.length - validations.length;
+	// A `frame` result persisted before DAT-469 (server-owned conversations,
+	// DAT-462) has no `validations` key — reload recovery re-projects it here, so
+	// narrow defensively (rule 11) rather than crash on `.slice` of undefined.
+	const allValidations = frame.validations ?? [];
+	const validations = allValidations.slice(0, MAX_VISIBLE_ROWS);
+	const validationOverflow = allValidations.length - validations.length;
 
 	return (
 		<Stack gap="lg" data-testid="canvas-model-frame">
@@ -57,9 +61,9 @@ export function ModelFrameWidget({
 				<Text c="dimmed" size="xs">
 					{frame.concepts.length} concept
 					{frame.concepts.length === 1 ? "" : "s"}
-					{frame.validations.length > 0 &&
-						` · ${frame.validations.length} validation${
-							frame.validations.length === 1 ? "" : "s"
+					{allValidations.length > 0 &&
+						` · ${allValidations.length} validation${
+							allValidations.length === 1 ? "" : "s"
 						}`}
 				</Text>
 			</Group>
@@ -111,7 +115,7 @@ export function ModelFrameWidget({
 				)}
 			</Stack>
 
-			{frame.validations.length > 0 && (
+			{allValidations.length > 0 && (
 				<Stack gap="xs">
 					<Text size="xs" fw={700} c="dimmed">
 						VALIDATIONS

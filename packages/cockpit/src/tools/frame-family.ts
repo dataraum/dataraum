@@ -72,10 +72,12 @@ export interface FrameFamilyResult<T> {
  * Resolve a family's set then write each member as a `config_overlay` row.
  *
  * `edited` present (incl. an explicit empty array) → declare those verbatim, no
- * LLM (the accept/edit path; an empty array curates the family away). `edited`
- * absent → run `induce`. Each member is shaped to its overlay payload by
- * `toPayload` and written through the shared `teach` seam, vertical-tagged by the
- * payload (the engine's per-type applier filters on it).
+ * LLM (the accept/edit path; an empty array writes nothing — curating the family
+ * away, where the family permits it: `frame()` rejects an empty CONCEPT set
+ * downstream, since a model needs a vocabulary). `edited` absent → run `induce`.
+ * Each member is shaped to its overlay payload by `toPayload` and written through
+ * the shared `teach` seam, vertical-tagged by the payload (the engine's per-type
+ * applier filters on it).
  */
 export async function frameFamily<T>(opts: {
 	teachType: TeachType;

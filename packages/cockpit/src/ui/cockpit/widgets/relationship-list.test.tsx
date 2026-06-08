@@ -9,7 +9,6 @@ import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { theme } from "#/ui/theme";
@@ -109,22 +108,20 @@ describe("RelationshipListWidget (DAT-434)", () => {
 			screen.getByTestId("relationship-why-c_orders_customer->c_customers_id"),
 		);
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const turn = sendMessage.mock.calls[0][0] as {
-			content: Array<{ type: "text"; content: string }>;
-		};
-		expect(turn.content).toHaveLength(2);
-		const [bubble, refs] = turn.content;
+		const [bubble, opts] = sendMessage.mock.calls[0] as [
+			string,
+			{ refs?: string },
+		];
 		// The bubble: display names + the tool name, NO internal ids.
-		expect(bubble?.content).toContain("orders.customer_id");
-		expect(bubble?.content).toContain("customers.id");
-		expect(bubble?.content).toContain("why_relationship");
-		expect(bubble?.content).not.toContain("c_orders_customer");
-		expect(bubble?.content).not.toContain("sess-1");
-		// The refs part: marked model-only, key=value imperative form.
-		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("session_id=sess-1");
-		expect(refs?.content).toContain("from_column_id=c_orders_customer");
-		expect(refs?.content).toContain("to_column_id=c_customers_id");
-		expect(refs?.content).toContain("Internal only");
+		expect(bubble).toContain("orders.customer_id");
+		expect(bubble).toContain("customers.id");
+		expect(bubble).toContain("why_relationship");
+		expect(bubble).not.toContain("c_orders_customer");
+		expect(bubble).not.toContain("sess-1");
+		// The refs ride via forwardedProps (opts.refs), key=value imperative form.
+		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).toContain("from_column_id=c_orders_customer");
+		expect(opts.refs).toContain("to_column_id=c_customers_id");
+		expect(opts.refs).toContain("Internal only");
 	});
 });

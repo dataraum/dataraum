@@ -8,7 +8,6 @@
 // code in the client bundle).
 
 import { Alert, Anchor, Group, Stack, Table, Text } from "@mantine/core";
-import { turnWithRefs } from "#/lib/agent-refs";
 import type { TableReadiness } from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -80,12 +79,13 @@ export function TableReadinessWidget({
 	// streams back.
 	const explainColumn = (columnId: string, columnName: string) => {
 		sendMessage(
-			turnWithRefs(
-				`Explain the readiness for column "${columnName}" using the why_column tool.`,
-				`Internal only — do not quote in prose: column_id=${columnId} ` +
+			`Explain the readiness for column "${columnName}" using the why_column tool.`,
+			{
+				refs:
+					`Internal only — do not quote in prose: column_id=${columnId} ` +
 					`(use as the column_id argument to the why_column tool).`,
-			),
-			{ label: "Explaining the column…" },
+				label: "Explaining the column…",
+			},
 		);
 	};
 

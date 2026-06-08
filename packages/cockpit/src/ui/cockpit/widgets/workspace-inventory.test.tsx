@@ -17,7 +17,6 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { InventoryTable } from "#/tools/list-tables";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
 import { theme } from "#/ui/theme";
@@ -190,20 +189,18 @@ describe("WorkspaceInventoryWidget (DAT-349)", () => {
 		renderWidget(inventory);
 		fireEvent.click(screen.getByTestId("inventory-table-t_orders"));
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const turn = sendMessage.mock.calls[0][0] as {
-			content: Array<{ type: "text"; content: string }>;
-		};
-		expect(turn.content).toHaveLength(2);
-		const [bubble, refs] = turn.content;
+		const [bubble, opts] = sendMessage.mock.calls[0] as [
+			string,
+			{ refs?: string },
+		];
 		// The bubble: human name + intent, NO internal id.
-		expect(bubble?.content).toContain("orders");
-		expect(bubble?.content).toContain("look_table");
-		expect(bubble?.content).not.toContain("t_orders");
-		// The refs part: marked model-only, carries the id in the unambiguous
-		// key=value imperative form.
-		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("table_id=t_orders");
-		expect(refs?.content).toContain("Internal only");
+		expect(bubble).toContain("orders");
+		expect(bubble).toContain("look_table");
+		expect(bubble).not.toContain("t_orders");
+		// The refs ride via forwardedProps (opts.refs), carrying the id in the
+		// unambiguous key=value imperative form — never in the bubble.
+		expect(opts.refs).toContain("table_id=t_orders");
+		expect(opts.refs).toContain("Internal only");
 	});
 
 	it("Refresh re-lists the inventory through the chat loop", () => {

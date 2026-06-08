@@ -6,7 +6,11 @@
 
 import type { UIMessage } from "@tanstack/ai-react";
 import { describe, expect, it } from "vitest";
-import { buildModelMessages, STUBBED_TOOL_RESULT } from "./model-messages";
+import {
+	buildModelMessages,
+	foldModelOnlyRefs,
+	STUBBED_TOOL_RESULT,
+} from "./model-messages";
 
 function userMsg(id: string, text: string): UIMessage {
 	return {
@@ -118,20 +122,70 @@ describe("buildModelMessages", () => {
 		expect(text && "content" in text ? text.content : "").toBe("narration a0");
 	});
 
-	it("passes a text-only system row (model-only refs) through untouched", () => {
-		const refs = {
-			id: "refs-1",
-			role: "system",
-			parts: [{ type: "text", content: "refs: table_id=abc" }],
+	it("passes a text-only model-only refs row (folded onto its user turn) untouched", () => {
+		// After foldModelOnlyRefs, refs ride as an extra part of the user message.
+		const refsFolded = {
+			id: "u0",
+			role: "user",
+			parts: [
+				{ type: "text", content: "q0" },
+				{ type: "text", content: "refs: table_id=abc" },
+			],
 		} as UIMessage;
 		const transcript = [
-			refs,
-			userMsg("u0", "q0"),
+			refsFolded,
 			assistantWithTool("a0", "c0", "OLD"),
 			userMsg("u1", "q1"),
 			assistantWithTool("a1", "c1", "RECENT"),
 		];
 		const out = buildModelMessages(transcript, { recentTurns: 1 });
-		expect(out[0]).toEqual(refs);
+		expect(out[0]).toEqual(refsFolded);
+	});
+});
+
+describe("foldModelOnlyRefs", () => {
+	const refsRow = (id: string, body: string): UIMessage =>
+		({
+			id,
+			role: "user",
+			parts: [{ type: "text", content: body }],
+		}) as UIMessage;
+
+	it("folds a model-only refs row into the preceding same-role message", () => {
+		const out = foldModelOnlyRefs([
+			{ message: userMsg("u0", "what is column amount?"), modelOnly: false },
+			{ message: refsRow("r0", "refs: column_id=abc"), modelOnly: true },
+		]);
+		// One message out — refs became an extra part of the user turn.
+		expect(out).toHaveLength(1);
+		expect(out[0].id).toBe("u0");
+		expect(out[0].parts).toEqual([
+			{ type: "text", content: "what is column amount?" },
+			{ type: "text", content: "refs: column_id=abc" },
+		]);
+	});
+
+	it("passes display rows through 1:1", () => {
+		const out = foldModelOnlyRefs([
+			{ message: userMsg("u0", "hi"), modelOnly: false },
+			{ message: assistantWithTool("a0", "c0", "R"), modelOnly: false },
+		]);
+		expect(out.map((m) => m.id)).toEqual(["u0", "a0"]);
+	});
+
+	it("leaves a model-only row standalone when it can't fold (no prior message)", () => {
+		const out = foldModelOnlyRefs([
+			{ message: refsRow("r0", "orphan refs"), modelOnly: true },
+		]);
+		expect(out.map((m) => m.id)).toEqual(["r0"]);
+	});
+
+	it("leaves a model-only row standalone on a role mismatch (safety)", () => {
+		const out = foldModelOnlyRefs([
+			{ message: assistantWithTool("a0", "c0", "R"), modelOnly: false },
+			{ message: refsRow("r0", "refs"), modelOnly: true },
+		]);
+		// prev is assistant, refs is user → not merged.
+		expect(out.map((m) => m.id)).toEqual(["a0", "r0"]);
 	});
 });

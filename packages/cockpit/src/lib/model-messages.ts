@@ -34,6 +34,44 @@ export interface BuildModelMessagesOptions {
 	recentTurns?: number;
 }
 
+/** A stored transcript row + whether it's a model-only (refs) row. */
+export interface TranscriptRow {
+	message: UIMessage;
+	modelOnly: boolean;
+}
+
+/**
+ * Assemble the model transcript from stored rows, folding each model-only row
+ * (the refs channel) into the PRECEDING same-role message as extra parts.
+ *
+ * This is what makes the refs flip work without either failure mode: refs stay
+ * model-visible (folded into the user turn the model reads) WITHOUT becoming a
+ * standalone consecutive same-role message (which the Anthropic API rejects —
+ * `role: "system"` rows are dropped entirely by the converter, and a bare second
+ * user message breaks alternation), and WITHOUT a display-side marker — the
+ * display view simply never loads model-only rows (loadDisplayMessages filters
+ * them in SQL). A model-only row that can't fold (no prior message, or a role
+ * mismatch — neither happens by construction, refs always follow their user
+ * bubble) falls back to standing alone.
+ */
+export function foldModelOnlyRefs(
+	rows: ReadonlyArray<TranscriptRow>,
+): Array<UIMessage> {
+	const out: Array<UIMessage> = [];
+	for (const row of rows) {
+		const prev = out[out.length - 1];
+		if (row.modelOnly && prev && prev.role === row.message.role) {
+			out[out.length - 1] = {
+				...prev,
+				parts: [...prev.parts, ...row.message.parts],
+			};
+		} else {
+			out.push(row.message);
+		}
+	}
+	return out;
+}
+
 /**
  * Bound the model's view of a conversation: recent turns verbatim, older turns
  * with their tool payloads stubbed. Pure — no I/O, fully unit-testable.

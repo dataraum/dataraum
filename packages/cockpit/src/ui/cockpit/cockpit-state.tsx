@@ -40,9 +40,15 @@ import {
 } from "#/ui/cockpit/tool-result-to-canvas";
 
 /** Options for a turn sent from the UI. `label` captions the loading canvas
- * shown until the first result arrives ("Explaining the column…"). */
+ * shown until the first result arrives ("Explaining the column…"). `refs` carries
+ * model-only internals (table/column/session ids, upload uris) to the agent via
+ * `forwardedProps` — the server persists them as a model-only row and folds them
+ * into the user turn for the model; they NEVER enter the visible bubble. This is
+ * the DAT-462 refs flip: it replaces the old in-message marker (lib/agent-refs),
+ * so a refs leak is impossible by construction, not by a renderer convention. */
 export interface SendOptions {
 	label?: string;
+	refs?: string;
 }
 
 /** The content a turn carries: a plain string, or multimodal content parts — the
@@ -117,6 +123,14 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	// connection object each render would recreate the underlying ChatClient (per
 	// the SDK contract), dropping the conversation.
 	const connection = useMemo(() => fetchServerSentEvents("/api/chat"), []);
+	// Per-turn model-only refs (DAT-462 flip) ride on AG-UI `forwardedProps`. The
+	// react `useChat` hook drops sendMessage's 2nd (per-call body) arg, so we use
+	// the INSTANCE forwardedProps option instead — but make it a STABLE holder we
+	// mutate per send: ChatClient spreads its CURRENT contents into each request
+	// (`{...forwardedProps}` at send time), so setting `holder.refs` synchronously
+	// in sendTurn before sendMessage() attaches them to exactly that turn. Stable
+	// ref → useChat never recreates the client over it.
+	const refsHolder = useMemo<{ refs?: string }>(() => ({}), []);
 	const {
 		messages,
 		isLoading,
@@ -124,7 +138,7 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 		sendMessage,
 		stop,
 		addToolApprovalResponse,
-	} = useChat({ connection });
+	} = useChat({ connection, forwardedProps: refsHolder });
 
 	const [pinnedCallId, setPinnedCallId] = useState<string | null>(null);
 	// The pending loading caption for the next turn.
@@ -135,12 +149,18 @@ export function CockpitProvider({ children }: { children: ReactNode }) {
 	const sendTurn = useCallback(
 		(content: TurnContent, opts?: SendOptions) => {
 			setPendingLabel(opts?.label);
+			// Attach this turn's model-only refs to the stable forwardedProps holder
+			// the client spreads at send time (DAT-462). Set or clear synchronously
+			// BEFORE sendMessage so they land on exactly this turn and don't leak into
+			// the next. They never enter `content`, so the rail can't render them.
+			if (opts?.refs != null) refsHolder.refs = opts.refs;
+			else delete refsHolder.refs;
 			// `TurnContent` IS the SDK's `string | MultimodalContent` (type-only
 			// import), so this call is assignable by construction — an SDK bump
 			// that reshapes the param surfaces at the import, not here.
 			void sendMessage(content);
 		},
-		[sendMessage],
+		[sendMessage, refsHolder],
 	);
 
 	const pinCanvas = useCallback(

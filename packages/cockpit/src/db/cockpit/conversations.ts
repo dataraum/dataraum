@@ -17,6 +17,7 @@
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "@tanstack/ai-react";
 import { and, desc, eq, max } from "drizzle-orm";
+import { foldModelOnlyRefs } from "#/lib/model-messages";
 import { cockpitDb } from "./client";
 import { conversationMessages, conversations } from "./schema";
 
@@ -88,17 +89,21 @@ export async function loadDisplayMessages(
 	return rows.map((r) => r.message);
 }
 
-/** The full transcript (incl. modelOnly refs rows), in order — the
- * `buildModelMessages` input. */
+/** The full transcript with model-only refs rows FOLDED into their user turns,
+ * in order — the `buildModelMessages` input. No model_only filter (refs feed the
+ * model); the fold keeps them from becoming consecutive same-role messages. */
 export async function loadModelTranscript(
 	conversationId: string,
 ): Promise<Array<UIMessage>> {
 	const rows = await cockpitDb
-		.select({ message: conversationMessages.message })
+		.select({
+			message: conversationMessages.message,
+			modelOnly: conversationMessages.modelOnly,
+		})
 		.from(conversationMessages)
 		.where(eq(conversationMessages.conversationId, conversationId))
 		.orderBy(conversationMessages.seq);
-	return rows.map((r) => r.message);
+	return foldModelOnlyRefs(rows);
 }
 
 /**

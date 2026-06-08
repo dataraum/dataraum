@@ -168,29 +168,6 @@ describe("ChatRail (DAT-353)", () => {
 		);
 	});
 
-	it("renders a turn's clean bubble but NOT the model-only refs part (DAT-423/DAT-437)", () => {
-		h.messages = [
-			{
-				id: "u1",
-				role: "user",
-				parts: [
-					{ type: "text", content: "Uploaded invoices.csv and payments.csv." },
-					{
-						type: "text",
-						content:
-							"[[dataraum:refs]] The user just uploaded these objects, in order (filename — uri):\n1. invoices.csv — s3://dataraum-lake/uploads/aaa/invoices.csv",
-					},
-				],
-			},
-		];
-		renderRail();
-		const text = screen.getByTestId("chat-messages").textContent ?? "";
-		expect(text).toContain("Uploaded invoices.csv and payments.csv.");
-		// The refs part — and crucially its s3:// uri — never reaches the DOM.
-		expect(text).not.toContain("s3://");
-		expect(text).not.toContain("[[dataraum:refs]]");
-	});
-
 	it("projects a list_sources tool result onto the source-list canvas", () => {
 		h.messages = [sourcesCall("c1")];
 		renderRail();

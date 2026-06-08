@@ -10,7 +10,6 @@ import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { LookValidationResult } from "#/tools/look-validation";
 import { ValidationListWidget } from "#/ui/cockpit/widgets/validation-list";
 import { theme } from "#/ui/theme";
@@ -129,20 +128,18 @@ describe("ValidationListWidget (DAT-440)", () => {
 		renderWidget(analyzed);
 		fireEvent.click(screen.getByTestId("validation-why-gl_invoice_match"));
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const turn = sendMessage.mock.calls[0][0] as {
-			content: Array<{ type: "text"; content: string }>;
-		};
-		expect(turn.content).toHaveLength(2);
-		const [bubble, refs] = turn.content;
+		const [bubble, opts] = sendMessage.mock.calls[0] as [
+			string,
+			{ refs?: string },
+		];
 		// The bubble: the humanized label + the tool name, NO internal ids.
-		expect(bubble?.content).toContain("Gl invoice match");
-		expect(bubble?.content).toContain("why_validation");
-		expect(bubble?.content).not.toContain("gl_invoice_match");
-		expect(bubble?.content).not.toContain("sess-1");
-		// The refs part: marked model-only, key=value imperative form.
-		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("session_id=sess-1");
-		expect(refs?.content).toContain("validation_id=gl_invoice_match");
-		expect(refs?.content).toContain("Internal only");
+		expect(bubble).toContain("Gl invoice match");
+		expect(bubble).toContain("why_validation");
+		expect(bubble).not.toContain("gl_invoice_match");
+		expect(bubble).not.toContain("sess-1");
+		// The refs ride via forwardedProps (opts.refs), key=value imperative form.
+		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).toContain("validation_id=gl_invoice_match");
+		expect(opts.refs).toContain("Internal only");
 	});
 });

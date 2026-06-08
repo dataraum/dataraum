@@ -15,7 +15,6 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isAgentRefsPart } from "#/lib/agent-refs";
 import type { LookTableResult } from "#/tools/look-table";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { theme } from "#/ui/theme";
@@ -171,25 +170,24 @@ describe("TableReadinessWidget (DAT-350)", () => {
 	// DAT-352: clicking a column routes a why_column request through the chat-loop
 	// hook (sendMessage), carrying the row's column_id — it does NOT call
 	// whyColumn directly (the request runs once per click through the agent loop,
-	// where the paid Anthropic synthesis is gated). DAT-437: the id rides in the
-	// model-only refs part; the visible bubble carries the human name only.
-	it("click-through dispatches a why_column request — id in the refs part, never the bubble", () => {
+	// where the paid Anthropic synthesis is gated). DAT-462: the id rides as
+	// model-only refs (forwardedProps via SendOptions.refs); the visible bubble
+	// carries the human name only.
+	it("click-through dispatches a why_column request — id in refs, never the bubble", () => {
 		renderWidget(analyzed);
 		fireEvent.click(screen.getByTestId("readiness-why-amount"));
 		expect(sendMessage).toHaveBeenCalledTimes(1);
-		const turn = sendMessage.mock.calls[0][0] as {
-			content: Array<{ type: "text"; content: string }>;
-		};
-		expect(turn.content).toHaveLength(2);
-		const [bubble, refs] = turn.content;
+		const [bubble, opts] = sendMessage.mock.calls[0] as [
+			string,
+			{ refs?: string },
+		];
 		// The bubble: human name + intent, NO internal id.
-		expect(bubble?.content).toContain("amount");
-		expect(bubble?.content).toContain("why_column");
-		expect(bubble?.content).not.toContain("c_amount");
-		// The refs part: marked model-only, carries the id in the unambiguous
-		// key=value imperative form.
-		expect(refs && isAgentRefsPart(refs.content)).toBe(true);
-		expect(refs?.content).toContain("column_id=c_amount");
-		expect(refs?.content).toContain("Internal only");
+		expect(bubble).toContain("amount");
+		expect(bubble).toContain("why_column");
+		expect(bubble).not.toContain("c_amount");
+		// The refs ride via forwardedProps (opts.refs), carrying the id in the
+		// unambiguous key=value imperative form — never in the bubble.
+		expect(opts.refs).toContain("column_id=c_amount");
+		expect(opts.refs).toContain("Internal only");
 	});
 });

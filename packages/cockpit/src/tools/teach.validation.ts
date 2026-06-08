@@ -210,23 +210,42 @@ const TYPE_SCHEMAS = {
 	concept: ConceptPayload,
 	concept_property: ConceptPropertyPayload,
 	relationship: RelationshipPayload,
+	// validation/cycle/metric are NOT advertised to the agent (see
+	// AGENT_TEACH_TYPES). The typed teach_validation/teach_cycle/teach_metric
+	// tools own that surface — they validate the rich spec at the SDK boundary,
+	// then write THROUGH this primitive via teach({type}). They stay here as the
+	// internal dispatch target only; their payload is already validated upstream,
+	// so GenericPayload is a passthrough. (`explanation` removed — DAT-343 stub
+	// with no typed tool, no engine applier, and no caller.)
 	validation: GenericPayload,
 	cycle: GenericPayload,
 	metric: GenericPayload,
-	explanation: GenericPayload,
 } as const;
 
 export type TeachType = keyof typeof TYPE_SCHEMAS;
 
 export const TEACH_TYPES = Object.keys(TYPE_SCHEMAS) as readonly TeachType[];
 
-// The payload shape surfaced in the teach TOOL's input schema. A union of the
-// per-type payloads above, so `toJSONSchema` dumps each type's exact fields (+
-// their descriptions) into the tool schema the model sees — the missing context
-// that made the agent guess wrong params. Anthropic's tool input_schema must be
-// a top-level object, so this rides inside the `payload` property (not as a
-// top-level discriminated union). The GenericPayload branch keeps the deferred
-// types callable; `validateTeach` still enforces the right shape per `type`.
+// What the generic `teach` TOOL advertises to the agent: ONLY the grounding-layer
+// corrections (applied by `replay`). validation/cycle/metric are deliberately
+// excluded — a second, loose agent path alongside the typed teach_* tools would
+// let the model write an unvalidated payload the operating_model grounder can't
+// consume. One way to teach each thing.
+export const AGENT_TEACH_TYPES = [
+	"type_pattern",
+	"null_value",
+	"concept",
+	"concept_property",
+	"relationship",
+] as const satisfies readonly TeachType[];
+
+// The payload shape surfaced in the teach TOOL's input schema — a union of ONLY
+// the agent-advertised (AGENT_TEACH_TYPES) payloads, so `toJSONSchema` dumps each
+// type's exact fields into the schema the model sees. Anthropic's tool
+// input_schema must be a top-level object, so this rides inside the `payload`
+// property (not a top-level discriminated union). No GenericPayload branch: the
+// agent only sends the five typed shapes; validation/cycle/metric reach the
+// write primitive via their typed tools, never through this schema.
 export const TeachPayloadSchema = z
 	.union([
 		TypePatternPayload,
@@ -234,7 +253,6 @@ export const TeachPayloadSchema = z
 		ConceptPayload,
 		ConceptPropertyPayload,
 		RelationshipPayload,
-		GenericPayload,
 	])
 	.describe(
 		"The teach payload; required fields depend on `type` — " +
@@ -243,8 +261,7 @@ export const TeachPayloadSchema = z
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
-			"(keep is engine-internal, not a user action). " +
-			"(validation/cycle/metric/explanation take a free-form object — recorded, not yet applied.)",
+			"(keep is engine-internal, not a user action).",
 	);
 
 export interface TeachInput {

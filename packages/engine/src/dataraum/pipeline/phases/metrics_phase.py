@@ -9,17 +9,19 @@ via frame-2 teach rows). Each declared metric flows through the typed artifact
 lifecycle:
 
 * **declare** — every loaded ``graph_id`` becomes a ``declared`` artifact.
-* **compose** (``metric.compose``) — the metric grounds when its graph's inputs
-  resolve to real columns/concepts of the workspace (the ``can_execute_metric``
-  field-mapping gate). A metric whose required ``standard_field`` references are
-  unmapped STAYS ``declared`` with the reason on the row — visibly impossible,
-  never a silent best-effort LLM guess at a number. A definition that won't even
-  parse stays ``declared`` with the parse error recorded.
-* **execute** (``metric.execute``) — the graph agent composes the metric SQL and
-  runs it cleanly → ``executed``; the working SQL is saved as reusable snippets
-  (the durable, cross-run executable knowledge ``query`` later consumes). A
-  composed metric whose SQL fails to run stays ``grounded`` with the reason —
-  composed but not executable, never reported as executed.
+* **compose** (``metric.compose``) — EVERY parseable metric is composed by the
+  graph agent: it inspects the workspace (tables, columns, existing snippets) and
+  materializes the metric's SQL. There is NO field-mapping pre-gate — whether an
+  input like ``revenue`` is derivable from the data (e.g. from the GL via
+  chart_of_accounts) is the agent's job to discover, not a heuristic dict-key
+  check in front of the prompt. A definition that won't even parse stays
+  ``declared`` with the parse error recorded (the one legitimate pre-gate).
+* **execute** (``metric.execute``) — the agent runs the composed SQL cleanly →
+  ``executed``, and the working SQL is materialized as reusable snippets (the
+  durable, cross-run executable knowledge ``query`` later consumes). The snippet
+  is gated on SUCCESSFUL execution — never a guess. A metric the agent cannot
+  materialize into runnable SQL stays ``grounded`` with the reason: born-loud at
+  the agent, not pre-empted by a gate.
 
 A re-run supersedes: everything is re-declared and re-flowed under the fresh
 ``run_id`` (no skip-if-already-ran — the prior run's artifacts coexist untouched,
@@ -101,7 +103,6 @@ class MetricsPhase(BasePhase):
         """Declare → compose → execute every declared metric graph."""
         from dataraum.graphs.agent import ExecutionContext, GraphAgent
         from dataraum.graphs.config import get_metric_definitions
-        from dataraum.graphs.field_mapping import can_execute_metric, load_semantic_mappings
         from dataraum.graphs.loader import GraphLoader
         from dataraum.query.snippet_library import SnippetLibrary
 
@@ -203,31 +204,16 @@ class MetricsPhase(BasePhase):
                 artifacts[graph_id].state_reason = f"malformed metric definition: {e.message}"
                 _log.warning("metric_definition_malformed", graph_id=graph_id, error=e.message)
 
-        # compose: a metric grounds when its required field mappings resolve. The
-        # gate is fail-loud — an unmappable required input leaves the artifact
-        # declared with the reason, NEVER a best-effort LLM execution over a
-        # missing input (the silent-wrong-number path is gone). Composed metrics
-        # are queued for execution.
-        field_mappings = load_semantic_mappings(
-            ctx.session, table_ids, semantic_runs=base_runs.semantic_runs
-        )
+        # compose: hand EVERY parseable metric to the graph agent. No
+        # field-mapping pre-gate — the agent inspects the workspace (and the
+        # existing snippet base) and discovers whether a required input is
+        # derivable; that is the agentic job, not a dict-key check in front of the
+        # prompt. Born-loud lives at execute (an agent that cannot materialize
+        # runnable SQL stays grounded with the reason) and at snippet
+        # materialization (gated on a clean run) — never a heuristic skip here.
         grounded_against = base_runs.model_dump(mode="json")
         prep: list[MetricPrep] = []
         for graph_id, graph in graphs.items():
-            required_fields = [
-                step.source.standard_field
-                for step in graph.steps.values()
-                if step.source and step.source.standard_field
-            ]
-            _, missing = can_execute_metric(field_mappings, required_fields)
-            if missing:
-                artifacts[graph_id].state_reason = (
-                    "ungroundable: required field mappings missing in this "
-                    f"workspace ({', '.join(sorted(missing))})"
-                )
-                _log.info("metric_ungroundable", graph_id=graph_id, missing=missing)
-                continue
-
             transition(
                 artifacts[graph_id],
                 operation="compose",

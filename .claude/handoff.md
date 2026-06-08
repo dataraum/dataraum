@@ -4,21 +4,29 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
-## 2026-06-08: cockpit metric teach loop — `teach_metric` / `look_metric` / `why_metric` are live (DAT-466)
+## 2026-06-08: metric pre-gate REMOVED — metrics ground agentically (DAT-456 fix)
 
-**Cockpit-only; NO calibration impact, NO engine change, NO schema change.** Logged
-only so a full-loop smoke uses the right tool names. The METRIC family now has the
-same cockpit teach loop validation/cycles got: `teach_metric` writes a `metric`-typed
-`config_overlay` row (declare a new metric graph by `graph_id`, or override a shipped
-one — `_apply_metric` upsert-replaces into the vertical's `metrics` collection,
-DAT-456); the next `operating_model` run composes + executes it; `look_metric` /
-`why_metric` read the promoted `current_lifecycle_artifacts` (`artifact_type='metric'`)
-plus the `sql_snippets` (`source='graph:<graph_id>'`) for the per-step SQL composition.
-**The metric's numeric VALUE is deliberately NOT shown and NOT stored** — it is
-ephemeral (the engine discards it; `metrics_phase.py` transitions to executed and
-drops `output_value`), and re-computing it is a future live "run metric" query action.
-A full-loop smoke: declare a metric via `teach_metric`, run `operating_model`, verify
-`look_metric` shows declared→grounded→executed (or the born-loud ungroundable reason).
+**Supersedes the `can_execute_metric` born-loud-gate claim further below.** A live
+operating_model smoke over the 8-table finance set exposed it: **0/12 metrics
+grounded, ALL string-match-blocked.** The DAT-456 "born-loud gate" was a
+deterministic dict-key check (`FieldMappings.has_mapping`) of each metric's
+`standard_field` against the `business_concept` annotation keys, run BEFORE the
+graph agent — so a metric needing `revenue` was declared "ungroundable" unless a
+column was literally annotated `business_concept == "revenue"`, and the LLM that
+would derive revenue from the GL (chart_of_accounts × journal_lines) never ran.
+That contradicts the agentic platform.
+
+**Fix:** the pre-gate is deleted (`metrics_phase` no longer calls
+`can_execute_metric`). Every parseable metric is composed by the agent; born-loud
+lives at the agent (stays `grounded` with the reason when it cannot materialize
+runnable SQL) and at snippet materialization (gated on a clean execute, AFTER the
+prompt). The only legitimate pre-gate is the parse check (malformed graph →
+`declared`). `can_execute_metric` / `resolve_metric_fields` deleted from
+`graphs/field_mapping.py`.
+
+**Calibration impact:** the set of metrics reaching execution GROWS back to all
+parseable graphs (the opposite of the gate's shrink). `formula_match` (DAT-442)
+should calibrate against metrics the AGENT grounds, not a mapping pre-filter.
 
 ## 2026-06-08: cockpit cycle teach loop — `teach_cycle` / `look_cycle` / `why_cycle` are live (DAT-465)
 

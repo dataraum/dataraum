@@ -44,33 +44,6 @@ class FieldMappings:
     # Tracks which tables were scanned
     table_ids: list[str] = field(default_factory=list)
 
-    def get_column(self, business_concept: str) -> ColumnCandidate | None:
-        """Get best matching column for a business concept.
-
-        Args:
-            business_concept: Standard field name (e.g., 'revenue')
-
-        Returns:
-            Best matching column or None if no match
-        """
-        candidates = self.mappings.get(business_concept, [])
-        if not candidates:
-            return None
-        # Return highest confidence match
-        return max(candidates, key=lambda c: c.confidence)
-
-    def get_column_name(self, business_concept: str) -> str | None:
-        """Get column name for a business concept.
-
-        Args:
-            business_concept: Standard field name (e.g., 'revenue')
-
-        Returns:
-            Column name or None if no match
-        """
-        candidate = self.get_column(business_concept)
-        return candidate.column_name if candidate else None
-
     def get_all_columns(self, business_concept: str) -> list[ColumnCandidate]:
         """Get all matching columns for a business concept.
 
@@ -82,17 +55,6 @@ class FieldMappings:
         """
         candidates = self.mappings.get(business_concept, [])
         return sorted(candidates, key=lambda c: c.confidence, reverse=True)
-
-    def has_mapping(self, business_concept: str) -> bool:
-        """Check if a business concept has any mappings.
-
-        Args:
-            business_concept: Standard field name
-
-        Returns:
-            True if at least one column maps to this concept
-        """
-        return bool(self.mappings.get(business_concept))
 
     @property
     def available_concepts(self) -> list[str]:
@@ -221,49 +183,9 @@ def format_mappings_for_prompt(field_mappings: FieldMappings) -> str:
     return "\n".join(lines)
 
 
-def can_execute_metric(
-    field_mappings: FieldMappings,
-    required_fields: list[str],
-) -> tuple[bool, list[str]]:
-    """Check if a metric can be executed with available field mappings.
-
-    Args:
-        field_mappings: Available field mappings
-        required_fields: List of standard_field names required by the metric
-
-    Returns:
-        Tuple of (can_execute, missing_fields)
-    """
-    missing = [field for field in required_fields if not field_mappings.has_mapping(field)]
-    return len(missing) == 0, missing
-
-
-def resolve_metric_fields(
-    field_mappings: FieldMappings,
-    field_references: list[str],
-) -> dict[str, str]:
-    """Resolve standard field references to concrete column names.
-
-    Args:
-        field_mappings: Available field mappings
-        field_references: List of standard_field names to resolve
-
-    Returns:
-        Dict mapping standard_field → column_name (only for resolvable fields)
-    """
-    resolved = {}
-    for field_ref in field_references:
-        column_name = field_mappings.get_column_name(field_ref)
-        if column_name:
-            resolved[field_ref] = column_name
-    return resolved
-
-
 __all__ = [
     "ColumnCandidate",
     "FieldMappings",
     "load_semantic_mappings",
     "format_mappings_for_prompt",
-    "can_execute_metric",
-    "resolve_metric_fields",
 ]

@@ -109,7 +109,14 @@ export async function loadModelTranscript(
 /**
  * Append messages to a conversation, idempotent by message id (a re-sent turn is
  * a no-op). `seq` continues from the conversation's current max so ordering is
- * stable; gaps from skipped duplicates are harmless. Bumps `updatedAt`.
+ * stable; gaps from skipped duplicates are harmless.
+ *
+ * Known limitation (single-user assumption): the max(seq) read → insert is not
+ * atomic, so two genuinely concurrent sends for the SAME conversation (e.g. two
+ * tabs sending in the same tick) could allocate overlapping seq values. Benign
+ * for the current single-active-user model; a `(conversation_id, seq)` unique
+ * constraint + retry, or an advisory lock, is the fix when multi-tab lands.
+ * Bumps `updatedAt`.
  */
 export async function appendMessages(
 	conversationId: string,

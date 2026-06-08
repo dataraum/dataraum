@@ -168,8 +168,8 @@ function refsRow(body: string): UIMessage {
  * turn(s) in a StreamProcessor, then persist them when the stream drains — so a
  * reload right after a reply restores it. Best-effort persist: a failure is
  * logged, never surfaced (the turn already streamed); the `finally` also captures
- * a partial turn if the client aborts mid-stream, keeping cockpit_db consistent
- * with what the client accumulated. */
+ * whatever the server produced before a mid-stream abort (a partial turn), for
+ * partial recovery — the client's own copy stays authoritative until next reload. */
 async function* teeAndPersist(stream: ChatStream, conversationId: string) {
 	const processor = new StreamProcessor();
 	try {
@@ -220,6 +220,9 @@ export const Route = createFileRoute("/api/chat")({
 					const turn = newUserTurn(messages);
 					if (turn) entries.push({ message: turn });
 					const refs = extractRefs(forwardedProps);
+					// refs only attach when there IS a user turn — they fold into the
+					// preceding same-role message, so an orphan refs row has nothing to
+					// ride and is dropped.
 					if (turn && refs) {
 						entries.push({ message: refsRow(refs), modelOnly: true });
 					}

@@ -4,6 +4,30 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-08: metric pre-gate REMOVED — metrics ground agentically (DAT-456 fix)
+
+**Supersedes the `can_execute_metric` born-loud-gate claim further below.** A live
+operating_model smoke over the 8-table finance set exposed it: **0/12 metrics
+grounded, ALL string-match-blocked.** The DAT-456 "born-loud gate" was a
+deterministic dict-key check (`FieldMappings.has_mapping`) of each metric's
+`standard_field` against the `business_concept` annotation keys, run BEFORE the
+graph agent — so a metric needing `revenue` was declared "ungroundable" unless a
+column was literally annotated `business_concept == "revenue"`, and the LLM that
+would derive revenue from the GL (chart_of_accounts × journal_lines) never ran.
+That contradicts the agentic platform.
+
+**Fix:** the pre-gate is deleted (`metrics_phase` no longer calls
+`can_execute_metric`). Every parseable metric is composed by the agent; born-loud
+lives at the agent (stays `grounded` with the reason when it cannot materialize
+runnable SQL) and at snippet materialization (gated on a clean execute, AFTER the
+prompt). The only legitimate pre-gate is the parse check (malformed graph →
+`declared`). `can_execute_metric` / `resolve_metric_fields` deleted from
+`graphs/field_mapping.py`.
+
+**Calibration impact:** the set of metrics reaching execution GROWS back to all
+parseable graphs (the opposite of the gate's shrink). `formula_match` (DAT-442)
+should calibrate against metrics the AGENT grounds, not a mapping pre-filter.
+
 ## 2026-06-08: cockpit cycle teach loop — `teach_cycle` / `look_cycle` / `why_cycle` are live (DAT-465)
 
 **Cockpit-only; NO calibration impact, NO engine change, NO schema change.** Logged

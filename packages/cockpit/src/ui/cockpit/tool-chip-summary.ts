@@ -20,6 +20,7 @@
 import type { ConnectSchema } from "#/duckdb/connect";
 import { humanizeIdentifier } from "#/lib/display-names";
 import { fileName } from "#/lib/file-uri";
+import { isAgentError } from "#/tools/agent-error";
 import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -122,6 +123,12 @@ export function toolChipSummary(
 	output: unknown,
 ): string {
 	const done = output !== undefined;
+	// A tool that returned the agent-actionable `{ error }` envelope (consistency
+	// pass 2): show the message, not the success-shape fields — `select`'s
+	// `${name} (${source_type})` on an `{ error }` object reads as
+	// "undefined (undefined)". The chip's failed STATE is set separately
+	// (tool-chip-state); this is just the readable subtitle.
+	if (done && isAgentError(output)) return truncate(output.error);
 	switch (toolName) {
 		case "list_sources": {
 			if (!done) return "listing available inputs…";

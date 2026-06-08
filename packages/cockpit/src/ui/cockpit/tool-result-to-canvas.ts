@@ -18,9 +18,11 @@ import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
+import type { LookValidationResult } from "#/tools/look-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
+import type { WhyValidationResult } from "#/tools/why-validation";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 /** Projects one tool's result (+ call input) to a CanvasState, or null to leave
@@ -85,6 +87,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		Array.isArray((result as { relationships?: unknown } | null)?.relationships)
 			? { kind: "relationship-list", look: result as LookRelationshipsResult }
 			: null,
+	// The operating_model validation list (DAT-440). Project only a complete
+	// result (a `validations` array) — same partial/errored-output guard as
+	// look_relationships.
+	look_validation: (result) =>
+		Array.isArray((result as { validations?: unknown } | null)?.validations)
+			? { kind: "validation-list", look: result as LookValidationResult }
+			: null,
+	// The per-validation drill-down (DAT-440) — same `found` guard as the other
+	// why_* tools. NB the operating_model DRIVER tool deliberately has no entry:
+	// like begin_session it returns run ids, not a renderable surface — the
+	// outcome arrives via look_validation; its chip stays display-only.
+	why_validation: (result) =>
+		isWhyResult(result)
+			? { kind: "validation-why", why: result as WhyValidationResult }
+			: null,
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and
 	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file
@@ -136,6 +153,18 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		return r?.workflow_id && r?.run_id
 			? {
 					kind: "session-progress",
+					workflowId: r.workflow_id,
+					runId: r.run_id,
+				}
+			: null;
+	},
+	// operating_model STARTS the validation run and returns immediately — the
+	// canvas flips to the live progress widget (DAT-440, DAT-435 follow-on).
+	operating_model: (result) => {
+		const r = result as { workflow_id?: string; run_id?: string } | null;
+		return r?.workflow_id && r?.run_id
+			? {
+					kind: "operating-model-progress",
 					workflowId: r.workflow_id,
 					runId: r.run_id,
 				}

@@ -57,4 +57,9 @@ describe("WidgetRegistry (DAT-347)", () => {
 	it("the shared canvas registry has the upload-area widget (redesign)", () => {
 		expect(canvasRegistry.has("upload-area")).toBe(true);
 	});
+
+	it("the shared canvas registry has the validation widgets (DAT-440)", () => {
+		expect(canvasRegistry.has("validation-list")).toBe(true);
+		expect(canvasRegistry.has("validation-why")).toBe(true);
+	});
 });

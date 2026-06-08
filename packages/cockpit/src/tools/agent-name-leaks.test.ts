@@ -34,6 +34,7 @@ import {
 	type RelationshipReadinessRow,
 } from "./look-relationships";
 import { projectColumnReadiness, projectLookTable } from "./look-table";
+import { projectValidationOverview } from "./look-validation";
 import {
 	projectWhyData,
 	type WhyEvidenceRow,
@@ -45,6 +46,7 @@ import {
 	type WhyRelEvidenceRow,
 } from "./why-relationship";
 import { projectWhyTable, type WhyTableEvidenceRow } from "./why-table";
+import { projectWhyValidation } from "./why-validation";
 import { projectWorkflowStatus } from "./workflow-status";
 
 const LEAK = /src_[0-9a-f]{40}/;
@@ -263,6 +265,63 @@ describe("agent name-leak property (DAT-433)", () => {
 		);
 		expect(out.failure?.phase).toBe("typing");
 		expect(out.failure?.table_id).toBe("t2");
+	});
+
+	it("look_validation: full result is digest-free, reason stays readable", () => {
+		// Engine-built lifecycle reasons + result messages embed raw physical
+		// names (the validation binder works on lake tables).
+		const out = projectValidationOverview(
+			{
+				artifactKey: "gl_invoice_match",
+				state: "declared",
+				stateReason: `Missing required tables: ${RAW_ORDERS} and ${RAW_CUSTOMERS}`,
+			},
+			{
+				status: "executed",
+				severity: "error",
+				passed: false,
+				message: `12 rows in ${RAW_ORDERS} have no match`,
+			},
+		);
+		expect(JSON.stringify(out)).not.toMatch(LEAK);
+		expect(out.state_reason).toBe(
+			"Missing required tables: orders and customers",
+		);
+		expect(out.message).toBe("12 rows in orders have no match");
+	});
+
+	it("why_validation: full result is digest-free, SQL + grounding sanitized", () => {
+		const out = projectWhyValidation(
+			"gl_invoice_match",
+			{
+				state: "executed",
+				stateReason: null,
+				strictness: 0.8,
+				groundedAgainst: {
+					from_table: RAW_ORDERS,
+					to_table: RAW_CUSTOMERS,
+					_table_name: RAW_ORDERS,
+				},
+			},
+			{
+				status: "executed",
+				severity: "error",
+				passed: false,
+				message: `12 rows in ${RAW_ORDERS} have no match`,
+				sqlUsed: `SELECT count(*) FROM lake.typed.${RAW_ORDERS} o LEFT JOIN lake.typed.${RAW_CUSTOMERS} c ON o.customer_id = c.id`,
+				executedAt: new Date("2026-06-07T12:00:00Z"),
+				details: { table: RAW_ORDERS, failing_rows: 12 },
+			},
+			0,
+		);
+		expect(JSON.stringify(out)).not.toMatch(LEAK);
+		// The SQL stays readable as evidence — digest prefixes dropped.
+		expect(out.sql_used).toContain("lake.typed.orders");
+		expect(out.sql_used).toContain("lake.typed.customers");
+		// The grounding render display-maps known table-name keys and drops
+		// engine-internal `_` keys (shared evidence sanitizer).
+		expect(out.grounded_against).toContain('"from_table":"orders"');
+		expect(out.grounded_against).not.toContain("_table_name");
 	});
 
 	it("workflow_status: an import failure quoting the staged-upload s3 URI is digest-free", () => {

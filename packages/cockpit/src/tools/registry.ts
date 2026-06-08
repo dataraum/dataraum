@@ -14,6 +14,8 @@ import { listTablesTool } from "./list-tables";
 import { listVerticalsTool } from "./list-verticals";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
+import { lookValidationTool } from "./look-validation";
+import { operatingModelTool } from "./operating-model";
 import { probeTool } from "./probe";
 import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
@@ -23,6 +25,7 @@ import { uploadTool } from "./upload";
 import { whyColumnTool } from "./why-column";
 import { whyRelationshipTool } from "./why-relationship";
 import { whyTableTool } from "./why-table";
+import { whyValidationTool } from "./why-validation";
 import { workflowStatusTool } from "./workflow-status";
 
 export const tools = [
@@ -42,6 +45,9 @@ export const tools = [
 	selectTool,
 	teachTool,
 	beginSessionTool,
+	operatingModelTool,
+	lookValidationTool,
+	whyValidationTool,
 	replayTool,
 	workflowStatusTool,
 ] as const;

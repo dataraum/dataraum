@@ -89,7 +89,12 @@ describe("toolResultToCanvas", () => {
 		// An errored server tool's output is the truthy `{ error }` object — it
 		// must NOT project (it would render as a not-found state, masking the
 		// failure); the error surfaces in the chat rail instead.
-		for (const tool of ["why_column", "why_table", "why_relationship"]) {
+		for (const tool of [
+			"why_column",
+			"why_table",
+			"why_relationship",
+			"why_validation",
+		]) {
 			expect(
 				toolResultToCanvas(tool, { error: "Temporal query failed" }),
 			).toBeNull();
@@ -159,6 +164,47 @@ describe("toolResultToCanvas", () => {
 			toolResultToCanvas("look_relationships", { analyzed: true }),
 		).toBeNull();
 		expect(toolResultToCanvas("look_relationships", null)).toBeNull();
+	});
+
+	it("maps why_validation to a validation-why canvas (DAT-440)", () => {
+		const state = toolResultToCanvas("why_validation", {
+			validation_id: "gl_invoice_match",
+			found: true,
+			state: "executed",
+			state_reason: null,
+			strictness: 0.8,
+			grounded_against: "",
+			status: "executed",
+			severity: "error",
+			passed: false,
+			message: "12 invoices unmatched",
+			sql_used: "SELECT 1",
+			executed_at: "2026-06-07T12:00:00.000Z",
+			details: "",
+			pending_teaches: 0,
+		});
+		expect(state?.kind).toBe("validation-why");
+	});
+
+	it("leaves the canvas unchanged when why_validation has no result", () => {
+		expect(toolResultToCanvas("why_validation", null)).toBeNull();
+	});
+
+	it("maps look_validation to a validation-list canvas (DAT-440)", () => {
+		const state = toolResultToCanvas("look_validation", {
+			session_id: "s1",
+			analyzed: true,
+			pending_teaches: 0,
+			validations: [],
+		});
+		expect(state?.kind).toBe("validation-list");
+	});
+
+	it("leaves the canvas unchanged for a partial look_validation output (no validations array)", () => {
+		expect(
+			toolResultToCanvas("look_validation", { analyzed: true }),
+		).toBeNull();
+		expect(toolResultToCanvas("look_validation", null)).toBeNull();
 	});
 
 	it("maps connect to a schema-preview canvas", () => {
@@ -327,6 +373,25 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("begin_session", null)).toBeNull();
 		expect(
 			toolResultToCanvas("begin_session", { error: "session row missing" }),
+		).toBeNull();
+	});
+
+	it("maps operating_model to the operating-model-progress canvas (DAT-440)", () => {
+		expect(
+			toolResultToCanvas("operating_model", {
+				workflow_id: "operatingmodel-ws-sess",
+				run_id: "run-om-1",
+				session_id: "sess-1",
+			}),
+		).toEqual({
+			kind: "operating-model-progress",
+			workflowId: "operatingmodel-ws-sess",
+			runId: "run-om-1",
+		});
+		// A failed start leaves the canvas unchanged (chat rail carries the error).
+		expect(toolResultToCanvas("operating_model", null)).toBeNull();
+		expect(
+			toolResultToCanvas("operating_model", { error: "workflow start failed" }),
 		).toBeNull();
 	});
 

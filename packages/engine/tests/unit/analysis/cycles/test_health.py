@@ -12,6 +12,12 @@ from dataraum.analysis.cycles.health import (
 )
 
 
+# NOTE on namespaces (DAT-455): a cycle's ``tables_involved`` holds table NAMES
+# (the LLM's table_name form), while a validation result's ``table_ids`` holds
+# table UUIDs. health.py resolves the result ids → names via a Table lookup and
+# matches in NAME space. These fixtures keep names and ids DISTINCT (``invoices``
+# vs ``tid-invoices``) so a regression back to comparing names against ids would
+# stop matching and fail the test — the previous same-string fixtures masked it.
 def _make_cycle(
     cycle_id: str = "c1",
     cycle_name: str = "Journal Entry Cycle",
@@ -24,7 +30,7 @@ def _make_cycle(
     cycle.cycle_name = cycle_name
     cycle.canonical_type = canonical_type
     cycle.completion_rate = completion_rate
-    cycle.tables_involved = tables_involved or ["t1", "t2"]
+    cycle.tables_involved = tables_involved or ["invoices", "payments"]
     return cycle
 
 
@@ -36,10 +42,24 @@ def _make_validation_result(
 ) -> MagicMock:
     vr = MagicMock()
     vr.validation_id = validation_id
-    vr.table_ids = table_ids or ["t1"]
+    vr.table_ids = table_ids or ["tid-invoices"]
     vr.passed = passed
     vr.status = status if status is not None else ("passed" if passed else "failed")
     return vr
+
+
+def _make_table(table_id: str, table_name: str) -> MagicMock:
+    table = MagicMock()
+    table.table_id = table_id
+    table.table_name = table_name
+    return table
+
+
+# The default id→name resolution the health query performs (3rd scalars call).
+_DEFAULT_TABLES = [
+    _make_table("tid-invoices", "invoices"),
+    _make_table("tid-payments", "payments"),
+]
 
 
 def _make_validation_spec(validation_id: str) -> MagicMock:
@@ -60,13 +80,14 @@ class TestComputeCycleHealth:
         ]
 
         cycle = _make_cycle(completion_rate=0.8)
-        vr1 = _make_validation_result("double_entry_balance", ["t1"], passed=True)
-        vr2 = _make_validation_result("sign_conventions", ["t2"], passed=True)
+        vr1 = _make_validation_result("double_entry_balance", ["tid-invoices"], passed=True)
+        vr2 = _make_validation_result("sign_conventions", ["tid-payments"], passed=True)
 
         session = MagicMock()
         session.scalars.side_effect = [
             MagicMock(all=MagicMock(return_value=[cycle])),  # cycles query
             MagicMock(all=MagicMock(return_value=[vr1, vr2])),  # validation query
+            MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),  # id→name query
         ]
 
         report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
@@ -74,6 +95,8 @@ class TestComputeCycleHealth:
         assert len(report.cycle_scores) == 1
         score = report.cycle_scores[0]
         assert score.completion_rate == 0.8
+        # Crosses the name/id namespace: matched only because table_ids resolved
+        # to names that the cycle's tables_involved carry (the masked-bug guard).
         assert score.validation_pass_rate == 1.0
         assert score.validations_run == 2
         assert score.validations_passed == 2
@@ -86,13 +109,15 @@ class TestComputeCycleHealth:
         mock_get_specs.return_value = [_make_validation_spec("double_entry_balance")]
 
         cycle = _make_cycle(completion_rate=0.75)
-        # Validation result exists but for a different table
-        vr = _make_validation_result("double_entry_balance", ["other_table"], passed=True)
+        # Validation result exists but for a table the cycle doesn't span:
+        # its id resolves to the name "ledger", absent from tables_involved.
+        vr = _make_validation_result("double_entry_balance", ["tid-ledger"], passed=True)
 
         session = MagicMock()
         session.scalars.side_effect = [
             MagicMock(all=MagicMock(return_value=[cycle])),
             MagicMock(all=MagicMock(return_value=[vr])),
+            MagicMock(all=MagicMock(return_value=[_make_table("tid-ledger", "ledger")])),
         ]
 
         report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
@@ -108,12 +133,13 @@ class TestComputeCycleHealth:
         mock_get_specs.return_value = [_make_validation_spec("double_entry_balance")]
 
         cycle = _make_cycle(completion_rate=None)
-        vr = _make_validation_result("double_entry_balance", ["t1"], passed=True)
+        vr = _make_validation_result("double_entry_balance", ["tid-invoices"], passed=True)
 
         session = MagicMock()
         session.scalars.side_effect = [
             MagicMock(all=MagicMock(return_value=[cycle])),
             MagicMock(all=MagicMock(return_value=[vr])),
+            MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),
         ]
 
         report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
@@ -138,18 +164,19 @@ class TestComputeCycleHealth:
         ]
 
         cycle = _make_cycle(completion_rate=None)
-        judged = _make_validation_result("double_entry_balance", ["t1"], passed=True)
+        judged = _make_validation_result("double_entry_balance", ["tid-invoices"], passed=True)
         inconclusive = _make_validation_result(
-            "three_way_match", ["t1"], passed=False, status="error"
+            "three_way_match", ["tid-invoices"], passed=False, status="error"
         )
         never_ran = _make_validation_result(
-            "sign_conventions", ["t1"], passed=False, status="skipped"
+            "sign_conventions", ["tid-invoices"], passed=False, status="skipped"
         )
 
         session = MagicMock()
         session.scalars.side_effect = [
             MagicMock(all=MagicMock(return_value=[cycle])),
             MagicMock(all=MagicMock(return_value=[judged, inconclusive, never_ran])),
+            MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),
         ]
 
         report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")

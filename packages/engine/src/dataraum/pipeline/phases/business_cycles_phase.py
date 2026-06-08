@@ -181,6 +181,12 @@ class BusinessCyclesPhase(BasePhase):
         for detected in analysis.cycles:
             key = detected.canonical_type
             if key is None:
+                # Degenerate LLM output: a detection with no canonical type has no
+                # declared artifact to attach to. Drop it, but loudly (DAT-439).
+                _log.warning(
+                    "cycle_detected_no_canonical_type",
+                    cycle_name=detected.cycle_name,
+                )
                 continue
             if key not in artifacts:
                 _log.warning(

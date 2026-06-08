@@ -16,7 +16,7 @@ phases:
 
   typing:
     description: Type inference and resolution
-    detectors: [type_fidelity]
+    detectors: [type_fidelity, null_semantics]
 
   statistics:
     description: Statistical profiling of typed tables

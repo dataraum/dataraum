@@ -131,6 +131,70 @@ def load_typing(
     return None
 
 
+_TEXT_RESOLVED_TYPES = frozenset({"VARCHAR", "TEXT", "STRING", "CHAR"})
+
+
+def rejected_token_counts(
+    duckdb_conn: Any, raw_table_fqn: str, column_name: str, resolved_type: str
+) -> list[tuple[str, int]]:
+    """Distinct values of a column that fail ``TRY_CAST`` to its resolved type.
+
+    Queries the RAW (VARCHAR) table, not the row-level quarantine table: a row is
+    quarantined if ANY column failed, so a per-column read must apply the
+    column's OWN cast. Returns ``[(token, count), …]`` (descending) for non-null
+    values that do not parse — empty for a VARCHAR column (every cast succeeds).
+
+    ``resolved_type`` is a DuckDB type keyword from the type decision (e.g.
+    ``DECIMAL(18,2)``), not user input.
+    """
+    col = column_name.replace('"', '""')
+    rows = duckdb_conn.execute(
+        f'SELECT "{col}" AS token, COUNT(*) AS n FROM {raw_table_fqn} '
+        f'WHERE "{col}" IS NOT NULL AND TRY_CAST("{col}" AS {resolved_type}) IS NULL '
+        f'GROUP BY "{col}" ORDER BY n DESC'
+    ).fetchall()
+    return [(str(token), int(n)) for token, n in rows]
+
+
+def load_quarantine_tokens(
+    session: Session,
+    column_id: str,
+    duckdb_conn: Any,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Per-token cast-failure counts for a column — the quarantine witness input.
+
+    Resolves the column's raw table + resolved type, then counts the distinct
+    tokens that fail the cast. ``None`` if the column/table is unresolved;
+    ``{"rejected_tokens": [], "total_rejected": 0}`` for a VARCHAR column (no
+    inferred type → no rejects → no null-token signal).
+    """
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+    from dataraum.storage import Column, Table
+
+    if duckdb_conn is None:
+        return None
+    col = session.get(Column, column_id)
+    if col is None:
+        return None
+    table = session.get(Table, col.table_id)
+    if table is None or not table.duckdb_path:
+        return None
+
+    typing = load_typing(session, column_id, run_id)
+    resolved_type = (typing or {}).get("resolved_type")
+    if not resolved_type or str(resolved_type).upper() in _TEXT_RESOLVED_TYPES:
+        return {"rejected_tokens": [], "total_rejected": 0}
+
+    raw_fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{table.duckdb_path}"'
+    counts = rejected_token_counts(duckdb_conn, raw_fqn, col.column_name, str(resolved_type))
+    return {
+        "rejected_tokens": [{"token": token, "count": n} for token, n in counts],
+        "total_rejected": sum(n for _, n in counts),
+    }
+
+
 def load_statistics(
     session: Session,
     column_id: str,

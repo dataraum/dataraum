@@ -72,6 +72,7 @@ class SubDimension(_StrValueMixin):
     JOIN_PATH_DETERMINISM = "join_path_determinism"
     RELATIONSHIP_QUALITY = "relationship_quality"
     NULL_RATIO = "null_ratio"
+    NULL_SEMANTICS = "null_semantics"
     OUTLIER_RATE = "outlier_rate"
     BENFORD_COMPLIANCE = "benford_compliance"
     TEMPORAL_DRIFT = "temporal_drift"

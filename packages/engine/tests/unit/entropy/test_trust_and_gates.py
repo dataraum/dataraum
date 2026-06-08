@@ -10,6 +10,7 @@ ALL_DETECTOR_IDS = {
     "join_path_determinism",
     "relationship_entropy",
     "null_ratio",
+    "null_semantics",
     "outlier_rate",
     "benford",
     "temporal_drift",

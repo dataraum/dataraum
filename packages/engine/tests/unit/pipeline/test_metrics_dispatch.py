@@ -164,7 +164,13 @@ class TestExecuteMetricsParallel:
         prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(7)]
 
         out = gep._execute_metrics_parallel(
-            prep, manager, agent, "src-1", ["t1"], session_id=baseline_session_id()
+            prep,
+            manager,
+            agent,
+            "src-1",
+            ["t1"],
+            session_id=baseline_session_id(),
+            om_run_id="run-test",
         )
 
         assert sorted(gid for gid, _, _ in out) == [f"g{i}" for i in range(7)]
@@ -184,7 +190,13 @@ class TestExecuteMetricsParallel:
         prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(8)]
 
         gep._execute_metrics_parallel(
-            prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+            prep,
+            manager,
+            agent,
+            "src",
+            ["t"],
+            session_id=baseline_session_id(),
+            om_run_id="run-test",
         )
 
         # With cap=2 and 8 metrics, peak must not exceed 2
@@ -206,7 +218,13 @@ class TestExecuteMetricsParallel:
         ]
 
         out = gep._execute_metrics_parallel(
-            prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+            prep,
+            manager,
+            agent,
+            "src",
+            ["t"],
+            session_id=baseline_session_id(),
+            om_run_id="run-test",
         )
 
         by_id = {gid: (r, iid) for gid, r, iid in out}
@@ -220,7 +238,13 @@ class TestExecuteMetricsParallel:
             classmethod(lambda cls, **kw: MagicMock()),
         )
         out = gep._execute_metrics_parallel(
-            [], _stub_manager(), MagicMock(), "src", [], session_id=baseline_session_id()
+            [],
+            _stub_manager(),
+            MagicMock(),
+            "src",
+            [],
+            session_id=baseline_session_id(),
+            om_run_id="run-test",
         )
         assert out == []
 
@@ -261,7 +285,13 @@ class TestExecuteMetricsParallel:
         ]
 
         out = gep._execute_metrics_parallel(
-            prep, manager, _FlakyAgent(), "src", ["t"], session_id=baseline_session_id()
+            prep,
+            manager,
+            _FlakyAgent(),
+            "src",
+            ["t"],
+            session_id=baseline_session_id(),
+            om_run_id="run-test",
         )
 
         by_id = {gid: (r, iid) for gid, r, iid in out}
@@ -313,10 +343,10 @@ class TestExecuteIsolated:
 
         # Each call should open a fresh pair
         gep._execute_isolated(
-            _graph("g0"), None, manager, agent, "src", ["t"], baseline_session_id()
+            _graph("g0"), None, manager, agent, "src", ["t"], baseline_session_id(), "run-test"
         )
         gep._execute_isolated(
-            _graph("g1"), None, manager, agent, "src", ["t"], baseline_session_id()
+            _graph("g1"), None, manager, agent, "src", ["t"], baseline_session_id(), "run-test"
         )
 
         assert len(opened_sessions) == 2
@@ -356,6 +386,6 @@ def test_asyncio_run_does_not_deadlock_with_nested_calls(
     prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
 
     out = gep._execute_metrics_parallel(
-        prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+        prep, manager, agent, "src", ["t"], session_id=baseline_session_id(), om_run_id="run-test"
     )
     assert len(out) == 3

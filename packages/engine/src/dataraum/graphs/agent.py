@@ -93,6 +93,7 @@ class ExecutionContext:
         slice_column: str | None = None,
         slice_value: str | None = None,
         session_id: str | None = None,
+        om_run_id: str | None = None,
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -108,6 +109,11 @@ class ExecutionContext:
             slice_value: Optional value for the slice column.
             session_id: Analytical session — scopes the relationship read to that
                 session's promoted run (DAT-409). Omitted ⇒ cross-run fallback.
+            om_run_id: Explicit operating_model run to read cycles/validation/cycle
+                health at — passed by the in-run metrics phase so the graph context
+                sees THIS run's evidence (written by the earlier validation +
+                business_cycles activities). Omitted ⇒ the promoted operating_model
+                head (the post-promote current-state read; the query agent's path).
             **kwargs: Additional ExecutionContext dataclass fields.
 
         Returns:
@@ -122,6 +128,7 @@ class ExecutionContext:
             slice_column=slice_column,
             slice_value=slice_value,
             session_id=session_id,
+            om_run_id=om_run_id,
         )
 
         return cls(

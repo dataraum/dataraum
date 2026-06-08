@@ -247,7 +247,13 @@ class MetricsPhase(BasePhase):
         # serial fallback otherwise.
         if ctx.manager is not None:
             results = _execute_metrics_parallel(
-                prep, ctx.manager, agent, schema_mapping_id, table_ids, session_id=session_id
+                prep,
+                ctx.manager,
+                agent,
+                schema_mapping_id,
+                table_ids,
+                session_id=session_id,
+                om_run_id=run_id,
             )
         else:
             exec_ctx = ExecutionContext.with_rich_context(
@@ -256,6 +262,7 @@ class MetricsPhase(BasePhase):
                 table_ids=table_ids,
                 schema_mapping_id=schema_mapping_id,
                 session_id=session_id,
+                om_run_id=run_id,
             )
             results = _execute_metrics_serial(
                 prep, ctx.session, exec_ctx, agent, session_id=session_id
@@ -283,9 +290,16 @@ class MetricsPhase(BasePhase):
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
 
-        previews = [
-            f"{graph_id} executed" for graph_id, a in artifacts.items() if a.state == "executed"
-        ]
+        # Surface every artifact's outcome — executed, plus each stuck one WITH
+        # its reason — so the cockpit shows "dso: declared — ungroundable
+        # (missing: accounts_receivable)" rather than a bare count, distinguishing
+        # the failure modes (ungroundable vs malformed vs composed-but-unexecutable).
+        previews: list[str] = []
+        for graph_id, a in artifacts.items():
+            if a.state == "executed":
+                previews.append(f"{graph_id}: executed")
+            else:
+                previews.append(f"{graph_id}: {a.state} — {a.state_reason or 'no reason recorded'}")
 
         return PhaseResult.success(
             outputs={
@@ -338,12 +352,15 @@ def _execute_metrics_parallel(
     table_ids: list[str],
     *,
     session_id: str,
+    om_run_id: str,
 ) -> list[MetricResult]:
     """Concurrent path: per-call session + cursor, gathered via asyncio.
 
     Each metric runs `agent.execute` on a thread with its own SQLAlchemy
     session (auto-commit via session_scope) and its own DuckDB cursor.
     A semaphore caps in-flight LLM calls to _MAX_CONCURRENT_METRICS.
+    ``om_run_id`` is this operating_model run — the graph context reads its
+    cycles/validation evidence at this run, not the (not-yet-promoted) head.
     """
 
     async def _run_all() -> list[MetricResult]:
@@ -368,6 +385,7 @@ def _execute_metrics_parallel(
                         schema_mapping_id,
                         table_ids,
                         session_id,
+                        om_run_id,
                     )
                 except Exception as exc:
                     result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
@@ -386,6 +404,7 @@ def _execute_isolated(
     schema_mapping_id: str,
     table_ids: list[str],
     session_id: str,
+    om_run_id: str,
 ) -> Result[GraphExecution]:
     """Run one metric with an isolated session + cursor pair.
 
@@ -402,6 +421,7 @@ def _execute_isolated(
             table_ids=table_ids,
             schema_mapping_id=schema_mapping_id,
             session_id=session_id,
+            om_run_id=om_run_id,
         )
         return agent.execute(
             session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id

@@ -116,7 +116,9 @@ class GraphLoader:
         """
         graphs: dict[str, TransformationGraph] = {}
         for graph_id, data in definitions.items():
-            graphs[graph_id] = self._parse_graph(self.graphs_dir / f"{graph_id}.yaml", data)
+            # A sentinel "path" — these dicts come from the overlay-merged
+            # collection, not a file on disk; it only labels parse errors.
+            graphs[graph_id] = self._parse_graph(Path(f"<overlay:{graph_id}>"), data)
         return graphs
 
     def _load_directory(self, directory: Path) -> None:

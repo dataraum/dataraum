@@ -429,6 +429,12 @@ class PhaseActivities:
         agent survives the source-free cut. Makes real Anthropic calls (per-metric
         SQL composition). Runs after ``business_cycles`` so the graph context can
         read this run's cycle + validation evidence (DAT-456).
+
+        This is the longest-running activity on the spine — up to
+        ``_MAX_CONCURRENT_METRICS`` concurrent compositions, ``ceil(N/10)`` LLM
+        waves for ``N`` declared metrics. Like the other phase activities it does
+        NOT heartbeat; a worker crash mid-run is recovered by the workflow's retry
+        policy once the shared ``start_to_close_timeout`` fires.
         """
         run = run_session_phase(
             self._manager,

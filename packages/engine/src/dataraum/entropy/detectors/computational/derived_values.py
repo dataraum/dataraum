@@ -84,41 +84,36 @@ class DerivedValueDetector(EntropyDetector):
                     current_derived = dc
                     break
 
-        # Calculate entropy based on derived column status
+        # No formula detected for this column → nothing to measure. The absence of a
+        # derived formula is IGNORANCE, not a 100%-broken column (the old score=1.0
+        # "no_formula" branch was theater, DAT-442 two-table).
         if current_derived is None:
-            # No formula detected - highest uncertainty for computational layer
-            score = 1.0
-            status = "no_formula"
-            formula: str | None = None
-            match_rate: float | None = None
-            source_columns: list[str] = []
+            return []
+
+        # Extract match rate
+        if hasattr(current_derived, "match_rate"):
+            match_rate = current_derived.match_rate
+            formula = getattr(current_derived, "formula", None)
+            source_columns = getattr(current_derived, "source_column_names", [])
         else:
-            # Extract match rate
-            if hasattr(current_derived, "match_rate"):
-                match_rate = current_derived.match_rate
-                formula = getattr(current_derived, "formula", None)
-                source_columns = getattr(current_derived, "source_column_names", [])
-            else:
-                match_rate = current_derived.get("match_rate", 0.0)
-                formula = current_derived.get("formula")
-                source_columns = current_derived.get("source_column_names", [])
+            match_rate = current_derived.get("match_rate", 0.0)
+            formula = current_derived.get("formula")
+            source_columns = current_derived.get("source_column_names", [])
 
-            # Honest mismatch rate — fraction of rows the formula fails. No boost
-            # (DAT-442); the eval asserts the ordering vs clean, severity in loss.
-            mismatch_rate = 1.0 - match_rate
-            score = max(0.0, min(1.0, mismatch_rate))
+        # Honest mismatch rate — fraction of rows the formula fails. No boost (DAT-442);
+        # the eval asserts the ordering vs clean, severity in the loss table.
+        score = max(0.0, min(1.0, 1.0 - match_rate))
 
-            # Classify match quality using configurable thresholds
-            if match_rate >= match_exact:
-                status = "exact"
-            elif match_rate >= match_near_exact:
-                status = "near_exact"
-            elif match_rate >= match_approximate:
-                status = "approximate"
-            else:
-                status = "poor"
+        # Classify match quality using configurable thresholds (display label only)
+        if match_rate >= match_exact:
+            status = "exact"
+        elif match_rate >= match_near_exact:
+            status = "near_exact"
+        elif match_rate >= match_approximate:
+            status = "approximate"
+        else:
+            status = "poor"
 
-        # Build evidence
         evidence = [
             {
                 "status": status,
@@ -127,17 +122,9 @@ class DerivedValueDetector(EntropyDetector):
                 "source_columns": source_columns,
             }
         ]
+        if hasattr(current_derived, "derivation_type"):
+            evidence[0]["derivation_type"] = current_derived.derivation_type
+        elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
+            evidence[0]["derivation_type"] = current_derived["derivation_type"]
 
-        if current_derived:
-            if hasattr(current_derived, "derivation_type"):
-                evidence[0]["derivation_type"] = current_derived.derivation_type
-            elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
-                evidence[0]["derivation_type"] = current_derived["derivation_type"]
-
-        return [
-            self.create_entropy_object(
-                context=context,
-                score=score,
-                evidence=evidence,
-            )
-        ]
+        return [self.create_entropy_object(context=context, score=score, evidence=evidence)]

@@ -17,7 +17,11 @@ class TestDerivedValueDetector:
         return DerivedValueDetector()
 
     def test_no_formula_detected(self, detector: DerivedValueDetector):
-        """Test max entropy when no formula is detected."""
+        """No formula detected → nothing to measure: ignorance, not a fabricated 1.0.
+
+        The old no_formula→score=1.0 branch was theater (DAT-442 two-table): a column
+        with no detected derived formula is not a 100%-broken derivation.
+        """
         context = DetectorContext(
             table_name="orders",
             column_name="total",
@@ -28,11 +32,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert results[0].evidence[0]["status"] == "no_formula"
+        assert detector.detect(context) == []
 
     def test_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for exact formula match."""
@@ -137,7 +137,7 @@ class TestDerivedValueDetector:
         assert results[0].evidence[0]["status"] == "poor"
 
     def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
-        """Test entropy when column is not in derived columns list."""
+        """Column not in the derived list → no formula → nothing to measure (empty)."""
         context = DetectorContext(
             table_name="orders",
             column_name="other_col",
@@ -154,12 +154,8 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = detector.detect(context)
-
-        # Column not in derived list = no formula detected
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert results[0].evidence[0]["status"] == "no_formula"
+        # Column not in derived list = no formula → ignorance, not a fabricated 1.0.
+        assert detector.detect(context) == []
 
     def test_evidence_includes_source_columns(self, detector: DerivedValueDetector):
         """Test evidence includes source columns."""

@@ -18,7 +18,15 @@
 # network onto this path; their nodes/edges are gone). Weights are PLACEHOLDER
 # priors, calibrated later from generative families (DAT-450); NOT tuned to pass a metric.
 #
-# Intents: query_intent, aggregation_intent, reporting_intent (network.yaml).
+# Intents: query_intent, aggregation_intent, reporting_intent.
+
+# Readiness bands (relocated from the network.yaml discretization, which is being
+# deleted): a per-intent risk ≤ low_upper is ready, ≤ medium_upper is investigate,
+# else blocked. risk(column, intent) = clamp01(Σ weight[measurement, intent] · value)
+# over THIS table is the whole rollup — no noisy-OR graph, no invented edge weights.
+readiness_bands:
+  low_upper: 0.3
+  medium_upper: 0.6
 
 measurements:
   null_semantics:

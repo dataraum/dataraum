@@ -55,9 +55,32 @@ class LossConfig:
     """
 
     measurements: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)
+    # Readiness bands (relocated from the deleted network.yaml discretization): a
+    # per-intent risk ≤ low_upper is ready, ≤ medium_upper is investigate, else blocked.
+    readiness_bands: dict[str, float] = field(
+        default_factory=lambda: {"low_upper": 0.3, "medium_upper": 0.6}
+    )
 
     def is_loss_measurement(self, detector_id: str) -> bool:
         return detector_id in self.measurements
+
+    def intents(self) -> list[str]:
+        """Every intent name across the loss table — replaces the network intent nodes."""
+        seen: set[str] = set()
+        for table in self.measurements.values():
+            seen.update(table)
+        return sorted(seen)
+
+    def band(self, risk: float) -> str:
+        """Readiness band for a per-intent risk: the whole banding, no network.
+
+        ``risk ≤ low_upper`` → ready · ``≤ medium_upper`` → investigate · else blocked.
+        """
+        if risk > self.readiness_bands["medium_upper"]:
+            return "blocked"
+        if risk > self.readiness_bands["low_upper"]:
+            return "investigate"
+        return "ready"
 
 
 _cache: LossConfig | None = None
@@ -68,7 +91,8 @@ def get_loss_config() -> LossConfig:
     global _cache  # noqa: PLW0603
     if _cache is None:
         raw = yaml.safe_load(get_config_file(LOSS_CONFIG_PATH).read_text()) or {}
-        _cache = LossConfig(measurements=raw.get("measurements", {}))
+        bands = raw.get("readiness_bands") or {"low_upper": 0.3, "medium_upper": 0.6}
+        _cache = LossConfig(measurements=raw.get("measurements", {}), readiness_bands=bands)
     return _cache
 
 

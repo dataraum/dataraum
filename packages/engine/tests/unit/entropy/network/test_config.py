@@ -11,12 +11,13 @@ class TestNetworkConfigLoading:
         assert len(full_config.states) == 3
 
     def test_node_count(self, full_config: NetworkConfig):
-        # benford + temporal_drift + slice_variance → loss path (DAT-442): 20 → 17.
-        assert len(full_config.nodes) == 17
+        # DAT-442 flat-table: statistical fleet + dissolved computational composites
+        # (formula_match, aggregation_safety) → loss path. 20 → 13.
+        assert len(full_config.nodes) == 13
 
     def test_edge_count(self, full_config: NetworkConfig):
-        # Also removed: slice_stability → query / aggregation (DAT-442): 33 → 31.
-        assert len(full_config.edges) == 31
+        # Composite + null_ratio/outlier_rate edges removed, unit→aggregation added.
+        assert len(full_config.edges) == 21
 
     def test_states_are_low_medium_high(self, full_config: NetworkConfig):
         assert full_config.states == ["low", "medium", "high"]

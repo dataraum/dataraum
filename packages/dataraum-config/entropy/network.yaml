@@ -12,19 +12,15 @@ discretization:
   # high: > 0.6
 
 nodes:
-  # Observable roots (8) - each has a detector
+  # Observable roots - each has a detector
   type_fidelity:
     layer: structural
     dimension: types
     sub_dimension: type_fidelity
-  null_ratio:
-    layer: value
-    dimension: nulls
-    sub_dimension: null_ratio
-  outlier_rate:
-    layer: value
-    dimension: outliers
-    sub_dimension: outlier_rate
+
+  # null_ratio + outlier_rate: moved off the network onto the loss path (DAT-442)
+  # — plain rates, their {score} feeds risk(intent) via entropy/loss.yaml.
+
   naming_clarity:
     layer: semantic
     dimension: business_meaning
@@ -78,15 +74,11 @@ nodes:
     dimension: relations
     sub_dimension: relationship_quality
 
-  # Inferred children (2) - genuine causal composites
-  formula_match:
-    layer: computational
-    dimension: derived_values
-    sub_dimension: formula_match
-  aggregation_safety:
-    layer: computational
-    dimension: derived_values
-    sub_dimension: aggregation_safety
+  # formula_match (derived_value) + aggregation_safety: dissolved (DAT-442 flat-table
+  # end-state). aggregation_safety had no detector — the aggregation_intent BAND
+  # expresses "is it safe to aggregate" directly. derived_value's formula-match score
+  # feeds the loss path; aggregation_safety's only non-migrated parent
+  # (unit_declaration) is rewired straight to the intents below.
 
   # Intent leaves (3) - readiness scores
   query_intent:
@@ -107,35 +99,27 @@ edges:
   # Structural -> children
   - [type_fidelity, join_path_determinism, 0.5]
   - [type_fidelity, relationship_quality, 0.6]
-  # Root -> computational children
-  - [naming_clarity, formula_match, 0.5]
-  - [unit_declaration, formula_match, 0.8]
-  - [null_ratio, formula_match, 0.4]
-  - [null_ratio, aggregation_safety, 0.7]
-  - [outlier_rate, aggregation_safety, 0.6]
-  - [unit_declaration, aggregation_safety, 0.9]
+  # null_ratio / outlier_rate / derived_value (formula_match) → loss path;
+  # aggregation_safety dissolved (DAT-442). The computational composites are gone.
   # dimension_coverage -> intent leaves
   - [dimension_coverage, query_intent, 0.5]
   - [dimension_coverage, reporting_intent, 0.6]
   # cross_column_patterns -> intents (DAT-403; initial strengths, eval-calibrated)
   - [cross_column_patterns, query_intent, 0.3]
   - [cross_column_patterns, aggregation_intent, 0.4]
-  # -> query_intent (7 parents)
+  # -> query_intent
   - [type_fidelity, query_intent, 0.7]
   - [join_path_determinism, query_intent, 0.8]
-  - [null_ratio, query_intent, 0.5]
-  - [outlier_rate, query_intent, 0.4]
   - [naming_clarity, query_intent, 0.3]
-  # temporal_drift → query/aggregation moved to the loss path (DAT-442).
   # A broken time role (unparseable dates) makes time-filtering/ordering
   # unreliable — more severe than drift, hence the higher strength.
   - [time_role, query_intent, 0.5]
-  # -> aggregation_intent (3 parents; benford + temporal_drift via the loss path)
-  - [aggregation_safety, aggregation_intent, 0.9]
-  - [formula_match, aggregation_intent, 0.7]
+  # -> aggregation_intent. unit_declaration rewired direct here (was unit →
+  # aggregation_safety → aggregation_intent before the composite dissolved).
+  - [unit_declaration, aggregation_intent, 0.8]
   # Time-bucketed aggregations (monthly revenue, …) break on a bad time role.
   - [time_role, aggregation_intent, 0.4]
-  # -> reporting_intent (6+1 parents)
+  # -> reporting_intent
   - [naming_clarity, reporting_intent, 0.7]
   # 0.5 → 0.75 (DAT-405 calibration): at relationship grain the ONLY observed
   # parent is relationship_quality itself, so the edge alone must carry a real
@@ -143,7 +127,6 @@ edges:
   # ≈0.45 → 0.75 puts it at "investigate" with margin; clean relationships
   # score ≈0.1 (below the clean-band floor) and are unaffected.
   - [relationship_quality, reporting_intent, 0.75]
-  - [aggregation_safety, reporting_intent, 0.8]
   - [unit_declaration, reporting_intent, 0.6]
   - [time_role, reporting_intent, 0.4]
   - [type_fidelity, reporting_intent, 0.4]

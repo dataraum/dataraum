@@ -470,15 +470,13 @@ class TestAssembleFullNetwork:
         score: float = 0.7,
         target: str = "column:t.c1",
     ) -> list[EntropyObject]:
-        """Create objects for 6 network root nodes targeting a single column.
+        """Create objects for 4 network root nodes targeting a single column.
 
-        (benford + temporal_drift moved off the network onto the loss path,
-        DAT-442 — they are no longer network roots.)
+        (The statistical fleet — null_ratio, outlier_rate, benford, temporal_drift,
+        slice_variance — moved off the network onto the loss path, DAT-442.)
         """
         roots = [
             ("structural", "types", "type_fidelity"),
-            ("value", "nulls", "null_ratio"),
-            ("value", "outliers", "outlier_rate"),
             ("semantic", "business_meaning", "naming_clarity"),
             ("semantic", "units", "unit_declaration"),
             ("semantic", "temporal", "time_role"),
@@ -495,7 +493,7 @@ class TestAssembleFullNetwork:
         ]
 
     def test_all_roots_one_column_produces_3_intents(self, full_network):
-        """With all 6 network roots observed for one column, all 3 intents computed."""
+        """With all 4 network roots observed for one column, all 3 intents computed."""
         objects = self._make_root_objects(score=0.7)
         result = assemble_readiness_context(objects, full_network)
         assert result.total_columns == 1

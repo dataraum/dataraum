@@ -41,13 +41,13 @@ class TestBuildDimensionPathToNodeMap:
 
     def test_all_nodes_have_paths(self, full_network: EntropyNetwork):
         path_map = build_dimension_path_to_node_map(full_network)
-        # benford + temporal_drift + slice_variance → loss path (DAT-442): 20 → 17.
-        assert len(path_map) == 17
+        # Statistical fleet + computational composites → loss path (DAT-442): 20 → 13.
+        assert len(path_map) == 13
 
     def test_correct_mapping(self, full_network: EntropyNetwork):
         path_map = build_dimension_path_to_node_map(full_network)
         assert path_map["structural.types.type_fidelity"] == "type_fidelity"
-        assert path_map["value.nulls.null_ratio"] == "null_ratio"
+        assert path_map["semantic.temporal.time_role"] == "time_role"
         assert path_map["intent.query.readiness"] == "query_intent"
 
     def test_all_values_are_valid_node_names(self, full_network: EntropyNetwork):
@@ -69,15 +69,15 @@ class TestEntropyObjectsToEvidence:
                 score=0.8,
             ),
             EntropyObject(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="null_ratio",
+                layer="semantic",
+                dimension="business_meaning",
+                sub_dimension="naming_clarity",
                 score=0.1,
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)
         assert evidence["type_fidelity"] == "high"
-        assert evidence["null_ratio"] == "low"
+        assert evidence["naming_clarity"] == "low"
 
     def test_unmapped_objects_skipped(self, full_network: EntropyNetwork):
         objects = [
@@ -111,11 +111,11 @@ class TestEntropyObjectsToEvidence:
     def test_medium_score(self, full_network: EntropyNetwork):
         objects = [
             EntropyObject(
-                layer="value",
-                dimension="outliers",
-                sub_dimension="outlier_rate",
+                layer="semantic",
+                dimension="coverage",
+                sub_dimension="dimension_coverage",
                 score=0.45,
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)
-        assert evidence["outlier_rate"] == "medium"
+        assert evidence["dimension_coverage"] == "medium"

@@ -57,3 +57,26 @@ measurements:
     # reference. Old network edges were query 0.4 / aggregation 0.5 (placeholders).
     query_intent: { score: 0.4 }
     aggregation_intent: { score: 0.5 }
+
+  # Rates / magnitudes (not divergences): the "score" weight scores the detector's
+  # existing [0,1] score directly. These three left the network with the dissolved
+  # computational composites (formula_match / aggregation_safety, DAT-442 flat-table
+  # end-state) — severity per intent now lives here, not in noisy-OR edges.
+  null_ratio:
+    # Raw missing fraction. Worst for aggregation (missing rows corrupt sums) and
+    # reporting; a query can caveat. (Old: query 0.5 direct; aggregation/reporting
+    # via aggregation_safety.) Placeholder priors (DAT-450).
+    query_intent: { score: 0.5 }
+    aggregation_intent: { score: 0.7 }
+    reporting_intent: { score: 0.5 }
+  outlier_rate:
+    # Outlier fraction (distribution-shape-adjusted). Same intent profile as nulls.
+    query_intent: { score: 0.4 }
+    aggregation_intent: { score: 0.6 }
+    reporting_intent: { score: 0.5 }
+  derived_value:
+    # A within-table formula no longer holds (e.g. net ≠ debit − credit). Worst for
+    # aggregation (you'd sum a broken derivation) and reporting. Was formula_match →
+    # aggregation_intent 0.7 in the network.
+    aggregation_intent: { score: 0.7 }
+    reporting_intent: { score: 0.6 }

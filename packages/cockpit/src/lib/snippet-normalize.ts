@@ -31,7 +31,14 @@ export function normalizeSql(sql: string): string {
  * `normalizeSql`, leaving the engine-compat primitive untouched.
  */
 export function canonicalizeForReuse(sql: string): string {
-	return sql.replace(/\blake\.[A-Za-z_]\w*\./gi, "");
+	// Strip `lake.<layer>.` ONLY outside single-quoted string literals — a literal
+	// like '…lake.typed.x…' must never be corrupted (review HIGH). The alternation
+	// matches a whole single-quoted string first (incl. '' escapes) and keeps it
+	// verbatim; otherwise the qualifier is dropped.
+	return sql.replace(
+		/('(?:[^']|'')*')|\blake\.[A-Za-z_]\w*\./gi,
+		(_match, literal) => literal ?? "",
+	);
 }
 
 /** How a generated SQL step relates to the snippet it referenced. */

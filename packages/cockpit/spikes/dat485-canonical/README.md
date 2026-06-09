@@ -12,6 +12,17 @@ Proves snippet identity can be a **canonical SQL form** that the Python producer
 
 Run: `bun canon-ts.mjs > ts-out.json` ; `uv run --directory ../../../engine python "$PWD/canon-py.py" > py-out.json` ; `bun diff.mjs`
 
-Result: **byte-identical PY≡TS on every member.** Two deferred tail cases — output
-alias (prompt-steered to `AS value`) and commutative `WHERE a AND b` vs `b AND a`
-(DAT-483 follow-up). The TS side is locked by `src/lib/sql-canonical.test.ts`.
+Result on THIS small corpus: byte-identical PY≡TS on every member. **But a 7-class
+stress-test (joins/CASE/window/nested/agg/funcs/setops) proved the byte-identical
+claim FAILS on common SQL** — sqlglot and polyglot diverge on:
+- `DATE_TRUNC('month')` literal-casing (PY → `'MONTH'`, TS → `'month'`)
+- `IS NOT NULL` / `IS NOT TRUE` / `NOT BETWEEN` (PY → `NOT x IS NULL`, TS keeps); `NOT LIKE` inverts the other way
+- abbreviated window frames (`ROWS 3 PRECEDING` → PY expands, TS keeps)
+- `SUBSTRING(.. FROM .. FOR ..)` and `INTERVAL '7 days'` rendering
+- polyglot can't parse `EXTRACT(.. FROM ..)` / `TABLESAMPLE 10 PERCENT` (sqlglot can)
+
+**Conclusion:** two native engines do NOT share a canonical key. For cross-language
+snippet sharing (P2a / GraphAgent overlap, **DAT-486**) use ONE engine in both —
+polyglot bound into Python. P1 is unaffected (polyglot canonicalizes both sides).
+Deferred shared gaps: commutative order (**DAT-492**), frame-keyword case. The TS
+side is locked by `src/lib/sql-canonical.test.ts`.

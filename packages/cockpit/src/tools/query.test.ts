@@ -208,6 +208,13 @@ describe("assembleAnswer", () => {
 		expect(out.grid).toBeNull();
 		expect(out.components).toEqual([]);
 		expect(out.data_quality).toBeNull();
+		// No components → grounded_ratio 0 (not NaN from a 0/0 division).
+		expect(out.reliability).toEqual({
+			grounded_ratio: 0,
+			exact_reuse: 0,
+			adapted: 0,
+			fresh: 0,
+		});
 	});
 
 	it("yields a null grid when the captured composed SQL is blank", () => {

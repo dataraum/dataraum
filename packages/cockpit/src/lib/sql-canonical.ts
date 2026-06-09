@@ -9,14 +9,20 @@
 // MCP `cte_parser` did for snippets.
 //
 // We use polyglot (@polyglot-sql/sdk — a Rust SQL parser via WASM, DuckDB dialect)
-// for the TS side. A cross-language spike (packages/cockpit/spikes/dat485-canonical)
-// proved polyglot's canonical form is BYTE-IDENTICAL to the engine's sqlglot over
-// the representative snippet shapes — so a Python-produced snippet and a TS-matched
-// one share one identity without binding a single engine into both.
+// for the TS side. P1 canonicalizes BOTH sides of every comparison with polyglot,
+// so reuse classification is self-consistent regardless of how a snippet was
+// produced — it never compares a sqlglot key to a polyglot key.
 //
-// Two known, deferred tail cases (the spike surfaced them): the output alias (fixed
-// by steering the prompt to a constant `AS value`) and commutative `WHERE a AND b`
-// vs `b AND a` (DAT-483 follow-up — AST round-trip preserves operand order).
+// CROSS-LANGUAGE CAVEAT (the DAT-485 stress-test, not the small spike): polyglot
+// (TS) and the engine's sqlglot (Python) do NOT agree byte-for-byte on common SQL.
+// They render DATE_TRUNC('month') unit-casing, IS NOT NULL / NOT LIKE negation,
+// abbreviated window frames, SUBSTRING(.. FROM ..), and INTERVAL units differently,
+// and polyglot can't parse EXTRACT(.. FROM ..) / TABLESAMPLE. So a SHARED canonical
+// key computed by two different engines would miss. The fix for CROSS-LANGUAGE
+// snippet sharing (P2a / GraphAgent overlap, DAT-486) is ONE engine in both —
+// polyglot bound into Python — not two native engines. Deferred normalization gaps
+// both engines share (cross-engine-consistent but still under-matching): commutative
+// operand order (DAT-492) and frame-keyword case.
 //
 // `lake.<layer>.` qualifier strip rides on top: the cockpit addresses
 // `lake.typed.<name>` while stored snippets are bare, and the AST preserves

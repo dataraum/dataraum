@@ -81,6 +81,16 @@ describe("canonicalizeForReuse", () => {
 		expect(canonicalizeForReuse(bare)).toBe(bare);
 	});
 
+	it("does NOT corrupt a `lake.<layer>.` inside a string literal (review HIGH)", () => {
+		// The table qualifier is stripped; the identical text inside a quoted
+		// literal is preserved.
+		expect(
+			canonicalizeForReuse(
+				"SELECT x FROM lake.typed.orders WHERE path = 'lake.typed.orders'",
+			),
+		).toBe("SELECT x FROM orders WHERE path = 'lake.typed.orders'");
+	});
+
 	it("makes a qualified model SQL classify as exact_reuse against a bare snippet", () => {
 		// The whole point: the cockpit writes qualified, snippets are stored bare.
 		const modelSql =

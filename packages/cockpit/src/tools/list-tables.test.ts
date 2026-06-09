@@ -15,7 +15,9 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import {
 	buildInventory,
 	type ColumnBandRow,
+	type EnrichedViewRow,
 	type InventoryTableRow,
+	type TableEntityRow,
 } from "./list-tables";
 
 // A 40-char sha-1 hex digest, as the content-keyed upload sources mint them.
@@ -173,5 +175,283 @@ describe("buildInventory (DAT-349)", () => {
 		const byId = new Map(out.map((t) => [t.table_id, t]));
 		expect(byId.get("t_orders")?.worst_band).toBe("blocked");
 		expect(byId.get("t_items")?.worst_band).toBe("ready");
+	});
+});
+
+// DAT-477: the session/detect-grain orientation buildInventory attaches per table
+// — entity classification (entity_type / is_fact) + the enriched fact/dimension
+// views built off the table. The two new row arrays default to empty, so the
+// pre-session state (no entity rows, no view rows) yields null entity facts + an
+// empty enriched_views summary on every table.
+describe("buildInventory entity + enriched_views (DAT-477)", () => {
+	it("leaves entity_type/is_fact null and enriched_views empty pre-session", () => {
+		// Two-arg call (the legacy add_source path) — no session has run.
+		const [out] = buildInventory([tableRow()], []);
+		expect(out.entity_type).toBeNull();
+		expect(out.is_fact).toBeNull();
+		expect(out.enriched_views).toEqual({
+			count: 0,
+			view_names: [],
+			any_grain_verified: null,
+		});
+	});
+
+	it("treats an explicitly empty entity/view set as the pre-session state", () => {
+		const [out] = buildInventory([tableRow()], [], [], []);
+		expect(out.entity_type).toBeNull();
+		expect(out.is_fact).toBeNull();
+		expect(out.enriched_views.count).toBe(0);
+	});
+
+	it("attaches the table's entity classification by table_id", () => {
+		const entities: TableEntityRow[] = [
+			{
+				tableId: "t_orders",
+				detectedEntityType: "transaction",
+				isFactTable: true,
+				detectedAt: new Date("2026-06-01T00:00:00Z"),
+			},
+		];
+		const [out] = buildInventory([tableRow()], [], entities, []);
+		expect(out.entity_type).toBe("transaction");
+		expect(out.is_fact).toBe(true);
+	});
+
+	it("scopes the entity classification to its own table", () => {
+		const entities: TableEntityRow[] = [
+			{
+				tableId: "t_orders",
+				detectedEntityType: "transaction",
+				isFactTable: true,
+				detectedAt: new Date("2026-06-01T00:00:00Z"),
+			},
+			{
+				tableId: "t_items",
+				detectedEntityType: "reference",
+				isFactTable: false,
+				detectedAt: new Date("2026-06-01T00:00:00Z"),
+			},
+		];
+		const out = buildInventory(
+			[
+				tableRow({ tableId: "t_orders", tableName: "orders" }),
+				tableRow({ tableId: "t_items", tableName: "items" }),
+			],
+			[],
+			entities,
+			[],
+		);
+		const byId = new Map(out.map((t) => [t.table_id, t]));
+		expect(byId.get("t_orders")).toMatchObject({
+			entity_type: "transaction",
+			is_fact: true,
+		});
+		expect(byId.get("t_items")).toMatchObject({
+			entity_type: "reference",
+			is_fact: false,
+		});
+	});
+
+	it("summarizes the enriched views grouped under their fact table", () => {
+		// Engine builds enriched view names as `enriched_<source>__<table>`
+		// (enriched_views_phase.py); displayTableName strips the content-keyed
+		// `<source>__` segment so no digest reaches the agent (DAT-431).
+		const views: EnrichedViewRow[] = [
+			{
+				factTableId: "t_orders",
+				viewName: `enriched_src_${DIGEST}__orders`,
+				isGrainVerified: true,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+			{
+				factTableId: "t_orders",
+				viewName: `enriched_src_${DIGEST}__orders_by_region`,
+				isGrainVerified: false,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+			// A different fact table's view must not leak onto t_orders.
+			{
+				factTableId: "t_items",
+				viewName: `enriched_src_${DIGEST}__items`,
+				isGrainVerified: false,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+		];
+		const out = buildInventory(
+			[
+				tableRow({ tableId: "t_orders", tableName: "orders" }),
+				tableRow({ tableId: "t_items", tableName: "items" }),
+			],
+			[],
+			[],
+			views,
+		);
+		const byId = new Map(out.map((t) => [t.table_id, t]));
+		expect(byId.get("t_orders")?.enriched_views).toEqual({
+			count: 2,
+			view_names: ["enriched_orders", "enriched_orders_by_region"],
+			any_grain_verified: true,
+		});
+		expect(byId.get("t_items")?.enriched_views).toEqual({
+			count: 1,
+			view_names: ["enriched_items"],
+			any_grain_verified: false,
+		});
+		// The digest appears nowhere in the projected names (DAT-431).
+		expect(JSON.stringify(out)).not.toMatch(/src_[0-9a-f]{40}/);
+	});
+
+	it("drops a null/blank enriched-view name and keeps count == view_names", () => {
+		const views: EnrichedViewRow[] = [
+			{
+				factTableId: "t_orders",
+				viewName: null,
+				isGrainVerified: false,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+			{
+				factTableId: "t_orders",
+				viewName: "",
+				isGrainVerified: false,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+			{
+				factTableId: "t_orders",
+				viewName: `enriched_src_${DIGEST}__orders`,
+				isGrainVerified: false,
+				createdAt: new Date("2026-06-01T00:00:00Z"),
+			},
+		];
+		const [out] = buildInventory([tableRow()], [], [], views);
+		// `count` tracks the EMITTED names, never the raw row count — a name-less
+		// stale row must not inflate `count: 3` against `view_names: [one]`.
+		expect(out.enriched_views.count).toBe(1);
+		expect(out.enriched_views.view_names).toEqual(["enriched_orders"]);
+		// But grain-verified still keys off the raw rows (here none verified), and
+		// is non-null because the fact table does carry views.
+		expect(out.enriched_views.any_grain_verified).toBe(false);
+	});
+
+	it("keeps the existing inventory fields unchanged when entity data is present", () => {
+		const entities: TableEntityRow[] = [
+			{
+				tableId: "t_orders",
+				detectedEntityType: "transaction",
+				isFactTable: true,
+				detectedAt: new Date("2026-06-01T00:00:00Z"),
+			},
+		];
+		const [out] = buildInventory(
+			[tableRow()],
+			[
+				{ tableId: "t_orders", band: "ready" },
+				{ tableId: "t_orders", band: "blocked" },
+			],
+			entities,
+			[],
+		);
+		// The DAT-349 projection is untouched — additive only.
+		expect(out).toMatchObject({
+			table_id: "t_orders",
+			table_name: "orders",
+			physical_name: `src_${DIGEST}__orders`,
+			row_count: 1000,
+			column_count: 2,
+			worst_band: "blocked",
+			analyzed: true,
+		});
+		expect(out.readiness).toEqual({
+			ready: 1,
+			investigate: 0,
+			blocked: 1,
+			unanalyzed: 0,
+		});
+	});
+
+	// `current_table_entities` / `current_enriched_views` are `session:{id}`-head-
+	// scoped: a multi-session workspace carries one row-set per session per table.
+	// buildInventory must pick the LATEST session deterministically (by detected_at
+	// / created_at), order-independent of the input array — never the
+	// nondeterministic "whichever row was last in the list".
+	describe("multi-session determinism (DAT-476 cross-lane guard)", () => {
+		const t1 = new Date("2026-06-01T00:00:00Z");
+		const t2 = new Date("2026-06-08T00:00:00Z");
+
+		it("picks the latest-session entity by detected_at", () => {
+			const entities: TableEntityRow[] = [
+				{
+					tableId: "t_orders",
+					detectedEntityType: "reference",
+					isFactTable: false,
+					detectedAt: t1,
+				},
+				{
+					tableId: "t_orders",
+					detectedEntityType: "transaction",
+					isFactTable: true,
+					detectedAt: t2,
+				},
+			];
+			// Newest-last in the array — the wrong row would win without the dedup.
+			const [out] = buildInventory([tableRow()], [], entities, []);
+			expect(out.entity_type).toBe("transaction");
+			expect(out.is_fact).toBe(true);
+		});
+
+		it("is order-independent — the latest entity wins newest-first too", () => {
+			const newestFirst: TableEntityRow[] = [
+				{
+					tableId: "t_orders",
+					detectedEntityType: "transaction",
+					isFactTable: true,
+					detectedAt: t2,
+				},
+				{
+					tableId: "t_orders",
+					detectedEntityType: "reference",
+					isFactTable: false,
+					detectedAt: t1,
+				},
+			];
+			const [out] = buildInventory([tableRow()], [], newestFirst, []);
+			expect(out.entity_type).toBe("transaction");
+			expect(out.is_fact).toBe(true);
+		});
+
+		it("keeps only the latest session's enriched views, not a cross-session pile", () => {
+			const views: EnrichedViewRow[] = [
+				// Older session: a single, unverified view.
+				{
+					factTableId: "t_orders",
+					viewName: `enriched_src_${DIGEST}__orders_old`,
+					isGrainVerified: false,
+					createdAt: t1,
+				},
+				// Newer session: two views, one grain-verified — this set must win
+				// whole, with no carry-over from the older session.
+				{
+					factTableId: "t_orders",
+					viewName: `enriched_src_${DIGEST}__orders`,
+					isGrainVerified: true,
+					createdAt: t2,
+				},
+				{
+					factTableId: "t_orders",
+					viewName: `enriched_src_${DIGEST}__orders_by_region`,
+					isGrainVerified: false,
+					createdAt: t2,
+				},
+			];
+			const [out] = buildInventory([tableRow()], [], [], views);
+			expect(out.enriched_views).toEqual({
+				count: 2,
+				view_names: ["enriched_orders", "enriched_orders_by_region"],
+				any_grain_verified: true,
+			});
+			// The older session's view must not leak in.
+			expect(out.enriched_views.view_names).not.toContain(
+				"enriched_orders_old",
+			);
+		});
 	});
 });

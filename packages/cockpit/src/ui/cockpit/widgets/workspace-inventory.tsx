@@ -1,14 +1,18 @@
-// Workspace-inventory widget (DAT-349; de-noised in the redesign) — the
-// `list_tables` result as ONE row per logical table (the engine's raw / typed /
-// quarantine physical layers collapsed; the analyzed `typed` layer is shown).
-// Clicking a table name routes a look_table request through the chat loop;
-// clicking a source badge opens an in-widget SourceCard rail (local, no agent
-// round-trip); a red quarantine count opens a detail modal; Refresh re-lists.
+// Workspace-inventory widget (DAT-349; de-noised in the redesign; DAT-477 entity
+// orientation) — the `list_tables` result as ONE row per logical table (the
+// engine's raw / typed / quarantine physical layers collapsed; the analyzed
+// `typed` layer is shown). Clicking a table name routes a look_table request
+// through the chat loop; clicking a source badge opens an in-widget SourceCard
+// rail (local, no agent round-trip); a red quarantine count opens a detail
+// modal; Refresh re-lists.
 //
 // Bands are the engine's PERSISTED, calibrated values — this widget only colors
-// and title-cases them, it never recomputes readiness. Reads theme tokens only;
-// the row type is a type-only import (erased — no server code in the client
-// bundle).
+// and title-cases them, it never recomputes readiness. The entity_type / is_fact
+// classification and the enriched_views summary (DAT-477) are likewise PERSISTED,
+// session-grain values: the widget surfaces them as-is and shows nothing for the
+// pre-session null/empty state, never inventing a classification. Reads theme
+// tokens only; the row type is a type-only import (erased — no server code in the
+// client bundle).
 
 import {
 	Anchor,
@@ -38,6 +42,62 @@ import {
 // virtualizing (overkill for bounded metadata). Applies to the master list and a
 // single source's table list alike.
 const MAX_VISIBLE_ROWS = 100;
+
+// How many enriched-view names to spell out inline before collapsing to a count
+// (a fact table can fan out to several views — the cell is a glance, not a list).
+const ENRICHED_VIEW_NAMES_SHOWN = 2;
+
+/**
+ * The session-grain entity orientation for one table (DAT-477): its detected
+ * entity type + a fact marker + the count of enriched fact/dimension views built
+ * off it. Renders a neutral dash when nothing is classified yet (pre-session) so
+ * the column reads as "not analyzed", never as a blank that implies "not a fact".
+ * Pure render of PERSISTED values — colors/labels only, no recomputation.
+ */
+function EntityFacts({ table }: { table: InventoryTable }) {
+	const entity_type = table.entity_type ?? null;
+	const is_fact = table.is_fact ?? null;
+	// `enriched_views` is optional at the type boundary (pre-DAT-477 fixtures) —
+	// the server always sets it; default to the empty summary defensively.
+	const enriched_views = table.enriched_views ?? {
+		count: 0,
+		view_names: [],
+		any_grain_verified: null,
+	};
+	if (entity_type === null && is_fact === null && enriched_views.count === 0) {
+		return (
+			<Text span c="dimmed" size="xs">
+				—
+			</Text>
+		);
+	}
+	return (
+		<Group gap={4} wrap="wrap">
+			{entity_type && (
+				<Badge variant="light" color="blue" size="sm" tt="none">
+					{entity_type}
+				</Badge>
+			)}
+			{is_fact && (
+				<Badge variant="light" color="grape" size="sm" tt="none">
+					fact
+				</Badge>
+			)}
+			{enriched_views.count > 0 && (
+				<Badge
+					variant="outline"
+					color="teal"
+					size="sm"
+					tt="none"
+					data-testid={`inventory-enriched-${table.table_id}`}
+					title={enriched_views.view_names.join(", ")}
+				>
+					{enriched_views.count} view{enriched_views.count === 1 ? "" : "s"}
+				</Badge>
+			)}
+		</Group>
+	);
+}
 
 /** The per-source drill-in rail: source metadata + its logical tables' bands.
  * Built entirely from the inventory rows already in hand (no extra fetch). */
@@ -189,6 +249,37 @@ function TableDetailModal({
 						</Text>
 					)}
 
+					{/* Session-grain orientation (DAT-477): the detected entity class +
+					    the enriched fact/dimension views built off this table. Rendered
+					    only once a session has classified the table — pre-session there's
+					    nothing to show (entity null, no views). The show condition mirrors
+					    `EntityFacts`'s own (entity_type OR is_fact OR a view) so the
+					    is_fact-true / entity_type-null case isn't silently hidden here. */}
+					{((table.representative.entity_type ?? null) !== null ||
+						(table.representative.is_fact ?? null) !== null ||
+						(table.representative.enriched_views?.count ?? 0) > 0) && (
+						<Stack gap={4} data-testid="modal-entity">
+							<Text size="sm" fw={600}>
+								Entity
+							</Text>
+							<EntityFacts table={table.representative} />
+							{(table.representative.enriched_views?.view_names.length ?? 0) >
+								0 && (
+								<Text size="xs" c="dimmed">
+									{table.representative.enriched_views?.view_names
+										.slice(0, ENRICHED_VIEW_NAMES_SHOWN)
+										.join(", ")}
+									{(table.representative.enriched_views?.view_names.length ??
+										0) > ENRICHED_VIEW_NAMES_SHOWN &&
+										` +${
+											(table.representative.enriched_views?.view_names.length ??
+												0) - ENRICHED_VIEW_NAMES_SHOWN
+										} more`}
+								</Text>
+							)}
+						</Stack>
+					)}
+
 					<Stack gap={4}>
 						<Text size="sm" fw={600}>
 							Layers
@@ -310,6 +401,7 @@ export function WorkspaceInventoryWidget({
 							<Table.Tr>
 								<Table.Th>Table</Table.Th>
 								<Table.Th>Source</Table.Th>
+								<Table.Th>Entity</Table.Th>
 								<Table.Th>Rows</Table.Th>
 								<Table.Th>Cols</Table.Th>
 								<Table.Th>Readiness</Table.Th>
@@ -363,6 +455,9 @@ export function WorkspaceInventoryWidget({
 													: `${group.label} · ${lt.sourceType}`}
 											</Badge>
 										</Table.Td>
+										<Table.Td data-testid={`inventory-entity-${t.table_id}`}>
+											<EntityFacts table={t} />
+										</Table.Td>
 										<Table.Td>{t.row_count ?? "—"}</Table.Td>
 										<Table.Td>{t.column_count}</Table.Td>
 										<Table.Td>
@@ -391,7 +486,7 @@ export function WorkspaceInventoryWidget({
 							})}
 							{overflow > 0 && (
 								<Table.Tr data-testid="inventory-overflow">
-									<Table.Td colSpan={6}>
+									<Table.Td colSpan={7}>
 										<Text c="dimmed" size="xs">
 											…and {overflow} more — ask the agent to filter by source.
 										</Text>

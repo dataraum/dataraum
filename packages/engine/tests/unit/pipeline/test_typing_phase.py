@@ -305,3 +305,48 @@ class TestApplyUnitOverrides:
         _apply_unit_overrides(session, {}, table)
         tc = self._candidate(session, col)
         assert tc.detected_unit is None
+
+    def test_patch_is_run_scoped_so_a_rerun_does_not_cross_runs(self, session: Session) -> None:
+        """A teach RE-RUN leaves the prior run's TypeCandidate in place. The patch must
+        land on THIS run's candidate (the row the detect path reads via run_id), not an
+        arbitrary confidence-tie winner. Regression for the silent no-op the eval caught:
+        unscoped, the patch hit the prior run while the detect read the current run → None.
+        """
+        from tests.conftest import baseline_session_id
+
+        src = _make_source(session)
+        table = _make_table(session, src.source_id, "src_zzz__bank_transactions")
+        col = Column(
+            column_id=str(uuid4()),
+            table_id=table.table_id,
+            column_name="amount",
+            column_position=0,
+            raw_type="VARCHAR",
+            resolved_type="DECIMAL",
+        )
+        session.add(col)
+        session.flush()
+        # Two coexisting candidates at the SAME confidence: the prior run + this run.
+        for run in ("run_prior", "run_current"):
+            session.add(
+                TypeCandidate(
+                    candidate_id=str(uuid4()),
+                    session_id=baseline_session_id(),
+                    column_id=col.column_id,
+                    run_id=run,
+                    data_type="DECIMAL",
+                    confidence=1.0,
+                )
+            )
+        session.flush()
+
+        config = {"overrides": {"units": {"bank_transactions.amount": {"unit": "EUR"}}}}
+        _apply_unit_overrides(session, config, table, run_id="run_current")
+
+        landed = {
+            c.run_id: c.detected_unit
+            for c in session.execute(
+                select(TypeCandidate).where(TypeCandidate.column_id == col.column_id)
+            ).scalars()
+        }
+        assert landed == {"run_current": "EUR", "run_prior": None}

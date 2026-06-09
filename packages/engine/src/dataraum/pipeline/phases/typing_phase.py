@@ -299,12 +299,16 @@ class TypingPhase(BasePhase):
                 )
                 continue
 
-            # Apply unit overrides before resolution
-            _apply_unit_overrides(ctx.session, ctx.config, table)
-
-            # Flush type candidates so resolve_types can query them via selectinload
-            # This is necessary because selectinload queries the DB, not the session cache
+            # Flush the just-inferred candidates BEFORE the unit-override patch and
+            # resolution: the session is autoflush=False, so this run's pending
+            # TypeCandidate rows are invisible to a run-scoped SELECT until flushed.
+            # Without this, _apply_unit_overrides' run_id filter finds nothing on a
+            # teach re-run (the patch silently no-ops); resolve_types' selectinload
+            # likewise queries the DB, not the session cache.
             ctx.session.flush()
+
+            # Apply unit overrides (run-scoped to THIS run's candidate) before resolution
+            _apply_unit_overrides(ctx.session, ctx.config, table, ctx.run_id)
 
             # Phase 2: Resolve types (create typed + quarantine tables)
             resolution_result = resolve_types(
@@ -370,6 +374,7 @@ def _apply_unit_overrides(
     session: Session,
     config: dict,  # type: ignore[type-arg]
     table: Table,
+    run_id: str | None = None,
 ) -> None:
     """Patch TypeCandidate.detected_unit from config overrides.
 
@@ -380,6 +385,12 @@ def _apply_unit_overrides(
     but a raw table's stored name is source-qualified (``src_<digest>__bank_transactions``).
     So we match a key against BOTH the qualified name and the de-prefixed raw name —
     a human teach lands without the user having to know the internal source digest.
+
+    ``run_id`` scopes the patch to THIS run's candidate. A teach RE-RUN leaves the
+    prior run's TypeCandidate rows in place, so an unscoped ``confidence DESC`` pick
+    can patch a different run's candidate than the one the detect path reads (which
+    filters by ``run_id``) — the unit then never reaches ``load_typing`` and the teach
+    silently no-ops. Filtering here keeps the patch on the row the run will read.
     """
     from dataraum.analysis.typing.db_models import TypeCandidate
 
@@ -408,12 +419,12 @@ def _apply_unit_overrides(
         if not unit:
             continue
 
-        # Patch the best type candidate for this column
+        # Patch THIS run's best type candidate (run-scoped — see docstring).
+        stmt = select(TypeCandidate).where(TypeCandidate.column_id == col.column_id)
+        if run_id is not None:
+            stmt = stmt.where(TypeCandidate.run_id == run_id)
         tc = session.execute(
-            select(TypeCandidate)
-            .where(TypeCandidate.column_id == col.column_id)
-            .order_by(TypeCandidate.confidence.desc())
-            .limit(1)
+            stmt.order_by(TypeCandidate.confidence.desc()).limit(1)
         ).scalar_one_or_none()
         if tc is not None:
             tc.detected_unit = unit

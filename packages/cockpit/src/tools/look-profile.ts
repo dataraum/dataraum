@@ -52,7 +52,14 @@ const NumericStats = z.object({
 	cv: z.number().nullable().optional(),
 	mad: z.number().nullable().optional(),
 	robust_cv: z.number().nullable().optional(),
-	percentiles: z.record(z.string(), z.number()).nullable().optional(),
+	// Percentile VALUES are nullable: the engine wraps each in `_finite_or_none`
+	// (profiler.py) → null on a NaN/Inf/degenerate column. A non-nullable value
+	// would fail the whole ProfileData parse and silently drop the entire stats
+	// block (numeric/string/histogram/top_values all empty).
+	percentiles: z
+		.record(z.string(), z.number().nullable())
+		.nullable()
+		.optional(),
 });
 
 const StringStats = z.object({
@@ -62,8 +69,12 @@ const StringStats = z.object({
 });
 
 const HistogramBucket = z.object({
-	bucket_min: z.number().nullable().optional(),
-	bucket_max: z.number().nullable().optional(),
+	// The engine types these `float | str` (HistogramBucket, models.py) — numeric
+	// buckets carry edges, categorical buckets carry the category label. A
+	// number-only schema would reject a string bucket and silently drop the whole
+	// stats block, exactly like the nullable-percentile bug.
+	bucket_min: z.union([z.number(), z.string()]).nullable().optional(),
+	bucket_max: z.union([z.number(), z.string()]).nullable().optional(),
 	count: z.number().nullable().optional(),
 });
 
@@ -131,7 +142,9 @@ const Stats = z.object({
 			cv: z.number().nullable(),
 			mad: z.number().nullable(),
 			robust_cv: z.number().nullable(),
-			percentiles: z.record(z.string(), z.number()).nullable(),
+			// Values nullable to match the input grammar — a null percentile leaf
+			// must survive @tanstack/ai outputSchema validation, not blow up.
+			percentiles: z.record(z.string(), z.number().nullable()).nullable(),
 		})
 		.nullable(),
 	string_stats: z
@@ -143,8 +156,9 @@ const Stats = z.object({
 		.nullable(),
 	histogram: z.array(
 		z.object({
-			bucket_min: z.number().nullable(),
-			bucket_max: z.number().nullable(),
+			// number-or-string to match the input grammar (categorical buckets).
+			bucket_min: z.union([z.number(), z.string()]).nullable(),
+			bucket_max: z.union([z.number(), z.string()]).nullable(),
 			count: z.number().nullable(),
 		}),
 	),
@@ -393,20 +407,19 @@ function projectStats(row: StatsRow | null): ProfileStats | null {
 function projectTypeCandidates(
 	rows: TypeCandidateRow[],
 ): ProfileTypeCandidate[] {
-	// Sort by confidence desc (a null confidence sinks to the bottom); `failed_examples`
-	// is deliberately omitted — it's noisy raw input the agent doesn't need.
-	return [...rows]
-		.sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
-		.map((r) => ({
-			data_type: r.dataType ?? null,
-			confidence: r.confidence ?? null,
-			parse_success_rate: r.parseSuccessRate ?? null,
-			detected_pattern: r.detectedPattern ?? null,
-			pattern_match_rate: r.patternMatchRate ?? null,
-			detected_unit: r.detectedUnit ?? null,
-			unit_confidence: r.unitConfidence ?? null,
-			quarantine_rate: r.quarantineRate ?? null,
-		}));
+	// Rows arrive already confidence-desc ordered from the DB (`orderBy(desc(confidence))`
+	// in loadTypeCandidates) — trust that order, don't re-sort. `failed_examples` is
+	// deliberately omitted — it's noisy raw input the agent doesn't need.
+	return rows.map((r) => ({
+		data_type: r.dataType ?? null,
+		confidence: r.confidence ?? null,
+		parse_success_rate: r.parseSuccessRate ?? null,
+		detected_pattern: r.detectedPattern ?? null,
+		pattern_match_rate: r.patternMatchRate ?? null,
+		detected_unit: r.detectedUnit ?? null,
+		unit_confidence: r.unitConfidence ?? null,
+		quarantine_rate: r.quarantineRate ?? null,
+	}));
 }
 
 function projectTypeDecision(
@@ -621,6 +634,9 @@ async function loadStats(columnId: string): Promise<StatsRow | null> {
 async function loadTypeCandidates(
 	columnId: string,
 ): Promise<TypeCandidateRow[]> {
+	// `.limit(MAX_SAMPLE)` caps at the query level (defense-in-depth, like
+	// top_values/outlier_samples) so a pathological column can't dump an unbounded
+	// candidate list into context; `.orderBy(desc(confidence))` keeps the cap meaningful.
 	return metadataDb
 		.select({
 			dataType: currentTypeCandidates.dataType,
@@ -634,7 +650,8 @@ async function loadTypeCandidates(
 		})
 		.from(currentTypeCandidates)
 		.where(eq(currentTypeCandidates.columnId, columnId))
-		.orderBy(desc(currentTypeCandidates.confidence));
+		.orderBy(desc(currentTypeCandidates.confidence))
+		.limit(MAX_SAMPLE);
 }
 
 async function loadTypeDecision(
@@ -688,6 +705,12 @@ async function loadTemporal(columnId: string): Promise<TemporalRow | null> {
 async function loadDerived(columnId: string): Promise<DerivedRow[]> {
 	// `derived_column_id` is the column this derived column IS — i.e. the rows
 	// where THIS column was synthesized from others (formula + match rate).
+	//
+	// `current_derived_columns` is SESSION-grain (head-joined on `session:{id}`),
+	// so across multiple sessions the same derived column yields several rows.
+	// Order by `computed_at` desc so the read is DETERMINISTIC (latest first, not
+	// arbitrary), and cap at MAX_SAMPLE so it stays bounded. (Cross-lane guard —
+	// DAT-476/477/478 share this session-grain class.)
 	return metadataDb
 		.select({
 			derivationType: currentDerivedColumns.derivationType,
@@ -695,7 +718,9 @@ async function loadDerived(columnId: string): Promise<DerivedRow[]> {
 			matchRate: currentDerivedColumns.matchRate,
 		})
 		.from(currentDerivedColumns)
-		.where(eq(currentDerivedColumns.derivedColumnId, columnId));
+		.where(eq(currentDerivedColumns.derivedColumnId, columnId))
+		.orderBy(desc(currentDerivedColumns.computedAt))
+		.limit(MAX_SAMPLE);
 }
 
 export const lookProfileTool = toolDefinition({

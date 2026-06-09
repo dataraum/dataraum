@@ -138,6 +138,7 @@ describe("ColumnProfileWidget (DAT-475)", () => {
 		expect(screen.getByTestId("canvas-column-profile-stats")).toBeTruthy();
 		expect(screen.getByTestId("canvas-column-profile-numeric")).toBeTruthy();
 		expect(screen.getByTestId("canvas-column-profile-topvalues")).toBeTruthy();
+		expect(screen.getByTestId("canvas-column-profile-histogram")).toBeTruthy();
 		expect(screen.getByTestId("canvas-column-profile-candidates")).toBeTruthy();
 		expect(screen.getByTestId("canvas-column-profile-decision")).toBeTruthy();
 		expect(screen.getByTestId("canvas-column-profile-quality")).toBeTruthy();
@@ -150,5 +151,13 @@ describe("ColumnProfileWidget (DAT-475)", () => {
 		expect(screen.getByText("revenue")).toBeTruthy();
 		expect(screen.getAllByText("non-compliant").length).toBeGreaterThan(0);
 		expect(screen.getByText("qty * price")).toBeTruthy();
+		// The histogram bucket renders its edges + count (0–100 · 30). The badge
+		// holds several text fragments, so assert on the block's text content.
+		expect(
+			screen.getByTestId("canvas-column-profile-histogram").textContent,
+		).toContain("0–100");
+		expect(
+			screen.getByTestId("canvas-column-profile-histogram").textContent,
+		).toContain("30");
 	});
 });

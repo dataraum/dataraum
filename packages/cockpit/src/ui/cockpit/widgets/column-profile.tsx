@@ -26,6 +26,13 @@ function pct(v: number | null | undefined): string {
 	return `${(v * 100).toFixed(1)}%`;
 }
 
+/** Format a histogram bucket edge — number (numeric bucket) or string
+ * (categorical bucket); null degrades to the em-dash. */
+function edge(v: number | string | null | undefined): string {
+	if (v === null || v === undefined) return "—";
+	return typeof v === "number" ? num(v) : v;
+}
+
 function Field({ label, value }: { label: string; value: ReactNode }) {
 	return (
 		<Group gap={6} align="baseline">
@@ -95,6 +102,28 @@ function StatsBlock({ stats }: { stats: ProfileStats }) {
 							color="gray"
 						>
 							{String(tv.value ?? "∅")} · {num(tv.count)}
+						</Badge>
+					))}
+				</Group>
+			)}
+			{stats.histogram.length > 0 && (
+				<Group
+					gap={4}
+					wrap="wrap"
+					data-testid="canvas-column-profile-histogram"
+				>
+					<Text span size="xs" c="dimmed">
+						histogram
+					</Text>
+					{stats.histogram.map((h, i) => (
+						<Badge
+							// biome-ignore lint/suspicious/noArrayIndexKey: static parsed JSON, bucket order is stable
+							key={i}
+							size="xs"
+							variant="light"
+							color="blue"
+						>
+							{edge(h.bucket_min)}–{edge(h.bucket_max)} · {num(h.count)}
 						</Badge>
 					))}
 				</Group>

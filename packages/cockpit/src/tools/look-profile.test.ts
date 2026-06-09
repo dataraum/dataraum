@@ -179,6 +179,72 @@ describe("projectColumnProfile — stats JSONB parse + caps", () => {
 		]);
 	});
 
+	it("keeps the whole stats block when a percentile leaf is null", () => {
+		// The engine wraps each percentile in `_finite_or_none` (profiler.py) → a
+		// degenerate/NaN column persists `{"p01": null, "p50": 40, ...}`. A
+		// non-nullable percentile value would fail the whole ProfileData parse and
+		// SILENTLY drop numeric_stats + string_stats + histogram + top_values.
+		const out = projectColumnProfile("c_1", "amount", "orders", null, {
+			...EMPTY_ROWS,
+			stats: statsRow({
+				numeric_stats: {
+					min_value: 40,
+					max_value: 40,
+					mean: 40,
+					stddev: 0,
+					skewness: null,
+					kurtosis: null,
+					cv: null,
+					mad: 0,
+					robust_cv: null,
+					percentiles: { p01: null, p25: 40, p50: 40, p75: 40, p99: null },
+				},
+				string_stats: { min_length: 2, max_length: 2, avg_length: 2 },
+				histogram: [{ bucket_min: 0, bucket_max: 100, count: 30 }],
+				top_values: [{ value: 40, count: 100, percentage: 1 }],
+			}),
+		});
+		// numeric_stats survives with the null leaves preserved.
+		expect(out.stats?.numeric_stats?.mean).toBe(40);
+		expect(out.stats?.numeric_stats?.percentiles).toEqual({
+			p01: null,
+			p25: 40,
+			p50: 40,
+			p75: 40,
+			p99: null,
+		});
+		// The sibling sub-blocks are NOT dropped.
+		expect(out.stats?.string_stats?.avg_length).toBe(2);
+		expect(out.stats?.histogram).toEqual([
+			{ bucket_min: 0, bucket_max: 100, count: 30 },
+		]);
+		expect(out.stats?.top_values).toEqual([
+			{ value: 40, count: 100, percentage: 1 },
+		]);
+	});
+
+	it("keeps the stats block when a histogram bucket edge is categorical (string)", () => {
+		// The engine types bucket_min/bucket_max `float | str` (models.py) — a
+		// string bucket must not be rejected and nuke the whole stats block.
+		const out = projectColumnProfile("c_1", "category", "orders", null, {
+			...EMPTY_ROWS,
+			stats: statsRow({
+				histogram: [
+					{ bucket_min: "A", bucket_max: "A", count: 12 },
+					{ bucket_min: "B", bucket_max: "B", count: 8 },
+				],
+				top_values: [{ value: "A", count: 12, percentage: 0.6 }],
+			}),
+		});
+		expect(out.stats?.histogram).toEqual([
+			{ bucket_min: "A", bucket_max: "A", count: 12 },
+			{ bucket_min: "B", bucket_max: "B", count: 8 },
+		]);
+		expect(out.stats?.top_values).toEqual([
+			{ value: "A", count: 12, percentage: 0.6 },
+		]);
+	});
+
 	it("caps top_values at 10", () => {
 		const many = Array.from({ length: 25 }, (_, i) => ({
 			value: `v${i}`,
@@ -221,13 +287,16 @@ describe("projectColumnProfile — stats JSONB parse + caps", () => {
 });
 
 describe("projectColumnProfile — type candidates", () => {
-	it("sorts by confidence desc and omits failed_examples", () => {
+	it("preserves the DB confidence-desc order and omits failed_examples", () => {
+		// Rows arrive already confidence-desc ordered from the DB
+		// (loadTypeCandidates `orderBy(desc(confidence))`); the projection trusts
+		// that order and does NOT re-sort.
 		const out = projectColumnProfile("c_1", "amount", "orders", null, {
 			...EMPTY_ROWS,
 			typeCandidates: [
-				candidate({ dataType: "VARCHAR", confidence: 0.3 }),
 				candidate({ dataType: "DECIMAL", confidence: 0.9 }),
 				candidate({ dataType: "INTEGER", confidence: 0.6 }),
+				candidate({ dataType: "VARCHAR", confidence: 0.3 }),
 			],
 		});
 		expect(out.type_candidates.map((c) => c.data_type)).toEqual([
@@ -237,20 +306,6 @@ describe("projectColumnProfile — type candidates", () => {
 		]);
 		// `failed_examples` is omitted — never present on the projected shape.
 		expect(out.type_candidates[0]).not.toHaveProperty("failed_examples");
-	});
-
-	it("sinks a null-confidence candidate to the bottom", () => {
-		const out = projectColumnProfile("c_1", "amount", "orders", null, {
-			...EMPTY_ROWS,
-			typeCandidates: [
-				candidate({ dataType: "UNKNOWN", confidence: null }),
-				candidate({ dataType: "DECIMAL", confidence: 0.9 }),
-			],
-		});
-		expect(out.type_candidates.map((c) => c.data_type)).toEqual([
-			"DECIMAL",
-			"UNKNOWN",
-		]);
 	});
 });
 

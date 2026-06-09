@@ -14,10 +14,13 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {
 	projectColumnReadiness,
+	projectColumnSemantic,
 	projectLookTable,
 	projectTableBand,
+	projectTableEntity,
 	type ReadinessRow,
 	type TableBandRow,
+	type TableEntityRow,
 } from "./look-table";
 
 function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
@@ -27,6 +30,11 @@ function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
 		resolvedType: "DECIMAL(18,2)",
 		band: "investigate",
 		worstIntentRisk: 0.42,
+		// Light per-column semantics (DAT-476) — populated by default; the
+		// unannotated case overrides all three to null.
+		businessConcept: "monetary_amount",
+		semanticRole: "measure",
+		businessName: "Order Amount",
 		intents: [
 			{ intent: "query", band: "ready", risk: 0.1, drivers: [] },
 			{
@@ -75,6 +83,12 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		expect(out.top_drivers).toEqual([
 			{ label: "Unit Documentation", state: "high", impact_delta: 0.3 },
 		]);
+		// The light semantic triple rides alongside (DAT-476).
+		expect(out.semantic).toEqual({
+			business_concept: "monetary_amount",
+			semantic_role: "measure",
+			business_name: "Order Amount",
+		});
 	});
 
 	it("treats a left-join miss (no readiness row) as not-analyzed", () => {
@@ -84,12 +98,17 @@ describe("projectColumnReadiness (DAT-350)", () => {
 				worstIntentRisk: null,
 				intents: null,
 				topDrivers: null,
+				businessConcept: null,
+				semanticRole: null,
+				businessName: null,
 			}),
 		);
 		expect(out.band).toBeNull();
 		expect(out.worst_intent_risk).toBeNull();
 		expect(out.intents).toEqual([]);
 		expect(out.top_drivers).toEqual([]);
+		// Unannotated column (semantic left-join also missed) → null semantic block.
+		expect(out.semantic).toBeNull();
 	});
 
 	it("caps top drivers at 3 (the overview shows the worst few)", () => {
@@ -114,6 +133,75 @@ describe("projectColumnReadiness (DAT-350)", () => {
 		// The scalar band still comes through — it's a real column, just with a
 		// blob we couldn't parse.
 		expect(out.band).toBe("investigate");
+	});
+});
+
+describe("projectColumnSemantic (DAT-476)", () => {
+	it("projects the light semantic triple when the column is annotated", () => {
+		expect(projectColumnSemantic(row())).toEqual({
+			business_concept: "monetary_amount",
+			semantic_role: "measure",
+			business_name: "Order Amount",
+		});
+	});
+
+	it("is null when the column is unannotated (every semantic field absent)", () => {
+		const out = projectColumnSemantic(
+			row({ businessConcept: null, semanticRole: null, businessName: null }),
+		);
+		expect(out).toBeNull();
+	});
+
+	it("keeps the block (partial fields) when at least one field is present", () => {
+		// A partial annotation (e.g. only a business_concept) is still an annotation —
+		// the block survives with the absent fields null, not collapsed to null.
+		const out = projectColumnSemantic(
+			row({
+				businessConcept: "monetary_amount",
+				semanticRole: null,
+				businessName: null,
+			}),
+		);
+		expect(out).toEqual({
+			business_concept: "monetary_amount",
+			semantic_role: null,
+			business_name: null,
+		});
+	});
+});
+
+function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
+	return {
+		detectedEntityType: "transaction",
+		isFactTable: true,
+		isDimensionTable: false,
+		grainColumns: ["order_id", "line_no"],
+		timeColumn: "order_date",
+		description: "One row per order line item.",
+		...overrides,
+	};
+}
+
+describe("projectTableEntity (DAT-476)", () => {
+	it("maps the descriptive header straight through, grain as a name array", () => {
+		expect(projectTableEntity(entityRow())).toEqual({
+			entity_type: "transaction",
+			is_fact_table: true,
+			is_dimension_table: false,
+			grain: ["order_id", "line_no"],
+			time_column: "order_date",
+			description: "One row per order line item.",
+		});
+	});
+
+	it("degrades a malformed/absent grain blob to an empty grain rather than throwing", () => {
+		expect(projectTableEntity(entityRow({ grainColumns: null })).grain).toEqual(
+			[],
+		);
+		expect(
+			projectTableEntity(entityRow({ grainColumns: { not: "an array" } }))
+				.grain,
+		).toEqual([]);
 	});
 });
 
@@ -199,18 +287,23 @@ describe("projectLookTable (DAT-433)", () => {
 			[projectColumnReadiness(row())],
 			null,
 			2,
+			projectTableEntity(entityRow()),
 		);
 		expect(out.table_name).toBe("orders");
 		expect(out.physical_name).toBe(`src_${DIGEST}__orders`);
 		expect(out.analyzed).toBe(true);
 		expect(out.pending_teaches).toBe(2);
+		// The entity header carries straight through (DAT-476).
+		expect(out.entity?.entity_type).toBe("transaction");
+		expect(out.entity?.is_fact_table).toBe(true);
+		expect(out.entity?.grain).toEqual(["order_id", "line_no"]);
 		// The digest appears ONLY in the sanctioned physical_name (the run_sql
 		// round-trip key) — nowhere else in the projection.
 		const { physical_name: _pn, ...rest } = out;
 		expect(JSON.stringify(rest)).not.toMatch(/src_[0-9a-f]{40}/);
 	});
 
-	it("returns the empty not-found shell for a stale table id", () => {
+	it("returns the empty not-found shell for a stale table id — entity null", () => {
 		const out = projectLookTable("t_gone", null, [], null, 0);
 		expect(out).toEqual({
 			table_id: "t_gone",
@@ -220,7 +313,21 @@ describe("projectLookTable (DAT-433)", () => {
 			pending_teaches: 0,
 			columns: [],
 			table_readiness: null,
+			entity: null,
 		});
+	});
+
+	it("entity is null pre-session (no promoted detect run)", () => {
+		// No entity arg — the default (null) models a table that hasn't been through
+		// a begin_session detect run yet; the descriptive header is absent.
+		const out = projectLookTable(
+			"t_orders",
+			"orders",
+			[projectColumnReadiness(row())],
+			null,
+			0,
+		);
+		expect(out.entity).toBeNull();
 	});
 
 	it("analyzed reflects whether any column carries a band", () => {

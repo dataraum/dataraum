@@ -29,6 +29,8 @@ import { tableTargetKey } from "../db/metadata/relationship-target";
 import {
 	columns,
 	currentEntropyReadiness,
+	currentSemanticAnnotations,
+	currentTableEntities,
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
@@ -51,6 +53,19 @@ const TopDriver = z.object({
 	impact_delta: z.number(),
 });
 
+// Light per-column semantics (DAT-476) — the cockpit analog of MCP
+// `look(target="table")`'s per-column semantic line. begin_session's
+// `semantic_per_column` annotation, head-resolved by `current_semantic_annotations`.
+// Null when the column carries no promoted annotation (unannotated /
+// pre-session). The full annotation (units, temporal behavior, evidence, …) is a
+// drill-down concern; this is the at-a-glance triple.
+const ColumnSemantic = z.object({
+	business_concept: z.string().nullable(),
+	semantic_role: z.string().nullable(),
+	business_name: z.string().nullable(),
+});
+export type ColumnSemantic = z.infer<typeof ColumnSemantic>;
+
 const ColumnReadiness = z.object({
 	column_id: z.string(),
 	column_name: z.string(),
@@ -60,6 +75,11 @@ const ColumnReadiness = z.object({
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
+	// Light semantics from begin_session's per-column annotation (DAT-476); null
+	// when the column is unannotated. Additive — independent of the band grid.
+	// Optional so the type stays back-compat for hand-built fixtures; the
+	// projection ALWAYS sets it (null or block), so it's present at runtime.
+	semantic: ColumnSemantic.nullable().optional(),
 });
 export type ColumnReadiness = z.infer<typeof ColumnReadiness>;
 
@@ -74,6 +94,22 @@ const TableReadiness = z.object({
 	top_drivers: z.array(TopDriver),
 });
 export type TableReadiness = z.infer<typeof TableReadiness>;
+
+// The table descriptive header (DAT-476) — the cockpit analog of MCP
+// `look(target="table")`'s entity block: what kind of table this is (fact /
+// dimension), its grain, its time column, and a short description.
+// begin_session's `detect` writes it; `current_table_entities` head-resolves to
+// the promoted run. Null when no detect run has promoted (pre-session).
+const TableEntity = z.object({
+	entity_type: z.string().nullable(),
+	is_fact_table: z.boolean().nullable(),
+	is_dimension_table: z.boolean().nullable(),
+	// The column names that uniquely identify a row (the table's grain).
+	grain: z.array(z.string()),
+	time_column: z.string().nullable(),
+	description: z.string().nullable(),
+});
+export type TableEntity = z.infer<typeof TableEntity>;
 
 const LookTableResult = z.object({
 	table_id: z.string(),
@@ -100,6 +136,13 @@ const LookTableResult = z.object({
 	// for this table (never begun / table not in the session). The per-column grid
 	// above is add_source-grain; this is the begin_session whole-table rollup.
 	table_readiness: TableReadiness.nullable(),
+	// The table descriptive header (DAT-476) — entity type / fact-dimension / grain
+	// / time column / description from `current_table_entities`. Session/detect grain
+	// → null pre-session (no promoted detect run). Independent of any session_id
+	// input; the view is head-resolved, so a plain select by table_id suffices.
+	// Optional so the type stays back-compat for hand-built fixtures; the
+	// projection ALWAYS sets it (null or block), so it's present at runtime.
+	entity: TableEntity.nullable().optional(),
 });
 export type LookTableResult = z.infer<typeof LookTableResult>;
 
@@ -107,7 +150,9 @@ export type LookTableResult = z.infer<typeof LookTableResult>;
 // shows the full ranked list).
 const TOP_DRIVERS_SHOWN = 3;
 
-/** One joined (columns ⟕ entropy_readiness) row, as Drizzle returns it. */
+/** One joined (columns ⟕ entropy_readiness ⟕ semantic_annotations) row, as
+ * Drizzle returns it. The semantic fields are left-join-nullable — a column with
+ * no promoted annotation reads them all null and projects `semantic: null`. */
 export interface ReadinessRow {
 	columnId: string;
 	columnName: string;
@@ -116,6 +161,36 @@ export interface ReadinessRow {
 	worstIntentRisk: number | null;
 	intents: unknown;
 	topDrivers: unknown;
+	// Light semantics from the `current_semantic_annotations` left join (DAT-476).
+	// Optional so callers that don't join the view still satisfy the type; absent
+	// (undefined) or null is treated as unannotated.
+	businessConcept?: string | null;
+	semanticRole?: string | null;
+	businessName?: string | null;
+}
+
+/** Project the light semantic triple for one column (DAT-476). Pure (no DB).
+ * Null when the column carries no annotation at all — every field absent means
+ * the `semantic_per_column` join missed (unannotated / pre-session), so the
+ * column gets no semantic block rather than a triple of nulls. */
+export function projectColumnSemantic(
+	row: ReadinessRow,
+): ColumnSemantic | null {
+	const businessConcept = row.businessConcept ?? null;
+	const semanticRole = row.semanticRole ?? null;
+	const businessName = row.businessName ?? null;
+	if (
+		businessConcept === null &&
+		semanticRole === null &&
+		businessName === null
+	) {
+		return null;
+	}
+	return {
+		business_concept: businessConcept,
+		semantic_role: semanticRole,
+		business_name: businessName,
+	};
 }
 
 /**
@@ -123,6 +198,7 @@ export interface ReadinessRow {
  * JSONB-parsing + null-handling logic is unit-testable without a live schema.
  * A column with no readiness row (left-join miss) keeps `band: null` and empty
  * intents/drivers; a malformed JSONB blob degrades to empty rather than throwing.
+ * The light semantic triple (DAT-476) rides alongside, null when unannotated.
  */
 export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 	const intents = PersistedIntent.array().safeParse(row.intents);
@@ -147,6 +223,7 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 					impact_delta: d.impact_delta,
 				}))
 			: [],
+		semantic: projectColumnSemantic(row),
 	};
 }
 
@@ -188,6 +265,36 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 	};
 }
 
+/** One `current_table_entities` row, as Drizzle returns it. grainColumns is the
+ * persisted JSON array of column names (the table's grain). */
+export interface TableEntityRow {
+	detectedEntityType: string | null;
+	isFactTable: boolean | null;
+	isDimensionTable: boolean | null;
+	grainColumns: unknown;
+	timeColumn: string | null;
+	description: string | null;
+}
+
+/**
+ * Project the table-entity header row to the tool shape (DAT-476). Pure (no DB).
+ * `grain_columns` is a persisted JSON array of column names; a malformed/absent
+ * blob degrades to an empty grain rather than throwing. The remaining fields map
+ * straight through (the view is head-resolved, so a present row IS the promoted
+ * detect run). The caller passes null when no entity row exists (pre-session).
+ */
+export function projectTableEntity(row: TableEntityRow): TableEntity {
+	const grain = z.array(z.string()).safeParse(row.grainColumns);
+	return {
+		entity_type: row.detectedEntityType ?? null,
+		is_fact_table: row.isFactTable ?? null,
+		is_dimension_table: row.isDimensionTable ?? null,
+		grain: grain.success ? grain.data : [],
+		time_column: row.timeColumn ?? null,
+		description: row.description ?? null,
+	};
+}
+
 export interface LookTableInput {
 	table_id: string;
 	// Optional: when this table is being inspected inside a begin_session, the
@@ -201,7 +308,9 @@ export interface LookTableInput {
  * display/physical name split is unit-testable: `table_name` is the display
  * form for prose (digest prefix stripped, DAT-433), `physical_name` the raw
  * DuckDB name run_sql addresses. A null rawTableName (stale table id) yields
- * the empty not-found shell.
+ * the empty not-found shell. `entity` is the optional DAT-476 descriptive header
+ * (defaulted null = pre-session / no promoted detect run) — last + defaulted so
+ * it's purely additive on the existing call shape.
  */
 export function projectLookTable(
 	tableId: string,
@@ -209,6 +318,7 @@ export function projectLookTable(
 	cols: ColumnReadiness[],
 	tableReadiness: TableReadiness | null,
 	pendingTeaches: number,
+	entity: TableEntity | null = null,
 ): LookTableResult {
 	return {
 		table_id: tableId,
@@ -218,6 +328,7 @@ export function projectLookTable(
 		pending_teaches: pendingTeaches,
 		columns: cols,
 		table_readiness: tableReadiness,
+		entity,
 	};
 }
 
@@ -237,14 +348,18 @@ export async function lookTable(
 		return projectLookTable(input.table_id, null, [], null, 0);
 	}
 
-	// Three independent reads once the table is known: the per-column grid (its own
-	// add_source `table:{id}` head), the table-grain band (the begin_session
-	// `session:{id}` head — a different head), and the workspace teach count. Fan
-	// them out — they share no input, so sequential awaits only add latency to the
-	// hot path. table_readiness stays null without a session_id (add_source view).
+	// Four independent reads once the table is known: the per-column grid (its own
+	// add_source `table:{id}` head, now carrying the light semantic join), the
+	// table descriptive header (DAT-476 — `current_table_entities`, head-resolved,
+	// session/detect grain so null pre-session), the table-grain band (the
+	// begin_session `session:{id}` head — a different head), and the workspace teach
+	// count. Fan them out — they share no input, so sequential awaits only add
+	// latency. table_readiness stays null without a session_id (add_source view);
+	// entity stays null until a detect run promotes (independent of session_id).
 	const tableName = table.tableName ?? "";
-	const [cols, tableReadiness, pending] = await Promise.all([
+	const [cols, entity, tableReadiness, pending] = await Promise.all([
 		loadColumnGrid(input.table_id),
+		loadTableEntity(input.table_id),
 		input.session_id ? loadTableBand(input.session_id, tableName) : null,
 		getPendingOverlays(),
 	]);
@@ -255,6 +370,7 @@ export async function lookTable(
 		cols,
 		tableReadiness,
 		pending.length,
+		entity,
 	);
 }
 
@@ -272,6 +388,12 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			topDrivers: currentEntropyReadiness.topDrivers,
+			// Light per-column semantics (DAT-476) — begin_session's
+			// `semantic_per_column` annotation, head-resolved by the view. Left-join
+			// nullable: an unannotated column reads all three null → semantic: null.
+			businessConcept: currentSemanticAnnotations.businessConcept,
+			semanticRole: currentSemanticAnnotations.semanticRole,
+			businessName: currentSemanticAnnotations.businessName,
 		})
 		.from(columns)
 		.leftJoin(
@@ -282,6 +404,10 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 				// fans out to two rows per column once a session head is promoted.
 				eq(currentEntropyReadiness.viaTableHead, true),
 			),
+		)
+		.leftJoin(
+			currentSemanticAnnotations,
+			eq(currentSemanticAnnotations.columnId, columns.columnId),
 		)
 		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));
@@ -295,6 +421,26 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 			columnName: r.columnName ?? "",
 		}),
 	);
+}
+
+/** Resolve a table's descriptive header (DAT-476) — entity type / fact-dimension
+ * / grain / time column / description from `current_table_entities`. The view is
+ * head-resolved (the promoted `detect` run), so a plain select by table_id
+ * suffices; null when no detect run has promoted (pre-session). */
+async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
+	const [row] = await metadataDb
+		.select({
+			detectedEntityType: currentTableEntities.detectedEntityType,
+			isFactTable: currentTableEntities.isFactTable,
+			isDimensionTable: currentTableEntities.isDimensionTable,
+			grainColumns: currentTableEntities.grainColumns,
+			timeColumn: currentTableEntities.timeColumn,
+			description: currentTableEntities.description,
+		})
+		.from(currentTableEntities)
+		.where(eq(currentTableEntities.tableId, tableId))
+		.limit(1);
+	return row ? projectTableEntity(row) : null;
 }
 
 /** Resolve a session's table-grain readiness band for one table (DAT-415).
@@ -333,7 +479,11 @@ export const lookTableTool = toolDefinition({
 		"is the DuckDB name — use it ONLY to address the table in run_sql as " +
 		"`lake.<layer>.<physical_name>`. Pass a begin_session session_id to also " +
 		"get the table's whole-table readiness band (table_readiness) from that " +
-		"session; use `why_table` to explain it. pending_teaches counts un-applied " +
+		"session; use `why_table` to explain it. Also returns the table's " +
+		"descriptive header (entity: type, fact/dimension, grain, time column, " +
+		"description) and light per-column semantics (columns[].semantic: business " +
+		"concept, semantic role, business name) — both from begin_session analysis, " +
+		"so null/empty before a session has run. pending_teaches counts un-applied " +
 		"teaches across the workspace (not scoped to this table); if > 0, suggest " +
 		"a `replay` before trusting the bands. Use `why_column` to explain a " +
 		"specific column's band.",

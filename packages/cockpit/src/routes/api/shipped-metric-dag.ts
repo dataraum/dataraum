@@ -42,9 +42,8 @@ export const Route = createFileRoute("/api/shipped-metric-dag")({
 				}
 				const parsed = InputSchema.safeParse(raw);
 				if (!parsed.success) {
-					return badRequest(
-						parsed.error.issues[0]?.message ?? "Invalid input.",
-					);
+					const field = parsed.error.issues[0]?.path.join(".") || "input";
+					return badRequest(`Missing or invalid field: ${field}.`);
 				}
 
 				try {

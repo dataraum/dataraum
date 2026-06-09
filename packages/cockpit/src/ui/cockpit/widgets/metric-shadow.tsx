@@ -43,6 +43,10 @@ export function MetricShadowWidget({
 	const { data, error, isLoading } = useQuery({
 		queryKey: ["shipped-metric-dag", vertical, graphId],
 		queryFn: () => fetchShippedDag(vertical, graphId),
+		// The shipped YAML is immutable for the process lifetime (read-only,
+		// bind-mounted config tree) — never stale, so re-revealing the canvas
+		// (pin/unpin, re-click) serves the cache instead of re-POSTing.
+		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnWindowFocus: false,
 	});
 

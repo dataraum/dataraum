@@ -11,6 +11,7 @@ import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
 import type { LookMetricResult } from "#/tools/look-metric";
+import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
@@ -47,6 +48,10 @@ export type CanvasState =
 	// DAT-351: per-column readiness explanation. Carries the why_column result —
 	// per-intent drivers + detector evidence + the synthesized narrative.
 	| { kind: "column-why"; why: WhyColumnResult }
+	// DAT-475: per-column descriptive profile — the heavy deep-dive (semantic,
+	// statistics, type candidates + decision, quality, temporal, derived). Carries
+	// the look_profile result; the widget renders every populated block read-only.
+	| { kind: "column-profile"; profile: LookProfileResult }
 	// DAT-434: per-table readiness explanation (the begin_session table-grain
 	// analog of column-why). Carries the why_table result.
 	| { kind: "table-why"; why: WhyTableResult }

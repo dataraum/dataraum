@@ -6,6 +6,7 @@
 // README.md for the register-don't-replace contract.
 
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
+import { ColumnProfileWidget } from "#/ui/cockpit/widgets/column-profile";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
 import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
@@ -44,6 +45,7 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
 	.register({ kind: "column-why", component: ColumnWhyWidget })
+	.register({ kind: "column-profile", component: ColumnProfileWidget })
 	.register({ kind: "table-why", component: TableWhyWidget })
 	.register({ kind: "relationship-why", component: RelationshipWhyWidget })
 	.register({ kind: "relationship-list", component: RelationshipListWidget })

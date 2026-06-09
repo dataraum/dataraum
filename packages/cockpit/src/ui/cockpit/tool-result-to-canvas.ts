@@ -19,6 +19,7 @@ import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
 import type { LookMetricResult } from "#/tools/look-metric";
+import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
@@ -74,6 +75,14 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	why_column: (result) =>
 		isWhyResult(result)
 			? { kind: "column-why", why: result as WhyColumnResult }
+			: null,
+	// The per-column descriptive profile (DAT-475) — same `found` discriminant
+	// guard as the why_* tools: an ERRORED call's `{ error }` output has no
+	// boolean `found`, so it won't project (would otherwise render as "No such
+	// column"); the failure surfaces in the chat rail instead.
+	look_profile: (result) =>
+		isWhyResult(result)
+			? { kind: "column-profile", profile: result as LookProfileResult }
 			: null,
 	// The per-table explanation (DAT-434) — same `found` guard.
 	why_table: (result) =>

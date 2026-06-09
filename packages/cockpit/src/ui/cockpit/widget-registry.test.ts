@@ -46,6 +46,10 @@ describe("WidgetRegistry (DAT-347)", () => {
 		expect(canvasRegistry.has("column-why")).toBe(true);
 	});
 
+	it("the shared canvas registry has the column-profile widget (DAT-475)", () => {
+		expect(canvasRegistry.has("column-profile")).toBe(true);
+	});
+
 	it("the shared canvas registry has the add-source-progress widget (DAT-352)", () => {
 		expect(canvasRegistry.has("add-source-progress")).toBe(true);
 	});

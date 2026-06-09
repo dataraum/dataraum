@@ -106,4 +106,5 @@ def test_terminal_detect_step_runs_every_wired_detector() -> None:
         "unit_entropy",
         "temporal_entropy",
         "benford",
+        "temporal_behavior",
     }

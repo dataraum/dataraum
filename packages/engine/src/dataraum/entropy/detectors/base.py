@@ -332,6 +332,10 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     from dataraum.entropy.detectors.computational.derived_values import (
         DerivedValueDetector,
     )
+    from dataraum.entropy.detectors.computational.temporal_behavior import (
+        TemporalBehaviorDetector,
+    )
 
     registry.register(CrossTableConsistencyDetector())
     registry.register(DerivedValueDetector())
+    registry.register(TemporalBehaviorDetector())

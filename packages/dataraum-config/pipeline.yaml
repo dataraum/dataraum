@@ -36,7 +36,11 @@ phases:
 
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
-    detectors: [business_meaning, unit_entropy, temporal_entropy, benford]
+    # temporal_behavior (DAT-445) is enabled here — it reads the per-column concept
+    # temporal_behavior these annotations carry — but runs at the terminal source-wide
+    # detect, where every table is typed so it can reconcile a period-keyed column
+    # against the ledger line-item movements.
+    detectors: [business_meaning, unit_entropy, temporal_entropy, benford, temporal_behavior]
 
   semantic_per_table:
     description: Per-table LLM synthesis (entities, relationships) over annotations

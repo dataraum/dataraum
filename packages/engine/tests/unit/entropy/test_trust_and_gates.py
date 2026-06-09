@@ -19,6 +19,7 @@ ALL_DETECTOR_IDS = {
     "dimensional_entropy",
     "dimension_coverage",
     "cross_table_consistency",
+    "temporal_behavior",
 }
 
 

@@ -38,6 +38,7 @@ describe("tool registry (DAT-353)", () => {
 				"look_relationships",
 				"why_relationship",
 				"run_sql",
+				"answer",
 				"probe",
 				"connect",
 				"frame",
@@ -91,6 +92,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(byName.get("look_metric")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("why_metric")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("answer")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("workflow_status")?.needsApproval ?? false).toBe(false);

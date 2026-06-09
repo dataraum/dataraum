@@ -49,8 +49,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 23 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(23);
+	it("marks the 24 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(24);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -74,6 +74,8 @@ describe("isCanvasTool", () => {
 			"begin_session",
 			"operating_model",
 			"run_sql",
+			// answer projects the streaming result-grid from its composed SQL (DAT-485).
+			"answer",
 			"replay",
 			"upload",
 		]) {

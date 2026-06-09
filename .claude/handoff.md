@@ -22,12 +22,23 @@ constants." New engine pieces:
   neutral fallback. `DEFAULT_RELIABILITIES` reframed as that fallback only.
 
 **Measured values (corpus null_tokens-v1, Laplace accuracy on opinionated votes):**
-`quarantine_clustering 0.999` (n=1579), `null_vocabulary 0.976` (n=33632),
-**`type_claim 0.221`** (n=2000). Held-out pooled Brier: measured **0.095** <
-placeholder 0.158 < uniform 0.168 — the measured weights resolve strictly better
+`quarantine_clustering 0.999` (n=1579), `null_vocabulary 0.953` (n=17467),
+**`type_claim 0.222`** (n=2000). Held-out pooled Brier: measured **0.101** <
+placeholder 0.181 < uniform 0.185 — the measured weights resolve strictly better
 than the constants they replace (DAT-450 AC4). The estimator is plain accuracy,
 chosen by held-out proper scoring (a balanced variant pooled worse and laundered
 the next finding — the rig MEASURES, it does not flatter a witness).
+
+**LIVE-PROVEN end-to-end (2026-06-09).** A real `addSourceWorkflow` over
+detection-null-v1 persisted `claim_witnesses` whose `reliability` equals the
+shipped `0.9994 / 0.2218 / 0.9531` (NOT the `0.8/0.7/0.6` fallback) — the artifact
+is consumed by the live pipeline. The adjudication-recall test passes (injected
+C > clean C on both injected columns). The live run also surfaced a calibration
+bug the isolated rig structurally couldn't: the family's combined marker+decoy
+ratio must keep `parse_success ≥ min_confidence` (0.85, `phases/typing.yaml`) — at
+16% corruption `journal_lines.debit` fell to VARCHAR, never quarantined, and the
+detector was skipped. The family ratio is now capped ≤0.10 (parse ≥0.90); both
+columns resolve DOUBLE and fire. Verify with `scripts/check_reliability_consumption.py`.
 
 **Finding for witness design (DAT-457):** **`type_claim` is non-discriminative** —
 its `r=0.221` and per-witness Brier `0.275` are WORSE than always-abstaining

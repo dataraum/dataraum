@@ -29,11 +29,11 @@ provenance:
   sample_size_per_witness:
     quarantine_clustering: 1579
     type_claim: 2000
-    null_vocabulary: 33632
+    null_vocabulary: 17467
   seeds: fit=0..399, holdout=10000..10119
-  pooled_brier_holdout: 0.0947
-  pooled_brier_holdout_uniform: 0.168
-  pooled_brier_holdout_placeholder: 0.1583
+  pooled_brier_holdout: 0.1008
+  pooled_brier_holdout_uniform: 0.1845
+  pooled_brier_holdout_placeholder: 0.1814
   notes: "quarantine_clustering never argues is-value (abstains on decoys) \u2192\
     \ its r is a sensitivity, not a discrimination score. type_claim votes is-null\
     \ on everything in failed_examples, so it cannot separate a sentinel from a genuine-but-unparseable\
@@ -43,5 +43,5 @@ provenance:
 witnesses:
   null_semantics:
     quarantine_clustering: 0.9994
-    type_claim: 0.2208
-    null_vocabulary: 0.9756
+    type_claim: 0.2218
+    null_vocabulary: 0.9531

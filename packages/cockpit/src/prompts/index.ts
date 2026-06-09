@@ -10,4 +10,5 @@ export {
 	getFrameValidationsInstructions,
 } from "./frame";
 export { getOrchestratorInstructions } from "./orchestrator";
+export { getQueryInstructions } from "./query";
 export { getWhyInstructions } from "./why";

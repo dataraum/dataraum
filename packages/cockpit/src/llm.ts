@@ -28,3 +28,12 @@ export const MAX_OUTPUT_TOKENS = 24576;
 // budget — normal turns finish well under it, and a turn that genuinely needs
 // more is a prompt/tool-design problem, not a reason to raise this.
 export const AGENT_LOOP_MAX_ITERATIONS = 20;
+
+// The iteration ceiling for the `answer` query sub-agent's OWN nested chat()
+// loop (DAT-485) — the same silent-maxIterations(5) governor as the
+// orchestrator above, just scoped to a narrower agent: search the snippet KB →
+// (maybe re-search) → validate the composed SQL via run_steps → (maybe repair) →
+// emit the structured answer. ~10 leaves headroom for a search + a validate + a
+// repair round without stalling mid-task, and stays a runaway ceiling (a normal
+// answer finishes in 2-4 iterations).
+export const QUERY_SUBAGENT_MAX_ITERATIONS = 10;

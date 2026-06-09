@@ -20,6 +20,7 @@ import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
 import { operatingModelTool } from "./operating-model";
 import { probeTool } from "./probe";
+import { answerTool } from "./query";
 import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
 import { selectTool } from "./select";
@@ -48,6 +49,7 @@ export const tools = [
 	lookRelationshipsTool,
 	whyRelationshipTool,
 	runSqlTool,
+	answerTool,
 	probeTool,
 	connectTool,
 	frameTool,

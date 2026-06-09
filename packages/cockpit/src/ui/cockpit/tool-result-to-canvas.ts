@@ -250,6 +250,18 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 			? { kind: "result-grid", sql: args.sql, params }
 			: { kind: "result-grid", sql: args.sql };
 	},
+	// The `answer` sub-agent composes + validates the SQL; the human grid streams
+	// the FULL result from the composed statement. Unlike run_sql, the grid SQL is
+	// in the RESULT (result.grid.sql) — the composed final_sql isn't in the call
+	// input (just the question). An errored sub-agent (`{ error }`, no grid) or a
+	// run with no runnable query (grid null) leaves the canvas unchanged.
+	answer: (result) => {
+		if (isAgentError(result)) return null;
+		const grid = (result as { grid?: { sql?: unknown } | null } | null)?.grid;
+		return grid && typeof grid.sql === "string" && grid.sql.length > 0
+			? { kind: "result-grid", sql: grid.sql }
+			: null;
+	},
 	// The `upload` UI tool carries no data — it just opens the upload area so the
 	// user can drop local files.
 	upload: () => ({ kind: "upload-area" }),

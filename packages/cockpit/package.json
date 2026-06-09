@@ -30,6 +30,7 @@
     "@duckdb/node-api": "^1.5.3-r.3",
     "@mantine/core": "^9.3.0",
     "@mantine/hooks": "^9.3.0",
+    "@polyglot-sql/sdk": "^0.5.1",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/ai": "latest",
     "@tanstack/ai-anthropic": "latest",

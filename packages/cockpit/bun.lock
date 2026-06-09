@@ -9,6 +9,7 @@
         "@duckdb/node-api": "^1.5.3-r.3",
         "@mantine/core": "^9.3.0",
         "@mantine/hooks": "^9.3.0",
+        "@polyglot-sql/sdk": "^0.5.1",
         "@tailwindcss/vite": "^4.3.0",
         "@tanstack/ai": "latest",
         "@tanstack/ai-anthropic": "latest",
@@ -309,6 +310,8 @@
     "@oxc-parser/binding-win32-x64-msvc": ["@oxc-parser/binding-win32-x64-msvc@0.120.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ys+upfqNtSu58huAhJMBKl3XCkGzyVFBlMlGPzHeFKgpFF/OdgNs1MMf8oaJIbgMH8ZxgGF7qfue39eJohmKIg=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.120.0", "", {}, "sha512-k1YNu55DuvAip/MGE1FTsIuU3FUCn6v/ujG9V7Nq5Df/kX2CWb13hhwD0lmJGMGqE+bE1MXvv9SZVnMzEXlWcg=="],
+
+    "@polyglot-sql/sdk": ["@polyglot-sql/sdk@0.5.1", "", {}, "sha512-iJ1f9aaIl9GT4uGWjUk3G6Juk6kcxC+5SRTPQ0LPtGjv2VcMNvR1Z6K1Osdn3kcu61v6X1PLO/oEPhUDH2tUdg=="],
 
     "@protobufjs/aspromise": ["@protobufjs/aspromise@1.1.2", "", {}, "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="],
 

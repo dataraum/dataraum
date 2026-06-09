@@ -323,26 +323,20 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 	});
 
 	describe("vocabulary is curated from graph:% snippets only", () => {
-		it("surfaces the four buckets from graph: snippets", async () => {
+		it("surfaces exactly the four buckets from graph: snippets (sorted)", async () => {
+			// Exact equality (the fixture is fully controlled): proves no rogue term
+			// — e.g. a query: concept — leaks in, AND that the output is sorted.
 			const vocab = await lib.getSearchVocabulary(MAP);
-			expect(vocab.standardFields).toEqual(
-				expect.arrayContaining([
-					"accounts_receivable",
-					"revenue",
-					"cost_of_goods_sold",
-					"days_in_period",
-					"gross_margin",
-				]),
-			);
-			expect(vocab.statements).toEqual(
-				expect.arrayContaining(["income_statement", "balance_sheet"]),
-			);
-			expect(vocab.aggregations).toEqual(
-				expect.arrayContaining(["sum", "end_of_period", "average"]),
-			);
-			expect(vocab.graphIds).toEqual(
-				expect.arrayContaining(["dso", "trend", "gross_margin"]),
-			);
+			expect(vocab.standardFields).toEqual([
+				"accounts_receivable",
+				"cost_of_goods_sold",
+				"days_in_period",
+				"gross_margin",
+				"revenue",
+			]);
+			expect(vocab.statements).toEqual(["balance_sheet", "income_statement"]);
+			expect(vocab.aggregations).toEqual(["average", "end_of_period", "sum"]);
+			expect(vocab.graphIds).toEqual(["dso", "gross_margin", "trend"]);
 		});
 
 		it("excludes query: snippets from the vocabulary, yet keeps them retrievable by concept", async () => {

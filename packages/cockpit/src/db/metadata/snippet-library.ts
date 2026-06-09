@@ -67,22 +67,33 @@ type RawSnippetRow = {
 };
 
 // The view is nullable-typed (Drizzle views default every column nullable), but
-// snippet_id / snippet_type / sql / description / source are NOT NULL in the
-// engine table — coerce them here so the consumer surface is honest.
+// snippet_id / snippet_type / sql / source are NOT NULL in the engine table. A
+// null here means view/schema drift — fail LOUD rather than propagate a `null`
+// typed as `string` into the consumer (the codebase's fail-loud + tool-output-
+// narrowing ethos). `description` is NOT NULL with a "" default, so it coerces.
+function req(value: unknown, column: string): string {
+	if (typeof value !== "string") {
+		throw new Error(
+			`sql_snippets.${column} is null/non-string — view or schema drift?`,
+		);
+	}
+	return value;
+}
+
 function mapRow(r: RawSnippetRow): SnippetRow {
 	return {
-		snippetId: r.snippetId as string,
-		snippetType: r.snippetType as string,
+		snippetId: req(r.snippetId, "snippet_id"),
+		snippetType: req(r.snippetType, "snippet_type"),
 		standardField: (r.standardField as string | null) ?? null,
 		statement: (r.statement as string | null) ?? null,
 		aggregation: (r.aggregation as string | null) ?? null,
 		parameterValue: (r.parameterValue as string | null) ?? null,
 		normalizedExpression: (r.normalizedExpression as string | null) ?? null,
 		inputFields: r.inputFields,
-		sql: r.sql as string,
+		sql: req(r.sql, "sql"),
 		description: (r.description as string | null) ?? "",
 		columnMappings: r.columnMappings,
-		source: r.source as string,
+		source: req(r.source, "source"),
 	};
 }
 
@@ -252,7 +263,13 @@ async function expandToGraphs(
 	return graphs.slice(0, limit);
 }
 
-/** Fetch a single snippet by id, or `null`. */
+/**
+ * Fetch a single snippet by id, or `null`. Intentionally NOT workspace-scoped:
+ * mirrors the engine's `find_by_id` (a primary-key `session.get`), and
+ * `snippet_id` is a globally-unique UUID, so a PK lookup returns the one row it
+ * names and cannot leak across workspaces. Callers reach a valid id only via
+ * `findGraphsByKeys` (which IS workspace-scoped), so the id is already correct.
+ */
 export async function findById(snippetId: string): Promise<SnippetRow | null> {
 	const rows = await metadataDb
 		.select(SNIPPET_COLUMNS)

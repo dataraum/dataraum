@@ -20,9 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from dataraum.core.logging import get_logger
+from dataraum.core.vertical_loader import Family, VerticalLoader
 
 logger = get_logger(__name__)
 
@@ -30,49 +29,19 @@ logger = get_logger(__name__)
 def get_cycles_config(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:
     """Load a vertical's cycles config, layered with ``cycle`` overlay rows.
 
-    Production path (``verticals_dir`` is ``None``): read the shipped vertical's
-    ``cycles.yaml`` (empty base when the vertical is framed — declared via the
-    cockpit, no on-disk file), then merge active ``cycle`` overlay rows via
-    :func:`dataraum.core.overlay.apply_overlay` (upsert by cycle name into
-    ``cycle_types``). An unknown vertical resolves to an EMPTY dict, never
-    raises — "no declared cycles" is a loud, explicit outcome at the phase
-    tier, not a loader crash.
-
-    Test path (explicit ``verticals_dir``): read
-    ``<verticals_dir>/<vertical>/cycles.yaml`` raw, bypassing the overlay —
-    deterministic for unit tests (mirrors ``OntologyLoader`` /
-    ``load_all_validation_specs``).
-
-    Args:
-        vertical: Vertical name (e.g. ``'finance'``).
-        verticals_dir: Root verticals directory override (tests only).
+    Thin wrapper over :class:`~dataraum.core.vertical_loader.VerticalLoader`
+    (DAT-481): the shipped ``cycles.yaml`` (empty base when the vertical is
+    framed — declared via the cockpit, no on-disk file) ⊕ active ``cycle``
+    overlay rows (upsert by cycle name into ``cycle_types``). An unknown vertical
+    resolves to an EMPTY dict, never raises — "no declared cycles" is a loud,
+    explicit outcome at the phase tier. An explicit ``verticals_dir`` reads raw
+    YAML and bypasses the overlay (tests).
 
     Returns:
         The cycles config dict (``{"cycle_types": {...}, "analysis_hints": ...}``),
         or an empty dict when neither file nor overlay declares anything.
     """
-    if verticals_dir is not None:
-        config_path = verticals_dir / vertical / "cycles.yaml"
-        if not config_path.is_file():
-            return {}
-        with open(config_path) as f:
-            return yaml.safe_load(f) or {}
-
-    from dataraum.core.config import get_config_file
-    from dataraum.core.overlay import apply_overlay
-
-    relative_path = f"verticals/{vertical}/cycles.yaml"
-    base: dict[str, Any] = {}
-    try:
-        path = get_config_file(relative_path)
-    except FileNotFoundError:
-        # Framed vertical (no on-disk file) or a vertical without a shipped
-        # cycle vocabulary — the overlay rows ARE the declared set.
-        path = None
-    if path is not None:
-        with open(path) as f:
-            base = yaml.safe_load(f) or {}
-    return apply_overlay(relative_path, base)
+    return VerticalLoader(vertical, verticals_dir).collection(Family.CYCLES)
 
 
 def get_cycle_types(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:

@@ -23,73 +23,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from dataraum.core.logging import get_logger
+from dataraum.core.vertical_loader import Family, VerticalLoader
 
 logger = get_logger(__name__)
-
-
-def _read_metric_dir(metrics_dir: Path) -> list[dict[str, Any]]:
-    """Read every metric graph YAML under ``metrics_dir`` into raw dicts.
-
-    Recurses (graphs are nested by category, e.g. ``working_capital/dso.yaml``)
-    and supports multi-document files (``---`` separators), mirroring
-    :meth:`GraphLoader._load_directory`. Returns the raw definition dicts (each
-    carrying a top-level ``graph_id``); parsing into ``TransformationGraph`` is
-    the loader's job.
-    """
-    entries: list[dict[str, Any]] = []
-    for yaml_file in sorted(metrics_dir.rglob("*.yaml")):
-        with open(yaml_file) as f:
-            for doc in yaml.safe_load_all(f):
-                if doc:
-                    entries.append(doc)
-    return entries
 
 
 def get_metrics_config(vertical: str, verticals_dir: Path | None = None) -> dict[str, Any]:
     """Load a vertical's metric graphs, layered with ``metric`` overlay rows.
 
-    Production path (``verticals_dir`` is ``None``): read the shipped vertical's
-    ``metrics/`` directory (empty base when the vertical is framed — declared
-    via the cockpit, no on-disk directory), then merge active ``metric`` overlay
-    rows via :func:`dataraum.core.overlay.apply_overlay` (upsert by
-    ``graph_id``). An unknown vertical resolves to an EMPTY collection, never
-    raises — "no declared metrics" is a loud, explicit outcome at the phase
-    tier, not a loader crash.
-
-    Test path (explicit ``verticals_dir``): read
-    ``<verticals_dir>/<vertical>/metrics`` raw, bypassing the overlay —
-    deterministic for unit tests (mirrors ``OntologyLoader`` /
-    ``load_all_validation_specs`` / ``get_cycles_config``).
-
-    Args:
-        vertical: Vertical name (e.g. ``'finance'``).
-        verticals_dir: Root verticals directory override (tests only).
+    Thin wrapper over :class:`~dataraum.core.vertical_loader.VerticalLoader`
+    (DAT-481): the shipped ``metrics/`` directory (empty base when the vertical
+    is framed — declared via the cockpit, no on-disk directory) ⊕ active
+    ``metric`` overlay rows (upsert by ``graph_id``). An unknown vertical
+    resolves to an EMPTY collection, never raises — "no declared metrics" is a
+    loud, explicit outcome at the phase tier. An explicit ``verticals_dir`` reads
+    raw YAML and bypasses the overlay (tests).
 
     Returns:
-        ``{"metrics": [graph_def_dict, ...]}`` — the merged collection, or
-        ``{"metrics": []}`` when neither directory nor overlay declares anything.
+        ``{"metrics": [graph_def_dict, ...]}`` — the merged collection.
     """
-    if verticals_dir is not None:
-        metrics_dir = verticals_dir / vertical / "metrics"
-        entries = _read_metric_dir(metrics_dir) if metrics_dir.is_dir() else []
-        return {"metrics": entries}
-
-    from dataraum.core.config import get_config_dir
-    from dataraum.core.overlay import apply_overlay
-
-    config_dir: Path | None
-    try:
-        config_dir = get_config_dir(f"verticals/{vertical}/metrics")
-    except FileNotFoundError:
-        # Framed vertical (no on-disk directory) or a vertical without shipped
-        # metrics — the overlay rows ARE the declared set.
-        config_dir = None
-    base_entries = _read_metric_dir(config_dir) if config_dir is not None else []
-    merged = apply_overlay(f"verticals/{vertical}/metrics", {"metrics": base_entries})
-    return {"metrics": merged.get("metrics") or []}
+    return VerticalLoader(vertical, verticals_dir).collection(Family.METRICS)
 
 
 def get_metric_definitions(

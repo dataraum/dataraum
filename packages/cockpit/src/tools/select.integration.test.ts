@@ -10,7 +10,10 @@
 // checked against the engine's consumers:
 //   - file source:     connection_config.file_uris (DISTINCT from `tables`),
 //                      source_type = the suffix-derived value (NOT "file"),
-//                      backend NULL, stage = "add_source".
+//                      backend NULL, stage = "add_source". The row is named by
+//                      its content key `src_<digest>` (DAT-422), parsed from the
+//                      staged `uploads/<digest>/<file>` URI — any passed
+//                      source_name is ignored for a file source.
 //                      (import_phase.py `_resolve_file_uris`)
 //   - database source: connection_config.tables = [{name, sql}], the backend
 //                      COLUMN set, source_type = "db_recipe", stage = "add_source".
@@ -27,6 +30,8 @@
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the
 // engine-created ws_<id>.sources table). Skipped automatically when
 // METADATA_DATABASE_URL isn't set so unit-test CI without the stack stays green.
+
+import { createHash } from "node:crypto";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -127,12 +132,20 @@ describe.skipIf(!STACK_AVAILABLE)(
 		}
 
 		it("writes a file source with file_uris + a suffix-derived source_type (not 'file')", async () => {
-			const name = `sel398_file_${Date.now()}`;
+			// DAT-422: a file source is content-keyed — `select` ignores any passed
+			// source_name and names the row `src_<digest>`, parsed from the locked
+			// `uploads/<digest>/<file>` staged-upload URI (select/mappers.ts
+			// contentKeyedSourceName); a non-upload-shaped URI is rejected loud, so
+			// the fixture MUST be that shape. A fresh per-test sha-1 digest keeps the
+			// row unique in the shared workspace (the old `Date.now()` role).
+			const digest = createHash("sha1")
+				.update(`sel398_file_${Date.now()}`)
+				.digest("hex");
+			const name = `src_${digest}`;
 			writtenNames.push(name);
-			const uri = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
+			const uri = `s3://${process.env.S3_BUCKET}/uploads/${digest}/orders.csv`;
 
 			const result = await persistSelection({
-				source_name: name,
 				schema: { sourceKind: "file", source: uri, tables: [] },
 			});
 
@@ -188,18 +201,25 @@ describe.skipIf(!STACK_AVAILABLE)(
 		});
 
 		it("UPSERTs on the unique name — re-selecting re-points config without a duplicate-name error", async () => {
-			const name = `sel398_upsert_${Date.now()}`;
+			// The UNIQUE name a file source UPSERTs on is its content key `src_<digest>`
+			// (DAT-422), so the two selects must share ONE digest to target the same
+			// row. Re-pointing that digest at a different staged file (csv → parquet)
+			// re-points connection_config in place — an UPSERT, not a duplicate-name
+			// error.
+			const digest = createHash("sha1")
+				.update(`sel398_upsert_${Date.now()}`)
+				.digest("hex");
+			const name = `src_${digest}`;
 			writtenNames.push(name);
-			const csv = `s3://${process.env.S3_BUCKET}/sel398/${name}.csv`;
-			const parquet = `s3://${process.env.S3_BUCKET}/sel398/${name}.parquet`;
+			const base = `s3://${process.env.S3_BUCKET}/uploads/${digest}`;
+			const csv = `${base}/data.csv`;
+			const parquet = `${base}/data.parquet`;
 
 			await persistSelection({
-				source_name: name,
 				schema: { sourceKind: "file", source: csv, tables: [] },
 			});
-			// Re-select the same name with a different file — must update, not error.
+			// Re-select the same content key with a different file — must update, not error.
 			await persistSelection({
-				source_name: name,
 				schema: { sourceKind: "file", source: parquet, tables: [] },
 			});
 

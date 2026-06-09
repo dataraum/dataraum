@@ -222,6 +222,45 @@ class TestPerColumnAdhocFailLoud:
         # Grounded nothing — no annotations written.
         assert session.execute(select(SemanticAnnotation)).scalars().all() == []
 
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.OntologyLoader")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.PromptRenderer")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.create_provider")
+    @patch("dataraum.pipeline.phases.semantic_per_column_phase.load_llm_config")
+    def test_fails_loud_on_unknown_vertical(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_loader_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """A typo'd / never-framed vertical fails born-loud naming what exists
+        (DAT-480) — distinct from the _adhoc 'run frame first' message, and it
+        never reaches OntologyLoader."""
+        config = MagicMock()
+        config.active_provider = "anthropic"
+        config.providers = {"anthropic": MagicMock()}
+        mock_load_config.return_value = config
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            source_id=None,
+            config={"vertical": "finanace"},
+            session_id=baseline_session_id(),
+        )
+        src = _source(session)
+        _typed_table(session, src.source_id, "t1", ["a"])
+
+        result = SemanticPerColumnPhase()._run(ctx)
+
+        assert result.status == PhaseStatus.FAILED
+        assert "Unknown vertical 'finanace'" in (result.error or "")
+        assert "finance" in (result.error or "")  # names what DOES exist
+        mock_loader_cls.return_value.load.assert_not_called()
+        assert session.execute(select(SemanticAnnotation)).scalars().all() == []
+
 
 class TestPerTableShouldSkip:
     """The per-table phase scopes by the session's ``table_ids`` (DAT-401, source-free)."""

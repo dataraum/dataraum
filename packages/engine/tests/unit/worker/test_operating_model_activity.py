@@ -128,6 +128,23 @@ class TestResolveOperatingModelScope:
         with pytest.raises(RuntimeError, match="not found"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
+    def test_typod_vertical_fails_born_loud(self, monkeypatch, session_factory):
+        """A typo'd / never-framed vertical raises at run entry (DAT-480) — before
+        any phase turns it into a benign no_declared_*."""
+        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+        with session_factory() as s:
+            s.add(
+                InvestigationSession(
+                    session_id=_IDENTITY.session_id, intent="test", vertical="finanace"
+                )
+            )
+            s.add(Table(table_id="tbl-1", source_id="src-1", table_name="tbl-1", layer="typed"))
+            s.add(SessionTable(session_id=_IDENTITY.session_id, table_id="tbl-1"))
+            s.commit()
+
+        with pytest.raises(RuntimeError, match="Unknown vertical 'finanace'"):
+            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+
     def test_workspace_mismatch_refused(self, monkeypatch, session_factory):
         monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-OTHER")
 

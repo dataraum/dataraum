@@ -104,6 +104,20 @@ def reset_overlay_resolver_for_tests() -> None:
     _overlay_resolver = None
 
 
+def get_overlay_rows() -> list[OverlayRow]:
+    """Return the workspace's active overlay rows, or ``[]`` if no resolver.
+
+    The single read path for code that needs to *enumerate* overlay rows
+    (vertical resolution, DAT-480) rather than merge them onto a base via
+    :func:`apply_overlay`. Inert (``[]``) when no resolver is registered —
+    CLI / tests that never bootstrap a workspace — mirroring
+    :func:`apply_overlay`'s short-circuit.
+    """
+    if _overlay_resolver is None:
+        return []
+    return _overlay_resolver()
+
+
 # ---------------------------------------------------------------------------
 # Per-type appliers.
 # ---------------------------------------------------------------------------

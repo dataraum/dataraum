@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// Render tests for the ModelFrameWidget (DAT-382, DAT-469): the frame-stage
-// co-design surface renders the framed model — concepts AND the validations over
-// them — read-only, so the user can accept or ask the agent to edit (which
-// re-invokes `frame` with a revised set, projected back here). Covers: both
-// families render, the validations section is omitted for a concepts-only model,
-// the empty guard, and the overflow cap (rule 15).
+// Render tests for the ModelFrameWidget (DAT-382, DAT-469, DAT-470): the
+// frame-stage co-design surface renders the framed model — concepts AND the
+// validations + cycles over them — read-only, so the user can accept or ask the
+// agent to edit (which re-invokes `frame` with a revised set, projected back
+// here). Covers: all three families render, each analysis section is omitted when
+// its family is empty, the empty guard, reload tolerance, and the overflow cap
+// (rule 15).
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -41,21 +42,32 @@ const VALIDATION = {
 	overlay_id: "v1",
 };
 
+const CYCLE = {
+	name: "order_to_cash",
+	description: "Order through to payment.",
+	business_value: "high" as const,
+	typical_stages: [{ name: "Order Placed" }, { name: "Paid" }],
+	completion_indicators: ["paid", "settled"],
+	overlay_id: "cy1",
+};
+
 const MODEL: FrameResult = {
 	vertical: "_adhoc",
 	concepts: [CONCEPT],
 	validations: [VALIDATION],
+	cycles: [CYCLE],
 };
 
 afterEach(cleanup);
 
-describe("ModelFrameWidget (DAT-382, DAT-469)", () => {
-	it("renders both the concept and validation sets with their counts", () => {
+describe("ModelFrameWidget (DAT-382, DAT-469, DAT-470)", () => {
+	it("renders the concept, validation, and cycle sets with their counts", () => {
 		renderWidget(MODEL);
 		expect(screen.getByTestId("canvas-model-frame")).toBeTruthy();
-		// Header reports both families.
+		// Header reports all three families.
 		expect(screen.getByText(/1 concept/)).toBeTruthy();
 		expect(screen.getByText(/1 validation/)).toBeTruthy();
+		expect(screen.getByText(/1 cycle/)).toBeTruthy();
 		// The concept row.
 		expect(screen.getByTestId("concept-row-revenue")).toBeTruthy();
 		// The validation row — name, id, check_type, severity all render.
@@ -64,25 +76,47 @@ describe("ModelFrameWidget (DAT-382, DAT-469)", () => {
 		expect(vrow.textContent).toContain("non_negative_amounts");
 		expect(vrow.textContent).toContain("constraint");
 		expect(vrow.textContent).toContain("error");
+		// The cycle row — free-form name, business_value, stage sequence, completion.
+		const crow = screen.getByTestId("cycle-row-order_to_cash");
+		expect(crow.textContent).toContain("order_to_cash");
+		expect(crow.textContent).toContain("high");
+		// typical_stages render as an ordered name sequence, and the completion
+		// indicators are surfaced.
+		expect(crow.textContent).toContain("Order Placed → Paid");
+		expect(crow.textContent).toContain("paid, settled");
 	});
 
-	it("omits the validations section for a concepts-only model", () => {
+	it("omits the validations section for a model with no validations", () => {
 		renderWidget({ ...MODEL, validations: [] });
 		expect(screen.getByTestId("concept-row-revenue")).toBeTruthy();
 		expect(screen.queryByText("VALIDATIONS")).toBeNull();
-		expect(screen.queryByText(/validation/)).toBeNull();
+		// The cycle section still renders independently.
+		expect(screen.getByTestId("cycle-row-order_to_cash")).toBeTruthy();
 	});
 
-	it("round-trips a declared model (no validations key surprises) and the empty guard", () => {
+	it("omits the cycles section for a model with no cycles", () => {
+		renderWidget({ ...MODEL, cycles: [] });
+		expect(screen.getByTestId("concept-row-revenue")).toBeTruthy();
+		expect(screen.queryByText("CYCLES")).toBeNull();
+		expect(screen.queryByText(/cycle/)).toBeNull();
+	});
+
+	it("round-trips a declared model and the empty guard", () => {
 		// A model with zero concepts is nothing to review — the foundation guard.
-		renderWidget({ vertical: "_adhoc", concepts: [], validations: [] });
+		renderWidget({
+			vertical: "_adhoc",
+			concepts: [],
+			validations: [],
+			cycles: [],
+		});
 		expect(screen.getByTestId("canvas-model-frame-empty")).toBeTruthy();
 	});
 
-	it("tolerates a pre-DAT-469 frame result with no validations key (reload recovery)", () => {
-		// A `frame` result persisted before DAT-469 (server-owned conversations)
-		// has no `validations` array; the projector still routes it here, so the
-		// widget must not crash on `.slice` of undefined.
+	it("tolerates a pre-analysis frame result with no validations/cycles keys (reload recovery)", () => {
+		// A `frame` result persisted before DAT-469/470 (server-owned conversations)
+		// has no `validations` / `cycles` array; the projector still routes it here
+		// on the `concepts` guard, so the widget must not crash on `.slice` of
+		// undefined.
 		const legacy = {
 			vertical: "_adhoc",
 			concepts: [CONCEPT],
@@ -90,6 +124,7 @@ describe("ModelFrameWidget (DAT-382, DAT-469)", () => {
 		renderWidget(legacy);
 		expect(screen.getByTestId("concept-row-revenue")).toBeTruthy();
 		expect(screen.queryByText("VALIDATIONS")).toBeNull();
+		expect(screen.queryByText("CYCLES")).toBeNull();
 	});
 
 	it("caps rendered validation rows and shows the overflow tail (rule 15)", () => {
@@ -103,6 +138,20 @@ describe("ModelFrameWidget (DAT-382, DAT-469)", () => {
 		expect(screen.queryByTestId("validation-row-check_119")).toBeNull();
 		expect(
 			screen.getByTestId("model-frame-validation-overflow").textContent,
+		).toContain("…and 20 more");
+	});
+
+	it("caps rendered cycle rows and shows the overflow tail (rule 15)", () => {
+		const many = Array.from({ length: 120 }, (_, i) => ({
+			...CYCLE,
+			name: `cycle_${i}`,
+			overlay_id: `cy${i}`,
+		}));
+		renderWidget({ ...MODEL, cycles: many });
+		expect(screen.getByTestId("cycle-row-cycle_0")).toBeTruthy();
+		expect(screen.queryByTestId("cycle-row-cycle_119")).toBeNull();
+		expect(
+			screen.getByTestId("model-frame-cycle-overflow").textContent,
 		).toContain("…and 20 more");
 	});
 });

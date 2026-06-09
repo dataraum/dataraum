@@ -1,14 +1,15 @@
-// Unit tests for the frame tool (DAT-382, DAT-469) — the agent-tier model
-// induction step.
+// Unit tests for the frame tool (DAT-382, DAT-469, DAT-470) — the agent-tier
+// model induction step.
 //
 // Two mocked seams (the AC): the Anthropic adapter (`@tanstack/ai-anthropic`)
 // + the SDK `chat()` structured-output call stand in for the induction LLM, and
 // the Drizzle metadata client stands in for the `config_overlay` write `teach`
-// performs. We assert the proposed concepts + validations are written as overlay
-// rows whose payloads match the engine's shapes, and that an explicit edited set
-// skips induction entirely. `frame` now frames the WHOLE model: concepts AND the
-// validations over them, in one call — so the induce path makes TWO chat calls
-// (concepts, then validations over those concepts).
+// performs. We assert the proposed concepts + validations + cycles are written as
+// overlay rows whose payloads match the engine's shapes, and that an explicit
+// edited set skips induction entirely. `frame` now frames the WHOLE model:
+// concepts AND the validations + cycles over them, in one call — so the induce
+// path makes THREE chat calls (concepts, then validations, then cycles over those
+// concepts).
 //
 // Importing frame.ts transitively pulls config.ts + the Postgres metadata
 // client (via teach.ts). We mock both — same approach as registry.test.ts. The
@@ -51,7 +52,9 @@ vi.mock("#/db/metadata/client", () => ({
 import {
 	frame,
 	induceConcepts,
+	induceCycles,
 	induceValidations,
+	type ProposedCycle,
 	type ProposedValidation,
 } from "./frame";
 
@@ -86,6 +89,16 @@ const PROPOSED_VALIDATION: ProposedValidation = {
 	check_type: "constraint",
 };
 
+// A minimal well-formed cycle the induction LLM "returns" (ProposedCycle =
+// CycleSpec minus `vertical`, which frame fixes on write). Free-form name +
+// closed business_value, completion_indicators drive structural scoring.
+const PROPOSED_CYCLE: ProposedCycle = {
+	name: "order_to_cash",
+	description: "Order through to payment collection.",
+	business_value: "high",
+	completion_indicators: ["paid", "settled"],
+};
+
 const rowsOfType = (type: string) =>
 	insertedRows.filter((r) => r.type === type);
 
@@ -95,9 +108,10 @@ beforeEach(() => {
 	valuesMock.mockClear();
 });
 
-describe("frame (DAT-382, DAT-469)", () => {
-	it("induces concepts AND validations and writes them as overlay rows", async () => {
-		// Concepts induce first, then validations over them — two chat calls.
+describe("frame (DAT-382, DAT-469, DAT-470)", () => {
+	it("induces concepts AND validations AND cycles and writes them as overlay rows", async () => {
+		// Concepts induce first, then validations, then cycles over them — three
+		// chat calls.
 		chatMock
 			.mockResolvedValueOnce({
 				concepts: [
@@ -110,12 +124,13 @@ describe("frame (DAT-382, DAT-469)", () => {
 					{ name: "order_id", typical_role: "key" },
 				],
 			})
-			.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] });
+			.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] })
+			.mockResolvedValueOnce({ cycles: [PROPOSED_CYCLE] });
 
 		const result = await frame({ schema: SCHEMA });
 
-		// Both families induced: one concept call, one validation call.
-		expect(chatMock).toHaveBeenCalledTimes(2);
+		// All three families induced: one concept, one validation, one cycle call.
+		expect(chatMock).toHaveBeenCalledTimes(3);
 
 		// One `concept` overlay row per induced concept, vertical-tagged "_adhoc".
 		const conceptRows = rowsOfType("concept");
@@ -139,21 +154,36 @@ describe("frame (DAT-382, DAT-469)", () => {
 		expect(v.validation_id).toBe("non_negative_amounts");
 		expect(v.check_type).toBe("constraint");
 
-		// The tool result carries the written model (concepts + validations + ids).
+		// One `cycle` overlay row, vertical-tagged + carrying the full spec.
+		const cycleRows = rowsOfType("cycle");
+		expect(cycleRows).toHaveLength(1);
+		const c = cycleRows[0].payload as Record<string, unknown>;
+		expect(cycleRows[0].type).toBe("cycle");
+		expect(c.vertical).toBe("_adhoc");
+		expect(c.name).toBe("order_to_cash");
+		expect(c.business_value).toBe("high");
+		expect(c.completion_indicators).toEqual(["paid", "settled"]);
+
+		// The tool result carries the written model (concepts + validations +
+		// cycles + ids).
 		expect(result.vertical).toBe("_adhoc");
 		expect(result.concepts).toHaveLength(2);
 		expect(result.concepts[0].overlay_id).toEqual(expect.any(String));
 		expect(result.validations).toHaveLength(1);
 		expect(result.validations[0].validation_id).toBe("non_negative_amounts");
 		expect(result.validations[0].overlay_id).toEqual(expect.any(String));
+		expect(result.cycles).toHaveLength(1);
+		expect(result.cycles[0].name).toBe("order_to_cash");
+		expect(result.cycles[0].overlay_id).toEqual(expect.any(String));
 	});
 
-	it("declares an edited concept + validation model verbatim, skipping all induction", async () => {
+	it("declares an edited concept + validation + cycle model verbatim, skipping all induction", async () => {
 		const result = await frame({
 			schema: SCHEMA,
 			vertical_name: "sales",
 			concepts: [{ name: "deal_value", typical_role: "measure" }],
 			validations: [PROPOSED_VALIDATION],
+			cycles: [PROPOSED_CYCLE],
 		});
 
 		// No LLM call on the full declare path.
@@ -164,37 +194,51 @@ describe("frame (DAT-382, DAT-469)", () => {
 		expect(
 			(rowsOfType("validation")[0].payload as { vertical: string }).vertical,
 		).toBe("sales");
+		const cycleRow = rowsOfType("cycle")[0].payload as Record<string, unknown>;
+		expect(cycleRow.vertical).toBe("sales");
+		// The edited cycle is declared VERBATIM — name + completion_indicators
+		// land exactly as supplied (no LLM rewrite).
+		expect(cycleRow.name).toBe("order_to_cash");
+		expect(cycleRow.completion_indicators).toEqual(["paid", "settled"]);
 		expect(result.vertical).toBe("sales");
 		expect(result.concepts[0].name).toBe("deal_value");
 		expect(result.validations[0].validation_id).toBe("non_negative_amounts");
+		expect(result.cycles[0].name).toBe("order_to_cash");
 	});
 
-	it("declares edited concepts but INDUCES validations over them (mixed path)", async () => {
-		chatMock.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] });
+	it("declares edited concepts but INDUCES validations + cycles over them (mixed path)", async () => {
+		chatMock
+			.mockResolvedValueOnce({ validations: [PROPOSED_VALIDATION] })
+			.mockResolvedValueOnce({ cycles: [PROPOSED_CYCLE] });
 
 		const result = await frame({
 			schema: SCHEMA,
 			concepts: [{ name: "gross_margin", typical_role: "measure" }],
-			// validations absent → induce over the declared concepts.
+			// validations + cycles absent → induce over the declared concepts.
 		});
 
-		// Only the validation induction ran (concepts were declared verbatim).
-		expect(chatMock).toHaveBeenCalledTimes(1);
+		// Validation + cycle induction ran (concepts were declared verbatim).
+		expect(chatMock).toHaveBeenCalledTimes(2);
 		expect(rowsOfType("concept")).toHaveLength(1);
 		expect(rowsOfType("validation")).toHaveLength(1);
+		expect(rowsOfType("cycle")).toHaveLength(1);
 		expect(result.concepts[0].name).toBe("gross_margin");
 		expect(result.validations).toHaveLength(1);
+		expect(result.cycles).toHaveLength(1);
 	});
 
-	it("declares zero validations when given an empty edited set (no induction)", async () => {
+	it("declares zero validations + cycles when given empty edited sets (no induction)", async () => {
 		const result = await frame({
 			schema: SCHEMA,
 			concepts: [{ name: "gross_margin", typical_role: "measure" }],
 			validations: [],
+			cycles: [],
 		});
 		expect(chatMock).not.toHaveBeenCalled();
 		expect(rowsOfType("validation")).toHaveLength(0);
+		expect(rowsOfType("cycle")).toHaveLength(0);
 		expect(result.validations).toEqual([]);
+		expect(result.cycles).toEqual([]);
 	});
 
 	it("rejects an unsafe vertical name", async () => {
@@ -204,6 +248,7 @@ describe("frame (DAT-382, DAT-469)", () => {
 				vertical_name: "../etc",
 				concepts: [{ name: "x" }],
 				validations: [],
+				cycles: [],
 			}),
 		).rejects.toThrow(/Invalid vertical name/);
 	});
@@ -214,6 +259,7 @@ describe("frame (DAT-382, DAT-469)", () => {
 			vertical_name: "_adhoc",
 			concepts: [{ name: "x" }],
 			validations: [],
+			cycles: [],
 		});
 		expect(result.vertical).toBe("_adhoc");
 	});
@@ -276,6 +322,53 @@ describe("frame (DAT-382, DAT-469)", () => {
 		expect(call.messages[0].content).toContain("amount");
 		expect(call.messages[0].content).toContain("trial_balance");
 		expect(call.messages[0].content).toMatch(/EXAMPLE/);
+	});
+
+	it("induceCycles induces over the concepts + seed, returns the set, writes nothing", async () => {
+		chatMock.mockResolvedValue({ cycles: [PROPOSED_CYCLE] });
+		// Inject a shipped-cycle reader so the seed wiring is exercised without fs.
+		const readSeed = vi.fn(async (v: string) =>
+			v === "finance"
+				? [
+						{
+							name: "order_to_cash",
+							description: "Revenue cycle",
+							business_value: "high",
+							completion_indicators: ["paid"],
+						},
+					]
+				: [],
+		);
+		// Frame ON TOP of finance so the seed reader's own-vertical specs feed the
+		// few-shot (the fallback scan over the config tree is covered in
+		// frame-family.test.ts).
+		const cycles = await induceCycles(
+			SCHEMA,
+			[{ name: "amount", typical_role: "measure" }],
+			"finance",
+			undefined,
+			readSeed,
+		);
+
+		expect(cycles).toEqual([PROPOSED_CYCLE]);
+		expect(insertedRows).toHaveLength(0);
+
+		// The induce call used the cycle instructions + carried the concepts and
+		// the structural few-shot from the seed reader, flagged as do-not-copy.
+		const call = chatMock.mock.calls[0]?.[0] as {
+			systemPrompts: string[];
+			messages: { content: string }[];
+		};
+		expect(call.systemPrompts[0]).toMatch(/business-process expert/);
+		expect(call.messages[0].content).toContain("amount");
+		expect(call.messages[0].content).toContain("order_to_cash");
+		// The library-as-seed framing the AC requires: examples / structural /
+		// do-not-copy, tagged by the cycle family + source vertical.
+		expect(call.messages[0].content).toMatch(/EXAMPLE/);
+		expect(call.messages[0].content).toMatch(/STRUCTURE|structural/i);
+		expect(call.messages[0].content).toContain(
+			'<cycle_examples vertical="finance">',
+		);
 	});
 
 	it("forwards the tool-context abort into the nested induction chat() (DAT-449)", async () => {

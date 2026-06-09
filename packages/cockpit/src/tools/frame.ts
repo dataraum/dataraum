@@ -8,15 +8,15 @@
 // through (Drizzle metadata client).
 //
 // `frame` frames the WHOLE model in ONE call / one approval: the business
-// `concepts` AND the executable knowledge over them — `validations` today
-// (DAT-469), cycles + metrics next (DAT-470/471). Each family runs through the
+// `concepts` AND the executable knowledge over them — `validations` (DAT-469) +
+// `cycles` (DAT-470), metrics next (DAT-471). Each family runs through the
 // shared frame-a-family core (frame-family.ts) two ways:
-//   - induce: no edited set → the LLM proposes that family's set (validations
-//     induce OVER the same-call concepts, seeded with the nearest shipped
+//   - induce: no edited set → the LLM proposes that family's set (validations +
+//     cycles induce OVER the same-call concepts, seeded with the nearest shipped
 //     vertical's specs as structural few-shot).
 //   - declare: an edited set → written verbatim, no LLM. This is how the
 //     ModelFrame widget's accept/edit round-trips: the agent re-invokes frame
-//     with the edited concepts and/or validations.
+//     with the edited concepts and/or validations and/or cycles.
 // Either way each member is persisted as a vertical-tagged overlay row and
 // returned for the ModelFrame widget to render.
 //
@@ -29,6 +29,7 @@ import { z } from "zod";
 
 import { ConnectSchema } from "../duckdb/connect";
 import {
+	getFrameCyclesInstructions,
 	getFrameInstructions,
 	getFrameValidationsInstructions,
 } from "../prompts";
@@ -37,6 +38,7 @@ import {
 	catchActionable,
 	withAgentError,
 } from "./agent-error";
+import { CycleSpecSchema, type ShippedCycleSpec } from "./cycle-spec";
 import {
 	formatSeedExamples,
 	frameFamily,
@@ -44,6 +46,7 @@ import {
 	nearestSeedVertical,
 	stripUndefined,
 } from "./frame-family";
+import { readShippedCycles } from "./teach-cycle";
 import { readShippedValidations } from "./teach-validation";
 import {
 	type ShippedValidationSpec,
@@ -135,6 +138,18 @@ const InducedValidations = z.object({
 	validations: z.array(ProposedValidation),
 });
 
+// One induced/declared business cycle. The engine's `cycle_types` entry shape
+// (cycle-spec.ts, DAT-465) MINUS `vertical`, which `frame` fixes on write —
+// exactly as ProposedConcept / ProposedValidation omit it. The model fills this
+// via structured output; the user accepts/edits the set in the ModelFrame widget.
+export const ProposedCycle = CycleSpecSchema.omit({ vertical: true });
+export type ProposedCycle = z.infer<typeof ProposedCycle>;
+
+// The structured-output shape the cycle induction LLM call returns.
+const InducedCycles = z.object({
+	cycles: z.array(ProposedCycle),
+});
+
 // One written concept + the overlay row id it landed as.
 const FrameConceptResult = ProposedConcept.extend({
 	overlay_id: z.string(),
@@ -147,12 +162,21 @@ const FrameValidationResult = ProposedValidation.extend({
 });
 export type FrameValidationResult = z.infer<typeof FrameValidationResult>;
 
+// One written cycle + the overlay row id it landed as.
+const FrameCycleResult = ProposedCycle.extend({
+	overlay_id: z.string(),
+});
+export type FrameCycleResult = z.infer<typeof FrameCycleResult>;
+
 export const FrameResult = z.object({
 	vertical: z.string(),
 	concepts: z.array(FrameConceptResult),
 	// The validations framed over those concepts (DAT-469). Empty for a
 	// concepts-only model (the user curated them all away, or none was proposed).
 	validations: z.array(FrameValidationResult),
+	// The business cycles framed over those concepts (DAT-470). Empty for a model
+	// with no cycles (the user curated them all away, or none was proposed).
+	cycles: z.array(FrameCycleResult),
 });
 export type FrameResult = z.infer<typeof FrameResult>;
 
@@ -165,6 +189,9 @@ export interface FrameInput {
 	// A user-reviewed / edited validation set. Same verbatim-declare semantics as
 	// `concepts`; absent → validations are induced over the framed concepts.
 	validations?: ProposedValidation[];
+	// A user-reviewed / edited cycle set. Same verbatim-declare semantics as
+	// `concepts`; absent → cycles are induced over the framed concepts.
+	cycles?: ProposedCycle[];
 	// The vertical to declare the model under (a NEW, framed vertical). The agent
 	// proposes a name that fits the data; the user can rename. Omitted → `_adhoc`
 	// (the unnamed cold-start fallback). Pass the SAME name to `select`.
@@ -234,12 +261,49 @@ export async function induceValidations(
 }
 
 /**
+ * Induce a business-cycle set for a source via one forced structured-output call,
+ * OVER the framed concept vocabulary (the concepts are part of the context, so
+ * the proposed cycles anchor to them, not guessed column names). The induce prompt
+ * is seeded with the nearest shipped vertical's `cycle_types` as STRUCTURAL
+ * few-shot (DAT-468/470) — the framing that makes the proposed shape reliable.
+ * Returns the proposed cycles; does NOT write anything. The shipped-spec reader is
+ * injectable so the seed wiring is unit-testable without the config tree; production
+ * uses the default. `signal` bridges the tool-context abort.
+ */
+export async function induceCycles(
+	schema: ConnectSchema,
+	concepts: ProposedConcept[],
+	vertical: string,
+	signal?: AbortSignal,
+	readSeed: (v: string) => Promise<ShippedCycleSpec[]> = readShippedCycles,
+): Promise<ProposedCycle[]> {
+	const seed = await nearestSeedVertical(vertical, readSeed);
+	const { cycles } = await induceStructured({
+		instructions: getFrameCyclesInstructions(),
+		userMessage:
+			"Propose the business cycles (recurring multi-stage processes) for the " +
+			"following source, over the framed concept vocabulary. Only propose cycles " +
+			"the data can stage and complete (it has a status/lifecycle column).\n\n" +
+			`<concepts>\n${JSON.stringify(concepts, null, 2)}\n</concepts>\n\n` +
+			`<schema>\n${JSON.stringify(schema, null, 2)}\n</schema>\n\n` +
+			formatSeedExamples(seed.specs, {
+				vertical: seed.vertical,
+				family: "cycle",
+			}),
+		outputSchema: InducedCycles,
+		signal,
+	});
+	return cycles;
+}
+
+/**
  * Run the frame stage: resolve the user's whole model — concepts AND the
- * validations over them — then write each member as a `config_overlay` row via
- * the shared teach seam. Each family independently induces (from the schema) or
- * declares verbatim (a user-edited set), so one `frame` call / one approval
- * frames the model. Validations induce OVER the same-call concepts. Returns the
- * written concepts + validations (with overlay ids) for the ModelFrame widget.
+ * validations + cycles over them — then write each member as a `config_overlay`
+ * row via the shared teach seam. Each family independently induces (from the
+ * schema) or declares verbatim (a user-edited set), so one `frame` call / one
+ * approval frames the model. Validations and cycles induce OVER the same-call
+ * concepts. Returns the written concepts + validations + cycles (with overlay ids)
+ * for the ModelFrame widget.
  */
 export async function frame(
 	input: FrameInput,
@@ -281,34 +345,51 @@ export async function frame(
 		signal,
 	});
 
+	// Cycles are framed over the just-resolved concepts and written as `cycle`
+	// overlay rows through the SAME teach seam (the engine's _apply_cycle
+	// upsert-replaces by name into the vertical's cycle_types mapping). Free-form
+	// names: the user's words shape WHICH cycle to detect, never HOW it's measured.
+	const cycles = await frameFamily<ProposedCycle>({
+		teachType: "cycle",
+		itemSchema: ProposedCycle,
+		induce: (sig) => induceCycles(schema, concepts.items, vertical, sig),
+		toPayload: (c) => ({ vertical, ...stripUndefined(c) }),
+		edited: input.cycles,
+		sessionId: input.session_id,
+		signal,
+	});
+
 	return {
 		vertical,
 		concepts: concepts.written,
 		validations: validations.written,
+		cycles: cycles.written,
 	};
 }
 
 /**
  * The `frame` tool for the agent loop. `needsApproval: true` — it writes
- * `concept` + `validation` overlay rows, so the user confirms before the write
- * runs. Input is the connect schema (to induce from) plus an optional
- * user-edited concept and/or validation set (the accept/edit round-trip). Output
- * is the written model, projected to the ModelFrame canvas widget.
+ * `concept` + `validation` + `cycle` overlay rows, so the user confirms before
+ * the write runs. Input is the connect schema (to induce from) plus an optional
+ * user-edited concept and/or validation and/or cycle set (the accept/edit
+ * round-trip). Output is the written model, projected to the ModelFrame canvas
+ * widget.
  */
 export const frameTool = toolDefinition({
 	name: "frame",
 	description:
 		"Co-design the user's model for a connected source as a NEW vertical: induce " +
-		"the business concepts from its schema + samples AND the validations (data-" +
-		"quality / business-rule checks) over them, then write the declared model as " +
-		"overlay rows under a named vertical. Propose a `vertical_name` that fits the " +
+		"the business concepts from its schema + samples, the validations (data-" +
+		"quality / business-rule checks), AND the business cycles (recurring multi-" +
+		"stage processes like order-to-cash) over them, then write the declared model " +
+		"as overlay rows under a named vertical. Propose a `vertical_name` that fits the " +
 		"data (e.g. sales, logistics) — the user can rename. Pass `schema` (the connect " +
-		"result) to induce a proposal; pass `concepts` and/or `validations` (a user-" +
-		"reviewed/edited set) to declare those verbatim — validations induce over the " +
-		"framed concepts. If `list_verticals` shows a builtin that already fits (e.g. " +
-		"finance), DON'T frame — `select` that vertical directly. Requires user approval " +
-		"— it writes to the workspace. Run after `connect` and before `add_source`; pass " +
-		"the SAME `vertical_name` to `select`.",
+		"result) to induce a proposal; pass `concepts` and/or `validations` and/or " +
+		"`cycles` (a user-reviewed/edited set) to declare those verbatim — validations " +
+		"and cycles induce over the framed concepts. If `list_verticals` shows a builtin " +
+		"that already fits (e.g. finance), DON'T frame — `select` that vertical directly. " +
+		"Requires user approval — it writes to the workspace. Run after `connect` and " +
+		"before `add_source`; pass the SAME `vertical_name` to `select`.",
 	inputSchema: z.object({
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		vertical_name: z
@@ -331,6 +412,13 @@ export const frameTool = toolDefinition({
 			.describe(
 				"User-reviewed/edited validations to declare verbatim (skips validation " +
 					"induction). Omit to induce validations over the framed concepts.",
+			),
+		cycles: z
+			.array(ProposedCycle)
+			.optional()
+			.describe(
+				"User-reviewed/edited business cycles to declare verbatim (skips cycle " +
+					"induction). Omit to induce cycles over the framed concepts.",
 			),
 		session_id: z.string().nullish(),
 	}),

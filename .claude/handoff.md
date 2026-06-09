@@ -21,36 +21,43 @@ constants." New engine pieces:
   `reliabilities=` into `measure_null_semantics`; absent → the measurement's
   neutral fallback. `DEFAULT_RELIABILITIES` reframed as that fallback only.
 
-**Measured values (corpus null_tokens-v1, Laplace accuracy on opinionated votes):**
-`quarantine_clustering 0.999` (n=1579), `null_vocabulary 0.953` (n=17467),
-**`type_claim 0.222`** (n=2000). Held-out pooled Brier: measured **0.101** <
-placeholder 0.181 < uniform 0.185 — the measured weights resolve strictly better
-than the constants they replace (DAT-450 AC4). The estimator is plain accuracy,
-chosen by held-out proper scoring (a balanced variant pooled worse and laundered
-the next finding — the rig MEASURES, it does not flatter a witness).
+**Measured values (corpus null_tokens-v2, Laplace accuracy on opinionated votes):**
+`quarantine_clustering 0.868`, `null_vocabulary 0.944`, **`type_claim 0.266`**.
+Held-out pooled Brier: measured **0.115** < placeholder 0.189 < uniform 0.191 — the
+measured weights resolve strictly better than the constants they replace (DAT-450
+AC4). The estimator is plain accuracy, chosen by held-out proper scoring (a balanced
+variant pooled worse and laundered the next finding — the rig MEASURES, it does not
+flatter a witness). v2 adds a disclosed ~20% clustered-decoy minority so
+quarantine's false-positive rate enters the estimate; provenance now ships
+`per_class_accuracy` (sensitivity/specificity) per witness.
 
 **LIVE-PROVEN end-to-end (2026-06-09).** A real `addSourceWorkflow` over
 detection-null-v1 persisted `claim_witnesses` whose `reliability` equals the
-shipped `0.9994 / 0.2218 / 0.9531` (NOT the `0.8/0.7/0.6` fallback) — the artifact
-is consumed by the live pipeline. The adjudication-recall test passes (injected
-C > clean C on both injected columns). The live run also surfaced a calibration
-bug the isolated rig structurally couldn't: the family's combined marker+decoy
-ratio must keep `parse_success ≥ min_confidence` (0.85, `phases/typing.yaml`) — at
-16% corruption `journal_lines.debit` fell to VARCHAR, never quarantined, and the
-detector was skipped. The family ratio is now capped ≤0.10 (parse ≥0.90); both
-columns resolve DOUBLE and fire. Verify with `scripts/check_reliability_consumption.py`.
+shipped values (NOT the `0.8/0.7/0.6` fallback) — the artifact is consumed by the
+live pipeline. The adjudication-recall test passes (injected C > clean C on both
+injected columns). The live run also surfaced a calibration bug the isolated rig
+structurally couldn't: the family's combined marker+decoy ratio must keep
+`parse_success ≥ min_confidence` (0.85, `phases/typing.yaml`) — at 16% corruption
+`journal_lines.debit` fell to VARCHAR, never quarantined, and the detector was
+skipped. The family ratio is now ENFORCED (combined upper bound ≤0.12 raises at
+construction; defaults ≤0.10 → parse ≥0.90); both columns resolve DOUBLE and fire.
+Verify with `scripts/check_reliability_consumption.py`.
 
-**Finding for witness design (DAT-457):** **`type_claim` is non-discriminative** —
-its `r=0.221` and per-witness Brier `0.275` are WORSE than always-abstaining
-(0.25). `type_distribution` can only return 0.5 (abstain) or `0.5+0.5·psr`
-(is-null); it never argues is-value, so once a genuine-but-unparseable value (a
-locale number, currency string) lands in the alphabetical `failed_examples[:5]`,
-the witness confidently mislabels it a null marker (0% specificity). The pool
-correctly down-weights it, but if its signal should count, it needs a real
-is-value path — a witness-design change, not a calibration one. (`quarantine_clustering`
-is also one-directional: it abstains on decoys, so its `0.999` is a sensitivity,
-not a discrimination score — its false-positive rate is unmeasured until a
-decoy-clustering stress family lands.)
+**Findings for witness design (DAT-457)** — two witnesses have **0% specificity**,
+now MEASURED (provenance `per_class_accuracy`), not hidden:
+- **`type_claim`** votes is-null on everything in `failed_examples[:5]` (it can only
+  return 0.5 or `0.5+0.5·psr`, never argues is-value) → it cannot tell a sentinel
+  from a genuine-but-unparseable value. `r≈0.27`, per-witness Brier worse than
+  always-abstain. If its signal should count, it needs a real is-value path.
+- **`quarantine_clustering`** votes is-null on any CLUSTER → on the v2 corpus's
+  clustered-decoy minority it mistakes a recurring genuine value for a sentinel
+  (specificity 0). Its `r` dropped 0.999→0.868 once that exposure entered the
+  estimate (the decoy-clustering stress family, DAT-450 follow-up). It is a
+  clustering detector, not a marker/genuine discriminator.
+
+Both are correctly down-weighted by the pool, and conflict C stays weight-robust so
+a contested genuine value still fires `investigate` via the vocabulary witness's
+dissent. Fixing either is a witness-design change, not a calibration one.
 
 **Re-run:** `python scripts/calibrate_reliabilities.py` in dataraum-eval rewrites
 the artifact. Add a new measurement's witnesses to `reliabilities.yaml` + the rig

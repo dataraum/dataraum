@@ -23,25 +23,39 @@
 provenance:
   calibrated: true
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
-  corpus_version: null_tokens-v1
+  corpus_version: null_tokens-v2
   estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded
+  corpus_composition: 400 distinct-decoy + 100 clustered-decoy stress samples (~20%
+    minority, disclosed not tuned)
   rows_per_sample: 2000
   sample_size_per_witness:
-    quarantine_clustering: 1579
-    type_claim: 2000
-    null_vocabulary: 17467
-  seeds: fit=0..399, holdout=10000..10119
-  pooled_brier_holdout: 0.1008
-  pooled_brier_holdout_uniform: 0.1845
-  pooled_brier_holdout_placeholder: 0.1814
-  notes: "quarantine_clustering never argues is-value (abstains on decoys) \u2192\
-    \ its r is a sensitivity, not a discrimination score. type_claim votes is-null\
-    \ on everything in failed_examples, so it cannot separate a sentinel from a genuine-but-unparseable\
-    \ value \u2192 low r (~0.22, Brier worse than always-abstain), correctly down-weighted:\
-    \ a witness-design finding for DAT-457, surfaced not tuned."
+    quarantine_clustering: 2273
+    type_claim: 2492
+    null_vocabulary: 18161
+  per_class_accuracy:
+    quarantine_clustering:
+      sensitivity: 1.0
+      specificity: 0.0
+    type_claim:
+      sensitivity: 1.0
+      specificity: 0.0
+    null_vocabulary:
+      sensitivity: 0.485
+      specificity: 1.0
+  pooled_brier_holdout: 0.1145
+  pooled_brier_holdout_uniform: 0.1908
+  pooled_brier_holdout_placeholder: 0.1895
+  notes: "type_claim votes is-null on everything in failed_examples \u2192 it cannot\
+    \ separate a sentinel from a genuine-but-unparseable value (specificity ~0) \u2192\
+    \ low r, correctly down-weighted. quarantine_clustering votes is-null on any CLUSTER,\
+    \ so on the clustered-decoy minority its specificity is < 1 (it mistakes a recurring\
+    \ genuine value for a sentinel) \u2014 now measured, not hidden. Both are witness-design\
+    \ findings for DAT-457, surfaced not tuned. Conflict C stays weight-robust, so\
+    \ a contested genuine value still fires investigate via the vocabulary witness's\
+    \ dissent."
   date: '2026-06-09'
 witnesses:
   null_semantics:
-    quarantine_clustering: 0.9994
-    type_claim: 0.2218
-    null_vocabulary: 0.9531
+    quarantine_clustering: 0.8681
+    type_claim: 0.2658
+    null_vocabulary: 0.944

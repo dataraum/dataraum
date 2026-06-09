@@ -243,16 +243,31 @@ def ground_columns(
     """
     from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
     from dataraum.analysis.semantic.ontology import OntologyLoader
-    from dataraum.graphs.loader import GraphLoader
+    from dataraum.graphs.config import get_metric_definitions
+    from dataraum.graphs.loader import GraphLoader, GraphLoadError
 
     col_config = config.features.column_annotation
     if not col_config or not col_config.enabled:
         return Result.fail("Column annotation is disabled in config.")
 
     # Standard-field concepts required by active metric graphs, so the model
-    # prioritizes mapping those concepts to actual columns.
+    # prioritizes mapping those concepts to actual columns. OVERLAY-AWARE: the
+    # declared set is the vertical's shipped graphs ⊕ `metric` overlay teach rows
+    # (get_metric_definitions), so a FRAMED vertical's metrics — declared at frame
+    # time, no on-disk directory — steer grounding too. load_all() is file-only and
+    # returns nothing for a framed/_adhoc vertical (DAT-471 AC3). The worker
+    # bootstrap installs the overlay resolver process-wide, so it resolves here in
+    # the add_source semantic phase exactly as it does in the operating_model
+    # metrics phase.
     metric_loader = GraphLoader(vertical=ontology)
-    metric_loader.load_all()
+    for graph_id, defn in get_metric_definitions(ontology).items():
+        # A declared metric that won't parse is skipped for this grounding HINT —
+        # its born-loud handling (declared-with-reason) is the metrics phase's job
+        # at operating_model; here a malformed graph must not sink column grounding.
+        try:
+            metric_loader.graphs.update(metric_loader.graphs_from_definitions({graph_id: defn}))
+        except GraphLoadError as exc:
+            logger.warning("metric_grounding_hint_skip", graph_id=graph_id, error=str(exc))
     required_standard_fields = sorted(metric_loader.get_all_abstract_fields())
 
     agent = ColumnAnnotationAgent(config=config, provider=provider, prompt_renderer=renderer)

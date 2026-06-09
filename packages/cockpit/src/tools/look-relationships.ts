@@ -245,22 +245,47 @@ function projectCatalogOnly(
 	};
 }
 
+// Representative-row precedence for a directional column pair (DAT-408), mirrored
+// from the engine: a user teach (manual) wins over an LLM confirmation, which wins
+// over a structural candidate; keeper sits between manual and llm. This is the SAME
+// map the engine's readiness pass uses to pick the representative relationship it
+// measures (`entropy/detectors/loaders.py` `load_representative_relationship`,
+// docstring: "that is the relationship the readiness measures"). Higher wins.
+// `look_relationships` joins catalog facts onto that readiness band, so the facts it
+// surfaces MUST come from the same representative row — selection by precedence, NOT
+// confidence, or `manual(0.7)+llm(0.9)` surfaces `llm` while the engine measured
+// `manual`, and the facts contradict the band on the same grid row.
+const REL_METHOD_PRECEDENCE: Record<string, number> = {
+	manual: 4,
+	keeper: 3,
+	llm: 2,
+	candidate: 1,
+};
+
+const relMethodRank = (method: string | null): number =>
+	REL_METHOD_PRECEDENCE[method ?? ""] ?? 0;
+
 /**
  * The per-pair catalog winner: a confirmed FK carries MULTIPLE catalog rows in one
  * promoted run — a structural `candidate` row AND an `llm`/`manual`/`keeper` row
  * (uniqueness is `(session_id, run_id, from_column_id, to_column_id, detection_method)`).
- * The facts we surface (`relationship_type` / `is_confirmed` / …) must be deterministic,
- * so per pair we prefer a NON-`candidate` row (the durable catalog — the same
- * `detection_method != 'candidate'` contract the readiness pass scores), then the
- * highest `confidence`. Returns true when `next` should replace the current `best`.
+ * The facts we surface (`relationship_type` / `is_confirmed` / …) must match the
+ * representative row the engine's readiness pass measured, so per pair we pick by the
+ * engine's METHOD PRECEDENCE (`manual > keeper > llm > candidate`), NOT confidence —
+ * else the surfaced facts can contradict the band on the same row. Confidence is only
+ * the final tiebreak among rows of the SAME `detection_method`. The candidate-only
+ * exclusion (no band → drop) stays in {@link unionRelationships}: candidate is the
+ * lowest precedence, so a pair with candidate + any other method already resolves to
+ * the other method here. Returns true when `next` should replace the current `best`.
  */
 function catalogRowBeats(
 	next: RelationshipCatalogRow,
 	best: RelationshipCatalogRow,
 ): boolean {
-	const nextDefined = next.detectionMethod !== "candidate";
-	const bestDefined = best.detectionMethod !== "candidate";
-	if (nextDefined !== bestDefined) return nextDefined;
+	const nextRank = relMethodRank(next.detectionMethod);
+	const bestRank = relMethodRank(best.detectionMethod);
+	if (nextRank !== bestRank) return nextRank > bestRank;
+	// Same detection_method — confidence breaks the tie.
 	return (next.confidence ?? -1) > (best.confidence ?? -1);
 }
 
@@ -273,11 +298,13 @@ function catalogRowBeats(
  * keeps null catalog facts, a catalog-only relationship keeps null bands/intents.
  *
  * Two determinism guarantees (DAT-478 review): (1) per pair the winning catalog row
- * is chosen by {@link catalogRowBeats} — non-`candidate` then highest confidence — so
- * which facts surface never depends on row order; (2) a pair whose ONLY catalog rows
- * are `candidate` AND that has no readiness band row is dropped, mirroring the
- * readiness contract (`detection_method != 'candidate'`): a bare structural candidate
- * the LLM never confirmed is not a catalog relationship.
+ * is chosen by {@link catalogRowBeats} — the engine's method precedence
+ * (`manual > keeper > llm > candidate`), confidence only as the same-method tiebreak —
+ * so the facts surface from the SAME representative row the engine's readiness pass
+ * measured, never depending on row order; (2) a pair whose ONLY catalog rows are
+ * `candidate` AND that has no readiness band row is dropped, mirroring the readiness
+ * contract (`detection_method != 'candidate'`): a bare structural candidate the LLM
+ * never confirmed is not a catalog relationship.
  */
 export function unionRelationships(
 	readinessRows: RelationshipReadinessRow[],
@@ -394,13 +421,14 @@ export async function lookRelationships(
 		})
 		.from(currentRelationships)
 		.where(eq(currentRelationships.sessionId, input.session_id))
-		// Deterministic catalog order so the per-pair winner is reproducible across
-		// reads: a confirmed FK carries BOTH a structural `candidate` row and an
-		// `llm`/`manual`/`keeper` row in the same promoted run (uniqueness is
-		// `(session_id, run_id, from_column_id, to_column_id, detection_method)`).
-		// `unionRelationships` owns the winner choice (prefer non-`candidate`, then
-		// highest confidence); this ORDER BY pins the row order it folds over so two
-		// reads never disagree. NULL confidence sorts last.
+		// The in-memory fold owns winner selection — `unionRelationships` /
+		// `catalogRowBeats` pick the per-pair representative by the engine's method
+		// precedence (`manual > keeper > llm > candidate`), confidence only as the
+		// same-method tiebreak. So this ORDER BY does NOT decide the winner; it only
+		// stabilizes the INPUT order the fold sees so two reads never disagree on the
+		// rare exact-tie (same method AND same confidence). Note Postgres `DESC`
+		// defaults to NULLS FIRST, so a NULL-confidence row sorts BEFORE a real one
+		// here — harmless, since the fold compares confidence (NULL → -1) itself.
 		.orderBy(
 			asc(currentRelationships.fromColumnId),
 			asc(currentRelationships.toColumnId),

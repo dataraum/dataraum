@@ -310,12 +310,13 @@ describe("unionRelationships (DAT-478)", () => {
 	it("picks the llm/confirmed row when a pair has BOTH a candidate and an llm row (deterministic winner)", () => {
 		// One promoted run carries multiple rows per directional pair — a structural
 		// `candidate` (is_confirmed=false) AND the `llm` row the selector confirmed
-		// (uniqueness includes detection_method). The non-`candidate` row must win
-		// regardless of input order, so the surfaced facts are deterministic.
+		// (uniqueness includes detection_method). The higher-precedence row (llm beats
+		// candidate) must win regardless of input order, so the surfaced facts are
+		// deterministic — and confidence does NOT flip it (the candidate's is higher).
 		const candidate = catalogRow({
 			detectionMethod: "candidate",
 			isConfirmed: false,
-			confidence: 0.99, // higher confidence must NOT beat being non-`candidate`
+			confidence: 0.99, // higher confidence must NOT beat the higher-precedence method
 			relationshipType: "structural_candidate",
 			cardinality: "unknown",
 		});
@@ -341,15 +342,79 @@ describe("unionRelationships (DAT-478)", () => {
 		}
 	});
 
-	it("prefers the higher-confidence row among same-method (non-candidate) rows", () => {
-		// Two defined rows on one pair (e.g. an llm + a keeper) — confidence breaks
-		// the tie once both are non-`candidate`.
+	it("picks `manual` over `llm` regardless of confidence — precedence dominates (both orderings)", () => {
+		// The engine's readiness pass picks the representative by METHOD PRECEDENCE
+		// (`manual > keeper > llm > candidate`), NOT confidence — so the facts we join
+		// onto that band must come from the same row. `manual(0.7)` must beat `llm(0.9)`
+		// even though the llm confidence is higher, or the facts contradict the band.
+		const manual = catalogRow({
+			detectionMethod: "manual",
+			confidence: 0.7,
+			relationshipType: "foreign_key",
+			cardinality: "one_to_one",
+		});
+		const llm = catalogRow({
+			detectionMethod: "llm",
+			confidence: 0.9, // higher confidence must NOT beat the higher-precedence method
+			relationshipType: "association",
+			cardinality: "many_to_one",
+		});
+		for (const catalog of [
+			[manual, llm],
+			[llm, manual],
+		]) {
+			const out = unionRelationships([row()], catalog, wideNames());
+			expect(out).toHaveLength(1);
+			expect(out[0].detection_method).toBe("manual");
+			expect(out[0].confidence).toBe(0.7);
+			expect(out[0].relationship_type).toBe("foreign_key");
+			expect(out[0].cardinality).toBe("one_to_one");
+		}
+	});
+
+	it("picks `keeper` over `llm` regardless of confidence — precedence dominates (both orderings)", () => {
+		// keeper outranks llm in the engine's precedence map, so a `keeper(0.6)` row
+		// wins over an `llm(0.95)` row — confidence never crosses the method boundary.
+		const keeper = catalogRow({
+			detectionMethod: "keeper",
+			confidence: 0.6,
+			relationshipType: "foreign_key",
+			cardinality: "one_to_one",
+		});
+		const llm = catalogRow({
+			detectionMethod: "llm",
+			confidence: 0.95, // higher confidence must NOT beat the higher-precedence method
+			relationshipType: "association",
+			cardinality: "many_to_one",
+		});
+		for (const catalog of [
+			[keeper, llm],
+			[llm, keeper],
+		]) {
+			const out = unionRelationships([row()], catalog, wideNames());
+			expect(out).toHaveLength(1);
+			expect(out[0].detection_method).toBe("keeper");
+			expect(out[0].confidence).toBe(0.6);
+			expect(out[0].relationship_type).toBe("foreign_key");
+			expect(out[0].cardinality).toBe("one_to_one");
+		}
+	});
+
+	it("prefers the higher-confidence row among same-method rows (intra-method tiebreak ONLY)", () => {
+		// Confidence is the tiebreak only WITHIN one detection_method — two `llm` rows
+		// on the same pair resolve to the higher-confidence one. (Across methods,
+		// precedence dominates — see the manual/keeper-over-llm tests above.)
 		const lo = catalogRow({ detectionMethod: "llm", confidence: 0.6 });
-		const hi = catalogRow({ detectionMethod: "keeper", confidence: 0.95 });
+		const hi = catalogRow({
+			detectionMethod: "llm",
+			confidence: 0.95,
+			cardinality: "one_to_one",
+		});
 		const out = unionRelationships([row()], [lo, hi], wideNames());
 		expect(out).toHaveLength(1);
-		expect(out[0].detection_method).toBe("keeper");
+		expect(out[0].detection_method).toBe("llm");
 		expect(out[0].confidence).toBe(0.95);
+		expect(out[0].cardinality).toBe("one_to_one");
 	});
 
 	it("excludes a candidate-only pair with no readiness row (readiness contract)", () => {

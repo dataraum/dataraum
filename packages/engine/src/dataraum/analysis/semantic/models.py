@@ -108,6 +108,33 @@ class ColumnSemanticOutput(BaseModel):
         ),
     )
 
+    temporal_behavior_claim: Literal["stock", "flow", "unsure"] = Field(
+        description=(
+            "Does this column hold a STOCK or a FLOW? A 'stock' is a carried-forward "
+            "point-in-time level — a balance, position, headcount, or status that "
+            "persists until changed and must NOT be summed across periods (summing "
+            "balances double-counts). A 'flow' is a per-period movement — a transaction "
+            "amount, payment, sale, or change that accumulates over time and IS "
+            "summable. Judge from the business meaning of the name, the semantic role, "
+            "and representative values; a periodic snapshot reported each period (e.g. a "
+            "trial-balance line) is still a stock. Use 'unsure' when the column is not a "
+            "numeric measure, or when name, role, and values give no clear stock/flow "
+            "signal — do not guess. This is an INDEPENDENT read: report what the column "
+            "actually looks like even if it disagrees with the expected concept."
+        )
+    )
+
+    temporal_behavior_claim_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence (0.0–1.0) in temporal_behavior_claim. High (0.85–1.0) for "
+            "unambiguous domain language (balance, payment, revenue, closing_position). "
+            "Moderate (0.6–0.8) when the role implies it but the name is ambiguous. Low "
+            "(0.2–0.4) for a weak signal. Set this low whenever you answer 'unsure'."
+        ),
+    )
+
 
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.

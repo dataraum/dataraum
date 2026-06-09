@@ -75,6 +75,17 @@ class SemanticAnnotation(Base):
     # Temporal behavior from ontology: 'additive' or 'point_in_time'
     temporal_behavior: Mapped[str | None] = mapped_column(String)
 
+    # Independent LLM stock/flow read (ADR-0009 / DAT-445), pooled against the
+    # ontology prior above in the temporal_behavior adjudication. The claim
+    # ('stock'/'flow'/'unsure') + its confidence are the LLM witness, written by
+    # semantic_per_column. ``temporal_behavior_contested`` is written back by the
+    # resolved-layer pass (dataraum.entropy.resolve) when the pooled conflict is
+    # non-trivial — it flags the resolved temporal_behavior so a downstream SQL
+    # agent treats a contested stock with caution. None = no claim / not resolved.
+    temporal_behavior_claim: Mapped[str | None] = mapped_column(String)
+    temporal_behavior_claim_confidence: Mapped[float | None] = mapped_column(Float)
+    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
+
     # Cross-column unit inference: column name that defines the unit for this measure
     # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
     unit_source_column: Mapped[str | None] = mapped_column(String)

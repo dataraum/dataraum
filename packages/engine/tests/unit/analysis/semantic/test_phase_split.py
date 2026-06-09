@@ -58,6 +58,8 @@ def _col(name: str, role: str, **kw) -> ColumnSemanticOutput:
         description=kw.get("description", f"{name} column"),
         confidence=kw.get("confidence", 0.9),
         unit_source_column=kw.get("unit_source_column"),
+        temporal_behavior_claim=kw.get("temporal_behavior_claim", "unsure"),
+        temporal_behavior_claim_confidence=kw.get("temporal_behavior_claim_confidence", 0.0),
     )
 
 

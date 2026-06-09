@@ -194,6 +194,10 @@ def persist_column_annotations(
                     "temporal_behavior": concept_temporal.get(col.business_concept)
                     if col.business_concept
                     else None,
+                    # Independent LLM stock/flow read (DAT-445) — the second witness,
+                    # stored ALONGSIDE the ontology temporal_behavior, never replacing it.
+                    "temporal_behavior_claim": col.temporal_behavior_claim,
+                    "temporal_behavior_claim_confidence": col.temporal_behavior_claim_confidence,
                     "unit_source_column": col.unit_source_column,
                     "annotation_source": DecisionSource.LLM.value,
                     "annotated_by": annotated_by,

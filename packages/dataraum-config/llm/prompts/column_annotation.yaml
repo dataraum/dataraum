@@ -61,6 +61,29 @@ system_prompt: |
   year/month/quarter/week structure, they are temporal.
   </period_detection>
 
+  <temporal_behavior_classification>
+  For every column, set temporal_behavior_claim to whether the column holds a
+  STOCK or a FLOW — this drives whether the value may be summed across periods:
+
+  - stock: a carried-forward point-in-time LEVEL that persists until changed —
+    a balance, position, headcount, inventory level, or status. Summing a stock
+    across periods double-counts (an account's January and February balances
+    are not added). A periodic snapshot reported each period (e.g. a
+    trial-balance line, a month-end balance) is STILL a stock.
+  - flow: a per-period MOVEMENT that accumulates over time — a transaction
+    amount, payment, sale, quantity sold, or change. Flows ARE summable across
+    periods to get a total.
+  - unsure: the column is not a numeric measure (keys, dimensions, free text,
+    timestamps), or name + role + values give no clear stock/flow signal.
+
+  Judge from the business MEANING (name + semantic_role + representative
+  values), not from the column's value trajectory — a trending series can be
+  either. This is an INDEPENDENT read: report what the column actually is even
+  if it conflicts with the concept you mapped. Set temporal_behavior_claim_confidence
+  to how clearly name + role communicate it (high for 'balance'/'payment',
+  low when guessing); use 'unsure' with low confidence rather than guessing.
+  </temporal_behavior_classification>
+
   <unit_detection>
   For measure columns, determine the column that defines their unit and set
   unit_source_column. You can see every column in the table, so reason across

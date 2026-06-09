@@ -357,6 +357,13 @@ def load_semantic(
         semantic_dict["unit_source_column"] = sa.unit_source_column
     if sa.temporal_behavior:
         semantic_dict["temporal_behavior"] = sa.temporal_behavior
+    # The LLM stock/flow witness (DAT-445), read alongside the ontology prior.
+    if sa.temporal_behavior_claim:
+        semantic_dict["temporal_behavior_claim"] = sa.temporal_behavior_claim
+    if sa.temporal_behavior_claim_confidence is not None:
+        semantic_dict["temporal_behavior_claim_confidence"] = (
+            sa.temporal_behavior_claim_confidence
+        )
     return semantic_dict
 
 

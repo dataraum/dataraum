@@ -51,6 +51,8 @@ def _col(name: str, role: str) -> ColumnSemanticOutput:
         business_term=name.title(),
         description=f"{name} column",
         confidence=0.9,
+        temporal_behavior_claim="unsure",
+        temporal_behavior_claim_confidence=0.0,
     )
 
 

@@ -31,6 +31,8 @@ import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
 import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
+import type { TeachCycleResult } from "#/tools/teach-cycle";
+import type { TeachMetricResult } from "#/tools/teach-metric";
 import type { TeachValidationResult } from "#/tools/teach-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
@@ -78,6 +80,8 @@ const TOOL_LABELS: Record<string, string> = {
 	probe: "Data check",
 	teach: "Teaching",
 	teach_validation: "Declaring validation",
+	teach_cycle: "Declaring cycle",
+	teach_metric: "Declaring metric",
 	replay: "Re-running",
 	upload: "File upload",
 };
@@ -92,6 +96,8 @@ const TOOL_LABELS_DONE: Record<string, string> = {
 	begin_session: "Session started",
 	teach: "Taught",
 	teach_validation: "Validation declared",
+	teach_cycle: "Cycle declared",
+	teach_metric: "Metric declared",
 	replay: "Re-ran",
 	// "Started", not "done" — the driver returns as soon as the durable run
 	// kicks off (non-blocking, the begin_session pattern).
@@ -337,6 +343,10 @@ export function toolChipSummary(
 			return teachChipSummary(input, output);
 		case "teach_validation":
 			return teachValidationChipSummary(input, output);
+		case "teach_cycle":
+			return teachCycleChipSummary(input, output);
+		case "teach_metric":
+			return teachMetricChipSummary(input, output);
 		case "replay": {
 			const args = input as { source_id?: string } | undefined;
 			const out = output as { run_id?: string } | undefined;
@@ -418,4 +428,56 @@ export function teachValidationChipSummary(
 			: `declare ${label}`;
 	}
 	return "declaring validation…";
+}
+
+/**
+ * The teach_cycle chip (DAT-482). Mirrors teach_validation: at approval it shows
+ * "declare <name>" off `arguments`; once complete it flips to "declared <name>"
+ * or, for a shadowed shipped cycle, "overrode <name>". No "(was …)" — a cycle is
+ * keyed BY name, so an override carries the same name (the shadowed cycle's name
+ * equals the new one); the override flag alone is the news. Unlike teach_metric
+ * the cycle chip maps to no canvas member (the outcome lands in look_cycle).
+ */
+export function teachCycleChipSummary(input: unknown, output: unknown): string {
+	const result = output as TeachCycleResult | undefined;
+	if (result && "name" in result && result.name) {
+		const label = humanizeIdentifier(result.name) || result.name;
+		return result.override ? `overrode ${label}` : `declared ${label}`;
+	}
+	const args = input as { name?: string } | undefined;
+	if (args?.name) {
+		return `declare ${humanizeIdentifier(args.name) || args.name}`;
+	}
+	return "declaring cycle…";
+}
+
+/**
+ * The teach_metric chip (DAT-482). Mirrors teach_validation: "declare <id>" at
+ * approval; "declared <id>" or "overrode <id> (was <shadowed name>)" once
+ * complete — the shipped metric's human NAME differs from its graph_id key, so
+ * "(was EBITDA)" names what an override of `ebitda` replaces. Unlike the other
+ * teach chips, an override ALSO drives the canvas (the metric-shadow widget
+ * renders the replaced DAG, DAT-482).
+ */
+export function teachMetricChipSummary(
+	input: unknown,
+	output: unknown,
+): string {
+	const result = output as TeachMetricResult | undefined;
+	if (result && "graph_id" in result && result.graph_id) {
+		const label = humanizeIdentifier(result.graph_id) || result.graph_id;
+		if (result.override) {
+			const shadowed =
+				result.shadowed_spec?.name ?? result.shadowed_spec?.graph_id;
+			return shadowed
+				? `overrode ${label} (was ${truncate(shadowed, 32)})`
+				: `overrode ${label}`;
+		}
+		return `declared ${label}`;
+	}
+	const args = input as { graph_id?: string } | undefined;
+	if (args?.graph_id) {
+		return `declare ${humanizeIdentifier(args.graph_id) || args.graph_id}`;
+	}
+	return "declaring metric…";
 }

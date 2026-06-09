@@ -141,6 +141,24 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		isWhyResult(result)
 			? { kind: "metric-why", why: result as WhyMetricResult }
 			: null,
+	// DAT-482: a teach_metric OVERRIDE surfaces the shipped DAG it replaces. Unlike
+	// the other teach tools (rail-only), an override carries a renderable surface —
+	// but only an override: a fresh declaration (override:false) or an errored
+	// result has nothing to replace, so it projects null (chip stays display-only).
+	// Carries ONLY the (vertical, graph_id) KEY — the widget re-fetches the DAG, so
+	// the lean teach result never carries it into the model's context.
+	teach_metric: (result) => {
+		const r = result as {
+			override?: unknown;
+			vertical?: unknown;
+			graph_id?: unknown;
+		} | null;
+		return r?.override === true &&
+			typeof r.vertical === "string" &&
+			typeof r.graph_id === "string"
+			? { kind: "metric-shadow", vertical: r.vertical, graphId: r.graph_id }
+			: null;
+	},
 	// Only project once the result is a COMPLETE schema (a `tables` array): a
 	// partial/streaming or errored connect output is truthy-but-tables-less, and
 	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file

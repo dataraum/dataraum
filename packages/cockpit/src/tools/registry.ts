@@ -14,6 +14,7 @@ import { listTablesTool } from "./list-tables";
 import { listVerticalsTool } from "./list-verticals";
 import { lookCycleTool } from "./look-cycle";
 import { lookMetricTool } from "./look-metric";
+import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
@@ -41,6 +42,7 @@ export const tools = [
 	listVerticalsTool,
 	uploadTool,
 	lookTableTool,
+	lookProfileTool,
 	whyColumnTool,
 	whyTableTool,
 	lookRelationshipsTool,

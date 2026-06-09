@@ -25,6 +25,7 @@ import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { Vertical } from "#/tools/list-verticals";
+import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
@@ -61,6 +62,7 @@ const TOOL_LABELS: Record<string, string> = {
 	list_verticals: "Domains",
 	list_tables: "Workspace tables",
 	look_table: "Table readiness",
+	look_profile: "Column profile",
 	why_column: "Column detail",
 	why_table: "Table detail",
 	why_relationship: "Relationship detail",
@@ -188,6 +190,19 @@ export function toolChipSummary(
 			return r.analyzed
 				? `${r.table_name} — ${cols}`
 				: `${r.table_name} — ${cols}, not yet analyzed`;
+		}
+		case "look_profile": {
+			const r = output as LookProfileResult | undefined;
+			if (!r) return "reading column profile…";
+			if (!r.found) return "column not found";
+			// `table_name` arrives in display form (projected in the tool, DAT-433).
+			const parts: string[] = [];
+			if (r.stats?.total_count != null)
+				parts.push(plural(r.stats.total_count, "row"));
+			if (r.type_candidates.length > 0)
+				parts.push(plural(r.type_candidates.length, "type candidate"));
+			const suffix = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
+			return `${r.column_name} (${r.table_name})${suffix}`;
 		}
 		case "why_column": {
 			const r = output as WhyColumnResult | undefined;

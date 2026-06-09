@@ -47,12 +47,13 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 21 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(21);
+	it("marks the 22 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(22);
 		for (const name of [
 			"list_sources",
 			"list_tables",
 			"look_table",
+			"look_profile",
 			"why_column",
 			"why_table",
 			"why_relationship",

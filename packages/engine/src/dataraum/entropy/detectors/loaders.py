@@ -236,7 +236,13 @@ def load_statistics(
                     sp_stmt.where(StatisticalProfile.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        sp = session.execute(sp_stmt).scalar_one_or_none()
+        # No run pinned: most recent (= the promoted re-run), never scalar_one_or_none
+        # — profiles coexist across re-runs (upsert is per (column_id, run_id)) (DAT-447).
+        sp = (
+            session.execute(sp_stmt.order_by(StatisticalProfile.profiled_at.desc()))
+            .scalars()
+            .first()
+        )
 
     if not sp:
         return None
@@ -263,7 +269,11 @@ def load_statistics(
                     qm_stmt.where(StatisticalQualityMetrics.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        qm = session.execute(qm_stmt).scalar_one_or_none()
+        qm = (
+            session.execute(qm_stmt.order_by(StatisticalQualityMetrics.computed_at.desc()))
+            .scalars()
+            .first()
+        )
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
@@ -327,7 +337,11 @@ def load_semantic(
                     sa_stmt.where(SemanticAnnotation.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        sa = session.execute(sa_stmt).scalar_one_or_none()
+        sa = (
+            session.execute(sa_stmt.order_by(SemanticAnnotation.annotated_at.desc()))
+            .scalars()
+            .first()
+        )
     if not sa:
         return None
 

@@ -70,7 +70,7 @@ class TestLoadTyping:
 class TestLoadStatistics:
     def test_returns_none_when_no_profile(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_statistics(session, "col1") is None
 
     def test_returns_stats_with_quality(self):
@@ -89,7 +89,7 @@ class TestLoadStatistics:
         qm.benford_compliant = True
         qm.quality_data = {"outlier_detection": {"iqr_outlier_count": 2}}
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [sp, qm]
+        session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
 
         result = load_statistics(session, "col1")
         assert result is not None
@@ -116,7 +116,7 @@ class TestLoadStatistics:
         qm.benford_compliant = True
         qm.quality_data = {"benford_analysis": {"is_compliant": True}}
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [sp, qm]
+        session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
 
         result = load_statistics(session, "col1")
         assert result is not None
@@ -127,7 +127,7 @@ class TestLoadStatistics:
 class TestLoadSemantic:
     def test_returns_none_when_no_annotation(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_semantic(session, "col1") is None
 
     def test_returns_semantic_dict(self):
@@ -141,7 +141,7 @@ class TestLoadSemantic:
         sa.business_concept = "revenue"
         sa.unit_source_column = None
 
-        session.execute.return_value.scalar_one_or_none.return_value = sa
+        session.execute.return_value.scalars.return_value.first.return_value = sa
 
         result = load_semantic(session, "col1")
         assert result is not None
@@ -159,7 +159,7 @@ class TestLoadSemantic:
         sa.business_concept = None
         sa.unit_source_column = "currency"
 
-        session.execute.return_value.scalar_one_or_none.return_value = sa
+        session.execute.return_value.scalars.return_value.first.return_value = sa
 
         result = load_semantic(session, "col1")
         assert result is not None

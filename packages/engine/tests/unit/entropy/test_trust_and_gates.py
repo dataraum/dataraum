@@ -15,6 +15,7 @@ ALL_DETECTOR_IDS = {
     "derived_value",
     "business_meaning",
     "unit_entropy",
+    "unit_consistency",
     "temporal_entropy",
     "dimensional_entropy",
     "dimension_coverage",

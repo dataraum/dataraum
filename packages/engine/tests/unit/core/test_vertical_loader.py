@@ -77,6 +77,30 @@ class TestFramed:
         assert ontology["name"] == "sales"
         assert [c["name"] for c in ontology["concepts"]] == ["deal_value"]
 
+    def test_validation_row_resolves(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="validation",
+                    payload={"vertical": "sales", "validation_id": "v_pipeline_stage"},
+                )
+            ]
+        )
+        validations = VerticalLoader("sales").collection(Family.VALIDATIONS)["validations"]
+        assert [v["validation_id"] for v in validations] == ["v_pipeline_stage"]
+
+    def test_cycle_row_resolves(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="cycle",
+                    payload={"vertical": "sales", "name": "sales_cycle"},
+                )
+            ]
+        )
+        cycle_types = VerticalLoader("sales").collection(Family.CYCLES)["cycle_types"]
+        assert "sales_cycle" in cycle_types
+
 
 class TestEmptyAndUnknown:
     """No on-disk source AND no overlay → the family's empty base, never a raise."""

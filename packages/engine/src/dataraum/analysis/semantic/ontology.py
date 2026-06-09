@@ -88,10 +88,11 @@ class OntologyLoader:
         return OntologyDefinition(**data)
 
     def list_verticals(self) -> list[str]:
-        """List available verticals with ontology definitions on disk.
+        """List the shipped (on-disk) verticals.
 
-        Lists only baked-in verticals — overlay rows can't add a wholly
-        new vertical (they augment a vertical whose YAML exists). Returns
+        File-globs ``verticals/*/ontology.yaml`` only — *framed* verticals
+        (declared via the cockpit ``frame`` stage; they live entirely in overlay
+        rows with no on-disk file, DAT-480) are NOT enumerated here. Returns
         ``[]`` if the verticals root doesn't exist.
         """
         root = self.verticals_dir if self.verticals_dir is not None else get_config_dir("verticals")

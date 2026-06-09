@@ -161,6 +161,59 @@ class TestApplyNullValue:
         assert merged["standard_nulls"] == []
 
 
+class TestApplyUnit:
+    """``unit`` rows merge into ``phases/typing.yaml`` ``overrides.units`` (DAT-428)."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_adds_unit_to_empty_overrides(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="unit",
+                    payload={"table": "invoices", "column": "amount", "unit": "EUR"},
+                )
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"] == {"invoices.amount": {"unit": "EUR"}}
+
+    def test_last_write_wins_on_same_column(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "USD"}),
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "EUR"}),
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"]["t.c"] == {"unit": "EUR"}
+
+    def test_composes_with_type_pattern_on_same_file(self) -> None:
+        """``unit`` (overrides.units) and ``type_pattern`` (overrides.patterns) share the
+        file but write disjoint keys, so the dispatcher applies both without clobbering."""
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="type_pattern", payload={"name": "p", "pattern": "^x$"}),
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "kg"}),
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["patterns"]["p"] == {"pattern": "^x$"}
+        assert merged["overrides"]["units"]["t.c"] == {"unit": "kg"}
+
+    def test_ignores_rows_missing_fields(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="unit", payload={"column": "c", "unit": "EUR"}),  # no table
+                OverlayRow(type="unit", payload={"table": "t", "unit": "EUR"}),  # no column
+                OverlayRow(type="unit", payload={"table": "t", "column": "c"}),  # no unit
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"] == {}
+
+
 class TestApplyConcept:
     """``concept`` rows upsert-replace into a vertical ontology's ``concepts:`` list.
 

@@ -24,6 +24,10 @@ Registered teach types
 ----------------------
 * ``type_pattern`` — ``phases/typing.yaml`` ``overrides.patterns.<name>``
 * ``null_value`` — ``null_values.yaml`` under its declared category list
+* ``unit`` — ``phases/typing.yaml`` ``overrides.units."<table>.<column>"`` (DAT-428):
+  the column-scoped unit teach. Shares the file with ``type_pattern`` but a disjoint
+  key, so both compose. The reader (``typing_phase._apply_unit_overrides``) has always
+  existed; this applier is the write half that was missing.
 * ``concept`` — ``verticals/<vertical>/ontology.yaml``, upsert-replace
   by ``name`` into ``concepts:``; routed via :func:`apply_overlay`'s
   vertical-path detection. Used both by user teach and by the engine's
@@ -177,6 +181,34 @@ def _apply_null_value(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
         seen.add(value)
         item = {k: v for k, v in row.payload.items() if k != "category"}
         out[category].append(item)
+    return out
+
+
+def _apply_unit(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
+    """Merge ``unit`` rows into ``phases/typing.yaml`` ``overrides.units``.
+
+    Payload shape: ``{table, column, unit}``. Keyed by ``"{table}.{column}"`` —
+    the ``col_ref`` ``typing_phase._apply_unit_overrides`` reads to patch the best
+    ``TypeCandidate``'s ``detected_unit`` (and force ``unit_confidence`` → 1.0). The
+    last row for a given ``table.column`` wins (rows are pre-sorted ASC by
+    ``created_at``). This is the column-scoped unit teach (DAT-428): the WRITE half
+    the reader was always missing, so a taught unit lands on an already-typed numeric
+    column without having to win a type pattern. Shares ``phases/typing.yaml`` with
+    ``type_pattern`` but touches a disjoint key (``overrides.units`` vs
+    ``overrides.patterns``), so the two compose under the dispatcher.
+    """
+    overrides = dict(base.get("overrides") or {})
+    units = dict(overrides.get("units") or {})
+    for row in rows:
+        table = row.payload.get("table")
+        column = row.payload.get("column")
+        unit = row.payload.get("unit")
+        if not table or not column or not unit:
+            continue
+        units[f"{table}.{column}"] = {"unit": unit}
+    overrides["units"] = units
+    out = dict(base)
+    out["overrides"] = overrides
     return out
 
 
@@ -351,6 +383,10 @@ _REGISTRY: Final[dict[str, _ApplierSpec]] = {
     "null_value": _ApplierSpec(
         target_path="null_values.yaml",
         apply=_apply_null_value,
+    ),
+    "unit": _ApplierSpec(
+        target_path="phases/typing.yaml",
+        apply=_apply_unit,
     ),
 }
 

@@ -19,11 +19,12 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.typing.db_models import TypeDecision
+from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.pipeline.base import PhaseContext
-from dataraum.pipeline.phases.typing_phase import TypingPhase
+from dataraum.pipeline.phases.typing_phase import TypingPhase, _apply_unit_overrides
 from dataraum.storage.models import Column, Source, Table
 
 
@@ -224,3 +225,83 @@ class TestShouldSkip:
 
         reason = TypingPhase().should_skip(_ctx(session, duckdb_conn, table_ids=[str(uuid4())]))
         assert reason == "No raw tables match the requested table_ids filter"
+
+
+# ---------------------------------------------------------------------------
+# _apply_unit_overrides — the column-scoped unit teach (DAT-428)
+# ---------------------------------------------------------------------------
+
+
+def _make_column_with_candidate(
+    session: Session, table: Table, name: str = "amount", confidence: float = 0.9
+) -> Column:
+    col = Column(
+        column_id=str(uuid4()),
+        table_id=table.table_id,
+        column_name=name,
+        column_position=0,
+        raw_type="VARCHAR",
+        resolved_type="DECIMAL",
+    )
+    session.add(col)
+    session.flush()
+    from tests.conftest import baseline_session_id
+
+    session.add(
+        TypeCandidate(
+            candidate_id=str(uuid4()),
+            session_id=baseline_session_id(),
+            column_id=col.column_id,
+            data_type="DECIMAL",
+            confidence=confidence,
+        )
+    )
+    session.flush()
+    return col
+
+
+class TestApplyUnitOverrides:
+    """``overrides.units`` lands on the best TypeCandidate — the read half of the
+    DAT-428 unit teach loop (overlay applier writes, this reader consumes)."""
+
+    def _setup(self, session: Session, table_name: str) -> tuple[Table, Column]:
+        src = _make_source(session)
+        table = _make_table(session, src.source_id, table_name)
+        col = _make_column_with_candidate(session, table)
+        return table, col
+
+    def _candidate(self, session: Session, col: Column) -> TypeCandidate:
+        return session.execute(
+            select(TypeCandidate).where(TypeCandidate.column_id == col.column_id)
+        ).scalar_one()
+
+    def test_qualified_key_patches_best_candidate(self, session: Session) -> None:
+        table, col = self._setup(session, "src_abc123__bank_transactions")
+        config = {"overrides": {"units": {"src_abc123__bank_transactions.amount": {"unit": "EUR"}}}}
+        _apply_unit_overrides(session, config, table)
+        tc = self._candidate(session, col)
+        assert tc.detected_unit == "EUR"
+        assert tc.unit_confidence == 1.0
+
+    def test_raw_name_key_patches_despite_source_prefix(self, session: Session) -> None:
+        # A human teaches the bare table name; the stored raw table is source-qualified.
+        table, col = self._setup(session, "src_deadbeef__bank_transactions")
+        config = {"overrides": {"units": {"bank_transactions.amount": {"unit": "USD"}}}}
+        _apply_unit_overrides(session, config, table)
+        tc = self._candidate(session, col)
+        assert tc.detected_unit == "USD"
+        assert tc.unit_confidence == 1.0
+
+    def test_no_matching_key_leaves_candidate_untouched(self, session: Session) -> None:
+        table, col = self._setup(session, "src_x__invoices")
+        config = {"overrides": {"units": {"other.col": {"unit": "EUR"}}}}
+        _apply_unit_overrides(session, config, table)
+        tc = self._candidate(session, col)
+        assert tc.detected_unit is None
+        assert tc.unit_confidence is None
+
+    def test_no_units_section_is_a_noop(self, session: Session) -> None:
+        table, col = self._setup(session, "src_y__payments")
+        _apply_unit_overrides(session, {}, table)
+        tc = self._candidate(session, col)
+        assert tc.detected_unit is None

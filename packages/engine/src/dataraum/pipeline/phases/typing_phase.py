@@ -373,8 +373,13 @@ def _apply_unit_overrides(
 ) -> None:
     """Patch TypeCandidate.detected_unit from config overrides.
 
-    Reads ``overrides.units`` from typing config. Keys are
-    ``"table.column"``; values contain ``{unit: "USD"}``.
+    Reads ``overrides.units`` from typing config (the column-scoped unit teach,
+    DAT-428). Keys are ``"table.column"``; values contain ``{unit: "USD"}``.
+
+    A teach names the table by its USER-FACING identity (``bank_transactions``),
+    but a raw table's stored name is source-qualified (``src_<digest>__bank_transactions``).
+    So we match a key against BOTH the qualified name and the de-prefixed raw name —
+    a human teach lands without the user having to know the internal source digest.
     """
     from dataraum.analysis.typing.db_models import TypeCandidate
 
@@ -385,9 +390,18 @@ def _apply_unit_overrides(
     if not isinstance(units, dict) or not units:
         return
 
+    # Strip the ``src_<digest>__`` source-qualifier so a teach keyed by the bare
+    # table name resolves; the qualified key still matches too.
+    qualified = table.table_name
+    raw_name = (
+        qualified.split("__", 1)[1]
+        if qualified.startswith("src_") and "__" in qualified
+        else qualified
+    )
+
     for col in table.columns:
-        col_ref = f"{table.table_name}.{col.column_name}"
-        entry = units.get(col_ref)
+        col_ref = f"{qualified}.{col.column_name}"
+        entry = units.get(col_ref) or units.get(f"{raw_name}.{col.column_name}")
         if not isinstance(entry, dict):
             continue
         unit = entry.get("unit")

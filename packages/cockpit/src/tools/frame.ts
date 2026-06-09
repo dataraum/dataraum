@@ -30,6 +30,7 @@ import { z } from "zod";
 import { ConnectSchema } from "../duckdb/connect";
 import {
 	getFrameInstructions,
+	getFrameMetricsInstructions,
 	getFrameValidationsInstructions,
 } from "../prompts";
 import {
@@ -44,6 +45,8 @@ import {
 	nearestSeedVertical,
 	stripUndefined,
 } from "./frame-family";
+import { MetricSpecSchema, type ShippedMetricSpec } from "./metric-spec";
+import { readShippedMetrics } from "./teach-metric";
 import { readShippedValidations } from "./teach-validation";
 import {
 	type ShippedValidationSpec,
@@ -135,6 +138,21 @@ const InducedValidations = z.object({
 	validations: z.array(ProposedValidation),
 });
 
+// One induced/declared metric — a TransformationGraph (DAT-466's MetricSpecSchema)
+// MINUS `vertical`, which `frame` fixes on write, exactly as ProposedConcept /
+// ProposedValidation omit it. The model fills this DAG via structured output; the
+// user accepts/edits the set in the ModelFrame widget. The leaves are
+// CONCEPT-level (`source.standard_field` names a framed concept, not a column) —
+// column binding happens later in the semantic phase, SQL composition in
+// operating_model (DAT-468/471).
+export const ProposedMetric = MetricSpecSchema.omit({ vertical: true });
+export type ProposedMetric = z.infer<typeof ProposedMetric>;
+
+// The structured-output shape the metric induction LLM call returns.
+const InducedMetrics = z.object({
+	metrics: z.array(ProposedMetric),
+});
+
 // One written concept + the overlay row id it landed as.
 const FrameConceptResult = ProposedConcept.extend({
 	overlay_id: z.string(),
@@ -147,12 +165,23 @@ const FrameValidationResult = ProposedValidation.extend({
 });
 export type FrameValidationResult = z.infer<typeof FrameValidationResult>;
 
+// One written metric + the overlay row id it landed as.
+const FrameMetricResult = ProposedMetric.extend({
+	overlay_id: z.string(),
+});
+export type FrameMetricResult = z.infer<typeof FrameMetricResult>;
+
 export const FrameResult = z.object({
 	vertical: z.string(),
 	concepts: z.array(FrameConceptResult),
 	// The validations framed over those concepts (DAT-469). Empty for a
 	// concepts-only model (the user curated them all away, or none was proposed).
 	validations: z.array(FrameValidationResult),
+	// The metric DAGs framed over those concepts (DAT-471). Empty when none was
+	// proposed / all curated away. Each is a TransformationGraph with concept-leaf
+	// dependencies; born-loud after execution absorbs a malformed one (never a
+	// frame-time gate).
+	metrics: z.array(FrameMetricResult),
 });
 export type FrameResult = z.infer<typeof FrameResult>;
 
@@ -165,6 +194,9 @@ export interface FrameInput {
 	// A user-reviewed / edited validation set. Same verbatim-declare semantics as
 	// `concepts`; absent → validations are induced over the framed concepts.
 	validations?: ProposedValidation[];
+	// A user-reviewed / edited metric set. Same verbatim-declare semantics as
+	// `concepts`; absent → metric DAGs are induced over the framed concepts.
+	metrics?: ProposedMetric[];
 	// The vertical to declare the model under (a NEW, framed vertical). The agent
 	// proposes a name that fits the data; the user can rename. Omitted → `_adhoc`
 	// (the unnamed cold-start fallback). Pass the SAME name to `select`.
@@ -234,12 +266,55 @@ export async function induceValidations(
 }
 
 /**
+ * Induce a metric-DAG set for a source via one forced structured-output call,
+ * OVER the framed concept vocabulary (the concepts are part of the context, so
+ * each metric's leaf `extract` steps anchor to framed CONCEPTS, not guessed
+ * columns — column binding is the semantic phase's job, SQL composition is
+ * operating_model's). The induce prompt is seeded with the nearest shipped
+ * vertical's metric DAGs as STRUCTURAL few-shot (DAT-468) — flagged explicitly
+ * as examples and as the dependency SHAPE to learn, never the formula content to
+ * copy, which is what makes DAG induction reliable. Returns the proposed metrics;
+ * does NOT write anything (the induced DAG is inspiration, not a frame-time gate
+ * — a malformed one still declares + surfaces born-loud after execution). The
+ * shipped-spec reader is injectable so the seed wiring is unit-testable without
+ * the config tree; production uses the default. `signal` bridges the tool-context
+ * abort (DAT-449).
+ */
+export async function induceMetrics(
+	schema: ConnectSchema,
+	concepts: ProposedConcept[],
+	vertical: string,
+	signal?: AbortSignal,
+	readSeed: (v: string) => Promise<ShippedMetricSpec[]> = readShippedMetrics,
+): Promise<ProposedMetric[]> {
+	const seed = await nearestSeedVertical(vertical, readSeed);
+	const { metrics } = await induceStructured({
+		instructions: getFrameMetricsInstructions(),
+		userMessage:
+			"Propose metrics — each a small computation DAG over the framed concept " +
+			"vocabulary — for the following source. Wire the dependency structure " +
+			"correctly; leaves are concepts, not columns. Only propose metrics whose " +
+			"leaf concepts the vocabulary contains.\n\n" +
+			`<concepts>\n${JSON.stringify(concepts, null, 2)}\n</concepts>\n\n` +
+			`<schema>\n${JSON.stringify(schema, null, 2)}\n</schema>\n\n` +
+			formatSeedExamples(seed.specs, {
+				vertical: seed.vertical,
+				family: "metric",
+			}),
+		outputSchema: InducedMetrics,
+		signal,
+	});
+	return metrics;
+}
+
+/**
  * Run the frame stage: resolve the user's whole model — concepts AND the
- * validations over them — then write each member as a `config_overlay` row via
- * the shared teach seam. Each family independently induces (from the schema) or
- * declares verbatim (a user-edited set), so one `frame` call / one approval
- * frames the model. Validations induce OVER the same-call concepts. Returns the
- * written concepts + validations (with overlay ids) for the ModelFrame widget.
+ * executable knowledge over them (validations + metric DAGs) — then write each
+ * member as a `config_overlay` row via the shared teach seam. Each family
+ * independently induces (from the schema) or declares verbatim (a user-edited
+ * set), so one `frame` call / one approval frames the model. Validations and
+ * metrics both induce OVER the same-call concepts. Returns the written concepts
+ * + validations + metrics (with overlay ids) for the ModelFrame widget.
  */
 export async function frame(
 	input: FrameInput,
@@ -281,34 +356,55 @@ export async function frame(
 		signal,
 	});
 
+	// Metrics are framed over the same concepts and written as `metric` overlay
+	// rows through the SAME teach seam (the engine's _apply_metric upsert-replaces
+	// by graph_id, filtered by vertical). The payload IS the TransformationGraph
+	// (graph_id + metadata + output + the concept-leaf `dependencies` DAG); the
+	// next operating_model run declares → composes → executes it, and a malformed
+	// graph stays `declared` with a born-loud reason — NEVER gated here (DAT-471).
+	const metrics = await frameFamily<ProposedMetric>({
+		teachType: "metric",
+		itemSchema: ProposedMetric,
+		induce: (sig) => induceMetrics(schema, concepts.items, vertical, sig),
+		toPayload: (m) => ({ vertical, ...stripUndefined(m) }),
+		edited: input.metrics,
+		sessionId: input.session_id,
+		signal,
+	});
+
 	return {
 		vertical,
 		concepts: concepts.written,
 		validations: validations.written,
+		metrics: metrics.written,
 	};
 }
 
 /**
  * The `frame` tool for the agent loop. `needsApproval: true` — it writes
- * `concept` + `validation` overlay rows, so the user confirms before the write
- * runs. Input is the connect schema (to induce from) plus an optional
- * user-edited concept and/or validation set (the accept/edit round-trip). Output
- * is the written model, projected to the ModelFrame canvas widget.
+ * `concept` + `validation` + `metric` overlay rows, so the user confirms before
+ * the write runs. Input is the connect schema (to induce from) plus an optional
+ * user-edited concept, validation, and/or metric set (the accept/edit
+ * round-trip). Output is the written model, projected to the ModelFrame canvas
+ * widget.
  */
 export const frameTool = toolDefinition({
 	name: "frame",
 	description:
 		"Co-design the user's model for a connected source as a NEW vertical: induce " +
-		"the business concepts from its schema + samples AND the validations (data-" +
-		"quality / business-rule checks) over them, then write the declared model as " +
-		"overlay rows under a named vertical. Propose a `vertical_name` that fits the " +
+		"the business concepts from its schema + samples AND the executable knowledge " +
+		"over them — the validations (data-quality / business-rule checks) and the " +
+		"metrics (computation DAGs, e.g. EBITDA, DSO) — then write the declared model " +
+		"as overlay rows under a named vertical. Propose a `vertical_name` that fits the " +
 		"data (e.g. sales, logistics) — the user can rename. Pass `schema` (the connect " +
-		"result) to induce a proposal; pass `concepts` and/or `validations` (a user-" +
-		"reviewed/edited set) to declare those verbatim — validations induce over the " +
-		"framed concepts. If `list_verticals` shows a builtin that already fits (e.g. " +
-		"finance), DON'T frame — `select` that vertical directly. Requires user approval " +
-		"— it writes to the workspace. Run after `connect` and before `add_source`; pass " +
-		"the SAME `vertical_name` to `select`.",
+		"result) to induce a proposal; pass `concepts`, `validations`, and/or `metrics` " +
+		"(a user-reviewed/edited set) to declare those verbatim — validations and " +
+		"metrics induce over the framed concepts. Metric leaves are CONCEPTS (grounded " +
+		"to columns later, in the semantic phase), not column names. If `list_verticals` " +
+		"shows a builtin that already fits (e.g. finance), DON'T frame — `select` that " +
+		"vertical directly. Requires user approval — it writes to the workspace. Run " +
+		"after `connect` and before `add_source`; pass the SAME `vertical_name` to " +
+		"`select`.",
 	inputSchema: z.object({
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		vertical_name: z
@@ -331,6 +427,14 @@ export const frameTool = toolDefinition({
 			.describe(
 				"User-reviewed/edited validations to declare verbatim (skips validation " +
 					"induction). Omit to induce validations over the framed concepts.",
+			),
+		metrics: z
+			.array(ProposedMetric)
+			.optional()
+			.describe(
+				"User-reviewed/edited metric DAGs to declare verbatim (skips metric " +
+					"induction). Omit to induce metrics over the framed concepts. Each is a " +
+					"TransformationGraph whose extract-step leaves name framed concepts.",
 			),
 		session_id: z.string().nullish(),
 	}),

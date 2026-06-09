@@ -57,6 +57,21 @@ describe("formatSeedExamples (library-as-seed)", () => {
 		expect(out).toMatch(/No shipped validation library/i);
 		expect(out).not.toMatch(/EXAMPLE validation specs/);
 	});
+
+	it("frames METRIC seed DAGs as examples / structural / do-not-copy (DAT-471)", () => {
+		// The metric family reuses the generic seed helper — the same example /
+		// structural / do-not-copy framing the AC requires, tagged by `metric`.
+		const out = formatSeedExamples(
+			[{ graph_id: "ebitda", dependencies: { op_income: {} } }],
+			{ vertical: "finance", family: "metric" },
+		);
+		expect(out).toMatch(/EXAMPLE/);
+		expect(out).toMatch(/STRUCTURE|structural/i);
+		expect(out).toMatch(/do not (reuse|copy)|not\s+content to copy/i);
+		// The seed DAG content is included so the model sees the dependency shape.
+		expect(out).toContain("ebitda");
+		expect(out).toContain('<metric_examples vertical="finance">');
+	});
 });
 
 describe("nearestSeedVertical", () => {

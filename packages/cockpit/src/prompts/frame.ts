@@ -87,3 +87,49 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
 - Do NOT propose validations that need data the schema doesn't surface
 </guidelines>`;
 }
+
+/**
+ * The frame METRIC induction instructions (DAT-471) — sibling to
+ * `getFrameInstructions` / `getFrameValidationsInstructions`. The hard family:
+ * a metric is a DAG of typed steps (extract → formula → output), and the
+ * dependency WIRING is the knowledge — an intent-only "depends on" throws it
+ * away (DAT-468). The induced DAG is concept-level at frame time: leaves name
+ * FRAMED CONCEPTS, never columns or SQL — column binding happens later in the
+ * semantic phase, SQL composition in operating_model. Kept byte-stable so it
+ * ships as a cached system block; the per-turn schema + framed concepts + the
+ * shipped library's STRUCTURAL few-shot go in the user/context turn, never here.
+ *
+ * The example metric DAGs the user turn carries are flagged explicitly as
+ * EXAMPLES and as STRUCTURAL — the dependency SHAPE to learn from, not the
+ * formula content to copy. That framing (also enforced by `formatSeedExamples`
+ * around the seed JSON) is what DAT-468 calls out as making DAG induction
+ * reliable: start from a known-good shape, refine over time.
+ */
+export function getFrameMetricsInstructions(): string {
+	return `You are a metrics modelling expert helping a data practitioner frame the metrics for their data. Given a source's tables (column names, types, sample values), the business concepts already framed over it, and EXAMPLE metric definitions from a related vertical, you propose a set of metrics — each a small computation graph (a DAG of steps) over the concept vocabulary.
+
+<goal>
+Propose metrics that fit THIS source's concepts and schema. A metric is NOT a flat intent — it is a DAG: the dependency WIRING (which steps feed which) IS the knowledge you are capturing. The engine grounds each leaf concept to a real column later (the semantic phase) and composes the runnable SQL later still (operating_model); you frame the STRUCTURE here, not the SQL. The example DAGs show you the SHAPE to produce — learn the dependency structure from them, do not copy their formulas.
+</goal>
+
+<metric_fields>
+- graph_id: lowercase_snake_case metric identifier (e.g. "ebitda", "dso", "current_ratio")
+- metadata.name: human-readable metric name (e.g. "EBITDA", "Days Sales Outstanding"); metadata.description + metadata.category (e.g. "profitability", "liquidity") optional
+- output: what the metric produces — output.type is "scalar" (default), "series", or "table"; output.unit (e.g. "currency", "days", "ratio", "percent") + decimal_places optional
+- dependencies: the computation DAG, keyed by step id. Each step has a "type":
+    - "extract": a LEAF — pulls a value for ONE framed concept. Set source.standard_field to the CONCEPT NAME from the framed vocabulary (e.g. "revenue"), and aggregation (e.g. "sum", "avg"). Do NOT name a column — the concept is grounded to a column later.
+    - "formula": combines earlier steps via expression (arithmetic over the step ids it consumes) + depends_on (the step ids). This is where the dependency wiring lives.
+    - "constant": a literal or parameter-derived value (set value, or parameter naming an entry in parameters).
+  Exactly ONE step is the output — mark it output_step: true.
+- interpretation.ranges: optional value bands ({ min, max, label, description }) classifying the result (e.g. negative / breakeven / healthy) — the declared MEANING, not a current value.
+</metric_fields>
+
+<guidelines>
+- Leaves are CONCEPTS, not columns: every "extract" step's source.standard_field names a framed concept from the vocabulary above. Never reference a raw column name or write SQL — grounding and SQL composition happen downstream.
+- Build a real DAG: leaf "extract" steps feed "formula" steps; a formula's depends_on must list the step ids it consumes, and its expression must reference exactly those ids. Wire the structure correctly — the wiring is the point.
+- Mark exactly one output_step: true (the step whose result IS the metric).
+- Propose 3-12 metrics depending on the data; quality over quantity — only metrics whose leaf concepts the framed vocabulary actually contains.
+- Use the example metric DAGs ONLY as a STRUCTURAL template (the dependency shape and the kind of computation); never copy their graph_ids, names, expressions, or parameters — induce metrics that fit THIS source's concepts.
+- Do NOT propose a metric whose leaf concepts are not in the framed vocabulary — a metric the data cannot ground is noise.
+</guidelines>`;
+}

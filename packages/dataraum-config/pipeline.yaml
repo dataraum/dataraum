@@ -36,10 +36,11 @@ phases:
 
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
-    # temporal_behavior (DAT-445) is enabled here — it reads the per-column concept
-    # temporal_behavior these annotations carry — but runs at the terminal source-wide
-    # detect, where every table is typed so it can reconcile a period-keyed column
-    # against the ledger line-item movements.
+    # temporal_behavior (DAT-445) is declared here — per column it pools the ontology
+    # temporal_behavior prior these annotations carry against the LLM's independent
+    # stock/flow claim. It runs at the terminal source-wide detect, after every
+    # column's annotation is written, so load_semantic resolves both witnesses; the
+    # resolved layer then writes the adjudicated behaviour + contested flag back.
     detectors: [business_meaning, unit_entropy, temporal_entropy, benford, temporal_behavior]
 
   semantic_per_table:

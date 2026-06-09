@@ -533,7 +533,7 @@ def run_detectors(
     resolution in the loaders let a concurrent promote tear reads mid-run.
     """
     from dataraum.entropy.detectors.loaders import resolve_base_runs
-    from dataraum.entropy.resolve import resolve_null_tokens
+    from dataraum.entropy.resolve import resolve_null_tokens, resolve_temporal_behavior
 
     detector_ids = declared_detector_ids(detector_phases)
     if not detector_ids:
@@ -568,8 +568,10 @@ def run_detectors(
         session.flush()
         # Resolved layer (ADR-0009 / DAT-457): collapse this run's adjudications
         # onto the semantic rows semantic_per_column already wrote — null_semantics
-        # → SemanticAnnotation.null_tokens. No-op when no adjudication ran.
+        # → SemanticAnnotation.null_tokens, temporal_behavior → the adjudicated
+        # stock/flow + contested flag (DAT-445). No-op when no adjudication ran.
         resolved = resolve_null_tokens(session, run_id)
+        resolved_tb = resolve_temporal_behavior(session, run_id)
         readiness_rows = persist_readiness(session, session_id, table_ids, run_id=run_id)
         logger.info(
             "terminal_detect_done",
@@ -577,6 +579,7 @@ def run_detectors(
             detector_records=total,
             readiness_rows=readiness_rows,
             resolved_annotations=resolved,
+            resolved_temporal_behavior=resolved_tb,
         )
     return total
 

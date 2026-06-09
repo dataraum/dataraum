@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 
 from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
+from dataraum.core.vertical import require_known_vertical
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
 from dataraum.investigation.db_models import InvestigationSession
@@ -739,11 +740,17 @@ def resolve_operating_model_scope(
         )
 
     with manager.session_scope() as session:
-        if session.get(InvestigationSession, identity.session_id) is None:
+        inv_session = session.get(InvestigationSession, identity.session_id)
+        if inv_session is None:
             raise RuntimeError(
                 f"InvestigationSession '{identity.session_id}' not found — "
                 "operating_model runs over an existing journey session."
             )
+        # Born-loud on a typo'd / never-framed vertical (DAT-480): an unknown
+        # name would silently resolve to no declared validations/cycles/metrics
+        # and every phase would emit a benign no_declared_*. A placeholder
+        # (_adhoc), shipped, or framed name passes through unchanged.
+        require_known_vertical(inv_session.vertical)
         table_ids = tables_for_session(session, identity.session_id)
         if not table_ids:
             raise RuntimeError(

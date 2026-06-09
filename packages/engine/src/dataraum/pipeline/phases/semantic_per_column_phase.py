@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
+from dataraum.core.vertical import VerticalKind, available_verticals, resolve_vertical
 from dataraum.investigation.queries import tables_for_session
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -134,6 +135,18 @@ class SemanticPerColumnPhase(BasePhase):
         if not ontology:
             return PhaseResult.failed(
                 "No vertical configured. Set 'vertical' in config/phases/semantic.yaml."
+            )
+
+        # Born-loud on an UNKNOWN vertical (DAT-480): a typo'd or never-framed
+        # name would otherwise resolve to zero concepts and look identical to a
+        # legitimately-empty framed vertical below. Distinguish it up front and
+        # name what DOES exist, so the user fixes the name rather than the data.
+        if resolve_vertical(ontology) is VerticalKind.UNKNOWN:
+            available = available_verticals()
+            return PhaseResult.failed(
+                f"Unknown vertical '{ontology}'. Available verticals: "
+                f"{', '.join(available) if available else '(none — frame one first)'}. "
+                "Frame this vertical (cockpit `frame`) or pick an existing one."
             )
 
         # Cold-start fail-loud (DAT-382, generalized for framed verticals): a

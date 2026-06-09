@@ -29,10 +29,11 @@ class TestGraphLoaderBasics:
 
         Regression: the `add_source` semantic phase grounds a framed vertical's
         columns (concepts resolved via the overlay-aware OntologyLoader) and then
-        asks GraphLoader for metric standard-fields. The old fail-loud
-        `VerticalConfig` crashed the whole phase with
+        asks GraphLoader for metric standard-fields. An on-construction fail-loud
+        on the missing dir crashed the whole phase with
         `FileNotFoundError: .../verticals/<framed> does not exist`. The path now
-        resolves and `load_all` degrades to an empty graph set.
+        resolves and `load_all` degrades to an empty graph set (the
+        unknown-vertical guard lives once at run entry, DAT-480).
         """
         loader = GraphLoader(vertical="a_framed_vertical_with_no_on_disk_dir")
         assert loader.graphs_dir.name == "a_framed_vertical_with_no_on_disk_dir"

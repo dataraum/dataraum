@@ -76,12 +76,13 @@ describe("ModelFrameWidget (DAT-382, DAT-469, DAT-470)", () => {
 		expect(vrow.textContent).toContain("non_negative_amounts");
 		expect(vrow.textContent).toContain("constraint");
 		expect(vrow.textContent).toContain("error");
-		// The cycle row — free-form name, business_value, stage count, completion.
+		// The cycle row — free-form name, business_value, stage sequence, completion.
 		const crow = screen.getByTestId("cycle-row-order_to_cash");
 		expect(crow.textContent).toContain("order_to_cash");
 		expect(crow.textContent).toContain("high");
-		// typical_stages length (2) and the completion indicators are surfaced.
-		expect(crow.textContent).toContain("2");
+		// typical_stages render as an ordered name sequence, and the completion
+		// indicators are surfaced.
+		expect(crow.textContent).toContain("Order Placed → Paid");
 		expect(crow.textContent).toContain("paid, settled");
 	});
 

@@ -237,7 +237,11 @@ export function ModelFrameWidget({
 											)}
 										</Table.Td>
 										<Table.Td>
-											<Text size="xs">{c.typical_stages?.length ?? 0}</Text>
+											<Text size="xs" c="dimmed" lineClamp={1}>
+												{c.typical_stages?.length
+													? c.typical_stages.map((s) => s.name).join(" → ")
+													: "—"}
+											</Text>
 										</Table.Td>
 										<Table.Td>
 											<Text size="xs" c="dimmed" lineClamp={1}>

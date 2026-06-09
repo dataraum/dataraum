@@ -6,6 +6,7 @@
 export {
 	getFrameCyclesInstructions,
 	getFrameInstructions,
+	getFrameMetricsInstructions,
 	getFrameValidationsInstructions,
 } from "./frame";
 export { getOrchestratorInstructions } from "./orchestrator";

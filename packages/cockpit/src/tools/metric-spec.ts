@@ -224,14 +224,38 @@ export const MetricSpecSchema = z.object({
 });
 export type MetricSpecInput = z.infer<typeof MetricSpecSchema>;
 
-/** A shipped metric as read off a vertical's `metrics/**​/*.yaml`, in the few
- * fields the shadowing affordance surfaces. The full graph carries far more; we
- * only echo what the UX shows when an override shadows a shipped metric. */
+/** A shipped metric as read off a vertical's `metrics/**​/*.yaml` — the summary
+ * fields PLUS the full DAG body (`output` shape + `dependencies` wiring). ONE
+ * canonical metric spec for both jobs: the frame SEED needs the structure (the
+ * dependency graph IS the knowledge — DAT-468/471), the teach SHADOW needs the
+ * `graph_id` match. `output`/`dependencies` stay `unknown` (rule 11) — passed
+ * through to the induce prompt / canvas, never inspected here. The lean agent-
+ * facing override echo is the `ShippedMetricSummary` view below. */
 export interface ShippedMetricSpec {
 	graph_id: string;
 	name: string | null;
 	description: string | null;
 	category: string | null;
+	output: unknown;
+	dependencies: unknown;
+}
+
+/** The summary view of a shipped metric — what the teach override RESULT echoes
+ * back to the agent (lean: no DAG body, which the human reads via the canvas, not
+ * the agent's context). A `Pick` of the canonical spec, not a second shape. */
+export type ShippedMetricSummary = Pick<
+	ShippedMetricSpec,
+	"graph_id" | "name" | "description" | "category"
+>;
+
+/** Project the canonical spec to its agent-facing summary. */
+export function metricSummary(spec: ShippedMetricSpec): ShippedMetricSummary {
+	return {
+		graph_id: spec.graph_id,
+		name: spec.name,
+		description: spec.description,
+		category: spec.category,
+	};
 }
 
 function asString(v: unknown): string | null {
@@ -239,9 +263,10 @@ function asString(v: unknown): string | null {
 }
 
 /** Narrow a parsed metric YAML doc (untrusted shape — rule 11) to a
- * ShippedMetricSpec, or null when it has no `graph_id` (not a metric file).
- * Reads only the summary keys (graph_id + metadata.{name,description,category}),
- * ignoring the heavy graph body. Pure — no fs/YAML here, so the reader's I/O
+ * ShippedMetricSpec, or null when it has no `graph_id` (not a metric file). Keeps
+ * the summary keys (graph_id + metadata.{name,description,category}) AND the DAG
+ * body (`output` + `dependencies`) — the frame seed needs the structure; the
+ * shadow affordance just ignores it. Pure — no fs/YAML here, so the reader's I/O
  * stays mockable and this narrowing is unit-tested directly. */
 export function narrowShippedMetric(doc: unknown): ShippedMetricSpec | null {
 	if (!doc || typeof doc !== "object") return null;
@@ -257,6 +282,8 @@ export function narrowShippedMetric(doc: unknown): ShippedMetricSpec | null {
 		name: asString(metadata.name),
 		description: asString(metadata.description),
 		category: asString(metadata.category),
+		output: raw.output ?? null,
+		dependencies: raw.dependencies ?? null,
 	};
 }
 

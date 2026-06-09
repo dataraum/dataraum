@@ -1,10 +1,12 @@
-// ModelFrame widget (DAT-382, DAT-469, DAT-470) — renders the `frame` tool
-// result: the user's framed MODEL, declared as config_overlay rows. The frame
-// stage is the signature co-design moment: the user reviews the proposed model
-// here and accepts, or asks the agent to edit (which re-invokes `frame` with a
-// revised set). The model is the business `concepts` AND the executable knowledge
-// over them — `validations` + `cycles` today (DAT-469/470), metrics next
-// (DAT-471). Read-only render; the row types are type-only imports (erased — no
+// ModelFrame widget (DAT-382, DAT-469, DAT-470, DAT-471) — renders the `frame`
+// tool result: the user's framed MODEL, declared as config_overlay rows. The
+// frame stage is the signature co-design moment: the user reviews the proposed
+// model here and accepts, or asks the agent to edit (which re-invokes `frame`
+// with a revised set). The model is the business `concepts` AND the executable
+// knowledge over them — `validations` (DAT-469), `cycles` (DAT-470), and
+// `metrics` (DAT-471, each a computation DAG whose extract-step leaves name
+// framed concepts). Read-only render; the row types are type-only imports
+// (erased — no
 // server code in the client bundle).
 
 import { Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
@@ -36,6 +38,35 @@ function joinOrDash(values: string[] | undefined): string {
 	return values && values.length > 0 ? values.join(", ") : "—";
 }
 
+// One step of a metric's computation DAG, as carried on a FrameMetricResult's
+// `dependencies` record (the engine's TransformationGraph step shape). Only the
+// fields this read-only review surface shows are narrowed (rule 11) — the engine
+// owns full validation.
+type MetricStep = {
+	type?: string;
+	source?: { standard_field?: string };
+	output_step?: boolean;
+};
+
+// Summarize a metric's DAG for the review row: the leaf CONCEPTS it extracts
+// (the dependency wiring's anchors — what the user is committing to ground) and
+// its step count. Leaves are concept-level by design (DAT-471): an `extract`
+// step's `source.standard_field` names a framed concept, never a column. Derived
+// during render (rule 1), never stored.
+function summarizeDag(dependencies: Record<string, MetricStep> | undefined): {
+	stepCount: number;
+	leafConcepts: string[];
+} {
+	const steps = Object.values(dependencies ?? {});
+	const leafConcepts: string[] = [];
+	for (const step of steps) {
+		if (step.type === "extract" && step.source?.standard_field) {
+			leafConcepts.push(step.source.standard_field);
+		}
+	}
+	return { stepCount: steps.length, leafConcepts };
+}
+
 export function ModelFrameWidget({
 	state,
 }: {
@@ -65,6 +96,11 @@ export function ModelFrameWidget({
 	const allCycles = frame.cycles ?? [];
 	const cycles = allCycles.slice(0, MAX_VISIBLE_ROWS);
 	const cycleOverflow = allCycles.length - cycles.length;
+	// Same defensive narrow for metrics — a pre-DAT-471 frame result has no
+	// `metrics` key (rule 11).
+	const allMetrics = frame.metrics ?? [];
+	const metrics = allMetrics.slice(0, MAX_VISIBLE_ROWS);
+	const metricOverflow = allMetrics.length - metrics.length;
 
 	return (
 		<Stack gap="lg" data-testid="canvas-model-frame">
@@ -80,6 +116,10 @@ export function ModelFrameWidget({
 						}`}
 					{allCycles.length > 0 &&
 						` · ${allCycles.length} cycle${allCycles.length === 1 ? "" : "s"}`}
+					{allMetrics.length > 0 &&
+						` · ${allMetrics.length} metric${
+							allMetrics.length === 1 ? "" : "s"
+						}`}
 				</Text>
 			</Group>
 
@@ -256,6 +296,72 @@ export function ModelFrameWidget({
 					{cycleOverflow > 0 && (
 						<Text size="xs" c="dimmed" data-testid="model-frame-cycle-overflow">
 							…and {cycleOverflow} more cycle{cycleOverflow === 1 ? "" : "s"}.
+						</Text>
+					)}
+				</Stack>
+			)}
+
+			{allMetrics.length > 0 && (
+				<Stack gap="xs">
+					<Text size="xs" fw={700} c="dimmed">
+						METRICS
+					</Text>
+					<Table.ScrollContainer minWidth={480}>
+						<Table striped highlightOnHover>
+							<Table.Thead>
+								<Table.Tr>
+									<Table.Th>Metric</Table.Th>
+									<Table.Th>Output</Table.Th>
+									<Table.Th>Steps</Table.Th>
+									<Table.Th>Leaf concepts</Table.Th>
+								</Table.Tr>
+							</Table.Thead>
+							<Table.Tbody>
+								{metrics.map((m) => {
+									const { stepCount, leafConcepts } = summarizeDag(
+										m.dependencies,
+									);
+									return (
+										<Table.Tr
+											key={m.overlay_id}
+											data-testid={`metric-row-${m.graph_id}`}
+										>
+											<Table.Td>
+												<Text size="sm">{m.metadata.name}</Text>
+												<Code>{m.graph_id}</Code>
+											</Table.Td>
+											<Table.Td>
+												<Badge variant="light" size="sm">
+													{m.output?.unit ?? m.output?.type ?? "scalar"}
+												</Badge>
+											</Table.Td>
+											<Table.Td>
+												<Text size="xs">{stepCount}</Text>
+											</Table.Td>
+											<Table.Td>
+												<Text
+													size="xs"
+													c="dimmed"
+													lineClamp={2}
+													data-testid={`metric-leaves-${m.graph_id}`}
+												>
+													{joinOrDash(leafConcepts)}
+												</Text>
+											</Table.Td>
+										</Table.Tr>
+									);
+								})}
+							</Table.Tbody>
+						</Table>
+					</Table.ScrollContainer>
+					{metricOverflow > 0 && (
+						<Text
+							size="xs"
+							c="dimmed"
+							data-testid="model-frame-metric-overflow"
+						>
+							…and {metricOverflow} more metric
+							{metricOverflow === 1 ? "" : "s"}.
 						</Text>
 					)}
 				</Stack>

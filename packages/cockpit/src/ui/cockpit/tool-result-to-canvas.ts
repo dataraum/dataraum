@@ -141,9 +141,10 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		Array.isArray((result as { tables?: unknown } | null)?.tables)
 			? { kind: "schema-preview", schema: result as ConnectSchema }
 			: null,
-	// The framed model (concepts + validations) renders as the ModelFrame widget;
-	// only once the result carries a `concepts` array (the model's foundation —
-	// same partial-output guard as connect; validations may be an empty array).
+	// The framed model (concepts + validations + metric DAGs) renders as the
+	// ModelFrame widget; only once the result carries a `concepts` array (the
+	// model's foundation — same partial-output guard as connect; validations and
+	// metrics may each be an empty array).
 	frame: (result) =>
 		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
 			? { kind: "model-frame", frame: result as FrameResult }

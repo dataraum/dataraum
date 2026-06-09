@@ -27,8 +27,10 @@ import { config } from "../config";
 import {
 	findShadowedMetric,
 	MetricSpecSchema,
+	metricSummary,
 	narrowShippedMetric,
 	type ShippedMetricSpec,
+	type ShippedMetricSummary,
 } from "./metric-spec";
 import { teach } from "./teach";
 
@@ -41,26 +43,30 @@ export interface TeachMetricResult {
 	// silent shadow.
 	override: boolean;
 	// The shipped metric being shadowed (graph_id/name/description/category),
-	// echoed so the UX can show WHAT the user is replacing. null for a brand-new
+	// echoed so the UX can show WHAT the user is replacing. The lean summary view
+	// (no DAG body) keeps the agent's tool result small — the human reads the
+	// replaced DAG via the canvas (the reader carries it). null for a brand-new
 	// declaration.
-	shadowed_spec: ShippedMetricSpec | null;
+	shadowed_spec: ShippedMetricSummary | null;
 }
 
 /**
- * Read the metric graphs a vertical SHIPS on disk
- * (verticals/<v>/metrics/**​/*.yaml), narrowed to the shadow-summary fields.
- * Unlike cycles (ONE cycles.yaml) and like validations, metrics are a DIRECTORY
- * — but nested by category (e.g. profitability/ebitda.yaml), so this walks it
- * RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML,
+ * Read the metric graphs a vertical SHIPS on disk (verticals/<v>/metrics/**​/*.yaml),
+ * narrowed to ShippedMetricSpec (summary fields + the DAG body). ONE reader for
+ * both jobs: the frame SEED reads the DAG structure as few-shot, the teach SHADOW
+ * matches by `graph_id`. Metrics are a DIRECTORY (like validations, unlike cycles'
+ * ONE cycles.yaml) nested by category (e.g. profitability/ebitda.yaml), so this
+ * walks RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML is
  * imported lazily so merely importing this tool doesn't pull "bun" into the
- * node-run test workers. A missing/unreadable directory yields [].
+ * node-run test workers. A missing/unreadable directory yields []; a single
+ * unreadable file is skipped, never sinking the whole read.
  *
- * Degradation note: a swallowed read failure makes an actual override LOOK like
- * a fresh declaration in the rail hint (`override:false`) — but the override
- * itself is unaffected (the engine applier upsert-replaces by `graph_id`
- * regardless; it is the source of truth). Only the visible-override label
- * degrades, and only when the config tree is unreadable — which in the live
- * stack it never is (bind-mounted read-only). */
+ * Degradation note: a swallowed read failure makes an actual override LOOK like a
+ * fresh declaration in the rail hint (`override:false`) — but the override itself
+ * is unaffected (the engine applier upsert-replaces by `graph_id` regardless; it
+ * is the source of truth). Only the visible-override label degrades, and only when
+ * the config tree is unreadable — which in the live stack it never is (bind-mounted
+ * read-only). */
 export async function readShippedMetrics(
 	vertical: string,
 ): Promise<ShippedMetricSpec[]> {
@@ -119,7 +125,9 @@ export async function teachMetric(
 		graph_id: input.graph_id,
 		vertical: input.vertical,
 		override: shadowed !== null,
-		shadowed_spec: shadowed,
+		// Echo the lean summary, not the full DAG — the agent's result stays small;
+		// the human reads the replaced graph from the canvas (M2).
+		shadowed_spec: shadowed ? metricSummary(shadowed) : null,
 	};
 }
 

@@ -37,16 +37,18 @@ export const LAKE_ALIAS = "lake";
 let instancePromise: Promise<DuckDBInstance> | null = null;
 let connectionPromise: Promise<DuckDBConnection> | null = null;
 
-async function openConnection(): Promise<DuckDBConnection> {
-	if (!instancePromise) {
-		// A fresh in-memory instance owns the ATTACH. Using a per-cockpit-process
-		// instance (not `fromCache`) is fine: the cockpit ATTACHes the lake
-		// exactly once, so there is no same-process double-ATTACH to guard.
-		instancePromise = DuckDBInstance.create(":memory:");
-	}
-	const instance = await instancePromise;
-	const conn = await instance.connect();
-
+/**
+ * ATTACH the DuckLake lake READ_ONLY on an already-open connection, under
+ * {@link LAKE_ALIAS}. The full bootstrap dance — extension directory, INSTALL/
+ * LOAD ducklake, the S3 secret, and the catalog ATTACH — in one place, so both
+ * the memoized lake reader (`openConnection`) and a throwaway validator
+ * connection (`run-steps.ts`, DAT-485) attach the lake identically. The caller
+ * owns the connection's lifecycle (open + close); this only runs the ATTACH
+ * sequence on it.
+ */
+export async function attachLakeReadOnly(
+	conn: DuckDBConnection,
+): Promise<void> {
 	const attachSql = buildDucklakeAttachSql(
 		LAKE_ALIAS,
 		config.ducklakeCatalogUrl,
@@ -79,6 +81,18 @@ async function openConnection(): Promise<DuckDBConnection> {
 	// before the ATTACH (DuckLake resolves DATA_PATH eagerly). DAT-388.
 	await applyS3Secret(conn);
 	await conn.run(attachSql);
+}
+
+async function openConnection(): Promise<DuckDBConnection> {
+	if (!instancePromise) {
+		// A fresh in-memory instance owns the ATTACH. Using a per-cockpit-process
+		// instance (not `fromCache`) is fine: the cockpit ATTACHes the lake
+		// exactly once, so there is no same-process double-ATTACH to guard.
+		instancePromise = DuckDBInstance.create(":memory:");
+	}
+	const instance = await instancePromise;
+	const conn = await instance.connect();
+	await attachLakeReadOnly(conn);
 	return conn;
 }
 

@@ -26,7 +26,7 @@
 // are unit-tested here via `projectRelationshipReadiness` / `unionRelationships`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, eq, inArray, like } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -246,12 +246,38 @@ function projectCatalogOnly(
 }
 
 /**
+ * The per-pair catalog winner: a confirmed FK carries MULTIPLE catalog rows in one
+ * promoted run — a structural `candidate` row AND an `llm`/`manual`/`keeper` row
+ * (uniqueness is `(session_id, run_id, from_column_id, to_column_id, detection_method)`).
+ * The facts we surface (`relationship_type` / `is_confirmed` / …) must be deterministic,
+ * so per pair we prefer a NON-`candidate` row (the durable catalog — the same
+ * `detection_method != 'candidate'` contract the readiness pass scores), then the
+ * highest `confidence`. Returns true when `next` should replace the current `best`.
+ */
+function catalogRowBeats(
+	next: RelationshipCatalogRow,
+	best: RelationshipCatalogRow,
+): boolean {
+	const nextDefined = next.detectionMethod !== "candidate";
+	const bestDefined = best.detectionMethod !== "candidate";
+	if (nextDefined !== bestDefined) return nextDefined;
+	return (next.confidence ?? -1) > (best.confidence ?? -1);
+}
+
+/**
  * Full-outer union of readiness bands and catalog facts, keyed by the directional
  * column pair (`relationship:{from}::{to}`). Pure + unit-testable. Order: readiness
  * rows first (their query order is preserved — they carry the bands the grid sorts
  * around), then any catalog-only relationships the readiness pass didn't cover.
- * Neither side is dropped: a bands-only row keeps null catalog facts, a catalog-only
- * relationship keeps null bands/intents.
+ * Neither side is dropped except by the candidate-only policy below: a bands-only row
+ * keeps null catalog facts, a catalog-only relationship keeps null bands/intents.
+ *
+ * Two determinism guarantees (DAT-478 review): (1) per pair the winning catalog row
+ * is chosen by {@link catalogRowBeats} — non-`candidate` then highest confidence — so
+ * which facts surface never depends on row order; (2) a pair whose ONLY catalog rows
+ * are `candidate` AND that has no readiness band row is dropped, mirroring the
+ * readiness contract (`detection_method != 'candidate'`): a bare structural candidate
+ * the LLM never confirmed is not a catalog relationship.
  */
 export function unionRelationships(
 	readinessRows: RelationshipReadinessRow[],
@@ -261,7 +287,9 @@ export function unionRelationships(
 	const catalogByPair = new Map<string, RelationshipCatalogRow>();
 	for (const c of catalogRows) {
 		if (!c.fromColumnId || !c.toColumnId) continue;
-		catalogByPair.set(relationshipTargetKey(c.fromColumnId, c.toColumnId), c);
+		const key = relationshipTargetKey(c.fromColumnId, c.toColumnId);
+		const best = catalogByPair.get(key);
+		if (!best || catalogRowBeats(c, best)) catalogByPair.set(key, c);
 	}
 
 	const out: RelationshipReadiness[] = [];
@@ -283,6 +311,11 @@ export function unionRelationships(
 
 	for (const [key, c] of catalogByPair) {
 		if (matchedPairs.has(key)) continue;
+		// Candidate-only policy: a pair the readiness pass didn't score (no band row)
+		// whose winning catalog row is still a bare structural `candidate` is NOT a
+		// catalog relationship — drop it (the engine's `detection_method != 'candidate'`
+		// contract). Only confirmed/manual/keeper rows surface catalog-only.
+		if (c.detectionMethod === "candidate") continue;
 		const projected = projectCatalogOnly(c, names);
 		if (projected) out.push(projected);
 	}
@@ -321,10 +354,14 @@ export async function lookRelationships(
 		};
 	}
 
+	// Two independent reads off the same promoted run — the relationship-readiness
+	// bands and the relationship catalog. Fire them in parallel: neither depends on
+	// the other (both key off sessionId; the union joins them in memory afterward).
+	//
 	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. `target` carries the identity (relationship rows
 	// have null table_id/column_id), so filter by the `relationship:%` prefix.
-	const rawRows = await metadataDb
+	const readinessQuery = metadataDb
 		.select({
 			target: currentEntropyReadiness.target,
 			band: currentEntropyReadiness.band,
@@ -340,18 +377,12 @@ export async function lookRelationships(
 			),
 		)
 		.orderBy(asc(currentEntropyReadiness.target));
-	// View columns type as nullable (Postgres views carry no NOT NULL) —
-	// coalesce the identity fields the underlying table guarantees.
-	const readinessRows: RelationshipReadinessRow[] = rawRows.map((r) => ({
-		...r,
-		target: r.target ?? "",
-	}));
 
 	// The relationship catalog for this session (DAT-478) — WHAT each relationship
 	// is. The view is already sealed to the promoted detect run by its own
 	// `session:{id}` head EXISTS clause, so a sessionId filter reads the same run as
 	// the readiness rows above. Joined onto the bands by the directional column pair.
-	const catalogRows: RelationshipCatalogRow[] = await metadataDb
+	const catalogQuery = metadataDb
 		.select({
 			fromColumnId: currentRelationships.fromColumnId,
 			toColumnId: currentRelationships.toColumnId,
@@ -362,7 +393,31 @@ export async function lookRelationships(
 			isConfirmed: currentRelationships.isConfirmed,
 		})
 		.from(currentRelationships)
-		.where(eq(currentRelationships.sessionId, input.session_id));
+		.where(eq(currentRelationships.sessionId, input.session_id))
+		// Deterministic catalog order so the per-pair winner is reproducible across
+		// reads: a confirmed FK carries BOTH a structural `candidate` row and an
+		// `llm`/`manual`/`keeper` row in the same promoted run (uniqueness is
+		// `(session_id, run_id, from_column_id, to_column_id, detection_method)`).
+		// `unionRelationships` owns the winner choice (prefer non-`candidate`, then
+		// highest confidence); this ORDER BY pins the row order it folds over so two
+		// reads never disagree. NULL confidence sorts last.
+		.orderBy(
+			asc(currentRelationships.fromColumnId),
+			asc(currentRelationships.toColumnId),
+			desc(currentRelationships.confidence),
+		);
+
+	const [rawRows, catalogRows] = await Promise.all([
+		readinessQuery,
+		catalogQuery,
+	]);
+
+	// View columns type as nullable (Postgres views carry no NOT NULL) —
+	// coalesce the identity fields the underlying table guarantees.
+	const readinessRows: RelationshipReadinessRow[] = rawRows.map((r) => ({
+		...r,
+		target: r.target ?? "",
+	}));
 
 	// Batch-resolve endpoint names across BOTH sides of the union — every column id
 	// a readiness target or a catalog row references — then one join to

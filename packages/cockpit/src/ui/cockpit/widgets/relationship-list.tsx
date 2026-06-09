@@ -39,8 +39,12 @@ function CatalogFactsCell({ rel }: { rel: RelationshipReadiness }) {
 		? humanizeIdentifier(rel.relationship_type)
 		: null;
 	const headline = [type, rel.cardinality].filter(Boolean).join(" · ");
+	// A row carries real facts only when there's something to SHOW: a type/cardinality
+	// headline, a confidence caption, or a confirmed badge. `is_confirmed === false`
+	// (detected, not confirmed) renders nothing on its own — without a headline or
+	// confidence it must degrade to a plain dash, not an empty-headline cell + chrome.
 	const hasFacts =
-		headline.length > 0 || rel.confidence !== null || rel.is_confirmed !== null;
+		headline.length > 0 || rel.confidence !== null || rel.is_confirmed === true;
 
 	if (!hasFacts) {
 		return (

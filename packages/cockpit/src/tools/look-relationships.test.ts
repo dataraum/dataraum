@@ -33,7 +33,9 @@ function catalogRow(
 		relationshipType: "foreign_key",
 		cardinality: "many_to_one",
 		confidence: 0.91,
-		detectionMethod: "fk_inference",
+		// Real `detection_method` values are `candidate | llm | manual | keeper`
+		// (engine `relationships/db_models.py`). A confirmed FK is `llm`.
+		detectionMethod: "llm",
 		isConfirmed: true,
 		...overrides,
 	};
@@ -123,7 +125,7 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 		expect(out.relationship_type).toBe("foreign_key");
 		expect(out.cardinality).toBe("many_to_one");
 		expect(out.confidence).toBe(0.91);
-		expect(out.detection_method).toBe("fk_inference");
+		expect(out.detection_method).toBe("llm");
 		expect(out.is_confirmed).toBe(true);
 	});
 
@@ -294,14 +296,84 @@ describe("unionRelationships (DAT-478)", () => {
 	it("drops a readiness row whose target isn't a relationship key", () => {
 		const out = unionRelationships(
 			[row({ target: "table:t1" })],
-			[catalogRow()],
+			[catalogRow({ detectionMethod: "llm" })],
 			wideNames(),
 		);
-		// The non-relationship readiness row is dropped, but its catalog match still
-		// surfaces catalog-only (the pair is valid in the catalog).
+		// The non-relationship readiness row is dropped, but its (llm) catalog match
+		// still surfaces catalog-only (the pair is valid + defined in the catalog).
 		expect(out).toHaveLength(1);
 		expect(out[0].from_column_id).toBe(FROM);
 		expect(out[0].band).toBeNull();
 		expect(out[0].relationship_type).toBe("foreign_key");
+	});
+
+	it("picks the llm/confirmed row when a pair has BOTH a candidate and an llm row (deterministic winner)", () => {
+		// One promoted run carries multiple rows per directional pair — a structural
+		// `candidate` (is_confirmed=false) AND the `llm` row the selector confirmed
+		// (uniqueness includes detection_method). The non-`candidate` row must win
+		// regardless of input order, so the surfaced facts are deterministic.
+		const candidate = catalogRow({
+			detectionMethod: "candidate",
+			isConfirmed: false,
+			confidence: 0.99, // higher confidence must NOT beat being non-`candidate`
+			relationshipType: "structural_candidate",
+			cardinality: "unknown",
+		});
+		const llm = catalogRow({
+			detectionMethod: "llm",
+			isConfirmed: true,
+			confidence: 0.8,
+			relationshipType: "foreign_key",
+			cardinality: "many_to_one",
+		});
+		// Both orderings resolve to the same winner.
+		for (const catalog of [
+			[candidate, llm],
+			[llm, candidate],
+		]) {
+			const out = unionRelationships([row()], catalog, wideNames());
+			expect(out).toHaveLength(1);
+			expect(out[0].detection_method).toBe("llm");
+			expect(out[0].is_confirmed).toBe(true);
+			expect(out[0].relationship_type).toBe("foreign_key");
+			expect(out[0].cardinality).toBe("many_to_one");
+			expect(out[0].confidence).toBe(0.8);
+		}
+	});
+
+	it("prefers the higher-confidence row among same-method (non-candidate) rows", () => {
+		// Two defined rows on one pair (e.g. an llm + a keeper) — confidence breaks
+		// the tie once both are non-`candidate`.
+		const lo = catalogRow({ detectionMethod: "llm", confidence: 0.6 });
+		const hi = catalogRow({ detectionMethod: "keeper", confidence: 0.95 });
+		const out = unionRelationships([row()], [lo, hi], wideNames());
+		expect(out).toHaveLength(1);
+		expect(out[0].detection_method).toBe("keeper");
+		expect(out[0].confidence).toBe(0.95);
+	});
+
+	it("excludes a candidate-only pair with no readiness row (readiness contract)", () => {
+		// A bare structural `candidate` the LLM never confirmed, with no band row, is
+		// NOT a catalog relationship — the engine scores `detection_method != 'candidate'`,
+		// so it must not surface as a catalog-only relationship.
+		const out = unionRelationships(
+			[],
+			[catalogRow({ detectionMethod: "candidate", isConfirmed: false })],
+			wideNames(),
+		);
+		expect(out).toEqual([]);
+	});
+
+	it("surfaces a candidate pair that DOES have a readiness band row (bands lead, candidate facts ride)", () => {
+		// The exclusion is candidate-only-AND-no-band. When a readiness row exists for
+		// the pair, the (candidate) facts still ride on it — the row is real.
+		const out = unionRelationships(
+			[row()],
+			[catalogRow({ detectionMethod: "candidate", isConfirmed: false })],
+			wideNames(),
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].band).toBe("investigate");
+		expect(out[0].detection_method).toBe("candidate");
 	});
 });

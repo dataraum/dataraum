@@ -4,6 +4,39 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-09: unit_consistency — measurement #2 on the witness template (DAT-428)
+
+**The generalization test passed at the measurement layer.** `entropy/measurements/
+unit_consistency.py` adds the second pooled measurement on the SAME pooling engine —
+a new claim space `{consistent, mixed}` + two witness extractors, zero engine-core
+change (the DAT-457 promise: "a measurement is a claim space + witness extractors").
+
+- **magnitude_modality** witness: log10|v| bimodality via Pearson's coefficient
+  `(skew²+1)/kurtosis` (grounded, the uniform reference 0.555 is the pivot; no boost
+  curve). Reads a SCALE mix (kEUR among EUR) as `mixed`, a single scale as `consistent`.
+- **declared_unit** witness: the column's claim to one unit (Pint/LLM confidence);
+  abstains when none. Conflict is born when magnitude reads MIXED but the unit insists
+  SINGLE. 6 unit tests green.
+
+**Scope decision (grounded in mix_units):** the old `mix_units` injector does a ×1.1
+CURRENCY mix — a 10% shift is undetectable from values (the unit_entropy misalignment).
+So unit_consistency targets SCALE mixes only; the DAT-450 mixed-units family must
+inject ×1000-ish scale corruption, not currency.
+
+**Open precision risk to validate:** a clean financial column with both small fees and
+large invoices is naturally multimodal in log-magnitude → magnitude witness may read
+`mixed` → false conflict. The clean-baseline run is the precision check (must stay
+quiet); do NOT pre-tune — measure it. This is the same wall outlier_rate/temporal_drift
+hit; the disagreement framing (vs the declared unit) helps but doesn't fully resolve it.
+
+**Next phase (not yet done — the plumbing, needs its own e2e run):** column-scoped
+detector (layer SEMANTIC, dimension UNITS, new sub_dimension UNIT_CONSISTENCY) reading
+typed values + `load_typing` unit_confidence → measure_unit_consistency → witnessed
+EntropyObject; register it and CLEAN-CUT the old single-LLM `unit_entropy` (+ its
+loss.yaml entry + eval intent_readiness expectation, per ADR-0009's
+declaration[U]/consistency[C] split); the mixed-units scale family (testdata) + a rig
+block + a recall test (DAT-450).
+
 ## 2026-06-09: witness reliabilities are a CALIBRATED ARTIFACT, not inline constants (DAT-450)
 
 **The placeholder `DEFAULT_RELIABILITIES` are no longer the shipped values.** Per

@@ -87,3 +87,45 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
 - Do NOT propose validations that need data the schema doesn't surface
 </guidelines>`;
 }
+
+/**
+ * The frame CYCLE induction instructions (DAT-470) — sibling to
+ * `getFrameInstructions` / `getFrameValidationsInstructions`. Describes the
+ * `cycle_types` field set the model must produce. UNLIKE validations there is NO
+ * closed `check_type` enum — the cycle NAME is free-form (the engine preserves
+ * unknown names); the only closed vocabulary is `business_value` (high/medium/low).
+ * A cycle's completion is scored STRUCTURALLY (completion_rate from the status
+ * column's value counts), so the user's words shape WHICH cycle to detect, never
+ * HOW it is measured. Kept byte-stable so it ships as a cached system block; the
+ * per-turn schema + framed concepts + the shipped library's structural few-shot
+ * go in the user/context turn, never here.
+ */
+export function getFrameCyclesInstructions(): string {
+	return `You are a business-process expert helping a data practitioner frame the business cycles in their data. Given a source's tables (column names, types, sample values), the business concepts already framed over it, and example cycle specs from a related vertical, you propose a set of business cycles — recurring multi-stage processes (e.g. order-to-cash, procure-to-pay, a subscription renewal) the data records.
+
+<goal>
+Propose cycles that fit THIS source's concepts and schema. A cycle declares a recurring process the engine grounds against a status/lifecycle column and measures later — it does not run here. Frame the INTENT (which process, its stages, what marks completion), not the SQL. Only propose cycles the data can plausibly support: a cycle with no status column to ground against is noise.
+</goal>
+
+<cycle_fields>
+- name: lowercase_snake_case cycle identifier (e.g. "order_to_cash", "subscription_renewal") — FREE-FORM, there is no closed vocabulary
+- description: what this business cycle represents, in business terms — the engine grounds detection from this, so be specific about the flow
+- business_value: how important the cycle is — one of high | medium | low (drives ranking/priority); a CLOSED vocabulary
+- aliases: alternative names the cycle is known by (e.g. ["o2c","revenue_cycle"]), otherwise omit
+- typical_stages: the cycle's stages in order, each { name, order (1-based), indicators: status-column value substrings that mark the stage }, otherwise omit
+- participating_entities: entity types that flow through the cycle (e.g. ["customer","invoice","payment"]), otherwise omit
+- completion_indicators: status-column VALUES that mean the cycle COMPLETED (e.g. ["paid","closed","settled"]) — these drive the structural completion_rate
+- related_tables: table-name substrings hinting where the cycle lives (context, not matching), otherwise omit
+- feeds_into: downstream cycle names this cycle's output feeds (e.g. ["accounts_receivable"]), otherwise omit
+</cycle_fields>
+
+<guidelines>
+- Propose cycles OVER the framed concepts — anchor stages + entities to the concept vocabulary and the actual status columns, not processes the data can't show
+- A cycle needs a status/lifecycle column to ground against — look for columns whose sample VALUES progress through stages (e.g. status: ordered → shipped → paid); don't propose a cycle the schema can't stage
+- completion_indicators are the status VALUES that mean DONE — they drive the structural completion scoring, so pick them from the column's real values
+- Propose 2-8 cycles depending on the data; quality over quantity — every cycle should be one the data can stage and complete
+- business_value is the ONLY closed field (high | medium | low); the cycle name and every other field are free-form
+- Use any example specs only as a STRUCTURAL template (the field shape and the kind of process); never copy their names, stages, or indicators
+- Do NOT propose cycles that need a status progression the schema doesn't surface
+</guidelines>`;
+}

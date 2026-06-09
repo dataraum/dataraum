@@ -1,11 +1,11 @@
-// ModelFrame widget (DAT-382, DAT-469) — renders the `frame` tool result: the
-// user's framed MODEL, declared as config_overlay rows. The frame stage is the
-// signature co-design moment: the user reviews the proposed model here and
-// accepts, or asks the agent to edit (which re-invokes `frame` with a revised
-// set). The model is the business `concepts` AND the executable knowledge over
-// them — `validations` today (DAT-469), cycles + metrics next (DAT-470/471).
-// Read-only render; the row types are type-only imports (erased — no server code
-// in the client bundle).
+// ModelFrame widget (DAT-382, DAT-469, DAT-470) — renders the `frame` tool
+// result: the user's framed MODEL, declared as config_overlay rows. The frame
+// stage is the signature co-design moment: the user reviews the proposed model
+// here and accepts, or asks the agent to edit (which re-invokes `frame` with a
+// revised set). The model is the business `concepts` AND the executable knowledge
+// over them — `validations` + `cycles` today (DAT-469/470), metrics next
+// (DAT-471). Read-only render; the row types are type-only imports (erased — no
+// server code in the client bundle).
 
 import { Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -22,6 +22,14 @@ const SEVERITY_COLOR: Record<string, string> = {
 	warning: "yellow",
 	error: "orange",
 	critical: "red",
+};
+
+// business_value → badge color (the cycle-spec BUSINESS_VALUES vocabulary). high
+// is loudest; low is muted.
+const BUSINESS_VALUE_COLOR: Record<string, string> = {
+	high: "red",
+	medium: "yellow",
+	low: "gray",
 };
 
 function joinOrDash(values: string[] | undefined): string {
@@ -52,6 +60,11 @@ export function ModelFrameWidget({
 	const allValidations = frame.validations ?? [];
 	const validations = allValidations.slice(0, MAX_VISIBLE_ROWS);
 	const validationOverflow = allValidations.length - validations.length;
+	// Same defensive narrowing for cycles — a pre-DAT-470 frame result has no
+	// `cycles` key (the projector still routes it here on the `concepts` guard).
+	const allCycles = frame.cycles ?? [];
+	const cycles = allCycles.slice(0, MAX_VISIBLE_ROWS);
+	const cycleOverflow = allCycles.length - cycles.length;
 
 	return (
 		<Stack gap="lg" data-testid="canvas-model-frame">
@@ -65,6 +78,8 @@ export function ModelFrameWidget({
 						` · ${allValidations.length} validation${
 							allValidations.length === 1 ? "" : "s"
 						}`}
+					{allCycles.length > 0 &&
+						` · ${allCycles.length} cycle${allCycles.length === 1 ? "" : "s"}`}
 				</Text>
 			</Group>
 
@@ -172,6 +187,71 @@ export function ModelFrameWidget({
 						>
 							…and {validationOverflow} more validation
 							{validationOverflow === 1 ? "" : "s"}.
+						</Text>
+					)}
+				</Stack>
+			)}
+
+			{allCycles.length > 0 && (
+				<Stack gap="xs">
+					<Text size="xs" fw={700} c="dimmed">
+						CYCLES
+					</Text>
+					<Table.ScrollContainer minWidth={480}>
+						<Table striped highlightOnHover>
+							<Table.Thead>
+								<Table.Tr>
+									<Table.Th>Cycle</Table.Th>
+									<Table.Th>Value</Table.Th>
+									<Table.Th>Stages</Table.Th>
+									<Table.Th>Completes on</Table.Th>
+								</Table.Tr>
+							</Table.Thead>
+							<Table.Tbody>
+								{cycles.map((c) => (
+									<Table.Tr
+										key={c.overlay_id}
+										data-testid={`cycle-row-${c.name}`}
+									>
+										<Table.Td>
+											<Code>{c.name}</Code>
+											{c.description && (
+												<Text size="xs" c="dimmed" lineClamp={2}>
+													{c.description}
+												</Text>
+											)}
+										</Table.Td>
+										<Table.Td>
+											{c.business_value ? (
+												<Badge
+													variant="light"
+													size="sm"
+													color={
+														BUSINESS_VALUE_COLOR[c.business_value] ?? "gray"
+													}
+												>
+													{c.business_value}
+												</Badge>
+											) : (
+												"—"
+											)}
+										</Table.Td>
+										<Table.Td>
+											<Text size="xs">{c.typical_stages?.length ?? 0}</Text>
+										</Table.Td>
+										<Table.Td>
+											<Text size="xs" c="dimmed" lineClamp={1}>
+												{joinOrDash(c.completion_indicators)}
+											</Text>
+										</Table.Td>
+									</Table.Tr>
+								))}
+							</Table.Tbody>
+						</Table>
+					</Table.ScrollContainer>
+					{cycleOverflow > 0 && (
+						<Text size="xs" c="dimmed" data-testid="model-frame-cycle-overflow">
+							…and {cycleOverflow} more cycle{cycleOverflow === 1 ? "" : "s"}.
 						</Text>
 					)}
 				</Stack>

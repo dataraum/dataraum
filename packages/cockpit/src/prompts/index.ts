@@ -3,6 +3,10 @@
 // with the agents that use them. Per-agent prompt builders export from their own
 // module.
 
-export { getFrameInstructions, getFrameValidationsInstructions } from "./frame";
+export {
+	getFrameCyclesInstructions,
+	getFrameInstructions,
+	getFrameValidationsInstructions,
+} from "./frame";
 export { getOrchestratorInstructions } from "./orchestrator";
 export { getWhyInstructions } from "./why";

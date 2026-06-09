@@ -29,7 +29,7 @@ def test_for_measurement_returns_witness_weights() -> None:
 
 
 def test_unlisted_measurement_is_empty_so_detector_falls_back() -> None:
-    assert _CONFIG.for_measurement("unit_consistency") == {}
+    assert _CONFIG.for_measurement("not_a_listed_measurement") == {}
 
 
 def test_calibrated_flag_reads_provenance() -> None:

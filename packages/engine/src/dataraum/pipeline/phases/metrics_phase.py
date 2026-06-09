@@ -195,7 +195,7 @@ class MetricsPhase(BasePhase):
 
         # Parse declared definitions into graphs. A definition that won't parse
         # stays declared with the parse error recorded — visibly impossible.
-        loader = GraphLoader(vertical=vertical)
+        loader = GraphLoader()
         graphs: dict[str, TransformationGraph] = {}
         for graph_id, defn in declared_defs.items():
             try:

@@ -1,126 +1,97 @@
-"""Tests for graphs/loader.py - graph loading."""
+"""Tests for graphs/loader.py — GraphLoader parses definition dicts into graphs.
+
+DAT-481 retired the file-only directory loader (``load_all``); the loader is now
+seeded from the overlay-aware declared set (``get_metric_definitions``) via
+``graphs_from_definitions`` — exactly as the metrics phase / grounding do.
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
+from dataraum.graphs.config import get_metric_definitions
 from dataraum.graphs.loader import GraphLoader
 
 
+def _finance_loader() -> GraphLoader:
+    """A GraphLoader seeded with the finance vertical's declared metric graphs.
+
+    Mirrors production: parse the overlay-aware declared set via
+    ``graphs_from_definitions``. No overlay resolver is registered in unit tests,
+    so this resolves the shipped finance set off disk.
+    """
+    loader = GraphLoader()
+    loader.graphs.update(loader.graphs_from_definitions(get_metric_definitions("finance")))
+    return loader
+
+
 class TestGraphLoaderBasics:
-    """Basic GraphLoader functionality tests."""
-
-    def test_loader_init_with_vertical(self) -> None:
-        """Loader resolves config/verticals/finance path from vertical name."""
-        loader = GraphLoader(vertical="finance")
-        assert loader.graphs_dir.name == "finance"
-        assert loader.graphs_dir.parent.name == "verticals"
-
-    def test_loader_init_no_args_raises(self) -> None:
-        """Loader without vertical or graphs_dir raises ValueError."""
-        with pytest.raises(ValueError, match="vertical is required"):
-            GraphLoader()
-
-    def test_loader_init_framed_vertical_no_dir_does_not_raise(self) -> None:
-        """A framed vertical (cockpit `frame` overlay-only, no on-disk dir) must
-        NOT crash the constructor — it legitimately ships no metric graphs.
-
-        Regression: the `add_source` semantic phase grounds a framed vertical's
-        columns (concepts resolved via the overlay-aware OntologyLoader) and then
-        asks GraphLoader for metric standard-fields. An on-construction fail-loud
-        on the missing dir crashed the whole phase with
-        `FileNotFoundError: .../verticals/<framed> does not exist`. The path now
-        resolves and `load_all` degrades to an empty graph set (the
-        unknown-vertical guard lives once at run entry, DAT-480).
-        """
-        loader = GraphLoader(vertical="a_framed_vertical_with_no_on_disk_dir")
-        assert loader.graphs_dir.name == "a_framed_vertical_with_no_on_disk_dir"
-        assert loader.load_all() == {}
-        assert not loader.get_all_abstract_fields()
-
-    def test_loader_init_custom_path(self, tmp_path: Path) -> None:
-        """Loader accepts custom path."""
-        loader = GraphLoader(graphs_dir=tmp_path)
-        assert loader.graphs_dir == tmp_path
-
-    def test_load_all_empty_dir(self, tmp_path: Path) -> None:
-        """Loading from empty directory returns empty dict."""
-        loader = GraphLoader(graphs_dir=tmp_path)
-        graphs = loader.load_all()
-        assert graphs == {}
+    def test_empty_loader_has_no_graphs(self) -> None:
+        """A fresh loader holds no graphs until seeded."""
+        assert GraphLoader().graphs == {}
 
 
 class TestLoadMetricGraphs:
-    """Tests for loading metric graphs from verticals."""
+    """Seeding from the finance declared set populates the graphs."""
 
     @pytest.fixture
     def loader(self) -> GraphLoader:
-        """Create loader with finance vertical."""
-        loader = GraphLoader(vertical="finance")
-        loader.load_all()
-        return loader
+        return _finance_loader()
 
     def test_metric_graphs_loaded(self, loader: GraphLoader) -> None:
-        """Metric graphs are loaded."""
-        metrics = loader.get_metric_graphs()
-        assert len(metrics) >= 1
+        """Metric graphs are present after seeding."""
+        assert len(loader.get_metric_graphs()) >= 1
 
     def test_quality_metrics_not_loaded(self, loader: GraphLoader) -> None:
-        """Quality metrics were relocated out of verticals — not loaded by default."""
+        """Quality metrics were relocated out of verticals — not in the finance set."""
         assert loader.graphs.get("data_completeness") is None
         assert loader.graphs.get("data_freshness") is None
         assert loader.graphs.get("anomaly_rate") is None
 
 
 class TestValidateStandardFields:
-    """Tests for validate_standard_fields() method."""
+    """Tests for validate_standard_fields() against a vertical's ontology."""
 
     def test_all_known_fields_no_warnings(self) -> None:
         """Finance graphs + finance ontology = no warnings."""
-        loader = GraphLoader(vertical="finance")
-        loader.load_all()
-        warnings = loader.validate_standard_fields("finance")
-        assert warnings == []
+        loader = _finance_loader()
+        assert loader.validate_standard_fields("finance") == []
 
-    def test_unknown_field_produces_warning(self, tmp_path: Path) -> None:
-        """Graph with made-up standard_field = warning."""
-        metrics_dir = tmp_path / "metrics"
-        metrics_dir.mkdir()
-        graph_yaml = metrics_dir / "fake.yaml"
-        graph_yaml.write_text(
-            """
-graph_id: fake_metric
-version: "1.0"
-metadata:
-  name: Fake Metric
-  description: Test metric
-  category: test
-  source: system
-output:
-  type: scalar
-  metric_id: fake
-dependencies:
-  extract_nonexistent:
-    level: 1
-    type: extract
-    source:
-      standard_field: nonexistent_concept_xyz
-    output_step: true
-"""
+    def test_unknown_field_produces_warning(self) -> None:
+        """A graph with a made-up standard_field warns — parsed straight from a
+        definition dict, no file IO."""
+        loader = GraphLoader()
+        loader.graphs.update(
+            loader.graphs_from_definitions(
+                {
+                    "fake_metric": {
+                        "graph_id": "fake_metric",
+                        "version": "1.0",
+                        "metadata": {
+                            "name": "Fake Metric",
+                            "description": "Test metric",
+                            "category": "test",
+                            "source": "system",
+                        },
+                        "output": {"type": "scalar", "metric_id": "fake"},
+                        "dependencies": {
+                            "extract_nonexistent": {
+                                "level": 1,
+                                "type": "extract",
+                                "source": {"standard_field": "nonexistent_concept_xyz"},
+                                "output_step": True,
+                            }
+                        },
+                    }
+                }
+            )
         )
-
-        loader = GraphLoader(graphs_dir=tmp_path)
-        loader.load_all()
 
         warnings = loader.validate_standard_fields("finance")
         assert len(warnings) == 1
         assert "nonexistent_concept_xyz" in warnings[0]
         assert "finance" in warnings[0]
 
-    def test_no_ontology_returns_empty(self, tmp_path: Path) -> None:
-        """Nonexistent vertical returns no warnings."""
-        loader = GraphLoader(graphs_dir=tmp_path)
-        warnings = loader.validate_standard_fields("nonexistent_vertical")
-        assert warnings == []
+    def test_no_ontology_returns_empty(self) -> None:
+        """An unknown vertical resolves to no ontology → no warnings."""
+        assert GraphLoader().validate_standard_fields("nonexistent_vertical") == []

@@ -12,11 +12,15 @@
 //   - opens its OWN throwaway in-memory DuckDB instance + READ_ONLY lake ATTACH
 //     (mirror probe.ts/connect.ts; the shared lake reader is memoized and can't
 //     be closed mid-call). A dedicated connection means it CAN honor abort —
-//     aborting the chat run closes it, interrupting any in-flight statement.
-//   - materializes each step as a cursor-local `CREATE TEMP VIEW` (auto-dropped
-//     on close, invisible to concurrent callers — two answers can validate
-//     same-named steps without colliding), then runs `final_sql` referencing
-//     them, wrapped in a `LIMIT` so a broad final can't materialize unbounded.
+//     aborting the chat run `interrupt()`s it, which cancels the in-flight
+//     statement and rejects the pending promise (closeSync does NOT interrupt an
+//     in-flight query — it would leave it hung and leaked).
+//   - materializes each step as a cursor-local `CREATE TEMP VIEW` over a
+//     `SELECT * FROM (<body>)` wrap (auto-dropped on close, invisible to
+//     concurrent callers — two answers can validate same-named steps without
+//     colliding; the wrap makes the body single-statement, same as run_sql), then
+//     runs `final_sql` referencing them, wrapped in a `LIMIT` so a broad final
+//     can't materialize unbounded.
 //   - returns `{ ok, columns, rowCount, sample, truncated }` (the bounded peek)
 //     or `{ error }` (an agent-fixable SQL/bind failure the model repairs
 //     in-loop) — NEVER the full result set.
@@ -167,41 +171,66 @@ export async function runSteps(
 
 	if (signal?.aborted) return { error: "run_steps aborted before execution." };
 
-	const instance: DuckDBInstance = await DuckDBInstance.create(":memory:");
-	const conn: DuckDBConnection = await instance.connect();
+	// Acquired inside the try below; held as nullable refs so `close()` is
+	// idempotent by NULLING the refs (not a boolean) — that makes the abort-during-
+	// acquisition race leak-free: if `onAbort` closes before the refs are set, the
+	// later assignment + the finally still close the real handles.
+	let instance: DuckDBInstance | null = null;
+	let conn: DuckDBConnection | null = null;
 
-	let closed = false;
 	const close = () => {
-		if (closed) return;
-		closed = true;
-		try {
-			conn.closeSync();
-		} catch {
-			// already closed / never fully opened
+		if (conn) {
+			try {
+				conn.closeSync();
+			} catch {
+				// already closed / never fully opened
+			}
+			conn = null;
 		}
-		try {
-			instance.closeSync();
-		} catch {
-			// same
+		if (instance) {
+			try {
+				instance.closeSync();
+			} catch {
+				// same
+			}
+			instance = null;
 		}
 	};
-	// Aborting the chat run closes the throwaway connection, interrupting any
-	// in-flight CREATE VIEW / SELECT — unlike run_sql's shared reader, which
-	// can't be closed. `once` + the finally cleanup keep this leak-free.
-	const onAbort = () => close();
+	// On abort, `interrupt()` cancels the in-flight statement — it rejects the
+	// pending run()/runAndReadAll() promise, which unwinds into the catch → { error }
+	// → finally → close(). closeSync() does NOT interrupt an in-flight query (it
+	// leaves the promise unsettled → a hung, leaked worker-thread query that Bun's
+	// disabled idle timeout never reaps). The single close() path is the finally.
+	const onAbort = () => {
+		try {
+			conn?.interrupt();
+		} catch {
+			// not yet open / already gone — finally's close() handles cleanup
+		}
+	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 
 	try {
-		await attachLakeReadOnly(conn);
+		instance = await DuckDBInstance.create(":memory:");
+		// `cx` is the non-null handle for the DB ops; `conn` (the nullable let the
+		// closures read for interrupt/close) is pointed at it.
+		const cx = await instance.connect();
+		conn = cx;
+		await attachLakeReadOnly(cx);
 
 		for (const step of input.steps) {
 			if (signal?.aborted) return { error: "run_steps aborted." };
-			// `step.name` is validated to a bare identifier; the SQL body is the
-			// model's own query (READ_ONLY ATTACH blocks any write to the lake, the
-			// same trust model as run_sql). Temp views are cursor-local: auto-dropped
-			// on close and invisible to other connections, so concurrent answers
-			// validating same-named steps don't collide.
-			await conn.run(`CREATE TEMP VIEW ${step.name} AS ${step.sql}`);
+			// `step.name` is validated to a bare identifier. The SQL body is the
+			// model's own query, wrapped as `SELECT * FROM (<body>)` exactly like
+			// run_sql/probe so an injected `;` is a parser error: a BARE body would
+			// run multiple statements via conn.run (e.g. `…; ATTACH 'f' AS w; CREATE
+			// TABLE w.x AS …`) — READ_ONLY only blocks writes to the lake catalog, not
+			// a fresh ATTACH/INSTALL/local-disk write. Temp views are cursor-local:
+			// auto-dropped on close and invisible to other connections, so concurrent
+			// answers validating same-named steps don't collide.
+			await cx.run(
+				`CREATE TEMP VIEW ${step.name} AS SELECT * FROM (${step.sql}) AS _step`,
+			);
 		}
 
 		if (signal?.aborted) return { error: "run_steps aborted." };
@@ -209,7 +238,7 @@ export async function runSteps(
 		// Wrap + LIMIT cap+1 so a broad final never materializes unbounded AND we
 		// can tell a capped result from an exact fit (the one-past probe).
 		const peekLimit = HEADLINE_PEEK_ROWS + 1;
-		const reader = await conn.runAndReadAll(
+		const reader = await cx.runAndReadAll(
 			`SELECT * FROM (${finalSql}) AS _final LIMIT ${peekLimit}`,
 		);
 		const base = readerToResult(reader);

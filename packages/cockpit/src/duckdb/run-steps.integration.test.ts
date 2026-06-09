@@ -208,4 +208,41 @@ describe("runSteps over a real READ_ONLY DuckLake lake (DAT-485)", () => {
 		);
 		expect("error" in result && result.error).toContain("aborted");
 	});
+
+	it("interrupts an IN-FLIGHT statement on abort (does not hang)", async () => {
+		const { runSteps } = await import("./run-steps");
+		const controller = new AbortController();
+		// A deliberately heavy, non-shortcuttable final (sum over a ~10^10-row cross
+		// product) so the statement is genuinely in-flight when we abort. closeSync()
+		// would NOT interrupt it — the promise would hang past the test timeout;
+		// interrupt() cancels it and settles to { error } in ~hundreds of ms.
+		const promise = runSteps(
+			{
+				steps: [],
+				finalSql:
+					"SELECT sum(t.i + u.j) AS s FROM range(100000000) t(i), range(100) u(j)",
+			},
+			controller.signal,
+		);
+		setTimeout(() => controller.abort(), 150);
+		const result = await promise;
+		expect("error" in result).toBe(true);
+	}, 15000);
+
+	it("rejects a multi-statement step body — the wrap blocks injection", async () => {
+		const { runSteps } = await import("./run-steps");
+		// A bare body would run all three statements via conn.run (ATTACH a writable
+		// file, copy lake data). The `SELECT * FROM (<body>)` wrap turns the injected
+		// `;` into a parser error, so the call fails closed.
+		const result = await runSteps({
+			steps: [
+				{
+					name: "leak",
+					sql: "SELECT 1 AS n; ATTACH 'evil.db' AS evil; CREATE TABLE evil.x AS SELECT 1",
+				},
+			],
+			finalSql: "SELECT n FROM leak",
+		});
+		expect("error" in result).toBe(true);
+	});
 });

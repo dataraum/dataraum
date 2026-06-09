@@ -174,7 +174,10 @@ class TestGroundColumns:
         # standard_fields must steer column grounding. load_all() (file-only) would
         # return nothing for a framed vertical — this is the DAT-471 AC3 fix. Real
         # GraphLoader (NOT mocked) so the overlay def actually parses and
-        # get_all_abstract_fields walks its steps.
+        # get_all_abstract_fields walks its steps. A malformed sibling def (missing
+        # metadata.name) must be SKIPPED for this grounding hint — logged, not
+        # raised — without dropping the parseable one (covers the GraphLoadError
+        # branch: if the except didn't fire, ground_columns would error here).
         table = _table_with_columns(session, "ledger", ["amount"])
         mock_get_defs.return_value = {
             "framed_margin": {
@@ -191,6 +194,8 @@ class TestGroundColumns:
                     },
                 },
             },
+            # Unparseable (no metadata.name) → GraphLoadError, skipped for the hint.
+            "broken_metric": {"graph_id": "broken_metric", "dependencies": {}},
         }
         mock_ontology_cls.return_value.load.return_value = None
 

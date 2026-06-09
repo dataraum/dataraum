@@ -101,12 +101,13 @@ class GraphLoader:
     ) -> dict[str, TransformationGraph]:
         """Parse already-merged graph definition dicts into graphs.
 
-        The overlay-aware counterpart of :meth:`load_all`: the metrics phase
-        loads its declared set via
+        The overlay-aware counterpart of :meth:`load_all`: BOTH the
+        operating_model metrics phase AND the add_source semantic grounding-hint
+        path (``ground_columns``) load their declared set via
         :func:`dataraum.graphs.config.get_metric_definitions` (shipped graphs ⊕
-        ``metric`` overlay teach rows) and parses them here, so a taught metric
-        is executable exactly like a shipped one. ``load_all`` stays file-only —
-        the add_source semantic phase's field-discovery path is unchanged.
+        ``metric`` overlay teach rows) and parse them here, so a taught/framed
+        metric is groundable + executable exactly like a shipped one. ``load_all``
+        stays file-only, retained for callers that need the shipped-only set.
 
         Raises:
             GraphLoadError: a definition is malformed (missing ``graph_id`` /

@@ -361,9 +361,7 @@ def load_semantic(
     if sa.temporal_behavior_claim:
         semantic_dict["temporal_behavior_claim"] = sa.temporal_behavior_claim
     if sa.temporal_behavior_claim_confidence is not None:
-        semantic_dict["temporal_behavior_claim_confidence"] = (
-            sa.temporal_behavior_claim_confidence
-        )
+        semantic_dict["temporal_behavior_claim_confidence"] = sa.temporal_behavior_claim_confidence
     return semantic_dict
 
 

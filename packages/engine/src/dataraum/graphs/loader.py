@@ -1,12 +1,18 @@
-"""Transformation graph loader.
+"""Transformation graph parser.
 
-Loads metric graphs from YAML files in vertical config directories.
+Parses already-merged metric-graph definition dicts into
+:class:`~dataraum.graphs.models.TransformationGraph` objects. The definitions
+come from the overlay-aware declared set
+(:func:`dataraum.graphs.config.get_metric_definitions` — shipped graphs ⊕
+``metric`` overlay teach rows); the loader no longer reads directories itself
+(DAT-481 retired the file-only ``load_all`` footgun — see #264).
 
 Usage:
     from dataraum.graphs.loader import GraphLoader
+    from dataraum.graphs.config import get_metric_definitions
 
-    loader = GraphLoader(vertical="finance")
-    loader.load_all()
+    loader = GraphLoader()
+    loader.graphs.update(loader.graphs_from_definitions(get_metric_definitions("finance")))
     metrics = loader.get_metric_graphs()
 """
 
@@ -14,8 +20,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from .models import (
     GraphMetadata,
@@ -42,73 +46,29 @@ class GraphLoadError(Exception):
 
 
 class GraphLoader:
-    """Load metric transformation graphs from YAML files.
+    """Parse metric transformation-graph definition dicts into graphs.
 
-    Directory structure:
-        config/verticals/{vertical}/metrics/
-        ├── working_capital/
-        ├── liquidity/
-        └── profitability/
+    Seeded via :meth:`graphs_from_definitions` from the overlay-aware declared
+    set (:func:`dataraum.graphs.config.get_metric_definitions`); holds the
+    parsed graphs in :attr:`graphs`. It does NOT read directories — DAT-481
+    retired the file-only ``load_all`` (the #264 footgun: it bypassed the
+    overlay, so framed/taught metrics were invisible).
     """
 
-    def __init__(self, graphs_dir: Path | None = None, *, vertical: str | None = None):
-        """Initialize loader.
-
-        Args:
-            graphs_dir: Root directory containing graphs.
-                        Defaults to config/verticals/<vertical>/
-            vertical: Vertical name, required when graphs_dir is None.
-        """
-        if graphs_dir is None:
-            if vertical is None:
-                raise ValueError("vertical is required when graphs_dir is not provided")
-            from dataraum.core.config import get_config_dir
-
-            # Resolve the vertical's dir WITHOUT a fail-loud existence check
-            # (the unknown-vertical guard lives once at run entry, DAT-480). A
-            # framed vertical (declared via the cockpit `frame` stage — its
-            # concepts live in config_overlay, with no on-disk directory)
-            # legitimately ships no metric graphs. `load_all` already returns {}
-            # for a missing dir, so resolving the path here and letting load_all
-            # handle absence is what lets grounding run for a framed vertical
-            # (the `add_source` semantic phase grounds against framed concepts
-            # via the overlay-aware OntologyLoader, then asks GraphLoader for
-            # metric standard-fields).
-            graphs_dir = get_config_dir("verticals") / vertical
-        self.graphs_dir = graphs_dir
+    def __init__(self) -> None:
         self.graphs: dict[str, TransformationGraph] = {}
-        self._load_errors: list[GraphLoadError] = []
-
-    def load_all(self) -> dict[str, TransformationGraph]:
-        """Load all transformation graphs from the directory.
-
-        Returns:
-            Dict mapping graph_id to TransformationGraph
-        """
-        self.graphs.clear()
-        self._load_errors.clear()
-
-        if not self.graphs_dir.exists():
-            return {}
-
-        metrics_dir = self.graphs_dir / "metrics"
-        if metrics_dir.exists():
-            self._load_directory(metrics_dir)
-
-        return self.graphs
 
     def graphs_from_definitions(
         self, definitions: dict[str, dict[str, Any]]
     ) -> dict[str, TransformationGraph]:
         """Parse already-merged graph definition dicts into graphs.
 
-        The overlay-aware counterpart of :meth:`load_all`: BOTH the
-        operating_model metrics phase AND the add_source semantic grounding-hint
-        path (``ground_columns``) load their declared set via
+        The single metric-parse entry point. BOTH the operating_model metrics
+        phase AND the add_source semantic grounding-hint path (``ground_columns``)
+        load their declared set via
         :func:`dataraum.graphs.config.get_metric_definitions` (shipped graphs ⊕
         ``metric`` overlay teach rows) and parse them here, so a taught/framed
-        metric is groundable + executable exactly like a shipped one. ``load_all``
-        stays file-only, retained for callers that need the shipped-only set.
+        metric is groundable + executable exactly like a shipped one.
 
         Raises:
             GraphLoadError: a definition is malformed (missing ``graph_id`` /
@@ -121,45 +81,6 @@ class GraphLoader:
             # A sentinel "path" — these dicts come from the overlay-merged
             # collection, not a file on disk; it only labels parse errors.
             graphs[graph_id] = self._parse_graph(Path(f"<overlay:{graph_id}>"), data)
-        return graphs
-
-    def _load_directory(self, directory: Path) -> None:
-        """Recursively load graphs from a directory.
-
-        Supports multi-document YAML files (separated by ---).
-        """
-        for yaml_file in directory.rglob("*.yaml"):
-            try:
-                graphs = self.load_graphs_from_file(yaml_file)
-                for graph in graphs:
-                    self.graphs[graph.graph_id] = graph
-            except GraphLoadError as e:
-                self._load_errors.append(e)
-            except Exception as e:
-                self._load_errors.append(GraphLoadError(yaml_file, str(e)))
-
-    def load_graphs_from_file(self, yaml_path: Path) -> list[TransformationGraph]:
-        """Load all transformation graphs from a YAML file.
-
-        Supports multi-document YAML files (separated by ---).
-
-        Args:
-            yaml_path: Path to the YAML file
-
-        Returns:
-            List of TransformationGraph instances
-
-        Raises:
-            GraphLoadError: If the YAML is invalid or missing required fields
-        """
-        with open(yaml_path) as f:
-            documents = list(yaml.safe_load_all(f))
-
-        graphs = []
-        for doc in documents:
-            if doc:
-                graphs.append(self._parse_graph(yaml_path, doc))
-
         return graphs
 
     def _parse_graph(self, path: Path, data: dict[str, Any]) -> TransformationGraph:
@@ -317,10 +238,6 @@ class GraphLoader:
     def get_metric_graphs(self) -> list[TransformationGraph]:
         """Get all metric graphs."""
         return list(self.graphs.values())
-
-    def get_load_errors(self) -> list[GraphLoadError]:
-        """Get any errors encountered during loading."""
-        return self._load_errors.copy()
 
     def get_all_abstract_fields(self) -> set[str]:
         """Get all abstract fields used across all graphs.

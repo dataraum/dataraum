@@ -254,12 +254,12 @@ def ground_columns(
     # prioritizes mapping those concepts to actual columns. OVERLAY-AWARE: the
     # declared set is the vertical's shipped graphs ⊕ `metric` overlay teach rows
     # (get_metric_definitions), so a FRAMED vertical's metrics — declared at frame
-    # time, no on-disk directory — steer grounding too. load_all() is file-only and
-    # returns nothing for a framed/_adhoc vertical (DAT-471 AC3). The worker
+    # time, no on-disk directory — steer grounding too (a file-only read would
+    # return nothing for a framed/_adhoc vertical — DAT-471 AC3). The worker
     # bootstrap installs the overlay resolver process-wide, so it resolves here in
     # the add_source semantic phase exactly as it does in the operating_model
     # metrics phase.
-    metric_loader = GraphLoader(vertical=ontology)
+    metric_loader = GraphLoader()
     for graph_id, defn in get_metric_definitions(ontology).items():
         # A declared metric that won't parse is skipped for this grounding HINT —
         # its born-loud handling (declared-with-reason) is the metrics phase's job

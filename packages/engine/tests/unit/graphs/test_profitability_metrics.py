@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from dataraum.graphs.config import get_metric_definitions
 from dataraum.graphs.loader import GraphLoader
 from dataraum.graphs.models import OutputType
 
@@ -24,9 +25,9 @@ PERCENTAGE_METRICS = {"gross_margin", "operating_margin", "ebitda_margin", "net_
 
 @pytest.fixture(scope="module")
 def loader() -> GraphLoader:
-    """Load all finance graphs once for the module."""
-    loader = GraphLoader(vertical="finance")
-    loader.load_all()
+    """Seed the finance declared metric graphs once for the module."""
+    loader = GraphLoader()
+    loader.graphs.update(loader.graphs_from_definitions(get_metric_definitions("finance")))
     return loader
 
 

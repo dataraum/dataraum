@@ -109,8 +109,9 @@ class TestGroundColumns:
         assert len(rows) == 2
         assert {r.semantic_role for r in rows} == {"key", "measure"}
         assert all(r.annotated_by == "test-model" for r in rows)
-        # Standard-field concepts come from the active metric graphs for `finance`.
-        mock_graph_cls.assert_called_once_with(vertical="finance")
+        # Standard-field concepts come from the active metric graphs, seeded via
+        # graphs_from_definitions (the loader no longer resolves a vertical dir).
+        mock_graph_cls.assert_called_once_with()
 
     def test_disabled_config_gate_fails(self, session) -> None:
         config = MagicMock()

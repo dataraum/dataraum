@@ -12,33 +12,14 @@ reads raw YAML and bypasses the overlay.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from dataraum.analysis.validation.models import (
     ValidationSpec,
 )
 from dataraum.core.logging import get_logger
+from dataraum.core.vertical_loader import Family, VerticalLoader
 
 logger = get_logger(__name__)
-
-
-def _read_spec_dir(validations_dir: Path) -> list[dict[str, Any]]:
-    """Parse every per-id YAML file in a validations directory.
-
-    Per-file reads are raw (``yaml.safe_load``) — the overlay applies at the
-    *collection* level (``verticals/<v>/validations``), not per file.
-    """
-    import yaml
-
-    entries: list[dict[str, Any]] = []
-    for yaml_file in sorted(validations_dir.rglob("*.yaml")):
-        with open(yaml_file) as f:
-            data = yaml.safe_load(f)
-        if not data or not isinstance(data, dict):
-            logger.warning("validation_spec_empty", file=str(yaml_file))
-            continue
-        entries.append(data)
-    return entries
 
 
 def load_all_validation_specs(
@@ -46,45 +27,21 @@ def load_all_validation_specs(
 ) -> dict[str, ValidationSpec]:
     """Load a vertical's validation specs, layered with overlay teach rows.
 
-    Production path (``verticals_dir`` is ``None``): read the shipped
-    vertical's ``validations/`` directory (empty base when the vertical is
-    framed — declared via the cockpit, no on-disk directory), then merge
-    active ``validation`` overlay rows via
-    :func:`dataraum.core.overlay.apply_overlay` (upsert by
-    ``validation_id``). An unknown vertical resolves to an EMPTY dict, never
-    raises — "no declared validations" is a loud, explicit outcome at the
-    phase tier, not a loader crash.
-
-    Test path (explicit ``verticals_dir``): read
-    ``<verticals_dir>/<vertical>/validations`` raw, bypassing the overlay —
-    deterministic for unit tests (mirrors ``OntologyLoader``).
-
-    Args:
-        vertical: Vertical name (e.g. ``'finance'``).
-        verticals_dir: Root verticals directory override (tests only).
+    Thin wrapper over :class:`~dataraum.core.vertical_loader.VerticalLoader`
+    (DAT-481): the shipped ``validations/`` directory (empty base when the
+    vertical is framed — declared via the cockpit, no on-disk directory) ⊕
+    active ``validation`` overlay rows (upsert by ``validation_id``). An unknown
+    vertical resolves to an EMPTY dict, never raises — "no declared validations"
+    is a loud, explicit outcome at the phase tier. An explicit ``verticals_dir``
+    reads raw YAML and bypasses the overlay (tests).
 
     Returns:
         Dict mapping validation_id to ValidationSpec.
     """
-    if verticals_dir is not None:
-        spec_dir = verticals_dir / vertical / "validations"
-        entries = _read_spec_dir(spec_dir) if spec_dir.is_dir() else []
-    else:
-        from dataraum.core.config import get_config_dir
-        from dataraum.core.overlay import apply_overlay
-
-        try:
-            spec_dir = get_config_dir(f"verticals/{vertical}/validations")
-        except FileNotFoundError:
-            # Framed vertical (no on-disk directory) or a vertical without
-            # shipped validations — the overlay rows ARE the declared set.
-            spec_dir = None
-        base_entries = _read_spec_dir(spec_dir) if spec_dir is not None else []
-        merged = apply_overlay(f"verticals/{vertical}/validations", {"validations": base_entries})
-        entries = merged.get("validations") or []
+    collection = VerticalLoader(vertical, verticals_dir).collection(Family.VALIDATIONS)
 
     specs: dict[str, ValidationSpec] = {}
-    for data in entries:
+    for data in collection.get("validations") or []:
         spec = ValidationSpec.model_validate(data)
         specs[spec.validation_id] = spec
         logger.debug("validation_spec_loaded", validation_id=spec.validation_id)

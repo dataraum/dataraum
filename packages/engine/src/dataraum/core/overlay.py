@@ -355,15 +355,36 @@ _REGISTRY: Final[dict[str, _ApplierSpec]] = {
 }
 
 
-# Vertical ontology files live at ``verticals/<vertical>/ontology.yaml``;
-# the validation collection is the logical path ``verticals/<vertical>/validations``
-# (a directory merged to one dict by its loader, not a single file). These
-# constants keep the path-parsing in one place.
-_VERTICAL_ONTOLOGY_PREFIX = "verticals/"
-_VERTICAL_ONTOLOGY_SUFFIX = "/ontology.yaml"
-_VERTICAL_VALIDATIONS_SUFFIX = "/validations"
-_VERTICAL_CYCLES_SUFFIX = "/cycles.yaml"
-_VERTICAL_METRICS_SUFFIX = "/metrics"
+# Vertical-scoped overlay families. A teach row's target file lives under
+# ``verticals/<vertical>/<suffix>`` and is filtered by ``payload.vertical`` (the
+# vertical isn't in the row type, it's in the payload). Adding a vertical family
+# is ONE row here — not a new branch in :func:`apply_overlay` (DAT-481).
+_VERTICAL_PREFIX = "verticals/"
+
+
+@dataclass(frozen=True)
+class _VerticalFamily:
+    """A vertical overlay family: path suffix + ordered (teach_type, applier) pairs.
+
+    Rows are filtered to a pair's ``teach_type`` AND the path's vertical, then
+    merged in order. ``ontology.yaml`` has two pairs — ``concept`` defines /
+    replaces a whole entry, then ``concept_property`` patches one field on the
+    (possibly just-replaced) concept — so order matters; the others have one.
+    """
+
+    suffix: str
+    appliers: tuple[tuple[str, Callable[[dict[str, Any], list[OverlayRow]], dict[str, Any]]], ...]
+
+
+_VERTICAL_REGISTRY: Final[tuple[_VerticalFamily, ...]] = (
+    _VerticalFamily(
+        "/ontology.yaml",
+        (("concept", _apply_concept), ("concept_property", _apply_concept_property)),
+    ),
+    _VerticalFamily("/validations", (("validation", _apply_validation),)),
+    _VerticalFamily("/cycles.yaml", (("cycle", _apply_cycle),)),
+    _VerticalFamily("/metrics", (("metric", _apply_metric),)),
+)
 
 
 def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
@@ -403,53 +424,21 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
     if not rows:
         return base
 
-    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
-        _VERTICAL_ONTOLOGY_SUFFIX
-    ):
-        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_ONTOLOGY_SUFFIX)]
-        concept_rows = [
-            r for r in rows if r.type == "concept" and r.payload.get("vertical") == vertical
-        ]
-        property_rows = [
-            r
-            for r in rows
-            if r.type == "concept_property" and r.payload.get("vertical") == vertical
-        ]
-        merged = base
-        if concept_rows:
-            merged = _apply_concept(merged, concept_rows)
-        if property_rows:
-            merged = _apply_concept_property(merged, property_rows)
-        return merged
-
-    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
-        _VERTICAL_VALIDATIONS_SUFFIX
-    ):
-        vertical = relative_path[
-            len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_VALIDATIONS_SUFFIX)
-        ]
-        validation_rows = [
-            r for r in rows if r.type == "validation" and r.payload.get("vertical") == vertical
-        ]
-        return _apply_validation(base, validation_rows) if validation_rows else base
-
-    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
-        _VERTICAL_CYCLES_SUFFIX
-    ):
-        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_CYCLES_SUFFIX)]
-        cycle_rows = [
-            r for r in rows if r.type == "cycle" and r.payload.get("vertical") == vertical
-        ]
-        return _apply_cycle(base, cycle_rows) if cycle_rows else base
-
-    if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
-        _VERTICAL_METRICS_SUFFIX
-    ):
-        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_METRICS_SUFFIX)]
-        metric_rows = [
-            r for r in rows if r.type == "metric" and r.payload.get("vertical") == vertical
-        ]
-        return _apply_metric(base, metric_rows) if metric_rows else base
+    if relative_path.startswith(_VERTICAL_PREFIX):
+        for family in _VERTICAL_REGISTRY:
+            if not relative_path.endswith(family.suffix):
+                continue
+            vertical = relative_path[len(_VERTICAL_PREFIX) : -len(family.suffix)]
+            merged = base
+            for teach_type, apply in family.appliers:
+                matching = [
+                    r
+                    for r in rows
+                    if r.type == teach_type and r.payload.get("vertical") == vertical
+                ]
+                if matching:
+                    merged = apply(merged, matching)
+            return merged
 
     merged = base
     for teach_type, spec in _REGISTRY.items():

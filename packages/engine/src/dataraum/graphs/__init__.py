@@ -6,10 +6,11 @@ data schemas and generate executable SQL.
 
 Usage:
     from dataraum.graphs import GraphLoader, GraphAgent, ExecutionContext
+    from dataraum.graphs.config import get_metric_definitions
 
-    loader = GraphLoader(vertical="finance")
-    loader.load_all()
-    graph = loader.get_graph("dso")
+    loader = GraphLoader()
+    loader.graphs.update(loader.graphs_from_definitions(get_metric_definitions("finance")))
+    graph = loader.graphs["dso"]
 
     agent = GraphAgent(config, provider, renderer)
     context = ExecutionContext.with_rich_context(

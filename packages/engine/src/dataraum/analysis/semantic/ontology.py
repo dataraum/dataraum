@@ -1,21 +1,19 @@
 """Ontology loading from configuration files.
 
-Loads ontology definitions from config/verticals/<vertical>/ontology.yaml.
-Reads go through :func:`dataraum.core.config.load_yaml_config` so the
-workspace's active overlay rows (DAT-343; ``concept`` and
-``concept_property`` types per DAT-371) are merged onto the baked-in
-YAML. Custom ``verticals_dir`` (test fixtures) bypasses the overlay —
-they're deterministic.
+Loads ontology definitions from config/verticals/<vertical>/ontology.yaml
+through the shared :class:`~dataraum.core.vertical_loader.VerticalLoader`
+(DAT-481), so the workspace's active overlay rows (DAT-343; ``concept`` and
+``concept_property`` types per DAT-371) are merged onto the baked-in YAML.
+Custom ``verticals_dir`` (test fixtures) bypasses the overlay — deterministic.
 """
 
 from pathlib import Path
 
-import yaml
 from pydantic import BaseModel, Field
 
-from dataraum.core.config import get_config_dir, load_yaml_config
-from dataraum.core.overlay import apply_overlay
+from dataraum.core.config import get_config_dir
 from dataraum.core.vertical import VerticalKind, resolve_vertical
+from dataraum.core.vertical_loader import Family, VerticalLoader
 
 
 class OntologyConcept(BaseModel):
@@ -66,51 +64,35 @@ class OntologyLoader:
     def load(self, vertical: str) -> OntologyDefinition | None:
         """Load an ontology definition for a vertical.
 
-        Production path (``verticals_dir`` is ``None``) goes through
-        :func:`load_yaml_config` so any active overlay rows for
-        ``verticals/<vertical>/ontology.yaml`` are merged in. The test
-        path (explicit ``verticals_dir``) reads YAML directly and
-        bypasses the overlay.
+        Resolution is the shared :class:`VerticalLoader.collection` (DAT-481):
+        production (``verticals_dir`` is ``None``) reads the shipped baseline ⊕
+        overlay rows; the test path (explicit ``verticals_dir``) reads raw YAML
+        and bypasses the overlay.
 
         Args:
             vertical: Vertical name (e.g. ``'finance'`` or ``'_adhoc'``).
 
         Returns:
-            Loaded (and overlay-merged) ontology definition. A builtin
-            vertical resolves its baked-in YAML; a framed vertical (declared
-            via the cockpit `frame` stage — no on-disk directory, since the
-            config tree is read-only) resolves overlay-only. ``None`` only on
-            the test path when the YAML doesn't exist.
+            The (overlay-merged) ontology definition — a builtin resolves its
+            baked-in YAML, a framed vertical resolves overlay-only. ``None`` only
+            on the production path for an UNKNOWN vertical (a typo or one never
+            framed) — the single ``None`` case, owned by ``resolve_vertical``
+            (DAT-480); every known/placeholder/framed name resolves to a
+            (possibly empty) definition.
         """
-        if self.verticals_dir is None:
-            # The shipped/framed/placeholder/unknown discrimination lives in
-            # one place (DAT-480): an UNKNOWN name (typo, or never framed) is
-            # the only `None` case. Everything else resolves — shipped /
-            # placeholder read their on-disk baseline (⊕ overlay); a framed
-            # vertical has no file, so it materializes from overlay rows alone.
-            relative = f"verticals/{vertical}/ontology.yaml"
-            if resolve_vertical(vertical) is VerticalKind.UNKNOWN:
-                return None
-            try:
-                data = load_yaml_config(relative)
-            except FileNotFoundError:
-                data = apply_overlay(relative, {"name": vertical, "concepts": []})
-            return OntologyDefinition(**data)
-
-        ontology_path = self.verticals_dir / vertical / "ontology.yaml"
-        if not ontology_path.exists():
+        # DAT-480: an UNKNOWN production vertical is the only None case. The test
+        # path is deterministic (no overlay), so the guard is production-only.
+        if self.verticals_dir is None and resolve_vertical(vertical) is VerticalKind.UNKNOWN:
             return None
-
-        with open(ontology_path) as f:
-            data = yaml.safe_load(f)
-
+        data = VerticalLoader(vertical, self.verticals_dir).collection(Family.CONCEPTS)
         return OntologyDefinition(**data)
 
     def list_verticals(self) -> list[str]:
-        """List available verticals with ontology definitions on disk.
+        """List the shipped (on-disk) verticals.
 
-        Lists only baked-in verticals — overlay rows can't add a wholly
-        new vertical (they augment a vertical whose YAML exists). Returns
+        File-globs ``verticals/*/ontology.yaml`` only — *framed* verticals
+        (declared via the cockpit ``frame`` stage; they live entirely in overlay
+        rows with no on-disk file, DAT-480) are NOT enumerated here. Returns
         ``[]`` if the verticals root doesn't exist.
         """
         root = self.verticals_dir if self.verticals_dir is not None else get_config_dir("verticals")

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
 // Render tests for the RelationshipListWidget (DAT-434): rows with endpoint
-// labels + band badges, the not-analyzed / empty states, the overflow cap
-// (rule 15), and the why_relationship click-through — ids in the model-only
-// refs part, never the bubble (the table-readiness precedent).
+// labels + band badges, the catalog facts (DAT-478: type/cardinality/confidence/
+// confirmed), the not-analyzed / empty states, the overflow cap (rule 15), and the
+// why_relationship click-through — ids in the model-only refs part, never the
+// bubble (the table-readiness precedent).
 
 import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -42,6 +43,13 @@ const REL = {
 	top_drivers: [
 		{ label: "Referential Integrity", state: "low", impact_delta: 0.05 },
 	],
+	relationship_type: "foreign_key",
+	cardinality: "many_to_one",
+	confidence: 0.91,
+	// Real `detection_method` values are `candidate | llm | manual | keeper`
+	// (engine `relationships/db_models.py`). A confirmed FK is `llm`.
+	detection_method: "llm",
+	is_confirmed: true,
 };
 
 const analyzed: LookRelationshipsResult = {
@@ -66,6 +74,74 @@ describe("RelationshipListWidget (DAT-434)", () => {
 		expect(screen.getByText("Referential Integrity")).toBeTruthy();
 		expect(document.body.textContent).not.toContain("c_orders_customer");
 		expect(document.body.textContent).not.toContain("sess-1");
+	});
+
+	it("renders the catalog facts — type · cardinality, confidence, confirmed (DAT-478)", () => {
+		renderWidget(analyzed);
+		const facts = screen.getByTestId(
+			"relationship-facts-c_orders_customer->c_customers_id",
+		);
+		// humanizeIdentifier turns foreign_key → "Foreign key", joined to cardinality.
+		expect(facts.textContent).toContain("Foreign key · many_to_one");
+		expect(facts.textContent).toContain("confidence 0.91");
+		expect(facts.textContent).toContain("confirmed");
+	});
+
+	it("degrades a bands-only relationship's facts cell to a dash (DAT-478)", () => {
+		const bandsOnly = {
+			...REL,
+			relationship_type: null,
+			cardinality: null,
+			confidence: null,
+			detection_method: null,
+			is_confirmed: null,
+		};
+		renderWidget({ ...analyzed, relationships: [bandsOnly] });
+		// The row still renders (band + endpoints), the facts cell is just a dash.
+		expect(screen.getByText("orders.customer_id")).toBeTruthy();
+		expect(
+			screen.getByTestId("relationship-facts-c_orders_customer->c_customers_id")
+				.textContent,
+		).toBe("—");
+	});
+
+	it("renders a catalog-only row — facts present, band a dash (DAT-478)", () => {
+		// A relationship the readiness pass didn't score (no band) but the catalog
+		// knows: the facts cell carries the type/confidence, the band cell degrades.
+		const catalogOnly = {
+			...REL,
+			band: null,
+			worst_intent_risk: null,
+			intents: [],
+			top_drivers: [],
+		};
+		renderWidget({ ...analyzed, relationships: [catalogOnly] });
+		const facts = screen.getByTestId(
+			"relationship-facts-c_orders_customer->c_customers_id",
+		);
+		expect(facts.textContent).toContain("Foreign key · many_to_one");
+		expect(facts.textContent).toContain("confidence 0.91");
+		// The band cell shows the no-band dash, the row still renders.
+		expect(screen.getByText("orders.customer_id")).toBeTruthy();
+		expect(screen.queryByText("Ready")).toBeNull();
+	});
+
+	it("degrades an all-null-but-is_confirmed=false facts cell to a plain dash (DAT-478)", () => {
+		// is_confirmed=false is not a fact to show on its own — with no type/cardinality
+		// and no confidence the cell must be a bare dash, not empty chrome.
+		const detectedUnconfirmed = {
+			...REL,
+			relationship_type: null,
+			cardinality: null,
+			confidence: null,
+			detection_method: "candidate",
+			is_confirmed: false,
+		};
+		renderWidget({ ...analyzed, relationships: [detectedUnconfirmed] });
+		expect(
+			screen.getByTestId("relationship-facts-c_orders_customer->c_customers_id")
+				.textContent,
+		).toBe("—");
 	});
 
 	it("renders the not-analyzed state pointing at begin_session", () => {

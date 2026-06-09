@@ -6,10 +6,7 @@
 // shape live in metric-dag.ts.
 
 import { Badge, Code, Group, Stack, Text } from "@mantine/core";
-import type {
-	DagStep,
-	MetricOutputView,
-} from "#/ui/cockpit/widgets/metric-dag";
+import type { DagStep, MetricOutputView } from "#/lib/metric-dag";
 
 // Bound the steps rendered into the DOM (rule 15). A curated metric DAG is a
 // handful of steps, but the surface stays honest if a graph is unusually large.

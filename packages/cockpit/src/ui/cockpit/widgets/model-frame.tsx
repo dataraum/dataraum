@@ -10,8 +10,8 @@
 // server code in the client bundle).
 
 import { Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
+import { narrowDag, summarizeDag } from "#/lib/metric-dag";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
-import { narrowDag, summarizeDag } from "#/ui/cockpit/widgets/metric-dag";
 
 // Cap rows rendered into the DOM (rule 15). A framed model is a curated set
 // (single-digit to low-tens per family), but the cap keeps the surface honest if

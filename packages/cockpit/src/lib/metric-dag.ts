@@ -32,6 +32,18 @@ export interface MetricOutputView {
 	unit: string | null;
 }
 
+/** The shipped metric a teach override replaces — identity + the narrowed DAG.
+ * The contract of the `/api/shipped-metric-dag` route (DAT-482): server-narrowed
+ * (concrete, serializable) so the widget is a pure render and the model never
+ * sees the DAG. `null` when no shipped metric carries that graph_id. */
+export interface ShippedMetricDag {
+	graph_id: string;
+	name: string | null;
+	category: string | null;
+	output: MetricOutputView | null;
+	steps: DagStep[];
+}
+
 function str(v: unknown): string | null {
 	return typeof v === "string" ? v : null;
 }

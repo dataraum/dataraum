@@ -85,6 +85,12 @@ export type CanvasState =
 	// first-class + the per-step SQL fragments (how it computes). Carries the
 	// why_metric result.
 	| { kind: "metric-why"; why: WhyMetricResult }
+	// DAT-482: the shipped metric DAG a teach OVERRIDE replaces. Carries ONLY the
+	// (vertical, graph_id) key — the widget RE-FETCHES the shipped output +
+	// dependencies via getShippedMetricDag, so the heavy graph never rides the lean
+	// teach tool result into the model's context (the run_sql carry pattern).
+	// Projected ONLY for an override (teach_metric result.override) by the mapper.
+	| { kind: "metric-shadow"; vertical: string; graphId: string }
 	// DAT-352/DAT-436: live add_source workflow progress. Carries ONLY the
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused

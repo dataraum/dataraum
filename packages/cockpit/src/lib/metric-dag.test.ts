@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { narrowDag, summarizeDag } from "#/ui/cockpit/widgets/metric-dag";
+import { narrowDag, summarizeDag } from "#/lib/metric-dag";
 
 // A shipped metric DAG as it comes off the YAML (untrusted shape — extra keys
 // like `validation`/`decimal_places` the render view ignores).

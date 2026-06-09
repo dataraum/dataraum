@@ -19,7 +19,7 @@
 // are smoke-covered (a live ws_<id>); the pure projection is unit-tested here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -170,22 +170,34 @@ export interface ColumnBandRow {
 	band: string | null;
 }
 
-/** One `current_table_entities` row (the promoted detect run's classification). */
+/**
+ * One `current_table_entities` row (the promoted detect run's classification).
+ * `current_table_entities` is `session:{id}`-head-scoped — one row per
+ * (table_id, session) — so a multi-session workspace yields SEVERAL rows for the
+ * same table. `detectedAt` is the tie-break: buildInventory keeps the latest per
+ * table so the pick is deterministic, never the nondeterministic "last row seen".
+ * (NOT NULL on the underlying table; the view types it nullable.)
+ */
 export interface TableEntityRow {
 	tableId: string;
 	detectedEntityType: string | null;
 	isFactTable: boolean | null;
+	detectedAt: Date | null;
 }
 
 /**
  * One `current_enriched_views` row. `factTableId` keys the view back to the fact
  * table the inventory groups it under; `viewName` is the materialized view's
- * name; `isGrainVerified` flags a grain-verified join.
+ * name; `isGrainVerified` flags a grain-verified join. Like the entity view this
+ * is `session:{id}`-head-scoped, so a fact table can carry views from several
+ * sessions; `createdAt` selects the latest session's set in buildInventory so the
+ * summary is single-session, not a cross-session pile. (NOT NULL underneath.)
  */
 export interface EnrichedViewRow {
 	factTableId: string;
 	viewName: string | null;
 	isGrainVerified: boolean | null;
+	createdAt: Date | null;
 }
 
 /**
@@ -202,9 +214,16 @@ export interface EnrichedViewRow {
  * The entity facts (entity_type / is_fact) and enriched_views summary are
  * session/detect grain: absent any promoted detect run the entity rows / view
  * rows are empty, so entity_type / is_fact stay null and enriched_views is an
- * empty summary — never invented pre-session. At most one entity row per table
- * (the promoted run's classification); multiple enriched views can name the same
- * fact table, so they're grouped by `factTableId`.
+ * empty summary — never invented pre-session. The current_* views are
+ * `session:{id}`-head-scoped, so in a MULTI-SESSION workspace one table carries
+ * several entity rows / view sets (one per session). The pick is made
+ * deterministic here — order-independent of the input arrays: the entity is the
+ * latest by `detectedAt`, and the enriched views are the set belonging to the
+ * latest `createdAt` for that fact table (not a cross-session pile). Multiple
+ * enriched views can name the same fact table in one session, so they're grouped
+ * by `factTableId`; `enriched_views.count` then equals the number of NON-blank
+ * view names emitted (never the raw row count — a stale name-less row must not
+ * inflate the count past `view_names`).
  */
 export function buildInventory(
 	tableRows: InventoryTableRow[],
@@ -226,13 +245,31 @@ export function buildInventory(
 		}
 	}
 
-	// Entity classification, keyed by table_id (≤ 1 row per table on a run).
+	// Entity classification, keyed by table_id. The view is session-head-scoped,
+	// so a multi-session workspace carries several rows per table — keep the
+	// LATEST by `detectedAt` (order-independent of the input array), so the pick
+	// is deterministic, not "whichever row arrived last".
+	const epoch = (d: Date | null): number => (d ? d.getTime() : 0);
 	const entities = new Map<string, TableEntityRow>();
-	for (const e of tableEntityRows) entities.set(e.tableId, e);
+	for (const e of tableEntityRows) {
+		const cur = entities.get(e.tableId);
+		if (!cur || epoch(e.detectedAt) >= epoch(cur.detectedAt))
+			entities.set(e.tableId, e);
+	}
 
-	// Enriched views grouped under their fact table (a fact can fan out to many).
+	// Enriched views grouped under their fact table (a fact can fan out to many in
+	// ONE session). The view is session-head-scoped too, so first pin each fact
+	// table to its LATEST session by `createdAt`, then keep only that session's
+	// views — never a cross-session pile (which would over-count and mix grains).
+	const latestEpochByFact = new Map<string, number>();
+	for (const v of enrichedViewRows) {
+		const e = epoch(v.createdAt);
+		const cur = latestEpochByFact.get(v.factTableId);
+		if (cur === undefined || e > cur) latestEpochByFact.set(v.factTableId, e);
+	}
 	const enrichedByFact = new Map<string, EnrichedViewRow[]>();
 	for (const v of enrichedViewRows) {
+		if (epoch(v.createdAt) !== latestEpochByFact.get(v.factTableId)) continue;
 		const g = enrichedByFact.get(v.factTableId);
 		if (g) g.push(v);
 		else enrichedByFact.set(v.factTableId, [v]);
@@ -256,6 +293,14 @@ export function buildInventory(
 						: null;
 		const entity = entities.get(t.tableId);
 		const views = enrichedByFact.get(t.tableId) ?? [];
+		// Display-mapped names, content-keyed prefix stripped (DAT-431); a stale
+		// row that lost its name is dropped. `count` is THIS — the number of
+		// emitted names — never `views.length`, so the agent/widget can't read
+		// `count: 3` against `view_names: ["enriched_orders"]` (uninterpretable).
+		const view_names = views
+			.map((v) => v.viewName)
+			.filter((n): n is string => n !== null && n.length > 0)
+			.map((n) => displayTableName(n));
 		return {
 			table_id: t.tableId,
 			// Display form for prose (the raw source name strips its exact prefix;
@@ -279,13 +324,11 @@ export function buildInventory(
 			entity_type: entity?.detectedEntityType ?? null,
 			is_fact: entity?.isFactTable ?? null,
 			enriched_views: {
-				count: views.length,
-				// Display-mapped so no content-keyed prefix reaches LLM context; drop
-				// any view that lost its name on a stale row.
-				view_names: views
-					.map((v) => v.viewName)
-					.filter((n): n is string => n !== null && n.length > 0)
-					.map((n) => displayTableName(n)),
+				count: view_names.length,
+				view_names,
+				// Grain-verified is a property of the view rows, so it keys off the
+				// raw set (a name-less row still carries an honest grain flag). Null
+				// only when there are no views at all for this fact table.
 				any_grain_verified:
 					views.length === 0
 						? null
@@ -299,10 +342,14 @@ export interface ListTablesInput {
 	source_id?: string;
 }
 
-/** The workspace table inventory (optionally one source), oldest source first. */
+/** The workspace table inventory (optionally one source), oldest source first.
+ * Returns `ProjectedInventoryTable[]` — buildInventory ALWAYS sets the DAT-477
+ * fields, so callers never face a `string | null | undefined` for entity_type/
+ * is_fact/enriched_views (the `.optional()` on `InventoryTable` is a fixture-only
+ * type affordance, not a runtime maybe). */
 export async function listTables(
 	input: ListTablesInput = {},
-): Promise<InventoryTable[]> {
+): Promise<ProjectedInventoryTable[]> {
 	const sourceFilter = input.source_id
 		? eq(tables.sourceId, input.source_id)
 		: undefined;
@@ -348,21 +395,29 @@ export async function listTables(
 	// no source filter (these views carry no source_id — the table_id / fact_table_id
 	// keys join back to the source-filtered tableRows in buildInventory, so a
 	// source filter naturally drops unrelated entity/view rows there).
+	// `detectedAt` / `createdAt` are the tie-break for the latest-per-table pick in
+	// buildInventory (the views are session-head-scoped → several rows per table in
+	// a multi-session workspace). The DB orderBy isn't load-bearing — buildInventory
+	// is order-independent — but newest-first keeps the wire shape intuitive.
 	const tableEntityRows = await metadataDb
 		.select({
 			tableId: currentTableEntities.tableId,
 			detectedEntityType: currentTableEntities.detectedEntityType,
 			isFactTable: currentTableEntities.isFactTable,
+			detectedAt: currentTableEntities.detectedAt,
 		})
-		.from(currentTableEntities);
+		.from(currentTableEntities)
+		.orderBy(desc(currentTableEntities.detectedAt));
 
 	const enrichedViewRows = await metadataDb
 		.select({
 			factTableId: currentEnrichedViews.factTableId,
 			viewName: currentEnrichedViews.viewName,
 			isGrainVerified: currentEnrichedViews.isGrainVerified,
+			createdAt: currentEnrichedViews.createdAt,
 		})
-		.from(currentEnrichedViews);
+		.from(currentEnrichedViews)
+		.orderBy(desc(currentEnrichedViews.createdAt));
 
 	// View columns type as nullable (Postgres views carry no NOT NULL) —
 	// coalesce the fields the underlying tables guarantee.

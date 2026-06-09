@@ -252,8 +252,11 @@ function TableDetailModal({
 					{/* Session-grain orientation (DAT-477): the detected entity class +
 					    the enriched fact/dimension views built off this table. Rendered
 					    only once a session has classified the table — pre-session there's
-					    nothing to show (entity null, no views). */}
+					    nothing to show (entity null, no views). The show condition mirrors
+					    `EntityFacts`'s own (entity_type OR is_fact OR a view) so the
+					    is_fact-true / entity_type-null case isn't silently hidden here. */}
 					{((table.representative.entity_type ?? null) !== null ||
+						(table.representative.is_fact ?? null) !== null ||
 						(table.representative.enriched_views?.count ?? 0) > 0) && (
 						<Stack gap={4} data-testid="modal-entity">
 							<Text size="sm" fw={600}>

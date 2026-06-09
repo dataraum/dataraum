@@ -16,7 +16,7 @@
 // rows); the pure row→shape projection is unit-tested directly here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -33,7 +33,7 @@ import {
 	currentTableEntities,
 	tables,
 } from "../db/metadata/schema";
-import { displayTableName } from "../lib/display-names";
+import { displayTableName, stripSrcDigests } from "../lib/display-names";
 
 // The persisted JSONB grammar (intents / top_drivers) lives in
 // `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
@@ -138,8 +138,9 @@ const LookTableResult = z.object({
 	table_readiness: TableReadiness.nullable(),
 	// The table descriptive header (DAT-476) — entity type / fact-dimension / grain
 	// / time column / description from `current_table_entities`. Session/detect grain
-	// → null pre-session (no promoted detect run). Independent of any session_id
-	// input; the view is head-resolved, so a plain select by table_id suffices.
+	// → null pre-session (no promoted detect run). The view is one row per
+	// (table_id, session), so it's scoped to the passed session_id when given, else
+	// the latest detected entity (a deterministic pick, not an arbitrary session's).
 	// Optional so the type stays back-compat for hand-built fixtures; the
 	// projection ALWAYS sets it (null or block), so it's present at runtime.
 	entity: TableEntity.nullable().optional(),
@@ -189,7 +190,11 @@ export function projectColumnSemantic(
 	return {
 		business_concept: businessConcept,
 		semantic_role: semanticRole,
-		business_name: businessName,
+		// business_name is engine free-text (the human-readable column label) and
+		// can carry a raw `src_<digest>__` prefix — strip it before it reaches the
+		// result / widget (sibling precedent: why-cycle.ts). concept/role are
+		// engine-controlled identifiers, not free-text, so they pass through.
+		business_name: businessName == null ? null : stripSrcDigests(businessName),
 	};
 }
 
@@ -266,7 +271,9 @@ export function projectTableBand(row: TableBandRow): TableReadiness {
 }
 
 /** One `current_table_entities` row, as Drizzle returns it. grainColumns is the
- * persisted JSON array of column names (the table's grain). */
+ * persisted grain — the engine writes the DICT shape `{"columns": [...]}`
+ * (`semantic/processor.py`), so the parser below accepts that (and tolerates a
+ * bare `string[]` for safety). */
 export interface TableEntityRow {
 	detectedEntityType: string | null;
 	isFactTable: boolean | null;
@@ -276,22 +283,37 @@ export interface TableEntityRow {
 	description: string | null;
 }
 
+// The persisted grain shape. The engine ALWAYS writes the dict form
+// `{"columns": [...]}` (`analysis/semantic/processor.py:343`; the engine's own
+// reader `graphs/context.py` accepts both), so the dict is the real shape; the
+// bare array is tolerated as a fallback. Anything else degrades to [].
+const GrainColumns = z.union([
+	z.object({ columns: z.array(z.string()) }).transform((g) => g.columns),
+	z.array(z.string()),
+]);
+
 /**
  * Project the table-entity header row to the tool shape (DAT-476). Pure (no DB).
- * `grain_columns` is a persisted JSON array of column names; a malformed/absent
- * blob degrades to an empty grain rather than throwing. The remaining fields map
- * straight through (the view is head-resolved, so a present row IS the promoted
- * detect run). The caller passes null when no entity row exists (pre-session).
+ * `grain_columns` is the engine's persisted dict `{"columns": [...]}` (bare
+ * array tolerated); a genuinely malformed/absent blob degrades to an empty grain
+ * rather than throwing. The remaining fields map straight through (the view is
+ * head-resolved, so a present row IS the promoted detect run), but the engine
+ * free-text fields (description / business name surrogate) can carry raw
+ * `src_<digest>__` prefixes, so they're digest-stripped before reaching the
+ * result (sibling precedent: why-cycle.ts). The caller passes null when no entity
+ * row exists (pre-session).
  */
 export function projectTableEntity(row: TableEntityRow): TableEntity {
-	const grain = z.array(z.string()).safeParse(row.grainColumns);
+	const grain = GrainColumns.safeParse(row.grainColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
 		is_fact_table: row.isFactTable ?? null,
 		is_dimension_table: row.isDimensionTable ?? null,
-		grain: grain.success ? grain.data : [],
-		time_column: row.timeColumn ?? null,
-		description: row.description ?? null,
+		grain: grain.success ? grain.data.map(stripSrcDigests) : [],
+		time_column:
+			row.timeColumn == null ? null : stripSrcDigests(row.timeColumn),
+		description:
+			row.description == null ? null : stripSrcDigests(row.description),
 	};
 }
 
@@ -350,16 +372,17 @@ export async function lookTable(
 
 	// Four independent reads once the table is known: the per-column grid (its own
 	// add_source `table:{id}` head, now carrying the light semantic join), the
-	// table descriptive header (DAT-476 — `current_table_entities`, head-resolved,
-	// session/detect grain so null pre-session), the table-grain band (the
-	// begin_session `session:{id}` head — a different head), and the workspace teach
-	// count. Fan them out — they share no input, so sequential awaits only add
-	// latency. table_readiness stays null without a session_id (add_source view);
-	// entity stays null until a detect run promotes (independent of session_id).
+	// table descriptive header (DAT-476 — `current_table_entities`, a
+	// `session:{id}`-detect-head view so scoped to the passed session_id when
+	// given, else the latest detected entity), the table-grain band (the
+	// begin_session `session:{id}` head), and the workspace teach count. Fan them
+	// out — they share no input, so sequential awaits only add latency.
+	// table_readiness stays null without a session_id (add_source view); entity
+	// stays null until a detect run promotes (for the chosen session/latest scope).
 	const tableName = table.tableName ?? "";
 	const [cols, entity, tableReadiness, pending] = await Promise.all([
 		loadColumnGrid(input.table_id),
-		loadTableEntity(input.table_id),
+		loadTableEntity(input.table_id, input.session_id),
 		input.session_id ? loadTableBand(input.session_id, tableName) : null,
 		getPendingOverlays(),
 	]);
@@ -423,11 +446,34 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 	);
 }
 
+/** The `current_table_entities` filter for one table (DAT-476). The view is
+ * `session:{id}`-detect-head-scoped — ONE row per (table_id, session), NOT
+ * table-grain — so filtering on table_id alone picks an arbitrary session's row
+ * in a multi-session workspace. When a session_id is passed we scope to it
+ * (mirror loadTableBand); otherwise we filter on table_id alone and let the
+ * `detected_at desc` order at the call site pick the latest deterministically.
+ * Pure (no DB) so the scoping decision is unit-testable. */
+export function tableEntityWhere(tableId: string, sessionId?: string) {
+	return sessionId
+		? and(
+				eq(currentTableEntities.tableId, tableId),
+				eq(currentTableEntities.sessionId, sessionId),
+			)
+		: eq(currentTableEntities.tableId, tableId);
+}
+
 /** Resolve a table's descriptive header (DAT-476) — entity type / fact-dimension
  * / grain / time column / description from `current_table_entities`. The view is
- * head-resolved (the promoted `detect` run), so a plain select by table_id
- * suffices; null when no detect run has promoted (pre-session). */
-async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
+ * `session:{id}`-detect-head-scoped (one row per (table_id, session), NOT
+ * table-grain), so the {@link tableEntityWhere} filter scopes to the passed
+ * session_id when given; the `detected_at desc` order then picks the latest
+ * detected entity deterministically (vs an arbitrary session's row). Null when no
+ * detect run has promoted for the chosen scope (pre-session). */
+async function loadTableEntity(
+	tableId: string,
+	sessionId?: string,
+): Promise<TableEntity | null> {
+	const where = tableEntityWhere(tableId, sessionId);
 	const [row] = await metadataDb
 		.select({
 			detectedEntityType: currentTableEntities.detectedEntityType,
@@ -438,7 +484,8 @@ async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
 			description: currentTableEntities.description,
 		})
 		.from(currentTableEntities)
-		.where(eq(currentTableEntities.tableId, tableId))
+		.where(where)
+		.orderBy(desc(currentTableEntities.detectedAt))
 		.limit(1);
 	return row ? projectTableEntity(row) : null;
 }

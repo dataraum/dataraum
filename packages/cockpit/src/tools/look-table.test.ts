@@ -21,6 +21,7 @@ import {
 	type ReadinessRow,
 	type TableBandRow,
 	type TableEntityRow,
+	tableEntityWhere,
 } from "./look-table";
 
 function row(overrides: Partial<ReadinessRow> = {}): ReadinessRow {
@@ -175,7 +176,11 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 		detectedEntityType: "transaction",
 		isFactTable: true,
 		isDimensionTable: false,
-		grainColumns: ["order_id", "line_no"],
+		// The engine ALWAYS persists grain as the DICT shape `{"columns": [...]}`
+		// (`analysis/semantic/processor.py`), NOT a bare array — fixture it that way
+		// so the projection's real-shape parse is exercised (the bare-array form
+		// only ever shows up as a tolerated fallback).
+		grainColumns: { columns: ["order_id", "line_no"] },
 		timeColumn: "order_date",
 		description: "One row per order line item.",
 		...overrides,
@@ -183,7 +188,7 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 }
 
 describe("projectTableEntity (DAT-476)", () => {
-	it("maps the descriptive header straight through, grain as a name array", () => {
+	it("maps the descriptive header through, grain from the engine's {columns:[…]} dict", () => {
 		expect(projectTableEntity(entityRow())).toEqual({
 			entity_type: "transaction",
 			is_fact_table: true,
@@ -194,14 +199,82 @@ describe("projectTableEntity (DAT-476)", () => {
 		});
 	});
 
-	it("degrades a malformed/absent grain blob to an empty grain rather than throwing", () => {
+	it("tolerates a bare string[] grain (defensive fallback)", () => {
+		expect(
+			projectTableEntity(entityRow({ grainColumns: ["order_id"] })).grain,
+		).toEqual(["order_id"]);
+	});
+
+	it("degrades a genuinely malformed/absent grain blob to an empty grain rather than throwing", () => {
 		expect(projectTableEntity(entityRow({ grainColumns: null })).grain).toEqual(
 			[],
 		);
+		// Neither the dict-with-`columns` nor the bare-array shape.
 		expect(
 			projectTableEntity(entityRow({ grainColumns: { not: "an array" } }))
 				.grain,
 		).toEqual([]);
+		expect(
+			projectTableEntity(entityRow({ grainColumns: { columns: "nope" } }))
+				.grain,
+		).toEqual([]);
+	});
+
+	it("strips src_<digest>__ prefixes from grain / time_column / description", () => {
+		// Engine free-text/name fields can carry the content-keyed source prefix;
+		// the projection digest-strips them before they reach the tool output.
+		const D = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+		const out = projectTableEntity(
+			entityRow({
+				grainColumns: { columns: [`src_${D}__order_id`, "line_no"] },
+				timeColumn: `src_${D}__order_date`,
+				description: `One row per line in src_${D}__orders.`,
+			}),
+		);
+		expect(out.grain).toEqual(["order_id", "line_no"]);
+		expect(out.time_column).toBe("order_date");
+		// The 40-hex digest is gone from every projected field.
+		expect(JSON.stringify(out)).not.toMatch(/src_[0-9a-f]{40}/);
+	});
+});
+
+// The drizzle SQL predicate is a self-referential object whose bound literals
+// live in `Param` nodes (a `value` + `encoder` pair); collect just those via a
+// cycle-safe walk. The column refs back-reference the whole table schema, so
+// matching on column names would leak every sibling column — the bound VALUES
+// are the unambiguous signal of what the predicate actually filters on.
+function boundValues(predicate: unknown): string[] {
+	const seen = new Set<unknown>();
+	const out: string[] = [];
+	const walk = (o: unknown, depth: number) => {
+		if (depth > 8 || o === null || typeof o !== "object" || seen.has(o)) return;
+		seen.add(o);
+		const rec = o as Record<string, unknown>;
+		if ("value" in rec && "encoder" in rec && typeof rec.value === "string") {
+			out.push(rec.value);
+		}
+		for (const v of Object.values(rec)) walk(v, depth + 1);
+	};
+	walk(predicate, 0);
+	return out.sort();
+}
+
+describe("tableEntityWhere (DAT-476 — deterministic entity pick)", () => {
+	it("scopes to the passed session_id (binds both table_id and session_id)", () => {
+		// current_table_entities is session-head-scoped (one row per (table_id,
+		// session)), so a multi-session workspace must filter on the caller's
+		// session_id — not pick an arbitrary session's row. Assert the composed
+		// predicate binds BOTH the table_id and the session_id literals.
+		expect(boundValues(tableEntityWhere("t_orders", "sess_1"))).toEqual([
+			"sess_1",
+			"t_orders",
+		]);
+	});
+
+	it("filters table_id alone when no session_id is passed", () => {
+		// No session filter → the call-site `detected_at desc` order then yields the
+		// deterministic latest entity (not an arbitrary session's row).
+		expect(boundValues(tableEntityWhere("t_orders"))).toEqual(["t_orders"]);
 	});
 });
 

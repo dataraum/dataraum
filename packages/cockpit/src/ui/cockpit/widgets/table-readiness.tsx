@@ -114,10 +114,12 @@ function TableEntityHeader({ entity }: { entity: TableEntity }) {
 // under the column name. Null (unannotated) renders nothing — the column row stays
 // the bare add_source view.
 function ColumnSemanticChips({ semantic }: { semantic: ColumnSemantic }) {
+	// The caller guards `{c.semantic && …}` and the projection returns null when
+	// every field is absent, so a non-null `semantic` always has ≥1 field — no
+	// all-null guard needed here; each chip is individually conditional below.
 	const businessName = semantic.business_name;
 	const concept = semantic.business_concept;
 	const role = semantic.semantic_role;
-	if (!businessName && !concept && !role) return null;
 	return (
 		<Group gap={4} wrap="wrap" mt={2} data-testid="readiness-semantic">
 			{businessName && (

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, timedelta
+from typing import Any
 
 import duckdb
 from sqlalchemy import delete, select
@@ -32,6 +33,7 @@ from dataraum.analysis.temporal_slicing.models import (
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -634,29 +636,36 @@ def persist_drift_results(
             )
         )
 
-        count = 0
+        # Dedup by the unique key, then UPSERT — not session.add. The key
+        # ``uq_drift_slice_column_run`` is (slice_table_name, column_name, run_id),
+        # which omits ``time_column``, so a column analysed under two time columns
+        # shares a key; and a Temporal at-least-once RETRY re-runs this activity. A
+        # plain insert violates the constraint in both cases (DAT-447: the teach
+        # re-run lane stresses retries). Upsert is idempotent; dedup keeps the last
+        # row per key so a single batch can't "affect a row twice" either.
+        rows: dict[tuple[str, str, str | None], dict[str, Any]] = {}
         for result in results:
-            evidence_json = None
-            if result.drift_evidence:
-                evidence_json = result.drift_evidence.model_dump()
-
-            record = ColumnDriftSummary(
-                session_id=session_id,
-                run_id=run_id,
-                slice_table_name=slice_table_name,
-                column_name=result.column_name,
-                time_column=time_column,
-                max_js_divergence=result.max_js_divergence,
-                mean_js_divergence=result.mean_js_divergence,
-                drift_divergence=result.drift_divergence,
-                periods_analyzed=result.periods_analyzed,
-                periods_with_drift=result.periods_with_drift,
-                drift_evidence_json=evidence_json,
-            )
-            session.add(record)
-            count += 1
-
-        return Result.ok(count)
+            evidence_json = result.drift_evidence.model_dump() if result.drift_evidence else None
+            rows[(slice_table_name, result.column_name, run_id)] = {
+                "session_id": session_id,
+                "run_id": run_id,
+                "slice_table_name": slice_table_name,
+                "column_name": result.column_name,
+                "time_column": time_column,
+                "max_js_divergence": result.max_js_divergence,
+                "mean_js_divergence": result.mean_js_divergence,
+                "drift_divergence": result.drift_divergence,
+                "periods_analyzed": result.periods_analyzed,
+                "periods_with_drift": result.periods_with_drift,
+                "drift_evidence_json": evidence_json,
+            }
+        upsert(
+            session,
+            ColumnDriftSummary,
+            list(rows.values()),
+            index_elements=["slice_table_name", "column_name", "run_id"],
+        )
+        return Result.ok(len(rows))
 
     except Exception as e:
         logger.error("persist_drift_failed", error=str(e))

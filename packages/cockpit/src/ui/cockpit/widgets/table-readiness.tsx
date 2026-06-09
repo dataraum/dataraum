@@ -7,8 +7,13 @@
 // Reads theme/tokens only; the row type is a type-only import (erased — no server
 // code in the client bundle).
 
-import { Alert, Anchor, Group, Stack, Table, Text } from "@mantine/core";
-import type { TableReadiness } from "#/tools/look-table";
+import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { humanizeIdentifier } from "#/lib/display-names";
+import type {
+	ColumnSemantic,
+	TableEntity,
+	TableReadiness,
+} from "#/tools/look-table";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
 import {
@@ -54,6 +59,83 @@ function TableBandSummary({ band }: { band: TableReadiness }) {
 						</Text>
 					))}
 				</Group>
+			)}
+		</Group>
+	);
+}
+
+// The table descriptive header (DAT-476) — the cockpit analog of MCP
+// `look(target="table")`'s entity block: what kind of table this is (fact /
+// dimension), its grain, its time column, and a short description. Rendered above
+// the per-column grid; only present once a begin_session detect run has promoted
+// (else `entity` is null and this is skipped). Additive — it colors/labels the
+// engine-persisted values, never recomputes them.
+function TableEntityHeader({ entity }: { entity: TableEntity }) {
+	// The kind chips read straight from the persisted flags; an entity with neither
+	// flag set (a plain table) shows no kind chip rather than a misleading one.
+	const kinds: string[] = [];
+	if (entity.is_fact_table) kinds.push("Fact table");
+	if (entity.is_dimension_table) kinds.push("Dimension table");
+	return (
+		<Stack gap={4} data-testid="canvas-table-readiness-entity">
+			<Group gap="xs" align="center" wrap="wrap">
+				{entity.entity_type && (
+					<Badge variant="light" size="sm" tt="none">
+						{humanizeIdentifier(entity.entity_type) || entity.entity_type}
+					</Badge>
+				)}
+				{kinds.map((k) => (
+					<Badge key={k} variant="outline" size="sm" tt="none" color="gray">
+						{k}
+					</Badge>
+				))}
+				{entity.grain.length > 0 && (
+					<Text span size="xs" c="dimmed">
+						Grain: {entity.grain.join(", ")}
+					</Text>
+				)}
+				{entity.time_column && (
+					<Text span size="xs" c="dimmed">
+						Time: {entity.time_column}
+					</Text>
+				)}
+			</Group>
+			{entity.description && (
+				<Text size="sm" c="dimmed">
+					{entity.description}
+				</Text>
+			)}
+		</Stack>
+	);
+}
+
+// Light per-column semantics (DAT-476): the business name / concept / role triple
+// from begin_session's `semantic_per_column` annotation, shown as compact chips
+// under the column name. Null (unannotated) renders nothing — the column row stays
+// the bare add_source view.
+function ColumnSemanticChips({ semantic }: { semantic: ColumnSemantic }) {
+	// The caller guards `{c.semantic && …}` and the projection returns null when
+	// every field is absent, so a non-null `semantic` always has ≥1 field — no
+	// all-null guard needed here; each chip is individually conditional below.
+	const businessName = semantic.business_name;
+	const concept = semantic.business_concept;
+	const role = semantic.semantic_role;
+	return (
+		<Group gap={4} wrap="wrap" mt={2} data-testid="readiness-semantic">
+			{businessName && (
+				<Text span size="xs" c="dimmed" fs="italic">
+					{businessName}
+				</Text>
+			)}
+			{concept && (
+				<Badge variant="dot" size="xs" tt="none" color="blue">
+					{humanizeIdentifier(concept) || concept}
+				</Badge>
+			)}
+			{role && (
+				<Badge variant="dot" size="xs" tt="none" color="grape">
+					{humanizeIdentifier(role) || role}
+				</Badge>
 			)}
 		</Group>
 	);
@@ -109,6 +191,8 @@ export function TableReadinessWidget({
 				{tableLabel} — readiness
 			</Text>
 
+			{readiness.entity && <TableEntityHeader entity={readiness.entity} />}
+
 			{readiness.table_readiness && (
 				<TableBandSummary band={readiness.table_readiness} />
 			)}
@@ -158,6 +242,9 @@ export function TableReadinessWidget({
 										>
 											{c.column_name}
 										</Anchor>
+										{c.semantic && (
+											<ColumnSemanticChips semantic={c.semantic} />
+										)}
 									</Table.Td>
 									<Table.Td>
 										<Text span c="dimmed" size="xs">

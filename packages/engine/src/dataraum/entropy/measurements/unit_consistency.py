@@ -144,6 +144,8 @@ def measure_unit_consistency(
             magnitude_modality_distribution(values),
             rel["magnitude_modality"],
         ),
-        _witness("declared_unit", declared_unit_distribution(unit_confidence), rel["declared_unit"]),
+        _witness(
+            "declared_unit", declared_unit_distribution(unit_confidence), rel["declared_unit"]
+        ),
     )
     return UnitAdjudication(witnesses=witnesses, result=pool(witnesses))

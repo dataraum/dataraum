@@ -249,7 +249,7 @@ function projectCatalogOnly(
 // from the engine: a user teach (manual) wins over an LLM confirmation, which wins
 // over a structural candidate; keeper sits between manual and llm. This is the SAME
 // map the engine's readiness pass uses to pick the representative relationship it
-// measures (`entropy/detectors/loaders.py` `load_representative_relationship`,
+// measures (`entropy/detectors/loaders.py` `load_relationship_for_pair`,
 // docstring: "that is the relationship the readiness measures"). Higher wins.
 // `look_relationships` joins catalog facts onto that readiness band, so the facts it
 // surfaces MUST come from the same representative row — selection by precedence, NOT

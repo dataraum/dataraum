@@ -47,6 +47,18 @@ const MAX_VISIBLE_ROWS = 100;
 // (a fact table can fan out to several views — the cell is a glance, not a list).
 const ENRICHED_VIEW_NAMES_SHOWN = 2;
 
+/** Does a table carry any entity facts to show — an entity classification or a
+ * materialized enriched view? Shared by EntityFacts + the detail modal so their
+ * two show/hide conditions never drift (the is_fact-true / entity_type-null case
+ * must show in both). */
+function hasEntityFacts(t: InventoryTable): boolean {
+	return (
+		(t.entity_type ?? null) !== null ||
+		(t.is_fact ?? null) !== null ||
+		(t.enriched_views?.count ?? 0) > 0
+	);
+}
+
 /**
  * The session-grain entity orientation for one table (DAT-477): its detected
  * entity type + a fact marker + the count of enriched fact/dimension views built
@@ -64,7 +76,7 @@ function EntityFacts({ table }: { table: InventoryTable }) {
 		view_names: [],
 		any_grain_verified: null,
 	};
-	if (entity_type === null && is_fact === null && enriched_views.count === 0) {
+	if (!hasEntityFacts(table)) {
 		return (
 			<Text span c="dimmed" size="xs">
 				—
@@ -255,9 +267,7 @@ function TableDetailModal({
 					    nothing to show (entity null, no views). The show condition mirrors
 					    `EntityFacts`'s own (entity_type OR is_fact OR a view) so the
 					    is_fact-true / entity_type-null case isn't silently hidden here. */}
-					{((table.representative.entity_type ?? null) !== null ||
-						(table.representative.is_fact ?? null) !== null ||
-						(table.representative.enriched_views?.count ?? 0) > 0) && (
+					{hasEntityFacts(table.representative) && (
 						<Stack gap={4} data-testid="modal-entity">
 							<Text size="sm" fw={600}>
 								Entity

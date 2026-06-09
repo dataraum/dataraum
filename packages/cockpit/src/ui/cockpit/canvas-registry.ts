@@ -15,6 +15,7 @@ import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
 import { MetricListWidget } from "#/ui/cockpit/widgets/metric-list";
+import { MetricShadowWidget } from "#/ui/cockpit/widgets/metric-shadow";
 import { MetricWhyWidget } from "#/ui/cockpit/widgets/metric-why";
 import { ModelFrameWidget } from "#/ui/cockpit/widgets/model-frame";
 import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
@@ -55,6 +56,7 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "cycle-why", component: CycleWhyWidget })
 	.register({ kind: "metric-list", component: MetricListWidget })
 	.register({ kind: "metric-why", component: MetricWhyWidget })
+	.register({ kind: "metric-shadow", component: MetricShadowWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "session-progress", component: SessionProgressWidget })
 	.register({

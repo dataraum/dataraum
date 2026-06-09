@@ -10,6 +10,7 @@
 // server code in the client bundle).
 
 import { Badge, Code, Group, Stack, Table, Text } from "@mantine/core";
+import { narrowDag, summarizeDag } from "#/lib/metric-dag";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
 // Cap rows rendered into the DOM (rule 15). A framed model is a curated set
@@ -36,35 +37,6 @@ const BUSINESS_VALUE_COLOR: Record<string, string> = {
 
 function joinOrDash(values: string[] | undefined): string {
 	return values && values.length > 0 ? values.join(", ") : "—";
-}
-
-// One step of a metric's computation DAG, as carried on a FrameMetricResult's
-// `dependencies` record (the engine's TransformationGraph step shape). Only the
-// fields this read-only review surface shows are narrowed (rule 11) — the engine
-// owns full validation.
-type MetricStep = {
-	type?: string;
-	source?: { standard_field?: string };
-	output_step?: boolean;
-};
-
-// Summarize a metric's DAG for the review row: the leaf CONCEPTS it extracts
-// (the dependency wiring's anchors — what the user is committing to ground) and
-// its step count. Leaves are concept-level by design (DAT-471): an `extract`
-// step's `source.standard_field` names a framed concept, never a column. Derived
-// during render (rule 1), never stored.
-function summarizeDag(dependencies: Record<string, MetricStep> | undefined): {
-	stepCount: number;
-	leafConcepts: string[];
-} {
-	const steps = Object.values(dependencies ?? {});
-	const leafConcepts: string[] = [];
-	for (const step of steps) {
-		if (step.type === "extract" && step.source?.standard_field) {
-			leafConcepts.push(step.source.standard_field);
-		}
-	}
-	return { stepCount: steps.length, leafConcepts };
 }
 
 export function ModelFrameWidget({
@@ -318,9 +290,8 @@ export function ModelFrameWidget({
 							</Table.Thead>
 							<Table.Tbody>
 								{metrics.map((m) => {
-									const { stepCount, leafConcepts } = summarizeDag(
-										m.dependencies,
-									);
+									const { steps } = narrowDag(m.output, m.dependencies);
+									const { stepCount, leafConcepts } = summarizeDag(steps);
 									return (
 										<Table.Tr
 											key={m.overlay_id}

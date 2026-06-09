@@ -4,6 +4,8 @@ import {
 	CANVAS_TOOLS,
 	isCanvasTool,
 	teachChipSummary,
+	teachCycleChipSummary,
+	teachMetricChipSummary,
 	teachValidationChipSummary,
 	toolChipSummary,
 	toolLabel,
@@ -47,8 +49,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 22 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(22);
+	it("marks the 23 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(23);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -64,6 +66,8 @@ describe("isCanvasTool", () => {
 			"why_cycle",
 			"look_metric",
 			"why_metric",
+			// teach_metric: an OVERRIDE projects the metric-shadow canvas (DAT-482).
+			"teach_metric",
 			"connect",
 			"frame",
 			"select",
@@ -77,23 +81,27 @@ describe("isCanvasTool", () => {
 		}
 	});
 
-	it("marks probe / teach / teach_validation / teach_cycle / teach_metric display-only", () => {
+	it("marks probe / teach / teach_validation / teach_cycle display-only", () => {
 		// These return no renderable surface — their chips must not be clickable.
 		// (operating_model LEFT this list with the DAT-435 follow-on: its driver
 		// projects the live progress canvas, like begin_session.) teach_validation
-		// (DAT-441) / teach_cycle (DAT-465) / teach_metric (DAT-466) write an
-		// overlay row; their outcome lands in look_validation / look_cycle /
-		// look_metric after a re-run, not the canvas.
+		// (DAT-441) / teach_cycle (DAT-465) write an overlay row; their outcome
+		// lands in look_validation / look_cycle after a re-run, not the canvas.
+		// teach_metric LEFT this list (DAT-482): an OVERRIDE projects the shipped
+		// DAG it replaces (metric-shadow), so its chip is clickable.
 		for (const name of [
 			"probe",
 			"teach",
 			"teach_validation",
 			"teach_cycle",
-			"teach_metric",
 			"unknown",
 		]) {
 			expect(isCanvasTool(name)).toBe(false);
 		}
+	});
+
+	it("marks teach_metric a canvas tool (DAT-482 — an override renders the replaced DAG)", () => {
+		expect(isCanvasTool("teach_metric")).toBe(true);
 	});
 });
 
@@ -562,6 +570,103 @@ describe("teachValidationChipSummary (DAT-441, visible override)", () => {
 	it("degrades to a neutral label with no arguments yet", () => {
 		expect(teachValidationChipSummary(undefined, undefined)).toBe(
 			"declaring validation…",
+		);
+	});
+});
+
+describe("teachCycleChipSummary (DAT-482, visible override)", () => {
+	it("reads the proposed cycle name from arguments at approval time", () => {
+		expect(teachCycleChipSummary({ name: "order_to_cash" }, undefined)).toBe(
+			"declare Order to cash",
+		);
+	});
+
+	it("shows a fresh declaration once complete", () => {
+		expect(
+			teachCycleChipSummary(
+				{ name: "order_to_cash" },
+				{
+					overlay_id: "ov-1",
+					name: "order_to_cash",
+					vertical: "finance",
+					override: false,
+					shadowed_spec: null,
+				},
+			),
+		).toBe("declared Order to cash");
+	});
+
+	it("marks an override visible (no '(was …)' — a cycle is keyed by name)", () => {
+		expect(
+			teachCycleChipSummary(
+				{ name: "order_to_cash" },
+				{
+					overlay_id: "ov-2",
+					name: "order_to_cash",
+					vertical: "finance",
+					override: true,
+					shadowed_spec: {
+						name: "order_to_cash",
+						description: "Order → cash",
+						business_value: "high",
+					},
+				},
+			),
+		).toBe("overrode Order to cash");
+	});
+
+	it("degrades to a neutral label with no arguments yet", () => {
+		expect(teachCycleChipSummary(undefined, undefined)).toBe(
+			"declaring cycle…",
+		);
+	});
+});
+
+describe("teachMetricChipSummary (DAT-482, visible override)", () => {
+	it("reads the proposed graph_id from arguments at approval time", () => {
+		expect(teachMetricChipSummary({ graph_id: "ebitda" }, undefined)).toBe(
+			"declare Ebitda",
+		);
+	});
+
+	it("shows a fresh declaration once complete", () => {
+		expect(
+			teachMetricChipSummary(
+				{ graph_id: "win_rate" },
+				{
+					overlay_id: "ov-1",
+					graph_id: "win_rate",
+					vertical: "sales",
+					override: false,
+					shadowed_spec: null,
+				},
+			),
+		).toBe("declared Win rate");
+	});
+
+	it("makes an override VISIBLE — names the shipped metric's human name", () => {
+		expect(
+			teachMetricChipSummary(
+				{ graph_id: "ebitda" },
+				{
+					overlay_id: "ov-2",
+					graph_id: "ebitda",
+					vertical: "finance",
+					override: true,
+					shadowed_spec: {
+						graph_id: "ebitda",
+						name: "EBITDA",
+						description: null,
+						category: "profitability",
+					},
+				},
+			),
+		).toBe("overrode Ebitda (was EBITDA)");
+	});
+
+	it("degrades to a neutral label with no arguments yet", () => {
+		expect(teachMetricChipSummary(undefined, undefined)).toBe(
+			"declaring metric…",
 		);
 	});
 });

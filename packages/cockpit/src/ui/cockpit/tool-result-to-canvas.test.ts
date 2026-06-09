@@ -311,6 +311,38 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("run_sql", {}, undefined)).toBeNull();
 	});
 
+	it("maps a teach_metric OVERRIDE to the metric-shadow key (DAT-482)", () => {
+		expect(
+			toolResultToCanvas("teach_metric", {
+				overlay_id: "ov-1",
+				graph_id: "ebitda",
+				vertical: "finance",
+				override: true,
+				shadowed_spec: { graph_id: "ebitda", name: "EBITDA" },
+			}),
+		).toEqual({
+			kind: "metric-shadow",
+			vertical: "finance",
+			graphId: "ebitda",
+		});
+	});
+
+	it("returns null for a fresh teach_metric declaration (nothing to replace)", () => {
+		expect(
+			toolResultToCanvas("teach_metric", {
+				overlay_id: "ov-2",
+				graph_id: "win_rate",
+				vertical: "sales",
+				override: false,
+				shadowed_spec: null,
+			}),
+		).toBeNull();
+		// An errored teach result ({error}) carries no override → no canvas.
+		expect(
+			toolResultToCanvas("teach_metric", { error: "DB write failed" }),
+		).toBeNull();
+	});
+
 	it("maps upload to the upload-area canvas (the UI tool just opens it)", () => {
 		expect(toolResultToCanvas("upload", { ready: true })).toEqual({
 			kind: "upload-area",

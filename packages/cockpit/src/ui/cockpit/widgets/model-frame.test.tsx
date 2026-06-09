@@ -128,9 +128,12 @@ describe("ModelFrameWidget (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
 		expect(mrow.textContent).toContain("3");
 		// The leaf-concepts cell lists ONLY the extract steps' concepts — the
 		// dependency wiring's anchors, concept-level (not columns). The `formula`
-		// step (margin) is NOT a leaf, so it must not appear in that cell.
+		// step (margin) is NOT a leaf, so it must not appear in that cell. Order is
+		// the shared narrowDag's deterministic sort (level, then id); the fixture
+		// steps carry no `level`, so they tie at MAX_SAFE_INTEGER and render
+		// id-ascending: cost, revenue.
 		const leafCell = screen.getByTestId("metric-leaves-gross_margin");
-		expect(leafCell.textContent).toBe("revenue, cost");
+		expect(leafCell.textContent).toBe("cost, revenue");
 	});
 
 	it("omits the validations section for a model with no validations", () => {

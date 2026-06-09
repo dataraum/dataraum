@@ -57,6 +57,12 @@ COPY --from=build /app/.output ./.output
 # stages are Debian-based oven/bun images), so the binary loads in the runner.
 COPY --from=deps /app/node_modules/@duckdb ./node_modules/@duckdb
 
+# Likewise @polyglot-sql/sdk (DAT-485): externalized from the bundle (vite.config)
+# because its WASM parser readFileSync's a sibling `polyglot_sql.wasm` that the
+# bundler doesn't carry. Copy the package (JS + the .wasm) so the runtime import
+# resolves from node_modules with its WASM intact.
+COPY --from=deps /app/node_modules/@polyglot-sql ./node_modules/@polyglot-sql
+
 # Pre-install the DuckDB extensions at image build time (mirror of the engine's
 # worker.Dockerfile): ducklake + httpfs for the READ_ONLY lake reader / S3
 # secret, plus the connect-probe backends (postgres/mysql/sqlite + community

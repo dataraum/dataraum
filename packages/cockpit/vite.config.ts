@@ -22,12 +22,21 @@ const config = defineConfig({
 		// `node-bindings` JS (and `detect-libc`) still get bundled, and the `.node`
 		// is `require`d at runtime. The runner image must therefore carry those
 		// binding packages in node_modules — see packages/cockpit/Dockerfile.
+		// Same deal for polyglot (@polyglot-sql/sdk, DAT-485): its WASM parser loads
+		// a sibling `polyglot_sql.wasm` via a runtime `readFileSync(file:…)` relative
+		// to its own dist file. Bundling the JS into `.output/server/_libs/` leaves a
+		// dangling reference to a `.wasm` that was never copied → the server 500s at
+		// boot with `ENOENT … polyglot_sql.wasm`. Externalize the package so it
+		// resolves from node_modules (where the `.wasm` sibling actually is); the
+		// runner image carries it via the same node_modules copy as DuckDB.
 		// preset "bun": the runner serves with `bun .output/server/index.mjs`, so
 		// build the Bun-native server (Bun.serve via srvx) instead of the node
 		// default — the sanctioned shape for a Bun deployment (DAT-451).
 		nitro({
 			preset: "bun",
-			rollupConfig: { external: [/^@duckdb\/node-bindings-/] },
+			rollupConfig: {
+				external: [/^@duckdb\/node-bindings-/, /^@polyglot-sql\/sdk/],
+			},
 		}),
 		viteReact(),
 	],

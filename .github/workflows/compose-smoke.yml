@@ -12,7 +12,7 @@ permissions:
 jobs:
     compose-smoke:
         runs-on: ubuntu-latest
-        timeout-minutes: 10
+        timeout-minutes: 15
         defaults:
             run:
                 working-directory: packages/infra
@@ -84,6 +84,47 @@ jobs:
             # (The drizzle metadata drift check moved to ci.yml `schema-drift` —
             # it no longer needs the live stack: schema.sql is dumped offline
             # from the SQLAlchemy models and pulled via a scratch Postgres.)
+
+            # Cockpit integration suites (`*.integration.test.*`) against the live
+            # stack — the one place they actually execute. They need a real Postgres
+            # with the engine-created ws_<id> tables plus the bootstrapped DuckLake/S3,
+            # none of which exist in the fast, stack-less `cockpit` PR gate (ci.yml),
+            # so that gate runs unit-only and these suites self-skip there (no
+            # METADATA_DATABASE_URL). The Status=Running gate above guarantees the
+            # worker finished bootstrapping the ws_<id> schema before this runs.
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: "1.3.14"
+
+            - name: Install cockpit deps
+              working-directory: packages/cockpit
+              run: bun install --frozen-lockfile
+
+            # Run under the BUN runtime (`bun --bun`): the metadata client imports
+            # `bun`'s SQL (vitest 5's bun-runtime support, vitest#10363) — plain
+            # `bun run` launches vitest on Node and fails to resolve `bun`. Env is the
+            # host-port view of the compose services (ports publish to the runner:
+            # postgres 5432, seaweedfs S3 8333), mirroring packages/infra/.env.example;
+            # METADATA/COCKPIT use the `dataraum` OWNER role (write access to ws_<id>),
+            # NOT the read-only cockpit_reader the cockpit container runs as.
+            - name: Cockpit integration tests
+              working-directory: packages/cockpit
+              env:
+                  COCKPIT_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/cockpit_db
+                  METADATA_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/dataraum
+                  DATARAUM_WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
+                  DATARAUM_CONFIG_PATH: ../dataraum-config
+                  DATARAUM_LAKE_PATH: s3://dataraum-lake/lake
+                  DUCKLAKE_CATALOG_URL: postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum_lake_catalog
+                  ANTHROPIC_API_KEY: sk-ant-placeholder-replace-me
+                  S3_ENDPOINT: 127.0.0.1:8333
+                  S3_REGION: us-east-1
+                  S3_USE_SSL: "false"
+                  S3_ACCESS_KEY_ID: dataraum
+                  S3_SECRET_ACCESS_KEY: dataraum-s3-secret
+                  S3_BUCKET: dataraum-lake
+              run: bun --bun run test:integration
 
             - name: Dump compose logs on failure
               if: failure()

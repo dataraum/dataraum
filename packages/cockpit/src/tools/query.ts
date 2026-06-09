@@ -204,6 +204,9 @@ export async function classifyComponents(
 			});
 			continue;
 		}
+		// `record` is non-null here, so determineUsageType only ever returns
+		// "exact_reuse" or "adapted" (never the engine's "newly_generated" term —
+		// the no-snippet / hallucinated cases above already mapped to "fresh").
 		const usage =
 			determineUsageType(
 				canonicalizeForReuse(step.sql),

@@ -12,9 +12,12 @@
 // the concept keys (standard_field / statement / aggregation) + the validated
 // column expressions (column_mappings) + dependencies (input_fields) — enough to
 // MATCH a snippet by metadata and reconstruct its SQL grounded in the validated
-// column expressions, while keeping the sub-agent's context lean. The authoritative
-// SQL is substituted post-chat by `resolveSnippetReferences` (query.ts) when the
-// model declares reuse (sets snippet_id) and its SQL matches the stored one.
+// column expressions, while keeping the sub-agent's context lean. The reuse is
+// then CLASSIFIED (not substituted) by `classifyComponents` (query.ts): when the
+// model declares reuse (sets snippet_id) and its SQL matches the stored one
+// (modulo the table qualifier), the component is tagged `exact_reuse` — but the
+// model's executable (qualified) SQL is kept, since the stored bare-name form
+// would not resolve in the cockpit's lake.<layer>.<name> execution context.
 //
 // `buildVocabularyBlock` formats the searchable keys (`get_search_vocabulary`,
 // `graph:%`-curated only) as a prompt block — the engine's `<available_search_keys>`

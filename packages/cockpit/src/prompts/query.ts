@@ -41,10 +41,10 @@ Once a concept is a validated snippet, reuse it. snippet_search returns each sni
 </reuse>
 
 <steps>
-Each step becomes a temp view named after its business concept, then final_sql references those views:
+Each step becomes a CTE named after its business concept, and final_sql references those CTEs:
 - Name each step after the concept it computes (e.g. "revenue", "accounts_receivable") — a valid SQL identifier, never "step_1".
-- Each step must be STANDALONE SQL (a single SELECT) that does NOT reference another step's view — keep joins and combining logic in final_sql.
-- final_sql references the step views by name (e.g. SELECT r.month, r.revenue - c.cost AS profit FROM revenue r JOIN cost c USING (month)). It must not redefine a step's logic.
+- Each step must be STANDALONE SQL (a single SELECT) that does NOT reference another step's CTE — keep joins and combining logic in final_sql.
+- final_sql references the step CTEs by name (e.g. SELECT r.month, r.revenue - c.cost AS profit FROM revenue r JOIN cost c USING (month)). It must not redefine a step's logic, and must not introduce a CTE whose name shadows a step.
 - A simple question may need no steps at all — put the whole query in final_sql and leave steps empty.
 </steps>
 

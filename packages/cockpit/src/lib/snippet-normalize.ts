@@ -17,6 +17,23 @@ export function normalizeSql(sql: string): string {
 	return sql.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/**
+ * Cockpit-side reuse canonicalization — NOT part of the engine byte-compat
+ * contract above (DAT-485). The query sub-agent addresses tables as
+ * `lake.<layer>.<name>`, but the stored `graph:%` snippets use BARE table names
+ * (the engine GraphAgent generated them under a `USE lake.typed`). So a model's
+ * reconstruction would never `normalizeSql`-match a stored snippet on the table
+ * reference alone, and `exact_reuse` would never fire. This strips a leading
+ * `lake.<layer>.` qualifier from any table reference so a qualified reuse matches
+ * the bare stored form. It is applied ONLY to the reuse-equality DECISION (the
+ * classification) — never to the SQL that actually runs (the qualified form is
+ * what resolves in the cockpit's CTE execution context). Layered ON TOP of
+ * `normalizeSql`, leaving the engine-compat primitive untouched.
+ */
+export function canonicalizeForReuse(sql: string): string {
+	return sql.replace(/\blake\.[A-Za-z_]\w*\./gi, "");
+}
+
 /** How a generated SQL step relates to the snippet it referenced. */
 export type UsageType = "exact_reuse" | "adapted" | "newly_generated";
 

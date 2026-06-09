@@ -4,21 +4,27 @@
 // owned snippet substrate. The tool is a nested @tanstack/ai chat() SUB-AGENT
 // with its own internal tools (snippet_search over the validated KB, run_steps to
 // validate SQL). It composes a question's answer as concept-named steps + a
-// combining final_sql, reusing validated snippets; it VALIDATES the SQL and reads
-// a bounded headline; the BROWSER executes the full result via the composed grid
-// handle (so no rows ever enter the model context — inner OR outer). Gating is
-// gone: a read-only data-quality band rides along as INFORMATION, never a filter.
+// combining final_sql, reusing validated snippets; it VALIDATES the composed CTE
+// statement and reads a bounded headline; the BROWSER executes the full result
+// via that SAME composed statement (the grid handle). Gating is gone: a read-only
+// data-quality band rides along as INFORMATION, never a filter.
 //
-// Data flow (one chat() call; combined tools+outputSchema is native for
-// claude-sonnet-4-6):
-//   chat([snippet_search, run_steps], QueryDraftSchema)
-//     → resolveSnippetReferences  (substitute the stored validated SQL on exact
-//                                  reuse; clear a hallucinated snippet_id)
-//     → composeStandalone         (fold steps + final_sql → one grid statement)
-//     → readDataQuality           (worst readiness band over the touched tables)
-//     → AnswerSchema
+// CTE-based execution + bound validation (DAT-485 review): the run_steps tool
+// composes the steps into ONE standalone CTE statement, validates THAT, and
+// CAPTURES it. The grid is composed from the captured (validated) form — NOT from
+// any re-emitted model output — so the headline the model states and the grid the
+// user streams are provably the same query (no validate-X-emit-Y drift, no
+// temp-view-vs-grid divergence). The model's structured draft carries only the
+// narrative + provenance.
 //
-// The outer tool wraps this in `asAgentError`: a failed sub-agent run becomes the
+// Reuse is CLASSIFY-don't-substitute (DAT-485 review): the cockpit addresses
+// tables as lake.<layer>.<name> while stored snippets use bare names, so swapping
+// in a stored snippet's SQL would not resolve. Instead each component keeps its
+// executable (validated) SQL and is tagged exact_reuse / adapted / fresh — the
+// measurable re-usage surface (components[]) that P2a/P2b build on. The match uses
+// `canonicalizeForReuse` so a qualified reference matches a bare stored snippet.
+//
+// The outer tool wraps the sub-agent in `asAgentError`: a failed run becomes the
 // `{ error }` envelope the orchestrator reads and retries, not a dead turn.
 
 import { chat, maxIterations, toolDefinition } from "@tanstack/ai";
@@ -27,9 +33,16 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { findById } from "../db/metadata/snippet-library";
-import { composeStandalone, type RunStep, runSteps } from "../duckdb/run-steps";
+import {
+	composeStandalone,
+	runSteps,
+	validateStepNames,
+} from "../duckdb/run-steps";
 import { linkedAbortController } from "../lib/abort";
-import { determineUsageType } from "../lib/snippet-normalize";
+import {
+	canonicalizeForReuse,
+	determineUsageType,
+} from "../lib/snippet-normalize";
 import {
 	MAX_OUTPUT_TOKENS,
 	MODEL,
@@ -50,23 +63,27 @@ const BAND_SEVERITY: Record<Band, number> = {
 	blocked: 3,
 };
 
-// --- The model's structured draft (inner outputSchema). The model emits the
-// decomposed query + provenance; the grid handle + data-quality band are derived
-// post-chat (deterministic), NOT asked of the model.
+// --- The reuse classification — the measurable re-usage surface.
 
-const QueryStepDraft = z.object({
-	name: z
-		.string()
-		.describe(
-			"The step's concept name — a SQL identifier; becomes a temp view.",
-		),
-	sql: z.string().describe("Standalone DuckDB SQL for this step (a SELECT)."),
-	snippet_id: z
-		.string()
-		.nullable()
-		.optional()
-		.describe("The reused/adapted snippet's id; omit for fresh SQL."),
+const UsageType = z.enum(["exact_reuse", "adapted", "fresh"]);
+
+/** One validated CTE component + how it relates to the snippet KB. */
+const Component = z.object({
+	// The concept name (the CTE name).
+	name: z.string(),
+	// The executable (validated) SQL the component contributes.
+	sql: z.string(),
+	// The snippet it reused/adapted, or null when fresh / a hallucinated id.
+	snippet_id: z.string().nullable(),
+	// exact_reuse = reproduced a validated snippet (modulo table qualifier);
+	// adapted = started from one but changed it; fresh = newly composed.
+	usage: UsageType,
 });
+export type Component = z.infer<typeof Component>;
+
+// --- The model's structured draft (inner outputSchema). The model emits ONLY the
+// narrative + provenance; the steps/final_sql it validated live in its run_steps
+// call (captured server-side), so they can't drift from what the grid runs.
 
 const QueryDraftSchema = z.object({
 	answer: z
@@ -75,12 +92,6 @@ const QueryDraftSchema = z.object({
 			"The practitioner-facing reply with the headline number(s) from the " +
 				"validated sample. No SQL, tool names, or internal identifiers.",
 		),
-	steps: z
-		.array(QueryStepDraft)
-		.describe("The concept-named steps you validated (may be empty)."),
-	final_sql: z
-		.string()
-		.describe("The query combining the step views into the final result."),
 	assumptions: z
 		.array(z.string())
 		.describe(
@@ -102,9 +113,9 @@ export type QueryDraft = z.infer<typeof QueryDraftSchema>;
 
 const Grid = z
 	.object({
-		// The single self-contained statement the browser grid streams in full
-		// (composeStandalone of the resolved steps). No params: the sub-agent bakes
-		// literals from the question, so the grid query is fully literal.
+		// The single self-contained statement the browser grid streams in full — the
+		// EXACT composed CTE statement run_steps validated. No params: the sub-agent
+		// bakes literals from the question, so the grid query is fully literal.
 		sql: z.string(),
 	})
 	.nullable();
@@ -119,7 +130,7 @@ const DataQuality = z
 export const AnswerSchema = z.object({
 	answer: z.string(),
 	// The grid handle — the browser streams the FULL result from this SQL
-	// (DAT-490 uncapped). null when the sub-agent produced no runnable query.
+	// (DAT-490 uncapped). null when the sub-agent produced no validated query.
 	grid: Grid,
 	assumptions: z.array(z.string()),
 	concepts_used: z.array(z.string()),
@@ -127,6 +138,9 @@ export const AnswerSchema = z.object({
 	// READ from the readiness views for the touched tables — informational, NEVER
 	// a gate. null when no touched table has been analyzed.
 	data_quality: DataQuality,
+	// The validated CTE components + their reuse classification — the measurable
+	// re-usage surface (P2a saves fresh/adapted as snippets; P2b counts reuse).
+	components: z.array(Component),
 });
 export type AnswerResult = z.infer<typeof AnswerSchema>;
 
@@ -140,71 +154,123 @@ const RunStepsOk = z.object({
 	truncated: z.boolean(),
 });
 
-export const runStepsTool = toolDefinition({
-	name: "run_steps",
-	description:
-		"Validate your decomposed query before answering: each step becomes a temp " +
-		"view, then final_sql runs against them on a read-only connection. Returns " +
-		"ok with the result columns + a BOUNDED headline sample (not the full " +
-		"result — the full result streams to the user's grid), or an error message " +
-		"to repair and retry. Always call this before you answer.",
-	inputSchema: z.object({
-		steps: z
-			.array(z.object({ name: z.string(), sql: z.string() }))
-			.describe("The concept steps; each becomes a temp view named `name`."),
-		final_sql: z
-			.string()
-			.describe("The query combining the step views into the final result."),
-	}),
-	outputSchema: withAgentError(RunStepsOk),
-}).server((input, ctx) =>
-	runSteps({ steps: input.steps, finalSql: input.final_sql }, ctx?.abortSignal),
-);
-
-// --- Reuse resolution (port of agent.py `_resolve_snippet_references`).
-
-/** A resolved step: the model's step after snippet substitution. */
-export interface ResolvedStep {
-	name: string;
-	sql: string;
-	snippet_id: string | null;
+/** What a successful run_steps validation captured, for the grid + the surface. */
+interface ValidatedRun {
+	composedSql: string;
+	components: Component[];
 }
 
+// --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
+// agent.py `_resolve_snippet_references`).
+
 /**
- * Resolve each step's `snippet_id` against the stored snippet (the reuse teeth):
- * - no snippet_id → kept as fresh SQL;
- * - unknown id → cleared to null (the model hallucinated it), SQL kept as fresh;
- * - known id, SQL matches the stored snippet (normalized) → exact reuse: SUBSTITUTE
- *   the authoritative validated SQL;
- * - known id, SQL differs → adaptation: keep the model's SQL, snippet_id tracks
- *   provenance.
+ * Classify each step against the snippet it referenced — the reuse teeth, as a
+ * MEASURE rather than a substitution (the cockpit's qualified addressing means a
+ * stored bare-name snippet wouldn't resolve if swapped in, so we keep the model's
+ * executable SQL and tag the relationship):
+ * - no snippet_id → `fresh`;
+ * - unknown id (findById null) → `fresh`, the hallucinated id cleared;
+ * - known id, SQL matches the stored snippet (canonicalized + normalized) →
+ *   `exact_reuse` (the model reproduced the validated snippet);
+ * - known id, SQL differs → `adapted`, snippet_id tracks provenance.
  *
- * findById is a globally-unique-PK lookup (P0) — not workspace-scoped — so a
- * snippet_id the model got from snippet_search (which IS workspace-scoped)
- * resolves to the one row it names.
+ * `canonicalizeForReuse` strips the `lake.<layer>.` qualifier before the match so
+ * a qualified model reference matches a bare stored snippet. findById is a global
+ * PK lookup (P0) — not workspace-scoped — so a snippet_id from snippet_search
+ * (which IS workspace-scoped) resolves to the one row it names.
  */
-export async function resolveSnippetReferences(
-	steps: ResolvedStep[],
-): Promise<ResolvedStep[]> {
-	const resolved: ResolvedStep[] = [];
+export async function classifyComponents(
+	steps: { name: string; sql: string; snippet_id?: string | null }[],
+): Promise<Component[]> {
+	const out: Component[] = [];
 	for (const step of steps) {
 		if (!step.snippet_id) {
-			resolved.push({ ...step, snippet_id: null });
+			out.push({
+				name: step.name,
+				sql: step.sql,
+				snippet_id: null,
+				usage: "fresh",
+			});
 			continue;
 		}
 		const record = await findById(step.snippet_id);
 		if (record === null) {
-			// Hallucinated id — treat the SQL as fresh.
-			resolved.push({ ...step, snippet_id: null });
+			// Hallucinated id — treat as fresh.
+			out.push({
+				name: step.name,
+				sql: step.sql,
+				snippet_id: null,
+				usage: "fresh",
+			});
 			continue;
 		}
-		if (determineUsageType(step.sql, record.sql) === "exact_reuse") {
-			resolved.push({ ...step, sql: record.sql });
-		} else {
-			resolved.push(step);
-		}
+		const usage =
+			determineUsageType(
+				canonicalizeForReuse(step.sql),
+				canonicalizeForReuse(record.sql),
+			) === "exact_reuse"
+				? "exact_reuse"
+				: "adapted";
+		out.push({
+			name: step.name,
+			sql: step.sql,
+			snippet_id: step.snippet_id,
+			usage,
+		});
 	}
-	return resolved;
+	return out;
+}
+
+/**
+ * The per-invocation run_steps tool: it composes the model's steps + final_sql
+ * into ONE standalone CTE statement, validates THAT (the exact form the grid
+ * runs), and CAPTURES it (the last successful validation) into `captured`. The
+ * model sees only the validator status; the composed SQL + components stay
+ * server-side, so the grid is provably the validated query — not a re-emission.
+ */
+function makeRunStepsTool(captured: { value: ValidatedRun | null }) {
+	return toolDefinition({
+		name: "run_steps",
+		description:
+			"Validate your decomposed query before answering. Pass your concept " +
+			"`steps` (each {name, sql}, plus snippet_id when you reuse/adapt a snippet) " +
+			"and the combining `final_sql`. They are folded into one CTE statement and " +
+			"run on a read-only connection; you get back ok + the result columns + a " +
+			"BOUNDED headline sample (not the full result — the full result streams to " +
+			"the user's grid), or an error message to repair and retry. Always call " +
+			"this before you answer; the LAST query you validate here is the one the " +
+			"user's grid will run.",
+		inputSchema: z.object({
+			steps: z
+				.array(
+					z.object({
+						name: z.string(),
+						sql: z.string(),
+						snippet_id: z
+							.string()
+							.nullable()
+							.optional()
+							.describe("The reused/adapted snippet's id; omit for fresh SQL."),
+					}),
+				)
+				.describe("The concept steps; each becomes a CTE named `name`."),
+			final_sql: z
+				.string()
+				.describe("The query combining the step CTEs into the final result."),
+		}),
+		outputSchema: withAgentError(RunStepsOk),
+	}).server(async (input, ctx) => {
+		const nameError = validateStepNames(input.steps);
+		if (nameError) return { error: nameError };
+		const components = await classifyComponents(input.steps);
+		const composed = composeStandalone(
+			components.map((c) => ({ name: c.name, sql: c.sql })),
+			input.final_sql,
+		);
+		const result = await runSteps(composed, ctx?.abortSignal);
+		if ("ok" in result) captured.value = { composedSql: composed, components };
+		return result;
+	});
 }
 
 // --- Data-quality band (informational; reuses the tested list_tables rollup).
@@ -252,21 +318,20 @@ export async function readDataQuality(
 // --- Assembly (pure) + the sub-agent.
 
 /**
- * Assemble the answer from the model draft + resolved steps + data-quality band
- * (pure). Composes the single grid statement from the resolved steps; null grid
- * when there's no runnable query (empty final_sql). Unit-tested.
+ * Assemble the answer from the model draft + the captured validated run + the
+ * data-quality band (pure). The grid is the CAPTURED composed statement (what was
+ * validated), null when nothing validated. The components are the captured reuse
+ * surface. Unit-tested.
  */
 export function assembleAnswer(
 	draft: QueryDraft,
-	resolvedSteps: ResolvedStep[],
+	validated: ValidatedRun | null,
 	dataQuality: z.infer<typeof DataQuality>,
 ): AnswerResult {
-	const stepsForGrid: RunStep[] = resolvedSteps.map((s) => ({
-		name: s.name,
-		sql: s.sql,
-	}));
-	const composed = composeStandalone(stepsForGrid, draft.final_sql);
-	const grid = composed.trim() !== "" ? { sql: composed } : null;
+	const grid =
+		validated && validated.composedSql.trim() !== ""
+			? { sql: validated.composedSql }
+			: null;
 	return {
 		answer: draft.answer,
 		grid,
@@ -274,14 +339,16 @@ export function assembleAnswer(
 		concepts_used: draft.concepts_used,
 		tables_touched: draft.tables_touched,
 		data_quality: dataQuality,
+		components: validated ? validated.components : [],
 	};
 }
 
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
- * concrete `QueryDraftSchema`, then deterministic post-processing (reuse
- * substitution → grid composition → data-quality read). `signal` forwards the
- * outer run's abort into the nested call and the run_steps validator.
+ * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
+ * components come from the captured validated run; the data-quality band is read).
+ * `signal` forwards the outer run's abort into the nested call and the run_steps
+ * validator.
  */
 export async function querySubAgent(
 	question: string,
@@ -294,6 +361,10 @@ export async function querySubAgent(
 
 	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${vocabularyBlock}`;
 
+	// Per-invocation capture cell — the run_steps tool writes the last successful
+	// validation here, so it's isolated across concurrent answer calls.
+	const captured: { value: ValidatedRun | null } = { value: null };
+
 	// Combined tools + outputSchema is native for claude-sonnet-4-6 — one call
 	// runs the tool loop and returns the validated structured draft (no separate
 	// finalize round-trip). The concrete schema gives a typed result.
@@ -304,19 +375,12 @@ export async function querySubAgent(
 		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
 		systemPrompts: [getQueryInstructions()],
 		messages: [{ role: "user", content: userMessage }],
-		tools: [snippetSearchTool, runStepsTool],
+		tools: [snippetSearchTool, makeRunStepsTool(captured)],
 		outputSchema: QueryDraftSchema,
 	});
 
-	const resolvedSteps = await resolveSnippetReferences(
-		draft.steps.map((s) => ({
-			name: s.name,
-			sql: s.sql,
-			snippet_id: s.snippet_id ?? null,
-		})),
-	);
 	const dataQuality = await readDataQuality(draft.tables_touched);
-	return assembleAnswer(draft, resolvedSteps, dataQuality);
+	return assembleAnswer(draft, captured.value, dataQuality);
 }
 
 export const answerTool = toolDefinition({
@@ -326,10 +390,11 @@ export const answerTool = toolDefinition({
 		"composing and validating grounded DuckDB SQL — reusing validated snippets " +
 		"from the knowledge base where they fit. Returns the practitioner answer " +
 		"with the headline figure, a grid handle whose full result streams in the " +
-		"canvas, the assumptions made, the concepts and tables used, and an " +
-		"informational data-quality band for the tables touched (NOT a gate). " +
-		"Read-only. Use for analytical questions ('what is total revenue', 'monthly " +
-		"sales trend') once data has been imported and typed.",
+		"canvas, the assumptions made, the concepts and tables used, an " +
+		"informational data-quality band for the tables touched (NOT a gate), and " +
+		"the reused/adapted/fresh components. Read-only. Use for analytical " +
+		"questions ('what is total revenue', 'monthly sales trend') once data has " +
+		"been imported and typed.",
 	inputSchema: z.object({
 		question: z
 			.string()

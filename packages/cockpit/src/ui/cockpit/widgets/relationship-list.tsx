@@ -1,13 +1,18 @@
 // Relationship-list widget (DAT-434) — renders the `look_relationships` result
-// as one row per relationship pair: endpoints (display names), readiness band,
-// top drivers. A row click drives the why_relationship drill-down through the
-// chat loop — the column ids ride as model-only refs (forwardedProps), never in
-// the visible bubble (the DAT-462 flip; the table-readiness → why_column precedent).
+// as one row per relationship pair: endpoints (display names), the catalog facts
+// (DAT-478: type/cardinality/confidence/confirmed — WHAT it is), the readiness
+// band (HOW READY it is), and top drivers. A row click drives the why_relationship
+// drill-down through the chat loop — the column ids ride as model-only refs
+// (forwardedProps), never in the visible bubble (the DAT-462 flip; the
+// table-readiness → why_column precedent).
 //
 // Endpoint names arrive in DISPLAY form (`src_<digest>__` stripped, DAT-431);
-// the band is the engine's persisted value — never recomputed here.
+// the band + catalog facts are the engine's persisted values — never recomputed
+// here. Either side of the union can be null (a bands-only or catalog-only
+// relationship), so every cell degrades to a dash rather than omitting the row.
 
-import { Alert, Anchor, Stack, Table, Text } from "@mantine/core";
+import { Alert, Anchor, Badge, Group, Stack, Table, Text } from "@mantine/core";
+import { humanizeIdentifier } from "#/lib/display-names";
 import type { RelationshipReadiness } from "#/tools/look-relationships";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { useCockpitActions } from "#/ui/cockpit/cockpit-state";
@@ -23,6 +28,51 @@ import {
 const MAX_VISIBLE_ROWS = 100;
 
 const TOP_DRIVERS_SHOWN = 2;
+
+const DASH = "—";
+
+/** The catalog facts cell (DAT-478): type · cardinality, with a confidence caption
+ * and a confirmed badge. Every fact is nullable (a bands-only row carries none), so
+ * the cell degrades to a dash rather than rendering empty chrome. */
+function CatalogFactsCell({ rel }: { rel: RelationshipReadiness }) {
+	const type = rel.relationship_type
+		? humanizeIdentifier(rel.relationship_type)
+		: null;
+	const headline = [type, rel.cardinality].filter(Boolean).join(" · ");
+	const hasFacts =
+		headline.length > 0 || rel.confidence !== null || rel.is_confirmed !== null;
+
+	if (!hasFacts) {
+		return (
+			<Text span size="xs" c="dimmed">
+				{DASH}
+			</Text>
+		);
+	}
+
+	return (
+		<Stack gap={2}>
+			<Group gap="xs" align="center">
+				<Text span size="sm">
+					{headline || DASH}
+				</Text>
+				{rel.is_confirmed && (
+					<Badge size="xs" color="green" variant="light">
+						confirmed
+					</Badge>
+				)}
+			</Group>
+			{rel.confidence !== null && (
+				<Text span size="xs" c="dimmed">
+					{rel.detection_method
+						? `${humanizeIdentifier(rel.detection_method)} · `
+						: ""}
+					confidence {rel.confidence.toFixed(2)}
+				</Text>
+			)}
+		</Stack>
+	);
+}
 
 export function RelationshipListWidget({
 	state,
@@ -103,6 +153,7 @@ export function RelationshipListWidget({
 						<Table.Tr>
 							<Table.Th>From</Table.Th>
 							<Table.Th>To</Table.Th>
+							<Table.Th>Relationship</Table.Th>
 							<Table.Th>Band</Table.Th>
 							<Table.Th>Top drivers</Table.Th>
 						</Table.Tr>
@@ -135,6 +186,9 @@ export function RelationshipListWidget({
 												rel.to_column_name,
 											)}
 										</Text>
+									</Table.Td>
+									<Table.Td data-testid={`relationship-facts-${key}`}>
+										<CatalogFactsCell rel={rel} />
 									</Table.Td>
 									<Table.Td>
 										<BandBadge band={rel.band} />

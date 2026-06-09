@@ -11,8 +11,19 @@
 // the top quality drivers. It reads the PERSISTED band, never re-deriving it (the
 // engine owns the rollup). Read-only → no approval.
 //
-// The DB join is browser-smoke-covered; the pure row→shape projection is
-// unit-tested here via `projectRelationshipReadiness`.
+// DAT-478 — the readiness bands say HOW READY each relationship is; the
+// relationship *catalog* (`current_relationships`) says WHAT each one is
+// (type/cardinality/confidence/detection-method/confirmed). This joins the
+// catalog facts onto the band rows by the directional column-pair so the agent
+// gets what + how-ready in ONE call, at the same session/detect grain. The
+// catalog view is already sealed to the promoted run by its own `session:{id}`
+// head EXISTS clause, so a plain sessionId filter reads the same run. The union
+// is full-outer by column-pair key: a catalog relationship with no readiness row
+// surfaces catalog-only (bands null), and a readiness row with no catalog match
+// surfaces bands-only (catalog facts null) — neither side is dropped.
+//
+// The DB join is browser-smoke-covered; the pure row→shape projection + union
+// are unit-tested here via `projectRelationshipReadiness` / `unionRelationships`.
 
 import { toolDefinition } from "@tanstack/ai";
 import { and, asc, eq, inArray, like } from "drizzle-orm";
@@ -26,11 +37,13 @@ import {
 } from "../db/metadata/readiness-schemas";
 import {
 	parseRelationshipTarget,
+	relationshipTargetKey,
 	sessionHeadTarget,
 } from "../db/metadata/relationship-target";
 import {
 	columns,
 	currentEntropyReadiness,
+	currentRelationships,
 	metadataSnapshotHead,
 	tables,
 } from "../db/metadata/schema";
@@ -67,6 +80,15 @@ const RelationshipReadiness = z.object({
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
+	// Catalog facts (DAT-478) — WHAT the relationship is, from `current_relationships`,
+	// joined by the directional column pair. Null when no catalog row matches this
+	// pair (a bands-only row), the same way the bands above go null on a catalog-only
+	// relationship that has no readiness row yet.
+	relationship_type: z.string().nullable(),
+	cardinality: z.string().nullable(),
+	confidence: z.number().nullable(),
+	detection_method: z.string().nullable(),
+	is_confirmed: z.boolean().nullable(),
 });
 export type RelationshipReadiness = z.infer<typeof RelationshipReadiness>;
 
@@ -92,40 +114,97 @@ export interface RelationshipReadinessRow {
 	topDrivers: unknown;
 }
 
+/** One `current_relationships` catalog row (the facts join), as Drizzle returns it. */
+export interface RelationshipCatalogRow {
+	fromColumnId: string | null;
+	toColumnId: string | null;
+	relationshipType: string | null;
+	cardinality: string | null;
+	confidence: number | null;
+	detectionMethod: string | null;
+	isConfirmed: boolean | null;
+}
+
+/** The catalog facts as they ride on the tool's output shape (null when no match). */
+type CatalogFacts = Pick<
+	RelationshipReadiness,
+	| "relationship_type"
+	| "cardinality"
+	| "confidence"
+	| "detection_method"
+	| "is_confirmed"
+>;
+
+const NO_CATALOG_FACTS: CatalogFacts = {
+	relationship_type: null,
+	cardinality: null,
+	confidence: null,
+	detection_method: null,
+	is_confirmed: null,
+};
+
 /** Endpoint name lookup: column_id → its column + owning table name. */
 export type ColumnNameLookup = Map<
 	string,
 	{ columnName: string; tableName: string }
 >;
 
-/**
- * Project one relationship-readiness row to the tool's shape. Pure (no DB) so the
- * target-parsing + JSONB-parsing + name-resolution is unit-testable. Returns null
- * for a row whose target isn't a parseable relationship key (a defensive guard —
- * the query already filters to `relationship:%`). A malformed JSONB blob degrades
- * to empty intents/drivers rather than throwing.
- */
-export function projectRelationshipReadiness(
-	row: RelationshipReadinessRow,
+/** Resolve the from/to endpoint name fields for a column pair (display-form, DAT-431). */
+function endpointNames(
+	fromColumnId: string,
+	toColumnId: string,
 	names: ColumnNameLookup,
-): RelationshipReadiness | null {
-	const pair = parseRelationshipTarget(row.target);
-	if (!pair) return null;
-
-	const intents = PersistedIntent.array().safeParse(row.intents);
-	const drivers = ReadinessDriver.array().safeParse(row.topDrivers);
-	const from = names.get(pair.fromColumnId);
-	const to = names.get(pair.toColumnId);
-
+): Pick<
+	RelationshipReadiness,
+	"from_table_name" | "from_column_name" | "to_table_name" | "to_column_name"
+> {
+	const from = names.get(fromColumnId);
+	const to = names.get(toColumnId);
 	return {
-		from_column_id: pair.fromColumnId,
-		to_column_id: pair.toColumnId,
 		// This result goes back to the agent — strip the content-keyed
 		// `src_<digest>__` prefix so no hash name reaches LLM context (DAT-431).
 		from_table_name: from ? displayTableName(from.tableName) : null,
 		from_column_name: from?.columnName ?? null,
 		to_table_name: to ? displayTableName(to.tableName) : null,
 		to_column_name: to?.columnName ?? null,
+	};
+}
+
+/** The catalog facts a row carries, defaulting every field to null on no match. */
+function catalogFacts(row: RelationshipCatalogRow | undefined): CatalogFacts {
+	if (!row) return NO_CATALOG_FACTS;
+	return {
+		relationship_type: row.relationshipType ?? null,
+		cardinality: row.cardinality ?? null,
+		confidence: row.confidence ?? null,
+		detection_method: row.detectionMethod ?? null,
+		is_confirmed: row.isConfirmed ?? null,
+	};
+}
+
+/**
+ * Project one relationship-readiness row to the tool's shape, joining the matching
+ * catalog row's facts (or nulls when none). Pure (no DB) so the target-parsing +
+ * JSONB-parsing + name-resolution is unit-testable. Returns null for a row whose
+ * target isn't a parseable relationship key (a defensive guard — the query already
+ * filters to `relationship:%`). A malformed JSONB blob degrades to empty
+ * intents/drivers rather than throwing.
+ */
+export function projectRelationshipReadiness(
+	row: RelationshipReadinessRow,
+	names: ColumnNameLookup,
+	catalog?: RelationshipCatalogRow,
+): RelationshipReadiness | null {
+	const pair = parseRelationshipTarget(row.target);
+	if (!pair) return null;
+
+	const intents = PersistedIntent.array().safeParse(row.intents);
+	const drivers = ReadinessDriver.array().safeParse(row.topDrivers);
+
+	return {
+		from_column_id: pair.fromColumnId,
+		to_column_id: pair.toColumnId,
+		...endpointNames(pair.fromColumnId, pair.toColumnId, names),
 		band: row.band ?? null,
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
@@ -142,7 +221,73 @@ export function projectRelationshipReadiness(
 					impact_delta: d.impact_delta,
 				}))
 			: [],
+		...catalogFacts(catalog),
 	};
+}
+
+/** Project a catalog-only relationship (no readiness row) to the tool's shape:
+ * the facts + endpoints, with every band/intent field null. Skipped when either
+ * endpoint id is missing (it can't form a stable pair key for the drill-down). */
+function projectCatalogOnly(
+	row: RelationshipCatalogRow,
+	names: ColumnNameLookup,
+): RelationshipReadiness | null {
+	if (!row.fromColumnId || !row.toColumnId) return null;
+	return {
+		from_column_id: row.fromColumnId,
+		to_column_id: row.toColumnId,
+		...endpointNames(row.fromColumnId, row.toColumnId, names),
+		band: null,
+		worst_intent_risk: null,
+		intents: [],
+		top_drivers: [],
+		...catalogFacts(row),
+	};
+}
+
+/**
+ * Full-outer union of readiness bands and catalog facts, keyed by the directional
+ * column pair (`relationship:{from}::{to}`). Pure + unit-testable. Order: readiness
+ * rows first (their query order is preserved — they carry the bands the grid sorts
+ * around), then any catalog-only relationships the readiness pass didn't cover.
+ * Neither side is dropped: a bands-only row keeps null catalog facts, a catalog-only
+ * relationship keeps null bands/intents.
+ */
+export function unionRelationships(
+	readinessRows: RelationshipReadinessRow[],
+	catalogRows: RelationshipCatalogRow[],
+	names: ColumnNameLookup,
+): RelationshipReadiness[] {
+	const catalogByPair = new Map<string, RelationshipCatalogRow>();
+	for (const c of catalogRows) {
+		if (!c.fromColumnId || !c.toColumnId) continue;
+		catalogByPair.set(relationshipTargetKey(c.fromColumnId, c.toColumnId), c);
+	}
+
+	const out: RelationshipReadiness[] = [];
+	const matchedPairs = new Set<string>();
+	for (const r of readinessRows) {
+		const pair = parseRelationshipTarget(r.target);
+		const key = pair
+			? relationshipTargetKey(pair.fromColumnId, pair.toColumnId)
+			: null;
+		const projected = projectRelationshipReadiness(
+			r,
+			names,
+			key ? catalogByPair.get(key) : undefined,
+		);
+		if (!projected) continue;
+		out.push(projected);
+		if (key) matchedPairs.add(key);
+	}
+
+	for (const [key, c] of catalogByPair) {
+		if (matchedPairs.has(key)) continue;
+		const projected = projectCatalogOnly(c, names);
+		if (projected) out.push(projected);
+	}
+
+	return out;
 }
 
 export interface LookRelationshipsInput {
@@ -202,13 +347,29 @@ export async function lookRelationships(
 		target: r.target ?? "",
 	}));
 
-	// Batch-resolve endpoint names: collect every column id the targets reference,
-	// then one join to columns⟕tables. Avoids an N+1 over relationships.
-	const names = await loadColumnNames(readinessRows);
+	// The relationship catalog for this session (DAT-478) — WHAT each relationship
+	// is. The view is already sealed to the promoted detect run by its own
+	// `session:{id}` head EXISTS clause, so a sessionId filter reads the same run as
+	// the readiness rows above. Joined onto the bands by the directional column pair.
+	const catalogRows: RelationshipCatalogRow[] = await metadataDb
+		.select({
+			fromColumnId: currentRelationships.fromColumnId,
+			toColumnId: currentRelationships.toColumnId,
+			relationshipType: currentRelationships.relationshipType,
+			cardinality: currentRelationships.cardinality,
+			confidence: currentRelationships.confidence,
+			detectionMethod: currentRelationships.detectionMethod,
+			isConfirmed: currentRelationships.isConfirmed,
+		})
+		.from(currentRelationships)
+		.where(eq(currentRelationships.sessionId, input.session_id));
 
-	const relationships = readinessRows
-		.map((r) => projectRelationshipReadiness(r, names))
-		.filter((r): r is RelationshipReadiness => r !== null);
+	// Batch-resolve endpoint names across BOTH sides of the union — every column id
+	// a readiness target or a catalog row references — then one join to
+	// columns⟕tables. Avoids an N+1 over relationships.
+	const names = await loadColumnNames(readinessRows, catalogRows);
+
+	const relationships = unionRelationships(readinessRows, catalogRows, names);
 
 	const pending = await getPendingOverlays();
 
@@ -220,9 +381,12 @@ export async function lookRelationships(
 	};
 }
 
-/** Resolve the from/to column + table names referenced by the readiness targets. */
+/** Resolve the from/to column + table names referenced across both union sides —
+ * the readiness targets AND the catalog rows (catalog-only relationships need
+ * endpoint names too). */
 async function loadColumnNames(
 	rows: RelationshipReadinessRow[],
+	catalogRows: RelationshipCatalogRow[],
 ): Promise<ColumnNameLookup> {
 	const ids = new Set<string>();
 	for (const r of rows) {
@@ -231,6 +395,10 @@ async function loadColumnNames(
 			ids.add(pair.fromColumnId);
 			ids.add(pair.toColumnId);
 		}
+	}
+	for (const c of catalogRows) {
+		if (c.fromColumnId) ids.add(c.fromColumnId);
+		if (c.toColumnId) ids.add(c.toColumnId);
 	}
 	const lookup: ColumnNameLookup = new Map();
 	if (ids.size === 0) return lookup;
@@ -261,9 +429,11 @@ export const lookRelationshipsTool = toolDefinition({
 		"Show a begin_session session's per-relationship readiness — ready/investigate/" +
 		"blocked across the query, aggregation, and reporting intents — with the top " +
 		"quality drivers per relationship, identified by its directional column pair " +
-		"(from_column_id → to_column_id). Read-only; reflects the promoted detect run " +
-		"for the session. pending_teaches counts un-applied teaches across the " +
-		"workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
+		"(from_column_id → to_column_id). Each relationship also carries its catalog " +
+		"facts (relationship_type, cardinality, confidence, detection_method, " +
+		"is_confirmed) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
+		"promoted detect run for the session. pending_teaches counts un-applied teaches " +
+		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
 		"`why_relationship` to explain a specific relationship's band.",
 	inputSchema: z.object({
 		session_id: z

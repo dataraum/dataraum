@@ -279,6 +279,9 @@ export function toolChipSummary(
 			if (Array.isArray(f.validations) && f.validations.length > 0) {
 				parts.push(plural(f.validations.length, "validation"));
 			}
+			if (Array.isArray(f.cycles) && f.cycles.length > 0) {
+				parts.push(plural(f.cycles.length, "cycle"));
+			}
 			return `${f.vertical} — ${parts.join(", ")}`;
 		}
 		case "select": {

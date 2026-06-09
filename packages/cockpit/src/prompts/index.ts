@@ -4,6 +4,7 @@
 // module.
 
 export {
+	getFrameCyclesInstructions,
 	getFrameInstructions,
 	getFrameMetricsInstructions,
 	getFrameValidationsInstructions,

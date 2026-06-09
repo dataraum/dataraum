@@ -260,6 +260,36 @@ export function narrowShippedMetric(doc: unknown): ShippedMetricSpec | null {
 	};
 }
 
+/** A shipped metric's FULL DAG body — `graph_id` + the structural fields the
+ * frame few-shot must learn from: the `output` shape and the `dependencies`
+ * wiring (the dependency graph IS the knowledge — DAT-468/471). Distinct from
+ * ShippedMetricSpec (summary-only, for the shadow affordance): the induce step
+ * needs the STRUCTURE, not the name badge. `output`/`dependencies` stay `unknown`
+ * (rule 11) — they are echoed verbatim into the induce prompt, never inspected. */
+export interface ShippedMetricDag {
+	graph_id: string;
+	name: string | null;
+	description: string | null;
+	category: string | null;
+	output: unknown;
+	dependencies: unknown;
+}
+
+/** Narrow a parsed metric YAML doc to a ShippedMetricDag (the summary fields PLUS
+ * the heavy `output`/`dependencies` body), or null when it's not a metric file.
+ * Reuses narrowShippedMetric for the summary + graph_id guard, then keeps the DAG
+ * body. Pure — the reader's I/O stays mockable and this is unit-tested directly. */
+export function narrowShippedMetricDag(doc: unknown): ShippedMetricDag | null {
+	const summary = narrowShippedMetric(doc);
+	if (!summary) return null;
+	const raw = doc as Record<string, unknown>;
+	return {
+		...summary,
+		output: raw.output ?? null,
+		dependencies: raw.dependencies ?? null,
+	};
+}
+
 /**
  * Detect whether `graphId` shadows a shipped metric in `shipped`. Pure (no I/O),
  * so the override-vs-new decision is unit-tested directly; the tool supplies the

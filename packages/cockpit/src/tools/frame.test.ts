@@ -357,6 +357,20 @@ describe("frame (DAT-382, DAT-469)", () => {
 							name: "EBITDA",
 							description: null,
 							category: "profitability",
+							// The DAG body is the point of the few-shot — output shape +
+							// dependency wiring (concept-leaf `extract` steps), not a name
+							// badge. readShippedMetricDags keeps it; the summary reader drops it.
+							output: { type: "scalar", unit: "currency" },
+							dependencies: {
+								operating_income: {
+									type: "extract",
+									source: { standard_field: "operating_income" },
+								},
+								depreciation: {
+									type: "extract",
+									source: { standard_field: "depreciation" },
+								},
+							},
 						},
 					]
 				: [],
@@ -387,6 +401,11 @@ describe("frame (DAT-382, DAT-469)", () => {
 		expect(call.messages[0].content).toContain("ebitda");
 		expect(call.messages[0].content).toMatch(/EXAMPLE/);
 		expect(call.messages[0].content).toContain('<metric_examples vertical="');
+		// The seed carries the DAG STRUCTURE — output + dependency wiring — not just
+		// the name badge, so the few-shot actually teaches the dependency SHAPE that
+		// is the whole point of metric induction (DAT-471 review).
+		expect(call.messages[0].content).toContain("dependencies");
+		expect(call.messages[0].content).toContain("standard_field");
 	});
 
 	it("forwards the tool-context abort into the metric induction chat() (DAT-449)", async () => {

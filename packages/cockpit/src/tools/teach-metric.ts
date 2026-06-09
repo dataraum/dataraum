@@ -28,6 +28,8 @@ import {
 	findShadowedMetric,
 	MetricSpecSchema,
 	narrowShippedMetric,
+	narrowShippedMetricDag,
+	type ShippedMetricDag,
 	type ShippedMetricSpec,
 } from "./metric-spec";
 import { teach } from "./teach";
@@ -47,23 +49,18 @@ export interface TeachMetricResult {
 }
 
 /**
- * Read the metric graphs a vertical SHIPS on disk
- * (verticals/<v>/metrics/**​/*.yaml), narrowed to the shadow-summary fields.
- * Unlike cycles (ONE cycles.yaml) and like validations, metrics are a DIRECTORY
- * — but nested by category (e.g. profitability/ebitda.yaml), so this walks it
- * RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML,
- * imported lazily so merely importing this tool doesn't pull "bun" into the
- * node-run test workers. A missing/unreadable directory yields [].
- *
- * Degradation note: a swallowed read failure makes an actual override LOOK like
- * a fresh declaration in the rail hint (`override:false`) — but the override
- * itself is unaffected (the engine applier upsert-replaces by `graph_id`
- * regardless; it is the source of truth). Only the visible-override label
- * degrades, and only when the config tree is unreadable — which in the live
- * stack it never is (bind-mounted read-only). */
-export async function readShippedMetrics(
+ * Walk a vertical's shipped metric tree (verticals/<v>/metrics/**​/*.yaml) and
+ * narrow each doc with `narrow`, skipping non-metric / unreadable files. Metrics
+ * are a DIRECTORY (like validations, unlike cycles' ONE cycles.yaml) nested by
+ * category (e.g. profitability/ebitda.yaml), so this walks RECURSIVELY (mirrors
+ * the engine's `_read_metric_dir` rglob). Bun's YAML is imported lazily so merely
+ * importing this tool doesn't pull "bun" into the node-run test workers. A
+ * missing/unreadable directory yields []; a single unreadable file is skipped,
+ * never sinking the whole read. Shared by the summary + full-DAG readers below. */
+async function readMetricDocs<T>(
 	vertical: string,
-): Promise<ShippedMetricSpec[]> {
+	narrow: (doc: unknown) => T | null,
+): Promise<T[]> {
 	const dir = join(config.dataraumConfigPath, "verticals", vertical, "metrics");
 	let files: string[];
 	try {
@@ -74,18 +71,47 @@ export async function readShippedMetrics(
 		return [];
 	}
 	const { YAML } = await import("bun");
-	const specs: ShippedMetricSpec[] = [];
+	const out: T[] = [];
 	for (const file of files) {
 		if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
 		try {
 			const text = await readFile(join(dir, file), "utf8");
-			const spec = narrowShippedMetric(YAML.parse(text));
-			if (spec) specs.push(spec);
+			const spec = narrow(YAML.parse(text));
+			if (spec) out.push(spec);
 		} catch {
 			// A single unreadable/unparseable file must not sink the whole read.
 		}
 	}
-	return specs;
+	return out;
+}
+
+/**
+ * Read the metric graphs a vertical SHIPS on disk, narrowed to the shadow-summary
+ * fields — the shadowing affordance for teach_metric (look_metric / the override
+ * rail hint).
+ *
+ * Degradation note: a swallowed read failure makes an actual override LOOK like
+ * a fresh declaration in the rail hint (`override:false`) — but the override
+ * itself is unaffected (the engine applier upsert-replaces by `graph_id`
+ * regardless; it is the source of truth). Only the visible-override label
+ * degrades, and only when the config tree is unreadable — which in the live
+ * stack it never is (bind-mounted read-only). */
+export async function readShippedMetrics(
+	vertical: string,
+): Promise<ShippedMetricSpec[]> {
+	return readMetricDocs(vertical, narrowShippedMetric);
+}
+
+/**
+ * Read the FULL metric DAGs (the `output` shape + the `dependencies` wiring) a
+ * vertical ships — the STRUCTURAL few-shot the frame metric-induction seeds from
+ * (DAT-471). Same tree as readShippedMetrics, narrowed to KEEP the heavy graph
+ * body the induce step must learn the dependency SHAPE from (the summary reader
+ * drops it — right for the shadow affordance, wrong for the seed). */
+export async function readShippedMetricDags(
+	vertical: string,
+): Promise<ShippedMetricDag[]> {
+	return readMetricDocs(vertical, narrowShippedMetricDag);
 }
 
 /**

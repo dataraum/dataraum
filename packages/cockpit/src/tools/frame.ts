@@ -45,8 +45,8 @@ import {
 	nearestSeedVertical,
 	stripUndefined,
 } from "./frame-family";
-import { MetricSpecSchema, type ShippedMetricDag } from "./metric-spec";
-import { readShippedMetricDags } from "./teach-metric";
+import { MetricSpecSchema, type ShippedMetricSpec } from "./metric-spec";
+import { readShippedMetrics } from "./teach-metric";
 import { readShippedValidations } from "./teach-validation";
 import {
 	type ShippedValidationSpec,
@@ -285,7 +285,7 @@ export async function induceMetrics(
 	concepts: ProposedConcept[],
 	vertical: string,
 	signal?: AbortSignal,
-	readSeed: (v: string) => Promise<ShippedMetricDag[]> = readShippedMetricDags,
+	readSeed: (v: string) => Promise<ShippedMetricSpec[]> = readShippedMetrics,
 ): Promise<ProposedMetric[]> {
 	const seed = await nearestSeedVertical(vertical, readSeed);
 	const { metrics } = await induceStructured({

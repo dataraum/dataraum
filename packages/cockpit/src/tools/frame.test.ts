@@ -359,7 +359,7 @@ describe("frame (DAT-382, DAT-469)", () => {
 							category: "profitability",
 							// The DAG body is the point of the few-shot — output shape +
 							// dependency wiring (concept-leaf `extract` steps), not a name
-							// badge. readShippedMetricDags keeps it; the summary reader drops it.
+							// badge. readShippedMetrics carries it (one DAG-carrying spec).
 							output: { type: "scalar", unit: "currency" },
 							dependencies: {
 								operating_income: {

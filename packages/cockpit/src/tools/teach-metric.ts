@@ -27,10 +27,10 @@ import { config } from "../config";
 import {
 	findShadowedMetric,
 	MetricSpecSchema,
+	metricSummary,
 	narrowShippedMetric,
-	narrowShippedMetricDag,
-	type ShippedMetricDag,
 	type ShippedMetricSpec,
+	type ShippedMetricSummary,
 } from "./metric-spec";
 import { teach } from "./teach";
 
@@ -43,24 +43,33 @@ export interface TeachMetricResult {
 	// silent shadow.
 	override: boolean;
 	// The shipped metric being shadowed (graph_id/name/description/category),
-	// echoed so the UX can show WHAT the user is replacing. null for a brand-new
+	// echoed so the UX can show WHAT the user is replacing. The lean summary view
+	// (no DAG body) keeps the agent's tool result small — the human reads the
+	// replaced DAG via the canvas (the reader carries it). null for a brand-new
 	// declaration.
-	shadowed_spec: ShippedMetricSpec | null;
+	shadowed_spec: ShippedMetricSummary | null;
 }
 
 /**
- * Walk a vertical's shipped metric tree (verticals/<v>/metrics/**​/*.yaml) and
- * narrow each doc with `narrow`, skipping non-metric / unreadable files. Metrics
- * are a DIRECTORY (like validations, unlike cycles' ONE cycles.yaml) nested by
- * category (e.g. profitability/ebitda.yaml), so this walks RECURSIVELY (mirrors
- * the engine's `_read_metric_dir` rglob). Bun's YAML is imported lazily so merely
- * importing this tool doesn't pull "bun" into the node-run test workers. A
- * missing/unreadable directory yields []; a single unreadable file is skipped,
- * never sinking the whole read. Shared by the summary + full-DAG readers below. */
-async function readMetricDocs<T>(
+ * Read the metric graphs a vertical SHIPS on disk (verticals/<v>/metrics/**​/*.yaml),
+ * narrowed to ShippedMetricSpec (summary fields + the DAG body). ONE reader for
+ * both jobs: the frame SEED reads the DAG structure as few-shot, the teach SHADOW
+ * matches by `graph_id`. Metrics are a DIRECTORY (like validations, unlike cycles'
+ * ONE cycles.yaml) nested by category (e.g. profitability/ebitda.yaml), so this
+ * walks RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML is
+ * imported lazily so merely importing this tool doesn't pull "bun" into the
+ * node-run test workers. A missing/unreadable directory yields []; a single
+ * unreadable file is skipped, never sinking the whole read.
+ *
+ * Degradation note: a swallowed read failure makes an actual override LOOK like a
+ * fresh declaration in the rail hint (`override:false`) — but the override itself
+ * is unaffected (the engine applier upsert-replaces by `graph_id` regardless; it
+ * is the source of truth). Only the visible-override label degrades, and only when
+ * the config tree is unreadable — which in the live stack it never is (bind-mounted
+ * read-only). */
+export async function readShippedMetrics(
 	vertical: string,
-	narrow: (doc: unknown) => T | null,
-): Promise<T[]> {
+): Promise<ShippedMetricSpec[]> {
 	const dir = join(config.dataraumConfigPath, "verticals", vertical, "metrics");
 	let files: string[];
 	try {
@@ -71,47 +80,18 @@ async function readMetricDocs<T>(
 		return [];
 	}
 	const { YAML } = await import("bun");
-	const out: T[] = [];
+	const specs: ShippedMetricSpec[] = [];
 	for (const file of files) {
 		if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
 		try {
 			const text = await readFile(join(dir, file), "utf8");
-			const spec = narrow(YAML.parse(text));
-			if (spec) out.push(spec);
+			const spec = narrowShippedMetric(YAML.parse(text));
+			if (spec) specs.push(spec);
 		} catch {
 			// A single unreadable/unparseable file must not sink the whole read.
 		}
 	}
-	return out;
-}
-
-/**
- * Read the metric graphs a vertical SHIPS on disk, narrowed to the shadow-summary
- * fields — the shadowing affordance for teach_metric (look_metric / the override
- * rail hint).
- *
- * Degradation note: a swallowed read failure makes an actual override LOOK like
- * a fresh declaration in the rail hint (`override:false`) — but the override
- * itself is unaffected (the engine applier upsert-replaces by `graph_id`
- * regardless; it is the source of truth). Only the visible-override label
- * degrades, and only when the config tree is unreadable — which in the live
- * stack it never is (bind-mounted read-only). */
-export async function readShippedMetrics(
-	vertical: string,
-): Promise<ShippedMetricSpec[]> {
-	return readMetricDocs(vertical, narrowShippedMetric);
-}
-
-/**
- * Read the FULL metric DAGs (the `output` shape + the `dependencies` wiring) a
- * vertical ships — the STRUCTURAL few-shot the frame metric-induction seeds from
- * (DAT-471). Same tree as readShippedMetrics, narrowed to KEEP the heavy graph
- * body the induce step must learn the dependency SHAPE from (the summary reader
- * drops it — right for the shadow affordance, wrong for the seed). */
-export async function readShippedMetricDags(
-	vertical: string,
-): Promise<ShippedMetricDag[]> {
-	return readMetricDocs(vertical, narrowShippedMetricDag);
+	return specs;
 }
 
 /**
@@ -145,7 +125,9 @@ export async function teachMetric(
 		graph_id: input.graph_id,
 		vertical: input.vertical,
 		override: shadowed !== null,
-		shadowed_spec: shadowed,
+		// Echo the lean summary, not the full DAG — the agent's result stays small;
+		// the human reads the replaced graph from the canvas (M2).
+		shadowed_spec: shadowed ? metricSummary(shadowed) : null,
 	};
 }
 

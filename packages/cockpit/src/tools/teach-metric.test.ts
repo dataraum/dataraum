@@ -137,7 +137,7 @@ describe("MetricSpecSchema (DAT-466)", () => {
 });
 
 describe("narrowShippedMetric (DAT-466)", () => {
-	it("narrows a parsed metric YAML to the summary fields (reads metadata.*)", () => {
+	it("narrows a parsed metric YAML to metadata.* AND the DAG body", () => {
 		const spec = narrowShippedMetric({
 			graph_id: "ebitda",
 			version: "1.0",
@@ -146,7 +146,8 @@ describe("narrowShippedMetric (DAT-466)", () => {
 				description: "Earnings before interest, taxes, D&A.",
 				category: "profitability",
 			},
-			// the heavy graph body is ignored by the narrowing
+			// the DAG body is KEPT (the frame seed needs the structure)
+			output: { type: "scalar" },
 			dependencies: { revenue: { type: "extract" } },
 			interpretation: { ranges: [] },
 		});
@@ -155,6 +156,8 @@ describe("narrowShippedMetric (DAT-466)", () => {
 			name: "EBITDA",
 			description: "Earnings before interest, taxes, D&A.",
 			category: "profitability",
+			output: { type: "scalar" },
+			dependencies: { revenue: { type: "extract" } },
 		});
 	});
 
@@ -170,6 +173,8 @@ describe("narrowShippedMetric (DAT-466)", () => {
 			name: null,
 			description: null,
 			category: null,
+			output: null,
+			dependencies: null,
 		});
 	});
 });
@@ -181,12 +186,16 @@ describe("findShadowedMetric (DAT-466)", () => {
 			name: "EBITDA",
 			description: "…",
 			category: "profitability",
+			output: null,
+			dependencies: null,
 		},
 		{
 			graph_id: "dso",
 			name: "DSO",
 			description: "…",
 			category: "working_capital",
+			output: null,
+			dependencies: null,
 		},
 	];
 
@@ -251,6 +260,8 @@ describe("teachMetric wiring (DAT-466)", () => {
 				name: "EBITDA",
 				description: "Ships with the standard definition.",
 				category: "profitability",
+				output: null,
+				dependencies: null,
 			},
 		];
 		const input = MetricSpecSchema.parse({ ...MINIMAL, graph_id: "ebitda" });

@@ -4,6 +4,47 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-09: witness reliabilities are a CALIBRATED ARTIFACT, not inline constants (DAT-450)
+
+**The placeholder `DEFAULT_RELIABILITIES` are no longer the shipped values.** Per
+ADR-0009 reliabilities are "estimated quantities with provenance, never inline
+constants." New engine pieces:
+
+- **`dataraum-config/entropy/reliabilities.yaml`** — the shipped artifact:
+  `witnesses[measurement_id][witness_id] = r` + a `provenance` block (calibrated
+  flag, corpus version, sample size, seed range, held-out Brier, date). Currently
+  carries the **measured** null_semantics values from the eval rig.
+- **`entropy/reliabilities.py`** — loader (sibling of `loss.py`):
+  `get_reliability_config()` / `ReliabilityConfig.for_measurement(id)` /
+  `reset_reliability_config_cache()`.
+- **`null_token_adjudication.py`** — `load_data` loads the artifact and threads
+  `reliabilities=` into `measure_null_semantics`; absent → the measurement's
+  neutral fallback. `DEFAULT_RELIABILITIES` reframed as that fallback only.
+
+**Measured values (corpus null_tokens-v1, Laplace accuracy on opinionated votes):**
+`quarantine_clustering 0.999` (n=1579), `null_vocabulary 0.976` (n=33632),
+**`type_claim 0.221`** (n=2000). Held-out pooled Brier: measured **0.095** <
+placeholder 0.158 < uniform 0.168 — the measured weights resolve strictly better
+than the constants they replace (DAT-450 AC4). The estimator is plain accuracy,
+chosen by held-out proper scoring (a balanced variant pooled worse and laundered
+the next finding — the rig MEASURES, it does not flatter a witness).
+
+**Finding for witness design (DAT-457):** **`type_claim` is non-discriminative** —
+its `r=0.221` and per-witness Brier `0.275` are WORSE than always-abstaining
+(0.25). `type_distribution` can only return 0.5 (abstain) or `0.5+0.5·psr`
+(is-null); it never argues is-value, so once a genuine-but-unparseable value (a
+locale number, currency string) lands in the alphabetical `failed_examples[:5]`,
+the witness confidently mislabels it a null marker (0% specificity). The pool
+correctly down-weights it, but if its signal should count, it needs a real
+is-value path — a witness-design change, not a calibration one. (`quarantine_clustering`
+is also one-directional: it abstains on decoys, so its `0.999` is a sensitivity,
+not a discrimination score — its false-positive rate is unmeasured until a
+decoy-clustering stress family lands.)
+
+**Re-run:** `python scripts/calibrate_reliabilities.py` in dataraum-eval rewrites
+the artifact. Add a new measurement's witnesses to `reliabilities.yaml` + the rig
+when its witnesses land (unit/temporal_behavior/concept are still single-LLM).
+
 ## 2026-06-08: metric pre-gate REMOVED — metrics ground agentically (DAT-456 fix)
 
 **Supersedes the `can_execute_metric` born-loud-gate claim further below.** A live

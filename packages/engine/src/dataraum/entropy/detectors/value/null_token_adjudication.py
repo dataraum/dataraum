@@ -33,10 +33,11 @@ class NullSemanticsDetector(EntropyDetector):
     description = "Adjudicates rejected tokens as null markers vs values (witness pooling)"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load typing, per-token quarantine counts, and the null vocabulary."""
+        """Load typing, per-token quarantine counts, the null vocab, and reliabilities."""
         if context.session is None or context.column_id is None:
             return
         from dataraum.entropy.detectors.loaders import load_quarantine_tokens, load_typing
+        from dataraum.entropy.reliabilities import get_reliability_config
         from dataraum.sources.csv.null_values import load_null_value_config
 
         typing = load_typing(context.session, context.column_id, context.run_id)
@@ -47,6 +48,10 @@ class NullSemanticsDetector(EntropyDetector):
             context.session, context.column_id, context.duckdb_conn, context.run_id
         ) or dict(_EMPTY_QUARANTINE)
         context.analysis_results["null_vocab"] = load_null_value_config().get_null_strings()
+        # Calibrated witness reliabilities (DAT-450); empty → measurement's fallback.
+        context.analysis_results["reliabilities"] = get_reliability_config().for_measurement(
+            self.detector_id
+        )
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Pool each rejected token; emit one per-column object (worst-token C)."""
@@ -55,8 +60,11 @@ class NullSemanticsDetector(EntropyDetector):
             return []
         quarantine = context.get_analysis("quarantine_tokens", dict(_EMPTY_QUARANTINE))
         vocab = context.get_analysis("null_vocab", [])
+        reliabilities = context.get_analysis("reliabilities", None) or None
 
-        adjudications = measure_null_semantics(quarantine, typing, vocab)
+        adjudications = measure_null_semantics(
+            quarantine, typing, vocab, reliabilities=reliabilities
+        )
         if not adjudications:
             return []
 

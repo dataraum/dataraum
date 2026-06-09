@@ -42,8 +42,13 @@ CLAIM_SPACE: tuple[str, str] = ("is-null", "is-value")
 # Column types that mean "no type was inferred" — the type witness has no signal.
 _TEXT_TYPES = frozenset({"", "VARCHAR", "TEXT", "STRING", "CHAR"})
 
-# Placeholder reliability priors (DAT-457). Calibrated from generative families
-# by DAT-450; deliberately NOT tuned to pass a metric.
+# Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded in
+# (direct/test callers). The SHIPPED, calibrated values live in the artifact
+# dataraum-config/entropy/reliabilities.yaml (measured by the eval rig, DAT-450)
+# and are loaded by the detector and passed via ``reliabilities=``. Per ADR-0009
+# the shipped r are estimated-with-provenance, never inline constants; these
+# match the artifact's placeholder priors so direct callers behave identically
+# until the rig has run.
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "quarantine_clustering": 0.8,
     "type_claim": 0.7,

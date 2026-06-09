@@ -1,0 +1,47 @@
+# Witness reliabilities for pooled (adjudication) measurements — ADR-0009, DAT-457/450.
+#
+# A pooled measurement adjudicates a claim by pooling several WITNESSES, each
+# weighted by a reliability r ∈ [0, 1] (the log-linear pooling exponent — see
+# entropy/pooling/pool.py). Per ADR-0009 these r are "estimated quantities with
+# provenance, never inline constants": they are MEASURED by the eval reliability
+# rig (dataraum-eval scripts/calibrate_reliabilities.py) — each witness run over
+# the generative injection families against ground truth, r = its agreement
+# accuracy (Beta-smoothed). This file is the shipped artifact that run produces;
+# the engine loads it via entropy/reliabilities.py and the detector threads the
+# values into the measurement.
+#
+# Reliability is the resolution weight only: conflict C is weight-robust (two
+# disjoint one-hot witnesses give C=1 for any r), so a wrong/uncalibrated r never
+# hides a disagreement — it only mis-resolves the posterior + ignorance U. That
+# is why cold-start on placeholder priors is safe.
+#
+# `provenance` records WHERE these numbers came from. Until the rig has run,
+# `calibrated: false` and the values are the DAT-457 placeholder priors (NOT
+# tuned to pass any metric). After a rig run, eval overwrites both the values and
+# this block with the measured corpus version, sample size, seed range, and date.
+
+provenance:
+  calibrated: true
+  source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
+  corpus_version: null_tokens-v1
+  estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded
+  rows_per_sample: 2000
+  sample_size_per_witness:
+    quarantine_clustering: 1579
+    type_claim: 2000
+    null_vocabulary: 33632
+  seeds: fit=0..399, holdout=10000..10119
+  pooled_brier_holdout: 0.0947
+  pooled_brier_holdout_uniform: 0.168
+  pooled_brier_holdout_placeholder: 0.1583
+  notes: "quarantine_clustering never argues is-value (abstains on decoys) \u2192\
+    \ its r is a sensitivity, not a discrimination score. type_claim votes is-null\
+    \ on everything in failed_examples, so it cannot separate a sentinel from a genuine-but-unparseable\
+    \ value \u2192 low r (~0.22, Brier worse than always-abstain), correctly down-weighted:\
+    \ a witness-design finding for DAT-457, surfaced not tuned."
+  date: '2026-06-09'
+witnesses:
+  null_semantics:
+    quarantine_clustering: 0.9994
+    type_claim: 0.2208
+    null_vocabulary: 0.9756

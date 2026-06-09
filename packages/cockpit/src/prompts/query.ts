@@ -45,6 +45,7 @@ Each step becomes a CTE named after its business concept, and final_sql referenc
 - Name each step after the concept it computes (e.g. "revenue", "accounts_receivable") — a valid SQL identifier, never "step_1".
 - Each step must be STANDALONE SQL (a single SELECT) that does NOT reference another step's CTE — keep joins and combining logic in final_sql.
 - final_sql references the step CTEs by name (e.g. SELECT r.month, r.revenue - c.cost AS profit FROM revenue r JOIN cost c USING (month)). It must not redefine a step's logic, and must not introduce a CTE whose name shadows a step.
+- Alias each step's single computed value column AS value (the snippet-library convention). A consistent alias means the same computation is recognised as the same reusable snippet regardless of wording — don't invent a different output alias per question.
 - A simple question may need no steps at all — put the whole query in final_sql and leave steps empty.
 </steps>
 

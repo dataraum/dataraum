@@ -194,6 +194,13 @@ describe("assembleAnswer", () => {
 				usage: "exact_reuse",
 			},
 		]);
+		// Reliability aggregates the components: 1 exact_reuse of 1 → fully grounded.
+		expect(out.reliability).toEqual({
+			grounded_ratio: 1,
+			exact_reuse: 1,
+			adapted: 0,
+			fresh: 0,
+		});
 	});
 
 	it("yields a null grid + empty components when nothing was validated", () => {

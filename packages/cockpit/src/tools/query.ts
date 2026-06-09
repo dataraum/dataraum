@@ -39,10 +39,7 @@ import {
 	validateStepNames,
 } from "../duckdb/run-steps";
 import { linkedAbortController } from "../lib/abort";
-import {
-	canonicalizeForReuse,
-	determineUsageType,
-} from "../lib/snippet-normalize";
+import { sqlEquivalent } from "../lib/sql-canonical";
 import {
 	MAX_OUTPUT_TOKENS,
 	MODEL,
@@ -80,6 +77,19 @@ const Component = z.object({
 	usage: UsageType,
 });
 export type Component = z.infer<typeof Component>;
+
+/**
+ * How much of the answer's SQL is grounded in validated snippets vs newly
+ * generated — a cheap, honest reliability read aggregated from `components`.
+ * `grounded_ratio` = (exact_reuse + adapted) / total. INFORMATIONAL, never a gate
+ * (the contract/confidence signal the old design tried to enforce, reborn as info).
+ */
+const Reliability = z.object({
+	grounded_ratio: z.number(),
+	exact_reuse: z.number(),
+	adapted: z.number(),
+	fresh: z.number(),
+});
 
 // --- The model's structured draft (inner outputSchema). The model emits ONLY the
 // narrative + provenance; the steps/final_sql it validated live in its run_steps
@@ -141,6 +151,8 @@ export const AnswerSchema = z.object({
 	// The validated CTE components + their reuse classification — the measurable
 	// re-usage surface (P2a saves fresh/adapted as snippets; P2b counts reuse).
 	components: z.array(Component),
+	// How grounded the answer's SQL is in validated snippets (from components).
+	reliability: Reliability,
 });
 export type AnswerResult = z.infer<typeof AnswerSchema>;
 
@@ -204,16 +216,13 @@ export async function classifyComponents(
 			});
 			continue;
 		}
-		// `record` is non-null here, so determineUsageType only ever returns
-		// "exact_reuse" or "adapted" (never the engine's "newly_generated" term —
-		// the no-snippet / hallucinated cases above already mapped to "fresh").
-		const usage =
-			determineUsageType(
-				canonicalizeForReuse(step.sql),
-				canonicalizeForReuse(record.sql),
-			) === "exact_reuse"
-				? "exact_reuse"
-				: "adapted";
+		// AST-canonical comparison (polyglot, cross-language byte-identical with the
+		// engine's sqlglot — DAT-485 spike): exact_reuse when the model reproduced
+		// the validated snippet modulo cosmetic variance, else adapted. The model's
+		// executable SQL is always KEPT (classify, don't substitute).
+		const usage = (await sqlEquivalent(step.sql, record.sql))
+			? "exact_reuse"
+			: "adapted";
 		out.push({
 			name: step.name,
 			sql: step.sql,
@@ -335,6 +344,10 @@ export function assembleAnswer(
 		validated && validated.composedSql.trim() !== ""
 			? { sql: validated.composedSql }
 			: null;
+	const components = validated ? validated.components : [];
+	const counts = { exact_reuse: 0, adapted: 0, fresh: 0 };
+	for (const c of components) counts[c.usage] += 1;
+	const total = components.length;
 	return {
 		answer: draft.answer,
 		grid,
@@ -342,7 +355,12 @@ export function assembleAnswer(
 		concepts_used: draft.concepts_used,
 		tables_touched: draft.tables_touched,
 		data_quality: dataQuality,
-		components: validated ? validated.components : [],
+		components,
+		reliability: {
+			grounded_ratio:
+				total > 0 ? (counts.exact_reuse + counts.adapted) / total : 0,
+			...counts,
+		},
 	};
 }
 

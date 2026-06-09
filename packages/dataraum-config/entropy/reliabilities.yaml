@@ -59,12 +59,12 @@ witnesses:
     quarantine_clustering: 0.8681
     type_claim: 0.2658
     null_vocabulary: 0.944
-  # temporal_behavior (DAT-445): UNCALIBRATED placeholder priors — the reliability
-  # rig has not been run for this measurement's witnesses yet. They match the
-  # measurement's DEFAULT_RELIABILITIES, so behavior is identical until the rig
-  # measures them. structural_reconciliation is near-deterministic on the corpus
-  # (it abstains rather than guess on a wrong anchor); semantic_claim rides the LLM
-  # concept-assignment confidence. NOT tuned to a metric.
+  # temporal_behavior (DAT-445, teach-first): UNCALIBRATED placeholder priors — the
+  # reliability rig has not been run for this measurement's witnesses yet. They match
+  # the measurement's DEFAULT_RELIABILITIES. ontology_prior is the concept's declared
+  # temporal_behavior (grounding-conditional); llm_claim is the LLM's independent
+  # stock/flow read. NOT tuned to a metric. (The structural reconciliation witness is
+  # deferred to DAT-491 — events→measure aggregation lineage.)
   temporal_behavior:
-    structural_reconciliation: 0.8
-    semantic_claim: 0.6
+    ontology_prior: 0.7
+    llm_claim: 0.6

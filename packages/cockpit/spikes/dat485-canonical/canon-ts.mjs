@@ -9,7 +9,7 @@ const canon = (sql) => {
   const out = Array.isArray(t.sql) ? t.sql.join(" ") : t.sql;
   return { ok: true, canon: stripQ(out) };
 };
-const corpus = JSON.parse(readFileSync(new URL("./corpus.json", import.meta.url)));
+const corpus = JSON.parse(readFileSync(process.argv[2] ?? new URL("./corpus.json", import.meta.url)));
 const result = { groups: {}, distinct: [] };
 for (const g of corpus.groups) result.groups[g.id] = g.members.map(canon);
 result.distinct = corpus.distinct.map(canon);

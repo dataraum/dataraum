@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-const ts = JSON.parse(readFileSync("ts-out.json"));
-const py = JSON.parse(readFileSync("py-out.json"));
+const ts = JSON.parse(readFileSync(process.argv[2] ?? "ts-out.json"));
+const py = JSON.parse(readFileSync(process.argv[3] ?? "py-out.json"));
 const C = (x) => (x.ok ? x.canon : "ERR:" + x.err);
 const allEq = (arr) => arr.every((x) => x === arr[0]);
 console.log("GROUP                | within-PY | within-TS | PY≡TS per-member");

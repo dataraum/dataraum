@@ -20,7 +20,7 @@ from dataraum.storage import init_database
 class TestLoadTyping:
     def test_returns_none_when_no_data(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_typing(session, "col1") is None
 
     def test_returns_decision_with_candidate(self):
@@ -39,7 +39,7 @@ class TestLoadTyping:
         tc.detected_unit = "USD"
         tc.unit_confidence = 0.8
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [td, tc]
+        session.execute.return_value.scalars.return_value.first.side_effect = [td, tc]
 
         result = load_typing(session, "col1")
         assert result is not None
@@ -59,7 +59,7 @@ class TestLoadTyping:
         tc.detected_unit = None
         tc.unit_confidence = None
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [None, tc]
+        session.execute.return_value.scalars.return_value.first.side_effect = [None, tc]
 
         result = load_typing(session, "col1")
         assert result is not None

@@ -79,23 +79,22 @@ def load_typing(
 
     ``run_id`` (DAT-413): when set, restrict to THIS run's typing output — the
     detect path always passes the run's run_id so a detector reads its own run's
-    upstream metadata. ``None`` (non-detect / test callers) adds no filter, so
-    they stay behavior-preserving.
+    upstream metadata. ``None`` (non-detect / test callers) reads the MOST RECENT
+    typing for the column — which is the promoted re-run after a teach cycle — so a
+    read across coexisting runs returns the current one rather than raising
+    ``MultipleResultsFound`` (DAT-447).
     """
     from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 
     td_stmt = select(TypeDecision).where(TypeDecision.column_id == column_id)
-    tc_stmt = (
-        select(TypeCandidate)
-        .where(TypeCandidate.column_id == column_id)
-        .order_by(TypeCandidate.confidence.desc())
-        .limit(1)
-    )
+    tc_stmt = select(TypeCandidate).where(TypeCandidate.column_id == column_id)
     if run_id is not None:
         td_stmt = td_stmt.where(TypeDecision.run_id == run_id)
         tc_stmt = tc_stmt.where(TypeCandidate.run_id == run_id)
-    td = session.execute(td_stmt).scalar_one_or_none()
-    tc = session.execute(tc_stmt).scalar_one_or_none()
+    # Most-recent decision, highest-confidence candidate — ``.first()`` never raises
+    # on coexisting runs (a teach re-run leaves the prior run's typing rows in place).
+    td = session.execute(td_stmt.order_by(TypeDecision.decided_at.desc())).scalars().first()
+    tc = session.execute(tc_stmt.order_by(TypeCandidate.confidence.desc())).scalars().first()
 
     if td:
         typing_dict: dict[str, Any] = {

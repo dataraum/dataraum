@@ -458,8 +458,10 @@ export async function querySubAgent(
 
 	const dataQuality = await readDataQuality(draft.tables_touched);
 	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/
-	// adapted steps. Best-effort — never blocks or fails the answer.
-	await persistLearnedSnippets(captured.value);
+	// adapted steps. Fire-and-forget — the learning write runs AFTER the answer is
+	// assembled and is never on the answer's critical path; persistLearnedSnippets
+	// swallows its own errors, so it can neither block nor fail the answer.
+	void persistLearnedSnippets(captured.value);
 	return assembleAnswer(draft, captured.value, dataQuality);
 }
 

@@ -79,6 +79,21 @@ export function queryKeyConditions(key: QuerySnippetKey): SQL {
  * The caller gates WHICH steps reach here (only `fresh`/`adapted` components, not
  * `exact_reuse` — saving a reused step would re-write the curated `graph:` row it
  * came from).
+ *
+ * Concurrency: the dedup is SELECT-then-INSERT with NO DB backstop — the
+ * `uq_snippet_semantic_key` constraint is NULLS DISTINCT, so a null-bearing
+ * `query:` key (statement/aggregation/parameter_value all NULL) never raises a
+ * unique violation. Two CONCURRENT saves of the same concept can therefore both
+ * miss the SELECT and both insert. This is low-harm (a duplicate `query:` row;
+ * both are reusable, the next sequential save dedups, and the cross-type
+ * reconciliation DAT-493 collapses them) and acceptable for this best-effort
+ * path. The proper backstop — `NULLS NOT DISTINCT` on the engine constraint, so
+ * the DB enforces what the app-level IS-NULL match intends — is deferred.
+ *
+ * Failure-replacement: the engine's `save_snippet` REPLACES a row with
+ * `failure_count > 0`; this path always keeps the existing row. No cockpit path
+ * sets `failure_count` yet (usage/quarantine is P2b/DAT-488) and the grant has no
+ * UPDATE, so it cannot bite — folded into P2b when failure tracking lands.
  */
 export async function saveQuerySnippet(
 	input: SaveQuerySnippetInput,

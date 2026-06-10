@@ -2,7 +2,10 @@
 // matters lives in the SQL — the IS-NULL-aware dedup against a NULLS-DISTINCT
 // unique key — so, like the P0 conformance test, this must hit a real Postgres,
 // not a mock. A naive `ON CONFLICT` would silently duplicate; these tests prove
-// the app-level find-then-insert (first-writer-wins) actually dedups.
+// the app-level find-then-insert gives SEQUENTIAL first-writer-wins dedup (the
+// common case). Concurrent same-key saves can still double-insert — NULLS
+// DISTINCT means no DB backstop — a documented best-effort limitation
+// (saveQuerySnippet jsdoc); the proper fix is NULLS NOT DISTINCT engine-side.
 //
 // Harness: the established *.integration.test pattern — gated on
 // METADATA_DATABASE_URL, REUSING the running compose Postgres. Rows are written

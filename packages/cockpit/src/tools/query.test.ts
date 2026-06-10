@@ -3,7 +3,7 @@
 // and answer assembly from the captured validated run. The sub-agent's chat()
 // loop itself is exercised by the live smoke (it calls the real LLM).
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({
 	config: { dataraumWorkspaceId: "ws-test", anthropicApiKey: "k" },
@@ -25,9 +25,24 @@ vi.mock("#/tools/list-tables", () => ({
 	listTables: () => listTablesMock(),
 }));
 
+// save-on-clean: saveQuerySnippet is the write boundary, currentSessionId the FK
+// anchor — both mocked so the persist GATING/skip/best-effort logic is testable.
+const saveQuerySnippetMock = vi.fn();
+vi.mock("#/db/metadata/snippet-writer", () => ({
+	// biome-ignore lint/suspicious/noExplicitAny: passthrough to the spy.
+	saveQuerySnippet: (...a: any[]) => saveQuerySnippetMock(...a),
+}));
+const currentSessionIdMock = vi.fn();
+vi.mock("#/prompts/workspace-context", () => ({
+	currentSessionId: () => currentSessionIdMock(),
+}));
+
 import {
 	assembleAnswer,
+	type Component,
 	classifyComponents,
+	componentsToSave,
+	persistLearnedSnippets,
 	type QueryDraft,
 	readDataQuality,
 } from "./query";
@@ -224,5 +239,98 @@ describe("assembleAnswer", () => {
 			null,
 		);
 		expect(out.grid).toBeNull();
+	});
+});
+
+const comp = (
+	name: string,
+	usage: Component["usage"],
+	sql = "SELECT 1",
+): Component => ({
+	name,
+	sql,
+	snippet_id: usage === "fresh" ? null : "s1",
+	usage,
+});
+
+describe("componentsToSave (save-on-clean gate)", () => {
+	it("keeps fresh and adapted, drops exact_reuse", () => {
+		const out = componentsToSave([
+			comp("a", "fresh"),
+			comp("b", "exact_reuse"),
+			comp("c", "adapted"),
+		]);
+		expect(out.map((c) => c.name)).toEqual(["a", "c"]);
+	});
+
+	it("returns empty when every component is exact_reuse", () => {
+		expect(componentsToSave([comp("a", "exact_reuse")])).toEqual([]);
+	});
+});
+
+describe("persistLearnedSnippets (save-on-clean)", () => {
+	beforeEach(() => {
+		saveQuerySnippetMock.mockReset();
+		currentSessionIdMock.mockReset();
+	});
+
+	it("saves only fresh/adapted under the current session, sharing one query: source", async () => {
+		currentSessionIdMock.mockResolvedValue("sess-1");
+		saveQuerySnippetMock.mockResolvedValue({ snippetId: "x", deduped: false });
+
+		await persistLearnedSnippets({
+			composedSql: "WITH revenue AS (...) SELECT ...",
+			components: [
+				comp("revenue", "fresh", "SELECT SUM(rev) AS value"),
+				comp("reused", "exact_reuse"),
+				comp("margin", "adapted", "SELECT SUM(m) AS value"),
+			],
+		});
+
+		// fresh + adapted only — exact_reuse is skipped.
+		expect(saveQuerySnippetMock).toHaveBeenCalledTimes(2);
+		const args = saveQuerySnippetMock.mock.calls.map((c) => c[0]);
+		expect(args.map((a) => a.standardField)).toEqual(["revenue", "margin"]);
+		expect(args.every((a) => a.sessionId === "sess-1")).toBe(true);
+		expect(args.every((a) => a.schemaMappingId === "ws-test")).toBe(true);
+		// one provenance group per answer; the executable sql is carried through.
+		expect(args[0].source).toMatch(/^query:/);
+		expect(args[1].source).toBe(args[0].source);
+		expect(args[0].sql).toBe("SELECT SUM(rev) AS value");
+	});
+
+	it("skips entirely when there is no current session (the NOT-NULL FK anchor)", async () => {
+		currentSessionIdMock.mockResolvedValue(null);
+		await persistLearnedSnippets({
+			composedSql: "x",
+			components: [comp("a", "fresh")],
+		});
+		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
+	});
+
+	it("is a no-op for a null run or no fresh/adapted components (before touching the session)", async () => {
+		await persistLearnedSnippets(null);
+		await persistLearnedSnippets({
+			composedSql: "x",
+			components: [comp("a", "exact_reuse")],
+		});
+		expect(currentSessionIdMock).not.toHaveBeenCalled();
+		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
+	});
+
+	it("best-effort: swallows a save failure (never fails the answer)", async () => {
+		currentSessionIdMock.mockResolvedValue("sess-1");
+		saveQuerySnippetMock.mockRejectedValue(new Error("permission denied"));
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(
+			persistLearnedSnippets({
+				composedSql: "x",
+				components: [comp("a", "fresh")],
+			}),
+		).resolves.toBeUndefined();
+		expect(warnSpy).toHaveBeenCalled();
+
+		warnSpy.mockRestore();
 	});
 });

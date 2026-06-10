@@ -2,11 +2,12 @@
 //
 // The generated mirror (./schema.ts) introspects the promoted-READ schema —
 // views only, by design: the cockpit_reader role cannot SELECT raw run-stamped
-// tables. But three un-versioned CONTROL tables are deliberate cockpit writes:
+// tables. But four un-versioned CONTROL tables are deliberate cockpit writes:
 //
 //   sources                — register a data source before addSourceWorkflow
 //   investigation_sessions — open the session a workflow runs under
 //   config_overlay         — the teach vocabulary IS overlay rows
+//   sql_snippets           — save-on-clean grows the snippet library (DAT-486)
 //
 // The engine bootstrap grants the reader role exactly these verbs on exactly
 // these tables (storage/read_views.py::_CONTROL_WRITE_GRANTS); everything else
@@ -16,8 +17,10 @@
 
 import {
 	integer,
+	json,
 	jsonb,
 	pgSchema,
+	text,
 	timestamp,
 	varchar,
 } from "drizzle-orm/pg-core";
@@ -72,4 +75,35 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
 	payload: jsonb("payload").notNull(),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	supersededAt: timestamp("superseded_at", { mode: "date" }),
+});
+
+/**
+ * Raw `sql_snippets` — SELECT (IS-NULL-aware dedup lookup) + INSERT a learned
+ * `query:` snippet on a clean run (save-on-clean, DAT-486). Only the columns the
+ * writer touches; the engine SQLAlchemy model owns the full shape. The NOT-NULL
+ * columns with no DB default — `description`, `column_mappings`, `execution_count`,
+ * `failure_count`, `created_at`, `updated_at` — must be set on every insert
+ * (the model's defaults are ORM-side, not server defaults). `column_mappings`
+ * is `json` (not `jsonb`) to match the column type. Identity/quality columns the
+ * cockpit never writes (last_used_at, column_hash, provenance, input_fields,
+ * normalized_expression) are omitted.
+ */
+export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
+	snippetId: varchar("snippet_id").primaryKey(),
+	sessionId: varchar("session_id").notNull(),
+	snippetType: varchar("snippet_type").notNull(),
+	standardField: varchar("standard_field"),
+	statement: varchar("statement"),
+	aggregation: varchar("aggregation"),
+	schemaMappingId: varchar("schema_mapping_id").notNull(),
+	parameterValue: varchar("parameter_value"),
+	sql: text("sql").notNull(),
+	description: text("description").notNull(),
+	columnMappings: json("column_mappings").notNull(),
+	source: varchar("source").notNull(),
+	llmModel: varchar("llm_model"),
+	executionCount: integer("execution_count").notNull(),
+	failureCount: integer("failure_count").notNull(),
+	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+	updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 });

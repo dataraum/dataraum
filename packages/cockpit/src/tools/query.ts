@@ -27,12 +27,14 @@
 // The outer tool wraps the sub-agent in `asAgentError`: a failed run becomes the
 // `{ error }` envelope the orchestrator reads and retries, not a dead turn.
 
+import { randomUUID } from "node:crypto";
 import { chat, maxIterations, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
 
 import { config } from "../config";
 import { findById } from "../db/metadata/snippet-library";
+import { saveQuerySnippet } from "../db/metadata/snippet-writer";
 import {
 	composeStandalone,
 	runSteps,
@@ -46,6 +48,7 @@ import {
 	QUERY_SUBAGENT_MAX_ITERATIONS,
 } from "../llm";
 import { getQueryInstructions } from "../prompts";
+import { currentSessionId } from "../prompts/workspace-context";
 import { asAgentError, withAgentError } from "./agent-error";
 import { listTables } from "./list-tables";
 import { buildSchemaBlock } from "./query-context";
@@ -216,9 +219,11 @@ export async function classifyComponents(
 			});
 			continue;
 		}
-		// AST-canonical comparison (polyglot, cross-language byte-identical with the
-		// engine's sqlglot — DAT-485 spike): exact_reuse when the model reproduced
-		// the validated snippet modulo cosmetic variance, else adapted. The model's
+		// AST-canonical comparison (polyglot round-trip; DAT-485): exact_reuse when
+		// the model reproduced the validated snippet modulo cosmetic variance, else
+		// adapted. Self-consistent — polyglot canonicalizes BOTH sides — so it does
+		// NOT assume cross-language agreement with the engine's sqlglot (the stress-
+		// test found they diverge; one canonicalizer in both is DAT-492). The model's
 		// executable SQL is always KEPT (classify, don't substitute).
 		const usage = (await sqlEquivalent(step.sql, record.sql))
 			? "exact_reuse"
@@ -364,6 +369,57 @@ export function assembleAnswer(
 	};
 }
 
+// --- Save-on-clean (DAT-486 P2a): the learning loop.
+
+/**
+ * The components save-on-clean persists: the freshly-composed ones (`fresh`,
+ * `adapted`). `exact_reuse` is skipped — that step already reproduced a curated
+ * snippet, so saving a `query:` copy of the same concept is redundant (it would
+ * just dedup), and re-saving over a `graph:` row is exactly what we must avoid.
+ * Pure — unit-tested.
+ */
+export function componentsToSave(components: Component[]): Component[] {
+	return components.filter((c) => c.usage === "fresh" || c.usage === "adapted");
+}
+
+/**
+ * Persist a clean run's freshly-composed concept steps as learned `query:`
+ * snippets so the library grows from real questions and reuse compounds (P2a).
+ * Keyed by concept (standardField = the CTE name), first-writer-wins; all of one
+ * answer's saved steps share one `query:<runId>` provenance group.
+ *
+ * Best-effort: a learning side-effect must NEVER fail the answer (the product),
+ * so every error — including `permission denied` before the engine re-bootstraps
+ * with the sql_snippets grant (read_views.py) — is logged and swallowed. Skipped
+ * when there's no current session to anchor the NOT-NULL FK (the answer ran
+ * outside any session) and when nothing fresh/adapted was composed.
+ */
+export async function persistLearnedSnippets(
+	validated: ValidatedRun | null,
+): Promise<void> {
+	if (!validated) return;
+	const toSave = componentsToSave(validated.components);
+	if (toSave.length === 0) return;
+	try {
+		const sessionId = await currentSessionId();
+		if (!sessionId) return;
+		const source = `query:${randomUUID()}`;
+		for (const c of toSave) {
+			await saveQuerySnippet({
+				schemaMappingId: config.dataraumWorkspaceId,
+				standardField: c.name,
+				sessionId,
+				sql: c.sql,
+				description: `Learned from a query: ${c.name}`,
+				source,
+				llmModel: MODEL,
+			});
+		}
+	} catch (err) {
+		console.warn(`[cockpit] save-on-clean failed: ${err}`);
+	}
+}
+
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
  * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
@@ -401,6 +457,11 @@ export async function querySubAgent(
 	});
 
 	const dataQuality = await readDataQuality(draft.tables_touched);
+	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/
+	// adapted steps. Fire-and-forget — the learning write runs AFTER the answer is
+	// assembled and is never on the answer's critical path; persistLearnedSnippets
+	// swallows its own errors, so it can neither block nor fail the answer.
+	void persistLearnedSnippets(captured.value);
 	return assembleAnswer(draft, captured.value, dataQuality);
 }
 

@@ -15,8 +15,16 @@
 // otherwise the `typed` tables. The producer GraphAgent mints snippets against the
 // same enriched views, so matching its table context is what lets the consumer's
 // reuse classify as exact_reuse rather than adapted. raw / quarantine stay
-// ingestion-internal. The pure `formatSchema` + `preferEnriched` are unit-tested;
-// the thin Drizzle reads are smoke/integration-covered.
+// ingestion-internal.
+//
+// An enriched view's columns come from a LIVE `DESCRIBE` on the READ_ONLY lake
+// reader (mirroring the engine's `_describe_table`), NOT the column metadata: the
+// view is `SELECT f.*, <dim cols>` but the engine registers Column metadata for
+// the dim columns ONLY, so a metadata read would hide the fact's measures. DESCRIBE
+// returns the full set (names + types, no `[concept:]` tags — the engine drops them
+// too); a lake-read failure falls back to the typed tables. The pure `formatSchema`
+// + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
+// smoke/integration-covered.
 
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
@@ -27,7 +35,8 @@ import {
 	sources,
 	tables,
 } from "../db/metadata/schema";
-import { LAKE_ALIAS } from "../duckdb/lake";
+import { getLakeConnection, LAKE_ALIAS } from "../duckdb/lake";
+import { readerToResult } from "../duckdb/query-result";
 
 /** The clean, analysis-ready layer a question is answered over. */
 const TYPED_LAYER = "typed";
@@ -54,6 +63,49 @@ function schemaForLayer(layer: string): string {
 export function preferEnriched<T extends { layer: string }>(rows: T[]): T[] {
 	const enriched = rows.filter((r) => r.layer === ENRICHED_LAYER);
 	return enriched.length > 0 ? enriched : rows;
+}
+
+/**
+ * The live columns of each enriched view, via `DESCRIBE` on the READ_ONLY lake
+ * reader — the same source the engine's GraphAgent uses (`_describe_table`). The
+ * enriched VIEW is `SELECT f.*, <dim cols>`, but the engine registers Column
+ * METADATA for the dim columns ONLY, so a metadata read would hide the fact's
+ * measures; DESCRIBE returns the full set. Returns null when the lake read fails
+ * (views not yet checkpointed / lake unreachable) so the caller can fall back to
+ * the typed tables — a degraded but non-empty schema block beats a hard failure.
+ * Carries names + types only (no `[concept:]` tags), as the engine's enriched
+ * schema_info does.
+ */
+async function describeEnrichedViews(
+	views: SchemaTableRow[],
+): Promise<SchemaColumnRow[] | null> {
+	try {
+		const conn = await getLakeConnection();
+		const out: SchemaColumnRow[] = [];
+		for (const v of views) {
+			const address = `${LAKE_ALIAS}.${schemaForLayer(v.layer)}."${v.physicalName}"`;
+			const reader = await conn.runAndReadAll(`DESCRIBE ${address}`);
+			for (const r of readerToResult(reader).rows) {
+				const name = r.column_name;
+				if (typeof name !== "string") continue;
+				out.push({
+					tableId: v.tableId,
+					// Synthetic id — enriched columns carry no semantic annotation, so it
+					// is never used for a concept lookup (concepts are [] for this path).
+					columnId: `${v.tableId}:${name}`,
+					name,
+					resolvedType:
+						typeof r.column_type === "string" ? r.column_type : null,
+				});
+			}
+		}
+		return out;
+	} catch (err) {
+		console.warn(
+			`[cockpit] enriched DESCRIBE failed — falling back to typed tables: ${err}`,
+		);
+		return null;
+	}
 }
 
 /** One typed table — addressed in SQL as `lake.typed.<physicalName>`. */
@@ -135,9 +187,12 @@ export function formatSchema(
 }
 
 /**
- * Read the typed-layer schema for the active workspace and format it as the
- * sub-agent's `<schema>` block. Three lean reads (tables, columns, semantic
- * concepts) over non-archived sources, joined in the pure `formatSchema`.
+ * Read the schema for the active workspace and format it as the sub-agent's
+ * `<schema>` block. Prefer-enriched: when begin_session has materialized enriched
+ * views, surface ONLY those (columns from a live DESCRIBE — metadata registers dim
+ * columns only, so it would hide the fact's measures), falling back to the typed
+ * tables on a lake-read failure. The typed path reads columns + semantic concepts
+ * from metadata, so typed columns keep their `[concept:]` tags.
  */
 export async function buildSchemaBlock(): Promise<string> {
 	const tableRows = await metadataDb
@@ -156,6 +211,25 @@ export async function buildSchemaBlock(): Promise<string> {
 		)
 		.orderBy(asc(tables.tableName));
 
+	const mapped: SchemaTableRow[] = tableRows.map((t) => ({
+		tableId: t.tableId ?? "",
+		physicalName: t.physicalName ?? "",
+		layer: t.layer ?? TYPED_LAYER,
+	}));
+
+	// Prefer-enriched (mirror graphs/agent.py _build_schema_info): when enriched
+	// views exist, surface ONLY those — columns from a live DESCRIBE (the view is
+	// `SELECT f.*, dims`; metadata registers dims only). Fall through to the typed
+	// tables if the lake read fails (views not yet checkpointed / unreachable).
+	const enrichedViews = mapped.filter((t) => t.layer === ENRICHED_LAYER);
+	if (enrichedViews.length > 0) {
+		const enrichedColumns = await describeEnrichedViews(enrichedViews);
+		if (enrichedColumns)
+			return formatSchema(enrichedViews, enrichedColumns, []);
+	}
+
+	// Typed path: metadata columns + their semantic-concept tags.
+	const typedTables = mapped.filter((t) => t.layer === TYPED_LAYER);
 	const columnRows = await metadataDb
 		.select({
 			tableId: columns.tableId,
@@ -166,12 +240,7 @@ export async function buildSchemaBlock(): Promise<string> {
 		.from(columns)
 		.innerJoin(tables, eq(tables.tableId, columns.tableId))
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(
-			and(
-				isNull(sources.archivedAt),
-				inArray(tables.layer, [TYPED_LAYER, ENRICHED_LAYER]),
-			),
-		);
+		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)));
 
 	const conceptRows = await metadataDb
 		.select({
@@ -180,19 +249,8 @@ export async function buildSchemaBlock(): Promise<string> {
 		})
 		.from(currentSemanticAnnotations);
 
-	// Prefer-enriched (mirror graphs/agent.py): when enriched views exist, surface
-	// ONLY those; else the typed tables. formatSchema renders only the shown
-	// tables' columns, so passing the full typed+enriched column set is safe.
-	const shownTables = preferEnriched(
-		tableRows.map((t) => ({
-			tableId: t.tableId ?? "",
-			physicalName: t.physicalName ?? "",
-			layer: t.layer ?? TYPED_LAYER,
-		})),
-	);
-
 	return formatSchema(
-		shownTables,
+		typedTables,
 		columnRows.map((c) => ({
 			tableId: c.tableId ?? "",
 			columnId: c.columnId ?? "",

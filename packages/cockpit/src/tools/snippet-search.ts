@@ -98,7 +98,8 @@ function projectSnippet(s: SnippetRow): z.infer<typeof SnippetMeta> {
 	};
 }
 
-/** Project a library `SnippetGraph` to the tool's metadata projection. */
+/** Project a library `SnippetGraph` to the reuse shape — concept keys, the
+ * validated `sql`, and the column expressions (DAT-494). */
 export function projectGraph(g: SnippetGraph): SnippetGraphProjection {
 	return {
 		graph_id: g.graphId,
@@ -109,8 +110,9 @@ export function projectGraph(g: SnippetGraph): SnippetGraphProjection {
 }
 
 /**
- * Search the snippet KB by vocabulary keys and return matching graphs as a
- * metadata projection (no raw SQL). At least one key category is required — an
+ * Search the snippet KB by vocabulary keys and return matching graphs — concept
+ * keys + each snippet's validated `sql` to reproduce (DAT-494). At least one key
+ * category is required — an
  * all-empty call is agent-fixable (`{ error }`) so the model picks keys from the
  * advertised vocabulary instead of searching blindly. An empty match set is a
  * legitimate `[]` (nothing curated for those keys yet), not an error.

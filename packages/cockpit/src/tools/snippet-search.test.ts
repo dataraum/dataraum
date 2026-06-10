@@ -34,7 +34,7 @@ const graph = (): SnippetGraph => ({
 			parameterValue: null,
 			normalizedExpression: "sum(betrag)",
 			inputFields: null,
-			sql: 'SELECT SUM("Betrag") AS revenue FROM journal_lines',
+			sql: 'SELECT SUM("Betrag") AS value FROM journal_lines',
 			description: "Revenue from the income statement",
 			columnMappings: { revenue: 'SUM("Betrag")' },
 			source: "graph:dso",
@@ -56,16 +56,15 @@ describe("projectGraph", () => {
 			standard_field: "revenue",
 			statement: "income_statement",
 			aggregation: "sum",
-			// DAT-494: the validated sql IS surfaced — the model reproduces it.
-			sql: 'SELECT SUM("Betrag") AS revenue FROM journal_lines',
+			// DAT-494: the validated sql IS surfaced (the real store aliases AS value)
+			// — the model reproduces it; only the producer-internal
+			// normalized_expression is dropped.
+			sql: 'SELECT SUM("Betrag") AS value FROM journal_lines',
 			description: "Revenue from the income statement",
 			column_mappings: { revenue: 'SUM("Betrag")' },
 			input_fields: null,
 			parameter_value: null,
 		});
-		// The validated sql is now part of the projection (DAT-494, the thing the
-		// model reproduces) — but the producer-internal normalized_expression stays out.
-		expect(s.sql).toBe('SELECT SUM("Betrag") AS revenue FROM journal_lines');
 		expect("normalized_expression" in s).toBe(false);
 	});
 });

@@ -30,6 +30,7 @@
     "@duckdb/node-api": "^1.5.3-r.3",
     "@mantine/core": "^9.3.0",
     "@mantine/hooks": "^9.3.0",
+    "@polyglot-sql/sdk": "^0.5.1",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/ai": "latest",
     "@tanstack/ai-anthropic": "latest",
@@ -72,6 +73,6 @@
     "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^4.1.8"
+    "vitest": "5.0.0-beta.4"
   }
 }

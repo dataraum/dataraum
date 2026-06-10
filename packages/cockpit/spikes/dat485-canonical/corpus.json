@@ -1,0 +1,31 @@
+{
+  "note": "Groups whose members SHOULD canonicalize identically (same snippet despite LLM variance). 'distinct' members must NOT collide.",
+  "groups": [
+    { "id": "revenue_sale", "members": [
+      "SELECT SUM(\"Amount\") as value FROM enriched_transactions WHERE \"Type\" ILIKE 'Sale'",
+      "select  sum(\"Amount\")  AS value\nFROM enriched_transactions where \"Type\" ilike 'Sale'",
+      "SELECT SUM(\"Amount\") AS value FROM lake.typed.enriched_transactions WHERE \"Type\" ILIKE 'Sale'"
+    ]},
+    { "id": "ar_receivable", "members": [
+      "SELECT SUM(\"Balance\") as value FROM enriched_trial_balance WHERE account_id__account_type ILIKE 'receivable'",
+      "SELECT SUM(\"Balance\") AS value FROM lake.typed.enriched_trial_balance WHERE account_id__account_type ILIKE 'receivable'"
+    ]},
+    { "id": "const_30", "members": [
+      "SELECT 30 as value",
+      "SELECT 30 AS value"
+    ]},
+    { "id": "alias_diff", "members": [
+      "SELECT SUM(\"Amount\") AS value FROM enriched_transactions WHERE \"Type\" ILIKE 'Sale'",
+      "SELECT SUM(\"Amount\") AS revenue FROM enriched_transactions WHERE \"Type\" ILIKE 'Sale'"
+    ]},
+    { "id": "commutative_where", "members": [
+      "SELECT SUM(x) AS v FROM t WHERE a = 1 AND b = 2",
+      "SELECT SUM(x) AS v FROM t WHERE b = 2 AND a = 1"
+    ]}
+  ],
+  "distinct": [
+    "SELECT SUM(\"Amount\") AS value FROM enriched_transactions WHERE \"Type\" ILIKE 'Sale'",
+    "SELECT SUM(\"Balance\") AS value FROM enriched_trial_balance WHERE account_id__account_type ILIKE 'receivable'",
+    "SELECT 30 AS value"
+  ]
+}

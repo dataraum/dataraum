@@ -12,6 +12,37 @@ from pydantic import BaseModel, Field
 
 from dataraum.core.models.base import Result
 
+# === API-failure classification ===
+#
+# A provider tags its ``Result.error`` as transient or permanent so the durable
+# layer (the worker's ``_outcome_or_raise``) can decide retryability without a
+# provider-specific import or a brittle bare-string match. ``format_api_error``
+# (producer) and ``is_transient_error`` (consumer) are the one shared definition
+# of that tag — a round-trip test keeps them in lockstep.
+TRANSIENT_ERROR_KIND = "transient"
+PERMANENT_ERROR_KIND = "permanent"
+
+_TRANSIENT_TAG = f"API error ({TRANSIENT_ERROR_KIND})"
+
+
+def format_api_error(provider: str, kind: str, message: str) -> str:
+    """Render a provider API failure, embedding its transient/permanent ``kind``.
+
+    The ``({kind})`` tag is the single classification carrier read back by
+    :func:`is_transient_error` at the retry choke point.
+    """
+    return f"{provider} API error ({kind}): {message}"
+
+
+def is_transient_error(error: str | None) -> bool:
+    """True if ``error`` was tagged transient by :func:`format_api_error`.
+
+    Transient failures (rate limits, 5xx, timeouts, connection errors) should be
+    retried by Temporal; permanent ones (auth, bad request) should not.
+    """
+    return error is not None and _TRANSIENT_TAG in error
+
+
 # === Tool Use Models ===
 
 

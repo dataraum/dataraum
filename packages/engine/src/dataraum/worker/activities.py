@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from dataraum.llm.providers.base import is_transient_error
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     SESSION_DETECTOR_PHASES,
@@ -483,17 +484,23 @@ class PhaseActivities:
         return self._outcome_or_raise(run, phase_name)
 
     def _outcome_or_raise(self, run: PhaseRun, phase_name: str) -> PhaseOutcome:
-        """Translate a ``PhaseRun`` into a ``PhaseOutcome`` / non-retryable failure.
+        """Translate a ``PhaseRun`` into a ``PhaseOutcome`` / failure to raise.
 
         Shared by the add_source (``run_phase``) and begin_session
-        (``run_session_phase`` / ``begin_session_select``) activity paths: a
-        FAILED run is a deterministic, permanent phase failure → non-retryable
-        ``PhaseFailed``; anything else (completed / skipped) is a normal outcome.
+        (``run_session_phase`` / ``begin_session_select``) activity paths.
+        A FAILED run is normally a deterministic, permanent phase failure →
+        non-retryable ``PhaseFailed``. The exception is a *transient* provider
+        failure (an LLM 429 / 5xx / connection error the provider tagged via
+        ``format_api_error``): that is not deterministic, so raise a retryable
+        error and let Temporal re-run the whole activity with backoff (the
+        ``RetryPolicy``'s durable safety net the SDK's in-process retries can't
+        replace). Anything else (completed / skipped) is a normal outcome.
         """
         if run.status == PhaseStatus.FAILED.value:
-            raise ApplicationError(
-                run.error or f"Phase '{phase_name}' failed",
-                type="PhaseFailed",
-                non_retryable=True,
-            )
+            message = run.error or f"Phase '{phase_name}' failed"
+            if is_transient_error(run.error):
+                # Retryable: ``TransientPhaseFailure`` is absent from the
+                # workflow ``RetryPolicy``'s ``non_retryable_error_types``.
+                raise ApplicationError(message, type="TransientPhaseFailure")
+            raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
         return PhaseOutcome(status=run.status, summary=run.summary)

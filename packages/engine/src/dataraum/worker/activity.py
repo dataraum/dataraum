@@ -220,6 +220,14 @@ def run_phase(
 
         result = phase.run(ctx)
 
+        # A FAILED phase persists nothing: roll back its partial writes so
+        # session_scope's commit-on-clean-exit is a no-op. This is what makes a
+        # transient-failure activity retry safe — the retry (same run_id) starts
+        # from a clean slate instead of clashing with attempt 1's committed rows
+        # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        if result.status == PhaseStatus.FAILED:
+            session.rollback()
+
     logger.info(
         "activity.phase_done",
         phase=phase_name,
@@ -476,6 +484,14 @@ def run_session_phase(
             return PhaseRun(status=PhaseStatus.SKIPPED.value, summary=skip_reason)
 
         result = phase.run(ctx)
+
+        # A FAILED phase persists nothing: roll back its partial writes so
+        # session_scope's commit-on-clean-exit is a no-op. This is what makes a
+        # transient-failure activity retry safe — the retry (same run_id) starts
+        # from a clean slate instead of clashing with attempt 1's committed rows
+        # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        if result.status == PhaseStatus.FAILED:
+            session.rollback()
 
     logger.info(
         "activity.session_phase_done",

@@ -269,6 +269,38 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
     assert "some-other-workspace" in (result.error or "")
 
 
+def test_failed_phase_rolls_back_partial_writes(
+    worker_manager: ConnectionManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A FAILED phase commits nothing — its partial writes are rolled back.
+
+    This is what makes a transient-failure activity retry safe: the retry re-runs
+    under the SAME run_id, so attempt 1 must not leave committed rows for it to
+    clash with (e.g. a within-run UNIQUE on a non-idempotent writer). A stub phase
+    writes a Source then returns FAILED; the row must not survive.
+    """
+    import dataraum.worker.activity as activity_mod
+    from dataraum.pipeline.base import PhaseResult
+
+    ghost_id = str(uuid4())
+
+    class WriteThenFailPhase:
+        def should_skip(self, ctx: object) -> None:
+            return None
+
+        def run(self, ctx: object) -> PhaseResult:
+            ctx.session.add(Source(source_id=ghost_id, name="ghost", source_type="csv"))  # type: ignore[attr-defined]
+            return PhaseResult.failed("simulated transient failure")
+
+    monkeypatch.setattr(activity_mod, "get_phase_class", lambda _name: WriteThenFailPhase)
+
+    run = run_phase(worker_manager, "typing", _identity(str(uuid4())), [])
+    assert run.status == "failed"
+
+    with worker_manager.session_scope() as session:
+        assert session.get(Source, ghost_id) is None
+
+
 def test_addsource_runs_under_nondefault_workspace(
     pg_url_clean: str,
     lake_anchor,  # noqa: ANN001

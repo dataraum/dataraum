@@ -380,6 +380,23 @@ def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, An
     }
 
 
+# The measured referential-integrity evidence keys the relationships analyzer
+# writes (``detector._store_candidates`` / ``evaluator.compute_ri_metrics``) and
+# ``relationship_entropy`` scores. Teach-materialized rows (manual/keeper,
+# ``materialize_relationship_overlays``) carry overlay provenance only — never
+# these — so the representative backfills them from the measured rows of the
+# same pair. Without the backfill, teaching a relationship silently deleted its
+# orphan-rate measurement (recall = 0 on every taught pair, no error anywhere).
+_RI_EVIDENCE_KEYS = (
+    "left_referential_integrity",
+    "right_referential_integrity",
+    "orphan_count",
+    "total_count",
+    "left_total_count",
+    "cardinality_verified",
+)
+
+
 def load_relationship_for_pair(
     session: Session,
     from_column_id: str,
@@ -393,6 +410,13 @@ def load_relationship_for_pair(
     representative is the highest-precedence one (manual > keeper > llm > candidate)
     — that is the relationship the readiness measures. ``session_id`` + ``run_id``
     scope to this run's catalog (rows coexist across runs/sessions).
+
+    The representative keeps its IDENTITY (method, confidence, confirmation), but
+    measured RI evidence (:data:`_RI_EVIDENCE_KEYS`) is backfilled from the
+    highest-precedence row of the pair that carries it: the data witness lives on
+    the candidate/llm rows, and an overlay-materialized representative must not
+    shadow it into a silent no-measure. ``ri_evidence_source`` records the donor
+    method when a backfill happened.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
@@ -409,7 +433,8 @@ def load_relationship_for_pair(
     if not rels:
         return None
     precedence = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
-    rel = max(rels, key=lambda r: precedence.get(r.detection_method or "", 0))
+    ranked = sorted(rels, key=lambda r: precedence.get(r.detection_method or "", 0), reverse=True)
+    rel = ranked[0]
     table_names = dict(
         session.execute(
             select(Table.table_id, Table.table_name).where(
@@ -419,7 +444,19 @@ def load_relationship_for_pair(
         .tuples()
         .all()
     )
-    return _relationship_to_dict(rel, table_names)
+    result = _relationship_to_dict(rel, table_names)
+    evidence: dict[str, Any] = dict(result.get("evidence") or {})
+    for donor in ranked[1:]:
+        donor_evidence = donor.evidence or {}
+        backfilled = [
+            key for key in _RI_EVIDENCE_KEYS if key not in evidence and key in donor_evidence
+        ]
+        for key in backfilled:
+            evidence[key] = donor_evidence[key]
+        if backfilled:
+            evidence.setdefault("ri_evidence_source", donor.detection_method)
+    result["evidence"] = evidence
+    return result
 
 
 def load_session_relationships(

@@ -230,17 +230,26 @@ class SlicingPhase(BasePhase):
                     )
                 ).scalars()
                 name_by_id = {tid: name for name, tid in id_by_name.items()}
+                # Referential integrity on the agent's choice: the named column
+                # must exist among the candidates the prompt was given (own or
+                # enriched) — a hallucinated name must not land in the canonical
+                # field the query agent and resolver consume.
+                known_cols_by_table: dict[str, set[str]] = {
+                    t["table_name"]: {c["column_name"] for c in t.get("columns", [])}
+                    for t in context_data.get("tables", [])
+                }
                 for entity in entities:
                     if entity.time_column:
                         continue  # inherit, never override
-                    chosen = slicing.time_columns.get(name_by_id.get(entity.table_id, ""))
-                    if chosen:
-                        entity.time_column = chosen
-                        logger.info(
-                            "time_axis_filled",
-                            table=name_by_id.get(entity.table_id),
-                            column=chosen,
-                        )
+                    table_name = name_by_id.get(entity.table_id, "")
+                    chosen = slicing.time_columns.get(table_name)
+                    if not chosen:
+                        continue
+                    if chosen not in known_cols_by_table.get(table_name, set()):
+                        logger.warning("time_axis_unknown_column", table=table_name, column=chosen)
+                        continue
+                    entity.time_column = chosen
+                    logger.info("time_axis_filled", table=table_name, column=chosen)
 
         # Store slice definitions
         sid = ctx.require_session_id()
@@ -484,9 +493,10 @@ class SlicingPhase(BasePhase):
             tid for ev in ev_by_fact.values() if ev for tid in (ev.dimension_table_ids or [])
         }
         entity_stmt = select(TableEntity).where(
-            TableEntity.table_id.in_(list(set(table_ids) | dim_table_ids)),
-            TableEntity.run_id == ctx.run_id,
+            TableEntity.table_id.in_(list(set(table_ids) | dim_table_ids))
         )
+        if ctx.run_id is not None:
+            entity_stmt = entity_stmt.where(TableEntity.run_id == ctx.run_id)
         time_col_by_table: dict[str, str | None] = {
             e.table_id: e.time_column for e in ctx.session.execute(entity_stmt).scalars()
         }

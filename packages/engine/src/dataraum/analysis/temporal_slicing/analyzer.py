@@ -686,7 +686,10 @@ def _numeric_columns(duckdb_conn: duckdb.DuckDBPyConnection, slice_table_name: s
     }
     try:
         rows = duckdb_conn.execute(f'DESCRIBE "{slice_table_name}"').fetchall()
-    except Exception:
+    except Exception as e:
+        # No sums for this slice table → the lineage witness can never fire on
+        # this fact; that abstention must be visible, never silent.
+        logger.warning("slice_describe_failed", table=slice_table_name, error=str(e))
         return []
     return [r[0] for r in rows if str(r[1]).split("(")[0].upper() in numeric]
 

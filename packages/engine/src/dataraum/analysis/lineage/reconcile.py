@@ -64,21 +64,39 @@ class EntityReconciliation:
 
 
 def reconcile(y: Sequence[float], m: Sequence[float]) -> tuple[float, float]:
-    """Return ``(R_flow, R_stock)`` for one entity's series against its anchor."""
+    """Return ``(R_flow, R_stock)`` for one entity's series against its anchor.
+
+    A residual is ``inf`` when its hypothesis' normalizer is zero (a dead
+    anchor for flow; a dead anchor TAIL for stock): the residual is scale-free
+    by construction, and silently degrading to an absolute scale can mint a
+    spurious perfect fit — the hypothesis abstains instead.
+    """
     if len(y) != len(m):
         raise ValueError(f"series/anchor length mismatch: {len(y)} != {len(m)}")
-    denom_flow = sum(abs(v) for v in m) or 1.0
-    r_flow = sum(abs(yv - mv) for yv, mv in zip(y, m, strict=True)) / denom_flow
+    denom_flow = sum(abs(v) for v in m)
+    r_flow = (
+        sum(abs(yv - mv) for yv, mv in zip(y, m, strict=True)) / denom_flow
+        if denom_flow
+        else float("inf")
+    )
     dy = [y[t] - y[t - 1] for t in range(1, len(y))]
     m_tail = list(m[1:])
-    denom_stock = sum(abs(v) for v in m_tail) or 1.0
-    r_stock = sum(abs(dv - mv) for dv, mv in zip(dy, m_tail, strict=True)) / denom_stock
+    denom_stock = sum(abs(v) for v in m_tail)
+    r_stock = (
+        sum(abs(dv - mv) for dv, mv in zip(dy, m_tail, strict=True)) / denom_stock
+        if denom_stock
+        else float("inf")
+    )
     return r_flow, r_stock
 
 
 def classify_entity(y: Sequence[float], m: Sequence[float]) -> EntityReconciliation:
-    """Classify one entity, abstaining on short series, dead anchors, or bad fits."""
-    if len(y) < MIN_PERIODS or not any(m):
+    """Classify one entity, abstaining on short/dead series, dead anchors, or bad fits.
+
+    A dead MEASURE (identically zero) abstains symmetrically with the dead
+    anchor: a series that never moves has no stock/flow nature to detect.
+    """
+    if len(y) < MIN_PERIODS or not any(m) or not any(y):
         return EntityReconciliation(r_flow=float("inf"), r_stock=float("inf"), label=None)
     r_flow, r_stock = reconcile(y, m)
     if min(r_flow, r_stock) > FIRE_RESIDUAL_MAX:
@@ -115,11 +133,14 @@ def dispose(
     agreement = counts[pattern] / len(voted)
     if agreement < AGREEMENT_MIN:
         return None  # split vote — ambiguous lineage is ignorance, not a verdict
+    # Medians over the WINNING-label voters only — a dissenting minority's
+    # residuals would contaminate the diagnostics the witness later surfaces.
+    winners = [r for r in voted if r.label == pattern]
     return CandidateDisposal(
         pattern=pattern,
         match_rate=(len(voted) / len(results)) * agreement,
-        r_flow_median=median(r.r_flow for r in voted),
-        r_stock_median=median(r.r_stock for r in voted),
+        r_flow_median=median(r.r_flow for r in winners),
+        r_stock_median=median(r.r_stock for r in winners),
         n_entities=len(results),
         n_entities_fired=len(voted),
     )

@@ -67,6 +67,7 @@ def _seed(
     *,
     shared_dimension: bool = True,
     junk_column: bool = False,
+    key_column: bool = False,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions + the per-period slice sums.
 
@@ -75,9 +76,10 @@ def _seed(
     per-period sums ARE the movement. Both facts sliced by the same dimension.
     """
     ids: dict[str, str] = {}
+    extra = ["account_key"] if key_column else []
     for name, cols in (
-        ("trial_balance", ["balance", "net_change"]),
-        ("journal_lines", ["debit", "credit"]),
+        ("trial_balance", ["balance", "net_change", *extra]),
+        ("journal_lines", ["debit", "credit", *extra]),
     ):
         table = Table(
             table_id=str(uuid4()),
@@ -122,9 +124,16 @@ def _seed(
             running += net
             tb_sums = {"balance": running, "net_change": net}
             jl_sums: dict[str, float] = {"debit": net, "credit": 0.0}
+            if key_column:
+                # Identical key sums on both sides — the identity-noise shape.
+                tb_sums["account_key"] = float(k * 100)
+                jl_sums["account_key"] = float(k * 100)
             if junk_column:
                 jl_sums["line_id"] = float((i * 7919 + k * 104729) % 1000)
-            for fact_name, sums in (("trial_balance", tb_sums), ("journal_lines", jl_sums)):
+            for fact_name, sums, rows in (
+                ("trial_balance", tb_sums, 5),
+                ("journal_lines", jl_sums, 50),
+            ):
                 if fact_name == "journal_lines" and not shared_dimension:
                     continue
                 session.add(
@@ -136,7 +145,7 @@ def _seed(
                         period_label=label,
                         period_start=date(2025, i + 1, 1),
                         period_end=date(2025, i + 1, 28),
-                        row_count=10,
+                        row_count=rows,
                         column_sums=sums,
                     )
                 )
@@ -173,8 +182,9 @@ class TestDiscoverAggregationLineage:
         assert row.slice_dimension == _DIM
         assert row.match_rate > 0.99
         assert row.run_id == _RUN
-        # The winning convention reproduces the movement: debit (credit is zero).
-        assert '"debit"' in row.convention_sql
+        # The winning convention reproduces the movement exactly: the single
+        # column "debit" (ties with "debit" - "credit" break to singles-first).
+        assert row.convention_sql == '"debit"'
 
     def test_flow_measure_reconciles_per_period(self, real_session: Session) -> None:
         ids = _seed(real_session)
@@ -194,6 +204,42 @@ class TestDiscoverAggregationLineage:
         assert row.pattern == "cumulative"
         assert "line_id" not in row.convention_sql
         assert row.match_rate > 0.99
+
+    def test_no_inverted_lineage_rows(self, real_session: Session) -> None:
+        # The direction gate: journal_lines is finer-grained than trial_balance,
+        # so NO row may claim a line column aggregates the summary table —
+        # the silent inversion the senior review caught on the live run.
+        ids = _seed(real_session)
+        _discover(real_session, ids)
+        for col in ("journal_lines.debit", "journal_lines.credit"):
+            assert _row_for(real_session, ids[col]) is None, f"inverted lineage for {col}"
+
+    def test_key_columns_excluded(self, real_session: Session) -> None:
+        # A catalog-evidenced key column (relationship endpoint) is neither a
+        # measure nor a convention term — identity sums are not quantities.
+        from dataraum.analysis.relationships.db_models import Relationship
+
+        ids = _seed(real_session, key_column=True)
+        real_session.add(
+            Relationship(
+                session_id=_SESSION,
+                run_id=_RUN,
+                from_table_id=ids["trial_balance"],
+                from_column_id=ids["trial_balance.account_key"],
+                to_table_id=ids["journal_lines"],
+                to_column_id=ids["journal_lines.account_key"],
+                relationship_type="foreign_key",
+                cardinality="one-to-many",
+                confidence=0.9,
+                detection_method="llm",
+            )
+        )
+        real_session.flush()
+        _discover(real_session, ids)
+        assert _row_for(real_session, ids["trial_balance.account_key"]) is None
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert "account_key" not in row.convention_sql
 
     def test_no_shared_dimension_abstains(self, real_session: Session) -> None:
         ids = _seed(real_session, shared_dimension=False)

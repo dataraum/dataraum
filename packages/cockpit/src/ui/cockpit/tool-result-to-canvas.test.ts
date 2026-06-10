@@ -311,6 +311,88 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("run_sql", {}, undefined)).toBeNull();
 	});
 
+	it("maps answer to an answer-result, lifting the confidence onto the canvas (DAT-500)", () => {
+		const result = {
+			answer: "Total revenue is 42.",
+			grid: { sql: "SELECT SUM(revenue) AS value FROM t" },
+			assumptions: ["Treated 2024 as the fiscal year."],
+			concepts_used: ["revenue"],
+			tables_touched: ["t"],
+			data_quality: { band: "investigate", note: "one table not analyzed" },
+			components: [],
+			reliability: {
+				grounded_ratio: 0.5,
+				exact_reuse: 1,
+				adapted: 0,
+				fresh: 1,
+			},
+		};
+		expect(toolResultToCanvas("answer", result)).toEqual({
+			kind: "answer-result",
+			sql: "SELECT SUM(revenue) AS value FROM t",
+			confidence: {
+				band: "investigate",
+				note: "one table not analyzed",
+				groundedRatio: 0.5,
+				reuse: { exactReuse: 1, adapted: 0, fresh: 1 },
+				assumptions: ["Treated 2024 as the fiscal year."],
+				conceptsUsed: ["revenue"],
+			},
+		});
+	});
+
+	it("answer with no analyzed table yields a null band + zeroed reuse (no throw)", () => {
+		expect(
+			toolResultToCanvas("answer", {
+				grid: { sql: "SELECT 1" },
+				data_quality: null,
+				assumptions: [],
+				concepts_used: [],
+			}),
+		).toEqual({
+			kind: "answer-result",
+			sql: "SELECT 1",
+			confidence: {
+				band: null,
+				note: undefined,
+				groundedRatio: 0,
+				reuse: { exactReuse: 0, adapted: 0, fresh: 0 },
+				assumptions: [],
+				conceptsUsed: [],
+			},
+		});
+	});
+
+	it("returns null for answer with no grid or an agent error (canvas unchanged)", () => {
+		expect(toolResultToCanvas("answer", { grid: null })).toBeNull();
+		expect(toolResultToCanvas("answer", {})).toBeNull();
+		expect(toolResultToCanvas("answer", { error: "boom" })).toBeNull();
+	});
+
+	it("tolerates a drifted answer result without throwing (non-object fields, bad types)", () => {
+		// data_quality a bare string, reliability a string, concepts_used with a
+		// non-string member — all must degrade to defaults, never throw.
+		const state = toolResultToCanvas("answer", {
+			grid: { sql: "SELECT 1" },
+			data_quality: "ready",
+			reliability: "n/a",
+			assumptions: ["ok", 42, null],
+			concepts_used: ["revenue", 7],
+		});
+		expect(state).toEqual({
+			kind: "answer-result",
+			sql: "SELECT 1",
+			confidence: {
+				band: null,
+				note: undefined,
+				groundedRatio: 0,
+				reuse: { exactReuse: 0, adapted: 0, fresh: 0 },
+				assumptions: ["ok"],
+				conceptsUsed: ["revenue"],
+			},
+		});
+	});
+
 	it("maps a teach_metric OVERRIDE to the metric-shadow key (DAT-482)", () => {
 		expect(
 			toolResultToCanvas("teach_metric", {

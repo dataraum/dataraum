@@ -29,11 +29,53 @@ import type { WhyMetricResult } from "#/tools/why-metric";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
-import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import type { AnswerConfidence, CanvasState } from "#/ui/cockpit/canvas-state";
 
 /** Projects one tool's result (+ call input) to a CanvasState, or null to leave
  * the canvas unchanged. */
 type CanvasProjector = (result: unknown, input: unknown) => CanvasState | null;
+
+/**
+ * Lift the confidence an `answer` result carries onto the canvas (DAT-500).
+ * Reads defensively from the `unknown` tool result (cockpit boundary rule): every
+ * field is optional/absent-tolerant, so a degenerate or drifted result still
+ * yields a sane (zeroed / null-band) confidence rather than throwing.
+ */
+function readAnswerConfidence(
+	result: Record<string, unknown> | null,
+): AnswerConfidence {
+	const num = (v: unknown): number =>
+		typeof v === "number" && Number.isFinite(v) ? v : 0;
+	const strings = (v: unknown): string[] =>
+		Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+	// Object-type guard before any field access, so a drifted result that makes
+	// data_quality/reliability a non-object (e.g. a bare string) yields defaults,
+	// not a throw — the whole point of reading defensively.
+	const asObject = (v: unknown): Record<string, unknown> | null =>
+		v !== null && typeof v === "object" && !Array.isArray(v)
+			? (v as Record<string, unknown>)
+			: null;
+
+	const dq = asObject(result?.data_quality);
+	const band =
+		dq?.band === "ready" || dq?.band === "investigate" || dq?.band === "blocked"
+			? dq.band
+			: null;
+	const rel = asObject(result?.reliability);
+
+	return {
+		band,
+		note: typeof dq?.note === "string" ? dq.note : undefined,
+		groundedRatio: num(rel?.grounded_ratio),
+		reuse: {
+			exactReuse: num(rel?.exact_reuse),
+			adapted: num(rel?.adapted),
+			fresh: num(rel?.fresh),
+		},
+		assumptions: strings(result?.assumptions),
+		conceptsUsed: strings(result?.concepts_used),
+	};
+}
 
 /** A complete why_* result carries the boolean `found` discriminant — the SDK's
  * errored-call output (`{ error: string }`) does not, and must not project. */
@@ -254,13 +296,21 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// the FULL result from the composed statement. Unlike run_sql, the grid SQL is
 	// in the RESULT (result.grid.sql) — the composed final_sql isn't in the call
 	// input (just the question). An errored sub-agent (`{ error }`, no grid) or a
-	// run with no runnable query (grid null) leaves the canvas unchanged.
+	// run with no runnable query (grid null) leaves the canvas unchanged. When a
+	// grid IS present, the confidence the answer carries rides onto the canvas with
+	// it (DAT-500) instead of being dropped — band, grounded ratio, reuse, assumptions.
 	answer: (result) => {
 		if (isAgentError(result)) return null;
-		const grid = (result as { grid?: { sql?: unknown } | null } | null)?.grid;
-		return grid && typeof grid.sql === "string" && grid.sql.length > 0
-			? { kind: "result-grid", sql: grid.sql }
-			: null;
+		const r = result as Record<string, unknown> | null;
+		const grid = (r?.grid ?? null) as { sql?: unknown } | null;
+		if (!grid || typeof grid.sql !== "string" || grid.sql.length === 0) {
+			return null;
+		}
+		return {
+			kind: "answer-result",
+			sql: grid.sql,
+			confidence: readAnswerConfidence(r),
+		};
 	},
 	// The `upload` UI tool carries no data — it just opens the upload area so the
 	// user can drop local files.

@@ -106,8 +106,19 @@ measurements:
     # A within-table formula no longer holds (e.g. net ≠ debit − credit). Worst for
     # aggregation (you'd sum a broken derivation) and reporting. Was formula_match →
     # aggregation_intent 0.7 in the network.
-    aggregation_intent: { score: 0.7 }
-    reporting_intent: { score: 0.6 }
+    #
+    # formula_conflict / formula_ignorance (ADR-0009, derived-value second witness):
+    # the pooled formula-identity adjudication — the data-discovered/graded formula
+    # vs the LLM's name-based hypothesis. "score" stays the honest mismatch rate
+    # (obj.score); the pooled C/U ride in evidence under these names because a
+    # weight named "conflict" would alias to obj.score (loss.py primary-signal
+    # rule). A grounded divergence (name says net+tax, data says otherwise) is
+    # worst for aggregation/reporting, mild for a caveatable query. PLACEHOLDER
+    # priors, calibrated: false — eval rig has not run for this measurement;
+    # NOT tuned to pass any metric.
+    query_intent: { formula_conflict: 0.3, formula_ignorance: 0.1 }
+    aggregation_intent: { score: 0.7, formula_conflict: 0.6, formula_ignorance: 0.2 }
+    reporting_intent: { score: 0.6, formula_conflict: 0.5, formula_ignorance: 0.2 }
 
   # --- Relocated from network.yaml (DAT-442): this loss table is now the WHOLE rollup.
   # The noisy-OR DAG + intent-word nodes are deleted; each measurement maps DIRECTLY to

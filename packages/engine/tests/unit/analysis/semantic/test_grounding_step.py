@@ -53,6 +53,7 @@ def _col(name: str, role: str) -> ColumnSemanticOutput:
         confidence=0.9,
         temporal_behavior_claim="unsure",
         temporal_behavior_claim_confidence=0.0,
+        derived_formula_confidence=0.0,
     )
 
 

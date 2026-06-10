@@ -95,3 +95,15 @@ witnesses:
     llm_judgment: 0.7
     manual_curation: 0.9
     keeper_retention: 0.5
+
+  # derived_value (ADR-0009, derived-value second witness): UNCALIBRATED
+  # placeholder priors — calibrated: false for this measurement; the rig has not
+  # run for it (needs a generative family with a formula-divergence injection:
+  # column named for one formula, values following another). formula_discovery
+  # reads every row (the discovery/grading match-rate statistic) → high prior;
+  # llm_hypothesis is a name-reader → the same prior class as temporal's
+  # llm_claim placeholder. NOT tuned to pass any metric; re-measure via the eval
+  # rig and replace with provenance.
+  derived_value:
+    formula_discovery: 0.9
+    llm_hypothesis: 0.6

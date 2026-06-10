@@ -86,6 +86,15 @@ class SemanticAnnotation(Base):
     temporal_behavior_claim_confidence: Mapped[float | None] = mapped_column(Float)
     temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
 
+    # Independent LLM formula hypothesis (ADR-0009, derived_value second witness):
+    # the within-table arithmetic expression this column SHOULD obey from its
+    # name + concept context (e.g. 'subtotal + tax_amount'), with the LLM's
+    # confidence. Written by semantic_per_column alongside the stock/flow claim;
+    # pooled against the data-discovered formula (correlation phase) in the
+    # derived_value adjudication. None = no hypothesis (the witness abstains).
+    derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
+    derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
+
     # Cross-column unit inference: column name that defines the unit for this measure
     # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
     unit_source_column: Mapped[str | None] = mapped_column(String)

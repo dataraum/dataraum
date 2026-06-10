@@ -658,6 +658,8 @@ CREATE TABLE semantic_annotations (
 	temporal_behavior_claim VARCHAR, 
 	temporal_behavior_claim_confidence FLOAT, 
 	temporal_behavior_contested BOOLEAN, 
+	derived_formula_hypothesis VARCHAR, 
+	derived_formula_confidence FLOAT, 
 	unit_source_column VARCHAR, 
 	null_tokens JSON, 
 	annotation_source VARCHAR, 

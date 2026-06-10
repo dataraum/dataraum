@@ -84,6 +84,26 @@ system_prompt: |
   low when guessing); use 'unsure' with low confidence rather than guessing.
   </temporal_behavior_classification>
 
+  <derived_formula_hypothesis>
+  Some measure columns are COMPUTED from two other columns in the same table
+  (e.g. total = subtotal + tax, line_amount = quantity * unit_price). For each
+  such column, set derived_formula_hypothesis to the arithmetic expression the
+  column SHOULD obey given the business meaning of the names: exactly two
+  column names from the SAME table joined by one of + - * /, using EXACT
+  column names from the schema (e.g. "subtotal + tax_amount"). No constants,
+  functions, or cross-table references.
+
+  This is an INDEPENDENT expectation, not a verification: state what the
+  name says the column should be even if you cannot check it against the
+  sample values — a downstream check grades your hypothesis against the data,
+  and a grounded disagreement is exactly the signal it needs. Set null when
+  the column does not read as derived (keys, dimensions, raw measures) or
+  when no two plausible source columns exist. Set derived_formula_confidence
+  to how clearly the names communicate the formula (high for explicit naming
+  like total/net/tax; low when guessing among several plausible formulas;
+  0.0 with a null hypothesis).
+  </derived_formula_hypothesis>
+
   <unit_detection>
   For measure columns, determine the column that defines their unit and set
   unit_source_column. You can see every column in the table, so reason across

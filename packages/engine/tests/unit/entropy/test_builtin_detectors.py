@@ -177,11 +177,17 @@ class TestDetectorRequirements:
         assert detector is not None
         assert "semantic" in detector.required_analyses
 
-    def test_derived_value_requires_correlation(self, registry: DetectorRegistry):
-        """Test DerivedValueDetector requires correlation analysis."""
+    def test_derived_value_self_loads(self, registry: DetectorRegistry):
+        """DerivedValueDetector has no required analyses (second-witness landing).
+
+        Either witness path may be absent — correlation rows are session-run
+        written, the semantic formula hypothesis is add_source written — so
+        load_data self-loads what exists and detect() measures what it got
+        (the temporal_behavior convention).
+        """
         detector = registry.detectors.get("derived_value")
         assert detector is not None
-        assert "correlation" in detector.required_analyses
+        assert detector.required_analyses == []
 
     def test_join_path_requires_relationships(self, registry: DetectorRegistry):
         """Test JoinPathDeterminismDetector requires relationships analysis."""

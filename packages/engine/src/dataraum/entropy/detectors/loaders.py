@@ -362,6 +362,11 @@ def load_semantic(
         semantic_dict["temporal_behavior_claim"] = sa.temporal_behavior_claim
     if sa.temporal_behavior_claim_confidence is not None:
         semantic_dict["temporal_behavior_claim_confidence"] = sa.temporal_behavior_claim_confidence
+    # The LLM formula-hypothesis witness (derived_value second witness, ADR-0009).
+    if sa.derived_formula_hypothesis:
+        semantic_dict["derived_formula_hypothesis"] = sa.derived_formula_hypothesis
+    if sa.derived_formula_confidence is not None:
+        semantic_dict["derived_formula_confidence"] = sa.derived_formula_confidence
     return semantic_dict
 
 
@@ -579,6 +584,60 @@ def load_correlation(
             for dc in dcs
         ]
     }
+
+
+def load_hypothesis_match_rate(
+    session: Session,
+    column_id: str,
+    duckdb_conn: Any,
+    source_columns: tuple[str, str],
+    operation: str,
+) -> dict[str, Any] | None:
+    """Row-grade an LLM-hypothesized formula over the column's typed table.
+
+    The derived_value second witness (ADR-0009): the LLM hypothesizes
+    ``column = col1 op col2``; the data grounds it with the SAME row statistic
+    the formula discovery uses (``formula_match_counts`` — shared tolerance,
+    shared zero-target exclusion). Source names are resolved case-insensitively
+    against the table's actual columns — an unknown name (hallucinated source)
+    returns ``None`` so the data witness abstains instead of guessing; the same
+    for a non-numeric target (nothing gradable → total 0).
+
+    Returns ``{"match_rate", "matches", "total"}`` or ``None`` when ungradable.
+    """
+    from dataraum.analysis.correlation.within_table.derived_columns import formula_match_counts
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.entropy.measurements.derived_value import OPERATION_SYMBOL
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+    from dataraum.storage import Column, Table
+
+    op = OPERATION_SYMBOL.get(operation)
+    if duckdb_conn is None or op is None:
+        return None
+    col = session.get(Column, column_id)
+    if col is None:
+        return None
+    table = session.get(Table, col.table_id)
+    if table is None or not table.duckdb_path:
+        return None
+
+    # Resolve hypothesis source names against the table's REAL columns (the
+    # actual stored spelling is what gets quoted into SQL — never the LLM text).
+    siblings = {
+        c.column_name.strip().lower(): c.column_name
+        for c in session.execute(select(Column).where(Column.table_id == col.table_id)).scalars()
+    }
+    resolved = [siblings.get(name.strip().lower()) for name in source_columns]
+    if any(name is None for name in resolved) or len(resolved) != 2:
+        return None
+
+    fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{table.duckdb_path}"'
+    matches, total = formula_match_counts(
+        duckdb_conn, fqn, col.column_name, str(resolved[0]), str(resolved[1]), op
+    )
+    if total == 0:
+        return None
+    return {"match_rate": matches / total, "matches": matches, "total": total}
 
 
 # load_drift_summaries removed with the temporal_drift detector (DAT-442 reset).

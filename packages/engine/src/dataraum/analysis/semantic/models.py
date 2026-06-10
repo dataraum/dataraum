@@ -135,6 +135,33 @@ class ColumnSemanticOutput(BaseModel):
         ),
     )
 
+    derived_formula_hypothesis: str | None = Field(
+        default=None,
+        description=(
+            "If this column reads as COMPUTED from two other columns in the SAME table, "
+            "the arithmetic expression it should obey from the business meaning of the "
+            "names: exactly two column names from this table joined by one of + - * / "
+            "(e.g. 'subtotal + tax_amount', 'quantity * unit_price'). Use EXACT column "
+            "names from the schema; no constants, functions, or columns from other "
+            "tables. This is an INDEPENDENT expectation — state what the name says the "
+            "column SHOULD be, even without verifying it against the values. Set to null "
+            "when the column does not read as derived (keys, dimensions, raw measures) "
+            "or when no two plausible source columns exist in this table."
+        ),
+    )
+
+    derived_formula_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence (0.0–1.0) in derived_formula_hypothesis: how clearly the column "
+            "and source names communicate the formula. High (0.85–1.0) for explicit "
+            "naming ('total_amount' with 'net_amount' + 'tax_amount'). Low (0.2–0.4) "
+            "when guessing among several plausible formulas. Set 0.0 when the "
+            "hypothesis is null."
+        ),
+    )
+
 
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.

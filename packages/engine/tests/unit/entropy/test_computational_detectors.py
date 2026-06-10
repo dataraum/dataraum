@@ -186,4 +186,7 @@ class TestDerivedValueDetector:
         assert detector.detector_id == "derived_value"
         assert detector.layer == "computational"
         assert detector.dimension == "derived_values"
-        assert detector.required_analyses == ["correlation"]
+        # No required_analyses (second-witness landing): either witness path may
+        # be absent — load_data self-loads correlation AND the semantic
+        # hypothesis; detect() measures whatever is present.
+        assert detector.required_analyses == []

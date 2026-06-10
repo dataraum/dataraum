@@ -1,0 +1,61 @@
+# Trial Balance ↔ General Ledger Reconciliation
+# The watcher the deliverables were missing (DAT-432/L7): every board-level
+# number flows through journal_lines, and the trial balance is the bookkeeping
+# summary that must agree with it cell by cell.
+
+validation_id: tb_gl_reconciliation
+name: Trial Balance to General Ledger Reconciliation
+description: >
+  Validates that the trial balance equals the general ledger it summarizes:
+  for every (account, period) cell, trial_balance.debit_balance must equal
+  SUM(journal_lines.debit) and credit_balance must equal
+  SUM(journal_lines.credit) over that account's posted lines in that period.
+  A mismatch means either the trial balance was modified after preparation or
+  postings are missing — every downstream aggregate is suspect either way.
+
+category: financial
+severity: critical
+version: "1.0"
+
+tags:
+  - reconciliation
+  - trial-balance
+  - journal-lines
+  - general-ledger
+
+relevant_cycles:
+  - record_to_report
+
+check_type: aggregate
+
+parameters:
+  tolerance: 0.005
+
+sql_hints: >
+  The trial balance is PERIODIC, not cumulative: each trial_balance row holds
+  one account's activity for ONE period (the period column), so compare it to
+  the journal lines of that same period only — never to a running total.
+
+  Join path: trial_balance.account_id = journal_lines.account_id, and the
+  period comes from the journal entry date — journal_lines.entry_id references
+  journal_entries.entry_id; truncate journal_entries.date to the month and
+  compare it to trial_balance.period. Use POSTED journal entries only
+  (journal_entries.status).
+
+  For each (account_id, period) cell of the trial balance, compute
+  SUM(journal_lines.debit) and SUM(journal_lines.credit) over the matching
+  posted lines, and compare to debit_balance / credit_balance with the
+  relative tolerance. A cell mismatches when either side differs by more than
+  the tolerance fraction of the larger magnitude.
+
+  Calculate the violation rate as a FRACTION (0.0 to 1.0):
+    violation_rate = mismatched_cells / total_cells
+  over every trial balance (account, period) cell.
+
+  Return: total_cells, mismatched_cells, violation_rate, and the worst
+  absolute difference seen.
+
+expected_outcome: >
+  The trial balance is generated from the ledger, so every cell should
+  reconcile exactly; any violation_rate above zero means the books and their
+  summary disagree and every aggregate derived from either is suspect.

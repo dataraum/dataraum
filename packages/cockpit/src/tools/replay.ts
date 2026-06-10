@@ -216,14 +216,14 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 }
 
 /**
- * The `replay` tool for the agent loop. `needsApproval: true` — replay re-runs
- * engine processing (a durable Temporal workflow), so the user confirms before
- * it kicks off.
+ * The `replay` tool for the agent loop. An acting tool: replay re-runs engine
+ * processing (a durable Temporal workflow), so it runs on the user's explicit
+ * instruction — there is no approval gate.
  */
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Requires user approval. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
+		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
 	inputSchema: z.object({
 		session_id: z
 			.string()
@@ -249,5 +249,4 @@ export const replayTool = toolDefinition({
 			session_id: z.string(),
 		}),
 	),
-	needsApproval: true,
 }).server((input) => catchActionable(() => replay(input)));

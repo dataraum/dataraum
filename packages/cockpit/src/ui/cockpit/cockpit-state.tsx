@@ -91,10 +91,6 @@ interface CockpitActions {
 	/** Abort the in-flight turn (cancels the SSE stream → the server aborts the
 	 * Anthropic call — see /api/chat). */
 	stop: () => void;
-	addToolApprovalResponse: (response: {
-		id: string;
-		approved: boolean;
-	}) => Promise<void>;
 	/** Pin the canvas to a past tool-call's result (re-derived from messages). */
 	pinCanvas: (callId: string) => void;
 	/** Clear the pin → the canvas snaps back to the live latest. */
@@ -154,14 +150,7 @@ export function CockpitProvider({
 	// in sendTurn before sendMessage() attaches them to exactly that turn. Stable
 	// ref → useChat never recreates the client over it.
 	const refsHolder = useMemo<{ refs?: string }>(() => ({}), []);
-	const {
-		messages,
-		isLoading,
-		error,
-		sendMessage,
-		stop,
-		addToolApprovalResponse,
-	} = useChat({
+	const { messages, isLoading, error, sendMessage, stop } = useChat({
 		connection,
 		forwardedProps: refsHolder,
 		threadId: conversationId,
@@ -236,11 +225,10 @@ export function CockpitProvider({
 		() => ({
 			sendMessage: sendTurn,
 			stop,
-			addToolApprovalResponse,
 			pinCanvas,
 			returnToLive,
 		}),
-		[sendTurn, stop, addToolApprovalResponse, pinCanvas, returnToLive],
+		[sendTurn, stop, pinCanvas, returnToLive],
 	);
 
 	return (

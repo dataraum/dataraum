@@ -1,5 +1,5 @@
 // Unit tests for the add_source TRIGGER (DAT-352; folded into the select
-// approval gate by DAT-436 — `select.server` is the only caller, and it
+// call by DAT-436 — `select.server` is the only caller, and it
 // pre-flights the vertical BEFORE any write, so the trigger itself no longer
 // re-checks concepts).
 //
@@ -94,7 +94,7 @@ beforeEach(() => {
 	h.recordRun.mockClear();
 });
 
-describe("triggerAddSource (DAT-352, one-gate DAT-436)", () => {
+describe("triggerAddSource (DAT-352, one-call DAT-436)", () => {
 	it("seeds the investigation_sessions row BEFORE starting the workflow", async () => {
 		await triggerAddSource({ source_ids: ["src-1"] });
 

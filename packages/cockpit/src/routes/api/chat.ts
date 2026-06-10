@@ -2,9 +2,10 @@
 // SERVER-OWNED conversation (DAT-462).
 //
 // The TanStack AI SDK owns the agentic tool-loop and the SSE transport: chat()
-// runs the model, executes server tools (pausing for confirmation on
-// needsApproval tools), feeds results back, and iterates; toServerSentEventsResponse()
-// streams it. The client consumes it via useChat({ connection }).
+// runs the model, executes server tools directly (no approval gate — acting
+// tools run on the user's instruction), feeds results back, and iterates;
+// toServerSentEventsResponse() streams it. The client consumes it via
+// useChat({ connection }).
 //
 // Server-owned conversation (DAT-462): cockpit_db is the source of truth for the
 // transcript. Each turn the handler persists the new user turn (+ any model-only
@@ -208,10 +209,8 @@ export const Route = createFileRoute("/api/chat")({
 
 				// Reconstruct the model's view from cockpit_db (server-owned): persist
 				// the new user turn (+ any model-only refs), reload the full transcript,
-				// and bound it for the model — EXCEPT on a tool-approval continuation,
-				// which has no trailing user turn (see below). Degradable: if cockpit_db
-				// is unavailable, serve the client-sent messages unpersisted rather than
-				// a dead chat.
+				// and bound it for the model. Degradable: if cockpit_db is unavailable,
+				// serve the client-sent messages unpersisted rather than a dead chat.
 				let modelMessages: ChatMessages = messages;
 				let persistTo: string | null = null;
 				try {
@@ -229,20 +228,13 @@ export const Route = createFileRoute("/api/chat")({
 						entries.push({ message: refsRow(refs), modelOnly: true });
 					}
 					if (entries.length > 0) await appendMessages(threadId, entries);
-					// A fresh user turn → feed the model the BOUNDED server-owned
-					// transcript (DAT-462). A needsApproval CONTINUATION (the user
-					// approved a teach/select/replay/… gate) has NO trailing user turn:
-					// the client re-sends the assistant tool-call now carrying the
-					// approval. The server reload would end on that persisted assistant
-					// tool-call (teed BEFORE approval, so without the decision), which a
-					// no-prefill model (sonnet-4-6 et al.) rejects with "the conversation
-					// must end with a user message". So on a continuation, feed the model
-					// the CLIENT list — it carries the in-flight approval and ends on a
-					// tool-result/user turn. The bounding loss is one leg only (the next
-					// real user turn reloads + re-bounds); the result still tees+persists.
-					modelMessages = turn
-						? buildModelMessages(await loadModelTranscript(threadId))
-						: messages;
+					// Feed the model the BOUNDED server-owned transcript (DAT-462). Every
+					// POST now ends on a user turn (the gate that produced trailing
+					// assistant-tool-call continuations is gone), so the reload always
+					// ends on a user message — what a no-prefill model requires.
+					modelMessages = buildModelMessages(
+						await loadModelTranscript(threadId),
+					);
 					persistTo = threadId;
 				} catch (err) {
 					console.error(

@@ -112,9 +112,10 @@ export async function operatingModel(
 }
 
 /**
- * The `operating_model` tool for the agent loop. `needsApproval: true` — it
- * starts a durable Temporal workflow that makes real LLM calls (SQL generation
- * per declared validation), so the user confirms before it kicks off.
+ * The `operating_model` tool for the agent loop. An acting tool: it starts a
+ * durable Temporal workflow that makes real LLM calls (SQL generation per
+ * declared validation), so it runs on the user's explicit instruction — there
+ * is no approval gate.
  */
 export const operatingModelTool = toolDefinition({
 	name: "operating_model",
@@ -122,8 +123,8 @@ export const operatingModelTool = toolDefinition({
 		"Run the operating-model stage over a begin_session session: take the " +
 		"vertical's declared validations through their lifecycle — ground each " +
 		"against the session's tables and execute the ones that bind; a " +
-		"validation that cannot run stays visible with the reason. Requires user " +
-		"approval (runs engine processing + LLM calls). Returns the workflow + " +
+		"validation that cannot run stays visible with the reason. Runs engine " +
+		"processing + LLM calls. Returns the workflow + " +
 		"run id; call workflow_status with them to check progress, then " +
 		"look_validation to see the outcomes. Re-running the same session_id " +
 		"re-evaluates its validations.",
@@ -139,5 +140,4 @@ export const operatingModelTool = toolDefinition({
 		run_id: z.string(),
 		session_id: z.string(),
 	}),
-	needsApproval: true,
 }).server((input) => operatingModel(input));

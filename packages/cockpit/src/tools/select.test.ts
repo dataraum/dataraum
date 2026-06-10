@@ -1,6 +1,6 @@
-// Unit tests for the select tool (DAT-398, DAT-422; one-gate trigger DAT-436)
+// Unit tests for the select tool (DAT-398, DAT-422; one-call trigger DAT-436)
 // — the cockpit's first writer of the engine `ws_<id>.sources` table, and since
-// DAT-436 the single approval that also STARTS the import.
+// DAT-436 the single call that also STARTS the import.
 //
 // Persistence tests drive `persistSelection` (the row-shape core) against two
 // mocked seams: `#/config` (s3Bucket) and the Drizzle metadata client. The
@@ -13,7 +13,7 @@
 // config + the metadata client (and `../duckdb/connect` for ConnectSchema), so
 // both are mocked at the `#/` alias — same approach as frame.test.ts.
 //
-// The one-gate suite drives the composed `select`: the vertical pre-flight
+// The one-call suite drives the composed `select`: the vertical pre-flight
 // (mocked `#/tools/list-verticals`) BEFORE any write, then persist, then the
 // injected trigger stub — asserting order, the no-half-state refusal, and the
 // merged run identity in the result.
@@ -461,7 +461,7 @@ describe("select — upsert", () => {
 	});
 });
 
-describe("select — one approval gate (DAT-436)", () => {
+describe("select — one call (DAT-436)", () => {
 	// The injected trigger stub: records its input + the call order and hands
 	// back a fixed run identity (the real triggerAddSource seeds the session +
 	// starts addSourceWorkflow — its own unit test covers that).
@@ -530,11 +530,11 @@ describe("select — one approval gate (DAT-436)", () => {
 		expect(trigger).not.toHaveBeenCalled();
 	});
 
-	// The failure seam INSIDE the gate: persistence succeeded, then the trigger
+	// The failure seam INSIDE the call: persistence succeeded, then the trigger
 	// threw (Temporal down / unconfigured). This pins the INTENDED half-state —
 	// there is deliberately no rollback machinery around the upsert.
-	it("a failing trigger leaves sources persisted, errors the call, and a re-approval recovers", async () => {
-		// First approval: the upsert lands, then workflow.start fails.
+	it("a failing trigger leaves sources persisted, errors the call, and a re-call recovers", async () => {
+		// First call: the upsert lands, then workflow.start fails.
 		const failingTrigger = vi.fn(async () => {
 			throw new Error("TransportError: failed to connect to Temporal");
 		});
@@ -547,12 +547,12 @@ describe("select — one approval gate (DAT-436)", () => {
 		).rejects.toThrow(/failed to connect to Temporal/);
 
 		// The half-state: the source row WAS written (persist precedes trigger in
-		// the gate) and the tool call errored — no SelectResult, no run identity;
+		// the call) and the tool call errored — no SelectResult, no run identity;
 		// the user sees the failed call, not a phantom "import running".
 		expect(valuesMock).toHaveBeenCalledTimes(1);
 		expect(failingTrigger).toHaveBeenCalledTimes(1);
 
-		// Re-approval recovers: the SAME selection upserts idempotently onto the
+		// Re-calling recovers: the SAME selection upserts idempotently onto the
 		// same content-keyed name (the conflict path, not a duplicate row) and a
 		// fresh trigger starts the run — nothing about the half-state blocks it.
 		const trigger = makeTrigger();

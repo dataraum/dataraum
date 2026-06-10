@@ -12,7 +12,6 @@ const h = vi.hoisted(() => ({
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
 	stop: vi.fn(),
-	addToolApprovalResponse: vi.fn(),
 }));
 
 vi.mock("@tanstack/ai-react", () => ({
@@ -22,7 +21,6 @@ vi.mock("@tanstack/ai-react", () => ({
 		error: h.error,
 		sendMessage: h.sendMessage,
 		stop: h.stop,
-		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));

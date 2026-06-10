@@ -87,18 +87,17 @@ export async function undoTeach(overlayId: string): Promise<void> {
 }
 
 /**
- * The `teach` tool for the agent loop. `needsApproval: true` — a teach mutates
- * the workspace, so the SDK pauses for the user to confirm before `.server`
- * runs (the cockpit answers via `addToolApprovalResponse`). Coarse input
- * schema (type + payload object); the per-type deep validation runs inside
- * `teach()` via `validateTeach`.
+ * The `teach` tool for the agent loop. An acting tool: a teach mutates the
+ * workspace, so it runs on the user's explicit instruction — there is no
+ * approval gate. Coarse input schema (type + payload object); the per-type deep
+ * validation runs inside `teach()` via `validateTeach`.
  */
 export const teachTool = toolDefinition({
 	name: "teach",
 	description:
 		"Record a grounding-layer correction about the data — a typing pattern, " +
 		"null token, ontology concept/property, or a column relationship. Writes a " +
-		"config_overlay row (requires user approval); follow with `replay` to apply " +
+		"config_overlay row; follow with `replay` to apply " +
 		"it to the source. For operating-model declarations use the dedicated tools " +
 		"instead: teach_validation, teach_cycle, teach_metric.",
 	inputSchema: z.object({
@@ -119,7 +118,6 @@ export const teachTool = toolDefinition({
 		z.object({ overlay_id: z.string(), type: z.string() }),
 		z.object({ error: z.string() }),
 	]),
-	needsApproval: true,
 }).server(runTeachTool);
 
 /**

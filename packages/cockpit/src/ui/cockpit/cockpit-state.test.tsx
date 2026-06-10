@@ -16,7 +16,6 @@ const h = vi.hoisted(() => ({
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
 	stop: vi.fn(),
-	addToolApprovalResponse: vi.fn(),
 }));
 
 vi.mock("@tanstack/ai-react", () => ({
@@ -26,7 +25,6 @@ vi.mock("@tanstack/ai-react", () => ({
 		error: h.error,
 		sendMessage: h.sendMessage,
 		stop: h.stop,
-		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));
@@ -62,7 +60,6 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		h.error = undefined;
 		h.sendMessage.mockClear();
 		h.stop.mockClear();
-		h.addToolApprovalResponse.mockClear();
 	});
 	afterEach(() => cleanup());
 
@@ -141,7 +138,7 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 	});
 
 	it("a completed select result derives the add-source-progress canvas (DAT-436)", () => {
-		// Approving select starts the run; the result's ids key the progress poll.
+		// Calling select starts the run; the result's ids key the progress poll.
 		h.messages = [
 			{
 				id: "m-sel",

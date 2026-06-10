@@ -176,7 +176,7 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
 			? { kind: "model-frame", frame: result as FrameResult }
 			: null,
-	// Approving select STARTS the import (DAT-436): the result carries the
+	// Calling select STARTS the import (DAT-436): the result carries the
 	// started run's workflow_id + run_id, so project the live add-source-progress
 	// widget directly — the same member replay projects. A refused/failed select
 	// (no ids — e.g. NoConceptsError) leaves the canvas unchanged.
@@ -290,7 +290,7 @@ export function toolResultToCanvas(
  * probe) completing LAST must NOT shadow the last real canvas result — otherwise
  * `canvasFromMessages` returns null and the caller, which optimistically set the
  * canvas to "loading" on submit, has nothing to reconcile to (the stuck-spinner
- * bug after a denied select, whose turn ends on a non-canvas list_verticals).
+ * bug after a refused/failed select, whose turn ends on a non-canvas list_verticals).
  * Returns the latest mappable CanvasState, or null when no part maps at all.
  */
 export function canvasFromMessages(

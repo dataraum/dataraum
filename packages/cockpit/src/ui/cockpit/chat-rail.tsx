@@ -7,21 +7,12 @@
 // that used to mirror it (project-latest, error→empty, turn-ended reconcile) is
 // gone. As messages arrive:
 //   - text parts     → user / assistant bubbles
-//   - tool-call parts → a collapsible card; the SDK pauses approval-gated tools
-//                       (teach / replay) → Approve / Deny → addToolApprovalResponse
+//   - tool-call parts → a collapsible card (acting tools run directly on the
+//                       user's instruction — there is no approval gate)
 //   - a completed canvas-tool chip → click pins the canvas to that result
 // Streaming is driven ONLY by user submit (never on mount → SSR-safe).
 
-import {
-	Alert,
-	Box,
-	Button,
-	Card,
-	Group,
-	Loader,
-	Stack,
-	Text,
-} from "@mantine/core";
+import { Alert, Box, Card, Group, Loader, Stack, Text } from "@mantine/core";
 import { useEffect, useRef } from "react";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
@@ -75,7 +66,6 @@ function ToolCallCard({
 	resultError,
 	conversationMovedOn,
 	streamIdle,
-	onApprove,
 	onRehydrate,
 }: {
 	part: ToolCallPartLike;
@@ -86,7 +76,6 @@ function ToolCallCard({
 	/** The stream is not loading — an output-less call's drain is over (the
 	 * stop-then-idle cell: stop() with no follow-up message). */
 	streamIdle: boolean;
-	onApprove: (approvalId: string, approved: boolean) => void;
 	onRehydrate: (callId: string) => void;
 }) {
 	// DAT-436: "done" is NOT `state === "complete"` — the SDK has no error-
@@ -100,11 +89,6 @@ function ToolCallCard({
 		streamIdle,
 	});
 	const done = status.kind === "complete";
-	const approvalId = part.approval?.id;
-	const awaitingApproval =
-		part.state === "approval-requested" &&
-		approvalId !== undefined &&
-		part.approval?.approved === undefined;
 
 	// A canvas-producing tool's chip rehydrates the focus canvas to THIS call's
 	// result on click (pins by call-id). Only once complete — an in-flight or
@@ -147,12 +131,6 @@ function ToolCallCard({
 							view
 						</Text>
 					) : null
-				) : status.kind === "denied" ? (
-					// A denied approval is terminal: the tool never runs, so the call
-					// never reaches "complete" — show "denied", not a spinner.
-					<Text size="xs" c="dimmed" data-testid={`tool-denied-${part.id}`}>
-						denied
-					</Text>
 				) : status.kind === "error" ? (
 					// Explicit error state — the message rides on title for hover; the
 					// agent's narration carries the readable explanation.
@@ -168,33 +146,12 @@ function ToolCallCard({
 					<Loader size="xs" />
 				)}
 			</Group>
-
-			{awaitingApproval && approvalId && (
-				<Group gap="xs" mt="xs" data-testid={`tool-approval-${part.id}`}>
-					<Button
-						size="xs"
-						onClick={() => onApprove(approvalId, true)}
-						data-testid={`tool-approve-${part.id}`}
-					>
-						Approve
-					</Button>
-					<Button
-						size="xs"
-						variant="default"
-						onClick={() => onApprove(approvalId, false)}
-						data-testid={`tool-deny-${part.id}`}
-					>
-						Deny
-					</Button>
-				</Group>
-			)}
 		</Card>
 	);
 }
 
 export function ChatRail() {
-	const { messages, isLoading, error, addToolApprovalResponse, pinCanvas } =
-		useCockpit();
+	const { messages, isLoading, error, pinCanvas } = useCockpit();
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -212,11 +169,11 @@ export function ChatRail() {
 		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
 	}, [messages]);
 
-	// An approval-gated tool-call part is carried in BOTH the approval-request turn
-	// and the post-approval turn that completes it — same part id, two messages —
-	// so a naive per-message render shows the chip TWICE ("select shows twice after
-	// approve"). Render each tool-call id ONCE, at its LAST occurrence (the most-
-	// complete state). Maps tool-call id → "msgIdx:partIdx".
+	// A tool-call part can recur across messages (e.g. the persisted assistant
+	// tool-call plus its completion in a later teed turn — same part id, two
+	// messages), so a naive per-message render would show the chip twice. Render
+	// each tool-call id ONCE, at its LAST occurrence (the most-complete state).
+	// Maps tool-call id → "msgIdx:partIdx".
 	const lastToolCallAt = new Map<string, string>();
 	messages.forEach((m, mi) => {
 		m.parts.forEach((part, i) => {
@@ -284,8 +241,7 @@ export function ChatRail() {
 							}
 							if (part.type === "tool-call") {
 								// Skip all but the last occurrence of this tool-call id (see
-								// lastToolCallAt) — collapses the approval-request + completion
-								// duplicate into one chip.
+								// lastToolCallAt) — collapses any duplicate render into one chip.
 								if (lastToolCallAt.get(part.id) !== `${mi}:${i}`) return null;
 								return (
 									<ToolCallCard
@@ -294,9 +250,6 @@ export function ChatRail() {
 										resultError={resultErrors.get(part.id)}
 										conversationMovedOn={mi < lastUserIdx}
 										streamIdle={streamIdle}
-										onApprove={(approvalId, approved) =>
-											void addToolApprovalResponse({ id: approvalId, approved })
-										}
 										onRehydrate={onRehydrate}
 									/>
 								);

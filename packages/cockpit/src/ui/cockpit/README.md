@@ -47,9 +47,9 @@ never crashes the view.
 
 `CockpitProvider` (`cockpit-state.tsx`) owns the TanStack AI SDK's `useChat({
 connection: fetchServerSentEvents("/api/chat") })`. The SDK owns the whole loop:
-the conversation state, the agentic tool-loop (it executes server tools, pauses
-on `needsApproval` tools for the user to Approve/Deny via
-`addToolApprovalResponse`, feeds results back, iterates), and the SSE transport.
+the conversation state, the agentic tool-loop (it executes server tools directly
+— there is no approval gate; the user's instruction is the consent — feeds
+results back, iterates), and the SSE transport.
 We no longer hand-roll the wire. Streaming fires **only on user submit**
 (`sendMessage`) — never on mount — so the view is SSR-safe. The provider also
 threads an `AbortController` so the Stop button (and a disconnect) cancels the

@@ -134,9 +134,9 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * The `teach_validation` tool for the agent loop. `needsApproval: true` — it
- * mutates the workspace (writes an overlay row that the next run executes), so
- * the SDK pauses for the user to confirm before `.server` runs.
+ * The `teach_validation` tool for the agent loop. An acting tool: it mutates
+ * the workspace (writes an overlay row that the next run executes), so it runs
+ * on the user's explicit instruction — there is no approval gate.
  *
  * Data-informed: the agent declares AGAINST the workspace's tables/columns it
  * reads from `list_tables` / `look_table` (the existing read surface — reused,
@@ -147,8 +147,8 @@ export const teachValidationTool = toolDefinition({
 	name: "teach_validation",
 	description:
 		"Declare a NEW data-quality / business-rule validation, or OVERRIDE a " +
-		"shipped one, for the session's vertical. Writes a config_overlay row " +
-		"(requires user approval); the next operating_model run grounds and " +
+		"shipped one, for the session's vertical. Writes a config_overlay row; " +
+		"the next operating_model run grounds and " +
 		"executes it, and look_validation shows the outcome. The check is composed " +
 		"from a CLOSED set of check types (balance / comparison / constraint / " +
 		"aggregate) — you pick the evaluator branch; your description + sql_hints " +
@@ -179,5 +179,4 @@ export const teachValidationTool = toolDefinition({
 			})
 			.nullable(),
 	}),
-	needsApproval: true,
 }).server((input) => teachValidation(input));

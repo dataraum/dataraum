@@ -2,9 +2,9 @@
 // `chat({ tools })` on the server route. Hand-written and explicit: adding a
 // tool is one import + one entry here, no auto-discovery.
 //
-// Read tools (list_*) run unattended; write/compute tools (frame, select, teach,
-// replay) declare `needsApproval` and are gated by the user in the UI before
-// they run.
+// Read tools and write/compute tools (frame, select, teach, replay) alike run
+// directly when the agent calls them — there is no approval gate; the user's
+// instruction is the consent.
 
 import { beginSessionTool } from "./begin-session";
 import { connectTool } from "./connect";

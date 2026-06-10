@@ -6,7 +6,8 @@
 // table ids (from `list_tables`), which may span sources. It runs
 // relationships → semantic_per_table → materialize teaches → detect → keepers →
 // promote — the engine's `beginSessionWorkflow`. semantic_per_table makes real
-// Anthropic calls, so this is a compute kick gated behind user approval.
+// Anthropic calls, so this is a compute kick — it runs on the user's explicit
+// instruction (no approval gate).
 //
 // HARD PRECONDITION (DAT-407 FK), same as triggerAddSource / replay: the workflow's
 // `begin_session_select` writes `session_tables` rows with a NOT-NULL FK to
@@ -189,9 +190,9 @@ export async function beginSession(
 }
 
 /**
- * The `begin_session` tool for the agent loop. `needsApproval: true` — it starts a
- * durable Temporal workflow that makes real LLM calls (semantic_per_table), so the
- * user confirms before it kicks off.
+ * The `begin_session` tool for the agent loop. An acting tool: it starts a
+ * durable Temporal workflow that makes real LLM calls (semantic_per_table), so it
+ * runs on the user's explicit instruction — there is no approval gate.
  */
 export const beginSessionTool = toolDefinition({
 	name: "begin_session",
@@ -199,8 +200,8 @@ export const beginSessionTool = toolDefinition({
 		"Start an analytical session over a selected set of typed tables (from " +
 		"list_tables; may span sources) — runs relationship detection + LLM table " +
 		"classification, then persists relationship readiness you can inspect with " +
-		"look_relationships / why_relationship and refine with teach. Requires user " +
-		"approval (runs engine processing + LLM calls). Returns the workflow + run " +
+		"look_relationships / why_relationship and refine with teach. Runs engine " +
+		"processing + LLM calls. Returns the workflow + run " +
 		"id; call workflow_status with them to check progress. Pass an existing " +
 		"session_id to re-run a session after teaching.",
 	inputSchema: z.object({
@@ -229,5 +230,4 @@ export const beginSessionTool = toolDefinition({
 		session_id: z.string(),
 		table_ids: z.array(z.string()),
 	}),
-	needsApproval: true,
 }).server((input) => beginSession(input));

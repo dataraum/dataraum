@@ -95,7 +95,7 @@ export type CanvasState =
 	// (workflowId, runId) of the started run — the widget polls `get_progress`
 	// for the snapshot; the run id pins the precise iteration (the id is reused
 	// per session under ALLOW_DUPLICATE). Projected from the select/replay TOOL
-	// RESULTS by the tool-result mapper (tool-result-to-canvas.ts): approving
+	// RESULTS by the tool-result mapper (tool-result-to-canvas.ts): calling
 	// select STARTS the import, so its result carries the run ids. (The old
 	// trigger-button UI action that used to seed this member is retired.)
 	| { kind: "add-source-progress"; workflowId: string; runId: string }

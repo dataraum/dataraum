@@ -8,15 +8,14 @@ import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
 
 // Mock useChat at the SDK boundary — the test controls the message list + the
-// loading/error flags and asserts OUR rendering, canvas projection, and approval
-// dispatch. The SDK's own loop/transport is exercised by the compose smoke.
+// loading/error flags and asserts OUR rendering and canvas projection. The SDK's
+// own loop/transport is exercised by the compose smoke.
 const h = vi.hoisted(() => ({
 	messages: [] as unknown[],
 	isLoading: false,
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
 	stop: vi.fn(),
-	addToolApprovalResponse: vi.fn(),
 }));
 
 vi.mock("@tanstack/ai-react", () => ({
@@ -26,7 +25,6 @@ vi.mock("@tanstack/ai-react", () => ({
 		error: h.error,
 		sendMessage: h.sendMessage,
 		stop: h.stop,
-		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));
@@ -131,7 +129,6 @@ describe("ChatRail (DAT-353)", () => {
 		h.error = undefined;
 		h.sendMessage.mockClear();
 		h.stop.mockClear();
-		h.addToolApprovalResponse.mockClear();
 	});
 	afterEach(() => cleanup());
 
@@ -175,30 +172,6 @@ describe("ChatRail (DAT-353)", () => {
 		expect(screen.getByTestId("tool-call-c1")).toBeTruthy();
 	});
 
-	it("renders an approval prompt and dispatches the response", () => {
-		h.messages = [
-			{
-				id: "a1",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-call",
-						id: "c1",
-						name: "teach",
-						state: "approval-requested",
-						approval: { id: "ap1", needsApproval: true },
-					},
-				],
-			},
-		];
-		renderRail();
-		fireEvent.click(screen.getByTestId("tool-approve-c1"));
-		expect(h.addToolApprovalResponse).toHaveBeenCalledWith({
-			id: "ap1",
-			approved: true,
-		});
-	});
-
 	it("surfaces a run/stream error as a highlighted message in the chat (not a canvas takeover)", () => {
 		h.error = new Error("kaboom");
 		renderRail();
@@ -216,7 +189,6 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		h.error = undefined;
 		h.sendMessage.mockClear();
 		h.stop.mockClear();
-		h.addToolApprovalResponse.mockClear();
 	});
 	afterEach(() => cleanup());
 
@@ -352,10 +324,11 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		expect(screen.queryByTestId("tool-chip-c1")).toBeNull();
 	});
 
-	it("shows 'denied' (not a stuck loader) for a denied approval-gated tool", () => {
-		// Deny is terminal: the call never reaches "complete", so without the denied
-		// branch the card would spin its Loader forever (the Approve/Deny buttons
-		// vanish once `approved` is set). It must read "denied" and offer no buttons.
+	it("renders a tool-call carried in two messages only ONCE", () => {
+		// A tool-call id can recur across messages (an in-flight occurrence plus a
+		// later completion in a teed turn — different messages, shared id). The rail
+		// must collapse them to one chip (at the completed occurrence), not render
+		// the select twice.
 		h.messages = [
 			{
 				id: "m1",
@@ -365,36 +338,8 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 						type: "tool-call",
 						id: "c1",
 						name: "select",
-						state: "approval-requested",
+						state: "input-complete",
 						arguments: "{}",
-						approval: { id: "a1", needsApproval: true, approved: false },
-					},
-				],
-			},
-		];
-		renderRail();
-		expect(screen.getByTestId("tool-denied-c1").textContent).toBe("denied");
-		expect(screen.queryByTestId("tool-approve-c1")).toBeNull();
-		expect(screen.queryByTestId("tool-deny-c1")).toBeNull();
-	});
-
-	it("renders an approval-gated tool-call carried in two messages only ONCE", () => {
-		// The SDK carries the same tool-call id in BOTH the approval-request turn
-		// and the post-approval completion turn — different messages, shared id.
-		// The rail must collapse them to one chip (at the completed occurrence),
-		// not render the select twice ("shows twice after approve").
-		h.messages = [
-			{
-				id: "m1",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-call",
-						id: "c1",
-						name: "select",
-						state: "approval-requested",
-						arguments: "{}",
-						approval: { id: "a1", needsApproval: true, approved: true },
 					},
 				],
 			},
@@ -534,7 +479,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		);
 	});
 
-	it("renders a readable teach chip from arguments at approval time AND keeps Approve/Deny", () => {
+	it("renders a readable teach chip from arguments while the call is in flight", () => {
 		h.messages = [
 			{
 				id: "m1",
@@ -544,8 +489,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 						type: "tool-call",
 						id: "c1",
 						name: "teach",
-						state: "approval-requested",
-						approval: { id: "ap1", needsApproval: true },
+						state: "input-complete",
 						arguments: JSON.stringify({
 							type: "null_value",
 							payload: { sentinel: "N/A" },
@@ -562,12 +506,6 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		expect(summary).toContain("sentinel");
 		// No raw JSON dump.
 		expect(summary).not.toContain('"payload"');
-		// Approve/Deny still present and wired.
-		fireEvent.click(screen.getByTestId("tool-approve-c1"));
-		expect(h.addToolApprovalResponse).toHaveBeenCalledWith({
-			id: "ap1",
-			approved: true,
-		});
 	});
 
 	it("renders the completed teach chip as {overlay_id, type} (display-only)", () => {

@@ -9,6 +9,7 @@ ALL_DETECTOR_IDS = {
     "type_fidelity",
     "join_path_determinism",
     "relationship_entropy",
+    "relationship_discovery",
     "null_ratio",
     "null_semantics",
     "benford",

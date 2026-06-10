@@ -68,6 +68,7 @@ class SubDimension(_StrValueMixin):
     TYPE_FIDELITY = "type_fidelity"
     JOIN_PATH_DETERMINISM = "join_path_determinism"
     RELATIONSHIP_QUALITY = "relationship_quality"
+    RELATIONSHIP_DISCOVERY = "relationship_discovery"
     NULL_RATIO = "null_ratio"
     NULL_SEMANTICS = "null_semantics"
     BENFORD_COMPLIANCE = "benford_compliance"

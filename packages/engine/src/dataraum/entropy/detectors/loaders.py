@@ -459,6 +459,52 @@ def load_relationship_for_pair(
     return result
 
 
+def load_relationship_rows_for_pair(
+    session: Session,
+    from_column_id: str,
+    to_column_id: str,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """ALL method-rows for one directional column pair, keyed by detection method.
+
+    The relationship_discovery adjudication reads every witness class the pair
+    carries — the structural ``candidate`` (value-overlap statistics), the
+    ``llm`` confirmation, and the teach-materialized ``manual``/``keeper`` rows
+    — so it needs the per-method rows side by side, NOT the single
+    highest-precedence representative :func:`load_relationship_for_pair`
+    returns. Same session/run scoping. At most one row per method exists per
+    ``(session, run, pair)`` (the ``uq_relationship_columns_method`` key).
+    """
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    stmt = select(Relationship).where(
+        Relationship.from_column_id == from_column_id,
+        Relationship.to_column_id == to_column_id,
+    )
+    if session_id is not None:
+        stmt = stmt.where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
+    if not rels:
+        return {}
+    table_ids = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+        )
+        .tuples()
+        .all()
+    )
+    return {
+        str(rel.detection_method): _relationship_to_dict(rel, table_names)
+        for rel in rels
+        if rel.detection_method
+    }
+
+
 def load_session_relationships(
     session: Session, session_id: str, run_id: str | None = None
 ) -> list[dict[str, Any]]:

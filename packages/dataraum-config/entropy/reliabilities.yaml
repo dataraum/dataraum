@@ -82,3 +82,16 @@ witnesses:
     ontology_prior: 0.762
     llm_claim: 0.838
     structural_reconciliation: 0.85
+  # relationship_discovery (ADR-0009 pack, lane/relationship-pool): UNCALIBRATED
+  # placeholder priors — calibrated: false for this measurement; the eval rig has
+  # not run it (needs a generative relationship family: clean FK / orphan-broken FK
+  # / spurious-overlap pairs against ground truth). Priors are stated, not tuned:
+  # value_overlap is data-grounded but Jaccard/containment is not a calibrated
+  # P(genuine); llm_judgment mirrors the measured llm_claim ballpark pre-rig;
+  # manual_curation is an explicit human assertion; keeper_retention is silence
+  # (acceptance by not rejecting) — deliberately the least trusted.
+  relationship_discovery:
+    value_overlap: 0.7
+    llm_judgment: 0.7
+    manual_curation: 0.9
+    keeper_retention: 0.5

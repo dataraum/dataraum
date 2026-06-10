@@ -49,6 +49,19 @@ measurements:
     aggregation_intent: { conflict: 0.9, ignorance: 0.4 }
     reporting_intent: { conflict: 0.7, ignorance: 0.3 }
 
+  relationship_discovery:
+    # Contested relationship genuineness (ADR-0009 pack, lane/relationship-pool):
+    # a join the witnesses disagree about (data overlap vs LLM/teach assertion)
+    # corrupts anything built across it — reporting bears the highest loss (the
+    # join shapes every cross-table number), aggregation close behind (orphan
+    # fan-out / dropped rows), a query can caveat. PLACEHOLDER priors
+    # (calibrated: false) — shaped after null_semantics/temporal_behavior rows,
+    # NOT tuned to a metric; the eval rig calibrates them against the outcomes
+    # scoreboard.
+    query_intent: { conflict: 0.4, ignorance: 0.2 }
+    aggregation_intent: { conflict: 0.7, ignorance: 0.3 }
+    reporting_intent: { conflict: 0.8, ignorance: 0.4 }
+
   # benford is NOT in the loss table: it is an INFORMATIVE SIGNAL, not tunable entropy
   # (DAT-442). Leading-digit law is a forensic/compliance statistic, not an ERP data-
   # quality fact a teach can close — and it doesn't map to ERP measures (prices aren't

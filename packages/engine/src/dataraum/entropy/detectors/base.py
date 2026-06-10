@@ -296,6 +296,9 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     """
     # Structural layer detectors
     from dataraum.entropy.detectors.structural.relations import JoinPathDeterminismDetector
+    from dataraum.entropy.detectors.structural.relationship_discovery import (
+        RelationshipDiscoveryDetector,
+    )
     from dataraum.entropy.detectors.structural.relationship_entropy import (
         RelationshipEntropyDetector,
     )
@@ -304,6 +307,7 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     registry.register(TypeFidelityDetector())
     registry.register(JoinPathDeterminismDetector())
     registry.register(RelationshipEntropyDetector())
+    registry.register(RelationshipDiscoveryDetector())
 
     # Value layer detectors
     from dataraum.entropy.detectors.value.benford import BenfordDetector

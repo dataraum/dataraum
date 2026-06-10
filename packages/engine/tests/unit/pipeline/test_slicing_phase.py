@@ -352,6 +352,56 @@ class TestRunTimeAxisFill:
         # Empty recommendations — nothing mocked landed in SliceDefinition rows.
         assert session.execute(select(SliceDefinition)).scalars().all() == []
 
+    def test_high_cardinality_time_axis_survives_prefilter(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """A real date axis is high-cardinality and prompt-prefiltered — fill still lands.
+
+        ``_pre_filter_columns`` drops ``distinct_count > 50`` columns as
+        slice-DIMENSION candidates, and a time axis is exactly such a column.
+        Validating the agent's choice against the filtered list deterministically
+        rejected every real enriched date axis (the live DAT-491 false-reject:
+        ``journal_lines`` ← ``entry_id__date``); the check must run against the
+        unfiltered universe instead.
+        """
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result(
+            {"invoices": "invoice_id__date"}
+        )
+        seeded = _seed(session)
+        date_col = session.execute(
+            select(Column).where(Column.column_name == "invoice_id__date")
+        ).scalar_one()
+        session.add(
+            StatisticalProfile(
+                column_id=date_col.column_id,
+                total_count=300,
+                null_count=0,
+                distinct_count=300,
+                null_ratio=0.0,
+                cardinality_ratio=1.0,
+                profile_data={},
+            )
+        )
+        session.flush()
+
+        with capture_logs() as logs:
+            result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id]))
+
+        assert result.status == PhaseStatus.COMPLETED
+        mock_agent_cls.return_value.analyze.assert_called_once()
+        assert seeded["fact_entity"].time_column == "invoice_id__date"
+        assert any(e["event"] == "time_axis_filled" for e in logs)
+        assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
+
     def test_hallucinated_column_is_rejected(
         self,
         mock_load_config: MagicMock,

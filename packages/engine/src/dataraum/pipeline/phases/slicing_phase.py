@@ -231,11 +231,17 @@ class SlicingPhase(BasePhase):
                 ).scalars()
                 name_by_id = {tid: name for name, tid in id_by_name.items()}
                 # Referential integrity on the agent's choice: the named column
-                # must exist among the candidates the prompt was given (own or
-                # enriched) — a hallucinated name must not land in the canonical
-                # field the query agent and resolver consume.
+                # must exist on the table (own or enriched) — a hallucinated name
+                # must not land in the canonical field the query agent and
+                # resolver consume. Validate against the UNFILTERED universe
+                # (``col_id_by_name``, snapshotted before ``_pre_filter_columns``):
+                # the prompt filter drops high-cardinality columns as slice-
+                # DIMENSION candidates, and a time axis is exactly a high-
+                # cardinality column — checking the filtered list deterministically
+                # rejects every real enriched date axis (live false-reject:
+                # ``journal_lines`` ← ``entry_id__date``, DAT-491).
                 known_cols_by_table: dict[str, set[str]] = {
-                    t["table_name"]: {c["column_name"] for c in t.get("columns", [])}
+                    t["table_name"]: set(t.get("col_id_by_name", {}))
                     for t in context_data.get("tables", [])
                 }
                 for entity in entities:

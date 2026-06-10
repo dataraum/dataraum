@@ -73,6 +73,15 @@ are DROPPED, not blind-loaded — probes that call `persist_readiness` without
 `promote_run` must keep omitting `session_id` (or promote first).
 5 new tests in `tests/unit/entropy/test_persist_readiness_scope.py::TestRunResolvedLoad`.
 
+**Review wave-1 fix pass (2026-06-11, fc7a549b) — cockpit-facing:** the dual-grain
+read views gained `via_operating_model_head` AND `current_entropy_readiness` now has
+latest-promoted-wins precedence between the session-grain heads (detect vs
+operating_model) — regenerate the drizzle mirror (`bun run db:pull:metadata`) and
+audit unpinned readiness reads (why-table.ts) which previously picked one of two
+'current' rows nondeterministically. `validation_results.columns_used` is a new
+NOT-NULL JSON column — existing workspaces need the column added before the next
+validation run writes.
+
 - **Status**: pending
 
 ## 2026-06-09: unit_consistency — measurement #2 on the witness template (DAT-428)

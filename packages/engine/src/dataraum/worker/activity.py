@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = [
+    "OPERATING_MODEL_DETECTOR_PHASES",
     "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
@@ -132,6 +133,13 @@ SESSION_DETECTOR_PHASES = (
     "temporal_slice_analysis",
     "correlations",
 )
+
+# The operating_model terminal detect (DAT-432/L7): scores the validation
+# phase's declared detectors (cross_table_consistency). Named here beside its
+# siblings so the no-orphan guard can assert every pipeline.yaml phase that
+# declares detectors is covered by SOME detect path — the gap that left
+# cross_table_consistency silently scoreless for weeks.
+OPERATING_MODEL_DETECTOR_PHASES = ("validation",)
 
 
 @dataclass

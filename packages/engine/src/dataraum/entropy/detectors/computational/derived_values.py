@@ -180,12 +180,24 @@ class DerivedValueDetector(EntropyDetector):
         # leg, an injection that pushes the discovered formula below the
         # persistence cut scored 0.0 while 13% of rows measurably violated the
         # identity (the batch-1 recall miss on journal_lines.net_amount).
-        graded_rates = [a.match_rate for a in adjudications]
+        detector_config = get_entropy_config().detector("derived_value")
+        # Statistical hygiene on the hypothesis leg of the SCALAR (review
+        # wave-1): a low-confidence guess ("guessing among several plausible
+        # formulas") or a handful of gradable rows must not band a clean column
+        # whose true derivation is simply richer than two terms. The pooled
+        # axis keeps weighing every graded hypothesis — this gates the scalar.
+        hyp_min_rows = int(detector_config.get("hypothesis_min_rows", 20))
+        hyp_min_confidence = float(detector_config.get("hypothesis_min_confidence", 0.5))
+        hypothesis_scalar_ok = (
+            hypothesis is not None
+            and int(grading.get("total") or 0) >= hyp_min_rows
+            and float(hypothesis.get("confidence") or 0.0) >= hyp_min_confidence
+        )
+        graded_rates = [a.match_rate for a in adjudications if a.discovered or hypothesis_scalar_ok]
         best_rate = max((r for r in graded_rates if r is not None), default=None)
         score = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
 
         # Match-quality labels (display only), configurable thresholds.
-        detector_config = get_entropy_config().detector("derived_value")
         match_exact = detector_config.get("match_exact", 0.99)
         match_near_exact = detector_config.get("match_near_exact", 0.95)
         match_approximate = detector_config.get("match_approximate", 0.80)

@@ -89,6 +89,24 @@ def test_graded_hypothesis_drives_the_scalar() -> None:
     assert entry["formula_conflict"] > 0.3
 
 
+def test_low_confidence_or_thin_grading_gates_the_scalar() -> None:
+    # Statistical hygiene (review wave-1): a guessy hypothesis or a thin sample
+    # still pools, but cannot drive obj.score.
+    for semantic, grading in (
+        (  # confidence below the floor
+            {"derived_formula_hypothesis": "subtotal + tax", "derived_formula_confidence": 0.2},
+            {"match_rate": 0.1, "matches": 10, "total": 100},
+        ),
+        (  # gradable sample below the floor
+            {"derived_formula_hypothesis": "subtotal + tax", "derived_formula_confidence": 0.9},
+            {"match_rate": 0.0, "matches": 0, "total": 3},
+        ),
+    ):
+        ctx = _context(semantic=semantic, grading=grading)
+        (obj,) = DerivedValueDetector().detect(ctx)
+        assert obj.score == 0.0
+
+
 def test_ungraded_hypothesis_never_drives_the_scalar() -> None:
     # No grading (source columns didn't resolve — the hallucination guard
     # abstained): an LLM guess alone never moves the mismatch score.

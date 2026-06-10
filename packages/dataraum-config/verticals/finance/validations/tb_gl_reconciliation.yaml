@@ -23,13 +23,18 @@ tags:
   - journal-lines
   - general-ledger
 
-relevant_cycles:
-  - record_to_report
+# No GL/record-to-report cycle exists in the finance cycles vocabulary yet —
+# an invented id would be silently dead linkage (review wave-1).
+relevant_cycles: []
 
 check_type: aggregate
 
 parameters:
-  tolerance: 0.005
+  # The PASS threshold on the violation RATE: zero — the trial balance is
+  # generated from the ledger, so ANY mismatched cell fails this critical
+  # check. The per-cell numeric tolerance lives in the SQL (sql_hints below);
+  # conflating the two let small targeted tampering pass (review wave-1).
+  tolerance: 0.0
 
 sql_hints: >
   The trial balance is PERIODIC, not cumulative: each trial_balance row holds
@@ -44,9 +49,11 @@ sql_hints: >
 
   For each (account_id, period) cell of the trial balance, compute
   SUM(journal_lines.debit) and SUM(journal_lines.credit) over the matching
-  posted lines, and compare to debit_balance / credit_balance with the
-  relative tolerance. A cell mismatches when either side differs by more than
-  the tolerance fraction of the larger magnitude.
+  posted lines, and compare to debit_balance / credit_balance. A cell
+  mismatches when either side differs by more than 0.5% of the larger
+  magnitude (use 0.005 as a literal relative tolerance in the SQL — this is
+  the per-cell rounding allowance; the check's pass threshold on the
+  violation RATE is separate and zero).
 
   Calculate the violation rate as a FRACTION (0.0 to 1.0):
     violation_rate = mismatched_cells / total_cells

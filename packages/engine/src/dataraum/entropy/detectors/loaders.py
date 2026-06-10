@@ -622,10 +622,19 @@ def load_hypothesis_match_rate(
         return None
 
     # Resolve hypothesis source names against the table's REAL columns (the
-    # actual stored spelling is what gets quoted into SQL — never the LLM text).
+    # actual stored spelling is what gets quoted into SQL — never the LLM text)
+    # — NUMERIC columns only, mirroring the discovery sweep's filter
+    # (derived_columns.py numeric_cols). Without the type gate a hypothesis
+    # over DATE/VARCHAR sources (e.g. "end_date - start_date" for a duration
+    # column) TRY_CASTs every row to NULL, grades match_rate 0.0, and a
+    # perfectly clean column scores 1.0 (review wave-1 blocker).
+    _numeric_types = ("INTEGER", "BIGINT", "DOUBLE", "DECIMAL")
+    if col.resolved_type not in _numeric_types:
+        return None
     siblings = {
         c.column_name.strip().lower(): c.column_name
         for c in session.execute(select(Column).where(Column.table_id == col.table_id)).scalars()
+        if c.resolved_type in _numeric_types
     }
     resolved = [siblings.get(name.strip().lower()) for name in source_columns]
     if any(name is None for name in resolved) or len(resolved) != 2:

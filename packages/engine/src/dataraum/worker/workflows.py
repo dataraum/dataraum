@@ -694,8 +694,10 @@ class OperatingModelWorkflow:
 
         # Terminal-for-evidence detect (DAT-432/L7): score this run's executed
         # validation results (cross_table_consistency → table + column bands)
-        # and persist readiness BEFORE the LLM-heavy families — the bands
-        # survive a cycles/metrics failure and the graph context can read them.
+        # and persist readiness BEFORE the LLM-heavy families. NOTE: the rows
+        # become visible to head-resolved readers only at the terminal promote
+        # — a cycles/metrics failure still loses the run's visibility (the
+        # failed-runs-never-surface invariant), it just doesn't recompute this.
         self._progress.phase = "operating_model_detect"
         await workflow.execute_activity(
             "operating_model_detect",

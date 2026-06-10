@@ -22,6 +22,14 @@
 
 provenance:
   calibrated: true
+  # Per-measurement granularity (review wave-1): the file-global flag above was
+  # written by the null_tokens rig and must not vouch for other measurements'
+  # placeholders. Consumers read ReliabilityConfig.calibrated_for(<id>).
+  measurements:
+    null_semantics: { calibrated: true }
+    temporal_behavior: { calibrated: true } # structural_reconciliation r is a probe-derived placeholder; see its comment
+    relationship_discovery: { calibrated: false }
+    derived_value: { calibrated: false }
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
   corpus_version: null_tokens-v2
   estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded

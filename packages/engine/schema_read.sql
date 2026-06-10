@@ -31,7 +31,8 @@ WHERE EXISTS (
         OR h.target = 'session:' || r.session_id))
      OR (h.stage = 'operating_model'
       AND h.target = 'session:' || r.session_id))
-);
+)
+;
 
 DROP VIEW IF EXISTS __READ__.current_column_drift_summaries;
 CREATE VIEW __READ__.current_column_drift_summaries AS
@@ -118,7 +119,8 @@ WHERE EXISTS (
         OR h.target = 'session:' || r.session_id))
      OR (h.stage = 'operating_model'
       AND h.target = 'session:' || r.session_id))
-);
+)
+;
 
 DROP VIEW IF EXISTS __READ__.current_entropy_readiness;
 CREATE VIEW __READ__.current_entropy_readiness AS
@@ -147,7 +149,33 @@ WHERE EXISTS (
         OR h.target = 'session:' || r.session_id))
      OR (h.stage = 'operating_model'
       AND h.target = 'session:' || r.session_id))
-);
+)
+  AND (
+    NOT EXISTS (
+      SELECT 1 FROM __WS__.metadata_snapshot_head h3
+      WHERE h3.run_id = r.run_id
+        AND h3.target = 'session:' || r.session_id
+        AND h3.stage IN ('detect', 'operating_model')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM __WS__.entropy_readiness r2
+      JOIN __WS__.metadata_snapshot_head h2
+        ON h2.run_id = r2.run_id
+       AND h2.target = 'session:' || r2.session_id
+       AND h2.stage IN ('detect', 'operating_model')
+      WHERE r2.session_id = r.session_id
+        AND r2.target = r.target
+        AND r2.run_id <> r.run_id
+        AND h2.promoted_at > (
+          SELECT MAX(h3.promoted_at)
+          FROM __WS__.metadata_snapshot_head h3
+          WHERE h3.run_id = r.run_id
+            AND h3.target = 'session:' || r.session_id
+            AND h3.stage IN ('detect', 'operating_model')
+        )
+    )
+  )
+;
 
 DROP VIEW IF EXISTS __READ__.fix_ledger;
 CREATE VIEW __READ__.fix_ledger AS

@@ -56,8 +56,26 @@ class ReliabilityConfig:
 
     @property
     def calibrated(self) -> bool:
-        """True once the rig has overwritten the placeholder priors with measured values."""
+        """True once the rig has overwritten the placeholder priors with measured values.
+
+        File-global flag — prefer :meth:`calibrated_for`: with several
+        measurements in one artifact, a rig run for one must not vouch for
+        another's placeholders (review wave-1).
+        """
         return bool(self.provenance.get("calibrated", False))
+
+    def calibrated_for(self, measurement_id: str) -> bool:
+        """Whether THIS measurement's reliabilities are rig-measured.
+
+        Reads ``provenance.measurements.<id>.calibrated`` when present and
+        falls back to the file-global flag for artifacts predating the
+        per-measurement granularity. ADR-0009 piece 4 makes the distinction
+        mandatory: placeholders ship ``calibrated: false`` per measurement.
+        """
+        per = self.provenance.get("measurements", {})
+        if isinstance(per, dict) and measurement_id in per:
+            return bool((per.get(measurement_id) or {}).get("calibrated", False))
+        return self.calibrated
 
 
 _cache: ReliabilityConfig | None = None

@@ -28,6 +28,7 @@ from temporalio.exceptions import ApplicationError
 from dataraum.llm.providers.base import is_transient_error
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
+    OPERATING_MODEL_DETECTOR_PHASES,
     SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
@@ -475,14 +476,17 @@ class PhaseActivities:
         declared on the ``validation`` phase — into table + column entropy
         objects and persists readiness under the OM run. Pure scoring over
         persisted rows, zero LLM calls. Runs right after ``validation`` so the
-        bands exist even if the LLM-heavy cycles/metrics families fail, and the
-        graph context can read them.
+        expensive evidence is computed before the LLM-heavy families can fail —
+        but like every run-stamped row, the bands become VISIBLE to
+        head-resolved readers only after the terminal promote flips the
+        ``operating_model`` head (failed runs never surface; review wave-1
+        corrected an overclaim here).
         """
         count = run_detectors(
             self._manager,
             session_id=identity.session_id,
             run_id=identity.run_id,
-            detector_phases=("validation",),
+            detector_phases=OPERATING_MODEL_DETECTOR_PHASES,
         )
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,

@@ -78,6 +78,12 @@ detectors:
     match_near_exact: 0.95 # >= 95% = near exact
     match_approximate: 0.80 # >= 80% = approximate
     # < 80% = poor match
+    # Scalar-leg hygiene for the GRADED LLM hypothesis (review wave-1): below
+    # either floor the hypothesis still pools (conflict axis) but cannot drive
+    # obj.score - protects clean columns whose true derivation is richer than
+    # two terms from low-confidence guesses graded on thin samples.
+    hypothesis_min_rows: 20
+    hypothesis_min_confidence: 0.5
 
   # --------------------------------------------------------------------------
   # BUSINESS MEANING DETECTOR (semantic.business_meaning.naming_clarity)

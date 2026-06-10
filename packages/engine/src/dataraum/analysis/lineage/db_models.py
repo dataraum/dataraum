@@ -46,17 +46,12 @@ class MeasureAggregationLineage(Base):
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
 
-    # The alignment the verdict was computed under (audit + re-run reproducibility).
-    # event_join_*: the optional header join for split header/line event data
-    # (line table aliased ``e``, header ``h`` in the *_sql expressions).
-    event_join_duckdb_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    event_join_on_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
-    event_value_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    measure_key_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    event_key_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    measure_period_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    event_period_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    event_filter_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The pairing the verdict was computed under (audit + re-run reproducibility):
+    # the shared slice dimension the two facts were partitioned by, the signed
+    # convention over the event fact's per-period sums, and the period grain.
+    slice_dimension: Mapped[str] = mapped_column(String, nullable=False)
+    convention_sql: Mapped[str] = mapped_column(Text, nullable=False)
+    period_grain: Mapped[str] = mapped_column(String, nullable=False)
 
     # The deterministic verdict (reconcile.dispose).
     pattern: Mapped[str] = mapped_column(String, nullable=False)  # per_period | cumulative
@@ -66,7 +61,6 @@ class MeasureAggregationLineage(Base):
     n_entities: Mapped[int] = mapped_column(Integer, nullable=False)
     n_entities_fired: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

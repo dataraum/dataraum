@@ -394,7 +394,7 @@ class AddSourceWorkflow:
 # fact/grain entities + the relationship catalog the first two produced).
 # ``begin_session_select`` precedes all as the always-run scope setup. The
 # body iterates this tuple to execute the chain sequentially.
-_SESSION_PHASE_ORDER = ("relationships", "semantic_per_table", "aggregation_lineage")
+_SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
 
 # The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:
 # slice the fact tables (LLM), narrow each to a slicing view, materialize + profile
@@ -405,6 +405,9 @@ _SESSION_VALUE_PHASE_ORDER = (
     "slicing_view",
     "slice_analysis",
     "temporal_slice_analysis",
+    # DAT-491: pairs the per-period slice sums temporal_slice_analysis just
+    # persisted — must follow it.
+    "aggregation_lineage",
     "correlations",
 )
 

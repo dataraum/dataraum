@@ -115,6 +115,12 @@ export type CanvasState =
 			sql: string;
 			params?: (string | number | boolean | null)[];
 	  }
+	// DAT-500: the `answer` tool's result — the streaming table PLUS the
+	// confidence the answer carries (quality band, grounded ratio, per-concept
+	// reuse, assumptions). All of it is already in the AnswerSchema result; the
+	// projector surfaces it here instead of dropping it. The grid streams via the
+	// same result-grid path (the table is unchanged; confidence rides on top).
+	| { kind: "answer-result"; sql: string; confidence: AnswerConfidence }
 	// A file-upload area (redesign) — projected by the `upload` UI tool so the user
 	// can drop local files; NOT a permanent chat fixture. Carries nothing; the
 	// widget owns the dropzone + drives connect on upload.
@@ -122,3 +128,21 @@ export type CanvasState =
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];
+
+/** The confidence an `answer` result carries, lifted onto the canvas (DAT-500).
+ * Every field comes straight from the AnswerSchema result — nothing is recomputed;
+ * the projector only renames to the canvas's camelCase idiom. */
+export interface AnswerConfidence {
+	/** Worst readiness band across the touched tables, or null if none analyzed. */
+	band: "ready" | "investigate" | "blocked" | null;
+	/** Optional band note from `data_quality`. */
+	note?: string;
+	/** Share of the answer's SQL grounded in validated snippets (0..1). */
+	groundedRatio: number;
+	/** The per-concept reuse counts behind the grounded ratio. */
+	reuse: { exactReuse: number; adapted: number; fresh: number };
+	/** Plain-sentence ambiguity decisions the answer made (may be empty). */
+	assumptions: string[];
+	/** The business concepts the answer draws on (provenance; may be empty). */
+	conceptsUsed: string[];
+}

@@ -8,12 +8,17 @@
 // promoted semantic run — so the model maps a question's terms to concrete columns
 // inline, no separate field-mapping artifact (DAT-485: field_mappings NOT built).
 //
-// Only the `typed` layer is surfaced: that's the clean, analysis-ready data a
-// question is answered over (raw / quarantine are ingestion-internal). The pure
-// `formatSchema` is unit-tested; the thin Drizzle reads are smoke/integration-
-// covered.
+// Prefer-enriched (DAT-486): mirrors the engine's shared schema_info builder
+// (graphs/agent.py `_build_schema_info`) — when begin_session has materialized
+// enriched views (pre-joined fact+dimension supersets, layer `enriched`, which
+// resolve to the `typed` DuckDB schema via schema_for_layer), surface ONLY those;
+// otherwise the `typed` tables. The producer GraphAgent mints snippets against the
+// same enriched views, so matching its table context is what lets the consumer's
+// reuse classify as exact_reuse rather than adapted. raw / quarantine stay
+// ingestion-internal. The pure `formatSchema` + `preferEnriched` are unit-tested;
+// the thin Drizzle reads are smoke/integration-covered.
 
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
 import { metadataDb } from "../db/metadata/client";
 import {
@@ -26,6 +31,30 @@ import { LAKE_ALIAS } from "../duckdb/lake";
 
 /** The clean, analysis-ready layer a question is answered over. */
 const TYPED_LAYER = "typed";
+/** Pre-joined fact+dimension supersets begin_session materializes (DAT-486). */
+const ENRICHED_LAYER = "enriched";
+
+/**
+ * The DuckDB schema that physically holds a layer's artifacts. Mirrors the
+ * engine's core/duckdb_naming.schema_for_layer: enriched views are derived
+ * artifacts of typed tables, so they live in the `typed` schema (addressed as
+ * `lake.typed.<view_name>`), not a sibling `enriched` schema.
+ */
+function schemaForLayer(layer: string): string {
+	return layer === ENRICHED_LAYER ? TYPED_LAYER : layer;
+}
+
+/**
+ * Mirror the engine's prefer-enriched rule (graphs/agent.py `_build_schema_info`):
+ * when ANY enriched view exists, surface ONLY the enriched views (pre-joined
+ * supersets of the typed facts they're built from); otherwise the typed tables.
+ * All-or-nothing, matching the producer — so the consumer addresses the same
+ * tables the snippets were minted against. Pure; unit-tested.
+ */
+export function preferEnriched<T extends { layer: string }>(rows: T[]): T[] {
+	const enriched = rows.filter((r) => r.layer === ENRICHED_LAYER);
+	return enriched.length > 0 ? enriched : rows;
+}
 
 /** One typed table — addressed in SQL as `lake.typed.<physicalName>`. */
 export interface SchemaTableRow {
@@ -62,7 +91,7 @@ export function formatSchema(
 	conceptRows: SchemaConceptRow[],
 ): string {
 	if (tableRows.length === 0) {
-		return "<schema>\n(No typed tables in the workspace yet — nothing to query.)\n</schema>";
+		return "<schema>\n(No queryable tables in the workspace yet — nothing to query.)\n</schema>";
 	}
 
 	const conceptByColumn = new Map<string, string>();
@@ -85,7 +114,7 @@ export function formatSchema(
 		const cols = [...(columnsByTable.get(t.tableId) ?? [])].sort((a, b) =>
 			a.name.localeCompare(b.name),
 		);
-		const address = `${LAKE_ALIAS}.${t.layer}.${t.physicalName}`;
+		const address = `${LAKE_ALIAS}.${schemaForLayer(t.layer)}.${t.physicalName}`;
 		const colLines = cols.map((c) => {
 			const type = c.resolvedType ?? "unknown";
 			const concept = conceptByColumn.get(c.columnId);
@@ -119,7 +148,12 @@ export async function buildSchemaBlock(): Promise<string> {
 		})
 		.from(tables)
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)))
+		.where(
+			and(
+				isNull(sources.archivedAt),
+				inArray(tables.layer, [TYPED_LAYER, ENRICHED_LAYER]),
+			),
+		)
 		.orderBy(asc(tables.tableName));
 
 	const columnRows = await metadataDb
@@ -132,7 +166,12 @@ export async function buildSchemaBlock(): Promise<string> {
 		.from(columns)
 		.innerJoin(tables, eq(tables.tableId, columns.tableId))
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)));
+		.where(
+			and(
+				isNull(sources.archivedAt),
+				inArray(tables.layer, [TYPED_LAYER, ENRICHED_LAYER]),
+			),
+		);
 
 	const conceptRows = await metadataDb
 		.select({
@@ -141,12 +180,19 @@ export async function buildSchemaBlock(): Promise<string> {
 		})
 		.from(currentSemanticAnnotations);
 
-	return formatSchema(
+	// Prefer-enriched (mirror graphs/agent.py): when enriched views exist, surface
+	// ONLY those; else the typed tables. formatSchema renders only the shown
+	// tables' columns, so passing the full typed+enriched column set is safe.
+	const shownTables = preferEnriched(
 		tableRows.map((t) => ({
 			tableId: t.tableId ?? "",
 			physicalName: t.physicalName ?? "",
 			layer: t.layer ?? TYPED_LAYER,
 		})),
+	);
+
+	return formatSchema(
+		shownTables,
 		columnRows.map((c) => ({
 			tableId: c.tableId ?? "",
 			columnId: c.columnId ?? "",

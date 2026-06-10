@@ -12,6 +12,7 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {
 	formatSchema,
+	preferEnriched,
 	type SchemaColumnRow,
 	type SchemaConceptRow,
 	type SchemaTableRow,
@@ -44,6 +45,31 @@ describe("formatSchema", () => {
 		const block = formatSchema(tables, columnRows, concepts);
 		expect(block).toContain("Table lake.typed.journal_lines:");
 		expect(block).toContain("Table lake.typed.chart_of_accounts:");
+	});
+
+	it("addresses an enriched view in the typed schema (lake.typed.<view>)", () => {
+		// enriched views live in the typed DuckDB schema (schema_for_layer), so the
+		// address is lake.typed.<view> — NOT lake.enriched.<view>.
+		const block = formatSchema(
+			[
+				{
+					tableId: "e1",
+					physicalName: "enriched_src__orders",
+					layer: "enriched",
+				},
+			],
+			[
+				{
+					tableId: "e1",
+					columnId: "ec1",
+					name: "region",
+					resolvedType: "VARCHAR",
+				},
+			],
+			[],
+		);
+		expect(block).toContain("Table lake.typed.enriched_src__orders:");
+		expect(block).not.toContain("lake.enriched.");
 	});
 
 	it("shows each column's type and its [concept] tag when mapped", () => {
@@ -84,7 +110,29 @@ describe("formatSchema", () => {
 
 	it("notes an empty workspace", () => {
 		const block = formatSchema([], [], []);
-		expect(block).toContain("No typed tables in the workspace yet");
+		expect(block).toContain("No queryable tables in the workspace yet");
 		expect(block).toContain("<schema>");
+	});
+});
+
+describe("preferEnriched (mirror the engine's prefer-enriched rule)", () => {
+	const t = (layer: string, physicalName: string) => ({ layer, physicalName });
+
+	it("returns ONLY enriched rows when any exist (all-or-nothing)", () => {
+		const rows = [
+			t("typed", "orders"),
+			t("enriched", "enriched_orders"),
+			t("typed", "regions"),
+		];
+		expect(preferEnriched(rows)).toEqual([t("enriched", "enriched_orders")]);
+	});
+
+	it("falls back to the typed rows when no enriched view exists", () => {
+		const rows = [t("typed", "orders"), t("typed", "regions")];
+		expect(preferEnriched(rows)).toEqual(rows);
+	});
+
+	it("returns empty for an empty input", () => {
+		expect(preferEnriched([])).toEqual([]);
 	});
 });

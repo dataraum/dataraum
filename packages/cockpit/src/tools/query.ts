@@ -219,9 +219,11 @@ export async function classifyComponents(
 			});
 			continue;
 		}
-		// AST-canonical comparison (polyglot, cross-language byte-identical with the
-		// engine's sqlglot — DAT-485 spike): exact_reuse when the model reproduced
-		// the validated snippet modulo cosmetic variance, else adapted. The model's
+		// AST-canonical comparison (polyglot round-trip; DAT-485): exact_reuse when
+		// the model reproduced the validated snippet modulo cosmetic variance, else
+		// adapted. Self-consistent — polyglot canonicalizes BOTH sides — so it does
+		// NOT assume cross-language agreement with the engine's sqlglot (the stress-
+		// test found they diverge; one canonicalizer in both is DAT-492). The model's
 		// executable SQL is always KEPT (classify, don't substitute).
 		const usage = (await sqlEquivalent(step.sql, record.sql))
 			? "exact_reuse"

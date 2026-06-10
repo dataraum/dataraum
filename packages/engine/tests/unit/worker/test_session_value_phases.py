@@ -24,6 +24,9 @@ def test_value_phase_order_is_the_agreed_chain() -> None:
         "slicing_view",
         "slice_analysis",
         "temporal_slice_analysis",
+        # DAT-491: lineage pairs the per-period slice sums temporal_slice_analysis
+        # just persisted — it must follow that phase.
+        "aggregation_lineage",
         "correlations",
     )
 

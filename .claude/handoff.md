@@ -4,6 +4,46 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11: calibration program wave 1 + the TB↔GL watcher (DAT-432/442/444, lanes L2/L3/L9 + L7)
+
+**Four witnessed measurements now** (was two): `relationship_discovery` (lane L2 —
+genuineness pool over existing rows: value_overlap data witness + llm/manual/keeper;
+also FIXED the silent recall=0: teach-materialized rows shadowed measured RI evidence
+in `load_relationship_for_pair`, so the orphan measurement died exactly on taught
+pairs) and `derived_value`'s `llm_hypothesis` witness (lane L3 — the
+`column_annotation` prompt gains a `derived_formula_hypothesis` field pair;
+hypothesis graded over `lake.typed` by the discovery match-rate statistic; `obj.score`
+semantics unchanged). Lane L9: `rebind` teach applier (appends the column to the
+target concept's `indicators` — steers the grounding LLM's input, never writes
+`business_concept`) + an AST guard: every `teach_suggestion` must name an appliable
+teach type. ADR-0009 records the 7-piece measurement pack; ALL new numbers are
+uncalibrated placeholders in `loss.yaml`/`reliabilities.yaml` pending the batch rig.
+
+**L7 — cross_table_consistency is live end-to-end:** `OperatingModelWorkflow` gains a
+terminal `operating_model_detect` right after `validation` (pure scoring, zero LLM);
+the dual-grain read views accept the `(session:{id}, "operating_model")` head
+(`via_operating_model_head`); `ValidationResultRecord.columns_used` is persisted and
+failed checks fan out to COLUMN-grain entropy objects, so bands reach the GL columns
+deliverable metrics flow through. NEW finance spec `tb_gl_reconciliation.yaml`
+(critical): per-(account, period) TB vs SUM(journal_lines) — none of the nine specs
+reconciled TB↔GL before. Score shape: failed CRITICAL = categorical 1.0 (rates put the
+injected 10% break at risk 0.08, invisible, while 8/8 GL-derived deliverable numbers
+were wrong — the scoreboard finding); ERROR/inconclusive = 0.0 + `validation_unassessed`
+warning (was 0.5 = clean-leg false alarms from LLM SQL nondeterminism).
+
+**Calibrate:** the eval runner now drives `operatingModelWorkflow` third;
+`cross_table_consistency` is in `CURRENT_SLICE_DETECTORS` + `ORDERING_DETECTORS`;
+DAT-444 remap done. The first full batch (clean + detection-v1) validates recall,
+clean-leg precision (watch `validation_unassessed` + relationship_discovery quiet),
+and whether the outcomes scoreboard moves off 0 right / 0 prevented / 8
+wrong-delivered. Deferred: generative families for the three new witness sets
+(relationship, formula-divergence, events-backed stock/flow), confirm-overlay human
+witness, pure-decline focal pairs.
+
+- **Status**: pending
+
+
+
 ## 2026-06-10: run-resolved entropy load actually wired — detect path was inert (DAT-491)
 
 **The review-C2 fix shipped in name only and is now real.** `build_for_readiness`

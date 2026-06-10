@@ -1,0 +1,117 @@
+// Snippet WRITE surface (DAT-486 P2a) — save-on-clean persists a learned
+// `query:` snippet so the library grows from real questions and reuse compounds.
+//
+// Mirrors the engine's query-type save path (query/agent.py `_save_novel_snippets`
+// → snippet_library.py `save_snippet`): concept-keyed, first-writer-wins. The
+// snippet identity is the 6-col `uq_snippet_semantic_key`; for a `query` snippet
+// statement/aggregation/parameter_value are all NULL, so dedup CANNOT be a DB
+// `ON CONFLICT` — the unique key is NULLS DISTINCT, so a null-bearing key never
+// conflicts and every save would duplicate. We replicate the engine's app-level
+// `_find_by_key_any`: SELECT by key with explicit IS-NULL matching, then INSERT
+// only if absent. The cockpit writes the raw `sql_snippets` table through the
+// control-plane write surface (write-surface.ts), granted SELECT,INSERT to
+// cockpit_reader (storage/read_views.py).
+//
+// Scope: this writes ONLY `query`-type snippets (the cockpit answer tool's
+// learned SQL). Cross-`snippet_type` reconciliation/promotion against the
+// graph-minted extract/formula snippets is a separate layer (DAT-493).
+
+import { randomUUID } from "node:crypto";
+import { and, eq, isNull, type SQL } from "drizzle-orm";
+
+import { metadataDb } from "./client";
+import { sqlSnippetsWrite } from "./write-surface";
+
+/**
+ * The concept-key a learned `query:` snippet populates — the subset of
+ * `uq_snippet_semantic_key` that matters for this path. snippet_type is always
+ * `query`; statement/aggregation/parameter_value are always NULL.
+ */
+export interface QuerySnippetKey {
+	/** The dashed-UUID workspace_id VALUE (`config.dataraumWorkspaceId`). */
+	schemaMappingId: string;
+	/** The concept the step computes (the answer tool's `Component.name`). */
+	standardField: string;
+}
+
+export interface SaveQuerySnippetInput extends QuerySnippetKey {
+	/** A valid `investigation_sessions` id (NOT-NULL FK). */
+	sessionId: string;
+	sql: string;
+	description: string;
+	/** Provenance, e.g. `query:<runId>`. */
+	source: string;
+	llmModel?: string | null;
+}
+
+export interface SaveQuerySnippetResult {
+	snippetId: string;
+	/** true when a snippet with the same key already existed and was KEPT (first-writer-wins). */
+	deduped: boolean;
+}
+
+/**
+ * The full semantic key for a `query` snippet, IS-NULL-aware. statement /
+ * aggregation / parameter_value are NULL for query snippets and the unique
+ * constraint is NULLS DISTINCT, so these MUST be `isNull(...)` — `eq(col, null)`
+ * renders `col = NULL`, which never matches, and dedup would silently fail.
+ * Filters `snippet_type = 'query'`: a query save dedups only against other query
+ * snippets, never the graph-minted extract/formula rows (mirrors the engine's
+ * `_find_by_key_any`, which keys by the same snippet_type).
+ */
+export function queryKeyConditions(key: QuerySnippetKey): SQL {
+	return and(
+		eq(sqlSnippetsWrite.snippetType, "query"),
+		eq(sqlSnippetsWrite.standardField, key.standardField),
+		isNull(sqlSnippetsWrite.statement),
+		isNull(sqlSnippetsWrite.aggregation),
+		eq(sqlSnippetsWrite.schemaMappingId, key.schemaMappingId),
+		isNull(sqlSnippetsWrite.parameterValue),
+	) as SQL;
+}
+
+/**
+ * Save a learned `query:` snippet, first-writer-wins. If a snippet with the same
+ * concept key already exists it is KEPT and its id returned (`deduped: true`) —
+ * the first clean computation of a concept becomes the reusable one, matching the
+ * engine's healthy-existing branch. Otherwise a new row is inserted.
+ *
+ * The caller gates WHICH steps reach here (only `fresh`/`adapted` components, not
+ * `exact_reuse` — saving a reused step would re-write the curated `graph:` row it
+ * came from).
+ */
+export async function saveQuerySnippet(
+	input: SaveQuerySnippetInput,
+): Promise<SaveQuerySnippetResult> {
+	const existing = await metadataDb
+		.select({ snippetId: sqlSnippetsWrite.snippetId })
+		.from(sqlSnippetsWrite)
+		.where(queryKeyConditions(input))
+		.limit(1);
+	if (existing.length > 0) {
+		return { snippetId: existing[0].snippetId, deduped: true };
+	}
+
+	const snippetId = randomUUID();
+	const now = new Date();
+	await metadataDb.insert(sqlSnippetsWrite).values({
+		snippetId,
+		sessionId: input.sessionId,
+		snippetType: "query",
+		standardField: input.standardField,
+		statement: null,
+		aggregation: null,
+		schemaMappingId: input.schemaMappingId,
+		parameterValue: null,
+		sql: input.sql,
+		description: input.description,
+		columnMappings: {},
+		source: input.source,
+		llmModel: input.llmModel ?? null,
+		executionCount: 0,
+		failureCount: 0,
+		createdAt: now,
+		updatedAt: now,
+	});
+	return { snippetId, deduped: false };
+}

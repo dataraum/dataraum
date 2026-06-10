@@ -18,7 +18,14 @@ from dataraum.llm.providers.anthropic import (
     AnthropicProvider,
     _classify_anthropic_error,
 )
-from dataraum.llm.providers.base import ConversationRequest, Message
+from dataraum.llm.providers.base import (
+    PERMANENT_ERROR_KIND,
+    TRANSIENT_ERROR_KIND,
+    ConversationRequest,
+    Message,
+    format_api_error,
+    is_transient_error,
+)
 
 
 def _config() -> AnthropicConfig:
@@ -105,3 +112,31 @@ class TestConverseSurfacesClassification:
         result = provider.converse(_request())
         assert not result.success
         assert "transient" in (result.error or "")
+        # The consumer's predicate (worker retry choke point) agrees end-to-end.
+        assert is_transient_error(result.error)
+
+
+class TestTransientErrorPredicate:
+    """``format_api_error`` (producer) and ``is_transient_error`` (the worker's
+    retry choke point) are the one shared classification contract."""
+
+    def test_transient_round_trips(self) -> None:
+        msg = format_api_error("Anthropic", TRANSIENT_ERROR_KIND, "429 rate limit")
+        assert is_transient_error(msg) is True
+
+    def test_permanent_is_not_transient(self) -> None:
+        msg = format_api_error("Anthropic", PERMANENT_ERROR_KIND, "401 unauthorized")
+        assert is_transient_error(msg) is False
+
+    def test_none_and_unrelated_are_not_transient(self) -> None:
+        assert is_transient_error(None) is False
+        assert is_transient_error("No typed tables found. Run typing phase first.") is False
+
+    def test_tag_survives_real_error_wrapping(self) -> None:
+        # The classification must survive the concatenation the phase/agent layers
+        # apply before the string reaches ``_outcome_or_raise`` — else a transient
+        # failure silently reads as permanent and is never retried.
+        inner = format_api_error("Anthropic", TRANSIENT_ERROR_KIND, "429 rate limit")
+        assert is_transient_error(f"LLM call failed: {inner}")  # agent wrap
+        assert is_transient_error(f"RuntimeError: {inner}")  # BasePhase.run wrap
+        assert is_transient_error(f"Cycle grounding failed: {inner}")  # phase wrap

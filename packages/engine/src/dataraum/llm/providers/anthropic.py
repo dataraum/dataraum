@@ -11,12 +11,15 @@ from pydantic import BaseModel
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.providers.base import (
+    PERMANENT_ERROR_KIND,
+    TRANSIENT_ERROR_KIND,
     ConversationRequest,
     ConversationResponse,
     LLMProvider,
     Message,
     ToolCall,
     ToolResult,
+    format_api_error,
 )
 
 
@@ -62,20 +65,20 @@ def _classify_anthropic_error(exc: anthropic.APIError) -> tuple[str, str]:
         if exc.status_code in _AUTH_STATUS_CODES:
             message = f"{message}. Check your ANTHROPIC_API_KEY."
         if exc.status_code in _PERMANENT_STATUS_CODES:
-            return "permanent", message
-        return "transient", message
+            return PERMANENT_ERROR_KIND, message
+        return TRANSIENT_ERROR_KIND, message
     # Connection / timeout errors don't have a status code; they're
     # always transient by definition.
     if isinstance(exc, anthropic.APIConnectionError):
-        return "transient", str(exc)
+        return TRANSIENT_ERROR_KIND, str(exc)
     # APIResponseValidationError: the server returned something the SDK
     # couldn't parse. Treat as permanent — retrying the same request
     # likely produces the same malformed response.
     if isinstance(exc, anthropic.APIResponseValidationError):
-        return "permanent", str(exc)
+        return PERMANENT_ERROR_KIND, str(exc)
     # Anything else under APIError — default to transient (retry is
     # the safer default than surfacing as a user error).
-    return "transient", str(exc)
+    return TRANSIENT_ERROR_KIND, str(exc)
 
 
 class AnthropicProvider(LLMProvider):
@@ -203,7 +206,7 @@ class AnthropicProvider(LLMProvider):
         except anthropic.APIError as e:
             kind, message = _classify_anthropic_error(e)
             logger.error("anthropic_api_error", error=str(e), model=model, kind=kind)
-            return Result.fail(f"Anthropic API error ({kind}): {message}")
+            return Result.fail(format_api_error("Anthropic", kind, message))
         except Exception as e:
             logger.error("anthropic_unexpected_error", error=str(e), model=model)
             return Result.fail(f"Unexpected error calling Anthropic: {e}")

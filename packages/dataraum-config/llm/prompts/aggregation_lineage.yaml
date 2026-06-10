@@ -65,3 +65,12 @@ user_prompt: |
   {entities}
 
   Use the propose_aggregation_lineage tool to return the candidates.
+
+inputs:
+  schema:
+    description: Formatted multi-table schema (tables, columns, annotations, relationships) with exact duckdb paths
+    required: true
+
+  entities:
+    description: Fact/dimension + grain classification block from semantic_per_table
+    required: true

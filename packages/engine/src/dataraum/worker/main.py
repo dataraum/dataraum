@@ -46,6 +46,67 @@ logger = get_logger(__name__)
 _MAX_CONCURRENT_ACTIVITIES = 8
 
 
+def worker_activities(phase_activities: PhaseActivities) -> list[object]:
+    """Every activity the bundled worker registers — the single source of truth.
+
+    The workflows call activities by NAME string, so a phase present in a
+    workflow chain but missing here fails only at runtime (``NotFoundError``
+    mid-workflow — how the DAT-491 ``aggregation_lineage`` miss surfaced).
+    ``tests/unit/worker/test_worker_registration.py`` guards this list against
+    the workflow chains.
+    """
+    return [
+        phase_activities.run_import,
+        # DAT-430 run-scoped column gate — between the import loop
+        # and the per-table fan-out.
+        phase_activities.run_check_column_limit,
+        phase_activities.run_typing,
+        phase_activities.run_statistics,
+        phase_activities.run_column_eligibility,
+        phase_activities.run_statistical_quality,
+        phase_activities.run_temporal,
+        phase_activities.run_semantic_per_column,
+        phase_activities.run_detect,
+        phase_activities.run_promote_to_latest,
+        # DAT-401 begin_session spine — source-free, session-scoped.
+        phase_activities.run_begin_session_select,
+        phase_activities.run_relationships,
+        phase_activities.run_semantic_per_table,
+        # DAT-491 events→measure lineage — the structural witness's
+        # supply step, between semantic_per_table and the overlays.
+        phase_activities.run_aggregation_lineage,
+        phase_activities.run_enriched_views,
+        # DAT-403 value layer — runs after enriched_views.
+        phase_activities.run_slicing,
+        phase_activities.run_slicing_view,
+        phase_activities.run_slice_analysis,
+        phase_activities.run_temporal_slice_analysis,
+        phase_activities.run_correlations,
+        # DAT-408/409 begin_session: materialize durable overlays →
+        # terminal detect → silent-accept keepers → promote.
+        phase_activities.run_session_materialize_overlays,
+        phase_activities.run_session_detect,
+        phase_activities.run_session_write_keepers,
+        phase_activities.run_session_promote_to_latest,
+        # DAT-438/455/456 operating_model spine — resolve (pins) →
+        # validation → business_cycles → metrics lifecycle families →
+        # promote the stage head.
+        phase_activities.run_operating_model_resolve,
+        phase_activities.run_validation,
+        phase_activities.run_business_cycles,
+        phase_activities.run_metrics,
+        phase_activities.run_operating_model_promote,
+    ]
+
+
+def _activity_names(activities: list[object]) -> list[str]:
+    """The registered Temporal names, read off the ``@activity.defn`` metadata."""
+    return [
+        getattr(act, "__temporal_activity_definition").name  # noqa: B009 — dunder set by temporalio, not a static attr
+        for act in activities
+    ]
+
+
 async def run_worker() -> None:
     """Bootstrap the substrate, then poll the task queue until interrupted."""
     # TEMPORAL_* are required in Settings (DAT-369): get_settings() fails loud
@@ -66,6 +127,7 @@ async def run_worker() -> None:
             data_converter=pydantic_data_converter,  # PhaseActivity{Input,Result} are Pydantic
         )
         phase_activities = PhaseActivities(manager)
+        activities = worker_activities(phase_activities)
 
         interrupt = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -87,45 +149,7 @@ async def run_worker() -> None:
                     BeginSessionWorkflow,
                     OperatingModelWorkflow,
                 ],
-                activities=[
-                    phase_activities.run_import,
-                    # DAT-430 run-scoped column gate — between the import loop
-                    # and the per-table fan-out.
-                    phase_activities.run_check_column_limit,
-                    phase_activities.run_typing,
-                    phase_activities.run_statistics,
-                    phase_activities.run_column_eligibility,
-                    phase_activities.run_statistical_quality,
-                    phase_activities.run_temporal,
-                    phase_activities.run_semantic_per_column,
-                    phase_activities.run_detect,
-                    phase_activities.run_promote_to_latest,
-                    # DAT-401 begin_session spine — source-free, session-scoped.
-                    phase_activities.run_begin_session_select,
-                    phase_activities.run_relationships,
-                    phase_activities.run_semantic_per_table,
-                    phase_activities.run_enriched_views,
-                    # DAT-403 value layer — runs after enriched_views.
-                    phase_activities.run_slicing,
-                    phase_activities.run_slicing_view,
-                    phase_activities.run_slice_analysis,
-                    phase_activities.run_temporal_slice_analysis,
-                    phase_activities.run_correlations,
-                    # DAT-408/409 begin_session: materialize durable overlays →
-                    # terminal detect → silent-accept keepers → promote.
-                    phase_activities.run_session_materialize_overlays,
-                    phase_activities.run_session_detect,
-                    phase_activities.run_session_write_keepers,
-                    phase_activities.run_session_promote_to_latest,
-                    # DAT-438/455/456 operating_model spine — resolve (pins) →
-                    # validation → business_cycles → metrics lifecycle families →
-                    # promote the stage head.
-                    phase_activities.run_operating_model_resolve,
-                    phase_activities.run_validation,
-                    phase_activities.run_business_cycles,
-                    phase_activities.run_metrics,
-                    phase_activities.run_operating_model_promote,
-                ],
+                activities=activities,  # type: ignore[arg-type]  # bound @activity.defn methods
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
                 # The workflow module lives in the `dataraum` package, whose
@@ -152,36 +176,7 @@ async def run_worker() -> None:
                     "beginSessionWorkflow",
                     "operatingModelWorkflow",
                 ],
-                activities=[
-                    "import",
-                    "check_column_limit",
-                    "typing",
-                    "statistics",
-                    "column_eligibility",
-                    "statistical_quality",
-                    "temporal",
-                    "semantic_per_column",
-                    "detect",
-                    "promote_to_latest",
-                    "begin_session_select",
-                    "relationships",
-                    "semantic_per_table",
-                    "enriched_views",
-                    "slicing",
-                    "slicing_view",
-                    "slice_analysis",
-                    "temporal_slice_analysis",
-                    "correlations",
-                    "session_materialize_overlays",
-                    "session_detect",
-                    "session_write_keepers",
-                    "session_promote_to_latest",
-                    "operating_model_resolve",
-                    "validation",
-                    "business_cycles",
-                    "metrics",
-                    "operating_model_promote",
-                ],
+                activities=_activity_names(activities),
             )
             async with worker:
                 await interrupt.wait()

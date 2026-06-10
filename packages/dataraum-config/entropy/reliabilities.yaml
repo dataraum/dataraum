@@ -59,12 +59,17 @@ witnesses:
     quarantine_clustering: 0.8681
     type_claim: 0.2658
     null_vocabulary: 0.944
-  # temporal_behavior (DAT-445, teach-first): UNCALIBRATED placeholder priors — the
-  # reliability rig has not been run for this measurement's witnesses yet. They match
-  # the measurement's DEFAULT_RELIABILITIES. ontology_prior is the concept's declared
-  # temporal_behavior (grounding-conditional); llm_claim is the LLM's independent
-  # stock/flow read. NOT tuned to a metric. (The structural reconciliation witness is
-  # deferred to DAT-491 — events→measure aggregation lineage.)
+  # temporal_behavior (DAT-445, teach-first): MEASURED 2026-06-10 by the eval rig
+  # (scripts/calibrate_temporal_reliabilities.py) over the generative stock/flow corpus
+  # detection-stockflow-cal-v1 — 40 probe columns (24 clear / 16 ambiguous), Laplace-
+  # smoothed accuracy over opinionated votes (abstentions excluded), the same estimator
+  # as null_semantics. Stratified clear vs ambiguous (the hard, conflicting-cue regime):
+  #   ontology_prior: clear 92% (n=24) | ambiguous 56% (n=16)  → blended 0.762
+  #   llm_claim:      clear 100% (n=24) | ambiguous 55% (n=11)  → blended 0.838
+  # The ambiguous stratum is where the name-anchored LLM falls to ~chance — so these are
+  # FAITHFUL (not the best-case ~1.0 the clear-only corpus measured), NOT tuned to a metric.
+  # Small first sample; re-measure over more seeds before treating as final. (The
+  # structural reconciliation witness is deferred to DAT-491 — events→measure lineage.)
   temporal_behavior:
-    ontology_prior: 0.7
-    llm_claim: 0.6
+    ontology_prior: 0.762
+    llm_claim: 0.838

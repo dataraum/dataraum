@@ -186,3 +186,32 @@ class TestResolvedNullTokens:
         # exactly at threshold is not "past" it
         assert resolved_null_tokens([self._entry("x", 0.7)]) == []
         assert resolved_null_tokens([self._entry("x", 0.71)]) == ["x"]
+
+
+class TestAbstainerExclusion:
+    """An abstaining witness is ignorance, not a diluting party (review C3)."""
+
+    def test_abstaining_type_claim_does_not_dilute_novel_sentinel(self) -> None:
+        from dataraum.entropy.measurements.null_semantics import measure_null_semantics
+
+        # Novel sentinel: quarantine clusters hard (is-null), vocabulary has
+        # never seen it (miss) — type_claim abstains (token absent from
+        # failed_examples → uniform). The conflict must reflect the two
+        # OPINIONATED witnesses disagreeing, undiluted by the abstainer.
+        adjudications = measure_null_semantics(
+            quarantine_data={
+                "rejected_tokens": [{"token": "##MISSING##", "count": 40}],
+                "total_rejected": 40,
+            },
+            typing_data={},
+            null_tokens=[],
+        )
+        assert len(adjudications) == 1
+        adj = adjudications[0]
+        assert [w.witness_id for w in adj.witnesses] == [
+            "quarantine_clustering",
+            "null_vocabulary",
+        ]
+        # With the abstainer pooled the conflict sat at ~0.21 (below the 0.3
+        # band edge); excluded, the genuine disagreement surfaces above it.
+        assert adj.result.conflict > 0.3

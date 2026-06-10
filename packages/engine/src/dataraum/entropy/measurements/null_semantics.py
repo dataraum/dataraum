@@ -104,6 +104,12 @@ def _distribution(p_is_null: float) -> dict[str, float]:
     return {"is-null": p, "is-value": 1.0 - p}
 
 
+def _ns_has_opinion(witness: Witness) -> bool:
+    """A witness has an opinion when its distribution is not (≈) uniform."""
+    uniform = 1.0 / len(witness.distribution)
+    return any(abs(p - uniform) > 1e-6 for p in witness.distribution)
+
+
 def _witness(witness_id: str, distribution: Mapping[str, float], reliability: float) -> Witness:
     return Witness(
         witness_id=witness_id,
@@ -212,7 +218,7 @@ def measure_null_semantics(
     for entry in rejected:
         token = str(entry["token"])
         count = int(entry.get("count", 0))
-        witnesses = (
+        candidates = (
             _witness(
                 "quarantine_clustering",
                 quarantine_distribution(count, total_rejected, unique_tokens),
@@ -225,6 +231,13 @@ def measure_null_semantics(
                 rel["null_vocabulary"],
             ),
         )
+        # Only witnesses that take a position are pooled — same convention as
+        # measure_temporal_behavior. type_claim abstains at uniform in its
+        # COMMON state (VARCHAR column, token absent from failed_examples), and
+        # pooling the abstainer diluted the weighted JSD enough to demote the
+        # novel-sentinel conflict across the readiness band edge (review C3):
+        # abstention is ignorance, not a conflicting party.
+        witnesses = tuple(w for w in candidates if _ns_has_opinion(w))
         adjudications.append(
             TokenAdjudication(
                 token=token,

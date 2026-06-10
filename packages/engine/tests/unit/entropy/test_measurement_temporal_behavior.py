@@ -71,6 +71,22 @@ class TestResolvedBehaviour:
         assert label == "point_in_time"
         assert contested is False
 
+    def test_unequal_confidence_agreement_is_uncontested(self) -> None:
+        # Agreeing witnesses with DIFFERENT confidences produce a small positive
+        # JSD (~0.02) — that is confidence spread, not contest. Review C1: the
+        # flag must not fire below a meaningful conflict level.
+        adj = measure_temporal_behavior(
+            "t",
+            "c",
+            ontology_behaviour="point_in_time",
+            grounding_confidence=0.9,
+            llm_claim="stock",
+            llm_confidence=0.7,
+        )
+        label, contested = resolved_behaviour(adj.result)
+        assert label == "point_in_time"
+        assert contested is False
+
     def test_conflict_resolves_contested(self) -> None:
         adj = measure_temporal_behavior(
             "trial_balance",

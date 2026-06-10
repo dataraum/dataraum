@@ -59,6 +59,13 @@ CLAIM_SPACE: tuple[str, str] = ("stock", "flow")
 # rather than manufacturing conflict against a confident one (and pool([]) → U=1).
 _OPINION_EPS = 1e-6
 
+# A resolved label is CONTESTED only above a meaningful conflict level — aligned
+# with the readiness low band (risk <= 0.3 is "ready"). Witnesses that agree on
+# the label but differ in confidence produce small positive JSD (~0.02); reusing
+# the abstention epsilon here made the flag fire on nearly every column and
+# degraded the query agent's caveat signal to noise (review finding C1).
+CONTESTED_MIN_CONFLICT = 0.3
+
 # Default confidence when a present signal carries none (a declared behaviour / claim
 # with no confidence still leans, just not at full strength).
 _DEFAULT_CONFIDENCE = 0.7
@@ -166,7 +173,7 @@ def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
         return None, False
     p_stock = result.posterior[CLAIM_SPACE.index("stock")]
     label = "point_in_time" if p_stock >= 0.5 else "additive"
-    contested = result.conflict > _OPINION_EPS
+    contested = result.conflict > CONTESTED_MIN_CONFLICT
     return label, contested
 
 

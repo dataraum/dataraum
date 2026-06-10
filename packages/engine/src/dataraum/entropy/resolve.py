@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.entropy.measurements.null_semantics import resolved_null_tokens
@@ -51,7 +51,7 @@ def resolve_null_tokens(session: Session, run_id: str | None) -> int:
         tokens = resolved_null_tokens(evidence)
         if not tokens:
             continue
-        session.execute(
+        result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
             update(SemanticAnnotation)
             .where(
                 SemanticAnnotation.column_id == record.column_id,
@@ -59,7 +59,10 @@ def resolve_null_tokens(session: Session, run_id: str | None) -> int:
             )
             .values(null_tokens=tokens)
         )
-        updated += 1
+        # rowcount, not attempts: on session runs the annotations carry
+        # add_source run ids and every UPDATE matches zero rows — the intended
+        # no-op must show as 0 in the detect log, not as N phantom resolves.
+        updated += int(result.rowcount or 0)
     return updated
 
 
@@ -96,7 +99,7 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
         resolved = first.get("resolved")
         if resolved is None:
             continue  # total ignorance — leave the ontology backfill in place
-        session.execute(
+        result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
             update(SemanticAnnotation)
             .where(
                 SemanticAnnotation.column_id == record.column_id,
@@ -107,5 +110,5 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
                 temporal_behavior_contested=bool(first.get("contested", False)),
             )
         )
-        updated += 1
+        updated += int(result.rowcount or 0)  # see resolve_null_tokens — no-ops stay visible
     return updated

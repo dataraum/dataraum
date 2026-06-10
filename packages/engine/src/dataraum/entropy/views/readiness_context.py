@@ -406,7 +406,13 @@ def assemble_readiness_context(
 # ---------------------------------------------------------------------------
 
 
-def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[EntropyObject]:
+def _load_entropy_objects(
+    session: Session,
+    table_ids: list[str],
+    *,
+    current_run_id: str | None = None,
+    session_id: str | None = None,
+) -> list[EntropyObject]:
     """Load entropy objects for the typed tables among ``table_ids`` (or empty)."""
     if not table_ids:
         return []
@@ -417,7 +423,12 @@ def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[Entrop
         logger.warning("No typed tables found for readiness context")
         return []
 
-    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
+    entropy_objects = repo.load_for_tables(
+        typed_table_ids,
+        enforce_typed=True,
+        current_run_id=current_run_id,
+        session_id=session_id,
+    )
     if not entropy_objects:
         logger.debug("No entropy objects found for readiness context")
     return entropy_objects
@@ -426,6 +437,9 @@ def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[Entrop
 def build_for_readiness(
     session: Session,
     table_ids: list[str],
+    *,
+    current_run_id: str | None = None,
+    session_id: str | None = None,
 ) -> EntropyForReadiness:
     """Build the full readiness rollup (intents + bands) for typed tables.
 
@@ -440,6 +454,10 @@ def build_for_readiness(
     Returns:
         EntropyForReadiness with computed context.
     """
+    # Query-time path: still a blind load (pre-existing). After a begin_session
+    # promote, add_source and session rows coexist here too — resolving them
+    # needs the session head, i.e. threading session_id through the
+    # query_context callers. Follow-up to the detect-path fix (review C2).
     entropy_objects = _load_entropy_objects(session, table_ids)
     if not entropy_objects:
         return EntropyForReadiness()
@@ -465,6 +483,10 @@ def build_column_evidence(
     Returns:
         EntropyForReadiness with per-column node evidence + direct signals only.
     """
+    # Query-time path: still a blind load (pre-existing). After a begin_session
+    # promote, add_source and session rows coexist here too — resolving them
+    # needs the session head, i.e. threading session_id through the
+    # query_context callers. Follow-up to the detect-path fix (review C2).
     entropy_objects = _load_entropy_objects(session, table_ids)
     if not entropy_objects:
         return EntropyForReadiness()

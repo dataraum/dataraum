@@ -164,3 +164,64 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     assert [r.target for r in load_table_readiness(session, baseline_session_id())] == [
         "table:orders"
     ]
+
+
+class TestRunResolvedLoad:
+    """Per (target, detector): current run > session head > table heads (review C2).
+
+    temporal_behavior is the first detector on BOTH detect paths; a blind load
+    let the stale add_source conflict outlive its session-detect re-adjudication
+    via the max-score dedup — the resolution direction of the third witness.
+    """
+
+    @staticmethod
+    def _record(session: Session, run_id: str | None, score: float) -> None:
+        from dataraum.entropy.db_models import EntropyObjectRecord
+
+        session.add(
+            EntropyObjectRecord(
+                session_id=baseline_session_id(),
+                layer="semantic",
+                dimension="temporal",
+                sub_dimension="temporal_behavior",
+                target="column:t.debit_balance",
+                table_id="fact_t",
+                column_id=None,
+                run_id=run_id,
+                score=score,
+                detector_id="temporal_behavior",
+            )
+        )
+
+    def test_current_run_supersedes_table_head(self, session: Session) -> None:
+        from dataraum.entropy.core.storage import EntropyRepository
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+
+        session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
+        session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
+        session.flush()
+        # add_source run promoted as the table detect head: stale 2-witness C=0.9
+        self._record(session, "addsource-run", 0.9)
+        session.add(
+            MetadataSnapshotHead(target="table:fact_t", stage="detect", run_id="addsource-run")
+        )
+        # in-flight session detect: 3-witness re-adjudication resolved C=0.1
+        self._record(session, "session-run", 0.1)
+        session.flush()
+
+        objects = EntropyRepository(session).load_for_tables(
+            ["fact_t"], current_run_id="session-run", session_id=baseline_session_id()
+        )
+        assert [o.score for o in objects] == [0.1]
+
+    def test_without_current_run_loads_blind(self, session: Session) -> None:
+        from dataraum.entropy.core.storage import EntropyRepository
+
+        session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
+        session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
+        session.flush()
+        self._record(session, "a", 0.9)
+        self._record(session, "b", 0.1)
+        session.flush()
+        objects = EntropyRepository(session).load_for_tables(["fact_t"])
+        assert len(objects) == 2

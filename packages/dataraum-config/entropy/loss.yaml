@@ -36,6 +36,19 @@ measurements:
     aggregation_intent: { conflict: 0.9, ignorance: 0.5 }
     reporting_intent: { conflict: 0.8, ignorance: 0.4 }
 
+  temporal_behavior:
+    # Contested stock-vs-flow: THE don't-SUM-a-stock failure — summing a
+    # cumulative level double-counts every prior period, so aggregation bears
+    # the highest loss; a query can still caveat the resolved label; a report
+    # built on the wrong behaviour is materially wrong. Wired 2026-06-10 after
+    # the live three-witness e2e (recall C 0.003→0.363, precision quiet at
+    # 0.006). Name-witness reliabilities are rig-measured (DAT-450/445); the
+    # structural_reconciliation witness reliability is still a probe-derived
+    # placeholder (0.85) pending an events-backed generative family.
+    query_intent: { conflict: 0.4, ignorance: 0.2 }
+    aggregation_intent: { conflict: 0.9, ignorance: 0.4 }
+    reporting_intent: { conflict: 0.7, ignorance: 0.3 }
+
   # benford is NOT in the loss table: it is an INFORMATIVE SIGNAL, not tunable entropy
   # (DAT-442). Leading-digit law is a forensic/compliance statistic, not an ERP data-
   # quality fact a teach can close — and it doesn't map to ERP measures (prices aren't

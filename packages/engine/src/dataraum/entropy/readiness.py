@@ -68,7 +68,7 @@ def persist_readiness(
     session.execute(col_del)
     session.execute(rel_del)
 
-    ctx = build_for_readiness(session, table_ids)
+    ctx = build_for_readiness(session, table_ids, current_run_id=run_id, session_id=session_id)
     if not ctx.columns:
         return 0
 

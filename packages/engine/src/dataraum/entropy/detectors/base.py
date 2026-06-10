@@ -279,8 +279,12 @@ def get_default_registry() -> DetectorRegistry:
     """
     global _default_registry
     if _default_registry is None:
-        _default_registry = DetectorRegistry()
-        _register_builtin_detectors(_default_registry)
+        # Build fully, THEN publish: a concurrent ThreadPoolExecutor activity
+        # observing a partially-populated registry would silently skip its
+        # detector for that run (post_step_detector_not_found).
+        registry = DetectorRegistry()
+        _register_builtin_detectors(registry)
+        _default_registry = registry
     return _default_registry
 
 

@@ -175,6 +175,20 @@ class TemporalSliceAnalysisPhase(BasePhase):
         total_period_analyses = 0
         errors: list[str] = []
         time_columns_used: set[str] = set()
+        # Each physical slice table is drift-analysed exactly once per run. Two
+        # slice definitions for the same fact table + dimension (the slicing
+        # agent can emit a column twice, and ``_propagate_enriched_dimensions``
+        # adds more — ``slice_definitions`` has no per-run uniqueness guard)
+        # resolve to the same source-qualified prefix and so match the same
+        # slice tables. Persisting a slice table's drift twice in one activity
+        # appends duplicate ``(slice_table_name, column_name, run_id)`` rows
+        # under the production session's ``autoflush=False`` (the run-scoped
+        # delete in ``persist_drift_results`` does not flush the prior batch),
+        # violating ``uq_drift_slice_column_run``. The analysis is independent
+        # of which definition routed us here — same source ⇒ same time column
+        # and period bounds — so deduping is loss-free. (Root cause — duplicate
+        # ``SliceDefinition`` rows at the writer — tracked in DAT-496.)
+        processed_slice_tables: set[str] = set()
 
         for slice_def in slice_definitions:
             tc_entry = table_time_columns.get(slice_def.table_id)
@@ -240,6 +254,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
             )
 
             for si in slice_infos:
+                if si.slice_table_name in processed_slice_tables:
+                    continue
+                processed_slice_tables.add(si.slice_table_name)
                 try:
                     drift_result = analyze_column_drift(
                         slice_table_name=si.slice_table_name,

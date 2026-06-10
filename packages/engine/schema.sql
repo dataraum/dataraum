@@ -577,6 +577,8 @@ CREATE TABLE measure_aggregation_lineage (
 	measure_table_id VARCHAR NOT NULL, 
 	measure_column_id VARCHAR NOT NULL, 
 	event_table_id VARCHAR NOT NULL, 
+	event_join_duckdb_path TEXT, 
+	event_join_on_sql TEXT, 
 	event_value_sql TEXT NOT NULL, 
 	measure_key_sql TEXT NOT NULL, 
 	event_key_sql TEXT NOT NULL, 

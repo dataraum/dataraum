@@ -34,8 +34,18 @@ MIN_JOIN_COVERAGE = 0.5
 
 
 def _series_query(c: LineageCandidate) -> str:
-    """The alignment query: one row per matched ``(entity, period)``."""
+    """The alignment query: one row per matched ``(entity, period)``.
+
+    The event (line) table is always aliased ``e`` so bare-column expressions
+    keep resolving; an optional header join (``h``) covers the split
+    header/line shape where the event date lives one table away.
+    """
     event_where = f"WHERE {c.event_filter_sql}" if c.event_filter_sql else ""
+    event_join = (
+        f"JOIN {c.event_join_duckdb_path} h ON {c.event_join_on_sql}"
+        if c.event_join_duckdb_path and c.event_join_on_sql
+        else ""
+    )
     return f"""
         WITH series AS (
             SELECT {c.measure_key_sql} AS k, {c.measure_period_sql} AS p,
@@ -45,7 +55,8 @@ def _series_query(c: LineageCandidate) -> str:
         anchor AS (
             SELECT {c.event_key_sql} AS k, {c.event_period_sql} AS p,
                    SUM({c.event_value_sql}) AS m
-            FROM {c.event_duckdb_path}
+            FROM {c.event_duckdb_path} e
+            {event_join}
             {event_where}
             GROUP BY 1, 2
         )
@@ -169,6 +180,8 @@ def discover_aggregation_lineage(
                 measure_table_id=measure_table_id,
                 measure_column_id=measure_column_id,
                 event_table_id=event_table_id,
+                event_join_duckdb_path=candidate.event_join_duckdb_path,
+                event_join_on_sql=candidate.event_join_on_sql,
                 event_value_sql=candidate.event_value_sql,
                 measure_key_sql=candidate.measure_key_sql,
                 event_key_sql=candidate.event_key_sql,

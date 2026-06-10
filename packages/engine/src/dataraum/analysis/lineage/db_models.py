@@ -47,6 +47,10 @@ class MeasureAggregationLineage(Base):
     )
 
     # The alignment the verdict was computed under (audit + re-run reproducibility).
+    # event_join_*: the optional header join for split header/line event data
+    # (line table aliased ``e``, header ``h`` in the *_sql expressions).
+    event_join_duckdb_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_join_on_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_value_sql: Mapped[str] = mapped_column(Text, nullable=False)
     measure_key_sql: Mapped[str] = mapped_column(Text, nullable=False)
     event_key_sql: Mapped[str] = mapped_column(Text, nullable=False)

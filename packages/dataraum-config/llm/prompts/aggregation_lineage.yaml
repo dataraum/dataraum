@@ -37,6 +37,15 @@ system_prompt: |
     strftime("date_column", '%Y-%m'); if it uses dates, use date_trunc.
   - event_filter_sql: an optional WHERE condition when only a subset of events is
     effective (e.g. "status" = 'posted').
+  - event_join_duckdb_path / event_join_on_sql: when the event-level data is
+    SPLIT header/line — amounts on a line table, the date/status on a header
+    table (e.g. journal lines joined to journal entries) — set these to the
+    header table's duckdb_path and the join condition. The line table is
+    aliased e and the header h; the condition looks like
+    e."entry_id" = h."entry_id". With a join present, qualify EVERY event-side
+    expression with e. or h. — e.g. event_value_sql = e."debit" - e."credit",
+    event_period_sql = strftime(h."date", '%Y-%m'),
+    event_filter_sql = h."status" = 'posted'.
   </task>
 
   <rules>
@@ -45,7 +54,9 @@ system_prompt: |
     even when you cannot tell which way it reconciles.
   - Use the EXACT duckdb_path values from the schema for table references and
     double-quote every column name inside expressions.
-  - Each expression must reference columns of its own table only.
+  - Each expression must reference columns of its own table only — except via
+    an explicit header join, where e./h. qualified columns of those two tables
+    are allowed. NEVER reference a column that is not on the table you name.
   - Only propose a candidate when a plausible entity key exists on BOTH sides.
   - Multiple measure columns may roll up from the same event table (propose one
     candidate per measure column). If a measure column has two plausible signed

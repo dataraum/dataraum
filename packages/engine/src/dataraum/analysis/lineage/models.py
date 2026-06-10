@@ -18,19 +18,42 @@ class LineageCandidate(BaseModel):
     The LLM proposes WHERE a lineage might exist and HOW to align the two
     tables (key, period bridge, value expression); it does NOT decide stock vs
     flow — the deterministic reconciliation statistic disposes every candidate.
-    All ``*_sql`` fields are DuckDB SQL expressions over the named table only,
-    with column names double-quoted.
+    All ``*_sql`` fields are DuckDB SQL expressions with column names
+    double-quoted.
+
+    Event-side data is often SPLIT header/line (amounts on a line table, the
+    date/status on a header table — the canonical accounting shape). For that,
+    set ``event_join_duckdb_path``/``event_join_on_sql``: the line table is
+    aliased ``e``, the header ``h``, and every event-side expression must then
+    qualify its columns with ``e.``/``h.``. Without a join, bare double-quoted
+    columns over the event table.
     """
 
     measure_table: str = Field(description="table_name of the table holding the measure column")
     measure_duckdb_path: str = Field(description="exact duckdb_path of the measure table")
     measure_column: str = Field(description="the measure column being explained")
-    event_table: str = Field(description="table_name of the event-level table")
+    event_table: str = Field(description="table_name of the event-level (line) table")
     event_duckdb_path: str = Field(description="exact duckdb_path of the event table")
+    event_join_duckdb_path: str | None = Field(
+        default=None,
+        description=(
+            "exact duckdb_path of a HEADER table to join when the event date/status "
+            "lives there rather than on the line table (e.g. journal entries for "
+            "journal lines); the line table is aliased e, the header h"
+        ),
+    )
+    event_join_on_sql: str | None = Field(
+        default=None,
+        description=(
+            "join condition between line and header using the e/h aliases, "
+            'e.g. \'e."entry_id" = h."entry_id"\'; required with event_join_duckdb_path'
+        ),
+    )
     event_value_sql: str = Field(
         description=(
-            "SQL expression over event-table columns whose per-period SUM should "
-            'reproduce the measure (its movement), e.g. \'"debit" - "credit"\' or \'"amount"\''
+            "SQL expression over event-side columns whose per-period SUM should "
+            'reproduce the measure (its movement), e.g. \'"debit" - "credit"\' or \'"amount"\' '
+            '— qualified (e."debit" - e."credit") when a header join is present'
         )
     )
     measure_key_sql: str = Field(
@@ -47,8 +70,9 @@ class LineageCandidate(BaseModel):
     )
     event_period_sql: str = Field(
         description=(
-            "SQL expression on the event table producing the SAME period key (the "
-            "period bridge), e.g. 'strftime(\"date\", ''%Y-%m'')'"
+            "SQL expression on the event side producing the SAME period key (the "
+            "period bridge), e.g. 'strftime(\"date\", ''%Y-%m'')' — use the header's "
+            'date (h."date") when the line table has none'
         )
     )
     event_filter_sql: str | None = Field(

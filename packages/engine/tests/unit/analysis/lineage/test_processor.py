@@ -81,6 +81,27 @@ def duck() -> Iterator[duckdb.DuckDBPyConnection]:
              (SELECT UNNEST(range(1, 13)) AS period) p(period)
         """
     )
+    # The split header/line shape (the canonical accounting layout): amounts on
+    # the line table, the date on the header — bridgeable only via a join.
+    conn.execute(
+        """
+        CREATE TABLE journal_entries AS
+        SELECT period AS entry_id,
+               '2025-' || lpad(CAST(period AS VARCHAR), 2, '0') || '-15' AS entry_date
+        FROM (SELECT UNNEST(range(1, 13)) AS period) p(period)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE journal_lines_split AS
+        SELECT account_id,
+               period AS entry_id,
+               40.0 + period * (1 + account_id) AS debit,
+               0.0 AS credit
+        FROM (SELECT UNNEST([1, 2]) AS account_id) a,
+             (SELECT UNNEST(range(1, 13)) AS period) p(period)
+        """
+    )
     try:
         yield conn
     finally:
@@ -93,6 +114,7 @@ def _seed_tables(session: Session) -> dict[str, str]:
     for name, cols in (
         ("trial_balance", ["account_id", "period", "balance", "net_change"]),
         ("journal_lines", ["account_id", "entry_date", "debit", "credit"]),
+        ("journal_lines_split", ["account_id", "entry_id", "debit", "credit"]),
     ):
         table = Table(
             table_id=str(uuid4()),
@@ -142,14 +164,16 @@ def _discover(
         session,
         duck,
         candidates=list(cands),
-        table_ids=[ids["trial_balance"], ids["journal_lines"]],
+        table_ids=[v for k, v in ids.items() if "." not in k],
         session_id=_SESSION,
         run_id=_RUN,
     )
 
 
 class TestDiscoverAggregationLineage:
-    def test_stock_measure_reconciles_cumulative(self, real_session: Session, duck) -> None:
+    def test_stock_measure_reconciles_cumulative(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         ids = _seed_tables(real_session)
         assert _discover(real_session, duck, ids, _candidate("balance")) == 1
         row = real_session.execute(select(MeasureAggregationLineage)).scalar_one()
@@ -159,13 +183,40 @@ class TestDiscoverAggregationLineage:
         assert row.match_rate > 0.99
         assert row.run_id == _RUN
 
-    def test_flow_measure_reconciles_per_period(self, real_session: Session, duck) -> None:
+    def test_flow_measure_reconciles_per_period(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         ids = _seed_tables(real_session)
         assert _discover(real_session, duck, ids, _candidate("net_change")) == 1
         row = real_session.execute(select(MeasureAggregationLineage)).scalar_one()
         assert row.pattern == "per_period"
 
-    def test_misaligned_period_bridge_drops_candidate(self, real_session: Session, duck) -> None:
+    def test_header_line_split_reconciles_via_join(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # The DAT-491 live-e2e miss: the line table has no date — the period
+        # bridge lives on the header, reachable only through the e/h join.
+        ids = _seed_tables(real_session)
+        cand = _candidate(
+            "balance",
+            event_table="journal_lines_split",
+            event_duckdb_path="journal_lines_split",
+            event_join_duckdb_path="journal_entries",
+            event_join_on_sql='e."entry_id" = h."entry_id"',
+            event_value_sql='e."debit" - e."credit"',
+            event_key_sql='e."account_id"',
+            event_period_sql="strftime(strptime(h.\"entry_date\", '%Y-%m-%d'), '%Y-%m')",
+        )
+        assert _discover(real_session, duck, ids, cand) == 1
+        row = real_session.execute(select(MeasureAggregationLineage)).scalar_one()
+        assert row.pattern == "cumulative"
+        assert row.event_table_id == ids["journal_lines_split"]
+        assert row.event_join_duckdb_path == "journal_entries"
+        assert row.match_rate > 0.99
+
+    def test_misaligned_period_bridge_drops_candidate(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         # A wrong bridge produces an empty join → coverage gate drops it; the
         # witness downstream abstains instead of guessing.
         ids = _seed_tables(real_session)
@@ -174,19 +225,25 @@ class TestDiscoverAggregationLineage:
         )
         assert _discover(real_session, duck, ids, bad) == 0
 
-    def test_broken_sql_drops_candidate(self, real_session: Session, duck) -> None:
+    def test_broken_sql_drops_candidate(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         ids = _seed_tables(real_session)
         bad = _candidate("balance", event_value_sql='"no_such_column"')
         assert _discover(real_session, duck, ids, bad) == 0
 
-    def test_rerun_is_idempotent(self, real_session: Session, duck) -> None:
+    def test_rerun_is_idempotent(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         ids = _seed_tables(real_session)
         _discover(real_session, duck, ids, _candidate("balance"))
         _discover(real_session, duck, ids, _candidate("balance"))
         rows = real_session.execute(select(MeasureAggregationLineage)).scalars().all()
         assert len(rows) == 1
 
-    def test_loader_is_exact_run(self, real_session: Session, duck) -> None:
+    def test_loader_is_exact_run(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         ids = _seed_tables(real_session)
         _discover(real_session, duck, ids, _candidate("balance"))
         real_session.flush()

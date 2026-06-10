@@ -260,9 +260,12 @@ def materialize_read_schema(connection: Connection, workspace_schema: str) -> in
 
 # The cockpit's CONTROL-PLANE write surface (DAT-453): the only raw tables the
 # reader role can touch, with the minimum verbs. Registering a source, opening
-# a session, and teaching (config_overlay) are deliberate cockpit writes — the
-# teach vocabulary IS overlay rows. Everything else stays read-only via the
-# read schema. SELECT is included because INSERT … RETURNING needs it.
+# a session, teaching (config_overlay), and saving a learned query snippet
+# (sql_snippets, DAT-486) are deliberate cockpit writes — the teach vocabulary
+# IS overlay rows, and save-on-clean grows the snippet library from real
+# questions. Everything else stays read-only via the read schema. SELECT is
+# included because INSERT … RETURNING needs it (and sql_snippets reads its own
+# key for the IS-NULL-aware dedup lookup before INSERT-if-absent).
 #
 # ``sources`` carries a COLUMN-level UPDATE: the cockpit's select upsert is
 # ``INSERT … ON CONFLICT DO UPDATE`` and Postgres checks the UPDATE privilege
@@ -279,6 +282,12 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
     ),
     "investigation_sessions": "SELECT, INSERT",
     "config_overlay": "SELECT, INSERT, UPDATE",
+    # save-on-clean (DAT-486): the cockpit query tool saves learned `query:`
+    # snippets. SELECT for the IS-NULL-aware key lookup (the unique key has
+    # nullable columns and Postgres is NULLS DISTINCT, so dedup is app-level,
+    # not ON CONFLICT) + INSERT-if-absent (first-writer-wins). No UPDATE:
+    # failure-replacement / usage telemetry is P2b (DAT-488).
+    "sql_snippets": "SELECT, INSERT",
 }
 
 

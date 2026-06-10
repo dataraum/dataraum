@@ -33,9 +33,7 @@ def test_kl_is_non_negative() -> None:
 
 def test_kl_is_asymmetric() -> None:
     # D_KL is a divergence, not a metric — direction matters.
-    assert kl_divergence(_UNIFORM9, _BENFORD) != pytest.approx(
-        kl_divergence(_BENFORD, _UNIFORM9)
-    )
+    assert kl_divergence(_UNIFORM9, _BENFORD) != pytest.approx(kl_divergence(_BENFORD, _UNIFORM9))
 
 
 def test_kl_one_bit_for_point_mass_on_half() -> None:
@@ -55,9 +53,7 @@ def test_kl_scaling_observed_is_invariant() -> None:
     # 100× the same shape → identical surprise (intensive, not extensive).
     small = [6, 3, 1]
     large = [600, 300, 100]
-    assert kl_divergence(small, _BENFORD[:3]) == pytest.approx(
-        kl_divergence(large, _BENFORD[:3])
-    )
+    assert kl_divergence(small, _BENFORD[:3]) == pytest.approx(kl_divergence(large, _BENFORD[:3]))
 
 
 def test_kl_reference_floor_keeps_it_finite() -> None:

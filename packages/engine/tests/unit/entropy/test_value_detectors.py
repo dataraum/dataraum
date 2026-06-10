@@ -101,7 +101,6 @@ class TestNullRatioDetector:
         assert detector.required_analyses == ["statistics"]
 
 
-
 class TestBenfordDetector:
     """Tests for BenfordDetector — KL-surprise scoring (DAT-442).
 

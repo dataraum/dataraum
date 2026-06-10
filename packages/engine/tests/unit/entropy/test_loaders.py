@@ -188,6 +188,7 @@ class TestLoadCorrelation:
         assert result["derived_columns"][0]["derived_column_name"] == "total"
         assert result["derived_columns"][0]["match_rate"] == 0.98
 
+
 @pytest.fixture
 def real_session():
     """In-memory SQLite session with all tables; FKs off so we skip parent rows."""

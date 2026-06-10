@@ -119,7 +119,9 @@ def test_detector_consumes_the_shipped_calibrated_artifact() -> None:
     try:
         shipped = get_reliability_config().for_measurement(NullSemanticsDetector.detector_id)
         assert shipped  # the artifact actually carries null_semantics witnesses
-        assert shipped != {k: float(v) for k, v in DEFAULT_RELIABILITIES.items()}  # calibrated ≠ fallback
+        assert shipped != {
+            k: float(v) for k, v in DEFAULT_RELIABILITIES.items()
+        }  # calibrated ≠ fallback
         ctx = _context(
             {"rejected_tokens": [{"token": "N/A", "count": 95}], "total_rejected": 100},
             reliabilities=shipped,

@@ -20,8 +20,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ENTROPY LAYER                                     │
 │                                                                             │
-│   16 Detectors (4 layers)           ──▶  Contracts (6 built-in)             │
-│   Bayesian Network                  ──▶  Readiness (ready/investigate/      │
+│   14 Detectors (4 layers)           ──▶  Contracts (6 built-in)             │
+│   Loss Tables (per intent)          ──▶  Readiness (ready/investigate/      │
 │   Post-phase measurement            ──▶    blocked per column)              │
 │                                          Confidence Levels (traffic light)  │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -105,7 +105,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 | **Data Compute** | DuckDB | Load, query, transform data |
 | **Data Exchange** | PyArrow | Efficient data transfer between engines |
 | **Statistical** | SciPy, StatsModels, Ruptures | Distributions, regressions, changepoints |
-| **Probabilistic** | PGMPy, NetworkX | Bayesian networks for entropy causality |
+| **Graphs** | NetworkX | Relationship graph topology |
 | **LLM** | Anthropic (primary) | Semantic analysis, enrichment, interpretation |
 | **Configuration** | YAML | Ontologies, verticals, thresholds, prompts |
 
@@ -184,13 +184,13 @@ src/dataraum/
 │   ├── eligibility/       # Column eligibility evaluation
 │   └── views/             # Enriched view construction
 ├── entropy/               # Uncertainty quantification
-│   ├── detectors/         # 16 detectors across 4 layers
+│   ├── detectors/         # 14 detectors across 4 layers
 │   │   ├── structural/    # Type fidelity, join paths, relationship quality
-│   │   ├── semantic/      # Business meaning, units, temporal, dimensional, coverage, cycles
-│   │   ├── value/         # Nulls, outliers, drift, Benford, slice variance
-│   │   └── computational/ # Derived values, cross-table consistency
+│   │   ├── semantic/      # Business meaning, units, temporal, dimensional, coverage
+│   │   ├── value/         # Nulls, null semantics, Benford
+│   │   └── computational/ # Derived values, cross-table consistency, temporal behavior
 │   ├── contracts/         # Use-case threshold evaluation
-│   ├── network/           # Bayesian causal network
+│   ├── pooling/           # Witness pooling — conflict C, ignorance U (pooled measurements)
 │   ├── measurement.py     # measure_entropy(), match_threshold()
 │   └── engine.py          # Detector orchestration, post-step hooks
 ├── investigation/         # Session trace models (MCP audit trail)

@@ -25,7 +25,8 @@ config/
 ├── entropy/
 │   ├── contracts.yaml         # Use-case thresholds (6 built-in contracts)
 │   ├── thresholds.yaml        # Per-dimension entropy thresholds
-│   └── network.yaml           # Bayesian network configuration
+│   ├── loss.yaml              # Per-measurement × intent loss weights (readiness)
+│   └── reliabilities.yaml     # Calibrated witness reliabilities (pooled measurements)
 │
 ├── filters/                   # System-level quality filters (shared by all verticals)
 │   ├── role_based.yaml        # Filters by semantic role (key, measure, timestamp)
@@ -96,7 +97,7 @@ phases:
     dependencies: [relationships]
     produces: [semantic]
     detectors: [business_meaning, unit_entropy, temporal_entropy,
-                outlier_rate, benford,
+                benford, temporal_behavior,
                 join_path_determinism, relationship_entropy]
 
   graph_execution:
@@ -248,9 +249,16 @@ Define acceptable entropy levels per use case. See [Entropy](entropy.md) for det
 
 Per-dimension score thresholds that determine low/medium/high classification.
 
-### Network (`config/entropy/network.yaml`)
+### Loss (`config/entropy/loss.yaml`)
 
-Bayesian network configuration for causal impact analysis between entropy dimensions.
+Per-measurement × intent loss weights. Readiness per usage intent is the weighted
+sum of measurement losses, banded into ready / investigate / blocked.
+
+### Reliabilities (`config/entropy/reliabilities.yaml`)
+
+Calibrated witness reliabilities for pooled measurements (null_semantics,
+temporal_behavior) — measured by the eval reliability rig against generative
+ground-truth corpora, with provenance recorded in the file; never hand-set.
 
 ## Prompt Templates
 

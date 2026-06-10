@@ -73,7 +73,7 @@ After each phase completes, the orchestrator runs **post-step detectors** — en
 
 - After `typing`: measures `type_fidelity`
 - After `statistics`: measures `null_ratio`
-- After `semantic_per_column`: measures `business_meaning`, `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`
+- After `semantic_per_column`: measures `business_meaning`, `unit_entropy`, `temporal_entropy`, `benford`, `temporal_behavior`
 - After `semantic_per_table`: measures `join_path_determinism`, `relationship_entropy`
 - After `enriched_views`: measures `dimension_coverage`
 - After `correlations`: measures `derived_value`

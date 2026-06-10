@@ -61,7 +61,7 @@ The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint
 - **Pre-computed context** — AI receives a fully-assembled `ContextDocument`; no runtime discovery.
 - **Ontologies are config** — domain ontologies (financial_reporting, marketing, …) are YAML mapping column patterns → business terms, defining metrics, guiding interpretation. They live in `packages/dataraum-config/` (bind-mounted at `/opt/dataraum/config`); load them only through `dataraum.core.config`, never `Path(__file__)` navigation.
 - **Pipeline measures, doesn't interpret** — detectors run as pipeline post-steps; interpretation happens interactively through the cockpit (Temporal workflows + chat).
-- **BBN readiness** — per-column ready / investigate / blocked via a Bayesian network.
+- **Loss-based readiness** — per-column ready / investigate / blocked via per-intent loss tables (`config/entropy/loss.yaml`); the Bayesian network was deleted in DAT-442.
 - **Concurrency** — standard **GIL-on** CPython 3.14 (container `python:3.14-slim`; free-threading was evaluated and dropped as a target). The Temporal activity worker still runs phases concurrently on a `ThreadPoolExecutor`, so shared worker state — notably the one `ConnectionManager` — is touched by multiple activity threads; guard it as concurrent.
 
 **Temporal (durable orchestration).** Skill: `npx skills add temporalio/skill-temporal-developer`. The engine runs a **bundled Python worker** (`worker/`): `AddSourceWorkflow` (`worker/workflows.py`, sandbox-deterministic, imports only `temporalio` + the engine-free `worker/contracts.py`) **and** the phase activities (`worker/activities.py`, `@activity.defn(name="<phase>")` over `run_phase_activity`) on one task queue. Activities are **sync**, run on a `ThreadPoolExecutor` (NOT `asyncio.to_thread`). The cockpit triggers workflows via the Temporal Client. Workflow names are called by string; no shared catalogue. Locked decision + the DAT-360→DAT-344 reversal (workflows are Python, not TS) live in the `feedback-durable-execution-lean` memory.
@@ -70,7 +70,7 @@ The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint
 ```
 src/dataraum/
 ├── analysis/    # typing, stats, correlations, relationships, semantic, temporal, slicing, cycles, validation
-├── entropy/     # detectors, measurement, BBN
+├── entropy/     # detectors, measurement, pooling, loss
 ├── graphs/      # calculation graphs, context assembly
 ├── pipeline/    # orchestrator + phases, fixes
 ├── sources/     # loaders — CSV, Parquet, JSON, DB-via-recipe

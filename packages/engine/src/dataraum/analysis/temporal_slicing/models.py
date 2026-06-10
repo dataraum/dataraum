@@ -88,6 +88,10 @@ class PeriodMetrics(BaseModel):
     period_start: date
     period_end: date
     row_count: int
+    # Per-period SUM of each numeric column of the slice table (DAT-491): the
+    # substrate the aggregation-lineage reconciliation reads — sums are linear,
+    # so signed conventions (debit−credit, …) are arithmetic over these.
+    column_sums: dict[str, float] = Field(default_factory=dict)
     expected_days: int
     observed_days: int
     coverage_ratio: float

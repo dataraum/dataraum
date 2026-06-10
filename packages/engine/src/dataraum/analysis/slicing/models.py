@@ -76,6 +76,11 @@ class SlicingAnalysisResult(BaseModel):
     # Generated SQL for all slices
     slice_queries: list[SliceSQL] = Field(default_factory=list)
 
+    # Per-table time axis (DAT-491): table_name -> column name (own column or an
+    # enriched "fk__col" name). The agent inherits an existing time_column and
+    # judges only where none was identified.
+    time_columns: dict[str, str] = Field(default_factory=dict)
+
     # Metadata
     source: DecisionSource = DecisionSource.LLM
     tables_analyzed: int = 0
@@ -103,6 +108,20 @@ class SliceRecommendationOutput(BaseModel):
     )
 
 
+class TableTimeColumnOutput(BaseModel):
+    """The per-table time-axis judgment (DAT-491)."""
+
+    table_name: str = Field(description="Name of the table")
+    column_name: str = Field(
+        description=(
+            "The table's time axis: the column recording WHEN each row's event "
+            "occurred. Either an own column or an enriched 'fk__col' name (a "
+            "header date). Keep the table's existing time_column when one is "
+            "given in the context."
+        )
+    )
+
+
 class SlicingAnalysisOutput(BaseModel):
     """Pydantic model for LLM tool output - slicing analysis.
 
@@ -114,9 +133,19 @@ class SlicingAnalysisOutput(BaseModel):
         description="List of recommended slicing dimensions, ordered by priority",
     )
 
+    time_columns: list[TableTimeColumnOutput] = Field(
+        default_factory=list,
+        description=(
+            "The time axis for EVERY analyzed table that has one — inherit the "
+            "existing time_column when given; otherwise pick the enriched column "
+            "flagged is_dimension_time_column; omit tables with no time axis."
+        ),
+    )
+
 
 __all__ = [
     "SliceRecommendation",
+    "TableTimeColumnOutput",
     "SliceSQL",
     "SlicingAnalysisResult",
     "SliceRecommendationOutput",

@@ -103,6 +103,10 @@ class TemporalSliceAnalysis(Base):
     days_missing_at_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_day_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Per-period SUM of each numeric column of the slice table (DAT-491) —
+    # the aggregation-lineage reconciliation's substrate.
+    column_sums: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)
+
     # Volume anomaly metrics
     z_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     rolling_avg: Mapped[float | None] = mapped_column(Float, nullable=True)

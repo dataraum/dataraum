@@ -205,7 +205,12 @@ class TableEntityOutput(BaseModel):
 
     time_column: str | None = Field(
         default=None,
-        description="Primary timestamp column for time-based analysis, if the table has one.",
+        description=(
+            "The column recording WHEN each row's event occurred (booking/transaction/"
+            "observation date) — the axis time-based analysis segments by. NOT an "
+            "attribute date such as due_date or valid_until, and not record metadata "
+            "like created_at. None if the table has no such column."
+        ),
     )
 
 

@@ -145,13 +145,18 @@ class SlicingViewPhase(BasePhase):
         # Restrict to actual fact tables only — slicing views are not created for
         # dimension tables. Run-scoped to ``ctx.run_id`` (DAT-408/413): read only
         # this run's fact rows, never a prior run's coexisting classification.
-        fact_entity_stmt = select(TableEntity.table_id).where(
+        fact_entity_stmt = select(TableEntity).where(
             TableEntity.table_id.in_(list(slice_defs_by_table.keys())),
             TableEntity.is_fact_table.is_(True),
         )
         if ctx.run_id is not None:
             fact_entity_stmt = fact_entity_stmt.where(TableEntity.run_id == ctx.run_id)
-        fact_table_id_set = set(ctx.session.execute(fact_entity_stmt).scalars().all())
+        fact_entities = ctx.session.execute(fact_entity_stmt).scalars().all()
+        fact_table_id_set = {e.table_id for e in fact_entities}
+        # The agent-named time axis per fact (DAT-491): when it names an enriched
+        # "fk__col" column (header date), the projection must keep it so the
+        # slice tables cut from this view carry their time column.
+        time_col_by_fact = {e.table_id: e.time_column for e in fact_entities}
 
         # Process every fact table with slice definitions — no "already exists"
         # bail (DAT-415): the latest-only SlicingView is reconciled in place and
@@ -211,6 +216,7 @@ class SlicingViewPhase(BasePhase):
                 enriched_view=enriched_view,
                 columns_by_id=columns_by_id,
                 fact_columns=fact_columns_by_table.get(fact_table_id, []),
+                named_time_column=time_col_by_fact.get(fact_table_id),
             )
 
             view_name = slicing_view_name(fact_table.duckdb_path or "")
@@ -409,6 +415,7 @@ class SlicingViewPhase(BasePhase):
         enriched_view: EnrichedView | None,
         columns_by_id: dict[str, Column],
         fact_columns: list[Column],
+        named_time_column: str | None = None,
     ) -> tuple[str, list[str], list[str], str]:
         """Build SQL for the slicing view.
 
@@ -454,13 +461,22 @@ class SlicingViewPhase(BasePhase):
 
         # Build explicit SELECT — never SELECT * to avoid pulling all enriched columns
         fact_col_names = [col.column_name for col in fact_columns]
+        # The agent-named time axis rides along when it is an enriched column
+        # (DAT-491) — own-column axes are already in fact_col_names.
+        kept_time_cols = (
+            [named_time_column]
+            if named_time_column
+            and named_time_column in all_dim_cols
+            and named_time_column not in slice_dim_cols
+            else []
+        )
 
-        if enriched_view and (fact_col_names or slice_dim_cols):
-            # Project from enriched view: fact cols + slice dim cols only.
-            # Read the view's stored name rather than reconstructing it — the
-            # enriched view is now collision-named off the fact's duckdb_path
-            # (``enriched_{source}__{table}``, DAT-415), not ``enriched_{table_name}``.
-            select_parts = [f'"{c}"' for c in fact_col_names] + [f'"{c}"' for c in slice_dim_cols]
+        if enriched_view and (fact_col_names or slice_dim_cols or kept_time_cols):
+            # Project from enriched view: fact cols + slice dim cols + the named
+            # time column. Read the view's stored name rather than reconstructing
+            # it — the enriched view is now collision-named off the fact's
+            # duckdb_path (``enriched_{source}__{table}``, DAT-415).
+            select_parts = [f'"{c}"' for c in [*fact_col_names, *slice_dim_cols, *kept_time_cols]]
             source_fqn = _lake_fqn("enriched", enriched_view.view_name)
             sql = (
                 f"CREATE OR REPLACE VIEW {view_fqn} AS\n"

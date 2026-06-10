@@ -250,6 +250,7 @@ CREATE TABLE temporal_slice_analyses (
 	has_early_cutoff INTEGER, 
 	days_missing_at_end INTEGER, 
 	last_day_ratio FLOAT, 
+	column_sums JSON, 
 	z_score FLOAT, 
 	rolling_avg FLOAT, 
 	rolling_std FLOAT, 

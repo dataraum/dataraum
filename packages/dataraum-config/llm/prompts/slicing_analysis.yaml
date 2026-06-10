@@ -5,7 +5,7 @@
 # Uses tool-based output for structured responses.
 
 name: slicing_analysis
-version: "3.0.0"
+version: "3.1.0"
 description: Identify optimal categorical dimensions for slicing data into subsets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
@@ -70,6 +70,19 @@ system_prompt: |
   When a table has an enriched_view_name, prioritize considering its enriched columns for slicing.
   </enriched_columns>
 
+  <time_axis>
+  Besides slice dimensions, name each table's TIME AXIS via time_columns: the column
+  recording WHEN each row's event occurred (booking/transaction/observation date) —
+  NOT attribute dates like due_date or valid_until, and not record metadata.
+
+  - When a table's context already shows "time_column", INHERIT it verbatim — do not
+    re-decide.
+  - When "time_column" is null, look at the enriched columns: one flagged
+    "is_dimension_time_column": true is the joined header's event date (e.g. journal
+    lines dated by their journal entry) — name that enriched column.
+  - Omit a table only when it genuinely has no time axis.
+  </time_axis>
+
   <output_rules>
   - Order recommendations by global priority (1 = highest value across the entire dataset)
   - For each recommendation, note which other tables this dimension could join/filter
@@ -103,7 +116,12 @@ user_prompt: |
   {enriched_columns_json}
   </enriched_columns>
 
-  Use the analyze_slicing tool to provide your recommendations.
+  Each table object includes "time_column" — its already-identified time axis
+  (null when none was identified; then check enriched columns flagged
+  "is_dimension_time_column").
+
+  Use the analyze_slicing tool to provide your recommendations and the
+  time_columns judgments.
 
 # Input variable definitions
 inputs:

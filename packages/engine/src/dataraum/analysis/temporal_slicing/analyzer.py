@@ -672,24 +672,47 @@ def persist_drift_results(
         return Result.fail(f"Failed to persist drift results: {e}")
 
 
+def _numeric_columns(duckdb_conn: duckdb.DuckDBPyConnection, slice_table_name: str) -> list[str]:
+    """The slice table's numeric columns — the per-period sum targets (DAT-491)."""
+    numeric = {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "FLOAT",
+        "DOUBLE",
+        "DECIMAL",
+    }
+    try:
+        rows = duckdb_conn.execute(f'DESCRIBE "{slice_table_name}"').fetchall()
+    except Exception:
+        return []
+    return [r[0] for r in rows if str(r[1]).split("(")[0].upper() in numeric]
+
+
 def _compute_period_metrics(
     slice_table_name: str,
     time_column: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     periods: list[tuple[date, date, str]],
+    numeric_columns: list[str] | None = None,
 ) -> list[PeriodMetrics]:
-    """Compute row counts, day coverage, and rolling statistics per period.
+    """Compute row counts, day coverage, rolling statistics, and value sums per period.
 
     Args:
         slice_table_name: Name of the slice table in DuckDB
         time_column: Name of the temporal column
         duckdb_conn: DuckDB connection
         periods: List of (start_date, end_date, period_label) tuples
+        numeric_columns: Columns to SUM per period (DAT-491 lineage substrate)
 
     Returns:
         List of PeriodMetrics, one per period
     """
     metrics: list[PeriodMetrics] = []
+    numeric_columns = numeric_columns or []
+    sum_parts = "".join(f', SUM("{c}") AS sum_{i}' for i, c in enumerate(numeric_columns))
 
     for start, end, label in periods:
         expected_days = (end - start).days
@@ -700,6 +723,7 @@ def _compute_period_metrics(
             SELECT
                 COUNT(*) AS row_count,
                 COUNT(DISTINCT CAST("{time_column}" AS DATE)) AS observed_days
+                {sum_parts}
             FROM "{slice_table_name}"
             WHERE CAST("{time_column}" AS DATE) >= ?
               AND CAST("{time_column}" AS DATE) < ?
@@ -707,6 +731,11 @@ def _compute_period_metrics(
         row = duckdb_conn.execute(sql, [start, end]).fetchone()
         row_count = row[0] if row else 0
         observed_days = row[1] if row else 0
+        column_sums = {
+            col: float(row[2 + i])
+            for i, col in enumerate(numeric_columns)
+            if row and row[2 + i] is not None
+        }
 
         coverage_ratio = observed_days / expected_days if expected_days > 0 else 0.0
 
@@ -733,6 +762,7 @@ def _compute_period_metrics(
                 period_start=start,
                 period_end=end,
                 row_count=row_count,
+                column_sums=column_sums,
                 expected_days=expected_days,
                 observed_days=observed_days,
                 coverage_ratio=round(coverage_ratio, 4),
@@ -894,7 +924,11 @@ def analyze_period_metrics(
             )
 
         period_metrics = _compute_period_metrics(
-            slice_table_name, time_column, duckdb_conn, periods
+            slice_table_name,
+            time_column,
+            duckdb_conn,
+            periods,
+            numeric_columns=_numeric_columns(duckdb_conn, slice_table_name),
         )
         completeness = _analyze_completeness(period_metrics, config)
         anomalies = _detect_volume_anomalies(period_metrics, config)
@@ -992,6 +1026,7 @@ def persist_period_results(
                 period_start=m.period_start,
                 period_end=m.period_end,
                 row_count=m.row_count,
+                column_sums=m.column_sums or None,
                 expected_days=m.expected_days,
                 observed_days=m.observed_days,
                 coverage_ratio=m.coverage_ratio,

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CockpitLanding } from "#/ui/cockpit/cockpit-landing";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 const h = vi.hoisted(() => ({
 	messages: [] as unknown[],
@@ -28,9 +29,11 @@ vi.mock("@tanstack/ai-react", () => ({
 function renderLanding() {
 	render(
 		<MantineProvider env="test">
-			<CockpitProvider>
-				<CockpitLanding />
-			</CockpitProvider>
+			<TestQueryProvider>
+				<CockpitProvider>
+					<CockpitLanding />
+				</CockpitProvider>
+			</TestQueryProvider>
 		</MantineProvider>,
 	);
 }

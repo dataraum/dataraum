@@ -24,6 +24,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 // Mock useChat at the SDK boundary — the test controls the message list and
 // asserts OUR chip rendering (same harness shape as chat-rail.test.tsx).
@@ -49,9 +50,11 @@ vi.mock("@tanstack/ai-react", () => ({
 function renderRail() {
 	return render(
 		<MantineProvider env="test">
-			<CockpitProvider>
-				<ChatRail />
-			</CockpitProvider>
+			<TestQueryProvider>
+				<CockpitProvider>
+					<ChatRail />
+				</CockpitProvider>
+			</TestQueryProvider>
 		</MantineProvider>,
 	);
 }

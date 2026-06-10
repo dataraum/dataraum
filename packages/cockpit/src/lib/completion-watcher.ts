@@ -22,6 +22,8 @@
 //
 // SERVER-ONLY (Temporal client + cockpit_db + the agent loop).
 
+import type { StreamChunk } from "@tanstack/ai";
+
 import {
 	appendMessages,
 	getConversationWorkspaceId,
@@ -35,9 +37,10 @@ import {
 } from "#/db/cockpit/runs";
 import { linkedAbortController } from "#/lib/abort";
 import { streamAgentTurnToBus } from "#/lib/agent-turn";
-import { hasSubscribers } from "#/lib/chat-bus";
+import { hasSubscribers, publish } from "#/lib/chat-bus";
 import { completionNote } from "#/lib/completion-note";
 import { buildModelMessages } from "#/lib/model-messages";
+import { WORKFLOW_PROGRESS_EVENT } from "#/lib/workflow-progress-event";
 import { buildWorkspaceContext } from "#/prompts/workspace-context";
 import {
 	getWorkflowProgress,
@@ -141,6 +144,20 @@ async function watchLoop(
 			} catch {
 				continue; // transient Temporal hiccup — retry next tick.
 			}
+
+			// Push this snapshot to the widget (Phase 2A.3) — every tick AND the
+			// done tick, so the progress widget renders live and its terminal state
+			// WITHOUT polling. The provider's onChunk writes it to the query cache.
+			publish(conversationId, {
+				type: "CUSTOM",
+				name: WORKFLOW_PROGRESS_EVENT,
+				value: {
+					workflow_id: run.workflowId,
+					run_id: run.runId,
+					progress,
+				},
+			} as unknown as StreamChunk);
+
 			if (!progress.done) continue;
 
 			tracked.delete(key);

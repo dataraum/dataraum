@@ -9,6 +9,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 const h = vi.hoisted(() => ({
 	messages: [] as unknown[],
@@ -30,7 +31,11 @@ vi.mock("@tanstack/ai-react", () => ({
 }));
 
 function wrapper({ children }: { children: React.ReactNode }) {
-	return <CockpitProvider>{children}</CockpitProvider>;
+	return (
+		<TestQueryProvider>
+			<CockpitProvider>{children}</CockpitProvider>
+		</TestQueryProvider>
+	);
 }
 
 // A single completed list_sources call → source-list canvas (the simplest live

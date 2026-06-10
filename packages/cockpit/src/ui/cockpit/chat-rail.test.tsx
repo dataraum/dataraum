@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InventoryTable } from "#/tools/list-tables";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 // Mock useChat at the SDK boundary — the test controls the message list + the
 // loading/error flags and asserts OUR rendering and canvas projection. The SDK's
@@ -49,10 +50,12 @@ function CanvasProbe() {
 function renderRail() {
 	return render(
 		<MantineProvider env="test">
-			<CockpitProvider>
-				<ChatRail />
-				<CanvasProbe />
-			</CockpitProvider>
+			<TestQueryProvider>
+				<CockpitProvider>
+					<ChatRail />
+					<CanvasProbe />
+				</CockpitProvider>
+			</TestQueryProvider>
 		</MantineProvider>,
 	);
 }
@@ -422,10 +425,12 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		h.messages = [sourcesCall("c-sources"), tablesCall("c-tables")];
 		rerender(
 			<MantineProvider env="test">
-				<CockpitProvider>
-					<ChatRail />
-					<CanvasProbe />
-				</CockpitProvider>
+				<TestQueryProvider>
+					<CockpitProvider>
+						<ChatRail />
+						<CanvasProbe />
+					</CockpitProvider>
+				</TestQueryProvider>
 			</MantineProvider>,
 		);
 		// Canvas STAYS pinned on the historical result — the live projection is
@@ -463,10 +468,12 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		h.messages = [sourcesCall("c-sources"), tablesCall("c-tables")];
 		rerender(
 			<MantineProvider env="test">
-				<CockpitProvider>
-					<ChatRail />
-					<CanvasProbe />
-				</CockpitProvider>
+				<TestQueryProvider>
+					<CockpitProvider>
+						<ChatRail />
+						<CanvasProbe />
+					</CockpitProvider>
+				</TestQueryProvider>
 			</MantineProvider>,
 		);
 		// Still pinned to the old source-list.

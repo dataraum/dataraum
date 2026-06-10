@@ -8,12 +8,13 @@
 // visual vocabulary is shared code (React idiom rule 13, the why-detail
 // precedent).
 //
-// Polls the engine's `get_progress` @workflow.query via the
-// `/api/workflow-progress` route (→ `getWorkflowProgress`) on a TanStack Query
-// `refetchInterval` (~1s), keyed on the precise (workflowId, runId). It STOPS
-// polling once the snapshot reports `done` — either phase==="done" OR a
-// terminal describe() status (so a FAILED run, which never sets "done", still
-// halts). This is the polling template of React idiom rule 3.
+// Live progress arrives via PUSH (Phase 2A.3), not polling: the server
+// completion-watcher publishes a CUSTOM `workflow-progress` chunk per tick, and
+// the cockpit provider writes each into the Query cache under the shared
+// `progressQueryKey`. This widget's `useQuery` SEEDS the initial state with ONE
+// fetch of the `/api/workflow-progress` route (→ `getWorkflowProgress`) — which
+// also gives the terminal state on a reload-pinned widget — then re-renders on
+// each pushed update via `setQueryData`. `refetchInterval: false` → never polls.
 
 import {
 	Alert,
@@ -28,6 +29,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Check, X } from "lucide-react";
 import { displayTableName, stripSrcDigests } from "#/lib/display-names";
+import { progressQueryKey } from "#/lib/workflow-progress-event";
 import type { TableStep, WorkflowProgress } from "#/temporal/progress";
 import { PROGRESS_DONE_PHASE } from "#/temporal/types";
 
@@ -125,10 +127,9 @@ function TableStatusIcon({ status }: { status: TableStep["status"] }) {
 	return <Loader size={12} data-testid="table-status-running" />;
 }
 
-const POLL_INTERVAL_MS = 1000;
-
-/** Poll the progress API route for one run. Throws on a non-2xx so TanStack
- * Query surfaces it as the widget's error state. */
+/** Seed-fetch the progress API route for one run (one-shot — live updates arrive
+ * via the pushed CUSTOM events). Throws on a non-2xx so TanStack Query surfaces
+ * it as the widget's error state. */
 async function fetchProgress(
 	workflowId: string,
 	runId: string,
@@ -155,14 +156,17 @@ export function WorkflowProgressView({
 	runId: string;
 }) {
 	const { data, error, isLoading } = useQuery({
-		// One key namespace for both widgets — they poll the same endpoint for
-		// the same run, so the cached snapshot is interchangeable.
-		queryKey: ["workflow-progress", workflowId, runId],
+		// Shared key (workflow-progress-event.ts): the cockpit provider writes live
+		// snapshots here from the watcher's pushed CUSTOM events (Phase 2A.3 — no
+		// polling). This query just SEEDS the initial state with ONE fetch (and the
+		// terminal state on a reload-pinned widget); `refetchInterval: false` +
+		// infinite staleTime means it never polls — live updates arrive via
+		// setQueryData.
+		queryKey: progressQueryKey(workflowId, runId),
 		queryFn: () => fetchProgress(workflowId, runId),
-		// Poll until the run is done; then stop (refetchInterval returns false).
-		refetchInterval: (query) =>
-			query.state.data?.done ? false : POLL_INTERVAL_MS,
+		refetchInterval: false,
 		refetchOnWindowFocus: false,
+		staleTime: Number.POSITIVE_INFINITY,
 	});
 
 	const p = display.testId;

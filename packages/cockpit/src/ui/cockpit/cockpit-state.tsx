@@ -21,6 +21,7 @@
 // it) — @tanstack/ai-react's root index does not re-export it.
 import type { MultimodalContent } from "@tanstack/ai-client";
 import { type UIMessage, useChat } from "@tanstack/ai-react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
 	createContext,
 	type ReactNode,
@@ -32,6 +33,10 @@ import {
 // Type-only: erased at build, so the cockpit_db (bun:sql) client never enters
 // the client bundle — only the UiState shape rides along.
 import type { UiState } from "#/db/cockpit/ui-state";
+import {
+	asWorkflowProgressEvent,
+	progressQueryKey,
+} from "#/lib/workflow-progress-event";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { createChatConnection } from "#/ui/cockpit/chat-connection";
 import {
@@ -157,11 +162,31 @@ export function CockpitProvider({
 	// in sendTurn before sendMessage() attaches them to exactly that turn. Stable
 	// ref → useChat never recreates the client over it.
 	const refsHolder = useMemo<{ refs?: string }>(() => ({}), []);
+	// Live workflow progress (Phase 2A.3): the server watcher pushes a CUSTOM
+	// progress chunk per tick; write each into the Query cache so the progress
+	// widget's `useQuery` re-renders live (its `refetchInterval` is now a one-shot
+	// seed). `onChunk` fires for EVERY stream chunk — a standalone CUSTOM event
+	// outside a run still lands here — so it's the reliable seam (not onCustomEvent,
+	// which rides the run-scoped processor). This replaces the widget's poll.
+	const queryClient = useQueryClient();
+	const onProgressChunk = useCallback(
+		(chunk: unknown) => {
+			const ev = asWorkflowProgressEvent(chunk);
+			if (ev) {
+				queryClient.setQueryData(
+					progressQueryKey(ev.workflow_id, ev.run_id),
+					ev.progress,
+				);
+			}
+		},
+		[queryClient],
+	);
 	const { messages, isLoading, error, sendMessage, stop } = useChat({
 		connection,
 		// Subscribe on mount and stay subscribed between turns, so the server can
 		// push a turn (a run-completion narration) into an idle chat (Phase 2A).
 		live: true,
+		onChunk: onProgressChunk,
 		forwardedProps: refsHolder,
 		threadId,
 		initialMessages,

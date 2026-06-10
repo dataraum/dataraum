@@ -117,23 +117,6 @@ detectors:
   # DIMENSIONAL ENTROPY DETECTOR (semantic.dimensional.cross_column_patterns)
   # --------------------------------------------------------------------------
   # Pattern weights for cross-column entropy calculation
-  dimensional_entropy:
-    score_undocumented_rule: 0.7  # High-confidence undocumented pattern
-    score_partial_pattern: 0.5   # Lower-confidence pattern
-    correlation_threshold: 0.8   # Min correlation to flag as pattern
-    mutual_exclusivity_threshold: 0.95  # Min inverse null correlation
-    # Pattern type weights for DimensionalEntropyScore.calculate_total()
-    pattern_weights:
-      mutual_exclusivity: 0.8   # Critical business rule
-      conditional_dependency: 0.6  # Context-dependent behavior
-      correlated_variance: 0.4  # Relationship exists
-      temporal_correlation: 0.5 # Time-based relationship
-      temporal_drift: 0.3       # Expected in some cases
-
-  # --------------------------------------------------------------------------
-  # TEMPORAL ENTROPY DETECTOR (semantic.temporal.time_role)
-  # --------------------------------------------------------------------------
-  # Measures whether temporal columns are properly identified
   temporal_entropy:
     score_unmarked: 0.6 # Date type but not marked as timestamp
     score_mismatch: 0.8 # Marked as timestamp but not date type
@@ -153,6 +136,5 @@ dimension_labels:
   semantic.temporal: "Temporal Clarity"
   value.nulls: "Data Completeness"
   value.outliers: "Outlier Impact"
-  value.temporal: "Temporal Stability"
   value.distribution: "Distribution Conformance"
   computational.derived_values: "Computation Reliability"

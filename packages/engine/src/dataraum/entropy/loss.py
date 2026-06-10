@@ -21,8 +21,8 @@ the point belief: the log-linear posterior stays confident even under conflict
 contested column — exactly backwards. This is "entropy as disagreement" applied
 to severity.
 
-The loss path is PARALLEL to the network rollup: statistical detectors keep their
-``network.yaml`` nodes/edges; a pooled measurement (one with a loss table here)
+The loss tables ARE the whole readiness rollup (the Bayesian network and
+``network.yaml`` were deleted in DAT-442); a pooled measurement (one with a loss table here)
 feeds ``risk(intent)`` directly, with no hand-set edge weights. Per-measurement
 weights are PLACEHOLDER priors, calibrated later (DAT-450), never tuned to a metric.
 """
@@ -51,7 +51,7 @@ class LossConfig:
 
     ``measurements[detector_id][intent] = {"conflict": w_c, "ignorance": w_u}``.
     A detector present here is a *loss-path* (pooled) measurement; the readiness
-    assembler feeds its ``risk(intent)`` in parallel to the network rollup.
+    assembler feeds its ``risk(intent)`` straight into the per-intent bands.
     """
 
     measurements: dict[str, dict[str, dict[str, float]]] = field(default_factory=dict)

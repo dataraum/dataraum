@@ -389,11 +389,11 @@ class AddSourceWorkflow:
 # ``session_tables`` for provenance + the downstream readiness layer (DAT-408).
 
 # The begin_session chain, in dependency order: structural relationship
-# detection, the LLM table-synthesis that confirms a subset of those
-# candidates, then aggregation-lineage discovery (DAT-491 — needs the
-# fact/grain entities + the relationship catalog the first two produced).
-# ``begin_session_select`` precedes all as the always-run scope setup. The
-# body iterates this tuple to execute the chain sequentially.
+# detection, then the LLM table-synthesis that confirms a subset of those
+# candidates. ``begin_session_select`` precedes all as the always-run scope
+# setup. The body iterates this tuple to execute the chain sequentially.
+# (aggregation_lineage lives in the VALUE order below — its dependency is the
+# slice substrate, not this spine.)
 _SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
 
 # The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:

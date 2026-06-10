@@ -172,6 +172,11 @@ def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
     if not result.posterior:
         return None, False
     p_stock = result.posterior[CLAIM_SPACE.index("stock")]
+    if abs(p_stock - 0.5) < _OPINION_EPS:
+        # Exactly-uniform posterior (e.g. the zero-reliability fallback):
+        # nobody was trusted — do not resolve a label, let alone an
+        # "uncontested stock" via the >= tie-break.
+        return None, False
     label = "point_in_time" if p_stock >= 0.5 else "additive"
     contested = result.conflict > CONTESTED_MIN_CONFLICT
     return label, contested

@@ -194,8 +194,15 @@ class DimensionalEntropyDetector(EntropyDetector):
         self, context: DetectorContext, candidates: list[tuple[Column, str]]
     ) -> dict[str, list[Any]]:
         """Read all candidate columns in ONE scan so the label sequences stay row-aligned."""
-        select_list = ", ".join(f'"{col.column_name}"' for col, _ in candidates)
-        sql = f'SELECT {select_list} FROM lake.typed."{context.table_name}"'
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        def q(name: str) -> str:
+            return '"' + name.replace('"', '""') + '"'
+
+        select_list = ", ".join(q(col.column_name) for col, _ in candidates)
+        table_fqn = f"{LAKE_CATALOG_ALIAS}.{schema_for_layer('typed')}.{q(context.table_name)}"
+        sql = f"SELECT {select_list} FROM {table_fqn}"
         rows = context.duckdb_conn.execute(sql).fetchall()
         labels: dict[str, list[Any]] = {}
         for idx, (col, kind) in enumerate(candidates):

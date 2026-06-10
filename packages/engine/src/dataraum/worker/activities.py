@@ -227,11 +227,11 @@ class PhaseActivities:
     def run_aggregation_lineage(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Aggregation-lineage activity — events→measure rollup discovery (DAT-491).
 
-        The LLM proposes candidate rollups (one batched call per run); the
-        deterministic reconciliation statistic disposes them; reconciled lineage
-        persists run-versioned, feeding the ``structural_reconciliation`` witness
-        at the terminal ``session_detect``. Makes real Anthropic calls; needs a
-        working ``ANTHROPIC_API_KEY``.
+        Deterministic arithmetic over the slice substrate (per-period sums
+        persisted by ``temporal_slice_analysis``, paired across facts by their
+        shared slice dimensions) — NO LLM call. Reconciled lineage persists
+        run-versioned, feeding the ``structural_reconciliation`` witness at the
+        terminal ``session_detect``.
         """
         run = run_session_phase(
             self._manager, "aggregation_lineage", payload.identity, payload.table_ids

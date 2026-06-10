@@ -93,7 +93,7 @@ class EntropyReadinessRecord(Base):
     """Persisted per-column readiness, written by the terminal ``detect`` step (DAT-394).
 
     The transparent readiness-v2 rollup (``entropy/views/readiness_context.py``)
-    rolls detector scores up the network into per-intent readiness. This row is
+    rolls detector scores through the loss tables into per-intent readiness. This row is
     its persisted snapshot — one per analyzed column — for the cockpit ``why`` /
     ``look`` tools (read via Drizzle) and as agent context. Self-refreshing: the
     terminal detect step re-runs on every (re-)measure and rewrites these rows

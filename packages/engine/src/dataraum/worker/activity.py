@@ -110,7 +110,9 @@ _PROMOTE_STAGES = (
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
 # declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
 # DAT-415); the value layer (DAT-403) declares ``dimensional_entropy``
-# (temporal_slice_analysis) and ``derived_value`` (correlations) — column/table-grain
+# (temporal_slice_analysis), ``temporal_behavior`` (aggregation_lineage,
+# DAT-491 — the session re-adjudication with the structural witness) and
+# ``derived_value`` (correlations) — column/table-grain
 # value-readiness signals over the slices + enriched views the begin_session spine
 # just built. (slice_analysis still runs — temporal_slice_analysis + validation read
 # its slice tables — but it produces no entropy detector now: dimensional_entropy reads

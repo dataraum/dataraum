@@ -319,10 +319,10 @@ class StubTableDetector(EntropyDetector):
     sub_dimension = SubDimension.CROSS_COLUMN_PATTERNS
     scope = "table"
 
-    required_analyses = [AnalysisKey.SLICE_VARIANCE]
+    required_analyses = [AnalysisKey.DRIFT_SUMMARIES]
 
     def load_data(self, context: DetectorContext) -> None:
-        context.analysis_results["slice_variance"] = {"columns": {}, "slice_data": {}}
+        context.analysis_results["drift_summaries"] = {"columns": {}, "slice_data": {}}
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         return [self.create_entropy_object(context, score=0.6)]

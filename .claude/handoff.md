@@ -4,6 +4,37 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-10: run-resolved entropy load actually wired — detect path was inert (DAT-491)
+
+**The review-C2 fix shipped in name only and is now real.** `build_for_readiness`
+accepted `current_run_id`/`session_id` but dropped both at the `_load_entropy_objects`
+call — the run-resolution `load_for_tables` gained for DAT-491 never executed, so
+every readiness rollup since that commit still blind-loaded (stale add_source rows
+coexisting with session re-adjudications, max-score dedup deciding). Fixed +
+regression-pinned, and the QUERY-TIME half is now threaded too:
+
+- `storage.py load_for_tables`: resolution now also triggers on `session_id` alone
+  (query time has no in-flight run): session detect head > table heads/legacy.
+  Rank 0 is None-guarded — legacy unstamped rows (`run_id IS NULL`) no longer match
+  a vacant in-flight slot (`None == None`) and outrank the session head.
+- `build_for_readiness` forwards the ids (the inert hop); `build_column_evidence`
+  gained `session_id=None` kwarg; `build_for_query` exposes it as public API;
+  `graphs/context.py build_execution_context` passes its existing `session_id`
+  through — the metrics/agent path now sees the session-head verdict for
+  re-adjudicated detectors (temporal_behavior is the first).
+- Omitting the ids keeps the legacy blind load everywhere (single-path callers,
+  harnesses that skip promote).
+
+**Calibrate:** any eval reading evidence through `build_column_evidence`/
+`build_for_query` on a session that ran begin_session should now see the
+re-adjudicated temporal_behavior conflict (e.g. debit_balance C≈0.36), not the
+stale add_source pair. CAUTION: with `session_id` passed, stamped non-head rows
+are DROPPED, not blind-loaded — probes that call `persist_readiness` without
+`promote_run` must keep omitting `session_id` (or promote first).
+5 new tests in `tests/unit/entropy/test_persist_readiness_scope.py::TestRunResolvedLoad`.
+
+- **Status**: pending
+
 ## 2026-06-09: unit_consistency — measurement #2 on the witness template (DAT-428)
 
 **The generalization test passed at the measurement layer.** `entropy/measurements/

@@ -723,7 +723,10 @@ def build_execution_context(
     # from the rollup-free evidence, readiness band from the persisted rows.
     from dataraum.entropy.views.query_context import network_to_column_summaries
 
-    evidence = build_column_evidence(session, table_ids)
+    # session_id resolves entropy rows to the promoted session detect head — a
+    # re-adjudicated detector (e.g. temporal_behavior's third witness) must not
+    # show its stale add_source verdict to the agent (DAT-491).
+    evidence = build_column_evidence(session, table_ids, session_id=session_id)
     band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
     column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)
 

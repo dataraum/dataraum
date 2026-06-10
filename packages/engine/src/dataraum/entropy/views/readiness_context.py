@@ -450,15 +450,15 @@ def build_for_readiness(
     Args:
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
+        current_run_id: The in-flight detect run whose rows take precedence.
+        session_id: Scope for resolving the promoted session detect head.
 
     Returns:
         EntropyForReadiness with computed context.
     """
-    # Query-time path: still a blind load (pre-existing). After a begin_session
-    # promote, add_source and session rows coexist here too — resolving them
-    # needs the session head, i.e. threading session_id through the
-    # query_context callers. Follow-up to the detect-path fix (review C2).
-    entropy_objects = _load_entropy_objects(session, table_ids)
+    entropy_objects = _load_entropy_objects(
+        session, table_ids, current_run_id=current_run_id, session_id=session_id
+    )
     if not entropy_objects:
         return EntropyForReadiness()
     return assemble_readiness_context(entropy_objects)
@@ -467,6 +467,8 @@ def build_for_readiness(
 def build_column_evidence(
     session: Session,
     table_ids: list[str],
+    *,
+    session_id: str | None = None,
 ) -> EntropyForReadiness:
     """Build raw per-column entropy evidence WITHOUT the loss rollup.
 
@@ -479,15 +481,17 @@ def build_column_evidence(
     Args:
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
+        session_id: Analytical session — resolves rows to the promoted session
+            detect head (then table heads/legacy) instead of loading blindly.
+            After a begin_session promote, add_source and session rows coexist
+            for re-adjudicated detectors; omitted ⇒ the legacy blind load.
 
     Returns:
         EntropyForReadiness with per-column node evidence + direct signals only.
     """
-    # Query-time path: still a blind load (pre-existing). After a begin_session
-    # promote, add_source and session rows coexist here too — resolving them
-    # needs the session head, i.e. threading session_id through the
-    # query_context callers. Follow-up to the detect-path fix (review C2).
-    entropy_objects = _load_entropy_objects(session, table_ids)
+    # Query time has no in-flight detect run, so only session_id is threaded —
+    # resolution degrades to: session detect head > table heads/legacy.
+    entropy_objects = _load_entropy_objects(session, table_ids, session_id=session_id)
     if not entropy_objects:
         return EntropyForReadiness()
     return assemble_readiness_context(entropy_objects, compute_rollup=False)

@@ -1,7 +1,9 @@
-"""Entropy context for query agent.
+"""Entropy context for query-time consumers.
 
-Provides EntropyForQuery view for query/agent.py consumption.
-This view includes contract evaluation and confidence levels.
+Provides the EntropyForQuery view — readiness band, contract evaluation, and
+confidence levels for a query gate. Public API (``dataraum.entropy``); the
+in-engine query agent that consumed it was retired in DAT-487, the cockpit-driven
+query path is the intended next consumer.
 """
 
 from __future__ import annotations
@@ -100,8 +102,9 @@ def build_for_query(
     *,
     contract: str | None = None,
     auto_contract: bool = False,
+    session_id: str | None = None,
 ) -> EntropyForQuery:
-    """Build entropy context for query agent.
+    """Build entropy context for query-time consumers.
 
     Loads entropy data, evaluates contracts, and returns a view
     optimized for query execution decisions.
@@ -111,6 +114,8 @@ def build_for_query(
         table_ids: List of table IDs to include
         contract: Explicit contract name to evaluate
         auto_contract: If True, find strictest passing contract
+        session_id: Analytical session — resolves entropy rows to the promoted
+            session detect head; omitted ⇒ blind load (single-path sources only)
 
     Returns:
         EntropyForQuery with computed summaries and contract evaluation
@@ -137,7 +142,7 @@ def build_for_query(
     critical_entropy_count = persisted.columns_blocked
 
     # Contract gate: raw dimension scores (rollup-free) + the persisted band.
-    evidence = build_column_evidence(session, table_ids)
+    evidence = build_column_evidence(session, table_ids, session_id=session_id)
     overall_entropy_score: float | None = evidence.avg_entropy_score
     band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
     column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)

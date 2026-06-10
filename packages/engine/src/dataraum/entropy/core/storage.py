@@ -69,11 +69,13 @@ class EntropyRepository:
     ) -> list[EntropyObject]:
         """Load entropy objects for the given tables, run-resolved when asked.
 
-        With ``current_run_id`` set, rows are RESOLVED per ``(target,
-        detector_id)`` instead of loaded blindly: the in-flight run's rows win
-        (they are not promoted yet during their own detect), then rows under
-        the promoted session detect head, then rows under the promoted
-        table detect heads (plus legacy unstamped rows). Without it, every
+        With ``current_run_id`` and/or ``session_id`` set, rows are RESOLVED
+        per ``(target, detector_id)`` instead of loaded blindly: the in-flight
+        run's rows win (they are not promoted yet during their own detect),
+        then rows under the promoted session detect head, then rows under the
+        promoted table detect heads (plus legacy unstamped rows). At query
+        time there is no in-flight run — passing only ``session_id`` resolves
+        to the promoted session detect head first. With neither id, every
         row loads — the pre-DAT-491 behavior, when no detector lived on both
         the add_source and session detect paths and a blind load was safe.
         A session-detect re-adjudication (e.g. temporal_behavior's third
@@ -115,7 +117,7 @@ class EntropyRepository:
             logger.debug(f"No entropy objects found for {len(table_ids)} tables")
             return []
 
-        if current_run_id is not None:
+        if current_run_id is not None or session_id is not None:
             records = self._resolve_runs(records, table_ids, current_run_id, session_id)
 
         # Convert records to EntropyObjects
@@ -125,7 +127,7 @@ class EntropyRepository:
         self,
         records: list[EntropyObjectRecord],
         table_ids: list[str],
-        current_run_id: str,
+        current_run_id: str | None,
         session_id: str | None,
     ) -> list[EntropyObjectRecord]:
         """Per ``(target, detector_id)``: current run > session head > table heads/legacy."""
@@ -141,7 +143,10 @@ class EntropyRepository:
         }
 
         def rank(record: EntropyObjectRecord) -> int | None:
-            if record.run_id == current_run_id:
+            # None-guarded: at query time the in-flight slot is vacant, and a
+            # legacy unstamped row (run_id None) must not match it and outrank
+            # the session head.
+            if current_run_id is not None and record.run_id == current_run_id:
                 return 0
             if session_head is not None and record.run_id == session_head:
                 return 1

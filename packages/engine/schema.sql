@@ -275,6 +275,7 @@ CREATE TABLE validation_results (
 	run_id VARCHAR NOT NULL, 
 	validation_id VARCHAR NOT NULL, 
 	table_ids JSON NOT NULL, 
+	columns_used JSON NOT NULL, 
 	status VARCHAR NOT NULL, 
 	severity VARCHAR NOT NULL, 
 	passed BOOLEAN NOT NULL, 

@@ -16,14 +16,21 @@ SELECT r.*,
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'detect' AND h.run_id = r.run_id
       AND h.target = 'session:' || r.session_id
-  ) AS via_session_head
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
 FROM __WS__.claim_witnesses r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.stage = 'detect'
-    AND h.run_id = r.run_id
-    AND (h.target = 'table:' || r.table_id
-      OR h.target = 'session:' || r.session_id)
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
 );
 
 DROP VIEW IF EXISTS __READ__.current_column_drift_summaries;
@@ -96,14 +103,21 @@ SELECT r.*,
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'detect' AND h.run_id = r.run_id
       AND h.target = 'session:' || r.session_id
-  ) AS via_session_head
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
 FROM __WS__.entropy_objects r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.stage = 'detect'
-    AND h.run_id = r.run_id
-    AND (h.target = 'table:' || r.table_id
-      OR h.target = 'session:' || r.session_id)
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
 );
 
 DROP VIEW IF EXISTS __READ__.current_entropy_readiness;
@@ -118,14 +132,21 @@ SELECT r.*,
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'detect' AND h.run_id = r.run_id
       AND h.target = 'session:' || r.session_id
-  ) AS via_session_head
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
 FROM __WS__.entropy_readiness r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.stage = 'detect'
-    AND h.run_id = r.run_id
-    AND (h.target = 'table:' || r.table_id
-      OR h.target = 'session:' || r.session_id)
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
 );
 
 DROP VIEW IF EXISTS __READ__.fix_ledger;

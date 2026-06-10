@@ -467,6 +467,28 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "metrics")
 
+    @activity.defn(name="operating_model_detect")
+    def run_operating_model_detect(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Terminal detector pass for operating_model (DAT-432/L7).
+
+        Scores this run's executed validation results — cross_table_consistency,
+        declared on the ``validation`` phase — into table + column entropy
+        objects and persists readiness under the OM run. Pure scoring over
+        persisted rows, zero LLM calls. Runs right after ``validation`` so the
+        bands exist even if the LLM-heavy cycles/metrics families fail, and the
+        graph context can read them.
+        """
+        count = run_detectors(
+            self._manager,
+            session_id=identity.session_id,
+            run_id=identity.run_id,
+            detector_phases=("validation",),
+        )
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"{count} validation detector records for session {identity.session_id}",
+        )
+
     @activity.defn(name="operating_model_promote")
     def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:
         """Terminal promote for operating_model — flip the session's stage head.

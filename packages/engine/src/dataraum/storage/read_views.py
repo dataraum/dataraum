@@ -79,9 +79,12 @@ _SESSION_GRAIN: dict[str, str] = {
     "detected_business_cycles": "operating_model",
 }
 
-# Written by BOTH detect paths: add_source seals per (table:{id}, "detect"),
-# begin_session per (session:{id}, "detect") — a row is current when its run
-# is promoted under EITHER head.
+# Written by THREE detect paths: add_source seals per (table:{id}, "detect"),
+# begin_session per (session:{id}, "detect"), and operating_model's terminal
+# detect per (session:{id}, "operating_model") — a row is current when its
+# run is promoted under ANY of those heads (DAT-432/L7: without the third,
+# cross_table_consistency's OM-run rows were written but invisible to every
+# head-resolved reader).
 _DUAL_GRAIN: dict[str, str] = {
     "entropy_objects": "detect",
     "entropy_readiness": "detect",
@@ -140,14 +143,21 @@ def _current_view_sql(table: str) -> str:
             f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
             f"      AND h.target = 'session:' || r.session_id\n"
-            f"  ) AS via_session_head\n"
+            f"  ) AS via_session_head,\n"
+            f"  EXISTS (\n"
+            f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
+            f"    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id\n"
+            f"      AND h.target = 'session:' || r.session_id\n"
+            f"  ) AS via_operating_model_head\n"
             f"FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
-            f"  WHERE h.stage = '{stage}'\n"
-            f"    AND h.run_id = r.run_id\n"
-            f"    AND (h.target = 'table:' || r.table_id\n"
-            f"      OR h.target = 'session:' || r.session_id)\n"
+            f"  WHERE h.run_id = r.run_id\n"
+            f"    AND ((h.stage = '{stage}'\n"
+            f"      AND (h.target = 'table:' || r.table_id\n"
+            f"        OR h.target = 'session:' || r.session_id))\n"
+            f"     OR (h.stage = 'operating_model'\n"
+            f"      AND h.target = 'session:' || r.session_id))\n"
             f");"
         )
     if table in _SESSION_GRAIN:

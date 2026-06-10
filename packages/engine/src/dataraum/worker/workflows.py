@@ -692,6 +692,19 @@ class OperatingModelWorkflow:
             retry_policy=_RETRY,
         )
 
+        # Terminal-for-evidence detect (DAT-432/L7): score this run's executed
+        # validation results (cross_table_consistency → table + column bands)
+        # and persist readiness BEFORE the LLM-heavy families — the bands
+        # survive a cycles/metrics failure and the graph context can read them.
+        self._progress.phase = "operating_model_detect"
+        await workflow.execute_activity(
+            "operating_model_detect",
+            identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
         # Second lifecycle family (DAT-455): the declared cycle vocabulary
         # (vertical ⊕ teach rows) is declared, grounded against the workspace,
         # and measured. Runs AFTER validation so cycle health reads this run's

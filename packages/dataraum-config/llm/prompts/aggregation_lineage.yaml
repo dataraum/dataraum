@@ -1,13 +1,16 @@
 # Aggregation Lineage Proposal Prompt (DAT-491)
 #
-# The LLM proposes candidate events→measure rollups; a deterministic DuckDB
-# reconciliation statistic disposes every candidate. The LLM is the hypothesis
-# generator only — it never decides stock vs flow, so a wrong proposal costs a
-# wasted check, never a wrong verdict.
+# The LLM proposes ONLY the rollup hypothesis: which measure column plausibly
+# aggregates which event table, under what value expression and filter. The
+# engine derives the whole alignment deterministically (entity key from the
+# relationship catalog, event date from the semantic time columns, period
+# bridge from the temporal profile) and a reconciliation statistic disposes
+# every candidate. The LLM never decides stock vs flow and never writes join
+# or period SQL.
 
 name: aggregation_lineage
-version: "1.0.0"
-description: Propose candidate events→measure aggregation lineage for deterministic reconciliation
+version: "2.0.0"
+description: Propose candidate events→measure rollup hypotheses for deterministic reconciliation
 
 temperature: 0.0
 
@@ -16,53 +19,38 @@ system_prompt: |
 
   <task>
   Given a set of tables, identify MEASURE columns that plausibly AGGREGATE rows of
-  an EVENT table, and propose exactly how to align the two — so a deterministic
-  check can verify the rollup against the data.
+  an EVENT table.
 
   A MEASURE column is a numeric column in a summary/periodic table whose grain is
   typically (entity × period) — balances, totals, per-period amounts.
   An EVENT table is a transaction/line-level table with many rows per entity and
-  period, carrying a date and amount columns.
+  period, carrying amount columns.
 
-  For each candidate, propose DuckDB SQL expressions:
-  - event_value_sql: an expression over event columns whose per-period SUM should
-    reproduce the measure's PER-PERIOD MOVEMENT. Signed conventions matter: for
-    double-entry data this is often "debit" - "credit" (or its negation for
-    credit-normal measures).
-  - measure_key_sql / event_key_sql: expressions producing the SAME entity key on
-    each side (use detected relationships and matching id semantics).
-  - measure_period_sql / event_period_sql: expressions producing the SAME period
-    key on each side. This is the period bridge — mind the grain: if the measure
-    table keys periods as 'YYYY-MM' strings, bridge the event date with
-    strftime("date_column", '%Y-%m'); if it uses dates, use date_trunc.
-  - event_filter_sql: an optional WHERE condition when only a subset of events is
-    effective (e.g. "status" = 'posted').
-  - event_join_duckdb_path / event_join_on_sql: when the event-level data is
-    SPLIT header/line — amounts on a line table, the date/status on a header
-    table (e.g. journal lines joined to journal entries) — set these to the
-    header table's duckdb_path and the join condition. The line table is
-    aliased e and the header h; the condition looks like
-    e."entry_id" = h."entry_id". With a join present, qualify EVERY event-side
-    expression with e. or h. — e.g. event_value_sql = e."debit" - e."credit",
-    event_period_sql = strftime(h."date", '%Y-%m'),
-    event_filter_sql = h."status" = 'posted'.
+  For each candidate, propose:
+  - measure_table / measure_column: the summary column being explained.
+  - event_table: the event-level table whose rows it plausibly aggregates.
+  - event_value_sql: an expression over event-table columns whose per-period SUM
+    should reproduce the measure's PER-PERIOD MOVEMENT. Signed conventions
+    matter: for double-entry data this is often "debit" - "credit" (or its
+    negation for credit-normal measures), or a plain "amount".
+  - event_filter_sql: an optional WHERE condition when only a subset of events
+    is effective (e.g. "status" = 'posted').
   </task>
 
   <rules>
   - Do NOT decide whether the measure is a stock or a flow — the deterministic
     reconciliation decides. Propose the rollup whenever one plausibly exists,
     even when you cannot tell which way it reconciles.
-  - Use the EXACT duckdb_path values from the schema for table references and
-    double-quote every column name inside expressions.
-  - Each expression must reference columns of its own table only — except via
-    an explicit header join, where e./h. qualified columns of those two tables
-    are allowed. NEVER reference a column that is not on the table you name.
-  - Only propose a candidate when a plausible entity key exists on BOTH sides.
-  - Multiple measure columns may roll up from the same event table (propose one
-    candidate per measure column). If a measure column has two plausible signed
-    conventions, propose both candidates — the check disposes the wrong one.
-  - Return an EMPTY candidates list when nothing plausible exists. Never force a
-    proposal.
+  - Do NOT write join conditions, entity keys, or period/date expressions —
+    the engine derives those from verified metadata. Your expressions reference
+    event-table columns only, double-quoted.
+  - The filter may reference columns of a header table directly related to the
+    event table (e.g. an entry status) — bare double-quoted names.
+  - If a measure column has two plausible signed conventions, propose both
+    candidates — the check disposes the wrong one. One candidate per
+    (measure column, event table, convention).
+  - Return an EMPTY candidates list when nothing plausible exists. Never force
+    a proposal.
   </rules>
 
 user_prompt: |
@@ -79,7 +67,7 @@ user_prompt: |
 
 inputs:
   schema:
-    description: Formatted multi-table schema (tables, columns, annotations, relationships) with exact duckdb paths
+    description: Formatted multi-table schema (tables, columns, annotations, relationships)
     required: true
 
   entities:

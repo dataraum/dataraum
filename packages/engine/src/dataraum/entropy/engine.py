@@ -228,6 +228,19 @@ def run_detector_post_step(
                         column_id=from_col,
                     )
                 )
+                # Witness provenance at relationship grain (lane L2 request):
+                # same from-endpoint anchoring as the object record — without
+                # this, a pooled relationship measurement's WitnessClaims were
+                # silently discarded and claim_witnesses stayed column-only.
+                all_witnesses.extend(
+                    _make_witness_records(
+                        obj,
+                        session_id=session_id,
+                        run_id=run_id,
+                        table_id=from_table,
+                        column_id=from_col,
+                    )
+                )
 
     elif detector.scope == "view":
         # View-scoped: run on enriched views

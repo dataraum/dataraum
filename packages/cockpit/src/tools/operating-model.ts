@@ -10,7 +10,8 @@
 // engine fails loud when the session has no tables.
 //
 // Non-blocking (`workflow.start`), mirroring begin_session: returns the
-// workflow + run id immediately; the caller polls `workflow_status`. The
+// workflow + run id immediately; the cockpit narrates completion automatically
+// (a server-side watcher) — the caller does NOT poll. The
 // workflow id is reused per session (`operatingmodel-<workspace_id>-
 // <session_id>`) under ALLOW_DUPLICATE so re-runs of the same session group
 // under one id. Outcomes are read back with `look_validation` /
@@ -46,8 +47,8 @@ export interface OperatingModelToolResult {
 
 /**
  * Start `operatingModelWorkflow` NON-blocking. Returns the workflow + run id
- * immediately; the caller polls `workflow_status`, then reads the outcome via
- * `look_validation`.
+ * immediately; the cockpit narrates completion automatically (a server-side
+ * watcher) — the caller does NOT poll. Read the outcome via `look_validation`.
  */
 export async function operatingModel(
 	input: OperatingModelToolInput,
@@ -124,10 +125,11 @@ export const operatingModelTool = toolDefinition({
 		"vertical's declared validations through their lifecycle — ground each " +
 		"against the session's tables and execute the ones that bind; a " +
 		"validation that cannot run stays visible with the reason. Runs engine " +
-		"processing + LLM calls. Returns the workflow + " +
-		"run id; call workflow_status with them to check progress, then " +
-		"look_validation to see the outcomes. Re-running the same session_id " +
-		"re-evaluates its validations.",
+		"processing + LLM calls. Returns the workflow_id + " +
+		"run_id; the run proceeds in the background and its progress shows live " +
+		"in the canvas — you'll be told automatically when it finishes, so don't " +
+		"poll for status; then use look_validation to see the outcomes. " +
+		"Re-running the same session_id re-evaluates its validations.",
 	inputSchema: z.object({
 		session_id: z
 			.string()

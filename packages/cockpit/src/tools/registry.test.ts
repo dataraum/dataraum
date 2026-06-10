@@ -55,7 +55,6 @@ describe("tool registry (DAT-353)", () => {
 				"look_metric",
 				"why_metric",
 				"replay",
-				"workflow_status",
 				"upload",
 			]),
 		);

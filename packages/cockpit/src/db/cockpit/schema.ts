@@ -111,6 +111,14 @@ export const sessionRuns = pgTable(
 		runId: varchar("run_id").notNull(),
 		status: varchar("status").notNull().default("running"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
+		// The atomic claim for the run-completion narration (Phase 2A): the server
+		// watcher sets this (conditional UPDATE … WHERE … IS NULL) the first time it
+		// narrates a run's completion, so the agent narrates EXACTLY once even with
+		// several watchers for one conversation (multi-tab — each open
+		// /api/chat-stream hosts its own watcher). Distinct from `status`: the
+		// terminal-status writers (the progress poll / reconcile) don't touch it, so
+		// the claim never races them. NULL = not yet narrated.
+		completionNarratedAt: timestamp("completion_narrated_at", { mode: "date" }),
 	},
 	(t) => [
 		uniqueIndex("session_runs_workflow_run_uq").on(t.workflowId, t.runId),

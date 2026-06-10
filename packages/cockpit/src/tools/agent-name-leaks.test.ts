@@ -26,7 +26,6 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import type { WorkflowProgress } from "../temporal/progress";
 import { buildInventory, type InventoryTableRow } from "./list-tables";
 import {
 	type ColumnNameLookup,
@@ -47,7 +46,6 @@ import {
 } from "./why-relationship";
 import { projectWhyTable, type WhyTableEvidenceRow } from "./why-table";
 import { projectWhyValidation } from "./why-validation";
-import { projectWorkflowStatus } from "./workflow-status";
 
 const LEAK = /src_[0-9a-f]{40}/;
 
@@ -238,35 +236,6 @@ describe("agent name-leak property (DAT-433)", () => {
 		expect(out.table_name).toBe("orders");
 	});
 
-	it("workflow_status: full result is digest-free, failure surfaced sanitized", () => {
-		const progress: WorkflowProgress = {
-			phase: "typing",
-			tables_total: 2,
-			tables_completed: 1,
-			tables: [
-				{ raw_table_id: "t1", name: RAW_ORDERS, status: "done" },
-				{ raw_table_id: "t2", name: RAW_CUSTOMERS, status: "failed" },
-			],
-			failure: {
-				message: `cast failed in ${RAW_CUSTOMERS} (source src_${D2})`,
-				phase: "typing",
-				table_id: "t2",
-			},
-			status: "FAILED",
-			done: true,
-		};
-		const out = projectWorkflowStatus(progress);
-		expect(JSON.stringify(out)).not.toMatch(LEAK);
-		// The per-table steps (raw names) are deliberately NOT projected.
-		expect("tables" in out).toBe(false);
-		// failure IS surfaced — message sanitized, root cause readable.
-		expect(out.failure?.message).toBe(
-			"cast failed in customers (source upload)",
-		);
-		expect(out.failure?.phase).toBe("typing");
-		expect(out.failure?.table_id).toBe("t2");
-	});
-
 	it("look_validation: full result is digest-free, reason stays readable", () => {
 		// Engine-built lifecycle reasons + result messages embed raw physical
 		// names (the validation binder works on lake tables).
@@ -322,31 +291,5 @@ describe("agent name-leak property (DAT-433)", () => {
 		// engine-internal `_` keys (shared evidence sanitizer).
 		expect(out.grounded_against).toContain('"from_table":"orders"');
 		expect(out.grounded_against).not.toContain("_table_name");
-	});
-
-	it("workflow_status: an import failure quoting the staged-upload s3 URI is digest-free", () => {
-		// Engine import failures realistically embed the source's s3 URI — where
-		// the digest appears BARE (`uploads/<digest>/`, no `src_` prefix), so the
-		// generic /src_<40hex>/ property regex is blind to it. Assert on the
-		// fixture's specific digest instead.
-		const progress: WorkflowProgress = {
-			phase: "import",
-			tables_total: 0,
-			tables_completed: 0,
-			tables: [],
-			failure: {
-				message: `Invalid Input Error: CSV header mismatch in 's3://dataraum-lake/uploads/${D2}/orders.csv'`,
-				phase: "import",
-				table_id: null,
-			},
-			status: "FAILED",
-			done: true,
-		};
-		const out = projectWorkflowStatus(progress);
-		expect(JSON.stringify(out)).not.toContain(D2);
-		// The strip keeps the trailing filename — the root cause stays readable.
-		expect(out.failure?.message).toBe(
-			"Invalid Input Error: CSV header mismatch in 'orders.csv'",
-		);
 	});
 });

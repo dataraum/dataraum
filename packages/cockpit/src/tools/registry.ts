@@ -34,7 +34,6 @@ import { whyMetricTool } from "./why-metric";
 import { whyRelationshipTool } from "./why-relationship";
 import { whyTableTool } from "./why-table";
 import { whyValidationTool } from "./why-validation";
-import { workflowStatusTool } from "./workflow-status";
 
 export const tools = [
 	listSourcesTool,
@@ -65,5 +64,4 @@ export const tools = [
 	lookMetricTool,
 	whyMetricTool,
 	replayTool,
-	workflowStatusTool,
 ] as const;

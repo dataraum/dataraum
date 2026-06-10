@@ -490,8 +490,9 @@ export const selectTool = toolDefinition({
 		"DATABASE source: pass `source_name` (lowercase, starts with a letter), `backend`, " +
 		"and optionally `table_names` (a subset of the schema's tables; all if omitted). " +
 		"It writes to the workspace and starts a durable run. " +
-		"Returns the run's workflow_id + run_id; progress renders live in the canvas, " +
-		"and workflow_status with those ids reports completion.",
+		"Returns the run's workflow_id + run_id; the run proceeds durably in the " +
+		"background and its progress renders live in the canvas — you'll be told " +
+		"automatically when it finishes, so don't poll for status.",
 	inputSchema: z.object({
 		source_name: z
 			.string()

@@ -223,7 +223,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Returns the new workflow + run id; call workflow_status with that workflow_id + run_id to check progress/completion.",
+		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Returns the workflow_id + run_id; the run proceeds durably in the background and its progress renders live in the canvas — you'll be told automatically when it finishes, so don't poll for status.",
 	inputSchema: z.object({
 		session_id: z
 			.string()

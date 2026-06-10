@@ -89,9 +89,17 @@ vi.mock("@temporalio/client", () => ({
 	}),
 }));
 
-import { getWorkflowProgress, isProgressDone } from "./progress";
+import {
+	getWorkflowProgress,
+	isProgressDone,
+	resetTemporalClient,
+} from "./progress";
 
 beforeEach(() => {
+	// The Temporal client is process-cached (a shared, long-lived connection) —
+	// drop it between cases so the unconfigured-guard test re-checks config and
+	// each case starts from a fresh connect.
+	resetTemporalClient();
 	h.config = { temporalHost: "localhost:7233", temporalNamespace: "default" };
 	h.snapshot = {
 		phase: "import",
@@ -135,7 +143,6 @@ describe("getWorkflowProgress (DAT-352)", () => {
 			status: "RUNNING",
 			done: false,
 		});
-		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("resolves per-table ids to names and passes the failure through", async () => {

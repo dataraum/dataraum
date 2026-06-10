@@ -14,7 +14,7 @@
 // no-op.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
 import { sessionRuns, sessions } from "./schema";
@@ -107,6 +107,40 @@ export async function markRunStatus(
 	}
 }
 
+/**
+ * Atomically claim a run's completion narration (Phase 2A). The conditional
+ * UPDATE sets `completion_narrated_at` only when it's still NULL and RETURNs the
+ * row — so the FIRST caller wins (returns true) and every later one (another
+ * tab's watcher, a re-observation) gets false. This is what makes the agent
+ * narrate a completed run EXACTLY once across the several watchers a multi-tab
+ * conversation can have. Best-effort: a DB error returns false (skip the
+ * narration) rather than risk a double-fire.
+ */
+export async function claimRunNarration(
+	workflowId: string,
+	runId: string,
+): Promise<boolean> {
+	try {
+		const claimed = await cockpitDb
+			.update(sessionRuns)
+			.set({ completionNarratedAt: new Date() })
+			.where(
+				and(
+					eq(sessionRuns.workflowId, workflowId),
+					eq(sessionRuns.runId, runId),
+					isNull(sessionRuns.completionNarratedAt),
+				),
+			)
+			.returning({ id: sessionRuns.id });
+		return claimed.length > 0;
+	} catch (err) {
+		console.warn(
+			`[cockpit] claimRunNarration failed for run ${runId} (${workflowId}): ${err}`,
+		);
+		return false;
+	}
+}
+
 /** One in-flight run to reconcile on reload. */
 export interface ActiveRun {
 	workflowId: string;
@@ -138,4 +172,45 @@ export async function listNonTerminalRuns(
 		)
 		.orderBy(desc(sessionRuns.startedAt))
 		.limit(limit);
+}
+
+/** A run the completion-watcher should poll: in-flight (`running`) and not yet
+ * narrated. Carries `stage` so the narration can name what finished ("the import"
+ * vs "the session"). */
+export interface WatchableRun {
+	workflowId: string;
+	runId: string;
+	stage: RunStage;
+}
+
+/**
+ * The workspace's runs the completion-watcher should track — in-flight AND not
+ * yet narrated, newest first, bounded. The watcher captures these while they're
+ * `running`, then polls each against Temporal directly (the source of truth for
+ * completion), so a run that the progress poll separately marks terminal is still
+ * narrated. The `completion_narrated_at IS NULL` filter keeps already-narrated
+ * runs out; the per-run claim (`claimRunNarration`) is the actual once-only guard.
+ */
+export async function listWatchableRuns(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<WatchableRun>> {
+	const rows = await cockpitDb
+		.select({
+			workflowId: sessionRuns.workflowId,
+			runId: sessionRuns.runId,
+			stage: sessionRuns.stage,
+		})
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(
+			and(
+				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.status, "running"),
+				isNull(sessionRuns.completionNarratedAt),
+			),
+		)
+		.orderBy(desc(sessionRuns.startedAt))
+		.limit(limit);
+	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
 }

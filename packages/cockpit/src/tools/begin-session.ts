@@ -16,7 +16,8 @@
 // it) BEFORE starting the workflow, with the SAME session_id it hands the workflow.
 //
 // Non-blocking (`workflow.start`): returns the workflow + run id immediately; the
-// caller polls `workflow_status`. The workflow id is reused per session
+// cockpit narrates completion automatically (a server-side watcher) — the caller
+// does NOT poll. The workflow id is reused per session
 // (`beginsession-<workspace_id>-<session_id>`) under ALLOW_DUPLICATE so teach
 // re-runs of the same session group under one id.
 
@@ -100,7 +101,8 @@ export interface BeginSessionToolResult {
 /**
  * Seed the InvestigationSession parent row, then start `beginSessionWorkflow`
  * NON-blocking. Returns the workflow + run id (and the session id) immediately;
- * the caller polls `workflow_status`.
+ * the cockpit narrates completion automatically (a server-side watcher) — the
+ * caller does NOT poll.
  */
 export async function beginSession(
 	input: BeginSessionToolInput,
@@ -201,9 +203,10 @@ export const beginSessionTool = toolDefinition({
 		"list_tables; may span sources) — runs relationship detection + LLM table " +
 		"classification, then persists relationship readiness you can inspect with " +
 		"look_relationships / why_relationship and refine with teach. Runs engine " +
-		"processing + LLM calls. Returns the workflow + run " +
-		"id; call workflow_status with them to check progress. Pass an existing " +
-		"session_id to re-run a session after teaching.",
+		"processing + LLM calls. Returns the workflow_id + run_id; the run proceeds " +
+		"in the background and its progress shows live in the canvas — you'll be " +
+		"told automatically when it finishes, so don't poll for status. Pass an " +
+		"existing session_id to re-run a session after teaching.",
 	inputSchema: z.object({
 		table_ids: z
 			.array(z.string())

@@ -20,6 +20,10 @@ import type { StreamChunk } from "@tanstack/ai";
 import { createFileRoute } from "@tanstack/react-router";
 import { disableBunIdleTimeout } from "#/lib/bun-request-timeout";
 import { subscribe } from "#/lib/chat-bus";
+import {
+	acquireCompletionWatcher,
+	releaseCompletionWatcher,
+} from "#/lib/completion-watcher";
 
 /** Heartbeat cadence — a bare SSE comment (`: ping`) below the 10s idle floor so
  * neither Bun nor a proxy reaps a between-turns-quiet stream. */
@@ -41,6 +45,9 @@ export const Route = createFileRoute("/api/chat-stream")({
 						status: 400,
 					});
 				}
+				// Narrowed const captured by the hoisted `teardown` (a function
+				// declaration doesn't see the param's post-guard narrowing).
+				const cid: string = conversationId;
 
 				const encoder = new TextEncoder();
 				let unsubscribe: () => void = () => {};
@@ -73,6 +80,11 @@ export const Route = createFileRoute("/api/chat-stream")({
 								teardown();
 							}
 						}, HEARTBEAT_MS);
+						// Watch this conversation's in-flight runs; on completion the agent
+						// narrates over the bus (Phase 2A.2). Refcounted — ONE watcher per
+						// conversation no matter how many streams are open; `teardown`
+						// releases this stream's hold.
+						acquireCompletionWatcher(conversationId);
 					},
 					cancel() {
 						teardown();
@@ -86,6 +98,7 @@ export const Route = createFileRoute("/api/chat-stream")({
 					}
 					unsubscribe();
 					unsubscribe = () => {};
+					releaseCompletionWatcher(cid);
 				}
 
 				// Tear down if the request is aborted before the stream's own cancel fires.

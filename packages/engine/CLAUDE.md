@@ -54,7 +54,7 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface has been moved out of the package to `reference/mcp/` (DAT-369) — **dead code**, no transport, no in-tree consumer, kept only as a copy-reference during the cockpit takeover and slated for deletion in slice 2. Do not extend it, build on it, import from it, or treat its presence as a reason to preserve anything related. It is the one tolerated exception, not a pattern to emulate.
+The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by ADR-0002, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.
@@ -79,7 +79,6 @@ src/dataraum/
 ├── core/        # config, connections, settings
 ├── worker/      # Temporal activity worker — workflows, activities, bootstrap, contracts
 └── server/      # substrate bootstrap (DuckLake anchor + workspace overlay); no HTTP
-# (legacy mcp/ moved out of the package to reference/mcp/ — dead, slated for deletion)
 ```
 
 **Data flow:** Source → VARCHAR staging → type inference (typed + quarantine tables) → LLM semantic / temporal / topology enrichment → quality (LLM rules + entropy) → `ContextDocument`.

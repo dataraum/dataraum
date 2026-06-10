@@ -1,11 +1,16 @@
 // Cockpit chat endpoint — the agent-tier loop (DAT-353, DD/27688962) over a
 // SERVER-OWNED conversation (DAT-462).
 //
-// The TanStack AI SDK owns the agentic tool-loop and the SSE transport: chat()
-// runs the model, executes server tools directly (no approval gate — acting
-// tools run on the user's instruction), feeds results back, and iterates;
-// toServerSentEventsResponse() streams it. The client consumes it via
-// useChat({ connection }).
+// The TanStack AI SDK owns the agentic tool-loop: chat() runs the model,
+// executes server tools directly (no approval gate — acting tools run on the
+// user's instruction), feeds results back, and iterates. This route is the SEND
+// half of the subscribe transport (Phase 2A): it does NOT stream the turn back
+// in its own response — it PUBLISHES each chunk to the conversation's chat-bus
+// channel, which the client renders over its long-lived /api/chat-stream
+// subscription. That split is what lets the server push a proactive turn (a
+// run-completion narration) into an idle chat, which a per-request response
+// cannot do. The client drives this via a SubscribeConnectionAdapter whose
+// send() POSTs here and whose subscribe() reads /api/chat-stream.
 //
 // Server-owned conversation (DAT-462): cockpit_db is the source of truth for the
 // transcript. Each turn the handler persists the new user turn (+ any model-only
@@ -35,7 +40,6 @@ import {
 	chatParamsFromRequest,
 	maxIterations,
 	StreamProcessor,
-	toServerSentEventsResponse,
 } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import type { UIMessage } from "@tanstack/ai-react";
@@ -49,6 +53,7 @@ import {
 } from "../../db/cockpit/conversations";
 import { resolveActiveWorkspace } from "../../db/cockpit/registry";
 import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
+import { publish } from "../../lib/chat-bus";
 import { buildModelMessages } from "../../lib/model-messages";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
 import { getOrchestratorInstructions } from "../../prompts";
@@ -274,12 +279,30 @@ export const Route = createFileRoute("/api/chat")({
 				const stream = chat(
 					buildChatOptions(modelMessages, abortController, workspaceContext),
 				);
-				// Server-owned conversations persist the assistant turn via the tee;
-				// the unpersisted (degraded) path streams straight through.
-				return toServerSentEventsResponse(
-					persistTo ? teeAndPersist(stream, persistTo) : stream,
-					{ abortController },
-				);
+				// Subscribe transport (Phase 2A): the turn's chunks are PUBLISHED to the
+				// conversation's bus channel — the client renders them over its long-lived
+				// /api/chat-stream subscription, NOT from this response. So drain the
+				// stream here (the server-owned tee persists the assistant turn as it
+				// goes), publishing each chunk, then close with an empty SSE body. The
+				// client's send() awaits that close to know the turn dispatched; the
+				// chunks themselves already reached it over the subscription.
+				const source = persistTo ? teeAndPersist(stream, persistTo) : stream;
+				try {
+					for await (const chunk of source) {
+						publish(threadId, chunk);
+					}
+				} catch (err) {
+					// An abort (client stop()/disconnect aborts request.signal →
+					// abortController) ends the drain; the partial assistant turn is already
+					// teed+persisted, and chat() published its own RUN_ERROR on a real
+					// failure. Only a non-abort error is worth logging here.
+					if (!abortController.signal.aborted) {
+						console.error("[chat] send drain failed:", err);
+					}
+				}
+				return new Response("", {
+					headers: { "Content-Type": "text/event-stream" },
+				});
 			},
 		},
 	},

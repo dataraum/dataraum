@@ -20,11 +20,7 @@
 // MultimodalContent comes from @tanstack/ai-client (the package that defines
 // it) — @tanstack/ai-react's root index does not re-export it.
 import type { MultimodalContent } from "@tanstack/ai-client";
-import {
-	fetchServerSentEvents,
-	type UIMessage,
-	useChat,
-} from "@tanstack/ai-react";
+import { type UIMessage, useChat } from "@tanstack/ai-react";
 import {
 	createContext,
 	type ReactNode,
@@ -37,6 +33,7 @@ import {
 // the client bundle — only the UiState shape rides along.
 import type { UiState } from "#/db/cockpit/ui-state";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { createChatConnection } from "#/ui/cockpit/chat-connection";
 import {
 	canvasFromCallId,
 	canvasFromMessages,
@@ -135,13 +132,23 @@ export function CockpitProvider({
 	/** Persist a canvas-pin change (server fn from the route); fire-and-forget. */
 	onPersistPin?: (pinnedCallId: string | null) => void;
 }) {
-	// The agentic chat loop + SSE transport. The connection is memoized: a fresh
-	// connection object each render would recreate the underlying ChatClient (per
-	// the SDK contract), dropping the conversation. `threadId` pins the persisted
-	// conversation so a reload re-attaches to it; `initialMessages` seeds the
-	// restored transcript (the canvas re-derives from it — incl. any in-flight
-	// progress widget, which re-polls to done).
-	const connection = useMemo(() => fetchServerSentEvents("/api/chat"), []);
+	// The subscribe transport (Phase 2A) keys BOTH the long-lived subscribe channel
+	// (/api/chat-stream) and the send body off ONE conversation id, which MUST
+	// match — so resolve it up front. The loader provides it; the degraded/test
+	// path (no loader) gets a stable generated id so send + subscribe still target
+	// the same channel.
+	const threadId = useMemo(
+		() => conversationId ?? crypto.randomUUID(),
+		[conversationId],
+	);
+	// The agentic chat loop + subscribe transport. The connection is memoized per
+	// thread: a fresh connection object each render would recreate the underlying
+	// ChatClient (per the SDK contract), dropping the conversation + its open
+	// subscription. `threadId` pins the persisted conversation so a reload
+	// re-attaches; `initialMessages` seeds the restored transcript (the canvas
+	// re-derives from it — incl. any in-flight progress widget, which re-polls to
+	// done).
+	const connection = useMemo(() => createChatConnection(threadId), [threadId]);
 	// Per-turn model-only refs (DAT-462 flip) ride on AG-UI `forwardedProps`. The
 	// react `useChat` hook drops sendMessage's 2nd (per-call body) arg, so we use
 	// the INSTANCE forwardedProps option instead — but make it a STABLE holder we
@@ -152,8 +159,11 @@ export function CockpitProvider({
 	const refsHolder = useMemo<{ refs?: string }>(() => ({}), []);
 	const { messages, isLoading, error, sendMessage, stop } = useChat({
 		connection,
+		// Subscribe on mount and stay subscribed between turns, so the server can
+		// push a turn (a run-completion narration) into an idle chat (Phase 2A).
+		live: true,
 		forwardedProps: refsHolder,
-		threadId: conversationId,
+		threadId,
 		initialMessages,
 	});
 

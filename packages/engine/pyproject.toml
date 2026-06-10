@@ -30,8 +30,6 @@ dependencies = [
     # Pydantic
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    # MCP
-    "mcp>=1.0.0",
     # Configuration
     "pyyaml>=6.0.0",
     # Scientific computing
@@ -109,7 +107,6 @@ target-version = "py314"
 line-length = 100
 extend-exclude = [
     "prototypes/",
-    "reference/",
     "*.tcss",
 ]
 
@@ -167,7 +164,6 @@ module = "dataraum.core.models"
 [[tool.mypy.overrides]]
 module = [
     "duckdb.*",
-    "mcp.*",
     "anthropic.*",
     "scipy.*",
     "statsmodels.*",

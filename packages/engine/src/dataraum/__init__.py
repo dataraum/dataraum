@@ -2,9 +2,7 @@
 
 A rich metadata context engine for AI-driven data analytics. The engine runs
 as a Temporal activity worker (`dataraum.worker`); there is no HTTP surface and
-no public in-process Python API. The legacy MCP tool implementations have moved
-out of the package to `reference/mcp/` (dead, kept only as reference for the
-cockpit takeover; slated for deletion in slice 2).
+no public in-process Python API.
 """
 
 from importlib.metadata import PackageNotFoundError

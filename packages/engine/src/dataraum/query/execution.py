@@ -1,7 +1,7 @@
 """Shared SQL step execution logic.
 
 Extracts the common pattern of executing SQL steps as temp views,
-used by both GraphAgent and QueryAgent.
+used by the GraphAgent.
 
 Usage:
     result = execute_sql_steps(
@@ -74,7 +74,7 @@ def execute_sql_steps(
 ) -> Result[ExecutionResult]:
     """Execute SQL steps as temp views and run final SQL.
 
-    Common execution pattern shared by GraphAgent and QueryAgent:
+    The GraphAgent's execution pattern:
     1. Create temp view for each step
     2. Execute final_sql that references the views
     3. Optionally repair SQL on failure

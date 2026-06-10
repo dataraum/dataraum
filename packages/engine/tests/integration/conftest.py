@@ -521,15 +521,14 @@ def finance_junk_columns() -> list[str]:
 
 
 # =============================================================================
-# Agent Validation Fixtures — analyzed dataset (module-scoped, read-only)
+# Contract Fixtures — analyzed dataset (module-scoped, read-only)
 # =============================================================================
 #
-# The contract + query-agent suites are READ-ONLY over the analyzed dataset:
-# no test commits a mutation or asserts an absolute row count (the query agent
-# adds a QueryExecutionRecord but the tests never commit the session and pass
-# ``ephemeral=True``). So the full import -> ... -> temporal pipeline is run
-# ONCE PER MODULE and shared across that module's tests, rather than rebuilt
-# per test (which dominated integration wall-time — ~5-7s setup per test).
+# The contract suite is READ-ONLY over the analyzed dataset: no test commits a
+# mutation or asserts an absolute row count. So the full import -> ... -> temporal
+# pipeline is run ONCE PER MODULE and shared across that module's tests, rather
+# than rebuilt per test (which dominated integration wall-time — ~5-7s setup per
+# test).
 #
 # These fixtures build their own module-scoped Postgres engine + DuckLake
 # connection and clean the shared workspace schema / lake layers ONCE at setup.

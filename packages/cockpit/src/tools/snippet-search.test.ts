@@ -34,7 +34,7 @@ const graph = (): SnippetGraph => ({
 			parameterValue: null,
 			normalizedExpression: "sum(betrag)",
 			inputFields: null,
-			sql: 'SELECT SUM("Betrag") AS revenue FROM journal_lines',
+			sql: 'SELECT SUM("Betrag") AS value FROM journal_lines',
 			description: "Revenue from the income statement",
 			columnMappings: { revenue: 'SUM("Betrag")' },
 			source: "graph:dso",
@@ -43,7 +43,7 @@ const graph = (): SnippetGraph => ({
 });
 
 describe("projectGraph", () => {
-	it("projects metadata and DROPS the raw SQL + normalized_expression", () => {
+	it("projects the concept keys + the validated sql; DROPS only normalized_expression", () => {
 		const p = projectGraph(graph());
 		expect(p.graph_id).toBe("dso");
 		expect(p.source).toBe("graph:dso");
@@ -56,14 +56,15 @@ describe("projectGraph", () => {
 			standard_field: "revenue",
 			statement: "income_statement",
 			aggregation: "sum",
+			// DAT-494: the validated sql IS surfaced (the real store aliases AS value)
+			// — the model reproduces it; only the producer-internal
+			// normalized_expression is dropped.
+			sql: 'SELECT SUM("Betrag") AS value FROM journal_lines',
 			description: "Revenue from the income statement",
 			column_mappings: { revenue: 'SUM("Betrag")' },
 			input_fields: null,
 			parameter_value: null,
 		});
-		// The raw SQL body never leaves the library — it must NOT be in the projection.
-		expect(JSON.stringify(p)).not.toContain("FROM journal_lines");
-		expect("sql" in s).toBe(false);
 		expect("normalized_expression" in s).toBe(false);
 	});
 });

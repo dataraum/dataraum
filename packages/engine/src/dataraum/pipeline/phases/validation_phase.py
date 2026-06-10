@@ -268,6 +268,7 @@ def _persist_results(session: Session, run_result: ValidationRunResult, *, sessi
                 message=result.message,
                 executed_at=result.executed_at,
                 sql_used=result.sql_used,
+                columns_used=result.columns_used,
                 details=result_data.get("details"),
             )
         )

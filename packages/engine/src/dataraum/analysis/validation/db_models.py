@@ -36,6 +36,11 @@ class ValidationResultRecord(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # The "table.column" names the generated SQL actually touched (LLM-declared
+    # at bind time, DAT-432/L7). Column identity used to die at persistence —
+    # without it a failed reconciliation banded only at table grain, never the
+    # columns a deliverable metric flows through.
+    columns_used: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     # Result
     status: Mapped[str] = mapped_column(String, nullable=False)  # passed, failed, skipped, error

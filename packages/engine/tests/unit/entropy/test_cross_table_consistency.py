@@ -40,6 +40,7 @@ def _make_result(
     details: dict | None = None,
     validation_id: str = "v1",
     message: str | None = None,
+    columns_used: list[str] | None = None,
 ) -> MagicMock:
     r = MagicMock()
     r.passed = passed
@@ -48,6 +49,7 @@ def _make_result(
     r.details = details or {}
     r.validation_id = validation_id
     r.message = message
+    r.columns_used = columns_used or []
     return r
 
 
@@ -56,12 +58,23 @@ class TestScoreValidationResult:
         r = _make_result(passed=True)
         assert _score_validation_result(r) == 0.0
 
-    def test_error_returns_moderate(self):
-        """Execution errors AND inconclusive evaluations land here (DAT-439):
-        the check could not assess the data — moderate uncertainty, never a
-        failure measurement."""
+    def test_error_returns_zero(self):
+        """Execution errors AND inconclusive evaluations (DAT-439) are
+        ignorance, never a risk measurement (L7): the old 0.5 banded clean
+        tables whenever LLM SQL generation was nondeterministically broken."""
         r = _make_result(status="error")
-        assert _score_validation_result(r) == 0.5
+        assert _score_validation_result(r) == 0.0
+
+    def test_failed_critical_is_categorical(self):
+        """A CRITICAL identity failing beyond its own tolerance scores 1.0
+        regardless of the relative magnitude (L7): the injected 10% TB↔GL
+        break scored 0.001-0.10 as a rate — invisible below the band — while
+        every GL-derived deliverable number was provably wrong."""
+        r = _make_result(
+            severity="critical",
+            details={"check_type": "balance", "difference": 50_000, "magnitude": 50_000_000},
+        )
+        assert _score_validation_result(r) == 1.0
 
     def test_skipped_returns_zero(self):
         """A bind-time skip (LLM declared the validation inapplicable) is not
@@ -75,13 +88,14 @@ class TestScoreValidationResult:
         assert _score_validation_result(r) == 1.0
 
     def test_balance_small_difference(self):
-        """$50k difference on $50M total → honest relative discrepancy 0.001 (no boost)."""
+        """Non-critical: $50k on $50M → honest relative discrepancy 0.001 (no boost)."""
         r = _make_result(
+            severity="high",
             details={
                 "check_type": "balance",
                 "difference": 50_000,
                 "magnitude": 50_000_000,
-            }
+            },
         )
         score = _score_validation_result(r)
         assert score == pytest.approx(0.001, abs=1e-4)
@@ -91,15 +105,16 @@ class TestScoreValidationResult:
         assert _score_validation_result(r) == 1.0
 
     def test_aggregate_orphan_rate(self):
-        """5% orphans → honest rate 0.05 (no boost, DAT-442)."""
-        r = _make_result(details={"check_type": "aggregate", "orphan_rate": 0.05})
+        """Non-critical: 5% orphans → honest rate 0.05 (no boost, DAT-442)."""
+        r = _make_result(severity="high", details={"check_type": "aggregate", "orphan_rate": 0.05})
         score = _score_validation_result(r)
         assert score == pytest.approx(0.05, abs=1e-6)
 
     def test_constraint_violations(self):
-        """10 violations in 1000 rows → honest rate 0.01 (no boost, DAT-442)."""
+        """Non-critical: 10 violations in 1000 rows → honest rate 0.01 (no boost)."""
         r = _make_result(
-            details={"check_type": "constraint", "violation_count": 10, "total_rows": 1000}
+            severity="high",
+            details={"check_type": "constraint", "violation_count": 10, "total_rows": 1000},
         )
         score = _score_validation_result(r)
         assert score == pytest.approx(0.01, abs=1e-6)
@@ -136,6 +151,7 @@ class TestDetectFailures:
             validations=[
                 _make_result(passed=True, status="passed", validation_id="v1"),
                 _make_result(
+                    severity="high",
                     details={"check_type": "aggregate", "orphan_rate": 0.05},
                     validation_id="v2",
                 ),
@@ -156,6 +172,119 @@ class TestDetectFailures:
         assert len(evidence) == 2
         assert evidence[0]["validation_id"] == "v1"
         assert evidence[1]["validation_id"] == "v2"
+
+
+class TestColumnFanOut:
+    """Failed checks band the columns their SQL touched (L7).
+
+    The band must reach the columns deliverable metrics flow through — a
+    ``table:`` row joins to nothing downstream (scoreboard baseline:
+    0 prevented / 8 wrong-delivered with the GL unbanded).
+    """
+
+    @staticmethod
+    def _seed(session) -> tuple[str, dict[str, str]]:  # noqa: ANN001 — conftest fixture
+        from dataraum.storage import Column, Source, Table
+
+        session.add(Source(source_id="src_v", name="src_v", source_type="csv"))
+        table = Table(
+            table_id="jl",
+            source_id="src_v",
+            table_name="src_abc123__journal_lines",
+            layer="typed",
+        )
+        session.add(table)
+        session.flush()
+        ids: dict[str, str] = {}
+        for pos, name in enumerate(("credit", "debit", "account_id")):
+            col = Column(
+                table_id="jl", column_name=name, column_position=pos, resolved_type="DOUBLE"
+            )
+            session.add(col)
+            session.flush()
+            ids[name] = col.column_id
+        return "jl", ids
+
+    def _context(self, session, validations: list) -> DetectorContext:  # noqa: ANN001
+        ctx = DetectorContext(
+            table_id="jl",
+            table_name="src_abc123__journal_lines",
+            session=session,
+        )
+        ctx.analysis_results["validation"] = validations
+        return ctx
+
+    def test_failed_check_bands_its_columns(
+        self, detector: CrossTableConsistencyDetector, session
+    ) -> None:  # noqa: ANN001
+        """Logical and physical table prefixes both match; foreign tables ignored;
+        hallucinated columns dropped; column_id rides in evidence."""
+        _, ids = self._seed(session)
+        ctx = self._context(
+            session,
+            [
+                _make_result(
+                    severity="critical",
+                    details={"check_type": "aggregate", "violation_rate": 0.1},
+                    columns_used=[
+                        "journal_lines.credit",  # logical table name
+                        "src_abc123__journal_lines.debit",  # physical name
+                        "trial_balance.debit_balance",  # other table — not ours
+                        "journal_lines.ghost",  # hallucinated column
+                    ],
+                )
+            ],
+        )
+        objects = detector.detect(ctx)
+
+        by_target = {o.target: o for o in objects}
+        assert "column:src_abc123__journal_lines.credit" in by_target
+        assert "column:src_abc123__journal_lines.debit" in by_target
+        assert len(objects) == 3  # table object + 2 columns (ghost + foreign dropped)
+        credit = by_target["column:src_abc123__journal_lines.credit"]
+        assert credit.score == 1.0  # critical → categorical
+        assert credit.evidence[0]["column_id"] == ids["credit"]
+
+    def test_passed_checks_band_nothing(
+        self, detector: CrossTableConsistencyDetector, session
+    ) -> None:  # noqa: ANN001
+        self._seed(session)
+        ctx = self._context(
+            session,
+            [_make_result(passed=True, status="passed", columns_used=["journal_lines.credit"])],
+        )
+        objects = detector.detect(ctx)
+        assert len(objects) == 1  # the table object only
+        assert objects[0].score == 0.0
+
+    def test_worst_score_wins_per_column(
+        self, detector: CrossTableConsistencyDetector, session
+    ) -> None:  # noqa: ANN001
+        """Two failing checks touching the same column → one object, worst score,
+        both checks in evidence."""
+        _, ids = self._seed(session)
+        ctx = self._context(
+            session,
+            [
+                _make_result(
+                    validation_id="v_rate",
+                    severity="high",
+                    details={"check_type": "aggregate", "violation_rate": 0.05},
+                    columns_used=["journal_lines.credit"],
+                ),
+                _make_result(
+                    validation_id="v_critical",
+                    severity="critical",
+                    details={"check_type": "comparison"},
+                    columns_used=["journal_lines.credit"],
+                ),
+            ],
+        )
+        objects = detector.detect(ctx)
+        column_objs = [o for o in objects if o.target.startswith("column:")]
+        assert len(column_objs) == 1
+        assert column_objs[0].score == 1.0
+        assert {e["validation_id"] for e in column_objs[0].evidence} == {"v_rate", "v_critical"}
 
 
 class TestDetectorProperties:

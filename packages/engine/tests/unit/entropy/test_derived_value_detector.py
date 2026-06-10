@@ -68,9 +68,13 @@ def test_score_stays_the_honest_discovered_mismatch_rate() -> None:
     assert obj.sub_dimension == "formula_match"
 
 
-def test_hypothesis_alone_never_drives_the_scalar() -> None:
-    # No discovered formula: the LLM's broken hypothesis surfaces as grounded
-    # conflict in evidence (loss path), NOT as a unilateral mismatch score.
+def test_graded_hypothesis_drives_the_scalar() -> None:
+    # No discovered formula, but the hypothesis was GRADED over the rows: the
+    # match rate is DATA (the LLM only chose which identity to test — the
+    # validation-SQL division of labor), so the measured violation rate IS the
+    # mismatch score. Batch-1 recall miss: the injection pushed the discovered
+    # formula below the persistence cut and the measured 13% violation scored
+    # 0.0 — invisible in both the scalar and the pooled conflict.
     ctx = _context(
         semantic={
             "derived_formula_hypothesis": "subtotal + tax",
@@ -79,10 +83,24 @@ def test_hypothesis_alone_never_drives_the_scalar() -> None:
         grading={"match_rate": 0.1, "matches": 10, "total": 100},
     )
     (obj,) = DerivedValueDetector().detect(ctx)
-    assert obj.score == 0.0
+    assert obj.score == pytest.approx(0.9)
     (entry,) = obj.evidence
     assert entry["hypothesized"] and not entry["discovered"]
     assert entry["formula_conflict"] > 0.3
+
+
+def test_ungraded_hypothesis_never_drives_the_scalar() -> None:
+    # No grading (source columns didn't resolve — the hallucination guard
+    # abstained): an LLM guess alone never moves the mismatch score.
+    ctx = _context(
+        semantic={
+            "derived_formula_hypothesis": "subtotal + tax",
+            "derived_formula_confidence": 0.9,
+        },
+    )
+    objects = DerivedValueDetector().detect(ctx)
+    for obj in objects:
+        assert obj.score == 0.0
 
 
 def test_divergent_hypothesis_evidence_carries_loss_readable_conflict() -> None:

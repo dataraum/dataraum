@@ -3,9 +3,11 @@
 Two signals per derived column (ADR-0009, derived-value second witness):
 
 * ``obj.score`` stays the honest formula-mismatch rate ``1 − match_rate`` of the
-  best data-discovered formula (DAT-442 reset: no boost; a 10% mismatch scores
-  0.10). The eval asserts this as the ordering "injected separates from clean";
-  severity per intent lives in the loss table.
+  best GRADED formula — discovered or hypothesis, because grading is data:
+  the rate is measured over the actual rows; the LLM only chose which identity
+  to test (DAT-442 reset: no boost; a 10% mismatch scores 0.10). The eval
+  asserts this as the ordering "injected separates from clean"; severity per
+  intent lives in the loss table.
 * The POOLED second axis (``entropy/measurements/derived_value.py``): per
   canonical formula identity, the data witness (discovered/graded match rate)
   vs the LLM's name-based formula hypothesis (``derived_formula_hypothesis``
@@ -14,10 +16,10 @@ Two signals per derived column (ADR-0009, derived-value second witness):
   signals — and the witness distributions persist via ``obj.witnesses``.
 
 A column with neither a discovered formula nor a graded hypothesis emits
-nothing (absence of a formula is ignorance, not a 100%-broken column). With
-ONLY a hypothesis in play the scalar stays 0.0 — an LLM guess alone never
-drives the mismatch score; its grounded disagreement surfaces through the
-conflict signal instead (no deterministic override, no unilateral LLM claim).
+nothing (absence of a formula is ignorance, not a 100%-broken column). An
+UNGRADED hypothesis never moves the scalar — the hallucination guard abstains
+when its source columns don't resolve, so an LLM guess alone cannot flag a
+column (no deterministic override, no unilateral LLM claim).
 
 Match-quality status thresholds remain in config/entropy/thresholds.yaml.
 """
@@ -170,12 +172,16 @@ class DerivedValueDetector(EntropyDetector):
         if not adjudications:
             return []
 
-        # Honest mismatch rate of the best DISCOVERED formula — the scalar the
-        # eval orders against clean. Hypothesis-only columns stay at 0.0: the
-        # LLM never unilaterally drives the score; its grounded disagreement
-        # rides in formula_conflict below.
-        discovered_rates = [a.match_rate for a in adjudications if a.discovered]
-        best_rate = max((r for r in discovered_rates if r is not None), default=None)
+        # Honest mismatch rate of the best GRADED formula — discovered or
+        # hypothesis, because grading is DATA: the match rate is measured over
+        # the actual rows; the LLM only chose WHICH identity to test (the same
+        # division of labor as validation SQL). Hallucinations never get here —
+        # unresolvable source columns abstain upstream. Without the hypothesis
+        # leg, an injection that pushes the discovered formula below the
+        # persistence cut scored 0.0 while 13% of rows measurably violated the
+        # identity (the batch-1 recall miss on journal_lines.net_amount).
+        graded_rates = [a.match_rate for a in adjudications]
+        best_rate = max((r for r in graded_rates if r is not None), default=None)
         score = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
 
         # Match-quality labels (display only), configurable thresholds.

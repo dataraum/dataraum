@@ -45,7 +45,6 @@ def load_all_models() -> None:
 
     # Phase-owned models: auto-discovered from registry
     from dataraum.pipeline.registry import import_all_phase_models
-    from dataraum.query import db_models as _query  # noqa: F401
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
     from dataraum.storage import overlay_models as _overlay  # noqa: F401

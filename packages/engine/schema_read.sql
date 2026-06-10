@@ -146,10 +146,6 @@ DROP VIEW IF EXISTS __READ__.metadata_snapshot_head;
 CREATE VIEW __READ__.metadata_snapshot_head AS
 SELECT * FROM __WS__.metadata_snapshot_head;
 
-DROP VIEW IF EXISTS __READ__.query_executions;
-CREATE VIEW __READ__.query_executions AS
-SELECT * FROM __WS__.query_executions;
-
 DROP VIEW IF EXISTS __READ__.current_relationships;
 CREATE VIEW __READ__.current_relationships AS
 SELECT r.* FROM __WS__.relationships r

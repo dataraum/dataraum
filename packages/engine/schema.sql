@@ -178,28 +178,6 @@ CREATE TABLE lifecycle_artifacts (
 
 CREATE INDEX ix_lifecycle_artifacts_session_id ON lifecycle_artifacts (session_id);
 
-CREATE TABLE query_executions (
-	execution_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	source_id VARCHAR NOT NULL, 
-	question TEXT NOT NULL, 
-	sql_executed TEXT NOT NULL, 
-	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	success BOOLEAN NOT NULL, 
-	row_count INTEGER, 
-	error_message TEXT, 
-	confidence_level VARCHAR NOT NULL, 
-	contract_name VARCHAR, 
-	entropy_action VARCHAR, 
-	CONSTRAINT pk_query_executions PRIMARY KEY (execution_id), 
-	CONSTRAINT fk_query_executions_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_query_executions_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id) ON DELETE CASCADE
-);
-
-CREATE INDEX ix_query_executions_session_id ON query_executions (session_id);
-
-CREATE INDEX ix_query_executions_source_id ON query_executions (source_id);
-
 CREATE TABLE sql_snippets (
 	snippet_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 

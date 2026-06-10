@@ -574,25 +574,6 @@ export const metadataSnapshotHead = metadataSchema
 		sql`SELECT head_id, target, stage, run_id, promoted_at, version FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head`,
 	);
 
-export const queryExecutions = metadataSchema
-	.view("query_executions", {
-		executionId: varchar("execution_id"),
-		sessionId: varchar("session_id"),
-		sourceId: varchar("source_id"),
-		question: text(),
-		sqlExecuted: text("sql_executed"),
-		executedAt: timestamp("executed_at"),
-		success: boolean(),
-		rowCount: integer("row_count"),
-		errorMessage: text("error_message"),
-		confidenceLevel: varchar("confidence_level"),
-		contractName: varchar("contract_name"),
-		entropyAction: varchar("entropy_action"),
-	})
-	.as(
-		sql`SELECT execution_id, session_id, source_id, question, sql_executed, executed_at, success, row_count, error_message, confidence_level, contract_name, entropy_action FROM ws_00000000_0000_0000_0000_000000000001.query_executions`,
-	);
-
 export const sessionTables = metadataSchema
 	.view("session_tables", {
 		sessionId: varchar("session_id"),

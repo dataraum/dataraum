@@ -70,6 +70,15 @@ witnesses:
   # FAITHFUL (not the best-case ~1.0 the clear-only corpus measured), NOT tuned to a metric.
   # Small first sample; re-measure over more seeds before treating as final. (The
   # structural reconciliation witness is deferred to DAT-491 — events→measure lineage.)
+  # structural_reconciliation (DAT-491): UNCALIBRATED placeholder prior — the rig
+  # has not run for this witness yet (calibrating it needs a generative family with
+  # an event table underlying the probe measures; the DAT-450 stock/flow corpus has
+  # no events). The 0.85 prior is probe-derived, not tuned: the DAT-459 structural-
+  # reconciliation probe measured 100% accuracy on the real fixture + all rho1-killer
+  # synthetics through moderate reconciliation noise, with the wrong-anchor abstain
+  # guardrail keeping false fires structural rather than statistical. Re-measure via
+  # the eval rig once the events-backed family exists, then replace with provenance.
   temporal_behavior:
     ontology_prior: 0.762
     llm_claim: 0.838
+    structural_reconciliation: 0.85

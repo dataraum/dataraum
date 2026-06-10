@@ -223,6 +223,21 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "semantic_per_table")
 
+    @activity.defn(name="aggregation_lineage")
+    def run_aggregation_lineage(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Aggregation-lineage activity — events→measure rollup discovery (DAT-491).
+
+        The LLM proposes candidate rollups (one batched call per run); the
+        deterministic reconciliation statistic disposes them; reconciled lineage
+        persists run-versioned, feeding the ``structural_reconciliation`` witness
+        at the terminal ``session_detect``. Makes real Anthropic calls; needs a
+        working ``ANTHROPIC_API_KEY``.
+        """
+        run = run_session_phase(
+            self._manager, "aggregation_lineage", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "aggregation_lineage")
+
     @activity.defn(name="enriched_views")
     def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Enriched-views activity — grain-preserving fact×dimension views (DAT-415).

@@ -17,6 +17,7 @@ from dataraum.entropy.measurements.temporal_behavior import (
     measure_temporal_behavior,
     ontology_prior_distribution,
     resolved_behaviour,
+    structural_reconciliation_distribution,
 )
 
 _STOCK = CLAIM_SPACE.index("stock")
@@ -182,3 +183,81 @@ class TestMeasure:
         )
         assert adj.claim_field == "temporal_behavior:trial_balance.debit_balance"
         assert {w.witness_id for w in adj.witnesses} == {"ontology_prior", "llm_claim"}
+
+
+# --- structural reconciliation witness (DAT-491) -------------------------------
+class TestStructuralReconciliationWitness:
+    def test_absent_lineage_changes_nothing(self) -> None:
+        # No lineage row → the witness abstains → exactly the two-witness pool.
+        two = measure_temporal_behavior(
+            "tb", "balance", ontology_behaviour="point_in_time", llm_claim="stock"
+        )
+        three = measure_temporal_behavior(
+            "tb",
+            "balance",
+            ontology_behaviour="point_in_time",
+            llm_claim="stock",
+            structural_pattern=None,
+            structural_match_rate=None,
+        )
+        assert [w.witness_id for w in three.witnesses] == [w.witness_id for w in two.witnesses]
+        assert three.result.conflict == two.result.conflict
+
+    def test_data_dissent_against_agreeing_name_witnesses_raises_conflict(self) -> None:
+        # THE DAT-491 case: both name-readers say stock (correlated, possibly
+        # wrong together); the reconciliation says the column equals its
+        # per-period movement → flow. Conflict must rise — this is the witness
+        # that escapes name-anchoring.
+        agreed = measure_temporal_behavior(
+            "tb", "debit_balance", ontology_behaviour="point_in_time", llm_claim="stock"
+        )
+        dissent = measure_temporal_behavior(
+            "tb",
+            "debit_balance",
+            ontology_behaviour="point_in_time",
+            llm_claim="stock",
+            structural_pattern="per_period",
+            structural_match_rate=0.95,
+        )
+        assert "structural_reconciliation" in [w.witness_id for w in dissent.witnesses]
+        assert dissent.result.conflict > agreed.result.conflict
+        assert dissent.result.conflict > 0.05
+
+    def test_data_agreement_keeps_quiet(self) -> None:
+        quiet = measure_temporal_behavior(
+            "tb",
+            "balance",
+            ontology_behaviour="point_in_time",
+            llm_claim="stock",
+            structural_pattern="cumulative",
+            structural_match_rate=0.95,
+        )
+        assert quiet.result.conflict < 0.05
+        label, contested = resolved_behaviour(quiet.result)
+        assert label == "point_in_time"
+
+    def test_structural_alone_resolves_from_data(self) -> None:
+        # Opaque column (no concept, LLM unsure) but the data reconciles → the
+        # behaviour resolves from the data witness instead of routing to the
+        # doc-trap.
+        adj = measure_temporal_behavior(
+            "tb",
+            "xq_v7kl",
+            ontology_behaviour=None,
+            llm_claim="unsure",
+            structural_pattern="per_period",
+            structural_match_rate=0.9,
+        )
+        assert [w.witness_id for w in adj.witnesses] == ["structural_reconciliation"]
+        label, contested = resolved_behaviour(adj.result)
+        assert label == "additive"
+        assert not contested
+
+    def test_match_rate_scales_the_lean(self) -> None:
+        strong = structural_reconciliation_distribution("cumulative", 0.95)["stock"]
+        weak = structural_reconciliation_distribution("cumulative", 0.2)["stock"]
+        assert strong > weak > 0.5
+
+    def test_unknown_pattern_abstains(self) -> None:
+        assert structural_reconciliation_distribution("weird", 0.9)["stock"] == 0.5
+        assert structural_reconciliation_distribution(None, 0.9)["stock"] == 0.5

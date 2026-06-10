@@ -2,7 +2,7 @@
 
 Is a measure column a STOCK (a carried-forward point-in-time level, like a balance —
 must NOT be summed across periods) or a FLOW (a per-period movement, like a
-transaction amount — summable)? Two pooled witnesses over the claim space
+transaction amount — summable)? Up to three pooled witnesses over the claim space
 {stock, flow}; the pooling engine returns the posterior plus conflict ``C`` and
 ignorance ``U``:
 
@@ -14,6 +14,15 @@ ignorance ``U``:
 * **LLM claim** — the LLM's INDEPENDENT stock/flow read of the column (name + table
   context + sample values), produced in ``semantic_per_column``. Abstains on
   ``unsure``/absent.
+* **structural reconciliation (DAT-491)** — the DATA-GROUNDED witness: the
+  ``aggregation_lineage`` session phase discovers whether the column aggregates an
+  event table, and the deterministic R_flow/R_stock residual statistic says HOW it
+  reconciles (``per_period`` → flow, ``cumulative`` → stock), with the match rate
+  as confidence. Abstains when no lineage reconciled (including every add_source
+  detect — lineage rows are exact-run, written only by begin_session). This is the
+  witness whose input is the data, not the name: the only one that can dissent
+  when both name-readers are wrong together (the ambiguous-name regime where
+  measured accuracy of prior+claim falls to ~chance, correlated).
 
 The live ``debit_balance`` case is the disagreement: the concept claims a balance
 (stock) but the LLM, reading the periodic ``trial_balance`` context + values, reads
@@ -27,9 +36,9 @@ There is deliberately NO data-trajectory witness: the DAT-459 spike falsified th
 time-series persistence statistic, and the DAT-445 kill-gate showed an LLM reading a
 column's own trajectory is confidently WRONG on ambiguous shapes (trending flow,
 mean-reverting stock) — stock/flow is not determinable from a column's own values.
-The genuine data-reality witness is the events→measure aggregation reconciliation
-(per-period agg ⇒ flow, cumulative ⇒ stock); it is a thin-consumer add-on once that
-lineage is discovered (DAT-491), not part of this core.
+The structural witness reconciles against the INDEPENDENT per-period movements of
+the event table instead, which is robust exactly where the trajectory statistics
+broke (see ``analysis/lineage/reconcile.py``).
 
 Pure module: no DB, no LLM, no config. Reliabilities are documented placeholder
 priors, calibrated later from generative families (DAT-450) — not tuned to a metric.
@@ -58,6 +67,8 @@ _DEFAULT_CONFIDENCE = 0.7
 _BEHAVIOUR_PSTOCK: dict[str, float] = {"point_in_time": 1.0, "additive": 0.0}
 # LLM claim label → P(stock) extreme. "unsure"/None → abstain.
 _CLAIM_PSTOCK: dict[str, float] = {"stock": 1.0, "flow": 0.0}
+# Reconciliation pattern → P(stock) extreme (DAT-491). Unknown/None → abstain.
+_PATTERN_PSTOCK: dict[str, float] = {"cumulative": 1.0, "per_period": 0.0}
 
 # Neutral uncalibrated FALLBACK — used only when no reliabilities are threaded in
 # (direct/test callers). The SHIPPED, calibrated values live in the artifact
@@ -67,6 +78,7 @@ _CLAIM_PSTOCK: dict[str, float] = {"stock": 1.0, "flow": 0.0}
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "ontology_prior": 0.7,
     "llm_claim": 0.6,
+    "structural_reconciliation": 0.8,
 }
 
 
@@ -130,6 +142,17 @@ def llm_claim_distribution(claim: str | None, confidence: float | None) -> dict[
     return _leaning(_CLAIM_PSTOCK.get((claim or "").strip()), confidence)
 
 
+def structural_reconciliation_distribution(
+    pattern: str | None, match_rate: float | None
+) -> dict[str, float]:
+    """The reconciled aggregation pattern as a claim-space distribution (DAT-491).
+
+    ``cumulative`` → stock, ``per_period`` → flow, scaled by the reconciliation's
+    match rate (voting-entity fraction × agreement); absent lineage abstains.
+    """
+    return _leaning(_PATTERN_PSTOCK.get((pattern or "").strip()), match_rate)
+
+
 def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
     """The resolved temporal behaviour + a contested flag, from a pooled result.
 
@@ -155,6 +178,8 @@ def measure_temporal_behavior(
     grounding_confidence: float | None = None,
     llm_claim: str | None = None,
     llm_confidence: float | None = None,
+    structural_pattern: str | None = None,
+    structural_match_rate: float | None = None,
     reliabilities: Mapping[str, float] | None = None,
 ) -> ColumnTemporalAdjudication:
     """Adjudicate one column into ``(C, U)`` + a stock/flow posterior.
@@ -167,6 +192,9 @@ def measure_temporal_behavior(
             (weakens the prior; None → default lean).
         llm_claim: the LLM's independent read (``stock`` / ``flow`` / ``unsure`` / None).
         llm_confidence: the LLM's confidence in that read.
+        structural_pattern: the reconciled aggregation pattern (``per_period`` /
+            ``cumulative`` / None — DAT-491; None = no lineage, witness abstains).
+        structural_match_rate: the reconciliation's match rate as confidence.
         reliabilities: per-witness reliability overrides; defaults to
             :data:`DEFAULT_RELIABILITIES`.
 
@@ -187,6 +215,13 @@ def measure_temporal_behavior(
             "llm_claim",
             llm_claim_distribution(llm_claim, llm_confidence),
             rel["llm_claim"],
+        ),
+        _witness(
+            "structural_reconciliation",
+            structural_reconciliation_distribution(structural_pattern, structural_match_rate),
+            rel.get(
+                "structural_reconciliation", DEFAULT_RELIABILITIES["structural_reconciliation"]
+            ),
         ),
     )
     # Only witnesses that take a position are pooled: an abstaining witness is

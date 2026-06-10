@@ -124,6 +124,7 @@ _PROMOTE_STAGES = (
 SESSION_DETECTOR_PHASES = (
     "relationships",
     "semantic_per_table",
+    "aggregation_lineage",
     "enriched_views",
     "slice_analysis",
     "temporal_slice_analysis",

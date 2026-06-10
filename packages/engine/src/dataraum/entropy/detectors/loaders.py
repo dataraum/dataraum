@@ -530,3 +530,38 @@ def load_documented_dependencies(session: Session) -> set[frozenset[str]]:
         if len(cols) == 2 and all(cols):
             out.add(frozenset(cols))
     return out
+
+
+def load_structural_reconciliation(
+    session: Session, column_id: str, run_id: str | None
+) -> dict[str, Any] | None:
+    """The column's reconciled aggregation lineage for THIS run (DAT-491).
+
+    Exact-run by design, NO pinned fallback: lineage rows are written by the
+    begin_session ``aggregation_lineage`` phase under the session run's
+    ``run_id``, so the ``structural_reconciliation`` witness fires at that run's
+    ``session_detect`` and abstains everywhere else (every add_source detect in
+    particular — the two-witness behaviour there is unchanged). A cross-run
+    fallback would re-introduce the stale-immortal-artifact failure mode the
+    slice definitions hit (DAT-405); revisit only with head-promotion semantics
+    for lineage.
+    """
+    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
+
+    if run_id is None:
+        return None
+    row = session.execute(
+        select(MeasureAggregationLineage).where(
+            MeasureAggregationLineage.measure_column_id == column_id,
+            MeasureAggregationLineage.run_id == run_id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "pattern": row.pattern,
+        "match_rate": row.match_rate,
+        "event_table_id": row.event_table_id,
+        "r_flow_median": row.r_flow_median,
+        "r_stock_median": row.r_stock_median,
+    }

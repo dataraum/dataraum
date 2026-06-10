@@ -58,6 +58,7 @@ _PHASE_ORDER = [
     "begin_session_select",
     "relationships",
     "semantic_per_table",
+    "aggregation_lineage",
     "session_materialize_overlays",
     "enriched_views",
     "slicing",

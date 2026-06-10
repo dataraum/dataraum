@@ -9,11 +9,14 @@ periodic trial_balance as flow); high ignorance = the behaviour is undetermined.
 one witnessed ``EntropyObject`` per column carrying the resolved behaviour, the conflict,
 and a ranked ``concept_property`` / ``rebind`` teach suggestion.
 
-No data trajectory and no cross-table reconciliation: the DAT-459 spike falsified the
-time-series statistic, and the DAT-445 kill-gate showed an LLM reading a column's own
-trajectory is confidently wrong on ambiguous shapes. The genuine data-reality witness
-is the events→measure aggregation reconciliation (DAT-491) — a thin-consumer add-on
-once that lineage is discovered, NOT part of this core.
+No data-trajectory witness: the DAT-459 spike falsified the time-series statistic,
+and the DAT-445 kill-gate showed an LLM reading a column's own trajectory is
+confidently wrong on ambiguous shapes. The data-reality witness is instead the
+events→measure aggregation reconciliation (DAT-491): when the begin_session
+``aggregation_lineage`` phase reconciled the column against an event table THIS
+run, ``structural_reconciliation`` joins the pool (``per_period`` → flow,
+``cumulative`` → stock) — the only witness whose input is the data, not the name.
+It abstains on every add_source detect (lineage rows are exact-run).
 """
 
 from __future__ import annotations
@@ -42,10 +45,18 @@ class TemporalBehaviorDetector(EntropyDetector):
     description = "Stock vs flow: ontology prior vs LLM claim (teach-first)"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load the column's semantic annotation (concept behaviour + LLM claim)."""
+        """Load the column's semantic annotation (concept behaviour + LLM claim).
+
+        Also loads the column's reconciled aggregation lineage when THIS run wrote
+        one (DAT-491) — present only at a begin_session ``session_detect``, where
+        the ``structural_reconciliation`` witness joins the pool.
+        """
         if context.session is None or context.column_id is None:
             return
-        from dataraum.entropy.detectors.loaders import load_semantic
+        from dataraum.entropy.detectors.loaders import (
+            load_semantic,
+            load_structural_reconciliation,
+        )
         from dataraum.entropy.reliabilities import get_reliability_config
 
         semantic = load_semantic(
@@ -57,6 +68,11 @@ class TemporalBehaviorDetector(EntropyDetector):
         context.analysis_results["reliabilities"] = get_reliability_config().for_measurement(
             self.detector_id
         )
+        structural = load_structural_reconciliation(
+            context.session, context.column_id, context.run_id
+        )
+        if structural is not None:
+            context.analysis_results["structural"] = structural
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Pool prior vs LLM claim; emit one per-column object when a witness opines."""
@@ -64,6 +80,7 @@ class TemporalBehaviorDetector(EntropyDetector):
         if not semantic:
             return []
         reliabilities = context.get_analysis("reliabilities", None) or None
+        structural = context.get_analysis("structural", None) or {}
 
         adj = measure_temporal_behavior(
             context.table_name,
@@ -72,6 +89,8 @@ class TemporalBehaviorDetector(EntropyDetector):
             grounding_confidence=semantic.get("confidence"),
             llm_claim=semantic.get("temporal_behavior_claim"),
             llm_confidence=semantic.get("temporal_behavior_claim_confidence"),
+            structural_pattern=structural.get("pattern"),
+            structural_match_rate=structural.get("match_rate"),
             reliabilities=reliabilities,
         )
         if not adj.witnesses:
@@ -100,6 +119,8 @@ class TemporalBehaviorDetector(EntropyDetector):
                 "contested": contested,
                 "ontology_behavior": semantic.get("temporal_behavior"),
                 "llm_claim": semantic.get("temporal_behavior_claim"),
+                "structural_pattern": structural.get("pattern"),
+                "structural_match_rate": structural.get("match_rate"),
                 "teach_suggestion": teach,
             }
         ]

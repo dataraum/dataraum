@@ -47,6 +47,15 @@ phases:
     description: Per-table LLM synthesis (entities, relationships) over annotations
     detectors: [join_path_determinism, relationship_entropy]
 
+  aggregation_lineage:
+    description: Events→measure rollup discovery (LLM proposes, reconciliation disposes)
+    # temporal_behavior is declared HERE TOO (DAT-491, Fork A): at the session
+    # detect the measurement re-adjudicates with the data-grounded
+    # structural_reconciliation witness this phase just persisted — the witness
+    # that escapes name-anchoring. At add_source detect (no lineage rows for
+    # that run) the witness abstains and the two-witness behaviour is unchanged.
+    detectors: [temporal_behavior]
+
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================

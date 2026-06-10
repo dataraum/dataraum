@@ -36,6 +36,12 @@ features:
     enabled: true
     model_tier: balanced
 
+  # DAT-491: events→measure aggregation-lineage proposals (one batched call per
+  # begin_session run; the deterministic reconciliation disposes the candidates).
+  aggregation_lineage:
+    enabled: true
+    model_tier: balanced
+
   business_cycles:
     enabled: true
     model_tier: balanced

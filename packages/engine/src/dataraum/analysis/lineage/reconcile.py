@@ -1,0 +1,125 @@
+"""Structural reconciliation — the grounded stock/flow discriminator (DAT-491).
+
+Ported from the DAT-459 redirect probe (eval ``dat459_structural_reconciliation``),
+which grounded this statistic before any engine code was written. For a
+period-keyed measure series ``y[1..T]`` (per entity) and the INDEPENDENT
+per-period net movement ``m[1..T]`` aggregated from event rows (NOT from ``y``):
+
+    FLOW hypothesis : y[t]  ≈ m[t]          (the column IS the period's movement)
+    STOCK hypothesis: Δy[t] ≈ m[t]  (t≥2)   (the column carries forward)
+
+Scale-free residuals — no tuning, no boost curve:
+
+    R_flow  = Σ|y[t] − m[t]| / Σ|m[t]|
+    R_stock = Σ|Δy[t] − m[t][1:]| / Σ|m[t][1:]|
+
+Classify STOCK iff ``R_stock < R_flow``. This is robust exactly where the
+falsified persistence statistic (rho1/VR) broke: a trending/seasonal flow still
+equals its movement (R_flow≈0) and a mean-reverting stock still carries forward
+(R_stock≈0).
+
+The ABSTAIN gate is the probe's wrong-anchor guardrail: with a misaligned anchor
+(wrong entity, wrong join, wrong period bridge) BOTH residuals stay large —
+measured median min-residual ≈ 1.0 vs ≈ 0.0–0.1 for a correct anchor, holding
+through reconciliation noise up to ~0.25–0.5 of the movement scale. An entity
+therefore only VOTES when its winning residual is ≤ ``FIRE_RESIDUAL_MAX``; a
+candidate only fires when enough entities vote and they agree. These constants
+are separation-derived from the probe (provenance above), not fitted to a metric.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from statistics import median
+
+from dataraum.analysis.lineage.models import (
+    PATTERN_CUMULATIVE,
+    PATTERN_PER_PERIOD,
+    CandidateDisposal,
+)
+
+# Probe scope: residuals on fewer than 4 periods are not meaningful (DAT-459 fixture
+# filter ``T >= 4``); shorter entity series abstain.
+MIN_PERIODS = 4
+
+# Wrong-anchor guardrail (see module docstring): correct-anchor winning residual
+# ≈ 0.0–0.1 (≤ ~0.5 under heavy reconciliation noise); wrong-anchor min-residual
+# ≈ 1.0. The gate sits at the measured separation midpoint.
+FIRE_RESIDUAL_MAX = 0.5
+
+# A candidate's verdict needs at least this many voting entities and this much
+# agreement among them — a lone entity or a split vote is ignorance, not lineage.
+MIN_ENTITIES_FIRED = 2
+AGREEMENT_MIN = 0.8
+
+
+@dataclass(frozen=True)
+class EntityReconciliation:
+    """One entity's residual pair + its vote (``None`` = abstained)."""
+
+    r_flow: float
+    r_stock: float
+    label: str | None  # PATTERN_PER_PERIOD / PATTERN_CUMULATIVE / None
+
+
+def reconcile(y: Sequence[float], m: Sequence[float]) -> tuple[float, float]:
+    """Return ``(R_flow, R_stock)`` for one entity's series against its anchor."""
+    if len(y) != len(m):
+        raise ValueError(f"series/anchor length mismatch: {len(y)} != {len(m)}")
+    denom_flow = sum(abs(v) for v in m) or 1.0
+    r_flow = sum(abs(yv - mv) for yv, mv in zip(y, m, strict=True)) / denom_flow
+    dy = [y[t] - y[t - 1] for t in range(1, len(y))]
+    m_tail = list(m[1:])
+    denom_stock = sum(abs(v) for v in m_tail) or 1.0
+    r_stock = sum(abs(dv - mv) for dv, mv in zip(dy, m_tail, strict=True)) / denom_stock
+    return r_flow, r_stock
+
+
+def classify_entity(y: Sequence[float], m: Sequence[float]) -> EntityReconciliation:
+    """Classify one entity, abstaining on short series, dead anchors, or bad fits."""
+    if len(y) < MIN_PERIODS or not any(m):
+        return EntityReconciliation(r_flow=float("inf"), r_stock=float("inf"), label=None)
+    r_flow, r_stock = reconcile(y, m)
+    if min(r_flow, r_stock) > FIRE_RESIDUAL_MAX:
+        # Wrong-anchor guardrail: neither hypothesis fits — abstain, never guess.
+        return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=None)
+    label = PATTERN_CUMULATIVE if r_stock < r_flow else PATTERN_PER_PERIOD
+    return EntityReconciliation(r_flow=r_flow, r_stock=r_stock, label=label)
+
+
+def dispose(
+    series: Mapping[str, tuple[Sequence[float], Sequence[float]]],
+) -> CandidateDisposal | None:
+    """Aggregate per-entity votes into a candidate verdict; ``None`` = no lineage.
+
+    Args:
+        series: entity key → ``(y, m)`` aligned period series (measure, anchor).
+
+    Returns:
+        A :class:`CandidateDisposal` when enough entities vote and agree
+        (``match_rate`` = voting fraction × agreement), else ``None`` — the
+        candidate did not reconcile and the witness must abstain.
+    """
+    if not series:
+        return None
+    results = {k: classify_entity(y, m) for k, (y, m) in series.items()}
+    voted = [r for r in results.values() if r.label is not None]
+    if len(voted) < MIN_ENTITIES_FIRED:
+        return None
+    counts = {
+        PATTERN_PER_PERIOD: sum(1 for r in voted if r.label == PATTERN_PER_PERIOD),
+        PATTERN_CUMULATIVE: sum(1 for r in voted if r.label == PATTERN_CUMULATIVE),
+    }
+    pattern = max(counts, key=lambda p: counts[p])
+    agreement = counts[pattern] / len(voted)
+    if agreement < AGREEMENT_MIN:
+        return None  # split vote — ambiguous lineage is ignorance, not a verdict
+    return CandidateDisposal(
+        pattern=pattern,
+        match_rate=(len(voted) / len(results)) * agreement,
+        r_flow_median=median(r.r_flow for r in voted),
+        r_stock_median=median(r.r_stock for r in voted),
+        n_entities=len(results),
+        n_entities_fired=len(voted),
+    )

@@ -570,6 +570,41 @@ CREATE INDEX idx_readiness_target ON entropy_readiness (target);
 
 CREATE INDEX ix_entropy_readiness_session_id ON entropy_readiness (session_id);
 
+CREATE TABLE measure_aggregation_lineage (
+	lineage_id VARCHAR NOT NULL, 
+	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
+	measure_table_id VARCHAR NOT NULL, 
+	measure_column_id VARCHAR NOT NULL, 
+	event_table_id VARCHAR NOT NULL, 
+	event_value_sql TEXT NOT NULL, 
+	measure_key_sql TEXT NOT NULL, 
+	event_key_sql TEXT NOT NULL, 
+	measure_period_sql TEXT NOT NULL, 
+	event_period_sql TEXT NOT NULL, 
+	event_filter_sql TEXT, 
+	pattern VARCHAR NOT NULL, 
+	match_rate FLOAT NOT NULL, 
+	r_flow_median FLOAT NOT NULL, 
+	r_stock_median FLOAT NOT NULL, 
+	n_entities INTEGER NOT NULL, 
+	n_entities_fired INTEGER NOT NULL, 
+	rationale TEXT, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_measure_aggregation_lineage PRIMARY KEY (lineage_id), 
+	CONSTRAINT uq_measure_lineage_column_run UNIQUE (measure_column_id, run_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_session_id_investigation_af01 FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_measure_aggregation_lineage_event_table_id_tables FOREIGN KEY(event_table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_measure_aggregation_lineage_measure_column_id ON measure_aggregation_lineage (measure_column_id);
+
+CREATE INDEX ix_measure_aggregation_lineage_run_id ON measure_aggregation_lineage (run_id);
+
+CREATE INDEX ix_measure_aggregation_lineage_session_id ON measure_aggregation_lineage (session_id);
+
 CREATE TABLE relationships (
 	relationship_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 

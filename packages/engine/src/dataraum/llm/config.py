@@ -42,6 +42,7 @@ class LLMFeatures(BaseModel):
     column_annotation: FeatureConfig | None = None
     slicing_analysis: FeatureConfig | None = None
     validation: FeatureConfig | None = None
+    aggregation_lineage: FeatureConfig | None = None
     business_cycles: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None
     enrichment_analysis: FeatureConfig | None = None

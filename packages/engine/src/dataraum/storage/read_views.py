@@ -73,6 +73,7 @@ _SESSION_GRAIN: dict[str, str] = {
     "column_drift_summaries": "detect",
     "temporal_slice_analyses": "detect",
     "derived_columns": "detect",
+    "measure_aggregation_lineage": "detect",  # begin_session aggregation_lineage (DAT-491)
     "lifecycle_artifacts": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",

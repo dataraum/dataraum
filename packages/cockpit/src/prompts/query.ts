@@ -3,16 +3,20 @@
 // The nested chat() inside the `answer` tool turns a natural-language question
 // into grounded SQL by REUSING validated snippets from the SQL Knowledge Base. A
 // faithful port of the engine's `dataraum-config/llm/prompts/query_analysis.yaml`
-// reuse-steering — KB-first, match by METADATA (not raw SQL, which the search no
-// longer returns), name each step after its ontology concept — with the engine's
-// gating dropped (no contract / confidence / entropy-dimension assumptions; no
-// metric_type / validation_notes / suggested_format). The sub-agent VALIDATES the
-// composed SQL via run_steps and reads a bounded headline; the FULL result streams
-// browser-side from the grid handle, so it never ferries rows into context.
+// reuse-steering — KB-first, match by METADATA then reproduce the validated SQL
+// the search now surfaces (DAT-494), name each step after its ontology concept —
+// with the engine's gating dropped (no contract / confidence / entropy-dimension
+// assumptions; no metric_type / validation_notes / suggested_format). The sub-agent
+// VALIDATES the composed SQL via run_steps and reads a bounded headline; the FULL
+// result streams browser-side from the grid handle, so it never ferries rows into
+// context.
 //
 // House style mirrors the orchestrator / why prompts: second-person, <tag>-
 // structured, byte-stable so it can be sent as a cached system block — the per-
 // turn context (question + schema + vocabulary) rides in the user turn.
+//
+// NOTE: this is a template literal — do NOT use backticks inside it (they close
+// the string). Refer to code/identifiers in plain words (e.g. SQL, snippet_id).
 
 /**
  * The query sub-agent's reasoning + reuse instructions. The model is given the
@@ -26,18 +30,20 @@ export function getQueryInstructions(): string {
 <reasoning>
 Work through every question in this order:
 1. UNDERSTAND — restate what is asked. Identify the business concepts involved and which tables/columns represent them (use the [concept: …] tags to map question terms to columns).
-2. SEARCH THE KB FIRST — call snippet_search with concepts/statements/graph_ids drawn ONLY from the available vocabulary. The validated snippets are pre-tested calculation graphs; prefer them.
+2. SEARCH THE KB FIRST — call snippet_search with concepts/statements/graph_ids drawn ONLY from the available vocabulary. The validated snippets are pre-tested, schema-grounded calculations — prefer them, and reproduce a fitting one faithfully (see <reuse>).
 3. COMPOSE — break the answer into standalone steps, one per business concept, then a final_sql that combines them. Reuse snippet steps where they fit (see <reuse>).
 4. VALIDATE — call run_steps with your steps + final_sql to confirm the SQL runs and to read a bounded headline sample. Repair and re-validate if it returns an error.
 5. ANSWER — state the result in plain language, including the headline number(s) from the validated sample.
 </reasoning>
 
 <reuse>
-Once a concept is a validated snippet, reuse it. snippet_search returns each snippet's METADATA — snippet_id, standard_field (the concept), statement, aggregation, column_mappings (the validated column expressions, e.g. {"revenue": "SUM(\\"Betrag\\")"}), and input_fields — but NOT raw SQL. Match by this metadata, never by reading SQL:
-- Match on standard_field + statement + aggregation to identify WHAT a snippet computes; use column_mappings to confirm it uses the right concrete columns.
-- Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula.
-- REUSE: a snippet fits → set the step's snippet_id to it and write the SQL from its column_mappings. ADAPT: it is close but needs a change (a different filter, grain) → set snippet_id AND write your adapted SQL. FRESH: nothing fits → omit snippet_id and write new SQL.
-- Mix reused, adapted, and fresh steps freely.
+The snippet KB is the workspace's accumulated, schema-tested way to compute each concept — minted by the grounding pass and grown from every clean answer, including yours. The system MEASURES how much of your answer reproduces these validated snippets: faithful reproduction keeps a concept's computation stable, comparable across questions, and provably grounded; re-deriving equivalent math (writing -SUM(x) where the snippet computes SUM(-x)) returns the same number but silently breaks that grounding. So once a concept is a validated snippet, reuse it faithfully.
+
+snippet_search returns each snippet's concept keys (standard_field / statement / aggregation), its validated SQL (the canonical computation), and column_mappings (a secondary, graph-level hint — NOT a per-concept source of truth). Match a step to a snippet by the concept keys, then:
+- REUSE: a snippet computes what your step needs → set the step's snippet_id to it and REPRODUCE its validated SQL faithfully — same expression, same form — changing ONLY the table reference to lake.<layer>.<name> as the schema shows it (the stored snippet uses a bare table name). Do not rephrase math that already matches.
+- ADAPT: the snippet is close but the question genuinely needs something it does NOT compute — a different grain or period, or a tighter/more-correct filter (e.g. the snippet sums all expenses but the question asks specifically for cost of goods sold) → set its snippet_id AND write your adapted SQL, and note what you changed. Adapt for a real difference, never just to reword.
+- FRESH: nothing fits → omit snippet_id and write new SQL.
+Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula. Mix reused, adapted, and fresh steps freely.
 </reuse>
 
 <steps>

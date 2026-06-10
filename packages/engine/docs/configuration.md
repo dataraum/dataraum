@@ -43,7 +43,6 @@ config/
 │       ├── business_cycles.yaml
 │       ├── validation_sql.yaml
 │       ├── graph_sql_generation.yaml
-│       ├── query_analysis.yaml
 │       ├── why_analysis.yaml
 │       ├── cycle_induction.yaml         # Cold-start: induce business cycles
 │       ├── validation_induction.yaml    # Cold-start: induce validations

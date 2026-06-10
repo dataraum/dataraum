@@ -2,8 +2,9 @@
 //
 // The nested chat() inside the `answer` tool turns a natural-language question
 // into grounded SQL by REUSING validated snippets from the SQL Knowledge Base. A
-// faithful port of the engine's `dataraum-config/llm/prompts/query_analysis.yaml`
-// reuse-steering — KB-first, match by METADATA then reproduce the validated SQL
+// faithful port of the engine's former query-analysis prompt (the
+// `query_analysis.yaml` reuse-steering, removed with the engine query agent in
+// DAT-487) — KB-first, match by METADATA then reproduce the validated SQL
 // the search now surfaces (DAT-494), name each step after its ontology concept —
 // with the engine's gating dropped (no contract / confidence / entropy-dimension
 // assumptions; no metric_type / validation_notes / suggested_format). The sub-agent

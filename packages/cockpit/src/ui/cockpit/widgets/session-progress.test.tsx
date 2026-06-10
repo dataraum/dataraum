@@ -64,7 +64,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("SessionProgressWidget (DAT-435)", () => {
-	it("keys the poll on the precise (workflowId, runId) and stops on done", () => {
+	it("seeds on the precise (workflowId, runId) key and does NOT poll", () => {
 		h.queryResult = {
 			data: snapshot({}),
 			error: undefined,
@@ -76,11 +76,9 @@ describe("SessionProgressWidget (DAT-435)", () => {
 			"beginsession-ws-sess",
 			"run-1",
 		]);
-		const refetch = h.lastOptions?.refetchInterval as (q: {
-			state: { data?: { done: boolean } };
-		}) => number | false;
-		expect(refetch({ state: { data: { done: false } } })).toBeGreaterThan(0);
-		expect(refetch({ state: { data: { done: true } } })).toBe(false);
+		// No polling — live updates arrive via the watcher's pushed CUSTOM events
+		// written to this same key (Phase 2A.3).
+		expect(h.lastOptions?.refetchInterval).toBe(false);
 	});
 
 	it("shows a starting state before the first snapshot lands", () => {

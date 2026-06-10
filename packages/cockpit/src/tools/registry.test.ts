@@ -1,7 +1,7 @@
 // Tool-registry contract tests (DAT-353). Pure — asserts the LLM-facing surface
-// of the registry (names + approval gating). The DB query paths (list_sources /
-// list_tables) are covered by gated integration tests; teach/replay write paths
-// by the integration smoke.
+// of the registry (names + that no tool declares an approval gate). The DB query
+// paths (list_sources / list_tables) are covered by gated integration tests;
+// teach/replay write paths by the integration smoke.
 //
 // Importing the registry transitively pulls config.ts + the Postgres metadata
 // client (via the tools). We MOCK both so the test needs no real env and opens
@@ -56,45 +56,21 @@ describe("tool registry (DAT-353)", () => {
 				"look_metric",
 				"why_metric",
 				"replay",
-				"workflow_status",
 				"upload",
 			]),
 		);
 	});
 
-	it("gates the write/compute tools behind approval, leaves reads open", () => {
-		const byName = new Map(tools.map((t) => [t.name, t]));
-		expect(byName.get("frame")?.needsApproval).toBe(true);
-		expect(byName.get("select")?.needsApproval).toBe(true);
-		expect(byName.get("teach")?.needsApproval).toBe(true);
-		expect(byName.get("teach_validation")?.needsApproval).toBe(true);
-		expect(byName.get("teach_cycle")?.needsApproval).toBe(true);
-		expect(byName.get("teach_metric")?.needsApproval).toBe(true);
-		expect(byName.get("begin_session")?.needsApproval).toBe(true);
-		expect(byName.get("operating_model")?.needsApproval).toBe(true);
-		expect(byName.get("replay")?.needsApproval).toBe(true);
-		// Reads must NOT require approval — they run unattended in the loop.
-		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("list_tables")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("list_verticals")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_table")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_profile")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("why_column")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("why_table")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_relationships")?.needsApproval ?? false).toBe(
-			false,
-		);
-		expect(byName.get("why_relationship")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_validation")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("why_validation")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_cycle")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("why_cycle")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("look_metric")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("why_metric")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("answer")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("connect")?.needsApproval ?? false).toBe(false);
-		expect(byName.get("workflow_status")?.needsApproval ?? false).toBe(false);
+	it("declares NO approval gate on any tool — every tool runs directly", () => {
+		// The approval gate is gone: every tool (reads AND write/compute alike) runs
+		// on the user's natural-language instruction, so none may declare approval.
+		// A regression guard — a re-introduced `needsApproval: true` on any tool
+		// fails here.
+		for (const tool of tools) {
+			expect(
+				tool.needsApproval ?? false,
+				`${tool.name} must not declare an approval gate`,
+			).toBe(false);
+		}
 	});
 });

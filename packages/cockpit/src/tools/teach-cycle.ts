@@ -146,9 +146,9 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * The `teach_cycle` tool for the agent loop. `needsApproval: true` — it mutates
- * the workspace (writes an overlay row that the next run measures), so the SDK
- * pauses for the user to confirm before `.server` runs.
+ * The `teach_cycle` tool for the agent loop. An acting tool: it mutates the
+ * workspace (writes an overlay row that the next run measures), so it runs on
+ * the user's explicit instruction — there is no approval gate.
  *
  * Data-informed: the agent declares AGAINST the workspace's tables/columns it
  * reads from `list_tables` / `look_cycle` (the existing read surface — reused,
@@ -160,8 +160,8 @@ export const teachCycleTool = toolDefinition({
 	description:
 		"Declare a NEW business cycle (a recurring multi-stage process like " +
 		"order-to-cash or a subscription renewal), or OVERRIDE a shipped one, for " +
-		"the session's vertical. Writes a config_overlay row (requires user " +
-		"approval); the next operating_model run grounds and measures it, and " +
+		"the session's vertical. Writes a config_overlay row; the next " +
+		"operating_model run grounds and measures it, and " +
 		"look_cycle shows the outcome (lifecycle state + completion rate). The " +
 		"cycle name is FREE-FORM — there is no closed vocabulary; your description, " +
 		"stages, and completion_indicators shape WHAT gets detected and WHEN it " +
@@ -190,5 +190,4 @@ export const teachCycleTool = toolDefinition({
 			})
 			.nullable(),
 	}),
-	needsApproval: true,
 }).server((input) => teachCycle(input));

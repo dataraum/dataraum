@@ -6,7 +6,8 @@
 // table ids (from `list_tables`), which may span sources. It runs
 // relationships → semantic_per_table → materialize teaches → detect → keepers →
 // promote — the engine's `beginSessionWorkflow`. semantic_per_table makes real
-// Anthropic calls, so this is a compute kick gated behind user approval.
+// Anthropic calls, so this is a compute kick — it runs on the user's explicit
+// instruction (no approval gate).
 //
 // HARD PRECONDITION (DAT-407 FK), same as triggerAddSource / replay: the workflow's
 // `begin_session_select` writes `session_tables` rows with a NOT-NULL FK to
@@ -15,7 +16,8 @@
 // it) BEFORE starting the workflow, with the SAME session_id it hands the workflow.
 //
 // Non-blocking (`workflow.start`): returns the workflow + run id immediately; the
-// caller polls `workflow_status`. The workflow id is reused per session
+// cockpit narrates completion automatically (a server-side watcher) — the caller
+// does NOT poll. The workflow id is reused per session
 // (`beginsession-<workspace_id>-<session_id>`) under ALLOW_DUPLICATE so teach
 // re-runs of the same session group under one id.
 
@@ -99,7 +101,8 @@ export interface BeginSessionToolResult {
 /**
  * Seed the InvestigationSession parent row, then start `beginSessionWorkflow`
  * NON-blocking. Returns the workflow + run id (and the session id) immediately;
- * the caller polls `workflow_status`.
+ * the cockpit narrates completion automatically (a server-side watcher) — the
+ * caller does NOT poll.
  */
 export async function beginSession(
 	input: BeginSessionToolInput,
@@ -189,9 +192,9 @@ export async function beginSession(
 }
 
 /**
- * The `begin_session` tool for the agent loop. `needsApproval: true` — it starts a
- * durable Temporal workflow that makes real LLM calls (semantic_per_table), so the
- * user confirms before it kicks off.
+ * The `begin_session` tool for the agent loop. An acting tool: it starts a
+ * durable Temporal workflow that makes real LLM calls (semantic_per_table), so it
+ * runs on the user's explicit instruction — there is no approval gate.
  */
 export const beginSessionTool = toolDefinition({
 	name: "begin_session",
@@ -199,10 +202,11 @@ export const beginSessionTool = toolDefinition({
 		"Start an analytical session over a selected set of typed tables (from " +
 		"list_tables; may span sources) — runs relationship detection + LLM table " +
 		"classification, then persists relationship readiness you can inspect with " +
-		"look_relationships / why_relationship and refine with teach. Requires user " +
-		"approval (runs engine processing + LLM calls). Returns the workflow + run " +
-		"id; call workflow_status with them to check progress. Pass an existing " +
-		"session_id to re-run a session after teaching.",
+		"look_relationships / why_relationship and refine with teach. Runs engine " +
+		"processing + LLM calls. Returns the workflow_id + run_id; the run proceeds " +
+		"in the background and its progress shows live in the canvas — you'll be " +
+		"told automatically when it finishes, so don't poll for status. Pass an " +
+		"existing session_id to re-run a session after teaching.",
 	inputSchema: z.object({
 		table_ids: z
 			.array(z.string())
@@ -229,5 +233,4 @@ export const beginSessionTool = toolDefinition({
 		session_id: z.string(),
 		table_ids: z.array(z.string()),
 	}),
-	needsApproval: true,
 }).server((input) => beginSession(input));

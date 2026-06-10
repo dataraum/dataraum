@@ -490,7 +490,7 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 });
 
 describe("teachChipSummary (display-only, readable at every state)", () => {
-	it("reads {type, payload} from arguments at approval time", () => {
+	it("reads {type, payload} from arguments while the call is in flight", () => {
 		expect(
 			teachChipSummary(
 				{ type: "null_value", payload: { sentinel: "N/A" } },
@@ -523,7 +523,7 @@ describe("teachChipSummary (display-only, readable at every state)", () => {
 });
 
 describe("teachValidationChipSummary (DAT-441, visible override)", () => {
-	it("reads the proposed check from arguments at approval time", () => {
+	it("reads the proposed check from arguments while the call is in flight", () => {
 		expect(
 			teachValidationChipSummary(
 				{ validation_id: "invoice_reconciliation", check_type: "aggregate" },
@@ -577,7 +577,7 @@ describe("teachValidationChipSummary (DAT-441, visible override)", () => {
 });
 
 describe("teachCycleChipSummary (DAT-482, visible override)", () => {
-	it("reads the proposed cycle name from arguments at approval time", () => {
+	it("reads the proposed cycle name from arguments while the call is in flight", () => {
 		expect(teachCycleChipSummary({ name: "order_to_cash" }, undefined)).toBe(
 			"declare Order to cash",
 		);
@@ -625,7 +625,7 @@ describe("teachCycleChipSummary (DAT-482, visible override)", () => {
 });
 
 describe("teachMetricChipSummary (DAT-482, visible override)", () => {
-	it("reads the proposed graph_id from arguments at approval time", () => {
+	it("reads the proposed graph_id from arguments while the call is in flight", () => {
 		expect(teachMetricChipSummary({ graph_id: "ebitda" }, undefined)).toBe(
 			"declare Ebitda",
 		);

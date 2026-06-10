@@ -1,10 +1,16 @@
 // Cockpit chat endpoint — the agent-tier loop (DAT-353, DD/27688962) over a
 // SERVER-OWNED conversation (DAT-462).
 //
-// The TanStack AI SDK owns the agentic tool-loop and the SSE transport: chat()
-// runs the model, executes server tools (pausing for confirmation on
-// needsApproval tools), feeds results back, and iterates; toServerSentEventsResponse()
-// streams it. The client consumes it via useChat({ connection }).
+// The TanStack AI SDK owns the agentic tool-loop: chat() runs the model,
+// executes server tools directly (no approval gate — acting tools run on the
+// user's instruction), feeds results back, and iterates. This route is the SEND
+// half of the subscribe transport (Phase 2A): it does NOT stream the turn back
+// in its own response — it PUBLISHES each chunk to the conversation's chat-bus
+// channel, which the client renders over its long-lived /api/chat-stream
+// subscription. That split is what lets the server push a proactive turn (a
+// run-completion narration) into an idle chat, which a per-request response
+// cannot do. The client drives this via a SubscribeConnectionAdapter whose
+// send() POSTs here and whose subscribe() reads /api/chat-stream.
 //
 // Server-owned conversation (DAT-462): cockpit_db is the source of truth for the
 // transcript. Each turn the handler persists the new user turn (+ any model-only
@@ -20,118 +26,29 @@
 // messages past it. Not built — the expensive leg is already bounded here, and
 // the pointer must stay correct across reconnect/multi-tab/aborted turns.
 //
-// The assistant turn is captured server-side by teeing the stream through a
-// StreamProcessor and persisting getMessages() when it drains — a reload right
-// after a reply must restore it, so we can't wait for the next request to carry
-// it back.
+// The assistant turn is captured server-side by the shared agent-turn helper
+// (lib/agent-turn): it tees the stream through a StreamProcessor and persists it
+// when the stream drains — a reload right after a reply must restore it, so we
+// can't wait for the next request to carry it back.
 //
 // Persistence is degradable: if cockpit_db is unavailable the turn still runs on
 // the client-sent messages (unpersisted), never a dead chat.
 
 import { randomUUID } from "node:crypto";
-import {
-	chat,
-	chatParamsFromRequest,
-	maxIterations,
-	StreamProcessor,
-	toServerSentEventsResponse,
-} from "@tanstack/ai";
-import { createAnthropicChat } from "@tanstack/ai-anthropic";
+import { chatParamsFromRequest } from "@tanstack/ai";
 import type { UIMessage } from "@tanstack/ai-react";
 import { createFileRoute } from "@tanstack/react-router";
 
-import { config } from "../../config";
 import {
 	appendMessages,
 	ensureConversation,
 	loadModelTranscript,
 } from "../../db/cockpit/conversations";
 import { resolveActiveWorkspace } from "../../db/cockpit/registry";
+import { type ChatMessages, streamAgentTurnToBus } from "../../lib/agent-turn";
 import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
 import { buildModelMessages } from "../../lib/model-messages";
-import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "../../llm";
-import { getOrchestratorInstructions } from "../../prompts";
 import { buildWorkspaceContext } from "../../prompts/workspace-context";
-import { tools } from "../../tools/registry";
-
-type ChatMessages = Awaited<
-	ReturnType<typeof chatParamsFromRequest>
->["messages"];
-
-// The EXACT options type chat() accepts. buildChatOptions's return is pinned to
-// it so the object literal gets excess-property checking — a field chat() does
-// not know (e.g. a top-level `maxTokens`, which silently did nothing while the
-// adapter defaulted max_tokens to 1024) fails tsc instead of shipping. The
-// generics are pinned (anthropic adapter, no output schema, streaming) so
-// chat()'s result stays the AsyncIterable the SSE response requires AND
-// modelOptions narrows to the adapter's real provider-options type.
-type ChatOptions = Parameters<
-	typeof chat<ReturnType<typeof createAnthropicChat>, undefined, true>
->[0];
-
-/** chat()'s streaming return — the AsyncIterable of StreamChunk the tee wraps. */
-type ChatStream = ReturnType<
-	typeof chat<ReturnType<typeof createAnthropicChat>, undefined, true>
->;
-
-/**
- * Assemble the chat() options for a turn. Pure + side-effect-free (no network,
- * no model call) so the wiring — cached system prompt + the tool registry — is
- * unit-testable without hitting the LLM.
- *
- * The orchestrator instructions are the CACHED system block: byte-stable across
- * turns, so `cache_control: ephemeral` makes them a prompt-cache hit. It must
- * stay stateless — that's what is cached.
- *
- * `workspaceContext` (the current sessions — session-awareness for replay / teach
- * / look) is a SECOND system block placed AFTER the orchestrator. The cache
- * breakpoint is ON the orchestrator, so the cached prefix is exactly the
- * orchestrator; this dynamic block sits past the breakpoint and is never cached —
- * a small fresh suffix each turn. So the orchestrator keeps hitting even as the
- * session changes; the two don't thrash. The handler computes the block (a DB
- * read) and passes it; `buildChatOptions` stays pure for the unit wiring test.
- *
- * `abortController` (when given) is threaded into the agentic loop so a cancelled
- * stream — the client calling useChat's `stop()`, or simply disconnecting —
- * aborts the in-flight Anthropic call instead of letting the loop run (and bill)
- * to completion. The SAME controller is passed to `toServerSentEventsResponse`,
- * whose stream `cancel()` fires `abortController.abort()`.
- */
-export function buildChatOptions(
-	messages: ChatMessages,
-	abortController?: AbortController,
-	workspaceContext?: string | null,
-): ChatOptions {
-	const systemPrompts: Array<{
-		content: string;
-		metadata?: { cache_control: { type: "ephemeral" } };
-	}> = [
-		{
-			content: getOrchestratorInstructions(),
-			metadata: { cache_control: { type: "ephemeral" } },
-		},
-	];
-	// A second, UNCACHED block past the cache breakpoint (see above).
-	if (workspaceContext != null) {
-		systemPrompts.push({ content: workspaceContext });
-	}
-	return {
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		// Explicit output budget — provider params ride in modelOptions; the
-		// anthropic adapter reads `modelOptions?.max_tokens ?? 1024`, and 1024
-		// truncates real turns mid-tool-call / mid-narrative (see src/llm.ts).
-		// A truncated stream severs the client's background result drain, which
-		// is what parked tool chips on an eternal spinner (DAT-436).
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-		// Explicit loop budget — the SDK's silent default is maxIterations(5),
-		// which stops a multi-tool turn mid-task with no error (see src/llm.ts).
-		agentLoopStrategy: maxIterations(AGENT_LOOP_MAX_ITERATIONS),
-		systemPrompts,
-		messages,
-		tools: [...tools],
-		abortController,
-	};
-}
 
 /** The new user turn to persist — the last incoming message, when it's a
  * UIMessage authored by the user. The client uploads its whole list, but only
@@ -164,34 +81,6 @@ function refsRow(body: string): UIMessage {
 	};
 }
 
-/** Forward the model stream to the client while accumulating the assistant
- * turn(s) in a StreamProcessor, then persist them when the stream drains — so a
- * reload right after a reply restores it. Best-effort persist: a failure is
- * logged, never surfaced (the turn already streamed); the `finally` also captures
- * whatever the server produced before a mid-stream abort (a partial turn), for
- * partial recovery — the client's own copy stays authoritative until next reload. */
-async function* teeAndPersist(stream: ChatStream, conversationId: string) {
-	const processor = new StreamProcessor();
-	try {
-		for await (const chunk of stream) {
-			processor.processChunk(chunk);
-			yield chunk;
-		}
-	} finally {
-		try {
-			const produced = processor.getMessages();
-			if (produced.length > 0) {
-				await appendMessages(
-					conversationId,
-					produced.map((message) => ({ message })),
-				);
-			}
-		} catch (err) {
-			console.error("[chat] failed to persist the assistant turn:", err);
-		}
-	}
-}
-
 export const Route = createFileRoute("/api/chat")({
 	server: {
 		handlers: {
@@ -208,10 +97,8 @@ export const Route = createFileRoute("/api/chat")({
 
 				// Reconstruct the model's view from cockpit_db (server-owned): persist
 				// the new user turn (+ any model-only refs), reload the full transcript,
-				// and bound it for the model — EXCEPT on a tool-approval continuation,
-				// which has no trailing user turn (see below). Degradable: if cockpit_db
-				// is unavailable, serve the client-sent messages unpersisted rather than
-				// a dead chat.
+				// and bound it for the model. Degradable: if cockpit_db is unavailable,
+				// serve the client-sent messages unpersisted rather than a dead chat.
 				let modelMessages: ChatMessages = messages;
 				let persistTo: string | null = null;
 				try {
@@ -229,20 +116,13 @@ export const Route = createFileRoute("/api/chat")({
 						entries.push({ message: refsRow(refs), modelOnly: true });
 					}
 					if (entries.length > 0) await appendMessages(threadId, entries);
-					// A fresh user turn → feed the model the BOUNDED server-owned
-					// transcript (DAT-462). A needsApproval CONTINUATION (the user
-					// approved a teach/select/replay/… gate) has NO trailing user turn:
-					// the client re-sends the assistant tool-call now carrying the
-					// approval. The server reload would end on that persisted assistant
-					// tool-call (teed BEFORE approval, so without the decision), which a
-					// no-prefill model (sonnet-4-6 et al.) rejects with "the conversation
-					// must end with a user message". So on a continuation, feed the model
-					// the CLIENT list — it carries the in-flight approval and ends on a
-					// tool-result/user turn. The bounding loss is one leg only (the next
-					// real user turn reloads + re-bounds); the result still tees+persists.
-					modelMessages = turn
-						? buildModelMessages(await loadModelTranscript(threadId))
-						: messages;
+					// Feed the model the BOUNDED server-owned transcript (DAT-462). Every
+					// POST now ends on a user turn (the gate that produced trailing
+					// assistant-tool-call continuations is gone), so the reload always
+					// ends on a user message — what a no-prefill model requires.
+					modelMessages = buildModelMessages(
+						await loadModelTranscript(threadId),
+					);
 					persistTo = threadId;
 				} catch (err) {
 					console.error(
@@ -279,15 +159,21 @@ export const Route = createFileRoute("/api/chat")({
 					() => abortController.abort(),
 					{ once: true },
 				);
-				const stream = chat(
-					buildChatOptions(modelMessages, abortController, workspaceContext),
-				);
-				// Server-owned conversations persist the assistant turn via the tee;
-				// the unpersisted (degraded) path streams straight through.
-				return toServerSentEventsResponse(
-					persistTo ? teeAndPersist(stream, persistTo) : stream,
-					{ abortController },
-				);
+				// Run the turn and PUBLISH its chunks to the conversation's bus channel
+				// — the client renders them over its /api/chat-stream subscription, NOT
+				// from this response (Phase 2A). The shared helper tees+persists the
+				// assistant turn as it streams (skipped on the degraded path, where the
+				// bus still routes in-memory). Awaiting it holds this request open for
+				// the whole turn (bun idle-timeout disabled above); we then close with an
+				// empty body so the client's send() knows the turn dispatched.
+				await streamAgentTurnToBus(threadId, modelMessages, {
+					workspaceContext,
+					abortController,
+					persist: persistTo !== null,
+				});
+				return new Response("", {
+					headers: { "Content-Type": "text/event-stream" },
+				});
 			},
 		},
 	},

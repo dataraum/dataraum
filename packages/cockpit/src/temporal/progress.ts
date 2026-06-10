@@ -105,6 +105,36 @@ function requireTemporalConfig(): { host: string; namespace: string } {
 	return { host: config.temporalHost, namespace: config.temporalNamespace };
 }
 
+/**
+ * A lazily-created, process-SHARED Temporal client. The connection is long-lived
+ * (a gRPC channel that reconnects internally), so opening + closing one per call
+ * — which the progress poll AND the completion watcher do every couple of seconds
+ * per run — was pure churn. Cache the connect PROMISE so concurrent first-callers
+ * share one connect; reset it only if the connect itself fails, so the next call
+ * retries rather than reusing a rejected promise.
+ */
+let temporalClientPromise: Promise<Client> | null = null;
+
+function getTemporalClient(): Promise<Client> {
+	if (!temporalClientPromise) {
+		const { host, namespace } = requireTemporalConfig();
+		temporalClientPromise = Connection.connect({ address: host })
+			.then((connection) => new Client({ connection, namespace }))
+			.catch((err) => {
+				temporalClientPromise = null;
+				throw err;
+			});
+	}
+	return temporalClientPromise;
+}
+
+/** Drop the shared Temporal client so the next call reconnects. Primarily for
+ * tests (the module-level cache otherwise leaks across cases); also a hook if a
+ * forced reconnect is ever needed. */
+export function resetTemporalClient(): void {
+	temporalClientPromise = null;
+}
+
 /** True when the snapshot's phase OR the describe() status marks the run done. */
 export function isProgressDone(phase: string, status: string): boolean {
 	return phase === PROGRESS_DONE_PHASE || TERMINAL_STATUSES.has(status);
@@ -144,55 +174,48 @@ export function terminalRunStatus(
 export async function getWorkflowProgress(
 	input: WorkflowProgressInput,
 ): Promise<WorkflowProgress> {
-	const { host, namespace } = requireTemporalConfig();
+	const client = await getTemporalClient();
+	const handle = client.workflow.getHandle(input.workflow_id, input.run_id);
+	const description = await handle.describe();
+	const status = description.status.name;
 
-	const connection = await Connection.connect({ address: host });
+	let snapshot: ProgressSnapshot | null = null;
 	try {
-		const client = new Client({ connection, namespace });
-		const handle = client.workflow.getHandle(input.workflow_id, input.run_id);
-		const description = await handle.describe();
-		const status = description.status.name;
-
-		let snapshot: ProgressSnapshot | null = null;
-		try {
-			snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
-		} catch (err) {
-			// A workflow with no get_progress handler (none today; kept for
-			// forward-compat — all three parent workflows serve the query) raises
-			// WorkflowQueryFailedError — degrade to describe()-only. Match on the
-			// error name to avoid coupling to the SDK's class export.
-			if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {
-				throw err;
-			}
+		snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
+	} catch (err) {
+		// A workflow with no get_progress handler (none today; kept for
+		// forward-compat — all three parent workflows serve the query) raises
+		// WorkflowQueryFailedError — degrade to describe()-only. Match on the
+		// error name to avoid coupling to the SDK's class export.
+		if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {
+			throw err;
 		}
-
-		if (!snapshot) {
-			// describe()-only: no phase detail, but a real status + done signal. A
-			// COMPLETED run reads as the terminal "done" phase the agent watches for.
-			return {
-				phase:
-					status === "COMPLETED" ? PROGRESS_DONE_PHASE : status.toLowerCase(),
-				tables_total: 0,
-				tables_completed: 0,
-				tables: [],
-				failure: null,
-				status,
-				done: TERMINAL_STATUSES.has(status),
-			};
-		}
-
-		return {
-			phase: snapshot.phase,
-			tables_total: snapshot.tables_total,
-			tables_completed: snapshot.tables_completed,
-			tables: await resolveTableNames(snapshot.tables ?? []),
-			failure: snapshot.failure ?? null,
-			status,
-			done: isProgressDone(snapshot.phase, status),
-		};
-	} finally {
-		await connection.close();
 	}
+
+	if (!snapshot) {
+		// describe()-only: no phase detail, but a real status + done signal. A
+		// COMPLETED run reads as the terminal "done" phase the agent watches for.
+		return {
+			phase:
+				status === "COMPLETED" ? PROGRESS_DONE_PHASE : status.toLowerCase(),
+			tables_total: 0,
+			tables_completed: 0,
+			tables: [],
+			failure: null,
+			status,
+			done: TERMINAL_STATUSES.has(status),
+		};
+	}
+
+	return {
+		phase: snapshot.phase,
+		tables_total: snapshot.tables_total,
+		tables_completed: snapshot.tables_completed,
+		tables: await resolveTableNames(snapshot.tables ?? []),
+		failure: snapshot.failure ?? null,
+		status,
+		done: isProgressDone(snapshot.phase, status),
+	};
 }
 
 /** Request-body schema for `POST /api/workflow-progress` — the API route

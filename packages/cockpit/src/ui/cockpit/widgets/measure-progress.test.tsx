@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("MeasureProgressWidget (DAT-352)", () => {
-	it("keys the poll on the precise (workflowId, runId) and stops on done", () => {
+	it("seeds on the precise (workflowId, runId) key and does NOT poll", () => {
 		h.queryResult = {
 			data: {
 				phase: "import",
@@ -74,12 +74,9 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 			"addsource-ws-src",
 			"run-1",
 		]);
-		// refetchInterval polls while not done, returns false once done.
-		const refetch = h.lastOptions?.refetchInterval as (q: {
-			state: { data?: { done: boolean } };
-		}) => number | false;
-		expect(refetch({ state: { data: { done: false } } })).toBeGreaterThan(0);
-		expect(refetch({ state: { data: { done: true } } })).toBe(false);
+		// No polling — the seed fetch is one-shot; live updates arrive via the
+		// watcher's pushed CUSTOM events written to this same key (Phase 2A.3).
+		expect(h.lastOptions?.refetchInterval).toBe(false);
 	});
 
 	it("shows a starting state before the first snapshot lands", () => {

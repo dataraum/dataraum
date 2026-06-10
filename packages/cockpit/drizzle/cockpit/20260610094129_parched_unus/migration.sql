@@ -1,0 +1,1 @@
+ALTER TABLE "session_runs" ADD COLUMN "completion_narrated_at" timestamp;

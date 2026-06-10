@@ -108,17 +108,6 @@ describe("toolChipStatus (DAT-436)", () => {
 		expect(status.kind).toBe("error");
 	});
 
-	it("maps a denied approval to denied (terminal — the tool never runs)", () => {
-		expect(
-			toolChipStatus(
-				part({
-					state: "approval-responded",
-					approval: { id: "a1", needsApproval: true, approved: false },
-				}),
-			),
-		).toEqual({ kind: "denied" });
-	});
-
 	it("spins while a call is genuinely in flight (current turn, stream loading, no output)", () => {
 		for (const state of [
 			"awaiting-input",
@@ -165,50 +154,6 @@ describe("toolChipStatus (DAT-436)", () => {
 		});
 		expect(status.kind).toBe("error");
 		expect((status as { message: string }).message).toMatch(/didn't finish/);
-	});
-
-	it("never orphans a still-answerable approval request", () => {
-		// Approve/Deny buttons stay live across turns — awaiting the user is not
-		// dead, even when later user messages exist.
-		expect(
-			toolChipStatus(
-				part({
-					state: "approval-requested",
-					approval: { id: "a1", needsApproval: true },
-				}),
-				{ conversationMovedOn: true },
-			),
-		).toEqual({ kind: "running" });
-	});
-
-	it("never orphans a pending approval on an idle stream (idle BY DESIGN while awaiting the user)", () => {
-		// The SDK pauses the loop for needsApproval tools — the stream is idle
-		// while the Approve/Deny buttons wait. The approval-requested carve-out
-		// must hold for streamIdle exactly as for conversationMovedOn.
-		expect(
-			toolChipStatus(
-				part({
-					state: "approval-requested",
-					approval: { id: "a1", needsApproval: true },
-				}),
-				{ streamIdle: true },
-			),
-		).toEqual({ kind: "running" });
-	});
-
-	it("orphans an approved-but-severed call (approval-responded is NOT carved out)", () => {
-		// The user approved, the post-approval stream was severed before the
-		// result landed, and the rail sits idle: denied already short-circuited
-		// to `denied`, so an output-less approval-responded part on an idle
-		// stream is a dead call — error, not an eternal spinner.
-		const status = toolChipStatus(
-			part({
-				state: "approval-responded",
-				approval: { id: "a1", needsApproval: true, approved: true },
-			}),
-			{ streamIdle: true },
-		);
-		expect(status.kind).toBe("error");
 	});
 });
 

@@ -1,12 +1,14 @@
-// Wiring test for the chat route's buildChatOptions (DAT-353). Pure: asserts the
-// bug-prone glue — the system prompt is sent as a cached block and the full tool
-// registry is attached — without calling the model or touching the network.
-// The live agentic loop is acceptance-tested via the compose smoke (real LLM).
+// Wiring test for buildChatOptions (DAT-353) — now in lib/agent-turn, shared by
+// the chat route (user sends) and the completion watcher (Phase 2A). Pure:
+// asserts the bug-prone glue — the system prompt is sent as a cached block and
+// the full tool registry is attached — without calling the model or touching the
+// network. The live agentic loop is acceptance-tested via the compose smoke.
 //
-// Importing the route transitively pulls config.ts + the Postgres metadata
-// client (via the tool registry). We MOCK both so the test needs no real env and
-// opens no connection — and sets NO process.env, which would leak across files
-// in a reused worker and un-skip the gated integration tests.
+// Importing agent-turn transitively pulls config.ts + the Postgres metadata
+// client (via the tool registry) + the cockpit_db conversations seam. We MOCK
+// them so the test needs no real env and opens no connection — and sets NO
+// process.env, which would leak across files in a reused worker and un-skip the
+// gated integration tests.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -26,8 +28,8 @@ vi.mock("#/db/cockpit/conversations", () => ({
 	loadModelTranscript: async () => [],
 }));
 
+import { buildChatOptions } from "../../lib/agent-turn";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS } from "../../llm";
-import { buildChatOptions } from "./chat";
 
 /** Narrow the SDK's `SystemPrompt` union (string | {content, metadata?}) to the
  * object form buildChatOptions always emits — the return type is pinned to
@@ -136,7 +138,6 @@ describe("chat route wiring (DAT-353)", () => {
 				"look_metric",
 				"why_metric",
 				"replay",
-				"workflow_status",
 				"upload",
 			]),
 		);

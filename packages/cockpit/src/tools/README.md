@@ -24,10 +24,10 @@ chat.ts ──registry──→ tools/<name>.ts ──┬──→ src/db/metada
 ```
 
 The TanStack AI SDK owns the agentic loop: `chat()` runs the model, executes
-the `.server(...)` handler of each tool the model calls, pauses for user
-confirmation on `needsApproval` tools, feeds results back, and iterates.
-React components never reach across to the engine directly — tools are the only
-layer that touches engine state.
+the `.server(...)` handler of each tool the model calls directly (there is no
+approval gate — the user's instruction is the consent), feeds results back, and
+iterates. React components never reach across to the engine directly — tools are
+the only layer that touches engine state.
 
 The interactive DuckDB read verbs are **cockpit-owned** (DAT-367) — there is no
 HTTP round-trip to the engine for them. `run_sql` / `probe` are thin LLM-facing
@@ -55,14 +55,13 @@ export const fooTool = toolDefinition({
 	description: "What the model sees.",
 	inputSchema: z.object({ ... }),
 	outputSchema: z.array(FooRow),
-	// needsApproval: true,  // write/compute tools only — pauses for user OK
 }).server((input) => foo(input));
 ```
 
-- **Reads** (`list_*`) run unattended — no `needsApproval`.
-- **Writes / compute** (`teach`, `replay`) set `needsApproval: true`; the SDK
-  pauses and the cockpit answers via `addToolApprovalResponse` before `.server`
-  runs.
+- **Reads** (`list_*`) and **writes / compute** (`teach`, `replay`) alike run
+  directly when the agent calls them — there is no approval gate. The user's
+  natural-language instruction is the consent; `.server` runs as soon as the
+  model invokes the tool.
 - The DB-bound logic lives in a plain exported function (`listSources()`,
   `teach()`, …) so it can be tested directly; `.server(...)` just adapts it to
   the SDK.

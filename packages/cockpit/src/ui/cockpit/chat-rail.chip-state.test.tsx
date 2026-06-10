@@ -24,6 +24,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 // Mock useChat at the SDK boundary — the test controls the message list and
 // asserts OUR chip rendering (same harness shape as chat-rail.test.tsx).
@@ -33,7 +34,6 @@ const h = vi.hoisted(() => ({
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
 	stop: vi.fn(),
-	addToolApprovalResponse: vi.fn(),
 }));
 
 vi.mock("@tanstack/ai-react", () => ({
@@ -43,7 +43,6 @@ vi.mock("@tanstack/ai-react", () => ({
 		error: h.error,
 		sendMessage: h.sendMessage,
 		stop: h.stop,
-		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));
@@ -51,9 +50,11 @@ vi.mock("@tanstack/ai-react", () => ({
 function renderRail() {
 	return render(
 		<MantineProvider env="test">
-			<CockpitProvider>
-				<ChatRail />
-			</CockpitProvider>
+			<TestQueryProvider>
+				<CockpitProvider>
+					<ChatRail />
+				</CockpitProvider>
+			</TestQueryProvider>
 		</MantineProvider>,
 	);
 }
@@ -206,57 +207,5 @@ describe("ChatRail chip terminal states (DAT-436)", () => {
 		renderRail();
 		expect(chipHasLoader("tc-live")).toBe(true);
 		expect(screen.queryByTestId("tool-error-tc-live")).toBeNull();
-	});
-
-	it("a denied approval still reads denied (not failed, not spinning)", () => {
-		h.messages = [
-			{ id: "u1", role: "user", parts: [{ type: "text", content: "select" }] },
-			{
-				id: "a1",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-call",
-						id: "tc-denied",
-						name: "select",
-						state: "approval-responded",
-						arguments: "{}",
-						approval: { id: "ap-1", needsApproval: true, approved: false },
-					},
-				],
-			},
-			{ id: "u2", role: "user", parts: [{ type: "text", content: "later" }] },
-		];
-		renderRail();
-		expect(chipHasLoader("tc-denied")).toBe(false);
-		expect(screen.getByTestId("tool-denied-tc-denied").textContent).toBe(
-			"denied",
-		);
-		expect(screen.queryByTestId("tool-error-tc-denied")).toBeNull();
-	});
-
-	it("a pending approval request keeps its buttons across turns (never orphaned)", () => {
-		h.messages = [
-			{ id: "u1", role: "user", parts: [{ type: "text", content: "select" }] },
-			{
-				id: "a1",
-				role: "assistant",
-				parts: [
-					{
-						type: "tool-call",
-						id: "tc-pending",
-						name: "select",
-						state: "approval-requested",
-						arguments: "{}",
-						approval: { id: "ap-2", needsApproval: true },
-					},
-				],
-			},
-			// The user typed instead of approving — the request stays answerable.
-			{ id: "u2", role: "user", parts: [{ type: "text", content: "hmm" }] },
-		];
-		renderRail();
-		expect(screen.getByTestId("tool-approve-tc-pending")).toBeTruthy();
-		expect(screen.queryByTestId("tool-error-tc-pending")).toBeNull();
 	});
 });

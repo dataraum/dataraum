@@ -12,8 +12,8 @@
 // replay now projects the live add-source-progress widget, so its chip is
 // clickable.
 //
-// Input is lifted off the SDK part's `arguments` string (present in EVERY state,
-// including approval-requested) so a teach chip is readable at approval time —
+// Input is lifted off the SDK part's `arguments` string (present in EVERY state)
+// so a chip is readable while the call is in flight — a teach reads
 // `{type, payload}` before it runs, `{overlay_id, type}` once complete. Output
 // is the part's `output` (undefined until the call completes).
 
@@ -123,7 +123,7 @@ export function toolLabel(toolName: string, done = false): string {
  * arguments (may be undefined before they stream in); `output` is the result
  * (undefined until the call completes). Falls back to a neutral "running…" /
  * "done" string when the relevant payload isn't present yet, so a streaming or
- * approval-gated call still renders something readable.
+ * in-flight call still renders something readable.
  */
 export function toolChipSummary(
 	toolName: string,
@@ -314,8 +314,8 @@ export function toolChipSummary(
 			// The tool returns as soon as the workflow STARTS — the run keeps going
 			// (the session-progress widget tracks it), so the settled summary still
 			// reads as in-flight analysis. Count from the INPUT selection (present
-			// from approval time); ids (workflow/run/session uuids) never reach the
-			// chip.
+			// while the call is in flight); ids (workflow/run/session uuids) never
+			// reach the chip.
 			const args = input as { table_ids?: unknown } | undefined;
 			const count = Array.isArray(args?.table_ids)
 				? args.table_ids.length
@@ -366,9 +366,10 @@ export function toolChipSummary(
 }
 
 /**
- * The teach chip is readable at every state (DAT-354): at approval time it
- * shows the proposed `{type, payload}` lifted off `arguments`; once complete it
- * shows `{overlay_id, type}`. Display-only — teach maps to no canvas member.
+ * The teach chip is readable at every state (DAT-354): while the call is in
+ * flight it shows the proposed `{type, payload}` lifted off `arguments`; once
+ * complete it shows `{overlay_id, type}`. Display-only — teach maps to no canvas
+ * member.
  */
 export function teachChipSummary(input: unknown, output: unknown): string {
 	const result = output as TeachResult | { error?: string } | undefined;
@@ -390,8 +391,8 @@ export function teachChipSummary(input: unknown, output: unknown): string {
 }
 
 /**
- * The teach_validation chip (DAT-441). At approval time it shows the proposed
- * check ("declare <id> (<check_type>)" off `arguments`); once complete it flips
+ * The teach_validation chip (DAT-441). While the call is in flight it shows the
+ * proposed check ("declare <id> (<check_type>)" off `arguments`); once complete it flips
  * to "declared <id>" or — when the id shadows a shipped spec — "overrode <id>
  * (was <shadowed name>)", making the upsert-replace VISIBLE in the rail, never
  * silent. Display-only — like teach it maps to no canvas member (the outcome
@@ -431,8 +432,8 @@ export function teachValidationChipSummary(
 }
 
 /**
- * The teach_cycle chip (DAT-482). Mirrors teach_validation: at approval it shows
- * "declare <name>" off `arguments`; once complete it flips to "declared <name>"
+ * The teach_cycle chip (DAT-482). Mirrors teach_validation: while in flight it
+ * shows "declare <name>" off `arguments`; once complete it flips to "declared <name>"
  * or, for a shadowed shipped cycle, "overrode <name>". No "(was …)" — a cycle is
  * keyed BY name, so an override carries the same name (the shadowed cycle's name
  * equals the new one); the override flag alone is the news. Unlike teach_metric
@@ -452,8 +453,8 @@ export function teachCycleChipSummary(input: unknown, output: unknown): string {
 }
 
 /**
- * The teach_metric chip (DAT-482). Mirrors teach_validation: "declare <id>" at
- * approval; "declared <id>" or "overrode <id> (was <shadowed name>)" once
+ * The teach_metric chip (DAT-482). Mirrors teach_validation: "declare <id>"
+ * while in flight; "declared <id>" or "overrode <id> (was <shadowed name>)" once
  * complete — the shipped metric's human NAME differs from its graph_id key, so
  * "(was EBITDA)" names what an override of `ebitda` replaces. Unlike the other
  * teach chips, an override ALSO drives the canvas (the metric-shadow widget

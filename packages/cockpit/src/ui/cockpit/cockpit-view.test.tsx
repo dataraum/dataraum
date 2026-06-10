@@ -6,6 +6,7 @@ import { type ReactNode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CockpitProvider, useCockpit } from "#/ui/cockpit/cockpit-state";
 import { CockpitView } from "#/ui/cockpit/cockpit-view";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 
 // Mock useChat at the SDK boundary; the test controls the message list so we can
 // exercise BOTH cockpit modes (cold-start landing vs the working split).
@@ -15,7 +16,6 @@ const h = vi.hoisted(() => ({
 	error: undefined as Error | undefined,
 	sendMessage: vi.fn(),
 	stop: vi.fn(),
-	addToolApprovalResponse: vi.fn(),
 }));
 
 vi.mock("@tanstack/ai-react", () => ({
@@ -25,7 +25,6 @@ vi.mock("@tanstack/ai-react", () => ({
 		error: h.error,
 		sendMessage: h.sendMessage,
 		stop: h.stop,
-		addToolApprovalResponse: h.addToolApprovalResponse,
 	}),
 	fetchServerSentEvents: () => ({}),
 }));
@@ -39,10 +38,12 @@ const aMessage = {
 function renderView(extra?: ReactNode) {
 	render(
 		<MantineProvider env="test">
-			<CockpitProvider>
-				{extra}
-				<CockpitView />
-			</CockpitProvider>
+			<TestQueryProvider>
+				<CockpitProvider>
+					{extra}
+					<CockpitView />
+				</CockpitProvider>
+			</TestQueryProvider>
 		</MantineProvider>,
 	);
 }

@@ -52,11 +52,10 @@
 //     stop() with no follow-up message is exactly this cell).
 //
 // So "done" is NOT `state === "complete"`: a chip is terminal when the part
-// reached "complete", when it carries ANY output (success or error), when its
-// approval was denied, or when the conversation moved past it / the stream went
-// idle without delivering its result. The mapping below recognizes all of them;
-// the rail renders `error` as an explicit red state — an errored tool call must
-// never spin forever.
+// reached "complete", when it carries ANY output (success or error), or when the
+// conversation moved past it / the stream went idle without delivering its
+// result. The mapping below recognizes all of them; the rail renders `error` as
+// an explicit red state — an errored tool call must never spin forever.
 
 /** The untyped tool-call part shape the rail narrows off `type === "tool-call"`
  * (tools register server-side, so useChat sees them untyped). `arguments` is
@@ -66,17 +65,15 @@ export interface ToolCallPartLike {
 	id: string;
 	name: string;
 	state: string;
-	approval?: { id: string; needsApproval: boolean; approved?: boolean };
 	arguments?: unknown;
 	output?: unknown;
 }
 
-/** What a chip renders: spinner, terminal success, denied approval, or an
- * explicit error state (with the message for the tooltip/details). */
+/** What a chip renders: spinner, terminal success, or an explicit error state
+ * (with the message for the tooltip/details). */
 export type ToolChipStatus =
 	| { kind: "running" }
 	| { kind: "complete" }
-	| { kind: "denied" }
 	| { kind: "error"; message: string };
 
 /** The error-string prefix of the SDK's PLAIN-STRING errored-output shape
@@ -133,8 +130,8 @@ function outputError(output: unknown): string | null {
  * part with the stream idle is equally dead — this is the stop-then-idle cell,
  * where the user hit stop() and never sent another message.
  *
- * Precedence: denied → error (result error / error-shaped output) → complete
- * (the "complete" state OR any output — terminal even if a stream hiccup never
+ * Precedence: error (result error / error-shaped output) → complete (the
+ * "complete" state OR any output — terminal even if a stream hiccup never
  * flipped the state) → interrupted-orphan error → running.
  */
 export function toolChipStatus(
@@ -145,10 +142,6 @@ export function toolChipStatus(
 		streamIdle?: boolean;
 	} = {},
 ): ToolChipStatus {
-	// A denied approval is terminal: the tool never runs, so the call never
-	// completes — without this the chip would spin forever.
-	if (part.approval?.approved === false) return { kind: "denied" };
-
 	// Errored execution: the SDK parks the part at "input-complete" and carries
 	// the error in the output / the correlated tool-result part — there is no
 	// error STATE to test. Check before "complete" so an error-shaped output is
@@ -169,16 +162,7 @@ export function toolChipStatus(
 	// went idle without delivering it (stop() with NO further activity — no
 	// false-failure window: isLoading covers the whole back-fill drain, so idle
 	// means no result is ever coming). It can never finish.
-	// EXCEPT a pending approval request — its Approve/Deny buttons stay live
-	// across turns (and the stream is idle BY DESIGN while the SDK awaits the
-	// user), so it is awaiting the user, not dead. "approval-responded" is
-	// deliberately NOT carved out: a denied response short-circuited to
-	// `denied` above, and an approved-but-severed call (approval given, drain
-	// cut before the result landed) is exactly the orphan this catches.
-	if (
-		(opts.conversationMovedOn || opts.streamIdle) &&
-		part.state !== "approval-requested"
-	) {
+	if (opts.conversationMovedOn || opts.streamIdle) {
 		return {
 			kind: "error",
 			message: "The call didn't finish — its run was interrupted.",
@@ -236,9 +220,7 @@ export function toolResultErrorsById(
 /**
  * The index of the LAST user message — any tool-call part rendered from an
  * earlier message belongs to a turn the conversation has moved past
- * (`conversationMovedOn` in `toolChipStatus`). Approval round-trips do NOT
- * add a user message, so a pending approval/continuation is never orphaned
- * by this; a genuinely new user turn is.
+ * (`conversationMovedOn` in `toolChipStatus`).
  */
 export function lastUserMessageIndex(
 	messages: ReadonlyArray<MessageLike>,

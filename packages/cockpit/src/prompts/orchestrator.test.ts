@@ -27,13 +27,15 @@ describe("orchestrator system prompt", () => {
 		expect(prompt).toContain("name the FILE");
 	});
 
-	// Lockstep with the one-gate select (DAT-436): approving select IS the
-	// import start — the prompt must say so, and must no longer steer the user
-	// toward the retired "Add source" button / separate trigger hop.
-	it("teaches that approving select starts the import — no button hop", () => {
+	// Lockstep with the one-step select: calling select IS the import start (no
+	// approval gate, no separate trigger) — the prompt must say so, and must no
+	// longer steer the user toward the retired "Add source" button.
+	it("teaches that calling select starts the import — no button hop", () => {
 		const prompt = getOrchestratorInstructions();
-		expect(prompt).toContain("Approving select STARTS the import");
+		expect(prompt).toContain("Calling select STARTS the import");
 		expect(prompt).not.toContain("Add source button");
 		expect(prompt).not.toContain('"Add source"');
+		// No approval gate: the prompt must not promise a confirmation step.
+		expect(prompt).not.toContain("wait for confirmation");
 	});
 });

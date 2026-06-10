@@ -1,10 +1,10 @@
 // select tool (DAT-398, DAT-422; one-gate trigger DAT-436) — the agent-tier
 // step that turns a connected source + the user's subset choice into real
-// `sources` rows AND starts the import: approving `select` is the SINGLE
-// approval that registers the source(s) and kicks off addSourceWorkflow,
-// mirroring the one-gate pattern of `replay` and `begin_session` (seed +
-// workflow.start atomically inside ONE needsApproval gate). There is no
-// separate "Add source" button or `/api/add-source` route.
+// `sources` rows AND starts the import: calling `select` is the SINGLE step
+// that registers the source(s) and kicks off addSourceWorkflow, mirroring the
+// one-step pattern of `replay` and `begin_session` (seed + workflow.start
+// atomically in ONE call). There is no separate "Add source" button or
+// `/api/add-source` route.
 //
 // This is the FIRST cockpit writer of the engine-owned `ws_<id>.sources` table.
 // Nothing upstream creates the Source row: `connect` is read-only and `frame`
@@ -16,7 +16,7 @@
 // documented policy break (the metadata client is otherwise read-only; the engine
 // owns the schema, and these onboarding writes flow through this one seam).
 //
-// Order inside the gate: the vertical PRE-FLIGHT (NoConceptsError when it
+// Order inside the call: the vertical PRE-FLIGHT (NoConceptsError when it
 // resolves to zero concepts) runs BEFORE any write, so a refused vertical
 // leaves no half-state; then the source upsert(s); then the trigger (the
 // investigation_sessions seed + the non-blocking workflow.start —
@@ -43,9 +43,9 @@
 //               forward. The user-chosen `source_name` is required here (files
 //               are content-keyed, so it is ignored for them).
 //
-// `needsApproval: true` — it mutates workspace state (creates/updates source
-// rows) AND starts a durable engine run, so the SDK pauses for the user exactly
-// like `teach`/`frame`/`replay`.
+// An acting tool: it mutates workspace state (creates/updates source rows) AND
+// starts a durable engine run, so it runs on the user's explicit instruction —
+// there is no approval gate, exactly like `teach`/`frame`/`replay`.
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
@@ -139,7 +139,7 @@ export const SelectResult = z.object({
 	recipe_tables: z
 		.array(z.object({ name: z.string(), sql: z.string() }))
 		.nullable(),
-	// The started addSourceWorkflow run (DAT-436: approving select STARTS the
+	// The started addSourceWorkflow run (DAT-436: calling select STARTS the
 	// import). workflow_id + run_id pin the precise execution the progress
 	// canvas polls; session_id is the run's seeded investigation session.
 	workflow_id: z.string(),
@@ -285,7 +285,7 @@ async function importedRecipeHash(name: string): Promise<string | null> {
 /**
  * Persist (UPSERT) the `sources` row(s) for the selected subset and advance the
  * onboarding cursor to `add_source`. Returns the selection descriptor (the SET
- * of source ids the trigger runs over) — persistence ONLY; the one-gate
+ * of source ids the trigger runs over) — persistence ONLY; the one-call
  * composition (pre-flight → persist → trigger) lives in `select`.
  *
  * `enumerate` is injected for testability; the default is the real
@@ -426,10 +426,10 @@ export async function persistSelection(
 }
 
 /**
- * The one-gate select (DAT-436): vertical pre-flight → source upsert(s) →
- * investigation_sessions seed + non-blocking workflow.start. Approving the
- * `select` tool is the single approval that starts the import — mirroring
- * `replay` / `begin_session`, which also seed + start inside their one gate.
+ * The one-call select (DAT-436): vertical pre-flight → source upsert(s) →
+ * investigation_sessions seed + non-blocking workflow.start. Calling the
+ * `select` tool is the single step that starts the import — mirroring
+ * `replay` / `begin_session`, which also seed + start in one call.
  *
  * Ordering is load-bearing: the pre-flight runs BEFORE any write so a refused
  * vertical (NoConceptsError) leaves no half-state — no source row, no orphan
@@ -472,26 +472,27 @@ export async function select(
 }
 
 /**
- * The `select` tool for the agent loop. `needsApproval: true` — it creates/
- * updates source rows (workspace state) AND starts a durable engine run, so the
- * SDK pauses for user confirmation before `.server` runs. Run it after
- * `connect` (and `frame` on a cold-start workspace); approving it IS the
+ * The `select` tool for the agent loop. An acting tool: it creates/updates
+ * source rows (workspace state) AND starts a durable engine run, so it runs on
+ * the user's explicit instruction — there is no approval gate. Run it after
+ * `connect` (and `frame` on a cold-start workspace); calling it IS the
  * add_source start.
  */
 export const selectTool = toolDefinition({
 	name: "select",
 	description:
 		"Register the data the user chose to import as workspace source(s) AND start " +
-		"the import (add_source) in one step — approving this tool kicks off the " +
+		"the import (add_source) in one step — calling this tool kicks off the " +
 		"engine run. Pass the `connect` result as `schema`. For a FILE source: each " +
 		"uploaded file becomes its own content-keyed source automatically — pass " +
 		"`file_uris` (the staged s3:// upload URIs) or `prefix` (an s3:// folder), " +
 		"or omit both for the single connected file; no `source_name` is needed. For a " +
 		"DATABASE source: pass `source_name` (lowercase, starts with a letter), `backend`, " +
 		"and optionally `table_names` (a subset of the schema's tables; all if omitted). " +
-		"Requires user approval — it writes to the workspace and starts a durable run. " +
-		"Returns the run's workflow_id + run_id; progress renders live in the canvas, " +
-		"and workflow_status with those ids reports completion.",
+		"It writes to the workspace and starts a durable run. " +
+		"Returns the run's workflow_id + run_id; the run proceeds durably in the " +
+		"background and its progress renders live in the canvas — you'll be told " +
+		"automatically when it finishes, so don't poll for status.",
 	inputSchema: z.object({
 		source_name: z
 			.string()
@@ -547,9 +548,8 @@ export const selectTool = toolDefinition({
 	// source_name / reserved prefix / unsupported backend / no matching tables /
 	// NoConceptsError) come back as data so the model fixes the input and retries.
 	// They all raise BEFORE any write, so there's no half-state. A Temporal
-	// workflow.start failure is infra → still throws (re-approval recovers).
+	// workflow.start failure is infra → still throws (re-invoking recovers).
 	outputSchema: withAgentError(SelectResult),
-	needsApproval: true,
 	// The lambda is load-bearing: .server() calls its handler as (input, context)
 	// — passing `select` bare would shove the SDK's context object into select's
 	// injectable `enumerate` test-seam parameter, clobbering its default.

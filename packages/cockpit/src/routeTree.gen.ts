@@ -15,6 +15,7 @@ import { Route as ApiWorkflowProgressRouteImport } from './routes/api/workflow-p
 import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiShippedMetricDagRouteImport } from './routes/api/shipped-metric-dag'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
+import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
@@ -51,6 +52,11 @@ const ApiShippedMetricDagRoute = ApiShippedMetricDagRouteImport.update({
 const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
   id: '/api/run-sql',
   path: '/api/run-sql',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
+  id: '/api/chat-stream',
+  path: '/api/chat-stream',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChatRoute = ApiChatRouteImport.update({
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
@@ -116,6 +123,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
@@ -133,6 +141,7 @@ export interface FileRoutesById {
   '/(app)': typeof appRouteRouteWithChildren
   '/(app)/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
@@ -150,6 +159,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings'
     | '/api/chat'
+    | '/api/chat-stream'
     | '/api/run-sql'
     | '/api/shipped-metric-dag'
     | '/api/upload'
@@ -165,6 +175,7 @@ export interface FileRouteTypes {
     | '/'
     | '/settings'
     | '/api/chat'
+    | '/api/chat-stream'
     | '/api/run-sql'
     | '/api/shipped-metric-dag'
     | '/api/upload'
@@ -181,6 +192,7 @@ export interface FileRouteTypes {
     | '/(app)'
     | '/(app)/settings'
     | '/api/chat'
+    | '/api/chat-stream'
     | '/api/run-sql'
     | '/api/shipped-metric-dag'
     | '/api/upload'
@@ -197,6 +209,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
+  ApiChatStreamRoute: typeof ApiChatStreamRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
   ApiUploadRoute: typeof ApiUploadRoute
@@ -245,6 +258,13 @@ declare module '@tanstack/react-router' {
       path: '/api/run-sql'
       fullPath: '/api/run-sql'
       preLoaderRoute: typeof ApiRunSqlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/chat-stream': {
+      id: '/api/chat-stream'
+      path: '/api/chat-stream'
+      fullPath: '/api/chat-stream'
+      preLoaderRoute: typeof ApiChatStreamRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/chat': {
@@ -345,6 +365,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
+  ApiChatStreamRoute: ApiChatStreamRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
   ApiUploadRoute: ApiUploadRoute,

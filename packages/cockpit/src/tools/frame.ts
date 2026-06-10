@@ -7,7 +7,7 @@
 // the declared model as `config_overlay` rows — the same seam `teach` writes
 // through (Drizzle metadata client).
 //
-// `frame` frames the WHOLE model in ONE call / one approval: the business
+// `frame` frames the WHOLE model in ONE call: the business
 // `concepts` AND the executable knowledge over them — `validations` (DAT-469),
 // `cycles` (DAT-470), and `metrics` (DAT-471). Each family runs through the
 // shared frame-a-family core (frame-family.ts) two ways:
@@ -20,8 +20,8 @@
 // Either way each member is persisted as a vertical-tagged overlay row and
 // returned for the ModelFrame widget to render.
 //
-// `needsApproval: true` — frame mutates the workspace (writes overlay rows), so
-// the SDK pauses for the user to confirm before `.server` runs, exactly like
+// An acting tool: frame mutates the workspace (writes overlay rows), so it runs
+// on the user's explicit instruction — there is no approval gate, exactly like
 // `teach`/`replay`.
 
 import { toolDefinition } from "@tanstack/ai";
@@ -375,7 +375,7 @@ export async function induceMetrics(
  * executable knowledge over them (validations + cycles + metric DAGs) — then
  * write each member as a `config_overlay` row via the shared teach seam. Each
  * family independently induces (from the schema) or declares verbatim (a
- * user-edited set), so one `frame` call / one approval frames the model.
+ * user-edited set), so one `frame` call frames the model.
  * Validations, cycles, and metrics all induce OVER the same-call concepts.
  * Returns the written concepts + validations + cycles + metrics (with overlay
  * ids) for the ModelFrame widget.
@@ -460,13 +460,12 @@ export async function frame(
 }
 
 /**
- * The `frame` tool for the agent loop. `needsApproval: true` — it writes
- * `concept` + `validation` + `cycle` + `metric` overlay rows, so the user
- * confirms before the write runs. Input is the connect schema (to induce from)
- * plus an optional user-edited concept and/or validation and/or cycle and/or
- * metric set (the accept/edit
- * round-trip). Output is the written model, projected to the ModelFrame canvas
- * widget.
+ * The `frame` tool for the agent loop. An acting tool: it writes
+ * `concept` + `validation` + `cycle` + `metric` overlay rows, so it runs on the
+ * user's explicit instruction — there is no approval gate. Input is the connect
+ * schema (to induce from) plus an optional user-edited concept and/or validation
+ * and/or cycle and/or metric set (the accept/edit round-trip). Output is the
+ * written model, projected to the ModelFrame canvas widget.
  */
 export const frameTool = toolDefinition({
 	name: "frame",
@@ -483,7 +482,7 @@ export const frameTool = toolDefinition({
 		"cycles, and metrics induce over the framed concepts. Metric leaves are CONCEPTS " +
 		"(grounded to columns later, in the semantic phase), not column names. If " +
 		"`list_verticals` shows a builtin that already fits (e.g. finance), DON'T frame " +
-		"— `select` that vertical directly. Requires user approval — it writes to the " +
+		"— `select` that vertical directly. It writes to the " +
 		"workspace. Run after `connect` and before `add_source`; pass the SAME " +
 		"`vertical_name` to `select`.",
 	inputSchema: z.object({
@@ -530,7 +529,6 @@ export const frameTool = toolDefinition({
 	// returned no concepts is the agent's to fix (rephrase / pick a vertical), so
 	// it's returned as data, not an opaque throw (consistency pass 2b).
 	outputSchema: withAgentError(FrameResult),
-	needsApproval: true,
 }).server((input, ctx) =>
 	catchActionable(() => frame(input, ctx?.abortSignal)),
 );

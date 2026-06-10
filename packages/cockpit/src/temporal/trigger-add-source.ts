@@ -1,11 +1,11 @@
-// add_source TRIGGER (DAT-352, folded into the select approval gate by DAT-436)
+// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436)
 // — seeds the run's investigation_sessions row and starts the engine's
 // addSourceWorkflow for the source set `select` just persisted.
 //
-// Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): approving
-// the `select` tool is the single gate that registers the source(s) AND starts
-// the import — there is no separate "Add source" button or `/api/add-source`
-// route. select runs the vertical pre-flight (NoConceptsError) BEFORE any write,
+// Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): calling
+// the `select` tool registers the source(s) AND starts the import in one step —
+// there is no separate "Add source" button or `/api/add-source` route, and no
+// approval hop. select runs the vertical pre-flight (NoConceptsError) BEFORE any write,
 // so by the time this trigger runs the vertical is known to resolve to ≥1
 // concept; this function does not re-check it.
 //
@@ -136,8 +136,8 @@ export async function triggerAddSource(
 	// down / misconfigured), the row stays behind as an orphan — a session no
 	// workflow ever runs against. That is accepted: it is FK-satisfied and
 	// harmless (nothing joins to it until a run links tables), and the next
-	// approval seeds a FRESH session_id rather than reusing it. No cleanup
-	// machinery — the select call surfaces the error and a re-approval recovers.
+	// select call seeds a FRESH session_id rather than reusing it. No cleanup
+	// machinery — the select call surfaces the error and re-calling it recovers.
 	await metadataDb.insert(investigationSessionsWrite).values({
 		sessionId,
 		intent: SEED_INTENT,
@@ -149,12 +149,12 @@ export async function triggerAddSource(
 
 	// Correlation breadcrumb for the orphan seam above: logged BEFORE the start
 	// (not in a catch) so ANY failure mode — a thrown start, a crash, a hang —
-	// leaves the seeded session_id in the log next to its approval. An
+	// leaves the seeded session_id in the log next to its select call. An
 	// investigation_sessions row with no run is then traceable to this line.
 	console.warn(
 		`[trigger-add-source] seeded investigation_session ${sessionId} ` +
 			`(sources: ${input.source_ids.join(", ")}) — starting addSourceWorkflow; ` +
-			"if no run follows, this row is an orphan from a failed approval",
+			"if no run follows, this row is an orphan from a failed select",
 	);
 
 	// The active workspace, from the cockpit_db registry (DAT-461) rather than the
@@ -186,13 +186,13 @@ export async function triggerAddSource(
 			// iterations under one id — same policy the replay tool uses.
 			//
 			// DUPLICATE RUNS ARE BY DESIGN (decision pinned in the PR #231 review):
-			// every select approval mints a fresh session_id, so a re-called select
+			// every select call mints a fresh session_id, so a re-called select
 			// starts an INDEPENDENT full run. Under the versioned-snapshot model
 			// (DAT-412) runs coexist — each writes its own run_id-stamped metadata,
-			// none clobbers another — so there is nothing to guard. The human gate
-			// IS the approval card: a re-called select requires a visible second
-			// approval the user can deny. Deliberately NO idempotency key and NO
-			// in-flight check here.
+			// none clobbers another — so there is nothing to guard. The human control
+			// is the explicit select request itself: a re-called select is a
+			// deliberate user action (they re-issued it), not an accidental retry.
+			// Deliberately NO idempotency key and NO in-flight check here.
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 

@@ -141,9 +141,9 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * The `teach_metric` tool for the agent loop. `needsApproval: true` — it mutates
- * the workspace (writes an overlay row that the next run composes + executes), so
- * the SDK pauses for the user to confirm before `.server` runs.
+ * The `teach_metric` tool for the agent loop. An acting tool: it mutates the
+ * workspace (writes an overlay row that the next run composes + executes), so it
+ * runs on the user's explicit instruction — there is no approval gate.
  *
  * Data-informed: the agent declares the graph AGAINST the workspace's
  * tables/columns it reads from `list_tables` / `look_table` (extract steps
@@ -157,7 +157,7 @@ export const teachMetricTool = toolDefinition({
 	description:
 		"Declare a NEW metric (a computation graph over the data — e.g. EBITDA, " +
 		"DSO, current ratio), or OVERRIDE a shipped one, for the session's " +
-		"vertical. Writes a config_overlay row (requires user approval); the next " +
+		"vertical. Writes a config_overlay row; the next " +
 		"operating_model run composes and executes it, and look_metric shows the " +
 		"outcome (declared / grounded / executed, or the reason it could not " +
 		"ground). The metric is a DAG of steps: 'extract' steps pull values from " +
@@ -187,5 +187,4 @@ export const teachMetricTool = toolDefinition({
 			})
 			.nullable(),
 	}),
-	needsApproval: true,
 }).server((input) => teachMetric(input));

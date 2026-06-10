@@ -349,7 +349,7 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
-	it("maps select to the add-source-progress canvas (DAT-436: approving select starts the import)", () => {
+	it("maps select to the add-source-progress canvas (DAT-436: calling select starts the import)", () => {
 		const selection = {
 			source_ids: ["s1"],
 			name: "orders.csv",
@@ -557,7 +557,7 @@ describe("canvasFromMessages", () => {
 	it("does not let a trailing non-canvas tool shadow the last canvas result", () => {
 		// connect (maps to schema-preview) then list_verticals (no canvas projector).
 		// The canvas must STAY on the connect result, not collapse to null because a
-		// non-canvas tool completed last. This is the substrate of the denied-select
+		// non-canvas tool completed last. This is the substrate of the refused-select
 		// stuck-spinner fix: that turn ends on a non-canvas list_verticals, yet the
 		// canvas must still reconcile to a real result instead of spinning forever.
 		const messages = [

@@ -8,16 +8,19 @@
 // (`findGraphsByKeys` / `getSearchVocabulary`, keyed on `config.dataraumWorkspaceId`
 // — the dashed-UUID workspace VALUE, NOT the `ws_` schema name).
 //
-// The tool returns a METADATA PROJECTION, never raw SQL bodies: snippet_id +
-// the concept keys (standard_field / statement / aggregation) + the validated
-// column expressions (column_mappings) + dependencies (input_fields) — enough to
-// MATCH a snippet by metadata and reconstruct its SQL grounded in the validated
-// column expressions, while keeping the sub-agent's context lean. The reuse is
-// then CLASSIFIED (not substituted) by `classifyComponents` (query.ts): when the
-// model declares reuse (sets snippet_id) and its SQL matches the stored one
-// (modulo the table qualifier), the component is tagged `exact_reuse` — but the
-// model's executable (qualified) SQL is kept, since the stored bare-name form
-// would not resolve in the cockpit's lake.<layer>.<name> execution context.
+// The tool returns the concept-key metadata PLUS the snippet's validated `sql`
+// body (DAT-494): snippet_id + the concept keys (standard_field / statement /
+// aggregation) + the validated `sql` (the canonical, execution-tested computation)
+// + the column expressions (column_mappings) + dependencies (input_fields). The
+// model REPRODUCES the validated `sql` faithfully rather than reconstructing from
+// the looser, graph-level column_mappings — that faithful reproduction is what
+// lets the reuse classify as `exact_reuse` (snippet bodies are tiny single-SELECTs,
+// so this is cheap on context). The reuse is still CLASSIFIED, not SUBSTITUTED, by
+// `classifyComponents` (query.ts): the model declares reuse (sets snippet_id) and
+// addresses the table as lake.<layer>.<name>, so its executable (qualified) SQL is
+// what runs; the stored BARE-name form would not resolve in the cockpit's execution
+// context (the reason P1 classifies rather than substitutes), and
+// `canonicalizeForReuse` strips the qualifier only for the equality DECISION.
 //
 // `buildVocabularyBlock` formats the searchable keys (`get_search_vocabulary`,
 // `graph:%`-curated only) as a prompt block — the engine's `<available_search_keys>`
@@ -36,16 +39,22 @@ import {
 } from "../db/metadata/snippet-library";
 import { withAgentError } from "./agent-error";
 
-// The per-snippet metadata projection — every reusable signal EXCEPT the raw SQL
-// body (`sql`) and the producer-side `normalized_expression`. `column_mappings`
-// carries the validated SQL expression fragments (e.g. {"revenue":"SUM(\"Betrag\")"}),
-// which is the lean, reusable essence the model grounds its SQL in.
+// The per-snippet projection the model reuses from: the concept keys + the
+// validated `sql` (the AUTHORITATIVE computation to reproduce, DAT-494) + the
+// column expressions (column_mappings — a secondary, graph-level hint, NOT a
+// per-concept source of truth; the `sql` is the thing to reproduce) + formula
+// dependencies (input_fields). The producer-side `normalized_expression` stays
+// internal.
 const SnippetMeta = z.object({
 	snippet_id: z.string(),
 	snippet_type: z.string(),
 	standard_field: z.string().nullable(),
 	statement: z.string().nullable(),
 	aggregation: z.string().nullable(),
+	// The validated, execution-tested SQL body — the canonical computation the
+	// model reproduces faithfully, re-qualifying the table to lake.<layer>.<name>.
+	// NOT NULL in the store.
+	sql: z.string(),
 	description: z.string(),
 	// JSONB blobs — concrete column expressions + formula dependencies + the
 	// constant value. Passed through as-is (validated leniently by the model's use).
@@ -71,7 +80,9 @@ export interface SnippetSearchInput {
 	graph_ids?: string[];
 }
 
-/** Project one library `SnippetRow` to the lean metadata shape (drops raw SQL). */
+/** Project one library `SnippetRow` to the reuse shape — concept keys + the
+ * validated `sql` to reproduce (DAT-494). Drops only the internal
+ * `normalized_expression`. */
 function projectSnippet(s: SnippetRow): z.infer<typeof SnippetMeta> {
 	return {
 		snippet_id: s.snippetId,
@@ -79,6 +90,7 @@ function projectSnippet(s: SnippetRow): z.infer<typeof SnippetMeta> {
 		standard_field: s.standardField,
 		statement: s.statement,
 		aggregation: s.aggregation,
+		sql: s.sql,
 		description: s.description,
 		column_mappings: s.columnMappings,
 		input_fields: s.inputFields,
@@ -139,10 +151,11 @@ export const snippetSearchTool = toolDefinition({
 		"`concepts` (business concepts like 'revenue', 'accounts_receivable'), " +
 		"`statements` (e.g. 'income_statement'), and/or `graph_ids` (specific " +
 		"calculation graphs like 'dso'). Returns matching graphs with each snippet's " +
-		"metadata — snippet_id, the concept keys, the validated column expressions " +
-		"(column_mappings), and dependencies — but NOT the raw SQL. Match by this " +
-		"metadata; set a step's snippet_id to the chosen snippet to declare reuse. " +
-		"Returns [] when nothing is curated for those keys yet.",
+		"concept keys, its validated `sql` (the canonical computation to reproduce), " +
+		"the column expressions (column_mappings), and dependencies. Match by the " +
+		"concept keys, then reproduce the chosen snippet's validated SQL — set the " +
+		"step's snippet_id to declare reuse. Returns [] when nothing is curated for " +
+		"those keys yet.",
 	inputSchema: z.object({
 		concepts: z
 			.array(z.string())

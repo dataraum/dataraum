@@ -1,29 +1,17 @@
-"""Query Agent module for natural language to SQL conversion.
+"""Query module — the SQL-snippet KNOWLEDGE BASE substrate.
 
-This module provides the core query agent functionality that converts
-natural language questions into executable SQL with entropy awareness
-and assumption tracking.
+The natural-language query CONSUMER (``QueryAgent`` / ``answer_question``)
+migrated to the cockpit TS tier — the ``answer`` sub-agent (DAT-485/494) — and
+was removed in DAT-487. What remains here is the engine-owned snippet substrate
+the LIVE producer path depends on:
 
-Usage:
-    from dataraum.query import answer_question, QueryResult
+- ``snippet_library``: ``SnippetLibrary`` (save / find_by_key / record_usage) —
+  written by the GraphAgent (``graphs/agent.py``) and ``metrics_phase``.
+- ``snippet_models``: the ``SQLSnippetRecord`` / ``SnippetUsageRecord`` ORM models.
+- ``snippet_utils``: ``normalize_sql`` / ``determine_usage_type`` /
+  ``normalize_expression``.
+- ``execution``: ``execute_sql_steps`` — the engine's SQL-step executor (GraphAgent).
 
-    result = answer_question(
-        question="What was total revenue last month?",
-        session=session,
-        duckdb_conn=conn,
-        source_id="src_123",
-        contract="exploratory_analysis",
-    )
-
-    if result.success:
-        print(result.value.answer)
-        print(result.value.confidence_level)  # GREEN, YELLOW, ORANGE, RED
+Submodules are imported directly (e.g. ``from dataraum.query import
+snippet_models``); this package exposes no top-level re-exports.
 """
-
-from dataraum.query.core import answer_question
-from dataraum.query.models import QueryResult
-
-__all__ = [
-    "QueryResult",
-    "answer_question",
-]

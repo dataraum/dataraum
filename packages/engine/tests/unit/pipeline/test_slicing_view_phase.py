@@ -203,6 +203,156 @@ class TestBuildSlicingViewSql:
 
         assert slice_dim_cols.count("customer_id__region") == 1
 
+    def test_named_time_column_kept_from_enriched_dims(self):
+        """Agent-named enriched time column rides along at the end of the projection.
+
+        The kept time column is projected (DAT-491) but is NOT a slice dimension:
+        it follows the fact cols and slice dim cols in the SELECT list.
+        """
+        fact_table = _make_table("t1", "invoices", "typed_invoices")
+        fk_col = _make_column("c_fk", "customer_id", "t1")
+
+        enriched_view = _make_enriched_view(
+            "t1", "invoices", ["invoice_id__date", "customer_id__region"]
+        )
+        slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
+
+        sql, slice_dim_cols, _, _ = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c_fk": fk_col},
+            fact_columns=[fk_col],
+            named_time_column="invoice_id__date",
+        )
+
+        assert '"invoice_id__date"' in sql
+        # Kept time col is projected but is not a slice dimension
+        assert slice_dim_cols == ["customer_id__region"]
+        # Projection order: fact cols, slice dim cols, kept time cols last
+        assert sql.index('"customer_id__region"') < sql.index('"invoice_id__date"')
+
+    def test_named_time_column_already_slice_dim_not_double_projected(self):
+        """A time column that is itself a slice dimension is projected exactly once."""
+        fact_table = _make_table("t1", "orders", "typed_orders")
+        fk_col = _make_column("c_fk", "customer_id", "t1")
+
+        enriched_view = _make_enriched_view("t1", "orders", ["customer_id__region"])
+        slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
+
+        sql, slice_dim_cols, _, _ = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c_fk": fk_col},
+            fact_columns=[fk_col],
+            named_time_column="customer_id__region",
+        )
+
+        assert slice_dim_cols == ["customer_id__region"]
+        assert sql.count('"customer_id__region"') == 1
+
+    def test_named_time_column_own_fact_column_projected_once(self):
+        """An own-column time axis is a no-op: it is not an enriched dim column.
+
+        The column is already in the fact projection, so naming it as the time
+        axis must not project it a second time.
+        """
+        fact_table = _make_table("t1", "orders", "typed_orders")
+        fact_col = _make_column("c1", "booking_date", "t1")
+        fk_col = _make_column("c_fk", "customer_id", "t1")
+
+        enriched_view = _make_enriched_view("t1", "orders", ["customer_id__region"])
+        slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
+
+        sql, _, _, _ = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c1": fact_col, "c_fk": fk_col},
+            fact_columns=[fact_col, fk_col],
+            named_time_column="booking_date",
+        )
+
+        assert sql.count('"booking_date"') == 1
+
+    def test_named_time_column_none_matches_omitted_parameter(self):
+        """named_time_column=None produces output identical to omitting the parameter."""
+        fact_table = _make_table("t1", "orders", "typed_orders")
+        fk_col = _make_column("c_fk", "customer_id", "t1")
+
+        enriched_view = _make_enriched_view("t1", "orders", ["customer_id__region"])
+        slice_def = _make_slice_def("sd1", "c_fk", "t1", column_name="customer_id__region")
+
+        with_none = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c_fk": fk_col},
+            fact_columns=[fk_col],
+            named_time_column=None,
+        )
+        omitted = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c_fk": fk_col},
+            fact_columns=[fk_col],
+        )
+
+        assert with_none == omitted
+
+    def test_time_column_only_projection_uses_enriched_view(self):
+        """A kept time column alone is enough to project from the enriched view.
+
+        With no fact columns and no matching slice dims, the enriched branch
+        still fires (no SELECT *) and the projection is just the time column.
+        """
+        fact_table = _make_table("t1", "invoices", "typed_invoices")
+        status_col = _make_column("c1", "status", "t1")
+
+        enriched_view = _make_enriched_view("t1", "invoices", ["invoice_id__date"])
+        # Slice def on a native fact column — matches no enriched dim column
+        slice_def = _make_slice_def("sd1", "c1", "t1", column_name="status")
+
+        sql, slice_dim_cols, _, _ = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=enriched_view,
+            columns_by_id={"c1": status_col},
+            fact_columns=[],
+            named_time_column="invoice_id__date",
+        )
+
+        assert "SELECT *" not in sql
+        assert '"enriched_invoices"' in sql
+        assert 'SELECT "invoice_id__date"\nFROM' in sql
+        assert slice_dim_cols == []
+
+    def test_no_enriched_view_time_column_falls_back_to_select_star(self):
+        """Without an enriched view the typed SELECT * fallback applies.
+
+        kept_time_cols cannot apply — there are no enriched dim columns to keep.
+        """
+        fact_table = _make_table("t1", "orders", "typed_orders")
+        fact_col = _make_column("c1", "booking_date", "t1")
+
+        slice_def = _make_slice_def("sd1", "c1", "t1", column_name="booking_date")
+
+        sql, slice_dim_cols, _, source_fqn = self.phase._build_slicing_view_sql(
+            fact_table=fact_table,
+            slice_defs=[slice_def],
+            enriched_view=None,
+            columns_by_id={"c1": fact_col},
+            fact_columns=[fact_col],
+            named_time_column="booking_date",
+        )
+
+        assert "SELECT *" in sql
+        assert '"typed_orders"' in sql
+        assert source_fqn.endswith('"typed_orders"')
+        assert slice_dim_cols == []
+
 
 class TestVerifyGrain:
     """Tests for the _verify_grain static method."""

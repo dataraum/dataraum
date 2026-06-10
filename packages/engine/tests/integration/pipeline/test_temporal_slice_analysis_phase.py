@@ -443,6 +443,181 @@ class TestTemporalSliceAnalysisPhase:
         )
         assert result.outputs["time_columns"] == ["date"]
 
+    def test_duplicate_slice_definitions_persist_drift_once(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ):
+        """Two slice defs for the same fact+dimension persist drift exactly once.
+
+        Regression (prod ``uq_drift_slice_column_run`` UniqueViolation): the
+        slicing agent (+ enriched-dimension propagation) can emit two
+        ``SliceDefinition`` rows for the same fact table and dimension in one
+        run — there is no per-run uniqueness guard. Both resolve to the same
+        source-qualified prefix and so match the same physical slice table, so
+        the phase used to persist that table's drift twice. Under the
+        production session's ``autoflush=False`` the run-scoped delete in
+        ``persist_drift_results`` does not flush the prior batch, so the second
+        write appended duplicate ``(slice_table_name, column_name, run_id)``
+        rows and the commit blew up. The phase now drift-analyses each physical
+        slice table once per run.
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select
+
+        from dataraum.analysis.semantic.db_models import TableEntity
+        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.temporal import TemporalColumnProfile
+        from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
+
+        phase = TemporalSliceAnalysisPhase()
+        source_id = str(uuid4())
+        fact_id = str(uuid4())
+        date_col_id = str(uuid4())
+        region_col_id = str(uuid4())
+
+        source = Source(source_id=source_id, name="orders_src", source_type="csv")
+        session.add(source)
+
+        fact = Table(
+            table_id=fact_id,
+            source_id=source_id,
+            table_name="orders",
+            layer="typed",
+            duckdb_path="typed_orders",
+            row_count=100,
+        )
+        session.add(fact)
+
+        session.add(
+            Column(
+                column_id=date_col_id,
+                table_id=fact_id,
+                column_name="date",
+                column_position=0,
+                raw_type="VARCHAR",
+                resolved_type="DATE",
+            )
+        )
+        session.add(
+            Column(
+                column_id=region_col_id,
+                table_id=fact_id,
+                column_name="region",
+                column_position=1,
+                raw_type="VARCHAR",
+                resolved_type="VARCHAR",
+            )
+        )
+        session.commit()
+
+        session.add(
+            TemporalColumnProfile(
+                profile_id=str(uuid4()),
+                column_id=date_col_id,
+                profiled_at=datetime.now(UTC),
+                min_timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+                max_timestamp=datetime(2024, 6, 30, tzinfo=UTC),
+                detected_granularity="daily",
+                profile_data={},
+            )
+        )
+        session.add(TableEntity(table_id=fact_id, detected_entity_type="order", time_column="date"))
+
+        # Two slice definitions for the SAME fact + dimension — the prod
+        # condition with no per-run uniqueness guard. Both resolve to the
+        # prefix ``slice_typed_orders_region_``.
+        for _ in range(2):
+            session.add(
+                SliceDefinition(
+                    table_id=fact_id,
+                    column_id=region_col_id,
+                    slice_priority=1,
+                    slice_type="categorical",
+                    distinct_values=["us"],
+                    reasoning="region",
+                )
+            )
+
+        # One physical slice table both defs match, with its own column metadata.
+        slice_name = "slice_typed_orders_region_us"
+        slice_table_id = str(uuid4())
+        session.add(
+            Table(
+                table_id=slice_table_id,
+                source_id=source_id,
+                table_name=slice_name,
+                layer="slice",
+                duckdb_path=slice_name,
+                row_count=4,
+            )
+        )
+        session.add(
+            Column(
+                column_id=str(uuid4()),
+                table_id=slice_table_id,
+                column_name="region",
+                column_position=1,
+                raw_type="VARCHAR",
+                resolved_type="VARCHAR",
+            )
+        )
+        session.commit()
+
+        duckdb_conn.execute(f"""
+            CREATE OR REPLACE VIEW "{slice_name}" AS
+            SELECT '2024-01-15'::DATE AS date, 'us' AS region UNION ALL
+            SELECT '2024-02-15'::DATE, 'us' UNION ALL
+            SELECT '2024-03-15'::DATE, 'eu' UNION ALL
+            SELECT '2024-04-15'::DATE, 'eu'
+        """)
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id],
+            config={},
+            session_id=baseline_session_id(),
+        )
+
+        # Mirror the production session — the run-scoped delete only cleans up
+        # across activity retries, not within one run, when adds aren't flushed.
+        session.autoflush = False
+        result = phase.run(ctx)
+        session.commit()  # surfaces the duplicate-key violation if it regresses
+
+        assert result.status == PhaseStatus.COMPLETED, (
+            f"Phase failed: {result.error}, outputs: {result.outputs}"
+        )
+        rows = (
+            session.execute(
+                select(ColumnDriftSummary).where(
+                    ColumnDriftSummary.slice_table_name == slice_name,
+                    ColumnDriftSummary.column_name == "region",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1, f"expected one drift row per (slice, column), got {len(rows)}"
+
+        # Period rows share the same dedup guard. ``TemporalSliceAnalysis`` has no
+        # DB UNIQUE, so a double-visit would silently duplicate period labels
+        # rather than raise — assert each label persists once.
+        from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
+
+        period_labels = (
+            session.execute(
+                select(TemporalSliceAnalysis.period_label).where(
+                    TemporalSliceAnalysis.slice_table_name == slice_name
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(period_labels) == len(set(period_labels)), (
+            f"period rows duplicated for the slice table: {period_labels}"
+        )
+
     def test_success_no_slice_definitions(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

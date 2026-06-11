@@ -4,6 +4,31 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (DAT-502): failure contract — idempotent writers; behavior-preserving for detectors
+
+Phase 1 of epic DAT-501 (ADR-0010): writer mechanics only — run-scoped
+delete-then-insert clears replaced by `(key, run_id)` UNIQUEs + upserts
+(relationship candidates, TypeCandidate ×2, SliceDefinition,
+TemporalSliceAnalysis, drift, measure_aggregation_lineage), lifecycle
+declare-or-reuse, wave-0 guard deletions (import rollback helper,
+correlations in-run re-check, slice_analysis cross-run stale-skip,
+`MetadataSnapshotHead.version`), and a schema-drift gate that every
+run-stamped table carries a grain or a sanctioned exemption.
+
+- **No detector logic, thresholds, or measurement math changed — recall
+  baselines must NOT move.** Any calibration delta after this merge is a
+  regression in the writer mechanics, not a detector change; flag it.
+- Schema deltas eval may notice when introspecting `ws_<id>`:
+  `type_candidates.detected_pattern` is now NOT NULL DEFAULT `''` (was
+  nullable; `''` = no pattern) + new UNIQUE; new UNIQUEs on
+  `slice_definitions` / `temporal_slice_analyses`; `metadata_snapshot_head`
+  lost its dead `version` column. Unit/eval harnesses that write run-stamped
+  rows should stamp `run_id` (the new UNIQUEs are NULLS-DISTINCT).
+- `slice_analysis` re-run-after-teach now produces fresh analyses (the
+  DAT-448 stale-skip arm is gone) — teach-loop evals should see slice
+  re-analysis instead of a silent skip.
+- **Status**: pending
+
 ## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511
 
 The deferred live operating_model smoke ran end-to-end on a wiped stack (main =

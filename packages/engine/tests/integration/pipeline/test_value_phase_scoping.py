@@ -1,14 +1,13 @@
-"""Source-free + run-scoped behaviour of the revived value phases (DAT-403).
+"""Run-scoped fact reads of the revived value phases (DAT-403).
 
-Two properties the revival had to get right, proven against the real DB:
+``TableEntity`` is run-versioned and coexists across runs (DAT-408/413).
+``slicing_view`` must read only the current run's fact classification, exactly
+like ``enriched_views`` — an unscoped read leaks a prior run's facts.
 
-* **Cross-source**: a begin_session selection spans sources, so a value phase
-  must resolve its derived artifacts (slice tables) across every source its
-  typed tables belong to — not a single ``ctx.source_id`` (None past add_source).
-* **Run-scoped fact reads**: ``TableEntity`` is run-versioned and coexists across
-  runs (DAT-408/413). ``slicing_view`` must read only the current run's fact
-  classification, exactly like ``enriched_views`` — an unscoped read leaks a
-  prior run's facts.
+(The former cross-source slice-counting test pinned slice_analysis' cross-run
+"All slices already analyzed" arm — deleted by DAT-502: slice tables are not
+run-versioned, so their presence says nothing about the current run; see
+``tests/unit/pipeline/test_slice_analysis_phase.py``.)
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.pipeline.base import PhaseContext
-from dataraum.pipeline.phases.slice_analysis_phase import SliceAnalysisPhase
 from dataraum.pipeline.phases.slicing_view_phase import SlicingViewPhase
 from dataraum.storage import Column, Source, Table
 
@@ -50,67 +48,6 @@ def _typed_table(session: Session, source_id: str, name: str) -> str:
         )
     )
     return table_id
-
-
-def _slice_table(session: Session, source_id: str, name: str) -> None:
-    session.add(
-        Table(
-            table_id=_id(),
-            source_id=source_id,
-            table_name=name,
-            layer="slice",
-            duckdb_path=name,
-            row_count=50,
-        )
-    )
-
-
-class TestCrossSourceSliceScoping:
-    """slice_analysis derives its slice tables across the selection's sources."""
-
-    def test_skip_counts_slices_across_two_sources(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """A selection spanning two sources sees the slice tables of BOTH.
-
-        One slice value per source, one existing slice table per source: the
-        "already analyzed" skip only fires if the phase scopes by the selection's
-        full source set. Scoped to a single source it would find one slice table,
-        undercount, and fail to skip — the cross-source regression.
-        """
-        src_a, src_b = _id(), _id()
-        t_a = _typed_table(session, src_a, "a_orders")
-        t_b = _typed_table(session, src_b, "b_orders")
-        col_a = _id()
-        col_b = _id()
-        session.add(Column(column_id=col_a, table_id=t_a, column_name="region", column_position=0))
-        session.add(Column(column_id=col_b, table_id=t_b, column_name="region", column_position=0))
-        session.flush()
-
-        for tid, cid in ((t_a, col_a), (t_b, col_b)):
-            session.add(
-                SliceDefinition(
-                    table_id=tid,
-                    column_id=cid,
-                    slice_priority=1,
-                    slice_type="categorical",
-                    distinct_values=["us"],  # one value -> one expected slice table
-                    value_count=1,
-                    detection_source="llm",
-                )
-            )
-        # One existing slice table per source.
-        _slice_table(session, src_a, "slice_a_orders_region_us")
-        _slice_table(session, src_b, "slice_b_orders_region_us")
-        session.commit()
-
-        ctx = PhaseContext(
-            session=session, duckdb_conn=duckdb_conn, table_ids=[t_a, t_b], config={}
-        )
-
-        skip_reason = SliceAnalysisPhase().should_skip(ctx)
-        assert skip_reason is not None
-        assert "already analyzed" in skip_reason
 
 
 class TestSlicingViewRunScopedFacts:

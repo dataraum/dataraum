@@ -268,14 +268,22 @@ class DerivedValueDetector(EntropyDetector):
         # hypothesis-hygiene gate as the scalar: a low-confidence guess or a
         # thin grading sample must not band a clean column through this door
         # either (review wave-1 blocker).
-        identity_conflict = max(
-            (
-                a.result.conflict
-                for a in adjudications
-                if a.discovered or a.declared or hypothesis_scalar_ok
-            ),
-            default=0.0,
-        )
+        # CLOSURE (DAT-447): once the user has DECLARED the expected formula,
+        # the identity question has its human answer — the declared claim IS
+        # the column's identity risk, so the conflict leg aggregates over the
+        # declared slot(s) only. This is aggregation semantics, not an
+        # override: every witness still votes on every claim (the name-vs-data
+        # conflict on the hypothesis claim stays in evidence — it is a NAMING
+        # finding once the formula is settled), and a VIOLATED declaration
+        # bands harder, not softer (row grading fails vs the human's holds →
+        # high pooled conflict on exactly the claim the human anchored).
+        # Without this, a correct declaration left the column banded forever —
+        # a teach that cannot close, breaking the eval contract's "stable".
+        declared_slots = [a for a in adjudications if a.declared]
+        conflict_pool = declared_slots or [
+            a for a in adjudications if a.discovered or hypothesis_scalar_ok
+        ]
+        identity_conflict = max((a.result.conflict for a in conflict_pool), default=0.0)
         score = max(scalar, identity_conflict)
 
         # Match-quality labels (display only), configurable thresholds.

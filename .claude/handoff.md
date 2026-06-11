@@ -33,18 +33,27 @@ The derived_value band now hands the user an executable action. Two halves:
   the rows violate keeps conflict high and reaches `obj.score` (witness, never
   oracle); corroborated → conflict collapses on that claim.
 
-Eval implications: the teach-closure test for derived_value is PER-CLAIM — a
-declaration matching the data collapses conflict on the DECLARED claim and
-resolves its posterior; it does NOT silence the name-vs-data conflict on the
-contested hypothesis claim (the LLM's name reading still disagrees with the
-rows — no deterministic override of its judgment), so the column-level score
-stays banded under wholesale divergence even post-teach. If the eval expects
-score-level closure for this family, that is an open design question to raise
-with Philipp, not a bug in the routing. New evidence key `declared` (bool) per
-entry; witnesses gain `human_declaration` rows in claim_witnesses.
+Eval implications: the teach CLOSES at COLUMN level (the open question the
+first cut of this entry raised was resolved the same day, in the eval
+contract's favor — "stable: a teach closes it"): once a declaration exists,
+the identity-conflict score leg aggregates over the DECLARED slot(s) only —
+the declared claim IS the column's identity risk. Aggregation semantics, not
+an override: every witness still votes on every claim; the name-vs-data
+conflict on the hypothesis claim stays loud in evidence (a NAMING finding
+once the formula is settled); a VIOLATED declaration bands harder, not softer
+(row grading fails vs human holds on exactly the anchored claim). Closure
+shape pinned by `test_matching_declaration_closes_the_column_score`. New
+evidence key `declared` (bool) per entry; witnesses gain `human_declaration`
+rows in claim_witnesses.
 
 - **Status**: pending eval verification (Tier-1 green engine-side: detector +
-  measurement + loader + vocabulary guard, 52 tests)
+  measurement + loader + vocabulary guard + closure, 53 tests)
+
+Correction to the pre-merge LANE-NOTES entry below (fixed on THIS branch):
+the **confirm-overlay human witness gap is CLOSED** — `confirm` materializes
+a `manual` row and human rows coexist with the llm row (per-(pair, method)
+dedup); the teach protocol measured the human witnesses through it. The other
+two remainders (resolve write-back, pure-decline focal pairs) stand.
 
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 

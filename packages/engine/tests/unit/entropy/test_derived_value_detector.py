@@ -273,6 +273,30 @@ def test_declared_formula_violated_by_data_keeps_conflict_high() -> None:
     assert obj.score >= declared["formula_conflict"]  # the conflict reaches the score
 
 
+def test_matching_declaration_closes_the_column_score() -> None:
+    # The teach CLOSES (eval contract: "stable — a teach closes it"). Full
+    # wholesale shape: rows follow the discovered product formula perfectly,
+    # the name advertises subtotal+tax (graded 0.0 — identity conflict ~0.8
+    # drove the score pre-teach). The user declares the formula the rows
+    # follow: the declared claim becomes the column's identity risk, witnesses
+    # AGREE there, and the column score drops below every band. The
+    # name-vs-data dispute survives in evidence as a naming finding — visible,
+    # not banding. Aggregation semantics, not an override.
+    ctx = _context(
+        correlation=_DISCOVERED,
+        semantic={
+            "derived_formula_hypothesis": "subtotal + tax",
+            "derived_formula_confidence": 0.9,
+        },
+        grading={"match_rate": 0.0, "matches": 0, "total": 100},
+        declaration={"formula": "tax_rate * subtotal", "match_rate": 0.99},
+    )
+    (obj,) = DerivedValueDetector().detect(ctx)
+    contested = next(e for e in obj.evidence if e["hypothesized"])
+    assert contested["formula_conflict"] > 0.3  # the naming dispute stays loud in evidence
+    assert obj.score < 0.15  # ...but the settled identity no longer bands the column
+
+
 def test_threaded_reliabilities_reach_the_witnesses() -> None:
     ctx = _context(
         correlation=_DISCOVERED,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dataraum.investigation.db_models import InvestigationSession
@@ -29,8 +28,11 @@ def journey_session(session: Session) -> str:
     return _SESSION
 
 
-def _declare(run_id: str = "run-1", key: str = "double_entry_balance") -> LifecycleArtifact:
+def _declare(
+    session: Session, run_id: str = "run-1", key: str = "double_entry_balance"
+) -> LifecycleArtifact:
     return declare_artifact(
+        session,
         session_id=_SESSION,
         artifact_type="validation",
         artifact_key=key,
@@ -42,8 +44,7 @@ def _declare(run_id: str = "run-1", key: str = "double_entry_balance") -> Lifecy
 
 class TestTransitionMatrix:
     def test_declare_creates_declared(self, session: Session, journey_session: str) -> None:
-        artifact = _declare()
-        session.add(artifact)
+        artifact = _declare(session)
         session.flush()
 
         assert artifact.state == ArtifactState.DECLARED.value
@@ -51,8 +52,7 @@ class TestTransitionMatrix:
         assert artifact.strictness is None  # D3: no invented default
 
     def test_bind_then_execute(self, session: Session, journey_session: str) -> None:
-        artifact = _declare()
-        session.add(artifact)
+        artifact = _declare(session)
 
         transition(
             artifact,
@@ -70,32 +70,31 @@ class TestTransitionMatrix:
         assert artifact.state == ArtifactState.EXECUTED.value
 
     def test_execute_without_bind_rejected(self, session: Session, journey_session: str) -> None:
-        artifact = _declare()
+        artifact = _declare(session)
         with pytest.raises(IllegalTransitionError, match="requires state 'grounded'"):
             transition(artifact, operation="execute", stage=_STAGE)
         assert artifact.state == ArtifactState.DECLARED.value  # unchanged on rejection
 
     def test_double_bind_rejected(self, session: Session, journey_session: str) -> None:
-        artifact = _declare()
+        artifact = _declare(session)
         transition(artifact, operation="bind", stage=_STAGE)
         with pytest.raises(IllegalTransitionError, match="requires state 'declared'"):
             transition(artifact, operation="bind", stage=_STAGE)
 
     def test_declare_is_not_a_transition(self, session: Session, journey_session: str) -> None:
-        artifact = _declare()
+        artifact = _declare(session)
         with pytest.raises(IllegalTransitionError, match="declare creates"):
             transition(artifact, operation="declare", stage=_STAGE)
 
-    def test_unknown_operation_fails_closed(self) -> None:
-        artifact = _declare()
+    def test_unknown_operation_fails_closed(self, session: Session, journey_session: str) -> None:
+        artifact = _declare(session)
         with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
             transition(artifact, operation="promote", stage=_STAGE)
 
     def test_ungroundable_reason_is_recorded(self, session: Session, journey_session: str) -> None:
         # "Visibly impossible": a failed bind leaves the artifact declared with
         # the reason on the row, never silently absent.
-        artifact = _declare()
-        session.add(artifact)
+        artifact = _declare(session)
         artifact.state_reason = "no column annotated as debit/credit in the workspace"
         session.flush()
 
@@ -107,14 +106,15 @@ class TestTransitionMatrix:
 
 
 class TestStageAuthorization:
-    def test_bind_from_foreign_stage_rejected(self) -> None:
-        artifact = _declare()
+    def test_bind_from_foreign_stage_rejected(self, session: Session, journey_session: str) -> None:
+        artifact = _declare(session)
         with pytest.raises(StageNotAuthorizedError, match="not authorized"):
             transition(artifact, operation="bind", stage="begin_session")
 
-    def test_declare_from_foreign_stage_rejected(self) -> None:
+    def test_declare_from_foreign_stage_rejected(self, session: Session) -> None:
         with pytest.raises(StageNotAuthorizedError, match="not authorized"):
             declare_artifact(
+                session,
                 session_id=_SESSION,
                 artifact_type="validation",
                 artifact_key="x",
@@ -122,21 +122,22 @@ class TestStageAuthorization:
                 stage="add_source",
             )
 
-    def test_endorse_defined_but_no_authority(self) -> None:
+    def test_endorse_defined_but_no_authority(self, session: Session, journey_session: str) -> None:
         # executed → canonical exists in the state machine; no stage may invoke
         # it until the endorsement workflow exists.
-        artifact = _declare()
+        artifact = _declare(session)
         transition(artifact, operation="bind", stage=_STAGE)
         transition(artifact, operation="execute", stage=_STAGE)
         with pytest.raises(StageNotAuthorizedError, match="no authority workflow"):
             transition(artifact, operation="endorse", stage=_STAGE)
         assert artifact.state == ArtifactState.EXECUTED.value
 
-    def test_unknown_artifact_type_fails_closed(self) -> None:
+    def test_unknown_artifact_type_fails_closed(self, session: Session) -> None:
         # relationship/explanation are still-deferred types — no authorization
         # rows yet, so any declare fails closed.
         with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
             declare_artifact(
+                session,
                 session_id=_SESSION,
                 artifact_type="relationship",
                 artifact_key="journal_to_ledger",
@@ -144,11 +145,14 @@ class TestStageAuthorization:
                 stage=_STAGE,
             )
 
-    def test_metric_family_flows_through_the_lifecycle(self) -> None:
+    def test_metric_family_flows_through_the_lifecycle(
+        self, session: Session, journey_session: str
+    ) -> None:
         # metrics are the third lifecycle family (DAT-456): declare → compose →
         # execute are all authorized for operating_model. The grounding verb is
         # ``compose`` (not ``bind``), per architecture-future.
         artifact = declare_artifact(
+            session,
             session_id=_SESSION,
             artifact_type="metric",
             artifact_key="dso",
@@ -164,11 +168,14 @@ class TestStageAuthorization:
         with pytest.raises(StageNotAuthorizedError, match="no authority workflow"):
             transition(artifact, operation="endorse", stage=_STAGE)
 
-    def test_metric_grounds_via_compose_not_bind(self) -> None:
+    def test_metric_grounds_via_compose_not_bind(
+        self, session: Session, journey_session: str
+    ) -> None:
         # The verbs are family-specific: a metric grounds via ``compose`` and a
         # validation/cycle via ``bind`` — the cross verbs are unauthorized, so
         # the audit trail can't lie about which operation grounded an artifact.
         metric = declare_artifact(
+            session,
             session_id=_SESSION,
             artifact_type="metric",
             artifact_key="dso",
@@ -180,13 +187,14 @@ class TestStageAuthorization:
             transition(metric, operation="bind", stage=_STAGE)
         assert metric.state == ArtifactState.DECLARED.value  # unchanged on rejection
 
-        validation = _declare()
+        validation = _declare(session)
         with pytest.raises(StageNotAuthorizedError, match="no stage is authorized"):
             transition(validation, operation="compose", stage=_STAGE)
 
-    def test_metric_declare_from_foreign_stage_rejected(self) -> None:
+    def test_metric_declare_from_foreign_stage_rejected(self, session: Session) -> None:
         with pytest.raises(StageNotAuthorizedError, match="not authorized"):
             declare_artifact(
+                session,
                 session_id=_SESSION,
                 artifact_type="metric",
                 artifact_key="dso",
@@ -194,10 +202,13 @@ class TestStageAuthorization:
                 stage="begin_session",
             )
 
-    def test_cycle_family_flows_through_the_lifecycle(self) -> None:
+    def test_cycle_family_flows_through_the_lifecycle(
+        self, session: Session, journey_session: str
+    ) -> None:
         # cycles are the second lifecycle family (DAT-455): declare → bind →
         # execute are all authorized for operating_model, mirroring validation.
         artifact = declare_artifact(
+            session,
             session_id=_SESSION,
             artifact_type="cycle",
             artifact_key="order_to_cash",
@@ -213,9 +224,10 @@ class TestStageAuthorization:
         with pytest.raises(StageNotAuthorizedError, match="no authority workflow"):
             transition(artifact, operation="endorse", stage=_STAGE)
 
-    def test_cycle_declare_from_foreign_stage_rejected(self) -> None:
+    def test_cycle_declare_from_foreign_stage_rejected(self, session: Session) -> None:
         with pytest.raises(StageNotAuthorizedError, match="not authorized"):
             declare_artifact(
+                session,
                 session_id=_SESSION,
                 artifact_type="cycle",
                 artifact_key="order_to_cash",
@@ -225,27 +237,62 @@ class TestStageAuthorization:
 
 
 class TestSupersession:
-    def test_identity_unique_within_run(self, session: Session, journey_session: str) -> None:
-        session.add(_declare(run_id="run-1"))
+    def test_redeclare_within_run_reuses_the_row(
+        self, session: Session, journey_session: str
+    ) -> None:
+        """Declare twice in one run → reuse, not an IntegrityError (DAT-502).
+
+        The identity UNIQUE still guards the grain; declare-or-reuse is how a
+        success-redelivery converges on it instead of violating it.
+        """
+        first = _declare(session, run_id="run-1")
         session.flush()
-        session.add(_declare(run_id="run-1"))
-        with pytest.raises(IntegrityError):
-            session.flush()
-        session.rollback()
+        again = _declare(session, run_id="run-1")
+        session.flush()  # no IntegrityError — same row, reset to declared
+        assert again.artifact_id == first.artifact_id
+        rows = session.execute(select(LifecycleArtifact)).scalars().all()
+        assert len(rows) == 1
+
+    def test_redeclare_resets_state_and_reflows(
+        self, session: Session, journey_session: str
+    ) -> None:
+        """The redelivered declare RESETS a flowed row so transition() accepts it.
+
+        transition() requires exact from-states: a leftover executed state from
+        the first delivery would reject the redelivered bind. Declare-or-reuse
+        clears state/state_reason/grounded_against back to declared and the
+        run re-flows the lifecycle on the same row.
+        """
+        artifact = _declare(session, run_id="run-1")
+        transition(artifact, operation="bind", stage=_STAGE, grounded_against={"x": "run-a"})
+        transition(artifact, operation="execute", stage=_STAGE)
+        artifact.state_reason = "left over from attempt 1"
+        session.commit()  # the success-redelivery sees committed rows
+
+        redeclared = _declare(session, run_id="run-1")
+        assert redeclared.artifact_id == artifact.artifact_id
+        assert redeclared.state == ArtifactState.DECLARED.value
+        assert redeclared.state_reason is None
+        assert redeclared.grounded_against is None
+        # The redelivered run re-flows on the same row.
+        transition(redeclared, operation="bind", stage=_STAGE)
+        transition(redeclared, operation="execute", stage=_STAGE)
+        session.commit()
+        rows = session.execute(select(LifecycleArtifact)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].state == ArtifactState.EXECUTED.value
 
     def test_two_runs_coexist_with_independent_states(
         self, session: Session, journey_session: str
     ) -> None:
         # Supersession: the re-run declares anew under its run_id; the prior
         # run's executed row is never mutated.
-        prior = _declare(run_id="run-1")
-        session.add(prior)
+        prior = _declare(session, run_id="run-1")
         transition(prior, operation="bind", stage=_STAGE)
         transition(prior, operation="execute", stage=_STAGE)
         session.flush()
 
-        current = _declare(run_id="run-2")
-        session.add(current)
+        _declare(session, run_id="run-2")
         session.flush()
 
         session.expire_all()  # autoflush-independent: read back from the DB

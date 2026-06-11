@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Integer, String, UniqueConstraint, select
+from sqlalchemy import DateTime, String, UniqueConstraint, select
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -40,7 +40,6 @@ class MetadataSnapshotHead(Base):
         stage: the producing phase name (e.g. ``"statistics"``, ``"detect"``).
         run_id: the current (promoted) snapshot's run, minted by the workflow.
         promoted_at: when this head was last flipped.
-        version: optimistic-concurrency counter; bumped on each promote.
     """
 
     __tablename__ = "metadata_snapshot_head"
@@ -53,7 +52,6 @@ class MetadataSnapshotHead(Base):
     promoted_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 def session_head_target(session_id: str) -> str:

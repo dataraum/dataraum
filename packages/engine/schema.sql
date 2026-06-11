@@ -35,7 +35,6 @@ CREATE TABLE metadata_snapshot_head (
 	stage VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	promoted_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	version INTEGER NOT NULL, 
 	CONSTRAINT pk_metadata_snapshot_head PRIMARY KEY (head_id), 
 	CONSTRAINT uq_snapshot_head_target_stage UNIQUE (target, stage)
 );
@@ -260,6 +259,7 @@ CREATE TABLE temporal_slice_analyses (
 	issues_json JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
+	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id), 
 	CONSTRAINT fk_temporal_slice_analyses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
 );
 
@@ -693,6 +693,7 @@ CREATE TABLE slice_definitions (
 	detection_source VARCHAR NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
+	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT fk_slice_definitions_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
@@ -784,13 +785,14 @@ CREATE TABLE type_candidates (
 	confidence FLOAT NOT NULL, 
 	parse_success_rate FLOAT, 
 	failed_examples JSON, 
-	detected_pattern VARCHAR, 
+	detected_pattern VARCHAR DEFAULT '' NOT NULL, 
 	pattern_match_rate FLOAT, 
 	detected_unit VARCHAR, 
 	unit_confidence FLOAT, 
 	quarantine_count INTEGER, 
 	quarantine_rate FLOAT, 
 	CONSTRAINT pk_type_candidates PRIMARY KEY (candidate_id), 
+	CONSTRAINT uq_type_candidate_column_type_pattern_run UNIQUE (column_id, data_type, detected_pattern, run_id), 
 	CONSTRAINT fk_type_candidates_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_type_candidates_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
 );

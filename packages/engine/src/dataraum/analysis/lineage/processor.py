@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.lineage.models import CandidateDisposal
@@ -36,6 +36,7 @@ from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -182,21 +183,18 @@ def discover_aggregation_lineage(
 ) -> int:
     """Reconcile every shared-dimension fact pair and persist the verdicts.
 
-    Idempotent per run: delete-before-insert on ``run_id``. One row per
-    measure column — the best reconciling (event table, convention) by
-    winning residual.
+    Idempotent per run — form-(a) writer (DAT-502): one row per measure
+    column (the best reconciling event table + convention by winning
+    residual), UPSERTed on ``uq_measure_lineage_column_run``. A Temporal
+    success-redelivery (same ``run_id``) converges in place; prior runs'
+    rows stay untouched. Deterministic SQL producer: the recomputed batch
+    is the same verdict set, so no run-scoped clear is needed.
 
     Returns:
         The number of lineage rows persisted.
     """
     if run_id is None:
         raise ValueError("discover_aggregation_lineage requires a run_id (run-versioned rows)")
-    session.execute(
-        delete(MeasureAggregationLineage).where(
-            MeasureAggregationLineage.session_id == session_id,
-            MeasureAggregationLineage.run_id == run_id,
-        )
-    )
 
     tables = {
         t.table_id: t
@@ -325,27 +323,28 @@ def discover_aggregation_lineage(
                                 dim_col,
                             )
 
-    persisted = 0
+    # ``best_by_measure`` is keyed by measure_column_id, so the batch is
+    # dedup'd by construction; PK omitted so the model's default applies.
+    rows: list[dict[str, object]] = []
     for measure_column_id, (best, m_table, m_col, dim_col) in best_by_measure.items():
-        session.add(
-            MeasureAggregationLineage(
-                session_id=session_id,
-                run_id=run_id,
-                measure_table_id=m_table.table_id,
-                measure_column_id=measure_column_id,
-                event_table_id=best.event_table.table_id,
-                slice_dimension=dim_col,
-                convention_sql=best.convention_sql,
-                period_grain=period_grain,
-                pattern=best.verdict.pattern,
-                match_rate=best.verdict.match_rate,
-                r_flow_median=best.verdict.r_flow_median,
-                r_stock_median=best.verdict.r_stock_median,
-                n_entities=best.verdict.n_entities,
-                n_entities_fired=best.verdict.n_entities_fired,
-            )
+        rows.append(
+            {
+                "session_id": session_id,
+                "run_id": run_id,
+                "measure_table_id": m_table.table_id,
+                "measure_column_id": measure_column_id,
+                "event_table_id": best.event_table.table_id,
+                "slice_dimension": dim_col,
+                "convention_sql": best.convention_sql,
+                "period_grain": period_grain,
+                "pattern": best.verdict.pattern,
+                "match_rate": best.verdict.match_rate,
+                "r_flow_median": best.verdict.r_flow_median,
+                "r_stock_median": best.verdict.r_stock_median,
+                "n_entities": best.verdict.n_entities,
+                "n_entities_fired": best.verdict.n_entities_fired,
+            }
         )
-        persisted += 1
         logger.info(
             "lineage_reconciled",
             measure=f"{m_table.table_name}.{m_col}",
@@ -355,4 +354,10 @@ def discover_aggregation_lineage(
             pattern=best.verdict.pattern,
             match_rate=round(best.verdict.match_rate, 3),
         )
-    return persisted
+    upsert(
+        session,
+        MeasureAggregationLineage,
+        rows,
+        index_elements=["measure_column_id", "run_id"],
+    )
+    return len(rows)

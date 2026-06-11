@@ -54,20 +54,44 @@ def _rel(session: Session, frm: str, to: str, method: str, run_id: str | None = 
     )
 
 
-def test_redrive_deletes_candidates_keeps_llm_and_manual(session: Session) -> None:
-    """A re-derive clears this session's candidate rows; llm/manual survive."""
+def test_redrive_upserts_candidates_keeps_llm_and_manual(session: Session) -> None:
+    """A re-derive converges candidate rows by upsert; llm/manual survive (DAT-502).
+
+    The candidate writer is a form-(a) upsert on the same-pair-same-method key
+    — no run-scoped clear. A redelivered derivation for the SAME pair updates
+    the candidate row in place and never touches the durable llm/manual rows
+    sharing the column pair (``detection_method`` is part of the key).
+    """
+    from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
+
     _seed_tables_columns(session)
-    _rel(session, "ca", "cb", "candidate")
-    _rel(session, "ca", "cb", "llm")
-    _rel(session, "ca", "cb", "manual")
+    # run_id stamped: the upsert key is NULLS-DISTINCT, so only stamped rows
+    # converge (the workflow path always stamps; DAT-502).
+    _rel(session, "ca", "cb", "candidate", run_id="run-A")
+    _rel(session, "ca", "cb", "llm", run_id="run-A")
+    _rel(session, "ca", "cb", "manual", run_id="run-A")
     session.flush()
 
-    # Empty candidate set → only the delete path runs (no DuckDB needed).
-    _store_candidates(session, baseline_session_id(), ["t1", "t2"], candidates=[])
+    candidate = RelationshipCandidate(
+        table1="orders",
+        table2="customers",
+        join_candidates=[
+            JoinCandidate(
+                column1="customer_id", column2="id", join_confidence=0.7, cardinality="many-to-one"
+            )
+        ],
+    )
+    _store_candidates(session, baseline_session_id(), ["t1", "t2"], [candidate], run_id="run-A")
     session.flush()
+    session.expire_all()
 
-    methods = {r.detection_method for r in session.query(Relationship).all()}
-    assert methods == {"llm", "manual"}, "candidate re-derive must not touch llm/manual"
+    rows = session.query(Relationship).all()
+    by_method = {r.detection_method: r for r in rows}
+    assert set(by_method) == {"candidate", "llm", "manual"}, "one row per method (converged)"
+    assert len(rows) == 3
+    assert by_method["candidate"].confidence == 0.7, "candidate updated in place"
+    assert by_method["llm"].confidence == 0.9, "llm untouched"
+    assert by_method["manual"].confidence == 0.9, "manual untouched"
 
 
 def test_redrive_skips_a_suppressed_candidate(session: Session) -> None:

@@ -30,6 +30,17 @@ run-versioned — it is the cross-run reuse cache shared with ``query``; a re-ru
 reuses healthy snippets and self-heals failed ones. With no vertical or no
 declared metrics the phase succeeds loudly with an explicit outcome.
 
+**Sanctioned multi-commit exception (DAT-502):** unlike every other phase
+(one commit at ``session_scope`` exit), the parallel path commits once PER
+METRIC (``_execute_isolated``). That is under the failure contract because
+every per-metric write converges under at-least-once redelivery: snippet
+state is first-writer-wins (``SnippetLibrary.save_snippet`` keeps a healthy
+existing row, replaces only failed ones — the DAT-485 app-level dedup), and
+the ``snippet_usage`` rows / ``execution_count`` counters are the documented
+TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
+so a redelivery can inflate usage telemetry; nothing gates on it (write-only
+since DAT-487/488).
+
 Per-metric LLM calls are independent — dispatched concurrently via
 asyncio.to_thread + gather when the phase context exposes a ConnectionManager
 (each parallel call gets its own SQLAlchemy session + DuckDB cursor). Falls back
@@ -175,10 +186,12 @@ class MetricsPhase(BasePhase):
         snippet_library = SnippetLibrary(ctx.session, session_id=session_id)
 
         # declare: every declared graph_id becomes a declared artifact for THIS
-        # run — supersession across runs, UNIQUE identity within one.
+        # run — supersession across runs; a success-redelivery RESETS the same
+        # run's row to declared (declare-or-reuse, DAT-502).
         artifacts: dict[str, LifecycleArtifact] = {}
         for graph_id, defn in declared_defs.items():
-            artifact = declare_artifact(
+            artifacts[graph_id] = declare_artifact(
+                ctx.session,
                 session_id=session_id,
                 artifact_type="metric",
                 artifact_key=graph_id,
@@ -190,8 +203,6 @@ class MetricsPhase(BasePhase):
                     "category": (defn.get("metadata") or {}).get("category"),
                 },
             )
-            ctx.session.add(artifact)
-            artifacts[graph_id] = artifact
 
         # Parse declared definitions into graphs. A definition that won't parse
         # stays declared with the parse error recorded — visibly impossible.
@@ -397,6 +408,12 @@ def _execute_isolated(
     Wraps the call in manager.session_scope() so writes commit on success
     and roll back on exception. The DuckDB cursor is independent — the
     underlying connection is shared with other cursors safely.
+
+    Sanctioned multi-commit shape (DAT-502): each metric commits its own
+    session, so a phase that fails later does NOT roll these back. That is
+    safe because every write here converges under redelivery — snippets are
+    first-writer-wins (per-key app-level dedup, DAT-485) and usage counters
+    are the documented telemetry exception (see the module docstring).
     """
     from dataraum.graphs.agent import ExecutionContext
 

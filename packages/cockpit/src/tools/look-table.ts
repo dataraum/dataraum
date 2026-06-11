@@ -16,7 +16,7 @@
 // rows); the pure row→shape projection is unit-tested directly here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -34,6 +34,7 @@ import {
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName, stripSrcDigests } from "../lib/display-names";
+import { pickCurrentRow, stageOfRow } from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / top_drivers) lives in
 // `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
@@ -72,6 +73,9 @@ const ColumnReadiness = z.object({
 	resolved_type: z.string().nullable(),
 	// null band = this column has no readiness row yet (not analyzed).
 	band: z.string().nullable(),
+	// WHICH pipeline stage sealed the shown band (DAT-513): add_source /
+	// session_detect / operating_model — the grain pick made visible.
+	band_stage: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
@@ -159,6 +163,10 @@ export interface ReadinessRow {
 	columnName: string;
 	resolvedType: string | null;
 	band: string | null;
+	/** Stage of the picked verdict (DAT-513); null/absent when unanalyzed.
+	 * No run_id/history here by design — the grid labels the pick, why_column
+	 * carries the full verdict history. */
+	bandStage?: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 	topDrivers: unknown;
@@ -213,6 +221,7 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 		column_name: row.columnName,
 		resolved_type: row.resolvedType,
 		band: row.band ?? null,
+		band_stage: row.band == null ? null : (row.bandStage ?? null),
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
 			? intents.data.map((i) => ({
@@ -397,20 +406,19 @@ export async function lookTable(
 	);
 }
 
-/** Resolve a table's per-column readiness grid (the add_source view). The
- * current_* view IS the promoted run (ADR-0008/DAT-453) — the head join lives
- * in the database, so a plain LEFT JOIN suffices; no promoted run (never
- * detected) ⇒ the view is empty ⇒ every column reads back unanalyzed. */
+/** Resolve a table's per-column readiness grid. The current_* view IS the
+ * promoted run (ADR-0008/DAT-453), but it is multi-grain — the add_source
+ * table-head row and a session-grain re-roll coexist per column — which a
+ * single-row LEFT JOIN can't express. Readiness is fetched separately (all
+ * grains) and picked per column: the session re-roll supersedes the add_source
+ * verdict. No promoted run (never detected) ⇒ the view is empty ⇒ every
+ * column reads back unanalyzed. */
 async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
-	const rows = await metadataDb
+	const colRows = await metadataDb
 		.select({
 			columnId: columns.columnId,
 			columnName: columns.columnName,
 			resolvedType: columns.resolvedType,
-			band: currentEntropyReadiness.band,
-			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
-			intents: currentEntropyReadiness.intents,
-			topDrivers: currentEntropyReadiness.topDrivers,
 			// Light per-column semantics (DAT-476) — begin_session's
 			// `semantic_per_column` annotation, head-resolved by the view. Left-join
 			// nullable: an unannotated column reads all three null → semantic: null.
@@ -420,30 +428,59 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		})
 		.from(columns)
 		.leftJoin(
-			currentEntropyReadiness,
-			and(
-				eq(currentEntropyReadiness.columnId, columns.columnId),
-				// Pin the add_source grain — see why_column; without it the grid
-				// fans out to two rows per column once a session head is promoted.
-				eq(currentEntropyReadiness.viaTableHead, true),
-			),
-		)
-		.leftJoin(
 			currentSemanticAnnotations,
 			eq(currentSemanticAnnotations.columnId, columns.columnId),
 		)
 		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));
 
+	// Column-grain readiness rows carry table_id (the DAT-408 delete scope);
+	// the table-target row has column_id NULL and is excluded here.
+	const readinessRows = await metadataDb
+		.select({
+			columnId: currentEntropyReadiness.columnId,
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+			topDrivers: currentEntropyReadiness.topDrivers,
+			computedAt: currentEntropyReadiness.computedAt,
+			viaTableHead: currentEntropyReadiness.viaTableHead,
+			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
+		})
+		.from(currentEntropyReadiness)
+		.where(
+			and(
+				eq(currentEntropyReadiness.tableId, tableId),
+				isNotNull(currentEntropyReadiness.columnId),
+			),
+		);
+
+	const grainsByColumn = new Map<string, typeof readinessRows>();
+	for (const row of readinessRows) {
+		const key = row.columnId ?? "";
+		const group = grainsByColumn.get(key);
+		if (group === undefined) grainsByColumn.set(key, [row]);
+		else group.push(row);
+	}
+
 	// View columns type as nullable (Postgres views carry no NOT NULL) — the
 	// identity fields are guaranteed by the underlying tables; coalesce.
-	return rows.map((r) =>
-		projectColumnReadiness({
+	return colRows.map((r) => {
+		const readiness = pickCurrentRow(
+			grainsByColumn.get(r.columnId ?? "") ?? [],
+		);
+		return projectColumnReadiness({
 			...r,
+			band: readiness?.band ?? null,
+			bandStage: readiness === undefined ? null : stageOfRow(readiness),
+			worstIntentRisk: readiness?.worstIntentRisk ?? null,
+			intents: readiness?.intents ?? null,
+			topDrivers: readiness?.topDrivers ?? null,
 			columnId: r.columnId ?? "",
 			columnName: r.columnName ?? "",
-		}),
-	);
+		});
+	});
 }
 
 /** The `current_table_entities` filter for one table (DAT-476). The view is
@@ -512,6 +549,10 @@ async function loadTableBand(
 				eq(currentEntropyReadiness.target, tableTargetKey(tableName)),
 			),
 		)
+		// Safe without a grain pick: `table:{name}` targets are written only by
+		// session-grain runs (add_source persists column targets only), and the
+		// view's latest-promoted-wins dedup leaves ≤1 session-grain row per
+		// (session_id, target).
 		.limit(1);
 	return row ? projectTableBand(row) : null;
 }

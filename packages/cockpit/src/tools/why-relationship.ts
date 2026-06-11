@@ -35,6 +35,14 @@ import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
+import {
+	mergeCurrentEvidence,
+	pickCurrentRow,
+	projectVerdictHistory,
+	stageOfRow,
+	type VerdictHistoryEntry,
+	VerdictHistorySchema,
+} from "./readiness-grain";
 
 // --- Tool output (mirrors why_column, keyed on the relationship pair).
 
@@ -66,11 +74,17 @@ const WhyRelationshipResult = z.object({
 	// — distinct from "found but not analyzed".
 	found: z.boolean(),
 	band: z.string().nullable(),
+	// WHICH pipeline stage sealed the shown verdict (DAT-513) + when. null
+	// when unanalyzed.
+	band_stage: z.string().nullable(),
+	band_computed_at: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	analyzed: z.boolean(),
 	intents: z.array(IntentExplanation),
 	evidence: z.array(EvidenceSignal),
 	signal_count: z.number(),
+	// Every coexisting readiness snapshot for this pair, oldest first.
+	verdict_history: z.array(VerdictHistorySchema),
 	analysis: z.string(),
 	pending_teaches: z.number(),
 });
@@ -82,6 +96,9 @@ export type WhyRelationshipData = Omit<WhyRelationshipResult, "analysis">;
 /** The relationship's readiness row from the promoted run (null fields = no row). */
 export interface WhyRelReadinessRow {
 	band: string | null;
+	/** Stage that sealed the picked verdict (DAT-513); null when unanalyzed. */
+	bandStage: string | null;
+	bandComputedAt: Date | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 }
@@ -118,6 +135,7 @@ export function projectWhyRelationship(
 	readiness: WhyRelReadinessRow | null,
 	evidenceRows: WhyRelEvidenceRow[],
 	pendingTeaches: number,
+	verdictHistory: VerdictHistoryEntry[] = [],
 ): WhyRelationshipData {
 	const parsed = readiness
 		? PersistedIntent.array().safeParse(readiness.intents)
@@ -162,11 +180,17 @@ export function projectWhyRelationship(
 		// the pair in the promoted run.
 		found: readiness !== null || evidence.length > 0,
 		band: readiness?.band ?? null,
+		band_stage: readiness?.band == null ? null : (readiness.bandStage ?? null),
+		band_computed_at:
+			readiness?.band == null
+				? null
+				: (readiness.bandComputedAt?.toISOString() ?? null),
 		worst_intent_risk: readiness?.worstIntentRisk ?? null,
 		analyzed: (readiness?.band ?? null) !== null,
 		intents,
 		evidence,
 		signal_count: evidence.length,
+		verdict_history: verdictHistory,
 		pending_teaches: pendingTeaches,
 	};
 }
@@ -237,11 +261,20 @@ export async function whyRelationship(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → unanalyzed.
-	const [readinessRow] = await metadataDb
+	// Relationship targets are written by session-grain runs only, but the pick
+	// keeps the read uniform with why_column/why_table (and deterministic should
+	// a second grain ever appear).
+	const allReadinessRows = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
+			computedAt: currentEntropyReadiness.computedAt,
+			sessionId: currentEntropyReadiness.sessionId,
+			runId: currentEntropyReadiness.runId,
+			viaTableHead: currentEntropyReadiness.viaTableHead,
+			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
 		})
 		.from(currentEntropyReadiness)
 		.where(
@@ -249,14 +282,14 @@ export async function whyRelationship(
 				eq(currentEntropyReadiness.sessionId, input.session_id),
 				eq(currentEntropyReadiness.target, target),
 			),
-		)
-		.limit(1);
+		);
+	const readinessRow = pickCurrentRow(allReadinessRows);
 
 	// Evidence is keyed by the relationship target (relationship rows have no
 	// column_id); the view scopes to the promoted run, so stale runs can't
 	// inflate signal_count. View columns type as nullable (Postgres views carry
 	// no NOT NULL) — coalesce at the edge.
-	const rawEvidence = await metadataDb
+	const unmergedEvidence = await metadataDb
 		.select({
 			layer: currentEntropyObjects.layer,
 			dimension: currentEntropyObjects.dimension,
@@ -264,6 +297,11 @@ export async function whyRelationship(
 			score: currentEntropyObjects.score,
 			detectorId: currentEntropyObjects.detectorId,
 			evidence: currentEntropyObjects.evidence,
+			computedAt: currentEntropyObjects.computedAt,
+			runId: currentEntropyObjects.runId,
+			viaTableHead: currentEntropyObjects.viaTableHead,
+			viaSessionHead: currentEntropyObjects.viaSessionHead,
+			viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
 		})
 		.from(currentEntropyObjects)
 		.where(
@@ -273,6 +311,7 @@ export async function whyRelationship(
 			),
 		)
 		.orderBy(asc(currentEntropyObjects.dimension));
+	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",
@@ -287,9 +326,16 @@ export async function whyRelationship(
 		input.from_column_id,
 		input.to_column_id,
 		endpoints,
-		readinessRow ?? null,
+		readinessRow === undefined
+			? null
+			: {
+					...readinessRow,
+					bandStage: stageOfRow(readinessRow),
+					bandComputedAt: readinessRow.computedAt ?? null,
+				},
 		evidenceRows,
 		pending.length,
+		projectVerdictHistory(allReadinessRows, unmergedEvidence),
 	);
 
 	// Nothing to explain when there's no readiness row — skip the LLM call.

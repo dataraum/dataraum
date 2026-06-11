@@ -298,9 +298,8 @@ def _point_head(session: Session, table_id: str, run_id: str) -> None:
     """Flip the ``(table:{id}, "typing")`` snapshot head to ``run_id``.
 
     Mirrors ``worker.activity._upsert_head`` but scoped to the single typing
-    head a physical reset re-points — inserts at ``version=0`` if absent, else
-    re-points + bumps the version. Kept local to the typing module so a reset
-    does not depend on the worker package.
+    head a physical reset re-points (insert if absent, else re-point). Kept
+    local to the typing module so a reset does not depend on the worker package.
     """
     from datetime import UTC, datetime
 
@@ -317,14 +316,11 @@ def _point_head(session: Session, table_id: str, run_id: str) -> None:
     ).scalar_one_or_none()
     if head is None:
         session.add(
-            MetadataSnapshotHead(
-                target=target, stage=stage, run_id=run_id, promoted_at=now, version=0
-            )
+            MetadataSnapshotHead(target=target, stage=stage, run_id=run_id, promoted_at=now)
         )
     else:
         head.run_id = run_id
         head.promoted_at = now
-        head.version = head.version + 1
 
 
 def current_typing_run(session: Session, table_id: str) -> str | None:

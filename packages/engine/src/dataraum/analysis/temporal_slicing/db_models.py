@@ -71,11 +71,20 @@ class ColumnDriftSummary(Base):
 class TemporalSliceAnalysis(Base):
     """Period-level completeness and volume anomaly metrics for a slice table.
 
-    One row per period per slice table. Tracks data completeness (coverage,
-    early cutoffs) and volume anomalies (z-scores, spikes/drops/gaps).
+    One row per period per slice table PER RUN (DAT-502): the writer dedups
+    in-batch and UPSERTs on ``(slice_table_name, period_label, run_id)`` — a
+    Temporal success-redelivery (same ``run_id``) converges without the old
+    run-scoped clear, and a new run's analyses coexist with prior runs'.
+    Tracks data completeness (coverage, early cutoffs) and volume anomalies
+    (z-scores, spikes/drops/gaps).
     """
 
     __tablename__ = "temporal_slice_analyses"
+    __table_args__ = (
+        UniqueConstraint(
+            "slice_table_name", "period_label", "run_id", name="uq_tsa_slice_period_run"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(

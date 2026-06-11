@@ -23,6 +23,8 @@ function readiness(overrides: Partial<WhyReadinessRow> = {}): WhyReadinessRow {
 		columnName: "amount",
 		tableName: "orders",
 		band: "investigate",
+		bandStage: "session_detect",
+		bandComputedAt: new Date("2026-06-11T10:00:00Z"),
 		worstIntentRisk: 0.42,
 		intents: [
 			{

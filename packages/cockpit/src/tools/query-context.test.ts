@@ -35,9 +35,19 @@ const columnRows: SchemaColumnRow[] = [
 ];
 
 const concepts: SchemaConceptRow[] = [
-	{ columnId: "c1", businessConcept: "amount" },
+	{
+		columnId: "c1",
+		businessConcept: "amount",
+		temporalBehavior: null,
+		temporalBehaviorContested: null,
+	},
 	// c2 has no concept; c3 maps to account_classification.
-	{ columnId: "c3", businessConcept: "account_classification" },
+	{
+		columnId: "c3",
+		businessConcept: "account_classification",
+		temporalBehavior: null,
+		temporalBehaviorContested: null,
+	},
 ];
 
 describe("formatSchema", () => {
@@ -78,6 +88,35 @@ describe("formatSchema", () => {
 		expect(block).toContain(
 			'- "account_type" :: VARCHAR  [concept: account_classification]',
 		);
+	});
+
+	it("marks the resolved stock/flow behaviour and an open contest (DAT-509)", () => {
+		const semantics: SchemaConceptRow[] = [
+			{
+				columnId: "c1",
+				businessConcept: "account_balance",
+				temporalBehavior: "point_in_time",
+				temporalBehaviorContested: true,
+			},
+			// A resolved, uncontested flow renders the marker without the caveat —
+			// even with no concept mapped.
+			{
+				columnId: "c3",
+				businessConcept: null,
+				temporalBehavior: "additive",
+				temporalBehaviorContested: false,
+			},
+		];
+		const block = formatSchema(tables, columnRows, semantics);
+		expect(block).toContain(
+			'- "Betrag" :: DECIMAL  [concept: account_balance] (point_in_time)  [stock/flow contested]',
+		);
+		const accountLine = block
+			.split("\n")
+			.find((l) => l.includes('"account_type"'));
+		expect(accountLine).toBe('  - "account_type" :: VARCHAR (additive)');
+		// The instruction header explains both markers to the sub-agent.
+		expect(block).toContain("never SUM it across periods");
 	});
 
 	it("omits the concept tag for an unmapped column", () => {

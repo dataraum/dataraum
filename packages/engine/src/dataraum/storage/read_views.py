@@ -31,12 +31,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import text
+from sqlalchemy import UniqueConstraint, text
 
 from dataraum.storage.base import Base, load_all_models
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from sqlalchemy import Connection
+    from sqlalchemy import Table as SATable
 
 WS_TOKEN = "__WS__"
 READ_TOKEN = "__READ__"
@@ -93,6 +96,93 @@ _DUAL_GRAIN: dict[str, str] = {
 
 # The head pointer itself is exposed read-only (it IS the promoted state).
 _ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head",)
+
+# Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
+# failure contract's exempt list (DAT-502 / ADR-0010). The contract: Postgres
+# owns within-attempt atomicity (run_phase rolls back FAILED phases); writer
+# idempotency owns success-redelivery. Exactly two sanctioned writer forms:
+#
+#   (a) ``(key, run_id)`` UNIQUE + ON CONFLICT upsert — the DEFAULT, enforced
+#       structurally by :func:`enforce_run_grain` below;
+#   (b) run-scoped delete-then-insert, ONLY for producers whose row-set can
+#       legitimately SHRINK on redelivery — each listed here with its reason.
+#
+# An unlisted run-stamped table without a run-including UNIQUE fails loud at
+# generation time (boot + the ``schema-drift`` CI job via ``dump_ddl``).
+_RUN_GRAIN_EXEMPT: dict[str, str] = {
+    "entropy_readiness": (
+        "form-(b): shrink-to-empty rollup — entropy/readiness.py clears this "
+        "run's rows then re-derives; an empty rollup must mean empty rows"
+    ),
+    "entropy_objects": (
+        "form-(b): presence-keyed detector row-set — rows exist only where a "
+        "detector fired, and adjudication reads the un-run-versioned "
+        "config_overlay live, so a redelivered set can shrink "
+        "(entropy/engine.py run-scoped clear)"
+    ),
+    "enriched_views": (
+        "mutate-in-place writer — view rows update in place; the re-grain is "
+        "owed to the DAT-501 session-demotion phase (DAT-506)"
+    ),
+    "slicing_views": (
+        "mutate-in-place writer — view rows update in place; the re-grain is "
+        "owed to the DAT-501 session-demotion phase (DAT-506)"
+    ),
+    "derived_columns": (
+        "skip-guarded: CorrelationsPhase.should_skip is the run-scoped "
+        "redelivery guard (all-or-nothing single commit per run)"
+    ),
+}
+
+
+def enforce_run_grain(tables: Iterable[SATable]) -> None:
+    """Every run-stamped table carries a ``(key, run_id)`` UNIQUE or a sanctioned exemption.
+
+    The structural half of the failure contract (DAT-502): a run-stamped
+    writer without a DB-enforced grain silently duplicates under Temporal's
+    at-least-once redelivery. Fails loud — at boot and in the ``schema-drift``
+    CI gate — for: an unlisted table without a run-including UNIQUE, a listed
+    table that has GAINED one (prune the listing), and a listing that names a
+    table that is no longer run-stamped.
+
+    Args:
+        tables: SQLAlchemy ``Table`` objects to check (the live metadata).
+
+    Raises:
+        RuntimeError: any violation, all of them named at once.
+    """
+    problems: list[str] = []
+    versioned: set[str] = set()
+    for table in tables:
+        if table.name in _ALWAYS_PASSTHROUGH:
+            continue  # the head pointer: run_id is its payload, not a version axis
+        if "run_id" not in {c.name for c in table.columns}:
+            continue
+        versioned.add(table.name)
+        has_run_unique = any(
+            isinstance(c, UniqueConstraint) and "run_id" in {col.name for col in c.columns}
+            for c in table.constraints
+        )
+        if has_run_unique and table.name in _RUN_GRAIN_EXEMPT:
+            problems.append(
+                f"'{table.name}' carries a run-including UNIQUE but is still on "
+                f"_RUN_GRAIN_EXEMPT — prune the stale listing (storage/read_views.py)."
+            )
+        elif not has_run_unique and table.name not in _RUN_GRAIN_EXEMPT:
+            problems.append(
+                f"run-stamped table '{table.name}' has no (key, run_id) UNIQUE and no "
+                f"sanctioned exemption — give the writer a DB-enforced grain + upsert "
+                f"(form a) or list it with a reason in _RUN_GRAIN_EXEMPT (form b, "
+                f"storage/read_views.py; failure contract DAT-502/ADR-0010)."
+            )
+    stale = set(_RUN_GRAIN_EXEMPT) - versioned
+    if stale:
+        problems.append(
+            f"_RUN_GRAIN_EXEMPT names tables without run_id (or dropped tables): "
+            f"{sorted(stale)} — prune storage/read_views.py."
+        )
+    if problems:
+        raise RuntimeError("\n".join(problems))
 
 
 def _current_view_sql(table: str) -> str:
@@ -224,6 +314,8 @@ def read_view_statements() -> list[tuple[str, str]]:
     table cannot silently skip the read surface.
     """
     load_all_models()
+    # Failure-contract gate first (DAT-502): writer grain before read surface.
+    enforce_run_grain(Base.metadata.tables.values())
     classified = set(_COLUMN_GRAIN) | set(_TABLE_GRAIN) | set(_SESSION_GRAIN) | set(_DUAL_GRAIN)
 
     statements: list[tuple[str, str]] = []

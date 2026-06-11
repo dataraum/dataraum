@@ -1,10 +1,12 @@
-"""DAT-448: drift summaries + period analyses are run-versioned.
+"""DAT-448/DAT-502: drift summaries + period analyses are run-versioned form-(a) writers.
 
 Both writers were append-only — a re-run within a session duplicated rows and
-the detector loaders read the pile unscoped, cross-run. The persists now stamp
-``run_id`` and replace only THIS run's prior rows (idempotent under Temporal
-activity retry; earlier runs' rows untouched), and ``load_drift_summaries``
-filters to one run.
+the detector loaders read the pile unscoped, cross-run. Both now stamp
+``run_id`` and UPSERT on their ``(key, run_id)`` UNIQUEs (no run-scoped clear):
+a Temporal success-redelivery — committed rows, ack lost, same ``run_id``
+re-runs — converges in place, and earlier runs' rows stay untouched.
+Commits between persists make the redelivery real (the prior attempt's rows
+are durable when the retry fires).
 """
 
 from __future__ import annotations
@@ -72,6 +74,7 @@ class TestDriftRunVersioning:
         persist_drift_results(
             [_drift_result()], "slice_t", "date", real_session, session_id="s1", run_id="run-a"
         )
+        real_session.commit()
         persist_drift_results(
             [_drift_result()], "slice_t", "date", real_session, session_id="s1", run_id="run-b"
         )
@@ -80,17 +83,19 @@ class TestDriftRunVersioning:
         assert {r.run_id for r in rows} == {"run-a", "run-b"}
         assert len(rows) == 2  # one per run — NOT an append-duplicate
 
-    def test_retry_replaces_only_this_run(self, real_session):
+    def test_retry_converges_by_upsert(self, real_session):
         persist_drift_results(
             [_drift_result()], "slice_t", "date", real_session, session_id="s1", run_id="run-a"
         )
-        # Temporal at-least-once retry of the same activity (same run_id):
+        real_session.commit()  # the redelivered attempt sees committed rows
+        # Temporal at-least-once redelivery of the same activity (same run_id):
         persist_drift_results(
             [_drift_result()], "slice_t", "date", real_session, session_id="s1", run_id="run-a"
         )
+        real_session.commit()
 
         rows = real_session.execute(select(ColumnDriftSummary)).scalars().all()
-        assert len(rows) == 1  # replaced in place, no duplicate
+        assert len(rows) == 1  # upsert converged in place, no duplicate
 
 
 class TestPeriodRunVersioning:
@@ -119,8 +124,11 @@ class TestPeriodRunVersioning:
 
     def test_stamps_run_and_retry_is_idempotent(self, real_session):
         persist_period_results(self._result(), real_session, session_id="s1", run_id="run-a")
+        real_session.commit()  # the redelivered attempt sees committed rows
         persist_period_results(self._result(), real_session, session_id="s1", run_id="run-a")
+        real_session.commit()
         persist_period_results(self._result(), real_session, session_id="s1", run_id="run-b")
+        real_session.commit()
 
         rows = real_session.execute(select(TemporalSliceAnalysis)).scalars().all()
         assert {r.run_id for r in rows} == {"run-a", "run-b"}

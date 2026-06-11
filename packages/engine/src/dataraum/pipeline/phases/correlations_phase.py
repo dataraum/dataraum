@@ -78,7 +78,13 @@ class CorrelationsPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run derived column detection, dispatching to enriched view or typed table."""
+        """Run derived column detection, dispatching to enriched view or typed table.
+
+        No in-run "already analyzed" re-check here (DAT-502): ``should_skip``
+        owns the run-scoped redelivery guard, and a partially-analyzed state
+        within a run cannot commit — the phase runner rolls back FAILED phases
+        and the session commits once on success.
+        """
         # Source-free: the session's selected typed tables (DAT-403).
         typed_tables = self._typed_tables(ctx)
 
@@ -86,22 +92,6 @@ class CorrelationsPhase(BasePhase):
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
         table_ids = [t.table_id for t in typed_tables]
-
-        # Check which tables THIS run already analyzed (run-versioned, DAT-448)
-        derived_stmt = select(DerivedColumn.table_id.distinct()).where(
-            DerivedColumn.table_id.in_(table_ids),
-            DerivedColumn.run_id == ctx.run_id,
-        )
-        analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
-
-        unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_ids]
-
-        if not unanalyzed_tables:
-            return PhaseResult.success(
-                outputs={"correlations": [], "derived_columns": []},
-                records_processed=0,
-                records_created=0,
-            )
 
         # Build enriched view lookup: fact_table_id → EnrichedView
         enriched_views_by_fact: dict[str, EnrichedView] = {}
@@ -114,7 +104,7 @@ class CorrelationsPhase(BasePhase):
         total_derived = 0
         warnings: list[str] = []
 
-        for typed_table in unanalyzed_tables:
+        for typed_table in typed_tables:
             enriched_view = enriched_views_by_fact.get(typed_table.table_id)
             if enriched_view:
                 # Enriched view exists — superset finds same-table + cross-table

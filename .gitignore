@@ -15,6 +15,7 @@ data_sources/
 .claude/memory/
 .claude/worktrees/
 .claude/.mailbox/
+.claire/
 .claude/settings.local.json
 .worktrees/
 .claude/skills/temporal-developer

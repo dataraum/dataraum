@@ -55,6 +55,85 @@ a `manual` row and human rows coexist with the llm row (per-(pair, method)
 dedup); the teach protocol measured the human witnesses through it. The other
 two remainders (resolve write-back, pure-decline focal pairs) stand.
 
+## 2026-06-11 (DAT-502): failure contract — idempotent writers; behavior-preserving for detectors
+
+Phase 1 of epic DAT-501 (ADR-0010): writer mechanics only — run-scoped
+delete-then-insert clears replaced by `(key, run_id)` UNIQUEs + upserts
+(relationship candidates, TypeCandidate ×2, SliceDefinition,
+TemporalSliceAnalysis, drift, measure_aggregation_lineage), lifecycle
+declare-or-reuse, wave-0 guard deletions (import rollback helper,
+correlations in-run re-check, slice_analysis cross-run stale-skip,
+`MetadataSnapshotHead.version`), and a schema-drift gate that every
+run-stamped table carries a grain or a sanctioned exemption.
+
+- **No detector logic, thresholds, or measurement math changed — recall
+  baselines must NOT move.** Any calibration delta after this merge is a
+  regression in the writer mechanics, not a detector change; flag it.
+- Schema deltas eval may notice when introspecting `ws_<id>`:
+  `type_candidates.detected_pattern` is now NOT NULL DEFAULT `''` (was
+  nullable; `''` = no pattern) + new UNIQUE; new UNIQUEs on
+  `slice_definitions` / `temporal_slice_analyses`; `metadata_snapshot_head`
+  lost its dead `version` column. Unit/eval harnesses that write run-stamped
+  rows should stamp `run_id` (the new UNIQUEs are NULLS-DISTINCT).
+- `slice_analysis` re-run-after-teach now produces fresh analyses (the
+  DAT-448 stale-skip arm is gone) — teach-loop evals should see slice
+  re-analysis instead of a silent skip.
+- **Existing Postgres workspaces need `docker compose down -v` (a fresh
+  schema).** `create_all` is additive: it does NOT apply the three new
+  UNIQUEs, the `detected_pattern NOT NULL DEFAULT ''`, or the
+  `metadata_snapshot_head.version` column drop to an existing volume. There is
+  no migration tooling — consistent with the disposable-workspace / clean-cut
+  design.
+- **Status**: pending
+- 
+## 2026-06-11 (DAT-504): lake convergence — db_recipe raw-schema write + eligibility quarantine idempotency
+
+No detector or recall impact — substrate-placement and idempotency fixes only.
+`extract_backend` now writes recipe tables into `lake.raw` via
+`CREATE OR REPLACE` (they used to land in `lake.main` in production while
+metadata claimed layer="raw") and restores the connection's (catalog, schema)
+pair after extraction. Eligibility's column drop is now the convergent
+rebuild-from-recipe → one-shot `lake.quarantine."quarantine_columns_<bare>"`
+replace → drop sequence; lake failures fail the activity instead of degrading
+to warnings. Shipped `lake.main` strays are NOT cleaned up (workspaces are
+disposable per DD/34045953) — a wiped stack is the clean baseline.
+
+- **Status**: no action needed in eval/testdata
+
+## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511
+
+The deferred live operating_model smoke ran end-to-end on a wiped stack (main =
+DAT-442 #284 + DAT-509 #285): 5 clean finance CSVs → add_source ×5 →
+begin_session → operating_model, real LLM throughout. The spine works; the
+TB↔GL watcher executed; columns_used fan-out reached the exact TB columns
+(cross_table_consistency 1.0 on account_id/period/debit_balance/credit_balance
+under the operating_model head); debit_balance/credit_balance resolved
+point_in_time UNCONTESTED (witnesses agree on clean data — the contested tag
+correctly stays off).
+
+**DO NOT ingest the validation outcomes as calibration signal yet.** The run
+surfaced a sequencing bug (DAT-511): the operating model was started ~90s
+BEFORE begin_session's detect head promoted (caused by the cockpit narrating
+completions one stage early, DAT-510), so validation GROUNDING ran against
+pre-promote session state. The clean-leg outcomes — TB↔GL 91.7% match,
+GL↔invoice 98.5%, 1 sign-convention violation, 2 date-ordering violations,
+and 5/9 metrics failing execution (the income-statement family: Net Income,
+EBITDA Margin, Net/Operating Margin, Operating Income) — may be artifacts of
+that early grounding rather than engine behavior. Re-run the clean leg after
+DAT-511's guard lands; THEN compare against the clean bands. If the noise
+reproduces post-fix, the date-ordering count (2) and the metric grounding
+failures become real precision findings (the A4 due-date fix was supposed to
+zero the former).
+
+**DAT-511 guard landed**: `resolve_operating_model_scope` now fails born-loud
+(non-retryable `PhaseFailed`) when the session has linked tables but no promoted
+begin_session head — operating_model can no longer ground over a partial
+workspace. Eval drivers must await `beginSessionWorkflow` completion before
+starting `operatingModelWorkflow` (the sequential runner already does); a driver
+that pipelines them will now fail fast instead of producing quiet noise.
+
+- **Status**: pending (DAT-511 merged; smoke rerun owes eval the clean-leg verdict)
+
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 
 LANE-NOTES.md (lane scratch, deleted at merge) was the only record of three

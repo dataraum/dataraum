@@ -47,9 +47,28 @@ class TypeCandidate(Base):
     Note: Type inference is based ONLY on value analysis,
     NOT on column names (column names are semantically meaningful
     but fragile for type inference).
+
+    Many-per-column, so the identity widens past ``(column_id, run_id)``:
+    one row per ``(column_id, data_type, detected_pattern, run_id)`` —
+    a column's distinct type hypotheses within one run. Both writers
+    (the raw inference and the typed copies, DAT-502) upsert on this key, so
+    a Temporal success-redelivery (same ``run_id``) converges without a
+    run-scoped clear, while a new run's candidates coexist with prior runs'.
+    ``detected_pattern`` is part of the identity, hence NOT NULL with ``''``
+    as the no-pattern value (a NULL would be NULLS-DISTINCT and break the
+    grain); readers gate on truthiness, so ``''`` reads as "no pattern".
     """
 
     __tablename__ = "type_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "column_id",
+            "data_type",
+            "detected_pattern",
+            "run_id",
+            name="uq_type_candidate_column_type_pattern_run",
+        ),
+    )
 
     candidate_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
@@ -73,8 +92,11 @@ class TypeCandidate(Base):
     parse_success_rate: Mapped[float | None] = mapped_column(Float)
     failed_examples: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
-    # Pattern info (value-based, NOT column name based)
-    detected_pattern: Mapped[str | None] = mapped_column(String)
+    # Pattern info (value-based, NOT column name based). Part of the row
+    # identity — NOT NULL, '' = no pattern (DAT-502).
+    detected_pattern: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
     pattern_match_rate: Mapped[float | None] = mapped_column(Float)
 
     # Unit detection (from Pint)

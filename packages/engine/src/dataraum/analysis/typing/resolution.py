@@ -18,7 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
@@ -583,25 +583,15 @@ def resolve_types(
     # downstream consumers can query by typed column_id directly.
     # Note: quarantine_count/rate are already set on raw TypeCandidates above.
     #
-    # TypeCandidate is many-per-column, so its grain can't take a
-    # ``(column_id, run_id)`` key — clear THIS run's prior copies first (scoped to
-    # ``run_id`` so a NEW run's rows coexist with prior runs'). TypeDecision is
-    # one-per-column-per-run, so it upserts on ``(column_id, run_id)`` instead:
-    # idempotent under a Temporal at-least-once retry (same run_id) without the
-    # delete, and a new run still coexists. The promoted head names which run is
-    # current.
-    typed_col_ids = list(typed_column_map.values())
-    if typed_col_ids:
-        session.execute(
-            delete(TypeCandidate).where(
-                TypeCandidate.column_id.in_(typed_col_ids),
-                TypeCandidate.run_id == run_id,
-            )
-        )
-        session.flush()
-
+    # Both copies are form-(a) upserts (DAT-502): TypeDecision on
+    # ``(column_id, run_id)``; TypeCandidate — many-per-column — on its widened
+    # identity ``(column_id, data_type, detected_pattern, run_id)``. Idempotent
+    # under a Temporal success-redelivery (same run_id, no run-scoped clear),
+    # while a new run's copies coexist with prior runs'. The promoted head
+    # names which run is current.
     spec_by_column_id = {spec.column_id: spec for spec in specs}
     type_decision_rows: list[dict[str, Any]] = []
+    type_candidate_rows: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:
@@ -628,29 +618,31 @@ def resolve_types(
         for tc in raw_col.type_candidates:
             if tc.run_id != run_id:
                 continue  # copy only THIS run's candidates (DAT-413 coexistence)
-            session.add(
-                TypeCandidate(
-                    candidate_id=str(uuid4()),
-                    session_id=session_id,
-                    column_id=target_col_id,
-                    run_id=run_id,
-                    detected_at=tc.detected_at,
-                    data_type=tc.data_type,
-                    confidence=tc.confidence,
-                    parse_success_rate=tc.parse_success_rate,
-                    failed_examples=tc.failed_examples,
-                    detected_pattern=tc.detected_pattern,
-                    pattern_match_rate=tc.pattern_match_rate,
-                    detected_unit=tc.detected_unit,
-                    unit_confidence=tc.unit_confidence,
-                    quarantine_count=tc.quarantine_count,
-                    quarantine_rate=tc.quarantine_rate,
-                )
-            )
+            key = (target_col_id, tc.data_type, tc.detected_pattern, run_id)
+            type_candidate_rows[key] = {
+                "session_id": session_id,
+                "column_id": target_col_id,
+                "run_id": run_id,
+                "detected_at": tc.detected_at,
+                "data_type": tc.data_type,
+                "confidence": tc.confidence,
+                "parse_success_rate": tc.parse_success_rate,
+                "failed_examples": tc.failed_examples,
+                "detected_pattern": tc.detected_pattern,
+                "pattern_match_rate": tc.pattern_match_rate,
+                "detected_unit": tc.detected_unit,
+                "unit_confidence": tc.unit_confidence,
+                "quarantine_count": tc.quarantine_count,
+                "quarantine_rate": tc.quarantine_rate,
+            }
 
-    # Upsert the typed TypeDecision copies on ``(column_id, run_id)`` (idempotent
-    # under a same-run retry; the delete-before-insert is gone for this model).
     upsert(session, TypeDecision, type_decision_rows, index_elements=["column_id", "run_id"])
+    upsert(
+        session,
+        TypeCandidate,
+        list(type_candidate_rows.values()),
+        index_elements=["column_id", "data_type", "detected_pattern", "run_id"],
+    )
 
     logger.debug(
         "type_resolution_completed",

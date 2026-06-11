@@ -783,13 +783,14 @@ CREATE TABLE type_candidates (
 	confidence FLOAT NOT NULL, 
 	parse_success_rate FLOAT, 
 	failed_examples JSON, 
-	detected_pattern VARCHAR, 
+	detected_pattern VARCHAR DEFAULT '' NOT NULL, 
 	pattern_match_rate FLOAT, 
 	detected_unit VARCHAR, 
 	unit_confidence FLOAT, 
 	quarantine_count INTEGER, 
 	quarantine_rate FLOAT, 
 	CONSTRAINT pk_type_candidates PRIMARY KEY (candidate_id), 
+	CONSTRAINT uq_type_candidate_column_type_pattern_run UNIQUE (column_id, data_type, detected_pattern, run_id), 
 	CONSTRAINT fk_type_candidates_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
 	CONSTRAINT fk_type_candidates_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
 );

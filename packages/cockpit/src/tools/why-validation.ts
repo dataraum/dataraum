@@ -27,6 +27,7 @@ import {
 import { getPendingOverlays } from "../db/metadata/pending-overlays";
 import { currentValidationResults } from "../db/metadata/schema";
 import { renderEvidenceDetail, stripSrcDigests } from "../lib/display-names";
+import { columnsUsedStrings } from "./look-validation";
 
 // --- Tool output (mirrors the why_* found/anatomy conventions, keyed on the
 // validation id).
@@ -58,6 +59,9 @@ const WhyValidationResult = z.object({
 	// The result's detail payload, rendered through the shared evidence
 	// sanitizer — "" when absent.
 	details: z.string(),
+	// The exact "table.column" entries the executed check read (DAT-509) —
+	// which columns a failed check implicates. Empty until executed.
+	columns_used: z.array(z.string()),
 	pending_teaches: z.number(),
 });
 export type WhyValidationResult = z.infer<typeof WhyValidationResult>;
@@ -75,6 +79,8 @@ export interface WhyValidationResultRow {
 	sqlUsed: string | null;
 	executedAt: Date | null;
 	details: unknown;
+	// JSON column — unknown at the boundary, narrowed by columnsUsedStrings.
+	columnsUsed: unknown;
 }
 
 /**
@@ -109,6 +115,7 @@ export function projectWhyValidation(
 		sql_used: result?.sqlUsed == null ? null : stripSrcDigests(result.sqlUsed),
 		executed_at: result?.executedAt?.toISOString() ?? null,
 		details: renderEvidenceDetail(result?.details),
+		columns_used: columnsUsedStrings(result?.columnsUsed),
 		pending_teaches: pendingTeaches,
 	};
 }
@@ -142,6 +149,7 @@ export async function whyValidation(
 			sqlUsed: currentValidationResults.sqlUsed,
 			executedAt: currentValidationResults.executedAt,
 			details: currentValidationResults.details,
+			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults)
 		.where(

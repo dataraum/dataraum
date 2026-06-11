@@ -36,6 +36,7 @@ const EXECUTED: WhyValidationResult = {
 		"SELECT i.id FROM invoices i LEFT JOIN payments p ON i.id = p.invoice_id",
 	executed_at: "2026-06-07T12:00:00.000Z",
 	details: JSON.stringify({ failing_rows: 12 }),
+	columns_used: ["invoices.id", "payments.invoice_id"],
 	pending_teaches: 0,
 };
 
@@ -79,6 +80,9 @@ describe("ValidationWhyWidget (DAT-440)", () => {
 		expect(
 			screen.getByTestId("canvas-validation-why-message").textContent,
 		).toContain("12 invoices have no matching journal entry");
+		expect(
+			screen.getByTestId("canvas-validation-why-columns").textContent,
+		).toContain("invoices.id");
 		expect(
 			screen.getByTestId("canvas-validation-why-sql").textContent,
 		).toContain("LEFT JOIN payments");

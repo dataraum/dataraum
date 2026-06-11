@@ -14,7 +14,7 @@
 
 import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -34,6 +34,7 @@ import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
+import { mergeCurrentEvidence, pickCurrentRow } from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / drivers) is shared with look_table —
 // see `db/metadata/readiness-schemas.ts`. Parsed leniently below.
@@ -238,25 +239,23 @@ export async function whyColumn(
 
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
-	// run → empty views → unanalyzed (null band).
-	const [readinessRow] = await metadataDb
-		.select({
-			band: currentEntropyReadiness.band,
-			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
-			intents: currentEntropyReadiness.intents,
-		})
-		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.columnId, input.column_id),
-				// Pin the add_source grain: after begin_session, a column has a
-				// second current row sealed by the session head (different
-				// detector subset) — via_table_head keeps the old head-join
-				// semantics deterministic.
-				eq(currentEntropyReadiness.viaTableHead, true),
-			),
-		)
-		.limit(1);
+	// run → empty views → unanalyzed (null band). The view is multi-grain
+	// (add_source table head + session-grain heads coexist) — fetch all grains
+	// and pick explicitly: session re-roll supersedes the add_source verdict.
+	const readinessRow = pickCurrentRow(
+		await metadataDb
+			.select({
+				band: currentEntropyReadiness.band,
+				worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+				intents: currentEntropyReadiness.intents,
+				computedAt: currentEntropyReadiness.computedAt,
+				viaTableHead: currentEntropyReadiness.viaTableHead,
+				viaSessionHead: currentEntropyReadiness.viaSessionHead,
+				viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
+			})
+			.from(currentEntropyReadiness)
+			.where(eq(currentEntropyReadiness.columnId, input.column_id)),
+	);
 
 	// View columns type as nullable (Postgres views carry no NOT NULL); the
 	// underlying tables guarantee these — coalesce at the edge.
@@ -270,24 +269,28 @@ export async function whyColumn(
 	};
 
 	// Evidence comes from the same promoted-run view, so stale runs can't mix in
-	// or inflate signal_count.
-	const rawEvidence = await metadataDb
-		.select({
-			layer: currentEntropyObjects.layer,
-			dimension: currentEntropyObjects.dimension,
-			subDimension: currentEntropyObjects.subDimension,
-			score: currentEntropyObjects.score,
-			detectorId: currentEntropyObjects.detectorId,
-			evidence: currentEntropyObjects.evidence,
-		})
-		.from(currentEntropyObjects)
-		.where(
-			and(
-				eq(currentEntropyObjects.columnId, input.column_id),
-				eq(currentEntropyObjects.viaTableHead, true),
-			),
-		)
-		.orderBy(asc(currentEntropyObjects.dimension));
+	// or inflate signal_count. Multi-grain merge per detector: add_source-only
+	// detectors keep their table-head row; re-adjudicated detectors (e.g.
+	// temporal_behavior's session pass) and operating_model fan-out rows
+	// (cross_table_consistency on failed criticals) show the session verdict.
+	const rawEvidence = mergeCurrentEvidence(
+		await metadataDb
+			.select({
+				layer: currentEntropyObjects.layer,
+				dimension: currentEntropyObjects.dimension,
+				subDimension: currentEntropyObjects.subDimension,
+				score: currentEntropyObjects.score,
+				detectorId: currentEntropyObjects.detectorId,
+				evidence: currentEntropyObjects.evidence,
+				computedAt: currentEntropyObjects.computedAt,
+				viaTableHead: currentEntropyObjects.viaTableHead,
+				viaSessionHead: currentEntropyObjects.viaSessionHead,
+				viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
+			})
+			.from(currentEntropyObjects)
+			.where(eq(currentEntropyObjects.columnId, input.column_id))
+			.orderBy(asc(currentEntropyObjects.dimension)),
+	);
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",

@@ -19,7 +19,7 @@
 // are smoke-covered (a live ws_<id>); the pure projection is unit-tested here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -33,6 +33,7 @@ import {
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
 import { fileName } from "../lib/file-uri";
+import { pickCurrentRow } from "./readiness-grain";
 
 // The calibrated bands the engine emits (entropy_readiness.band). A column with
 // no readiness row (left-join miss) counts as `unanalyzed`, never as a band.
@@ -371,21 +372,55 @@ export async function listTables(
 		.where(and(isNull(sources.archivedAt), sourceFilter))
 		.orderBy(asc(sources.createdAt), asc(tables.tableName));
 
-	const columnBandRows = await metadataDb
-		.select({ tableId: columns.tableId, band: currentEntropyReadiness.band })
+	// Per-column bands, all grains: the readiness view is multi-grain (the
+	// add_source table-head row and a session-grain re-roll coexist per column),
+	// so a single-row LEFT JOIN either double-counts or freezes the add_source
+	// verdict. Fetch columns and readiness separately and pick per column —
+	// session re-roll wins (readiness-grain.ts). The readiness fetch is bounded
+	// to the inventory's tables (column-grain rows carry table_id, DAT-408).
+	const columnRows = await metadataDb
+		.select({ tableId: columns.tableId, columnId: columns.columnId })
 		.from(columns)
 		.innerJoin(tables, eq(tables.tableId, columns.tableId))
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.leftJoin(
-			currentEntropyReadiness,
-			and(
-				eq(currentEntropyReadiness.columnId, columns.columnId),
-				// Pin the add_source grain — see why_column; prevents double-
-				// counting columns once a session head is promoted.
-				eq(currentEntropyReadiness.viaTableHead, true),
-			),
-		)
 		.where(and(isNull(sources.archivedAt), sourceFilter));
+
+	const tableIds = tableRows
+		.map((t) => t.tableId ?? "")
+		.filter((id) => id !== "");
+	const readinessRows =
+		tableIds.length === 0
+			? []
+			: await metadataDb
+					.select({
+						columnId: currentEntropyReadiness.columnId,
+						band: currentEntropyReadiness.band,
+						computedAt: currentEntropyReadiness.computedAt,
+						viaTableHead: currentEntropyReadiness.viaTableHead,
+						viaSessionHead: currentEntropyReadiness.viaSessionHead,
+						viaOperatingModelHead:
+							currentEntropyReadiness.viaOperatingModelHead,
+					})
+					.from(currentEntropyReadiness)
+					.where(
+						and(
+							inArray(currentEntropyReadiness.tableId, tableIds),
+							isNotNull(currentEntropyReadiness.columnId),
+						),
+					);
+
+	const grainsByColumn = new Map<string, typeof readinessRows>();
+	for (const row of readinessRows) {
+		const key = row.columnId ?? "";
+		const group = grainsByColumn.get(key);
+		if (group === undefined) grainsByColumn.set(key, [row]);
+		else group.push(row);
+	}
+	const columnBandRows = columnRows.map((c) => ({
+		tableId: c.tableId,
+		band:
+			pickCurrentRow(grainsByColumn.get(c.columnId ?? "") ?? [])?.band ?? null,
+	}));
 
 	// Session/detect-grain orientation (DAT-477). The current_* views resolve the
 	// promoted detect run server-side (the head join lives in the DB, ADR-0008),

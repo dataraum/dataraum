@@ -38,6 +38,7 @@ const EXECUTED = {
 	status: "executed",
 	passed: false,
 	message: "12 invoices have no matching journal entry",
+	columns_used: ["invoices.id", "journal_lines.invoice_id"],
 };
 
 const BLOCKED = {
@@ -49,6 +50,7 @@ const BLOCKED = {
 	status: null,
 	passed: null,
 	message: null,
+	columns_used: [],
 };
 
 const analyzed: LookValidationResult = {

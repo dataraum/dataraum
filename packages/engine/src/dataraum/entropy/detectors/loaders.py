@@ -706,6 +706,58 @@ def load_documented_dependencies(session: Session) -> set[frozenset[str]]:
     return out
 
 
+def load_declared_formula(
+    session: Session, table_name: str, column_name: str
+) -> dict[str, Any] | None:
+    """The user-declared expected formula for one column (DAT-447, Option B).
+
+    The derived_value teach rides the EXISTING ``validation`` overlay type: a
+    declared expected formula is a spec-shaped ``validation`` teach row with
+    ``check_type: "expected_formula"`` and ``parameters: {table, column,
+    formula}`` (full shape documented on ``core.overlay._apply_validation``).
+    The validation phase executes the same row as a declared check every run;
+    this read pools it as the ``human_declaration`` witness on the matching
+    formula claim. Mirrors ``load_documented_dependencies``: a direct
+    ``config_overlay`` read, ``superseded_at IS NULL`` filters undone teaches,
+    ``created_at`` ASC + last write wins (the applier's upsert convention).
+
+    Returns ``{"formula": <str>}`` or ``None`` when no declaration targets the
+    column. Identity matching is case-insensitive on table + column names;
+    formula canonicalization stays the measurement's job (``parse_formula``).
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
+        session.execute(
+            select(ConfigOverlay)
+            .where(
+                ConfigOverlay.type == "validation",
+                ConfigOverlay.superseded_at.is_(None),
+            )
+            .order_by(ConfigOverlay.created_at.asc())
+        ).scalars()
+    )
+    target_table = table_name.strip().lower()
+    target_column = column_name.strip().lower()
+    declared: str | None = None
+    for row in rows:
+        payload = row.payload or {}
+        if payload.get("check_type") != "expected_formula":
+            continue
+        params = payload.get("parameters") or {}
+        if (
+            str(params.get("table") or "").strip().lower() != target_table
+            or str(params.get("column") or "").strip().lower() != target_column
+        ):
+            continue
+        formula = params.get("formula")
+        if formula:
+            declared = str(formula)  # rows are created_at ASC → last write wins
+    if declared is None:
+        return None
+    return {"formula": declared}
+
+
 def load_structural_reconciliation(
     session: Session, column_id: str, run_id: str | None
 ) -> dict[str, Any] | None:

@@ -145,3 +145,10 @@ witnesses:
   derived_value:
     formula_discovery: 0.75
     llm_hypothesis: 0.357
+    # human_declaration: PLACEHOLDER prior, NOT rig-measured (DAT-447 Option B
+    # — the expected-formula declaration riding the validation teach). Same
+    # class as relationship manual_curation's measured ceiling: an explicit
+    # human assertion, "quite low but not zero" error (Philipp). Uncalibrated
+    # until the teach protocol measures this witness; the derived_value
+    # calibrated flag above vouches for the two rig-measured witnesses only.
+    human_declaration: 0.875

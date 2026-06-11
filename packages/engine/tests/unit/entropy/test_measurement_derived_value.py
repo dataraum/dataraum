@@ -234,6 +234,98 @@ class TestMeasure:
         by_id = {w.witness_id: w.reliability for w in adjs[0].witnesses}
         assert by_id == {"formula_discovery": 0.55, "llm_hypothesis": 0.44}
 
+    def test_declared_formula_becomes_a_graded_claim(self) -> None:
+        # DAT-447 Option B: the declaration alone creates a slot, the loader's
+        # row grading is the data witness on it — adjudicated, never trusted.
+        adjs = measure_derived_value(
+            "orders",
+            "total",
+            [],
+            None,
+            declaration={"formula": "subtotal + tax", "match_rate": 0.99},
+        )
+        assert len(adjs) == 1
+        adj = adjs[0]
+        assert adj.declared and not adj.discovered and not adj.hypothesized
+        assert {w.witness_id for w in adj.witnesses} == {"formula_discovery", "human_declaration"}
+        assert adj.result.conflict < 0.1
+        assert adj.result.posterior[_HOLDS] > 0.5
+
+    def test_violated_declaration_is_contested_not_obeyed(self) -> None:
+        # Human asserts holds, the rows grade the formula broken → loud conflict.
+        adjs = measure_derived_value(
+            "orders",
+            "total",
+            [],
+            None,
+            declaration={"formula": "subtotal + tax", "match_rate": 0.1},
+        )
+        assert adjs[0].result.conflict > 0.3
+
+    def test_declaration_abstains_on_other_slots(self) -> None:
+        # Declaring X is not evidence against Y (the type_claim lesson).
+        adjs = measure_derived_value(
+            "orders",
+            "total",
+            [{"formula": "subtotal * tax_rate", "match_rate": 0.99, "derivation_type": "product"}],
+            None,
+            declaration={"formula": "subtotal + tax", "match_rate": 0.1},
+        )
+        disc = next(a for a in adjs if a.discovered)
+        assert [w.witness_id for w in disc.witnesses] == ["formula_discovery"]
+        assert disc.result.conflict == 0.0
+
+    def test_declaration_matching_discovery_shares_one_slot(self) -> None:
+        # Canonical identity, not strings: a commuted declaration corroborates
+        # the discovered claim on ONE slot; the discovery's grading stands.
+        adjs = measure_derived_value(
+            "orders",
+            "total",
+            [{"formula": "tax + subtotal", "match_rate": 0.99, "derivation_type": "sum"}],
+            None,
+            declaration={"formula": "subtotal + tax", "match_rate": None},
+        )
+        assert len(adjs) == 1
+        assert adjs[0].discovered and adjs[0].declared
+        assert adjs[0].match_rate == pytest.approx(0.99)
+        assert adjs[0].result.conflict < 0.1
+
+    def test_degenerate_declarations_abstain(self) -> None:
+        # Self-referential or unparseable declared formula = no declaration —
+        # no manufactured claim, the human witness abstains everywhere.
+        assert (
+            measure_derived_value(
+                "orders",
+                "total",
+                [],
+                None,
+                declaration={"formula": "total - discount", "match_rate": 0.99},
+            )
+            == []
+        )
+        assert (
+            measure_derived_value(
+                "orders",
+                "total",
+                [],
+                None,
+                declaration={"formula": "some prose, not a formula", "match_rate": None},
+            )
+            == []
+        )
+
+    def test_human_declaration_reliability_threads(self) -> None:
+        adjs = measure_derived_value(
+            "orders",
+            "total",
+            [],
+            None,
+            declaration={"formula": "a + b", "match_rate": 0.9},
+            reliabilities={"formula_discovery": 0.5, "human_declaration": 0.33},
+        )
+        by_id = {w.witness_id: w.reliability for w in adjs[0].witnesses}
+        assert by_id["human_declaration"] == 0.33
+
     def test_duplicate_discovered_rows_collapse_to_one_slot(self) -> None:
         adjs = measure_derived_value(
             "orders",

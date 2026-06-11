@@ -346,6 +346,17 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     ``validation_id`` replaces — the last row for a given id wins (rows are
     pre-sorted ASC by ``created_at``). A framed vertical resolves
     overlay-only: an empty base list plus rows IS the declared set.
+
+    Expected-formula declaration (DAT-447, Option B): the ``derived_value``
+    measurement's teach rides this type — a spec-shaped payload with
+    ``check_type: "expected_formula"`` and ``parameters: {table, column,
+    formula}`` (formula in the discovery's binary-arithmetic language, e.g.
+    ``"subtotal + tax"``; suggested identity ``validation_id:
+    "expected_formula:{table}.{column}"`` so a re-declaration replaces). The
+    validation phase executes it as a declared check every run via this
+    applier; ``entropy.detectors.loaders.load_declared_formula`` reads the
+    same rows directly and pools the declaration as the ``human_declaration``
+    witness on the matching formula claim.
     """
     out = dict(base)
     specs = [dict(s) for s in (out.get("validations") or [])]

@@ -33,6 +33,7 @@ def _context(
     correlation: dict[str, Any] | None = None,
     semantic: dict[str, Any] | None = None,
     grading: dict[str, Any] | None = None,
+    declaration: dict[str, Any] | None = None,
     reliabilities: dict[str, float] | None = None,
 ) -> DetectorContext:
     results: dict[str, Any] = {}
@@ -42,6 +43,8 @@ def _context(
         results["semantic"] = semantic
     if grading is not None:
         results["hypothesis_grading"] = grading
+    if declaration is not None:
+        results["declaration"] = declaration
     if reliabilities is not None:
         results["reliabilities"] = reliabilities
     return DetectorContext(table_name="orders", column_name="total", analysis_results=results)
@@ -213,6 +216,61 @@ def test_witnesses_carried_for_persistence() -> None:
     claim_fields = {w.claim_field for w in obj.witnesses}
     assert claim_fields == {e["claim_field"] for e in obj.evidence}
     assert all(set(w.distribution) == {"holds", "fails"} for w in obj.witnesses)
+
+
+def test_emitted_evidence_carries_the_validation_teach_suggestion() -> None:
+    # DAT-447 Option B routing: every emitted evidence entry carries the
+    # validation teach suggestion — always-emit (no thresholds), naming the
+    # column and the check intent, picking NO truth (the user declares).
+    (obj,) = DerivedValueDetector().detect(_context(correlation=_DISCOVERED))
+    for entry in obj.evidence:
+        assert entry["teach_suggestion"] == {
+            "type": "validation",
+            "check": "expected_formula",
+            "table": "orders",
+            "column": "total",
+        }
+
+
+def test_declared_formula_matching_data_collapses_conflict_on_its_claim() -> None:
+    # The closure shape (DAT-447): pre-teach the name advertises subtotal+tax
+    # but the rows violate it (graded 0.1) — the hypothesis claim is contested.
+    # The user declares the formula the rows actually follow; the loader graded
+    # it 0.99. On the DECLARED claim the human and the data agree → conflict
+    # collapses there and the posterior resolves holds. The name-vs-data
+    # dispute stays honest on the hypothesis claim (no override of the LLM).
+    ctx = _context(
+        semantic={
+            "derived_formula_hypothesis": "subtotal + tax",
+            "derived_formula_confidence": 0.9,
+        },
+        grading={"match_rate": 0.1, "matches": 10, "total": 100},
+        declaration={"formula": "subtotal * tax_rate", "match_rate": 0.99},
+    )
+    (obj,) = DerivedValueDetector().detect(ctx)
+    declared = next(e for e in obj.evidence if e["declared"])
+    contested = next(e for e in obj.evidence if e["hypothesized"])
+    assert declared["formula_conflict"] < 0.1
+    assert declared["posterior"]["holds"] > 0.5
+    assert contested["formula_conflict"] > 0.3
+    witness_ids = {w.witness_id for w in obj.witnesses if w.claim_field == declared["claim_field"]}
+    assert "human_declaration" in witness_ids
+
+
+def test_declared_formula_violated_by_data_keeps_conflict_high() -> None:
+    # The human is a witness, never an oracle: the rows follow the discovered
+    # product formula perfectly while the user declares subtotal+tax, which the
+    # loader graded broken (0.1). On the declared claim human-holds pools
+    # against data-fails → conflict stays high AND reaches the score (honest
+    # conflict, no silent trust in the declaration).
+    ctx = _context(
+        correlation=_DISCOVERED,
+        declaration={"formula": "subtotal + tax", "match_rate": 0.1},
+    )
+    (obj,) = DerivedValueDetector().detect(ctx)
+    declared = next(e for e in obj.evidence if e["declared"])
+    assert declared["formula_conflict"] > 0.3  # flagging is weight-robust: contested, loud
+    assert obj.score >= declared["formula_conflict"]  # the conflict reaches the score
 
 
 def test_threaded_reliabilities_reach_the_witnesses() -> None:

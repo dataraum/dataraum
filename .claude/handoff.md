@@ -4,6 +4,48 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11: derived_value teach routing — declaration rides the validation teach (DAT-447, Option B)
+
+The derived_value band now hands the user an executable action. Two halves:
+
+- **Suggestion (always-emit, like temporal_behavior):** every emitted evidence
+  entry carries `teach_suggestion: {type: "validation", check:
+  "expected_formula", table, column}` — no thresholds, no truth picked (both
+  candidate formulas already ride the per-claim evidence). Option B is a
+  design call by Philipp (2026-06-11): the declaration rides the EXISTING
+  validation teach (proven applier; the declaration doubles as a continuously
+  executed check) instead of a new expected_formula family. Documented caveat:
+  it conflates a quality check with a semantic declaration about a column —
+  revisit if concept-level formula declarations arrive in the ontology.
+- **Consumer (the declaration becomes a HUMAN witness):** the teach payload is
+  a spec-shaped `validation` overlay row with `check_type: "expected_formula"`
+  and `parameters: {table, column, formula}` (full shape documented on
+  `core.overlay._apply_validation`; suggested `validation_id:
+  "expected_formula:{table}.{column}"` so re-declaring replaces). The
+  validation phase executes it as a declared check every run;
+  `entropy.detectors.loaders.load_declared_formula` reads the same rows
+  directly, the detector row-grades a NOVEL declared formula with the
+  hypothesis statistic, and `measure_derived_value` pools a one-hot
+  `human_declaration` witness (r placeholder 0.875, manual_curation's class —
+  uncalibrated, the derived_value calibrated flag vouches only for the two
+  rig-measured witnesses) on the declared formula's claim, abstaining
+  elsewhere. Declared slots are first-class in BOTH score legs: a declaration
+  the rows violate keeps conflict high and reaches `obj.score` (witness, never
+  oracle); corroborated → conflict collapses on that claim.
+
+Eval implications: the teach-closure test for derived_value is PER-CLAIM — a
+declaration matching the data collapses conflict on the DECLARED claim and
+resolves its posterior; it does NOT silence the name-vs-data conflict on the
+contested hypothesis claim (the LLM's name reading still disagrees with the
+rows — no deterministic override of its judgment), so the column-level score
+stays banded under wholesale divergence even post-teach. If the eval expects
+score-level closure for this family, that is an open design question to raise
+with Philipp, not a bug in the routing. New evidence key `declared` (bool) per
+entry; witnesses gain `human_declaration` rows in claim_witnesses.
+
+- **Status**: pending eval verification (Tier-1 green engine-side: detector +
+  measurement + loader + vocabulary guard, 52 tests)
+
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 
 LANE-NOTES.md (lane scratch, deleted at merge) was the only record of three

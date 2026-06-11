@@ -38,4 +38,4 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
 - [0008 — Promoted reads are enforced by the database (head-joined views + grants), not by reader convention](./0008-promoted-read-views.md)
 - [0010 — Failure contract: (key, run_id) idempotent writers; skips and deletes are exceptions](./0010-failure-contract-idempotent-writers.md)
 - [0009 — Entropy measures disagreement between witnesses; no deterministic semantic overrides](./0009-entropy-as-disagreement.md)
-- [0009 — Entropy measurements ship as the 7-piece measurement pack; all numbers live in config](./0011-measurement-pack.md)
+- [0011 — Entropy measurements ship as the 7-piece measurement pack; all numbers live in config](./0011-measurement-pack.md)

@@ -30,7 +30,9 @@ function isSessionGrain(row: GrainRow): boolean {
 	return row.viaSessionHead === true || row.viaOperatingModelHead === true;
 }
 
-/** Latest by computedAt; null sorts oldest; ties keep the earlier row. */
+/** Latest by computedAt; null sorts oldest; ties keep the earlier row —
+ * "earlier" meaning input-array order, so an `.orderBy` added at a call site
+ * would silently change the tie-break. Ties are genuinely arbitrary today. */
 function latest<T extends GrainRow>(rows: readonly T[]): T | undefined {
 	let best: T | undefined;
 	for (const row of rows) {

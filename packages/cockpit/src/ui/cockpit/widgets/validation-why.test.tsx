@@ -81,6 +81,9 @@ describe("ValidationWhyWidget (DAT-440)", () => {
 			screen.getByTestId("canvas-validation-why-message").textContent,
 		).toContain("12 invoices have no matching journal entry");
 		expect(
+			screen.getByTestId("canvas-validation-why-columns").textContent,
+		).toContain("invoices.id");
+		expect(
 			screen.getByTestId("canvas-validation-why-sql").textContent,
 		).toContain("LEFT JOIN payments");
 		expect(

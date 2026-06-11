@@ -540,6 +540,10 @@ async function loadTableBand(
 				eq(currentEntropyReadiness.target, tableTargetKey(tableName)),
 			),
 		)
+		// Safe without a grain pick: `table:{name}` targets are written only by
+		// session-grain runs (add_source persists column targets only), and the
+		// view's latest-promoted-wins dedup leaves ≤1 session-grain row per
+		// (session_id, target).
 		.limit(1);
 	return row ? projectTableBand(row) : null;
 }

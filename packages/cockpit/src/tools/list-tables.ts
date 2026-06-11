@@ -19,7 +19,7 @@
 // are smoke-covered (a live ws_<id>); the pure projection is unit-tested here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, asc, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -376,9 +376,8 @@ export async function listTables(
 	// add_source table-head row and a session-grain re-roll coexist per column),
 	// so a single-row LEFT JOIN either double-counts or freezes the add_source
 	// verdict. Fetch columns and readiness separately and pick per column —
-	// session re-roll wins (readiness-grain.ts). The readiness fetch is
-	// workspace-wide (no source join — modest row counts); rows for columns
-	// outside the filter simply never match below.
+	// session re-roll wins (readiness-grain.ts). The readiness fetch is bounded
+	// to the inventory's tables (column-grain rows carry table_id, DAT-408).
 	const columnRows = await metadataDb
 		.select({ tableId: columns.tableId, columnId: columns.columnId })
 		.from(columns)
@@ -386,17 +385,29 @@ export async function listTables(
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
 		.where(and(isNull(sources.archivedAt), sourceFilter));
 
-	const readinessRows = await metadataDb
-		.select({
-			columnId: currentEntropyReadiness.columnId,
-			band: currentEntropyReadiness.band,
-			computedAt: currentEntropyReadiness.computedAt,
-			viaTableHead: currentEntropyReadiness.viaTableHead,
-			viaSessionHead: currentEntropyReadiness.viaSessionHead,
-			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
-		})
-		.from(currentEntropyReadiness)
-		.where(isNotNull(currentEntropyReadiness.columnId));
+	const tableIds = tableRows
+		.map((t) => t.tableId ?? "")
+		.filter((id) => id !== "");
+	const readinessRows =
+		tableIds.length === 0
+			? []
+			: await metadataDb
+					.select({
+						columnId: currentEntropyReadiness.columnId,
+						band: currentEntropyReadiness.band,
+						computedAt: currentEntropyReadiness.computedAt,
+						viaTableHead: currentEntropyReadiness.viaTableHead,
+						viaSessionHead: currentEntropyReadiness.viaSessionHead,
+						viaOperatingModelHead:
+							currentEntropyReadiness.viaOperatingModelHead,
+					})
+					.from(currentEntropyReadiness)
+					.where(
+						and(
+							inArray(currentEntropyReadiness.tableId, tableIds),
+							isNotNull(currentEntropyReadiness.columnId),
+						),
+					);
 
 	const grainsByColumn = new Map<string, typeof readinessRows>();
 	for (const row of readinessRows) {

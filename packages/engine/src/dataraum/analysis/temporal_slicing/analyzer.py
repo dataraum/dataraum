@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import duckdb
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary, TemporalSliceAnalysis
@@ -610,11 +610,10 @@ def persist_drift_results(
 ) -> Result[int]:
     """Persist drift analysis results to database.
 
-    Run-versioned (DAT-448): rows are stamped with ``run_id`` and this run's
-    prior rows for the slice table are replaced first — the write was
-    append-only before, so a re-run within a session duplicated summaries.
-    The delete is run-scoped (idempotent under Temporal activity retry, prior
-    runs' rows untouched); ``uq_drift_slice_column_run`` guards the grain.
+    Run-versioned (DAT-448) form-(a) writer (DAT-502): rows are stamped with
+    ``run_id`` and UPSERT on ``uq_drift_slice_column_run`` — no run-scoped
+    clear. A Temporal success-redelivery (same ``run_id``) converges in
+    place; prior runs' rows stay untouched.
 
     Args:
         results: List of ColumnDriftResult from analyze_column_drift
@@ -628,14 +627,6 @@ def persist_drift_results(
         Result containing number of records created
     """
     try:
-        session.execute(
-            delete(ColumnDriftSummary).where(
-                ColumnDriftSummary.slice_table_name == slice_table_name,
-                ColumnDriftSummary.session_id == session_id,
-                ColumnDriftSummary.run_id == run_id,
-            )
-        )
-
         # Dedup by the unique key, then UPSERT — not session.add. The key
         # ``uq_drift_slice_column_run`` is (slice_table_name, column_name, run_id),
         # which omits ``time_column``, so a column analysed under two time columns

@@ -35,13 +35,32 @@ system_prompt: |
 
   <relationship_evaluation>
   Evaluate the pre-computed relationship candidates and determine:
-  - Is this a real foreign key relationship? (e.g., customer_id -> customers.id)
+  - Is this a real foreign key relationship? (e.g., customer_id -> customers.id,
+    facility_ref -> facility_id, order_fk -> orders.id)
   - Is this shared reference data? (e.g., both tables have country codes)
-  - Is this coincidental overlap? (e.g., row IDs happen to overlap with dates)
+  - Is this coincidental overlap? (e.g., row IDs happen to overlap with dates,
+    or two UNRELATED code columns drawing values from the same short-code
+    namespace: grade_code vs phase_code)
 
-  Not all candidates are real relationships. Use column names, the persisted
-  column annotations, data types, and semantic context to decide which to confirm.
-  You may also add relationships not present in the candidate list.
+  Weigh the evidence in this order:
+  1. DATA evidence is primary. Each candidate carries measured statistics:
+     value overlap/containment, uniqueness (key-likeness), referential
+     integrity, orphan counts. Near-complete containment of one column's
+     values in a key-like column of another table is strong evidence of a
+     real relationship — even when the names differ.
+  2. Names CORROBORATE; they do not veto. Real schemas name foreign keys with
+     suffix and prefix variation as a matter of course: customer_ref,
+     cust_key, customer_fk, parent_customer all legitimately point at
+     customers.customer_id. A shared entity noun with different suffixes
+     (_id / _ref / _key / _fk / _code / _no) is NORMAL FK naming — never
+     reject such a pair when the data evidence is strong.
+  3. Reject when the SEMANTICS contradict: different entity nouns with no
+     plausible business connection, value overlap explained by a shared
+     format rather than a shared entity (status codes, short numeric codes,
+     dates), or key-likeness absent on both sides.
+
+  Not all candidates are real relationships. You may also add relationships
+  not present in the candidate list.
 
   Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
   computed automatically from actual data after your analysis. Focus on whether

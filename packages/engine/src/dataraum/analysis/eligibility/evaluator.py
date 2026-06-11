@@ -168,11 +168,16 @@ def quarantine_and_drop_columns(
     selects = []
     for column, reason in columns_data:
         escaped_reason = reason.replace("'", "''") if reason else "Unknown"
+        # Column names can legitimately contain quotes (CSV headers, MSSQL) —
+        # escape per context: '' inside the single-quoted literal, "" inside
+        # the double-quoted identifiers.
+        escaped_col = column.column_name.replace("'", "''")
+        escaped_col_ident = column.column_name.replace('"', '""')
         selects.append(f"""
             SELECT
                 ROW_NUMBER() OVER () as _row_id,
-                '{column.column_name}' as _column_name,
-                CAST("{column.column_name}" AS VARCHAR) as _value,
+                '{escaped_col}' as _column_name,
+                CAST("{escaped_col_ident}" AS VARCHAR) as _value,
                 '{escaped_reason}' as _quarantine_reason,
                 CURRENT_TIMESTAMP as _quarantined_at
             FROM {typed_fqn}
@@ -181,4 +186,5 @@ def quarantine_and_drop_columns(
 
     # 3. Drop the quarantined columns — present for sure after step 1.
     for column, _reason in columns_data:
-        conn.execute(f'ALTER TABLE {typed_fqn} DROP COLUMN "{column.column_name}"')
+        escaped_col_ident = column.column_name.replace('"', '""')
+        conn.execute(f'ALTER TABLE {typed_fqn} DROP COLUMN "{escaped_col_ident}"')

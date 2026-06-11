@@ -129,6 +129,7 @@ def extract_backend(
     # restores BOTH. Extraction targets are composed as ``lake.raw`` FQNs,
     # never against the connection's USE state.
     snapshot_row = duckdb_conn.execute("SELECT current_catalog(), current_schema()").fetchone()
+    # ("memory", "main") is unreachable with a live connection; defensive.
     restore_catalog, restore_schema = snapshot_row if snapshot_row else ("memory", "main")
 
     # 1. Install + load extension. Honors the image's pre-baked extension

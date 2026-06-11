@@ -17,6 +17,8 @@ EXCLUDE`` from the recipe-rebuilt table — see the DAT-504 refine notes).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
@@ -77,6 +79,7 @@ def test_all_null_key_named_column_drops_without_failing_the_run(
 
 def _typed_table_and_recipe(harness):
     """The typed table's (bare name, full-column recipe DDL, all-null Column)."""
+    # expire_on_commit=False keeps .column_name accessible after session close
     with harness.session_factory() as session:
         typed_table = session.execute(select(Table).where(Table.layer == "typed")).scalar_one()
         recipe = session.execute(
@@ -185,6 +188,50 @@ class TestLakeConvergence:
         assert len(quarantine_rows) == 4
         assert placements == ["quarantine"]
 
+        # Metadata-side convergence: exactly ONE eligibility record for the
+        # dropped column — guards the NULL-run_id NULLS-DISTINCT
+        # duplicate-insert hazard on redelivery.
+        with harness.session_factory() as session:
+            records = (
+                session.execute(
+                    select(ColumnEligibilityRecord).where(
+                        ColumnEligibilityRecord.column_name == "logikal30_id"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(records) == 1
+
+    def test_quoted_column_name_survives_quarantine_and_drop(self, harness) -> None:
+        """Column names can legitimately contain quotes (CSV headers, MSSQL);
+        the quarantine SELECT's literal and the CAST/DROP identifiers must
+        each be escaped for their context — and stay convergent on a re-run."""
+        bare = "positions_quoted"
+        quoted_col = 'it\'s "qty"'
+        ident = quoted_col.replace('"', '""')
+        recipe_ddl = (
+            f'CREATE OR REPLACE TABLE lake.typed."{bare}" AS '
+            f"SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, \"{ident}\")"
+        )
+        harness.duckdb_conn.execute(recipe_ddl)
+        # The function only reads .column_name — a stand-in Column suffices.
+        column = SimpleNamespace(column_name=quoted_col)
+
+        for _ in range(2):
+            quarantine_and_drop_columns(
+                harness.duckdb_conn,
+                bare,
+                [(column, "Column has 100% null values")],
+                typed_recipe_ddl=recipe_ddl,
+            )
+
+        typed_cols, quarantine_rows, placements = _lake_state(harness, bare)
+        assert typed_cols == ["id"]
+        assert len(quarantine_rows) == 2
+        assert {r[1] for r in quarantine_rows} == {quoted_col}
+        assert placements == ["quarantine"]
+
     def test_missing_recipe_fails_loud(self, harness, csv_with_all_null_id_column) -> None:
         """No stored typed recipe at the run grain = fail the phase, no
         fallback drop — convergence depends on the rebuild step."""
@@ -196,6 +243,7 @@ class TestLakeConvergence:
                 select(MaterializationRecipe).where(
                     MaterializationRecipe.table_id == typed_table.table_id,
                     MaterializationRecipe.layer == "typed",
+                    MaterializationRecipe.run_id.is_(None),
                 )
             ).scalar_one()
             session.delete(recipe)

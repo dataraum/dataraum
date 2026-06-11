@@ -4,6 +4,22 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (wave 2): derived_value score = max(mismatch, identity conflict)
+
+The detection-derived-cal-v1 corpus exposed a silent false negative: under
+WHOLESALE divergence (all rows follow formula B while the NAME advertises A)
+the best graded formula matches perfectly → the scalar was 0.0 and the column
+banded ready, while the pooled name-vs-data conflict (C ≈ 0.8 on the named
+claim) rode in evidence only. `obj.score` is now the WORSE of the two honest
+statistics — best-graded mismatch rate and the identity conflict — with the
+conflict leg behind the same hypothesis-hygiene gate as the scalar (review
+wave-1 blocker stays closed). Eval implications: wholesale recall flips green;
+corroborated clean columns score the residual pooled conflict (~0.01-0.05,
+below every floor); ORDERING_DETECTORS semantics unchanged. Also:
+stage_date_ordering sql_hints no longer present due_date as a process stage
+(A4 sweep caught the validation LLM flagging the 65% of clean payments that
+arrive EARLY on 2 of 4 seeds).
+
 ## 2026-06-11: calibration program wave 1 + the TB↔GL watcher (DAT-432/442/444, lanes L2/L3/L9 + L7)
 
 **Four witnessed measurements now** (was two): `relationship_discovery` (lane L2 —

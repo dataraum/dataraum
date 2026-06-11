@@ -1,9 +1,10 @@
 """The derived-value adjudication detector shell (ADR-0009, 2nd witness).
 
 Drives detect() with injected analysis_results (no DB/DuckDB) and asserts the
-score contract (honest discovered mismatch rate; an LLM hypothesis alone never
-moves the scalar), the loss-readable per-slot evidence, and the witness
-provenance carried for persistence.
+score contract — score = max(best graded mismatch, hygiene-passing name-vs-data
+identity conflict); an ungraded or hygiene-failing LLM hypothesis never moves
+it — the loss-readable per-slot evidence, and the witness provenance carried
+for persistence.
 """
 
 from __future__ import annotations
@@ -51,21 +52,57 @@ def test_nothing_in_play_emits_nothing() -> None:
     assert DerivedValueDetector().detect(_context(correlation={"derived_columns": []})) == []
 
 
-def test_score_stays_the_honest_discovered_mismatch_rate() -> None:
-    # The eval's ordering contract: score = 1 − match_rate of the discovered
-    # formula, regardless of the witness pool around it.
+def test_corroborated_discovery_scores_the_honest_mismatch_rate() -> None:
+    # Name and data agree (the hypothesis canonicalizes to the discovered
+    # formula): the identity-conflict leg is quiet and the score is the plain
+    # 1 − match_rate of the discovered formula. No boost.
     ctx = _context(
         correlation=_DISCOVERED,
+        semantic={
+            "derived_formula_hypothesis": "tax_rate * subtotal",  # commutative = same claim
+            "derived_formula_confidence": 0.9,
+        },
+        grading={"match_rate": 0.99, "matches": 99, "total": 100},
+    )
+    (obj,) = DerivedValueDetector().detect(ctx)
+    (entry,) = obj.evidence
+    # max(1 − 0.99, residual pooled conflict of two near-agreeing witnesses) —
+    # either way a corroborated formula stays far below any band.
+    assert obj.score == pytest.approx(max(0.01, entry["formula_conflict"]))
+    assert obj.score < 0.05
+    assert obj.target == "column:orders.total"
+    assert obj.sub_dimension == "formula_match"
+
+
+def test_wholesale_divergence_scores_the_identity_conflict() -> None:
+    # The wave-2 cal-corpus false negative: the data follows the DISCOVERED
+    # formula perfectly (mismatch leg 0.0) while the NAME advertises a
+    # different identity whose grading fails — the pooled conflict on that
+    # hygiene-passing claim is the entropy and must reach the score (and so
+    # the loss rollup). detection-derived-cal-v1: 3/3 wholesale columns were
+    # silently ready under the scalar-only contract.
+    ctx = _context(
+        correlation={
+            "derived_columns": [
+                {
+                    "derived_column_name": "total",
+                    "match_rate": 1.0,
+                    "formula": "subtotal * tax_rate",
+                    "derivation_type": "product",
+                    "source_column_names": ["subtotal", "tax_rate"],
+                }
+            ]
+        },
         semantic={
             "derived_formula_hypothesis": "subtotal + tax",
             "derived_formula_confidence": 0.9,
         },
-        grading={"match_rate": 0.1, "matches": 10, "total": 100},
+        grading={"match_rate": 0.0, "matches": 0, "total": 100},
     )
     (obj,) = DerivedValueDetector().detect(ctx)
-    assert obj.score == pytest.approx(0.01)  # 1 − 0.99, no boost
-    assert obj.target == "column:orders.total"
-    assert obj.sub_dimension == "formula_match"
+    hyp = next(e for e in obj.evidence if e["hypothesized"])
+    assert obj.score == pytest.approx(hyp["formula_conflict"])
+    assert obj.score > 0.3  # bands — visible to the loss rollup, not evidence-only
 
 
 def test_graded_hypothesis_drives_the_scalar() -> None:

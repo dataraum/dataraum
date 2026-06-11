@@ -2,8 +2,12 @@
 
 Two signals per derived column (ADR-0009, derived-value second witness):
 
-* ``obj.score`` stays the honest formula-mismatch rate ``1 − match_rate`` of the
-  best GRADED formula — discovered or hypothesis, because grading is data:
+* ``obj.score`` is the WORSE of two honest statistics: the formula-mismatch rate
+  ``1 − match_rate`` of the best GRADED formula, and the pooled name-vs-data
+  identity conflict on a hygiene-passing claim (wholesale divergence: the data
+  follows B perfectly, so the mismatch leg is 0.0, while the name advertises A —
+  the disagreement IS the entropy). Both legs share the hypothesis hygiene gate.
+  The mismatch leg is grounded because grading is data:
   the rate is measured over the actual rows; the LLM only chose which identity
   to test (DAT-442 reset: no boost; a 10% mismatch scores 0.10). The eval
   asserts this as the ordering "injected separates from clean"; severity per
@@ -195,7 +199,23 @@ class DerivedValueDetector(EntropyDetector):
         )
         graded_rates = [a.match_rate for a in adjudications if a.discovered or hypothesis_scalar_ok]
         best_rate = max((r for r in graded_rates if r is not None), default=None)
-        score = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
+        scalar = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
+        # The name-vs-data identity conflict joins the score (wave-2 cal corpus
+        # finding): under WHOLESALE divergence every row follows formula B, so
+        # the best graded formula matches perfectly and the scalar is 0.0 while
+        # the NAMED claim carries the real entropy — the LLM hypothesis (what
+        # the name advertises) leans holds, the row grading says fails, pooled
+        # C ≈ 0.8. That disagreement was evidence-only and thus invisible to
+        # the loss rollup — a silent false negative on 3/3 wholesale columns
+        # (detection-derived-cal-v1). The conflict leg honours the same
+        # hypothesis-hygiene gate as the scalar: a low-confidence guess or a
+        # thin grading sample must not band a clean column through this door
+        # either (review wave-1 blocker).
+        identity_conflict = max(
+            (a.result.conflict for a in adjudications if a.discovered or hypothesis_scalar_ok),
+            default=0.0,
+        )
+        score = max(scalar, identity_conflict)
 
         # Match-quality labels (display only), configurable thresholds.
         match_exact = detector_config.get("match_exact", 0.99)

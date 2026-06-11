@@ -84,7 +84,7 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
 
     manager = _manager(session_factory)
 
-    # First promote: one head per (table, stage), all at version 0, run-A.
+    # First promote: one head per (table, stage), all at run-A.
     promoted = promote_run(manager, identity)
     assert promoted == len(table_ids) * len(_PROMOTE_STAGES)
 
@@ -94,9 +94,8 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
         (f"table:{t}", s) for t in table_ids for s in _PROMOTE_STAGES
     }
     assert all(h.run_id == "run-A" for h in heads)
-    assert all(h.version == 0 for h in heads)
 
-    # Second promote with a new run: no new rows, run_id re-pointed, version bumped.
+    # Second promote with a new run: no new rows, run_id re-pointed.
     identity_b = identity.model_copy(update={"run_id": "run-B"})
     promoted_again = promote_run(manager, identity_b)
     assert promoted_again == len(table_ids) * len(_PROMOTE_STAGES)
@@ -104,7 +103,6 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
     heads_after = _heads(session_factory)
     assert len(heads_after) == len(table_ids) * len(_PROMOTE_STAGES)  # upsert, not insert
     assert all(h.run_id == "run-B" for h in heads_after)
-    assert all(h.version == 1 for h in heads_after)
 
 
 def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):

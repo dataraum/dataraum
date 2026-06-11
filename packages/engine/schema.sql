@@ -35,7 +35,6 @@ CREATE TABLE metadata_snapshot_head (
 	stage VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	promoted_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	version INTEGER NOT NULL, 
 	CONSTRAINT pk_metadata_snapshot_head PRIMARY KEY (head_id), 
 	CONSTRAINT uq_snapshot_head_target_stage UNIQUE (target, stage)
 );

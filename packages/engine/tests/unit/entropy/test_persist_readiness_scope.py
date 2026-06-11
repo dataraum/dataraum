@@ -157,7 +157,6 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
             stage="detect",
             run_id="run-1",
             promoted_at=datetime.now(UTC),
-            version=0,
         )
     )
     session.flush()

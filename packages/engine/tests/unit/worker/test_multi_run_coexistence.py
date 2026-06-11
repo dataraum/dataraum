@@ -180,9 +180,7 @@ def test_two_runs_semantic_annotations_for_same_column_coexist(session_factory: 
 def test_head_run_id_returns_promoted_run(session_factory: Any) -> None:
     """``head_run_id`` resolves the promoted run for one ``(target, stage)``."""
     with session_factory() as session:
-        session.add(
-            MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B", version=3)
-        )
+        session.add(MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B"))
         session.commit()
 
     with session_factory() as session:

@@ -711,14 +711,11 @@ def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: da
     ).scalar_one_or_none()
     if head is None:
         session.add(
-            MetadataSnapshotHead(
-                target=target, stage=stage, run_id=run_id, promoted_at=now, version=0
-            )
+            MetadataSnapshotHead(target=target, stage=stage, run_id=run_id, promoted_at=now)
         )
     else:
         head.run_id = run_id
         head.promoted_at = now
-        head.version = head.version + 1
 
 
 def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:

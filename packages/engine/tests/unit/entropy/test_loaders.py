@@ -305,7 +305,6 @@ class TestLoaderHeadFallback:
                 stage=stage,
                 run_id=run_id,
                 promoted_at=datetime.now(UTC),
-                version=0,
             )
         )
         session.flush()

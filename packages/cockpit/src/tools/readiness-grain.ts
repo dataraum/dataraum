@@ -17,6 +17,8 @@
 // at the cockpit's read edge. SQL stays grain-unpinned; the pick is explicit,
 // pure, and unit-tested (the DAT-474 deterministic-pick rule).
 
+import { z } from "zod";
+
 /** The head discriminators + recency every multi-grain view row carries. */
 export interface GrainRow {
 	viaTableHead: boolean | null;
@@ -28,6 +30,24 @@ export interface GrainRow {
 /** Session-grain = sealed by a begin_session detect or operating_model head. */
 function isSessionGrain(row: GrainRow): boolean {
 	return row.viaSessionHead === true || row.viaOperatingModelHead === true;
+}
+
+/** The pipeline stage a snapshot row was sealed by (DAT-513). The pick is only
+ * evaluable if the caller can SEE it — every surface that shows a picked
+ * verdict labels it with this stage. `operating_model` outranks
+ * `session_detect` in the label when both bits are set (they never are today:
+ * a row is sealed by exactly one head; the order is defensive). */
+export type GrainStage =
+	| "add_source"
+	| "session_detect"
+	| "operating_model"
+	| "unknown";
+
+export function stageOfRow(row: GrainRow): GrainStage {
+	if (row.viaOperatingModelHead === true) return "operating_model";
+	if (row.viaSessionHead === true) return "session_detect";
+	if (row.viaTableHead === true) return "add_source";
+	return "unknown";
 }
 
 /** Latest by computedAt; null sorts oldest; ties keep the earlier row —
@@ -92,3 +112,86 @@ export function mergeCurrentEvidence<
 	}
 	return merged;
 }
+
+/** One snapshot row in a target's verdict history (DAT-513) — the disclosure
+ * surface for the pick: every coexisting row, labeled, oldest first. Cross-
+ * session rows appear here instead of being silently dropped. */
+export interface VerdictHistoryEntry {
+	stage: GrainStage;
+	band: string;
+	worst_intent_risk: number | null;
+	computed_at: string | null;
+	session_id: string | null;
+	run_id: string | null;
+	/** Distinct detectors the stage's rollup drew on — CUMULATIVE by stage,
+	 * because each stage's readiness is recomputed over the run-resolved merge
+	 * of every earlier grain (engine `_resolve_runs`): the growing count is
+	 * exactly WHY a later snapshot supersedes. null when the caller passed no
+	 * evidence or the row's stage is unknown. */
+	signals: number | null;
+}
+
+/** Pipeline order for cumulative evidence attribution; unknown is excluded. */
+const STAGE_ORDER: Record<GrainStage, number> = {
+	add_source: 0,
+	session_detect: 1,
+	operating_model: 2,
+	unknown: -1,
+};
+
+/** Project a target's coexisting readiness rows into the labeled history.
+ * `evidenceRows` (optional) are the UNMERGED entropy-object rows for the same
+ * target — their grain bits attribute each detector to a stage, and a history
+ * row counts every detector at or below its own stage (cumulative — the scope
+ * its rollup was actually computed over). */
+export function projectVerdictHistory(
+	readinessRows: readonly (GrainRow & {
+		band: string | null;
+		worstIntentRisk: number | null;
+		sessionId: string | null;
+		runId: string | null;
+	})[],
+	evidenceRows: readonly (GrainRow & { detectorId: string | null })[] = [],
+): VerdictHistoryEntry[] {
+	function signalsAtOrBelow(stage: GrainStage): number | null {
+		if (evidenceRows.length === 0 || stage === "unknown") return null;
+		const cap = STAGE_ORDER[stage];
+		const detectors = new Set<string>();
+		for (const e of evidenceRows) {
+			if (e.detectorId === null) continue;
+			const order = STAGE_ORDER[stageOfRow(e)];
+			// Legacy rows without grain bits rank as add_source-era evidence.
+			if ((order === -1 ? 0 : order) <= cap) detectors.add(e.detectorId);
+		}
+		return detectors.size;
+	}
+	return (
+		readinessRows
+			.map((r) => {
+				const stage = stageOfRow(r);
+				return {
+					stage,
+					band: r.band ?? "",
+					worst_intent_risk: r.worstIntentRisk ?? null,
+					computed_at: r.computedAt?.toISOString() ?? null,
+					session_id: r.sessionId ?? null,
+					run_id: r.runId ?? null,
+					signals: signalsAtOrBelow(stage),
+				};
+			})
+			// ISO strings sort chronologically; null → "" sorts before any real
+			// timestamp (oldest first).
+			.sort((a, b) => (a.computed_at ?? "").localeCompare(b.computed_at ?? ""))
+	);
+}
+
+/** Zod mirror of {@link VerdictHistoryEntry} for the tools' output schemas. */
+export const VerdictHistorySchema = z.object({
+	stage: z.string(),
+	band: z.string(),
+	worst_intent_risk: z.number().nullable(),
+	computed_at: z.string().nullable(),
+	session_id: z.string().nullable(),
+	run_id: z.string().nullable(),
+	signals: z.number().nullable(),
+});

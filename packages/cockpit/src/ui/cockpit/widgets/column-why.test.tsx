@@ -27,6 +27,8 @@ const analyzed: WhyColumnResult = {
 	table_name: "orders",
 	found: true,
 	band: "investigate",
+	band_stage: "session_detect",
+	band_computed_at: "2026-06-11T10:00:00.000Z",
 	worst_intent_risk: 0.42,
 	analyzed: true,
 	intents: [
@@ -54,6 +56,26 @@ const analyzed: WhyColumnResult = {
 		},
 	],
 	signal_count: 1,
+	verdict_history: [
+		{
+			stage: "add_source",
+			band: "blocked",
+			worst_intent_risk: 0.8,
+			computed_at: "2026-06-11T09:00:00.000Z",
+			session_id: "sess-1",
+			run_id: "run-add",
+			signals: 7,
+		},
+		{
+			stage: "session_detect",
+			band: "investigate",
+			worst_intent_risk: 0.42,
+			computed_at: "2026-06-11T10:00:00.000Z",
+			session_id: "sess-1",
+			run_id: "run-ses",
+			signals: 12,
+		},
+	],
 	analysis: "amount has no declared unit, so summing it could mix currencies.",
 	pending_teaches: 0,
 };
@@ -103,6 +125,26 @@ describe("ColumnWhyWidget (DAT-351)", () => {
 				},
 			],
 			signal_count: 1,
+			verdict_history: [
+				{
+					stage: "add_source",
+					band: "blocked",
+					worst_intent_risk: 0.8,
+					computed_at: "2026-06-11T09:00:00.000Z",
+					session_id: "sess-1",
+					run_id: "run-add",
+					signals: 7,
+				},
+				{
+					stage: "session_detect",
+					band: "investigate",
+					worst_intent_risk: 0.42,
+					computed_at: "2026-06-11T10:00:00.000Z",
+					session_id: "sess-1",
+					run_id: "run-ses",
+					signals: 12,
+				},
+			],
 		});
 		// Empty dimension → a dash, not a hollow cell; the detector still humanizes.
 		expect(

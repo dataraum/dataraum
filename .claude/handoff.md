@@ -34,6 +34,20 @@ run-stamped table carries a grain or a sanctioned exemption.
   no migration tooling — consistent with the disposable-workspace / clean-cut
   design.
 - **Status**: pending
+- 
+## 2026-06-11 (DAT-504): lake convergence — db_recipe raw-schema write + eligibility quarantine idempotency
+
+No detector or recall impact — substrate-placement and idempotency fixes only.
+`extract_backend` now writes recipe tables into `lake.raw` via
+`CREATE OR REPLACE` (they used to land in `lake.main` in production while
+metadata claimed layer="raw") and restores the connection's (catalog, schema)
+pair after extraction. Eligibility's column drop is now the convergent
+rebuild-from-recipe → one-shot `lake.quarantine."quarantine_columns_<bare>"`
+replace → drop sequence; lake failures fail the activity instead of degrading
+to warnings. Shipped `lake.main` strays are NOT cleaned up (workspaces are
+disposable per DD/34045953) — a wiped stack is the clean baseline.
+
+- **Status**: no action needed in eval/testdata
 
 ## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511
 
@@ -60,7 +74,14 @@ reproduces post-fix, the date-ordering count (2) and the metric grounding
 failures become real precision findings (the A4 due-date fix was supposed to
 zero the former).
 
-- **Status**: pending (blocked on DAT-511; smoke rerun owes eval the clean-leg verdict)
+**DAT-511 guard landed**: `resolve_operating_model_scope` now fails born-loud
+(non-retryable `PhaseFailed`) when the session has linked tables but no promoted
+begin_session head — operating_model can no longer ground over a partial
+workspace. Eval drivers must await `beginSessionWorkflow` completion before
+starting `operatingModelWorkflow` (the sequential runner already does); a driver
+that pipelines them will now fail fast instead of producing quiet noise.
+
+- **Status**: pending (DAT-511 merged; smoke rerun owes eval the clean-leg verdict)
 
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 

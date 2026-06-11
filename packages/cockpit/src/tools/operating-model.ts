@@ -25,13 +25,14 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { resolveActiveWorkspace } from "../db/cockpit/registry";
-import { recordRun } from "../db/cockpit/runs";
+import { hasRunningRun, recordRun } from "../db/cockpit/runs";
 import type {
 	OperatingModelInput,
 	OperatingModelResult,
 	SessionIdentity,
 } from "../temporal/types";
 import { operatingModelWorkflowId } from "../temporal/workflow-id";
+import { type AgentError, withAgentError } from "./agent-error";
 
 export interface OperatingModelToolInput {
 	// The begin_session session to run the stage over — its table set anchors
@@ -52,7 +53,7 @@ export interface OperatingModelToolResult {
  */
 export async function operatingModel(
 	input: OperatingModelToolInput,
-): Promise<OperatingModelToolResult> {
+): Promise<OperatingModelToolResult | AgentError> {
 	if (
 		!config.temporalHost ||
 		!config.temporalNamespace ||
@@ -62,6 +63,20 @@ export async function operatingModel(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
 				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
 		);
+	}
+
+	// Sequencing pre-check (DAT-511): the operating model grounds on the
+	// promoted begin_session workspace — starting it mid-session pins an empty
+	// relationship context (the engine refuses born-loud; this check turns
+	// that workflow failure into an agent-actionable sentence instead).
+	if (await hasRunningRun(input.session_id, "begin_session")) {
+		return {
+			error:
+				`begin_session is still running for session '${input.session_id}' — ` +
+				"the operating model grounds on the session's promoted workspace. " +
+				"Wait for the session to finish (you'll be told when it does), " +
+				"then run operating_model again.",
+		};
 	}
 
 	const workspaceId = await resolveActiveWorkspace();
@@ -129,7 +144,9 @@ export const operatingModelTool = toolDefinition({
 		"run_id; the run proceeds in the background and its progress shows live " +
 		"in the canvas — you'll be told automatically when it finishes, so don't " +
 		"poll for status; then use look_validation to see the outcomes. " +
-		"Re-running the same session_id re-evaluates its validations.",
+		"Re-running the same session_id re-evaluates its validations. " +
+		"Precondition: the session's begin_session run must have FINISHED — " +
+		"while it is still running this returns { error } instead of starting.",
 	inputSchema: z.object({
 		session_id: z
 			.string()
@@ -137,9 +154,11 @@ export const operatingModelTool = toolDefinition({
 				"The begin_session session to run the stage over (its session_id; the engine re-reads the session's table set).",
 			),
 	}),
-	outputSchema: z.object({
-		workflow_id: z.string(),
-		run_id: z.string(),
-		session_id: z.string(),
-	}),
+	outputSchema: withAgentError(
+		z.object({
+			workflow_id: z.string(),
+			run_id: z.string(),
+			session_id: z.string(),
+		}),
+	),
 }).server((input) => operatingModel(input));

@@ -59,9 +59,11 @@ def resolve_operating_model_base_runs(
         table_ids: the session's typed tables.
 
     Returns:
-        The pinned map. Unresolved heads are recorded as absent (fail-closed
-        at the readers), and logged — a missing begin_session head on a
-        session that is supposed to have one is worth seeing.
+        The pinned map. An unresolved SEMANTIC head is recorded as absent
+        (fail-closed at the readers: that table's annotations stay empty). An
+        unresolved relationship head (``relationship_run_id=None``) is logged
+        here but REFUSED by the only caller (``resolve_operating_model_scope``,
+        DAT-511) — it is not a state downstream code handles.
     """
     # "detect" is begin_session's promoted stage on the session target (see
     # promote_session_run) — distinct from operating_model's own head, which

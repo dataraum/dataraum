@@ -62,6 +62,11 @@ def mssql_url() -> str:
 @pytest.fixture
 def duckdb_conn():
     conn = duckdb.connect(":memory:")
+    # Post-DAT-504 extraction targets ``lake.raw`` FQNs; stand in for the
+    # production lake catalog (the real DuckLake fixture is exercised in
+    # test_db_recipe_lake.py).
+    conn.execute("ATTACH ':memory:' AS lake")
+    conn.execute("CREATE SCHEMA lake.raw")
     yield conn
     conn.close()
 
@@ -190,7 +195,7 @@ class TestRealMSSQLExtraction:
         # The extractor already materialized aw_orders. Pull one row through
         # the same DuckDB connection to confirm value round-trip.
         row = duckdb_conn.execute(
-            "SELECT SalesOrderID, OrderDate FROM aw_orders ORDER BY SalesOrderID LIMIT 1"
+            'SELECT SalesOrderID, OrderDate FROM lake.raw."aw_orders" ORDER BY SalesOrderID LIMIT 1'
         ).fetchone()
         assert row is not None
         order_id, order_date = row
@@ -217,7 +222,8 @@ class TestRealMSSQLExtraction:
         )
         assert result.success, result.error
         row = duckdb_conn.execute(
-            "SELECT ListPrice FROM aw_prices WHERE ListPrice > 0 ORDER BY ProductID LIMIT 1"
+            'SELECT ListPrice FROM lake.raw."aw_prices" '
+            "WHERE ListPrice > 0 ORDER BY ProductID LIMIT 1"
         ).fetchone()
         assert row is not None
         (price,) = row

@@ -29,6 +29,8 @@ const analyzed: WhyRelationshipResult = {
 	to_column_name: "id",
 	found: true,
 	band: "ready",
+	band_stage: "session_detect",
+	band_computed_at: "2026-06-11T10:00:00.000Z",
 	worst_intent_risk: 0.1,
 	analyzed: true,
 	intents: [
@@ -48,6 +50,7 @@ const analyzed: WhyRelationshipResult = {
 		},
 	],
 	signal_count: 1,
+	verdict_history: [],
 	analysis: "The join key is clean: orphan ratio is negligible.",
 	pending_teaches: 0,
 };

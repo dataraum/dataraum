@@ -19,11 +19,12 @@ from dataraum.analysis.eligibility.evaluator import (
     quarantine_and_drop_columns,
 )
 from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column
+from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
@@ -77,6 +78,33 @@ class ColumnEligibilityPhase(BasePhase):
             return "No columns found"
 
         return None
+
+    def _typed_recipe_ddl(self, ctx: PhaseContext, table: Table) -> str:
+        """The run's stored typed ``MaterializationRecipe`` DDL for ``table``.
+
+        Grain ``(typed table_id, "typed", ctx.run_id)`` — written by both typing
+        paths (resolution + the strongly-typed copy) before eligibility runs.
+        The row is READ-only here: the convergent drop sequence (DAT-504)
+        depends on it reproducing the FULL-column typed table, so it is never
+        overwritten with post-drop DDL. Absence is a bug upstream — fail loud,
+        no fallback.
+        """
+        # A None run_id (non-run callers, mirrors the profiles query above)
+        # compiles to ``run_id IS NULL``.
+        recipe = ctx.session.execute(
+            select(MaterializationRecipe).where(
+                MaterializationRecipe.table_id == table.table_id,
+                MaterializationRecipe.layer == "typed",
+                MaterializationRecipe.run_id == ctx.run_id,
+            )
+        ).scalar_one_or_none()
+        if recipe is None:
+            raise RuntimeError(
+                f"No typed materialization recipe for table {table.table_name} "
+                f"({table.table_id}) at run {ctx.run_id} — typing stores it before "
+                "eligibility runs; cannot drop columns convergently without it."
+            )
+        return recipe.ddl
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run column eligibility evaluation."""
@@ -169,37 +197,34 @@ class ColumnEligibilityPhase(BasePhase):
         # Upsert on ``(column_id, run_id)`` so a retry refreshes rows in place.
         upsert(ctx.session, ColumnEligibilityRecord, rows, index_elements=["column_id", "run_id"])
 
-        # Drop ineligible columns from DuckDB tables
+        # Drop ineligible columns from the lake (DAT-504 convergent sequence):
+        # rebuild the typed table from the run's stored recipe, snapshot the
+        # quarantined columns in one shot, then drop them. A lake failure
+        # propagates and fails the activity (rollback per 9d262fde) — no
+        # warning downgrade; warnings remain only for the structural
+        # no-duckdb_path case below.
         for table_id, columns_data in columns_to_drop.items():
             table = table_map[table_id]
             if not table.duckdb_path:
                 warnings.append(f"Table {table.table_name} has no DuckDB path, cannot drop columns")
                 continue
 
-            try:
-                quarantine_and_drop_columns(
-                    ctx.duckdb_conn,
-                    table.duckdb_path,
-                    columns_data,
-                )
+            quarantine_and_drop_columns(
+                ctx.duckdb_conn,
+                table.duckdb_path,
+                columns_data,
+                typed_recipe_ddl=self._typed_recipe_ddl(ctx, table),
+            )
 
-                for column, _ in columns_data:
-                    ctx.session.delete(column)
+            for column, _ in columns_data:
+                ctx.session.delete(column)
 
-                logger.debug(
-                    "columns_dropped",
-                    table=table.table_name,
-                    dropped_count=len(columns_data),
-                    columns=[c.column_name for c, _ in columns_data],
-                )
-
-            except Exception as e:
-                warnings.append(f"Failed to drop columns from {table.table_name}: {e}")
-                logger.warning(
-                    "column_drop_failed",
-                    table=table.table_name,
-                    error=str(e),
-                )
+            logger.debug(
+                "columns_dropped",
+                table=table.table_name,
+                dropped_count=len(columns_data),
+                columns=[c.column_name for c, _ in columns_data],
+            )
 
         return PhaseResult.success(
             outputs={

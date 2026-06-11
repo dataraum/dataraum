@@ -151,3 +151,80 @@ export function EvidenceTable({
 		</Table.ScrollContainer>
 	);
 }
+
+// --- Verdict provenance (DAT-513) — the pick made visible. The shown band is
+// ONE of possibly several coexisting snapshot rows (add_source → session →
+// operating_model); this caption names which one, and the history lists them
+// all (oldest first) so a practitioner sees the verdict evolve as evidence
+// accrued. Later stages are computed over strictly more evidence — they
+// supersede earlier ones, they don't disagree with them.
+
+/** One readiness snapshot in a target's history — mirrors the tools' shape. */
+export interface VerdictHistoryRow {
+	stage: string;
+	band: string;
+	worst_intent_risk: number | null;
+	computed_at: string | null;
+	session_id: string | null;
+	run_id: string | null;
+	signals: number | null;
+}
+
+const STAGE_LABEL: Record<string, string> = {
+	add_source: "import",
+	session_detect: "session analysis",
+	operating_model: "operating model",
+};
+
+/** Human label for a pipeline stage; falls through to the raw stage string. */
+export function stageLabel(stage: string | null): string | null {
+	return stage === null ? null : (STAGE_LABEL[stage] ?? stage);
+}
+
+function historyTime(iso: string | null): string {
+	return iso === null ? "—" : new Date(iso).toLocaleString();
+}
+
+/** "as of <stage> · <time>" caption + the snapshot history (shown only when
+ * more than one snapshot coexists — a single row adds nothing). */
+export function VerdictProvenance({
+	stage,
+	computedAt,
+	history,
+	testId,
+}: {
+	stage: string | null;
+	computedAt: string | null;
+	history: VerdictHistoryRow[];
+	testId: string;
+}) {
+	if (stage === null) return null;
+	return (
+		<Stack gap={4} data-testid={testId}>
+			<Text size="xs" c="dimmed" data-testid={`${testId}-stage`}>
+				as of {stageLabel(stage)}
+				{computedAt !== null && ` · ${historyTime(computedAt)}`}
+			</Text>
+			{history.length > 1 && (
+				<Stack gap={2} data-testid={`${testId}-history`}>
+					{history.map((h) => (
+						<Group
+							gap="xs"
+							wrap="nowrap"
+							key={h.run_id ?? `${h.stage}-${h.computed_at ?? ""}`}
+						>
+							<Text size="xs" c="dimmed" w={140}>
+								{stageLabel(h.stage)}
+							</Text>
+							<BandBadge band={h.band} />
+							<Text size="xs" c="dimmed">
+								{historyTime(h.computed_at)}
+								{h.signals !== null && ` · ${h.signals} signals`}
+							</Text>
+						</Group>
+					))}
+				</Stack>
+			)}
+		</Stack>
+	);
+}

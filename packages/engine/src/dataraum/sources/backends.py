@@ -1,7 +1,7 @@
 """Backend extraction via DuckDB ATTACH.
 
 Every supported database backend is accessed through a DuckDB extension.
-This module materializes recipe queries into local raw tables and
+This module materializes recipe queries into ``lake.raw`` tables and
 harvests structural metadata (PK/FK/indexes) for downstream phases.
 """
 
@@ -81,12 +81,15 @@ def extract_backend(
     duckdb_conn: duckdb.DuckDBPyConnection,
     raw_prefix: str = "raw_",
 ) -> Result[BackendExtractionResult]:
-    """Materialize each recipe query into a `raw_{name}` table in DuckDB.
+    """Materialize each recipe query into a ``lake.raw`` table (DAT-504).
 
     Steps: INSTALL + LOAD the backend extension; ATTACH READ_ONLY;
     `USE src` so the user's SQL can reference attached tables by
-    `schema.table` without an alias prefix; CREATE TABLE per query;
-    restore catalog; DETACH.
+    `schema.table` without an alias prefix; CREATE OR REPLACE per query
+    into ``lake.raw`` (the same lake-convergent target the csv/json/parquet
+    loaders write — idempotent overwrite under a run-stable name, so a
+    Temporal redelivery converges instead of colliding on leftovers);
+    restore the snapshotted (catalog, schema) pair; DETACH.
 
     Fails loud at every step (DAT-274 pattern). On failure mid-extraction
     we still attempt to DETACH so the connection is left clean.
@@ -95,13 +98,19 @@ def extract_backend(
         backend: One of `mssql`, `postgres`, `mysql`, `sqlite`.
         url: Connection URL resolved from the credential chain.
         queries: Recipe tables (name + sql), order preserved.
-        duckdb_conn: DuckDB connection to materialize against.
+        duckdb_conn: DuckDB connection to materialize against. Must have the
+            ``lake`` catalog attached (the production session connection does).
         raw_prefix: Prefix applied to the recipe table name in DuckDB.
 
     Returns:
         Result with the list of extracted tables. Zero-row tables are
         surfaced as warnings, not errors.
     """
+    # Lazy imports, mirroring the csv/json/parquet loaders: avoid pulling the
+    # DuckLake bootstrap surface into module-load.
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
     if backend not in SUPPORTED_BACKENDS:
         return Result.fail(
             f"Unsupported backend: {backend}. Supported: {', '.join(sorted(SUPPORTED_BACKENDS))}"
@@ -111,15 +120,17 @@ def extract_backend(
 
     extension = BACKEND_EXTENSIONS[backend]
     attach_type = BACKEND_ATTACH_TYPES[backend]
+    raw_schema = schema_for_layer("raw")
 
-    # 0. Snapshot the connection's default catalog BEFORE we switch into
-    # the attached source. For in-memory connections this is "memory"; for
-    # file-backed connections (the production case — session data.duckdb)
-    # it's named after the file. Tables we create here must live in the
-    # ORIGINAL catalog (not the read-only attached one), so all CREATE /
-    # SELECT / information_schema queries qualify with this name.
-    default_catalog_row = duckdb_conn.execute("SELECT current_catalog()").fetchone()
-    default_catalog = default_catalog_row[0] if default_catalog_row else "memory"
+    # 0. Snapshot the connection's (catalog, schema) pair BEFORE we switch
+    # into the attached source. The production session connection sits at
+    # ``lake.typed`` (ConnectionManager._init_duckdb); restoring only the
+    # catalog would strand it at ``<catalog>.main``, so the finally block
+    # restores BOTH. Extraction targets are composed as ``lake.raw`` FQNs,
+    # never against the connection's USE state.
+    snapshot_row = duckdb_conn.execute("SELECT current_catalog(), current_schema()").fetchone()
+    # ("memory", "main") is unreachable with a live connection; defensive.
+    restore_catalog, restore_schema = snapshot_row if snapshot_row else ("memory", "main")
 
     # 1. Install + load extension. Honors the image's pre-baked extension
     # cache, same contract as bootstrap_lake / apply_s3_secret
@@ -180,27 +191,23 @@ def extract_backend(
         else:
             for q in queries:
                 duckdb_table = f"{raw_prefix}{q.name}"
+                # Cross-catalog CTAS: read from the attached source (current
+                # catalog), write into the lake's raw schema. CREATE OR
+                # REPLACE so a redelivery overwrites the leftover instead of
+                # colliding (lake convergence rule, DAT-504).
+                target_fqn = f'{LAKE_CATALOG_ALIAS}.{raw_schema}."{duckdb_table}"'
                 try:
-                    duckdb_conn.execute(
-                        f'CREATE TABLE {default_catalog}.main."{duckdb_table}" AS {q.sql}'
-                    )
+                    duckdb_conn.execute(f"CREATE OR REPLACE TABLE {target_fqn} AS {q.sql}")
                 except Exception as exc:
                     extraction_error = f"Recipe table '{q.name}' SELECT failed: {exc}"
                     break
 
-                row_count_row = duckdb_conn.execute(
-                    f'SELECT count(*) FROM {default_catalog}.main."{duckdb_table}"'
-                ).fetchone()
+                row_count_row = duckdb_conn.execute(f"SELECT count(*) FROM {target_fqn}").fetchone()
                 row_count = int(row_count_row[0]) if row_count_row else 0
 
-                col_rows = duckdb_conn.execute(
-                    "SELECT column_name, data_type "
-                    "FROM information_schema.columns "
-                    "WHERE table_catalog = ? AND table_schema = 'main' "
-                    "AND table_name = ? "
-                    "ORDER BY ordinal_position",
-                    [default_catalog, duckdb_table],
-                ).fetchall()
+                # DESCRIBE the FQN directly — information_schema would need
+                # catalog/schema filtering that DESCRIBE already encodes.
+                col_rows = duckdb_conn.execute(f"DESCRIBE {target_fqn}").fetchall()
                 columns = [(str(r[0]), str(r[1])) for r in col_rows]
 
                 if row_count == 0:
@@ -215,12 +222,17 @@ def extract_backend(
                     )
                 )
     finally:
-        # Restore default catalog and DETACH. Suppress secondary errors —
-        # the primary error (if any) is already captured.
+        # Restore the snapshotted (catalog, schema) pair and DETACH. Restoring
+        # only the catalog would leave the connection at ``<catalog>.main`` —
+        # in production that strands the session connection off ``lake.typed``
+        # (DAT-504). Suppress secondary errors — the primary error (if any) is
+        # already captured.
         try:
-            duckdb_conn.execute(f"USE {default_catalog}")
+            duckdb_conn.execute(f'USE "{restore_catalog}"."{restore_schema}"')
         except Exception:
-            _log.debug("USE %s failed during cleanup", default_catalog, exc_info=True)
+            _log.debug(
+                "USE %s.%s failed during cleanup", restore_catalog, restore_schema, exc_info=True
+            )
         try:
             duckdb_conn.execute(f"DETACH {_ATTACH_ALIAS}")
         except Exception:

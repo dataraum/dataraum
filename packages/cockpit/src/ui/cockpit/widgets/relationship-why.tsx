@@ -15,6 +15,7 @@ import {
 	PendingTeachAlert,
 	relationshipEndpointLabel,
 	SignalsCaption,
+	VerdictProvenance,
 } from "#/ui/cockpit/widgets/why-detail";
 
 export function RelationshipWhyWidget({
@@ -72,6 +73,13 @@ export function RelationshipWhyWidget({
 				</Text>
 				<BandBadge band={why.band} />
 			</Group>
+
+			<VerdictProvenance
+				stage={why.band_stage}
+				computedAt={why.band_computed_at}
+				history={why.verdict_history}
+				testId="canvas-relationship-why-provenance"
+			/>
 
 			<SignalsCaption
 				count={why.signal_count}

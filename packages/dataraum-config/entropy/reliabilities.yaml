@@ -28,7 +28,7 @@ provenance:
   measurements:
     null_semantics: { calibrated: true }
     temporal_behavior: { calibrated: true } # all three witnesses measured (wave-2: structural 0.889, events-backed corpus)
-    relationship_discovery: { calibrated: false } # value_overlap measured (0.615); llm_judgment kept prior; manual/keeper need the teach protocol
+    relationship_discovery: { calibrated: false } # nothing measurable IN CONTRACT yet: witnesses vote on the defined (post-LLM) catalog only; re-measure after the pair-lookup fix + teach protocol
     derived_value: { calibrated: true } # wave-2 rig, detection-derived-cal-v1 (2026-06-11)
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
   corpus_version: null_tokens-v2
@@ -93,26 +93,25 @@ witnesses:
     ontology_prior: 0.762
     llm_claim: 0.838
     structural_reconciliation: 0.889
-  # relationship_discovery: PARTIALLY measured 2026-06-11 (wave-2 rig over
-  # detection-relationship-cal-v1: 15 labelled pairs — 6 genuine_clean /
-  # 5 genuine_broken / 4 spurious_overlap); measurement-level calibrated stays
-  # FALSE until all witnesses are measured.
-  # value_overlap: MEASURED 0.615 — 100% on genuine (clean + broken), 0% on the
-  #   designed spurious-overlap stratum (the honest cost of Jaccard/containment
-  #   as a witness). Caveat in full: all 11 opinions were synthesized by the rig
-  #   from persisted candidate rows via the engine's own distribution function,
-  #   because a directional-lookup miss kept the live witness silent
-  #   (loaders.load_relationship_rows_for_pair matched candidate rows one-way;
-  #   fixed alongside this calibration — re-measure live next batch).
-  # llm_judgment: measured 0.833 but n=4, one-sided (only fires on accepted
-  #   pairs) and conditional on a selector that falsely rejected 7/11 genuine
-  #   pairs on child/parent name-suffix mismatches (facility_ref→facility_id)
-  #   even at join_confidence 1.0 — keep the 0.7 prior; re-measure after the
-  #   selector's suffix behavior is addressed.
+  # relationship_discovery: ALL PLACEHOLDERS still — calibrated: false. The
+  # wave-2 corpus (detection-relationship-cal-v1, 15 labelled pairs) could not
+  # measure any witness IN CONTRACT, and the boundary matters: relationship
+  # entropy exists ONLY on the defined catalog (post-LLM confirmation).
+  # Candidate rows are a generous structural list — never a measurement or
+  # calibration surface. A 0.615 for value_overlap synthesized from candidate
+  # rows was briefly shipped here and WITHDRAWN (2026-06-11): it measured the
+  # statistic on pairs the witness never votes on in production.
+  # value_overlap: unmeasurable this run — the live witness was silent on all
+  #   4 catalog pairs (one-way pair lookup, fixed in loaders the same day);
+  #   re-measure from claim rows on the next cal batch.
+  # llm_judgment: 0.833 at n=4, one-sided (only accepted pairs reach the
+  #   catalog) — prior kept. Selector finding for follow-up: 7/11 genuine
+  #   pairs rejected on child/parent name-suffix mismatches
+  #   (facility_ref→facility_id) even at full value overlap.
   # manual_curation / keeper_retention: UNMEASURABLE on a calibration run (no
   #   teach/keep actions) — placeholders stand until the teach protocol runs.
   relationship_discovery:
-    value_overlap: 0.615
+    value_overlap: 0.7
     llm_judgment: 0.7
     manual_curation: 0.9
     keeper_retention: 0.5

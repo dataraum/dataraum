@@ -37,8 +37,15 @@ sql_hints: >
   - order_date <= ship_date <= invoice_date <= payment_date
   - created_date <= approved_date <= posted_date
   - start_date <= end_date
-  - invoice_date <= due_date <= payment_date
+  - invoice_date <= due_date
+  - invoice_date <= payment_date
   - received_date <= matched_date <= paid_date
+
+  CAUTION: a due_date is a DEADLINE, not a process stage. Early payment
+  (payment_date < due_date) is healthy behaviour, never an ordering
+  violation — the only ordering constraint involving due_date is that it
+  follows the document date that sets it (invoice_date <= due_date).
+  Compare payment_date against the document's issue date, not its deadline.
 
   Generate SQL that counts rows where a later-stage date precedes an
   earlier-stage date. Only compare non-NULL date pairs. Return columns:

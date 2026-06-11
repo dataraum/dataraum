@@ -234,6 +234,38 @@ class TestSnippetLibrarySave:
         assert record2.description == "Original"
         assert record2.source == "graph:v1"
 
+    def test_redelivered_save_converges_across_commits(self, session):
+        """Success-redelivery (same key, committed prior write) converges (DAT-502).
+
+        metrics_phase commits once PER METRIC (the sanctioned multi-commit
+        exception): attempt 1's snippet is durable when the redelivered
+        attempt re-saves the same key — first-writer-wins must hold across
+        the commit, leaving exactly one healthy row.
+        """
+        from sqlalchemy import func, select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        library = SnippetLibrary(session, session_id=baseline_session_id())
+        kwargs = {
+            "snippet_type": "extract",
+            "description": "metric snippet",
+            "schema_mapping_id": "schema_abc",
+            "source": "graph:dso",
+            "standard_field": "revenue",
+            "aggregation": "sum",
+        }
+        first = library.save_snippet(sql="SELECT SUM(x) AS value FROM t", **kwargs)
+        session.commit()  # the per-metric commit; ack lost
+
+        again = library.save_snippet(sql="SELECT SUM(z) AS value FROM t3", **kwargs)
+        session.commit()
+
+        assert again.snippet_id == first.snippet_id
+        assert again.sql == "SELECT SUM(x) AS value FROM t"  # first writer won
+        total = session.scalar(select(func.count()).select_from(SQLSnippetRecord))
+        assert total == 1
+
     def test_save_formula_snippet(self, session):
         """Save a formula snippet with normalized expression."""
         library = SnippetLibrary(session, session_id=baseline_session_id())

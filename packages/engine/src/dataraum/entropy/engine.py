@@ -68,10 +68,17 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Retry-only clear (DAT-413): ALWAYS scoped to this exact run (``run_id ==``,
-    # which is ``IS NULL`` for the un-versioned test path) so it clears only its OWN
-    # prior rows and leaves earlier runs intact. No unscoped branch — a delete with
-    # no run_id would wipe every run's objects for this (detector, tables).
+    # SANCTIONED form-(b) writer (DAT-502): run-scoped delete-then-insert, NOT
+    # a (key, run_id) upsert. Entropy objects are a presence-keyed row-set —
+    # rows exist only where a detector fired, and the adjudicating detectors
+    # read the un-run-versioned ``config_overlay`` live between attempts, so a
+    # success-redelivery's row-set can legitimately SHRINK (a teach landing
+    # between attempts resolves a finding). An upsert without the clear would
+    # leave the vanished rows behind and corrupt the readiness rollup. The
+    # clear is ALWAYS scoped to this exact run (``run_id ==``, which is
+    # ``IS NULL`` for the un-versioned test path) so it clears only its OWN
+    # prior rows and leaves earlier runs intact — no unscoped branch: a delete
+    # with no run_id would wipe every run's objects for this (detector, tables).
     session.execute(
         delete(EntropyObjectRecord).where(
             EntropyObjectRecord.detector_id == detector_id,
@@ -79,9 +86,12 @@ def run_detector_post_step(
             EntropyObjectRecord.run_id == run_id,
         )
     )
-    # Same run-scoped clear for the pooled-witness provenance (ADR-0009): a
-    # no-op for non-adjudication detectors (they write none), so it stays a
-    # single generic step rather than a per-detector side effect.
+    # Same SANCTIONED form-(b) clear for the pooled-witness provenance
+    # (ADR-0009): witness sets shrink when an adjudication resolves
+    # differently on redelivery. A no-op for non-adjudication detectors (they
+    # write none), so it stays a single generic step rather than a
+    # per-detector side effect. ``uq_claim_witness_target_field_witness_run``
+    # stays as the grain guard beneath the clear.
     session.execute(
         delete(ClaimWitnessRecord).where(
             ClaimWitnessRecord.detector_id == detector_id,

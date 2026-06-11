@@ -27,6 +27,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     pass
@@ -257,26 +258,36 @@ class SlicingPhase(BasePhase):
                     entity.time_column = chosen
                     logger.info("time_axis_filled", table=table_name, column=chosen)
 
-        # Store slice definitions
+        # Store slice definitions — form-(a) idempotent writer (DAT-502):
+        # in-batch dedup on ``uq_slice_def_table_column_run`` (the agent can
+        # emit a dimension twice; propagation adds more), then UPSERT so a
+        # Temporal success-redelivery (same run_id) converges. PK omitted so
+        # the model's Python-side default applies.
         sid = ctx.require_session_id()
+        rows: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
         for rec in slicing.recommendations:
-            slice_def = SliceDefinition(
-                session_id=sid,
-                run_id=ctx.run_id,
-                table_id=rec.table_id,
-                column_id=rec.column_id,
-                column_name=rec.column_name,
-                slice_priority=rec.slice_priority,
-                slice_type="categorical",
-                distinct_values=rec.distinct_values,
-                value_count=rec.value_count,
-                reasoning=rec.reasoning,
-                business_context=rec.business_context,
-                confidence=rec.confidence,
-                sql_template=rec.sql_template,
-                detection_source="llm",
-            )
-            ctx.session.add(slice_def)
+            rows[(rec.table_id, rec.column_name, ctx.run_id)] = {
+                "session_id": sid,
+                "run_id": ctx.run_id,
+                "table_id": rec.table_id,
+                "column_id": rec.column_id,
+                "column_name": rec.column_name,
+                "slice_priority": rec.slice_priority,
+                "slice_type": "categorical",
+                "distinct_values": rec.distinct_values,
+                "value_count": rec.value_count,
+                "reasoning": rec.reasoning,
+                "business_context": rec.business_context,
+                "confidence": rec.confidence,
+                "sql_template": rec.sql_template,
+                "detection_source": "llm",
+            }
+        upsert(
+            ctx.session,
+            SliceDefinition,
+            list(rows.values()),
+            index_elements=["table_id", "column_name", "run_id"],
+        )
 
         return PhaseResult.success(
             outputs={

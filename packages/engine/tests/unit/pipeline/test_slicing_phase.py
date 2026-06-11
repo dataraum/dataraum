@@ -478,3 +478,113 @@ class TestRunTimeAxisFill:
         assert seeded["fact_entity"].time_column is None
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
+
+
+@patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")
+@patch("dataraum.pipeline.phases.slicing_phase.PromptRenderer")
+@patch("dataraum.pipeline.phases.slicing_phase.create_provider")
+@patch("dataraum.pipeline.phases.slicing_phase.load_llm_config")
+class TestSliceDefinitionWriterIdempotent:
+    """The SliceDefinition writer is a form-(a) upsert (DAT-502).
+
+    One definition per ``(table_id, column_name, run_id)``: the batch dedups
+    in-place (the agent can emit a dimension twice) and a redelivered ``_run``
+    under the SAME run_id converges instead of duplicating. Prior runs'
+    definitions coexist untouched.
+    """
+
+    @staticmethod
+    def _result_with_recs(
+        seeded: dict[str, Any], confidence: float
+    ) -> Result[SlicingAnalysisResult]:
+        from dataraum.analysis.slicing.models import SliceRecommendation
+
+        rec = SliceRecommendation(
+            table_id=seeded["fact"].table_id,
+            table_name="invoices",
+            column_id=seeded["fk_col"].column_id,
+            column_name="invoice_id__status",
+            slice_priority=1,
+            distinct_values=["open", "paid"],
+            value_count=2,
+            reasoning="status partitions",
+            confidence=confidence,
+            sql_template="CREATE OR REPLACE VIEW x AS SELECT 1",
+        )
+        # The same dimension twice in one batch (agent duplicate) — the
+        # in-batch dedup must keep one row (last wins).
+        return Result.ok(
+            SlicingAnalysisResult(
+                recommendations=[rec, rec.model_copy(update={"confidence": confidence})],
+                slice_queries=[],
+                time_columns={},
+            )
+        )
+
+    def test_redelivery_same_run_converges(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Re-running the committed writer body with the SAME run_id converges."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        # The seeded entities are None-run; this test pins the writer, so a
+        # run-stamped context is fine (the time-axis fill is exercised above).
+        mock_agent_cls.return_value.analyze.return_value = self._result_with_recs(seeded, 0.8)
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert len(rows) == 1, "in-batch duplicate deduped"
+        assert rows[0].confidence == 0.8
+
+        # The at-least-once redelivery: same run_id. The KEEP-class in-run
+        # guard (this run already sliced the table) short-circuits before the
+        # LLM — convergence by skip, with the UNIQUE as the DB-grain backstop.
+        mock_agent_cls.return_value.analyze.return_value = self._result_with_recs(seeded, 0.9)
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+        session.expire_all()
+
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert len(rows) == 1, "converged — no duplicate under the same run_id"
+        assert rows[0].run_id == "run-A"
+        assert rows[0].confidence == 0.8, "redelivery skipped re-derivation (in-run guard)"
+
+    def test_prior_run_untouched(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """A new run's definitions coexist with a prior run's (no clear)."""
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+
+        for run_id, confidence in (("run-A", 0.8), ("run-B", 0.7)):
+            mock_agent_cls.return_value.analyze.return_value = self._result_with_recs(
+                seeded, confidence
+            )
+            result = SlicingPhase()._run(
+                _ctx(session, duckdb_conn, [seeded["fact"].table_id], run_id)
+            )
+            assert result.status == PhaseStatus.COMPLETED
+            session.commit()
+
+        session.expire_all()
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        by_run = {r.run_id: r for r in rows}
+        assert set(by_run) == {"run-A", "run-B"}
+        assert by_run["run-A"].confidence == 0.8, "prior run untouched"
+        assert by_run["run-B"].confidence == 0.7

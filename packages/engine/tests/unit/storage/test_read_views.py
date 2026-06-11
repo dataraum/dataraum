@@ -12,9 +12,11 @@ import pytest
 
 from dataraum.storage.base import Base, load_all_models
 from dataraum.storage.read_views import (
+    _RUN_GRAIN_EXEMPT,
     READ_TOKEN,
     WS_TOKEN,
     dump_read_ddl,
+    enforce_run_grain,
     read_schema_name_for,
     read_view_statements,
 )
@@ -83,22 +85,88 @@ def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
 def test_unclassified_versioned_table_fails_loud() -> None:
     """A new run-stamped table without a grain classification breaks generation."""
     from sqlalchemy import Column as SAColumn
-    from sqlalchemy import String
+    from sqlalchemy import String, UniqueConstraint
     from sqlalchemy import Table as SATable
 
     # Register a rogue versioned table into the live metadata, then clean up.
+    # It carries a (key, run_id) UNIQUE so it passes the DAT-502 writer-grain
+    # gate and exercises the READ-surface classification tripwire specifically.
     load_all_models()
     rogue = SATable(
         "rogue_versioned_artifacts",
         Base.metadata,
         SAColumn("id", String, primary_key=True),
+        SAColumn("key", String),
         SAColumn("run_id", String, nullable=True),
+        UniqueConstraint("key", "run_id", name="uq_rogue_key_run"),
     )
     try:
         with pytest.raises(RuntimeError, match="rogue_versioned_artifacts"):
             read_view_statements()
     finally:
         Base.metadata.remove(rogue)
+
+
+class TestRunGrainGate:
+    """The failure-contract gate (DAT-502): UNIQUE-or-exempt for run-stamped tables."""
+
+    def test_live_metadata_passes(self) -> None:
+        """Every shipped run-stamped table has a (key, run_id) UNIQUE or a
+        sanctioned form-(b)/deferred listing — the 23-table sweep."""
+        load_all_models()
+        enforce_run_grain(Base.metadata.tables.values())  # must not raise
+
+        versioned = {
+            t.name
+            for t in Base.metadata.tables.values()
+            if t.name != "metadata_snapshot_head" and "run_id" in {c.name for c in t.columns}
+        }
+        # The exempt list is exactly the sanctioned non-grain writers; everything
+        # else passes via its UNIQUE. Pinned so a new exemption is a conscious,
+        # reviewed decision — not a drive-by.
+        assert set(_RUN_GRAIN_EXEMPT) == {
+            "entropy_readiness",
+            "entropy_objects",
+            "enriched_views",
+            "slicing_views",
+            "derived_columns",
+        }
+        assert set(_RUN_GRAIN_EXEMPT) <= versioned
+
+    def test_unlisted_run_stamped_table_without_unique_raises(self) -> None:
+        """The negative gate: a synthetic run-stamped model with no grain fails loud."""
+        from sqlalchemy import Column as SAColumn
+        from sqlalchemy import MetaData, String
+        from sqlalchemy import Table as SATable
+
+        meta = MetaData()
+        rogue = SATable(
+            "rogue_ungrained",
+            meta,
+            SAColumn("id", String, primary_key=True),
+            SAColumn("run_id", String, nullable=True),
+        )
+        with pytest.raises(RuntimeError, match="rogue_ungrained.*no \\(key, run_id\\) UNIQUE"):
+            enforce_run_grain([rogue])
+
+    def test_stale_exemption_with_unique_raises(self) -> None:
+        """A listed table that gained its UNIQUE must be pruned from the list."""
+        from sqlalchemy import Column as SAColumn
+        from sqlalchemy import MetaData, String, UniqueConstraint
+        from sqlalchemy import Table as SATable
+
+        meta = MetaData()
+        # Reuse a real exempt name so the listing check fires.
+        graduated = SATable(
+            "derived_columns",
+            meta,
+            SAColumn("id", String, primary_key=True),
+            SAColumn("key", String),
+            SAColumn("run_id", String, nullable=True),
+            UniqueConstraint("key", "run_id", name="uq_graduated_key_run"),
+        )
+        with pytest.raises(RuntimeError, match="prune the stale listing"):
+            enforce_run_grain([graduated])
 
 
 def test_read_schema_name() -> None:

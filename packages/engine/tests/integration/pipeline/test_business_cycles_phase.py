@@ -335,3 +335,39 @@ class TestCycleLifecycleFlow:
             ("order_to_cash", "run-1"),
             ("order_to_cash", "run-2"),
         }
+
+    @patch("dataraum.analysis.cycles.agent.BusinessCycleAgent.ground_cycles")
+    @patch("dataraum.pipeline.phases.business_cycles_phase.get_cycle_types")
+    def test_success_redelivery_same_run_converges(
+        self,
+        mock_types: MagicMock,
+        mock_ground: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """The at-least-once redelivery (same run_id, committed rows) converges (DAT-502).
+
+        declare-or-reuse RESETS the committed artifact back to declared so the
+        redelivered bind is legal, and the DetectedBusinessCycle upsert
+        converges on uq_detected_cycle_run — the fresh detection's fields win
+        on the existing row, no IntegrityError, no duplicates.
+        """
+        mock_types.return_value = {"order_to_cash": {"business_value": "high"}}
+        mock_ground.side_effect = lambda *a, **k: Result.ok(_analysis([_detected("order_to_cash")]))
+
+        phase = BusinessCyclesPhase()
+        r1 = phase._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id], "run-1"))
+        session.commit()  # attempt 1 committed; ack lost
+        r2 = phase._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id], "run-1"))
+        session.commit()
+
+        assert r1.status == r2.status == PhaseStatus.COMPLETED
+        session.expire_all()
+        artifacts = session.execute(select(LifecycleArtifact)).scalars().all()
+        assert [(a.artifact_key, a.run_id, a.state) for a in artifacts] == [
+            ("order_to_cash", "run-1", "executed")
+        ]
+        cycles = session.execute(select(DetectedBusinessCycle)).scalars().all()
+        assert [(c.canonical_type, c.run_id) for c in cycles] == [("order_to_cash", "run-1")]

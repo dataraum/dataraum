@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
 
 import duckdb
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import (
@@ -26,6 +26,7 @@ from dataraum.analysis.semantic.utils import load_column_mappings, load_table_ma
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -143,30 +144,24 @@ def _store_candidates(
     """Store this run's relationship candidates (DAT-408 run-versioned).
 
     ``candidate`` rows are ephemeral structural detections, re-derived every run
-    and stamped with ``run_id``. They coexist with prior runs (non-destructive) —
-    the delete below is **run_id-scoped**, so it only clears THIS run's own prior
-    candidates on a Temporal retry, never another run's. Reads scope to the current
-    run, so coexistence is invisible to consumers.
+    and stamped with ``run_id``. They coexist with prior runs (non-destructive).
+    Idempotent form-(a) writer (DAT-502): rows dedup in-batch on the
+    ``uq_relationship_columns_method`` key, then UPSERT — a Temporal
+    success-redelivery (same ``run_id``) converges on the same rows instead of
+    needing a run-scoped clear. Reads scope to the current run, so coexistence
+    is invisible to consumers.
     """
     # Load mappings
     column_map = load_column_mappings(session, table_ids)
     table_map = load_table_mappings(session, table_ids)
 
-    # Retry-only clear (DAT-408): ALWAYS scoped to this exact run (``run_id ==``,
-    # which is ``IS NULL`` for the un-versioned test path) so a re-executed run
-    # replaces only its OWN partial candidate writes — never another run's. There is
-    # no unscoped branch: a delete with no run_id would wipe every run's candidates,
-    # the destructive behaviour the run-versioning exists to remove.
-    session.execute(
-        delete(RelationshipDB).where(
-            RelationshipDB.session_id == session_id,
-            RelationshipDB.detection_method == "candidate",
-            RelationshipDB.run_id == run_id,
-        )
-    )
-
     # A user-dropped relationship must not be re-created on re-run (DAT-408).
     suppressed = load_suppressed_relationship_pairs(session)
+
+    # In-batch dedup on the unique key (the same column pair can surface from
+    # two table-pair contexts in one batch); last write wins, mirroring
+    # ``persist_drift_results``.
+    rows: dict[tuple[str, str | None, str, str, str], dict[str, Any]] = {}
 
     for candidate in candidates:
         table1_id = table_map.get(candidate.table1)
@@ -214,22 +209,35 @@ def _store_candidates(
             if candidate.introduces_duplicates is not None:
                 evidence["introduces_duplicates"] = candidate.introduces_duplicates
 
-            db_rel = RelationshipDB(
-                relationship_id=str(uuid4()),
-                session_id=session_id,
-                run_id=run_id,
-                from_table_id=table1_id,
-                from_column_id=col1_id,
-                to_table_id=table2_id,
-                to_column_id=col2_id,
-                relationship_type="candidate",
-                cardinality=jc.cardinality,
-                confidence=jc.join_confidence,
-                detection_method="candidate",
-                evidence=evidence,
-                is_confirmed=False,
-            )
-            session.add(db_rel)
+            # PK omitted so the model's Python-side default applies (upsert
+            # contract, storage/upsert.py).
+            rows[(session_id, run_id, col1_id, col2_id, "candidate")] = {
+                "session_id": session_id,
+                "run_id": run_id,
+                "from_table_id": table1_id,
+                "from_column_id": col1_id,
+                "to_table_id": table2_id,
+                "to_column_id": col2_id,
+                "relationship_type": "candidate",
+                "cardinality": jc.cardinality,
+                "confidence": jc.join_confidence,
+                "detection_method": "candidate",
+                "evidence": evidence,
+                "is_confirmed": False,
+            }
+
+    upsert(
+        session,
+        RelationshipDB,
+        list(rows.values()),
+        index_elements=[
+            "session_id",
+            "run_id",
+            "from_column_id",
+            "to_column_id",
+            "detection_method",
+        ],
+    )
 
 
 def _load_tables(

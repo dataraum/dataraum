@@ -603,10 +603,9 @@ export const metadataSnapshotHead = metadataSchema
 		stage: varchar(),
 		runId: varchar("run_id"),
 		promotedAt: timestamp("promoted_at"),
-		version: integer(),
 	})
 	.as(
-		sql`SELECT head_id, target, stage, run_id, promoted_at, version FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head`,
+		sql`SELECT head_id, target, stage, run_id, promoted_at FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head`,
 	);
 
 export const sessionTables = metadataSchema

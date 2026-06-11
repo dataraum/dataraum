@@ -169,15 +169,13 @@ class TestPromoteOperatingModelRun:
         assert head.target == session_head_target(_IDENTITY.session_id)
         assert head.stage == "operating_model"
         assert head.run_id == "run-om-A"
-        assert head.version == 0
 
-        # Re-promote under a new run: re-point + bump, never a second row.
+        # Re-promote under a new run: re-point, never a second row.
         identity_b = _IDENTITY.model_copy(update={"run_id": "run-om-B"})
         assert promote_operating_model_run(manager, identity_b) == 1
         with session_factory() as s:
             head = s.execute(select(MetadataSnapshotHead)).scalar_one()
         assert head.run_id == "run-om-B"
-        assert head.version == 1
 
     def test_coexists_with_the_begin_session_head(self, monkeypatch, session_factory):
         """Two stages' heads share the session target without colliding."""

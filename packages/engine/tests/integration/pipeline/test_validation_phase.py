@@ -333,3 +333,45 @@ class TestValidationLifecycleFlow:
         }
         records = session.execute(select(ValidationResultRecord)).scalars().all()
         assert {r.run_id for r in records} == {"run-1", "run-2"}
+
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.execute_validation")
+    @patch("dataraum.analysis.validation.agent.ValidationAgent.bind_validation")
+    @patch("dataraum.pipeline.phases.validation_phase.load_all_validation_specs")
+    def test_success_redelivery_same_run_converges(
+        self,
+        mock_load: MagicMock,
+        mock_bind: MagicMock,
+        mock_execute: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        workspace_table: Table,
+        _mock_llm: None,
+    ) -> None:
+        """The at-least-once redelivery (same run_id, committed rows) converges (DAT-502).
+
+        Attempt 1 commits (success), the ack is lost, and Temporal re-runs the
+        whole phase under the SAME run_id. declare-or-reuse RESETS the
+        committed artifact back to declared so the re-flow's bind is legal,
+        and the ValidationResultRecord upsert converges on
+        uq_validation_result_run — no IntegrityError, no duplicates.
+        """
+        mock_load.return_value = {"double_entry": _spec("double_entry")}
+        mock_bind.return_value = (MagicMock(sql_query="SELECT 1"), None)
+        mock_execute.return_value = _result("double_entry", ValidationStatus.PASSED)
+
+        phase = ValidationPhase()
+        r1 = phase._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id], "run-1"))
+        session.commit()  # attempt 1 committed; ack lost
+        r2 = phase._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id], "run-1"))
+        session.commit()
+
+        assert r1.status == r2.status == PhaseStatus.COMPLETED
+        session.expire_all()
+        artifacts = session.execute(select(LifecycleArtifact)).scalars().all()
+        assert [(a.artifact_key, a.run_id, a.state) for a in artifacts] == [
+            ("double_entry", "run-1", "executed")
+        ]
+        records = session.execute(select(ValidationResultRecord)).scalars().all()
+        assert [(r.validation_id, r.run_id, r.status) for r in records] == [
+            ("double_entry", "run-1", "passed")
+        ]

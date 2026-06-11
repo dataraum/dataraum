@@ -18,9 +18,10 @@ Source shapes — both written by the cockpit ``select`` tool, the only producer
   staged object as a one-element ``connection_config['file_uris']`` list
   (DAT-422: one file = one source). Changed bytes mint a new digest → a new
   source → a fresh import, so a presence check is a correct skip for uploads.
-  The per-URI loader loop below stays list-generic (it is the load mechanism,
-  and its all-or-nothing rollback also covers a failed single load), but
-  nothing produces a multi-element list today.
+  The per-URI loader loop below stays list-generic (it is the load mechanism),
+  but nothing produces a multi-element list today. A mid-list failure is
+  atomic via the phase runner: ``run_phase`` rolls the session back on a
+  FAILED result (DAT-502), so partial Table/Column rows never commit.
 - A db source is NAME-keyed and carries the synthesized recipe under
   ``connection_config['tables']`` (a list of ``{name, sql}`` query dicts) plus
   ``recipe_hash`` — sha256 over the canonical ``{backend, tables}`` JSON,
@@ -56,7 +57,6 @@ from typing import Any
 
 from sqlalchemy import select
 
-from dataraum.core.logging import get_logger
 from dataraum.core.uri import uri_suffix, validate_source_uri
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
@@ -66,8 +66,6 @@ from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.sources.json import JsonLoader
 from dataraum.sources.parquet import ParquetLoader
 from dataraum.storage import Column, Source, Table
-
-logger = get_logger(__name__)
 
 # Suffix → loader. Mirrors the cockpit's connect/upload contract (connect.ts
 # FILE_READERS + upload/policy.ts ALLOWED_EXTENSIONS) so what the cockpit lets a
@@ -230,16 +228,14 @@ class ImportPhase(BasePhase):
         ``<source_name>__<file_stem>``. The cockpit ``select`` tool persists
         one-element lists (one content-keyed source per file, DAT-422), so the
         loop runs once today; it stays list-generic because it is the load
-        mechanism and its rollback keeps a failed load all-or-nothing. A
-        per-element failure fails the whole import (no silent swallow).
+        mechanism. A per-element failure fails the whole import (no silent
+        swallow); the phase runner's rollback-on-FAILED keeps it all-or-nothing
+        (DAT-502).
         """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
 
         table_ids: list[str] = []
-        # Raw DuckDB tables this run created, so a per-URI failure can DROP them
-        # and roll the import back to nothing (see _rollback_partial_load).
-        created_duckdb_paths: list[str] = []
         records_processed = 0
         warnings_acc: list[str] = []
 
@@ -248,19 +244,17 @@ class ImportPhase(BasePhase):
                 ctx, source, source_name, source_uri, null_config, junk_columns
             )
             if result.status != PhaseStatus.COMPLETED:
-                # Multi-URI import is all-or-nothing. ``PhaseResult.failed`` is a
-                # RETURN, not a raise, so ``run_phase``'s ``session_scope`` would
-                # COMMIT the URIs loaded before this one on its clean exit — and
-                # the next run's ``should_skip`` (which fires when ANY raw table
-                # exists for the source) would then SKIP import and silently drop
-                # the URIs after the failure. Undo the partial work so the failed
-                # import commits nothing and a clean re-run re-imports the whole
-                # list (DAT-378).
-                self._rollback_partial_load(ctx, created_duckdb_paths)
+                # Multi-URI import is all-or-nothing — and that atomicity is owned
+                # by the phase runner, not this loop (DAT-502): ``run_phase`` /
+                # ``run_session_phase`` roll the session back on a FAILED result,
+                # so the Table/Column rows of the URIs loaded before this one
+                # never commit and the next run's ``should_skip`` sees no raw
+                # tables. Leftover raw DuckDB tables from the partial load are
+                # harmless: the loaders' ``CREATE OR REPLACE TABLE`` overwrites
+                # them on the clean re-run.
                 return result
             if result.outputs:
                 table_ids.extend(result.outputs.get("raw_tables", []))
-                created_duckdb_paths.extend(result.outputs.get("duckdb_paths", []))
             records_processed += result.records_processed
             warnings_acc.extend(result.warnings or [])
 
@@ -274,35 +268,6 @@ class ImportPhase(BasePhase):
             warnings=warnings_acc,
             summary=f"{len(table_ids)} tables, {records_processed:,} rows",
         )
-
-    def _rollback_partial_load(self, ctx: PhaseContext, duckdb_paths: list[str]) -> None:
-        """Undo a partially-applied multi-URI load so a failed import commits nothing.
-
-        Drops the raw DuckDB tables created so far this run, then rolls back the
-        in-session ``Table``/``Column`` rows. Combined with the loaders' raw
-        ``CREATE OR REPLACE TABLE`` (idempotent), this makes a mid-list failure
-        atomic: ``should_skip`` sees no raw tables afterward, so a clean re-run
-        re-imports the whole list instead of skipping the URIs past the failure
-        (DAT-378).
-        """
-        from dataraum.core.duckdb_naming import schema_for_layer
-        from dataraum.server.storage import LAKE_CATALOG_ALIAS
-
-        raw_schema = schema_for_layer("raw")
-        try:
-            for path in duckdb_paths:
-                fqn = f'{LAKE_CATALOG_ALIAS}.{raw_schema}."{path}"'
-                try:
-                    ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
-                except Exception:
-                    # A failed DROP must not skip the remaining drops OR the
-                    # rollback below: a leftover raw table is harmless (the
-                    # re-run's CREATE OR REPLACE overwrites it), but a skipped
-                    # session.rollback() would COMMIT the partial Table/Column
-                    # rows and re-introduce the should_skip wedge.
-                    logger.warning("import.rollback_drop_failed", path=path, exc_info=True)
-        finally:
-            ctx.session.rollback()
 
     def _load_single_file_with_prefix(
         self,
@@ -361,12 +326,7 @@ class ImportPhase(BasePhase):
         staged_table = result.unwrap()
 
         return PhaseResult.success(
-            outputs={
-                "raw_tables": [str(staged_table.table_id)],
-                # The raw DuckDB table name (== duckdb_path) so a mid-list failure
-                # can DROP exactly what this run created (DAT-378 atomic import).
-                "duckdb_paths": [staged_table.table_name],
-            },
+            outputs={"raw_tables": [str(staged_table.table_id)]},
             records_processed=staged_table.row_count,
             records_created=1,
             warnings=result.warnings,

@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy.orm import Session
@@ -36,6 +35,7 @@ from dataraum.core.models.base import (
     Result,
 )
 from dataraum.storage import Column, Table
+from dataraum.storage.upsert import upsert
 
 logger = get_logger(__name__)
 
@@ -95,6 +95,13 @@ def infer_type_candidates(
         )
 
         all_candidates = []
+        # Idempotent form-(a) writer (DAT-502): one row per
+        # ``(column_id, data_type, detected_pattern, run_id)``, deduped in-batch
+        # (last write wins) and UPSERTed — a Temporal success-redelivery (same
+        # run_id) converges instead of appending duplicates. PK omitted so the
+        # model's Python-side default applies; ``detected_pattern`` coalesces to
+        # '' (it is part of the identity — NULL would be NULLS-DISTINCT).
+        rows: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
 
         for column in columns:
             # Infer types for this column
@@ -118,26 +125,31 @@ def infer_type_candidates(
             if not candidates:
                 continue
 
-            # Store in database
             for candidate in candidates:
-                db_candidate = DBTypeCandidate(
-                    candidate_id=str(uuid4()),
-                    session_id=session_id,
-                    column_id=column.column_id,
-                    run_id=run_id,
-                    detected_at=datetime.now(UTC),
-                    data_type=candidate.data_type.value,
-                    confidence=candidate.confidence,
-                    parse_success_rate=candidate.parse_success_rate,
-                    failed_examples=candidate.failed_examples,
-                    detected_pattern=candidate.detected_pattern,
-                    pattern_match_rate=candidate.pattern_match_rate,
-                    detected_unit=candidate.detected_unit,
-                    unit_confidence=candidate.unit_confidence,
-                )
-                session.add(db_candidate)
+                pattern = candidate.detected_pattern or ""
+                rows[(column.column_id, candidate.data_type.value, pattern, run_id)] = {
+                    "session_id": session_id,
+                    "column_id": column.column_id,
+                    "run_id": run_id,
+                    "detected_at": datetime.now(UTC),
+                    "data_type": candidate.data_type.value,
+                    "confidence": candidate.confidence,
+                    "parse_success_rate": candidate.parse_success_rate,
+                    "failed_examples": candidate.failed_examples,
+                    "detected_pattern": pattern,
+                    "pattern_match_rate": candidate.pattern_match_rate,
+                    "detected_unit": candidate.detected_unit,
+                    "unit_confidence": candidate.unit_confidence,
+                }
 
             all_candidates.extend(candidates)
+
+        upsert(
+            session,
+            DBTypeCandidate,
+            list(rows.values()),
+            index_elements=["column_id", "data_type", "detected_pattern", "run_id"],
+        )
 
         logger.debug(
             "type_inference_completed",

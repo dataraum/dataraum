@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,10 +33,17 @@ class SliceDefinition(Base):
 
     Each record represents a recommended slicing dimension,
     with the column to slice on and the SQL to create slices.
+
+    One definition per ``(table_id, column_name, run_id)`` (DAT-502): the
+    slicing agent can emit a dimension twice and the propagation pass adds
+    more, so the writer dedups in-batch and UPSERTs on this key — a Temporal
+    success-redelivery (same ``run_id``) converges instead of duplicating,
+    and a new run's definitions coexist with prior runs'.
     """
 
     __tablename__ = "slice_definitions"
     __table_args__ = (
+        UniqueConstraint("table_id", "column_name", "run_id", name="uq_slice_def_table_column_run"),
         Index("idx_slice_definitions_table", "table_id"),
         Index("idx_slice_definitions_column", "column_id"),
     )

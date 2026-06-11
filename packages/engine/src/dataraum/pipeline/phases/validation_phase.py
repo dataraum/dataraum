@@ -27,8 +27,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import ModuleType
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any
 
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
@@ -45,6 +44,7 @@ from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -144,10 +144,12 @@ class ValidationPhase(BasePhase):
         )
 
         # declare: every spec becomes a declared artifact for THIS run —
-        # supersession across runs, UNIQUE identity within one.
+        # supersession across runs; a success-redelivery RESETS the same
+        # run's row to declared (declare-or-reuse, DAT-502).
         artifacts = {}
         for validation_id, spec in specs.items():
-            artifact = declare_artifact(
+            artifacts[validation_id] = declare_artifact(
+                ctx.session,
                 session_id=session_id,
                 artifact_type="validation",
                 artifact_key=validation_id,
@@ -160,8 +162,6 @@ class ValidationPhase(BasePhase):
                     "source": spec.source,
                 },
             )
-            ctx.session.add(artifact)
-            artifacts[validation_id] = artifact
 
         # The workspace schema, every run-versioned read pinned to base_runs.
         schema = get_multi_table_schema_for_llm(
@@ -251,27 +251,37 @@ class ValidationPhase(BasePhase):
 
 
 def _persist_results(session: Session, run_result: ValidationRunResult, *, session_id: str) -> None:
-    """Persist one run-stamped ``ValidationResultRecord`` per result."""
+    """Persist one run-stamped ``ValidationResultRecord`` per result.
+
+    Form-(a) upsert on ``uq_validation_result_run`` (DAT-502): a Temporal
+    success-redelivery re-runs the whole phase under the same ``run_id`` and
+    re-persists every check — converging in place instead of violating the
+    UNIQUE. PK omitted so the model's Python-side default applies.
+    """
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
     for result in run_result.results:
         # Serialize details to ensure JSON compatibility
         result_data = result.model_dump(mode="json")
-        session.add(
-            ValidationResultRecord(
-                result_id=str(uuid4()),
-                session_id=session_id,
-                run_id=run_result.run_id,
-                validation_id=result.validation_id,
-                table_ids=result.table_ids,
-                status=result.status.value,
-                severity=result.severity.value,
-                passed=result.passed,
-                message=result.message,
-                executed_at=result.executed_at,
-                sql_used=result.sql_used,
-                columns_used=result.columns_used,
-                details=result_data.get("details"),
-            )
-        )
+        rows[(session_id, result.validation_id, run_result.run_id)] = {
+            "session_id": session_id,
+            "run_id": run_result.run_id,
+            "validation_id": result.validation_id,
+            "table_ids": result.table_ids,
+            "status": result.status.value,
+            "severity": result.severity.value,
+            "passed": result.passed,
+            "message": result.message,
+            "executed_at": result.executed_at,
+            "sql_used": result.sql_used,
+            "columns_used": result.columns_used,
+            "details": result_data.get("details"),
+        }
+    upsert(
+        session,
+        ValidationResultRecord,
+        list(rows.values()),
+        index_elements=["session_id", "validation_id", "run_id"],
+    )
 
     _log.debug(
         "validation_results_persisted",

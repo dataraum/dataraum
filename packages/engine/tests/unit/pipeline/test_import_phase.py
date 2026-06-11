@@ -13,8 +13,8 @@ This module covers:
   ``connection_config['file_uris']`` — ``_run`` validates EVERY element (the
   engine never globs) then loads each in turn, and a single bad element fails
   the whole import. The cockpit ``select`` persists one-element lists today
-  (one content-keyed source per file, DAT-422); the loop and its all-or-nothing
-  rollback remain the load mechanism.
+  (one content-keyed source per file, DAT-422). Mid-list atomicity is owned by
+  the phase runner's rollback-on-FAILED (DAT-502), not a phase-local helper.
 """
 
 from __future__ import annotations
@@ -348,53 +348,101 @@ class TestMultiUriDispatch:
         for inst in loaders.values():
             inst.return_value._load_single_file.assert_not_called()
 
-    def test_load_failure_mid_list_rolls_back_and_drops(self) -> None:
-        """A loader failure mid-list undoes the partial load — nothing commits (DAT-378).
+    def test_mid_list_failure_commits_nothing(self) -> None:
+        """No Postgres rows survive a mid-list loader failure (DAT-502).
 
-        URIs before the failure already created raw DuckDB tables + Table rows.
-        Because ``PhaseResult.failed`` is a RETURN (``run_phase``'s ``session_scope``
-        commits on clean exit), the phase must DROP this run's DuckDB tables and
-        roll the session back — otherwise a re-run's ``should_skip`` would see the
-        partial raw tables and silently skip the URIs past the failure.
+        The import phase carries no rollback helper of its own anymore:
+        within-attempt atomicity is owned by the phase runner — ``run_phase`` /
+        ``run_session_phase`` roll the session back on a FAILED result
+        (``9d262fde``), so the Table rows the URIs before the failure wrote
+        never commit and a re-run's ``should_skip`` sees no raw tables.
+        Leftover raw DuckDB tables are harmless (``CREATE OR REPLACE``).
+
+        This drives the real writer over a real session: the first loader call
+        persists a Table row exactly like a real loader, the second fails, and
+        after the runner's rollback contract nothing is visible to a fresh
+        session — the phase itself must never commit mid-list.
         """
+        from sqlalchemy import create_engine, select
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        from dataraum.storage import Source, Table, init_database
+
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        init_database(engine)
+        factory = sessionmaker(bind=engine)
+
         phase = ImportPhase()
         uris = [
             "s3://dataraum-lake/sel/customers.csv",
             "s3://dataraum-lake/sel/orders.csv",  # valid URI; the loader fails on it
         ]
-        ctx = self._ctx(uris)
 
         staged = StagedTable(
-            table_id="t",
+            table_id="t1",
             table_name="src__customers",
             raw_table_name="src__customers",
             row_count=1,
             column_count=1,
         )
-        csv_loader = MagicMock()
-        # First URI loads; the second URI's loader fails.
-        csv_loader.return_value._load_single_file.side_effect = [
-            Result.ok(staged),
-            Result.fail("boom"),
-        ]
 
-        with (
-            patch("dataraum.pipeline.phases.import_phase.CSVLoader", csv_loader),
-            patch(
-                "dataraum.pipeline.phases.import_phase.load_null_value_config",
-                return_value=MagicMock(),
-            ),
-        ):
-            result = phase._run(ctx)
+        with factory() as session:
+            session.add(Source(source_id="test-source", name="src", source_type="csv"))
+            session.commit()
 
-        assert result.status == PhaseStatus.FAILED
-        assert "boom" in (result.error or "")
-        # The partial load was undone: the session rolled back and the one DuckDB
-        # table created before the failure was dropped.
-        ctx.session.rollback.assert_called_once()
-        drops = [
-            str(c.args[0])
-            for c in ctx.duckdb_conn.execute.call_args_list
-            if c.args and "DROP TABLE IF EXISTS" in str(c.args[0])
-        ]
-        assert any("src__customers" in d for d in drops), drops
+            ctx = PhaseContext(
+                session=session,
+                duckdb_conn=MagicMock(),
+                source_id="test-source",
+                config={
+                    "source_name": "src",
+                    "source_type": "file",
+                    "source_connection_config": {"file_uris": uris},
+                },
+            )
+
+            calls: list[int] = []
+
+            def _load_then_fail(**kwargs: Any) -> Result[StagedTable]:
+                calls.append(1)
+                if len(calls) == 1:
+                    # A real loader writes the raw Table row into the session.
+                    kwargs["session"].add(
+                        Table(
+                            table_id="t1",
+                            source_id="test-source",
+                            table_name="src__customers",
+                            layer="raw",
+                            duckdb_path="src__customers",
+                        )
+                    )
+                    return Result.ok(staged)
+                return Result.fail("boom")
+
+            csv_loader = MagicMock()
+            csv_loader.return_value._load_single_file.side_effect = _load_then_fail
+
+            with (
+                patch("dataraum.pipeline.phases.import_phase.CSVLoader", csv_loader),
+                patch(
+                    "dataraum.pipeline.phases.import_phase.load_null_value_config",
+                    return_value=MagicMock(),
+                ),
+            ):
+                result = phase._run(ctx)
+
+            assert result.status == PhaseStatus.FAILED
+            assert "boom" in (result.error or "")
+            # The runner's contract (run_phase: FAILED → session.rollback()).
+            session.rollback()
+
+        # Nothing committed: a fresh session sees no raw tables, so the next
+        # run's should_skip re-imports the whole list.
+        with factory() as session:
+            rows = list(session.execute(select(Table)).scalars())
+        assert rows == []

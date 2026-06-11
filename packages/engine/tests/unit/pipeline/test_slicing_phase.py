@@ -30,6 +30,7 @@ from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_phase import SlicingPhase
 from dataraum.storage import Column, Source, Table
+from dataraum.storage.upsert import upsert
 from tests.conftest import baseline_session_id
 
 
@@ -530,7 +531,15 @@ class TestSliceDefinitionWriterIdempotent:
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
-        """Re-running the committed writer body with the SAME run_id converges."""
+        """Re-running the phase with the SAME run_id converges via the skip-guard.
+
+        This pins the in-run KEEP-class skip-guard path: the second `_run`
+        short-circuits before the LLM (this run already sliced the table), so
+        convergence is by skip. The SliceDefinition UNIQUE + ``upsert()``
+        DB-grain backstop is pinned separately by
+        ``test_upsert_converges_on_redelivery`` (the skip-guard short-circuits
+        before the upsert here, so this test never exercises it).
+        """
         mock_load_config.return_value = _mock_llm_config()
         seeded = _seed(session)
         # The seeded entities are None-run; this test pins the writer, so a
@@ -558,6 +567,69 @@ class TestSliceDefinitionWriterIdempotent:
         assert len(rows) == 1, "converged — no duplicate under the same run_id"
         assert rows[0].run_id == "run-A"
         assert rows[0].confidence == 0.8, "redelivery skipped re-derivation (in-run guard)"
+
+    def test_upsert_converges_on_redelivery(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+    ) -> None:
+        """The DB-grain backstop: the writer's ``upsert`` path itself converges.
+
+        The skip-guard short-circuits before the upsert in the phase, so the
+        idempotency test above never exercises the UNIQUE + ON CONFLICT. This
+        test bypasses the guard and drives the writer's ``upsert`` directly
+        (same model + ``index_elements`` as ``SlicingPhase._run``), proving
+        ``UNIQUE(table_id, column_name, run_id)`` + ON CONFLICT DO UPDATE
+        actually collapses a redelivered batch to one converged row. The LLM
+        mocks are injected by the class-level patches but go unused here.
+        """
+        seeded = _seed(session)
+        sid = baseline_session_id()
+
+        def _row(confidence: float) -> dict[str, Any]:
+            return {
+                "session_id": sid,
+                "run_id": "run-A",
+                "table_id": seeded["fact"].table_id,
+                "column_id": seeded["fk_col"].column_id,
+                "column_name": "invoice_id__status",
+                "slice_priority": 1,
+                "slice_type": "categorical",
+                "distinct_values": ["open", "paid"],
+                "value_count": 2,
+                "reasoning": "status partitions",
+                "confidence": confidence,
+                "sql_template": "CREATE OR REPLACE VIEW x AS SELECT 1",
+                "detection_source": "llm",
+            }
+
+        upsert(
+            session,
+            SliceDefinition,
+            [_row(0.8)],
+            index_elements=["table_id", "column_name", "run_id"],
+        )
+        session.commit()
+
+        # At-least-once redelivery: same key, a changed value (confidence).
+        upsert(
+            session,
+            SliceDefinition,
+            [_row(0.9)],
+            index_elements=["table_id", "column_name", "run_id"],
+        )
+        session.commit()
+        session.expire_all()
+
+        rows = session.execute(select(SliceDefinition)).scalars().all()
+        assert len(rows) == 1, "UNIQUE + upsert collapsed the redelivery to one row"
+        assert rows[0].run_id == "run-A"
+        assert rows[0].confidence == 0.9, (
+            "the redelivered batch's value won (ON CONFLICT DO UPDATE)"
+        )
 
     def test_prior_run_untouched(
         self,

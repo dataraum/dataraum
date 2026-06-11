@@ -99,3 +99,8 @@ re-grain owed to DAT-501 Phase 5 / DAT-506), and `derived_columns` (skip-guarded
 - `run_id` stays NULLABLE; the new UNIQUEs are NULLS-DISTINCT, so only run-stamped
   rows converge — the workflow path always stamps, tests must stamp.
 - The session axis (`session_id` columns/predicates) is untouched — DAT-506 owns it.
+- Existing Postgres workspaces require `docker compose down -v` (a fresh schema):
+  `create_all` is additive, so it does NOT apply the three new UNIQUEs, the
+  `detected_pattern NOT NULL DEFAULT ''`, or the `metadata_snapshot_head.version`
+  column drop to an existing volume. There is no migration tooling — consistent
+  with the disposable-workspace / clean-cut design.

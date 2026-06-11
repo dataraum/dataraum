@@ -618,7 +618,8 @@ def resolve_types(
         for tc in raw_col.type_candidates:
             if tc.run_id != run_id:
                 continue  # copy only THIS run's candidates (DAT-413 coexistence)
-            key = (target_col_id, tc.data_type, tc.detected_pattern, run_id)
+            pattern = tc.detected_pattern or ""
+            key = (target_col_id, tc.data_type, pattern, run_id)
             type_candidate_rows[key] = {
                 "session_id": session_id,
                 "column_id": target_col_id,
@@ -628,7 +629,7 @@ def resolve_types(
                 "confidence": tc.confidence,
                 "parse_success_rate": tc.parse_success_rate,
                 "failed_examples": tc.failed_examples,
-                "detected_pattern": tc.detected_pattern,
+                "detected_pattern": pattern,
                 "pattern_match_rate": tc.pattern_match_rate,
                 "detected_unit": tc.detected_unit,
                 "unit_confidence": tc.unit_confidence,

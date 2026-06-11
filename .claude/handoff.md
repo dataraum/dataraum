@@ -27,6 +27,12 @@ run-stamped table carries a grain or a sanctioned exemption.
 - `slice_analysis` re-run-after-teach now produces fresh analyses (the
   DAT-448 stale-skip arm is gone) — teach-loop evals should see slice
   re-analysis instead of a silent skip.
+- **Existing Postgres workspaces need `docker compose down -v` (a fresh
+  schema).** `create_all` is additive: it does NOT apply the three new
+  UNIQUEs, the `detected_pattern NOT NULL DEFAULT ''`, or the
+  `metadata_snapshot_head.version` column drop to an existing volume. There is
+  no migration tooling — consistent with the disposable-workspace / clean-cut
+  design.
 - **Status**: pending
 
 ## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511

@@ -35,6 +35,7 @@ import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
+import { mergeCurrentEvidence, pickCurrentRow } from "./readiness-grain";
 
 // --- Tool output (mirrors why_column, keyed on the relationship pair).
 
@@ -237,42 +238,56 @@ export async function whyRelationship(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → unanalyzed.
-	const [readinessRow] = await metadataDb
-		.select({
-			band: currentEntropyReadiness.band,
-			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
-			intents: currentEntropyReadiness.intents,
-		})
-		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, input.session_id),
-				eq(currentEntropyReadiness.target, target),
+	// Relationship targets are written by session-grain runs only, but the pick
+	// keeps the read uniform with why_column/why_table (and deterministic should
+	// a second grain ever appear).
+	const readinessRow = pickCurrentRow(
+		await metadataDb
+			.select({
+				band: currentEntropyReadiness.band,
+				worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+				intents: currentEntropyReadiness.intents,
+				computedAt: currentEntropyReadiness.computedAt,
+				viaTableHead: currentEntropyReadiness.viaTableHead,
+				viaSessionHead: currentEntropyReadiness.viaSessionHead,
+				viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
+			})
+			.from(currentEntropyReadiness)
+			.where(
+				and(
+					eq(currentEntropyReadiness.sessionId, input.session_id),
+					eq(currentEntropyReadiness.target, target),
+				),
 			),
-		)
-		.limit(1);
+	);
 
 	// Evidence is keyed by the relationship target (relationship rows have no
 	// column_id); the view scopes to the promoted run, so stale runs can't
 	// inflate signal_count. View columns type as nullable (Postgres views carry
 	// no NOT NULL) — coalesce at the edge.
-	const rawEvidence = await metadataDb
-		.select({
-			layer: currentEntropyObjects.layer,
-			dimension: currentEntropyObjects.dimension,
-			subDimension: currentEntropyObjects.subDimension,
-			score: currentEntropyObjects.score,
-			detectorId: currentEntropyObjects.detectorId,
-			evidence: currentEntropyObjects.evidence,
-		})
-		.from(currentEntropyObjects)
-		.where(
-			and(
-				eq(currentEntropyObjects.sessionId, input.session_id),
-				eq(currentEntropyObjects.target, target),
-			),
-		)
-		.orderBy(asc(currentEntropyObjects.dimension));
+	const rawEvidence = mergeCurrentEvidence(
+		await metadataDb
+			.select({
+				layer: currentEntropyObjects.layer,
+				dimension: currentEntropyObjects.dimension,
+				subDimension: currentEntropyObjects.subDimension,
+				score: currentEntropyObjects.score,
+				detectorId: currentEntropyObjects.detectorId,
+				evidence: currentEntropyObjects.evidence,
+				computedAt: currentEntropyObjects.computedAt,
+				viaTableHead: currentEntropyObjects.viaTableHead,
+				viaSessionHead: currentEntropyObjects.viaSessionHead,
+				viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
+			})
+			.from(currentEntropyObjects)
+			.where(
+				and(
+					eq(currentEntropyObjects.sessionId, input.session_id),
+					eq(currentEntropyObjects.target, target),
+				),
+			)
+			.orderBy(asc(currentEntropyObjects.dimension)),
+	);
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",

@@ -108,6 +108,60 @@ class ColumnSemanticOutput(BaseModel):
         ),
     )
 
+    temporal_behavior_claim: Literal["stock", "flow", "unsure"] = Field(
+        description=(
+            "Does this column hold a STOCK or a FLOW? A 'stock' is a carried-forward "
+            "point-in-time level — a balance, position, headcount, or status that "
+            "persists until changed and must NOT be summed across periods (summing "
+            "balances double-counts). A 'flow' is a per-period movement — a transaction "
+            "amount, payment, sale, or change that accumulates over time and IS "
+            "summable. Judge from the business meaning of the name, the semantic role, "
+            "and representative values; a periodic snapshot reported each period (e.g. a "
+            "trial-balance line) is still a stock. Use 'unsure' when the column is not a "
+            "numeric measure, or when name, role, and values give no clear stock/flow "
+            "signal — do not guess. This is an INDEPENDENT read: report what the column "
+            "actually looks like even if it disagrees with the expected concept."
+        )
+    )
+
+    temporal_behavior_claim_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence (0.0–1.0) in temporal_behavior_claim. High (0.85–1.0) for "
+            "unambiguous domain language (balance, payment, revenue, closing_position). "
+            "Moderate (0.6–0.8) when the role implies it but the name is ambiguous. Low "
+            "(0.2–0.4) for a weak signal. Set this low whenever you answer 'unsure'."
+        ),
+    )
+
+    derived_formula_hypothesis: str | None = Field(
+        default=None,
+        description=(
+            "If this column reads as COMPUTED from two other columns in the SAME table, "
+            "the arithmetic expression it should obey from the business meaning of the "
+            "names: exactly two column names from this table joined by one of + - * / "
+            "(e.g. 'subtotal + tax_amount', 'quantity * unit_price'). Use EXACT column "
+            "names from the schema; no constants, functions, or columns from other "
+            "tables. This is an INDEPENDENT expectation — state what the name says the "
+            "column SHOULD be, even without verifying it against the values. Set to null "
+            "when the column does not read as derived (keys, dimensions, raw measures) "
+            "or when no two plausible source columns exist in this table."
+        ),
+    )
+
+    derived_formula_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Confidence (0.0–1.0) in derived_formula_hypothesis: how clearly the column "
+            "and source names communicate the formula. High (0.85–1.0) for explicit "
+            "naming ('total_amount' with 'net_amount' + 'tax_amount'). Low (0.2–0.4) "
+            "when guessing among several plausible formulas. Set 0.0 when the "
+            "hypothesis is null."
+        ),
+    )
+
 
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.
@@ -178,7 +232,12 @@ class TableEntityOutput(BaseModel):
 
     time_column: str | None = Field(
         default=None,
-        description="Primary timestamp column for time-based analysis, if the table has one.",
+        description=(
+            "The column recording WHEN each row's event occurred (booking/transaction/"
+            "observation date) — the axis time-based analysis segments by. NOT an "
+            "attribute date such as due_date or valid_until, and not record metadata "
+            "like created_at. None if the table has no such column."
+        ),
     )
 
 

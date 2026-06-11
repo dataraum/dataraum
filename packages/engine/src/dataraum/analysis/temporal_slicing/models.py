@@ -73,6 +73,9 @@ class ColumnDriftResult(BaseModel):
     column_name: str
     max_js_divergence: float
     mean_js_divergence: float
+    # Periods-as-witnesses generalized JSD vs the pooled distribution, in [0, 1]
+    # (the drift score; max/mean_js above are kept for evidence). DAT-442.
+    drift_divergence: float = 0.0
     periods_analyzed: int
     periods_with_drift: int
     drift_evidence: DriftEvidence | None = None
@@ -85,6 +88,10 @@ class PeriodMetrics(BaseModel):
     period_start: date
     period_end: date
     row_count: int
+    # Per-period SUM of each numeric column of the slice table (DAT-491): the
+    # substrate the aggregation-lineage reconciliation reads — sums are linear,
+    # so signed conventions (debit−credit, …) are arithmetic over these.
+    column_sums: dict[str, float] = Field(default_factory=dict)
     expected_days: int
     observed_days: int
     coverage_ratio: float

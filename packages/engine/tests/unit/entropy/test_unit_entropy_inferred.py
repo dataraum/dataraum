@@ -14,7 +14,7 @@ class TestUnitEntropyInference:
         return UnitEntropyDetector()
 
     def test_inferred_unit_from_dimension(self, detector: UnitEntropyDetector):
-        """When unit_source_column is set, score should be 0.1 (same as declared) not 0.8 (missing)."""
+        """A unit resolved via a dimension column is known → 0.0 (DAT-442: no 0.1 floor)."""
         context = DetectorContext(
             table_name="journal_entries",
             column_name="amount",
@@ -33,12 +33,12 @@ class TestUnitEntropyInference:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.1, abs=0.01)
+        assert results[0].score == 0.0
         assert results[0].evidence[0]["unit_status"] == "inferred_from_dimension"
         assert results[0].evidence[0]["unit_source_column"] == "currency_code"
 
     def test_missing_unit_no_inference(self, detector: UnitEntropyDetector):
-        """Without unit_source_column, missing unit should still score 0.8."""
+        """An undeclared unit with no inference is fully uncertain → 1.0 (= 1 - confidence 0)."""
         context = DetectorContext(
             table_name="orders",
             column_name="total",
@@ -56,7 +56,7 @@ class TestUnitEntropyInference:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.8, abs=0.01)
+        assert results[0].score == pytest.approx(1.0)
         assert results[0].evidence[0]["unit_status"] == "missing"
 
     def test_declared_unit_takes_precedence(self, detector: UnitEntropyDetector):
@@ -100,7 +100,7 @@ class TestUnitEntropyInference:
         assert len(results) == 0
 
     def test_inferred_unit_no_resolution_needed(self, detector: UnitEntropyDetector):
-        """Inferred unit (score 0.2) should not suggest resolution (threshold 0.3)."""
+        """An inferred unit is resolved (score 0.0) — no investigation needed."""
         context = DetectorContext(
             table_name="journal_entries",
             column_name="amount",

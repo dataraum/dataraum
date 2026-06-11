@@ -73,17 +73,22 @@ _SESSION_GRAIN: dict[str, str] = {
     "column_drift_summaries": "detect",
     "temporal_slice_analyses": "detect",
     "derived_columns": "detect",
+    "measure_aggregation_lineage": "detect",  # begin_session aggregation_lineage (DAT-491)
     "lifecycle_artifacts": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
 }
 
-# Written by BOTH detect paths: add_source seals per (table:{id}, "detect"),
-# begin_session per (session:{id}, "detect") — a row is current when its run
-# is promoted under EITHER head.
+# Written by THREE detect paths: add_source seals per (table:{id}, "detect"),
+# begin_session per (session:{id}, "detect"), and operating_model's terminal
+# detect per (session:{id}, "operating_model") — a row is current when its
+# run is promoted under ANY of those heads (DAT-432/L7: without the third,
+# cross_table_consistency's OM-run rows were written but invisible to every
+# head-resolved reader).
 _DUAL_GRAIN: dict[str, str] = {
     "entropy_objects": "detect",
     "entropy_readiness": "detect",
+    "claim_witnesses": "detect",
 }
 
 # The head pointer itself is exposed read-only (it IS the promoted state).
@@ -120,6 +125,44 @@ def _current_view_sql(table: str) -> str:
         )
     if table in _DUAL_GRAIN:
         stage = _DUAL_GRAIN[table]
+        # entropy_readiness is the ONE-TRUTH-PER-TARGET rollup: between the two
+        # SESSION-grain heads (detect vs operating_model) the latest-promoted
+        # run wins — without this, an OM run + a session detect both being
+        # promoted returned TWO conflicting 'current' bands per target and an
+        # unpinned reader picked one nondeterministically (review wave-1
+        # blocker). Table-grain rows keep the original dual-grain union (the
+        # via_table_head pinning contract). Objects/claim_witnesses stay union:
+        # per-detector rows, resolved by the run-aware loaders.
+        session_grain_precedence = ""
+        if table == "entropy_readiness":
+            session_heads = f"('{stage}', 'operating_model')"
+            session_grain_precedence = (
+                f"  AND (\n"
+                f"    NOT EXISTS (\n"
+                f"      SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h3\n"
+                f"      WHERE h3.run_id = r.run_id\n"
+                f"        AND h3.target = 'session:' || r.session_id\n"
+                f"        AND h3.stage IN {session_heads}\n"
+                f"    )\n"
+                f"    OR NOT EXISTS (\n"
+                f"      SELECT 1 FROM {WS_TOKEN}.{table} r2\n"
+                f"      JOIN {WS_TOKEN}.metadata_snapshot_head h2\n"
+                f"        ON h2.run_id = r2.run_id\n"
+                f"       AND h2.target = 'session:' || r2.session_id\n"
+                f"       AND h2.stage IN {session_heads}\n"
+                f"      WHERE r2.session_id = r.session_id\n"
+                f"        AND r2.target = r.target\n"
+                f"        AND r2.run_id <> r.run_id\n"
+                f"        AND h2.promoted_at > (\n"
+                f"          SELECT MAX(h3.promoted_at)\n"
+                f"          FROM {WS_TOKEN}.metadata_snapshot_head h3\n"
+                f"          WHERE h3.run_id = r.run_id\n"
+                f"            AND h3.target = 'session:' || r.session_id\n"
+                f"            AND h3.stage IN {session_heads}\n"
+                f"        )\n"
+                f"    )\n"
+                f"  )\n"
+            )
         # Written by BOTH detect paths, so after add_source + begin_session a
         # column legitimately has TWO current rows (one per sealed run, computed
         # from different detector subsets). The ``via_*`` discriminators let a
@@ -138,15 +181,24 @@ def _current_view_sql(table: str) -> str:
             f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
             f"      AND h.target = 'session:' || r.session_id\n"
-            f"  ) AS via_session_head\n"
+            f"  ) AS via_session_head,\n"
+            f"  EXISTS (\n"
+            f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
+            f"    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id\n"
+            f"      AND h.target = 'session:' || r.session_id\n"
+            f"  ) AS via_operating_model_head\n"
             f"FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
-            f"  WHERE h.stage = '{stage}'\n"
-            f"    AND h.run_id = r.run_id\n"
-            f"    AND (h.target = 'table:' || r.table_id\n"
-            f"      OR h.target = 'session:' || r.session_id)\n"
-            f");"
+            f"  WHERE h.run_id = r.run_id\n"
+            f"    AND ((h.stage = '{stage}'\n"
+            f"      AND (h.target = 'table:' || r.table_id\n"
+            f"        OR h.target = 'session:' || r.session_id))\n"
+            f"     OR (h.stage = 'operating_model'\n"
+            f"      AND h.target = 'session:' || r.session_id))\n"
+            f")\n"
+            f"{session_grain_precedence}"
+            f";"
         )
     if table in _SESSION_GRAIN:
         stage = _SESSION_GRAIN[table]

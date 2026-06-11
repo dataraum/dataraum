@@ -54,14 +54,14 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface has been moved out of the package to `reference/mcp/` (DAT-369) — **dead code**, no transport, no in-tree consumer, kept only as a copy-reference during the cockpit takeover and slated for deletion in slice 2. Do not extend it, build on it, import from it, or treat its presence as a reason to preserve anything related. It is the one tolerated exception, not a pattern to emulate.
+The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. `schema.sql` (package root) is the **generated** offline DDL dump of all SQLAlchemy models (`uv run python -m dataraum.storage.dump_ddl`) — the fast way to grasp the full DB schema without booting anything; CI (`schema-drift`) keeps it and the cockpit's drizzle mirror in lockstep with the models. The legacy MCP surface is **gone** (retired by ADR-0002, deleted in DAT-487); recover it from git history only as a reading reference, never as something to rebuild on.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.
 - **Pre-computed context** — AI receives a fully-assembled `ContextDocument`; no runtime discovery.
 - **Ontologies are config** — domain ontologies (financial_reporting, marketing, …) are YAML mapping column patterns → business terms, defining metrics, guiding interpretation. They live in `packages/dataraum-config/` (bind-mounted at `/opt/dataraum/config`); load them only through `dataraum.core.config`, never `Path(__file__)` navigation.
 - **Pipeline measures, doesn't interpret** — detectors run as pipeline post-steps; interpretation happens interactively through the cockpit (Temporal workflows + chat).
-- **BBN readiness** — per-column ready / investigate / blocked via a Bayesian network.
+- **Loss-based readiness** — per-column ready / investigate / blocked via per-intent loss tables (`config/entropy/loss.yaml`); the Bayesian network was deleted in DAT-442.
 - **Concurrency** — standard **GIL-on** CPython 3.14 (container `python:3.14-slim`; free-threading was evaluated and dropped as a target). The Temporal activity worker still runs phases concurrently on a `ThreadPoolExecutor`, so shared worker state — notably the one `ConnectionManager` — is touched by multiple activity threads; guard it as concurrent.
 
 **Temporal (durable orchestration).** Skill: `npx skills add temporalio/skill-temporal-developer`. The engine runs a **bundled Python worker** (`worker/`): `AddSourceWorkflow` (`worker/workflows.py`, sandbox-deterministic, imports only `temporalio` + the engine-free `worker/contracts.py`) **and** the phase activities (`worker/activities.py`, `@activity.defn(name="<phase>")` over `run_phase_activity`) on one task queue. Activities are **sync**, run on a `ThreadPoolExecutor` (NOT `asyncio.to_thread`). The cockpit triggers workflows via the Temporal Client. Workflow names are called by string; no shared catalogue. Locked decision + the DAT-360→DAT-344 reversal (workflows are Python, not TS) live in the `feedback-durable-execution-lean` memory.
@@ -70,7 +70,7 @@ The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint
 ```
 src/dataraum/
 ├── analysis/    # typing, stats, correlations, relationships, semantic, temporal, slicing, cycles, validation
-├── entropy/     # detectors, measurement, BBN
+├── entropy/     # detectors, measurement, pooling, loss
 ├── graphs/      # calculation graphs, context assembly
 ├── pipeline/    # orchestrator + phases, fixes
 ├── sources/     # loaders — CSV, Parquet, JSON, DB-via-recipe
@@ -79,7 +79,6 @@ src/dataraum/
 ├── core/        # config, connections, settings
 ├── worker/      # Temporal activity worker — workflows, activities, bootstrap, contracts
 └── server/      # substrate bootstrap (DuckLake anchor + workspace overlay); no HTTP
-# (legacy mcp/ moved out of the package to reference/mcp/ — dead, slated for deletion)
 ```
 
 **Data flow:** Source → VARCHAR staging → type inference (typed + quarantine tables) → LLM semantic / temporal / topology enrichment → quality (LLM rules + entropy) → `ContextDocument`.

@@ -27,6 +27,64 @@ from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
+# Absolute tolerance under which target − (col1 op col2) counts as a row match.
+# ONE source of truth for the formula-match statistic: the discovery below and
+# the derived_value detector's hypothesis grading (entropy/detectors/loaders.py)
+# must grade rows identically, or the two witnesses would disagree by tolerance
+# artifact rather than by data.
+FORMULA_MATCH_ABS_TOLERANCE = 0.01
+
+
+def formula_match_counts(
+    cursor: duckdb.DuckDBPyConnection,
+    table_name: str,
+    target_name: str,
+    col1_name: str,
+    col2_name: str,
+    op: str,
+) -> tuple[int, int]:
+    """``(matching_rows, total_rows)`` for ``target = col1 op col2`` over a table.
+
+    The formula-match row statistic shared by the discovery sweep and the
+    derived_value hypothesis grading. Rows where any operand is NULL are
+    excluded; zero-target rows are excluded because any formula producing a
+    near-zero result passes the absolute tolerance (e.g. discount_amount=0
+    "matches" quantity/amount ≈ 0.00002) — the match rate is meaningful only on
+    rows where the target has a non-trivial value.
+
+    Args:
+        cursor: DuckDB connection/cursor to execute on.
+        table_name: Relation to read (bare name or fully-qualified).
+        target_name, col1_name, col2_name: Column identifiers (quoted here).
+        op: One of ``+ - * /``.
+
+    Returns:
+        ``(matches, total)`` — ``total`` may be 0 (nothing gradable).
+    """
+    query = f"""
+        WITH derivation_check AS (
+            SELECT
+                ABS(
+                    TRY_CAST("{target_name}" AS DOUBLE) -
+                    (TRY_CAST("{col1_name}" AS DOUBLE) {op} TRY_CAST("{col2_name}" AS DOUBLE))
+                ) as diff
+            FROM {table_name}
+            WHERE
+                "{target_name}" IS NOT NULL
+                AND "{col1_name}" IS NOT NULL
+                AND "{col2_name}" IS NOT NULL
+                AND TRY_CAST("{target_name}" AS DOUBLE) != 0
+        )
+        SELECT
+            COUNT(CASE WHEN diff < {FORMULA_MATCH_ABS_TOLERANCE} THEN 1 END) as matches,
+            COUNT(*) as total
+        FROM derivation_check
+    """
+    result = cursor.execute(query).fetchone()
+    if not result:
+        return (0, 0)
+    return (int(result[0]), int(result[1]))
+
 
 def _check_derived_triple(
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -48,37 +106,9 @@ def _check_derived_triple(
     DuckDB cursors are thread-safe for read operations.
     """
     with duckdb_conn.cursor() as cursor:
-        query = f"""
-            WITH derivation_check AS (
-                SELECT
-                    ABS(
-                        TRY_CAST("{target_name}" AS DOUBLE) -
-                        (TRY_CAST("{col1_name}" AS DOUBLE) {op} TRY_CAST("{col2_name}" AS DOUBLE))
-                    ) as diff
-                FROM {table_name}
-                WHERE
-                    "{target_name}" IS NOT NULL
-                    AND "{col1_name}" IS NOT NULL
-                    AND "{col2_name}" IS NOT NULL
-                    -- Exclude zero-target rows: when the target is zero, any
-                    -- formula producing a near-zero result passes the absolute
-                    -- tolerance (< 0.01), inflating match rates for non-derived
-                    -- columns.  E.g. discount_amount=0 "matches" quantity/amount
-                    -- ≈ 0.00002.  Zero targets carry no discriminative power for
-                    -- formula detection; the match rate is meaningful only on
-                    -- rows where the target has a non-trivial value.
-                    AND TRY_CAST("{target_name}" AS DOUBLE) != 0
-            )
-            SELECT
-                COUNT(CASE WHEN diff < 0.01 THEN 1 END) as matches,
-                COUNT(*) as total
-            FROM derivation_check
-        """
-        result = cursor.execute(query).fetchone()
-        if not result:
-            return None
-
-        matches, total = result
+        matches, total = formula_match_counts(
+            cursor, table_name, target_name, col1_name, col2_name, op
+        )
         if total == 0:
             return None
 

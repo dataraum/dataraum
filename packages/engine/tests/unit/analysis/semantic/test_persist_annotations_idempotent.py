@@ -78,6 +78,9 @@ def _output(role: str) -> ColumnAnnotationOutput:
                         business_term="Transaction Amount",
                         description="The amount of the order.",
                         confidence=0.9,
+                        temporal_behavior_claim="flow",
+                        temporal_behavior_claim_confidence=0.9,
+                        derived_formula_confidence=0.0,
                     )
                 ],
             )

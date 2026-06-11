@@ -22,6 +22,7 @@ from dataraum.core.config import (
 )
 from dataraum.core.overlay import (
     OverlayRow,
+    appliable_teach_types,
     apply_overlay,
     reset_overlay_resolver_for_tests,
     set_overlay_resolver,
@@ -159,6 +160,59 @@ class TestApplyNullValue:
         )
         merged = apply_overlay("null_values.yaml", {"standard_nulls": []})
         assert merged["standard_nulls"] == []
+
+
+class TestApplyUnit:
+    """``unit`` rows merge into ``phases/typing.yaml`` ``overrides.units`` (DAT-428)."""
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_adds_unit_to_empty_overrides(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="unit",
+                    payload={"table": "invoices", "column": "amount", "unit": "EUR"},
+                )
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"] == {"invoices.amount": {"unit": "EUR"}}
+
+    def test_last_write_wins_on_same_column(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "USD"}),
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "EUR"}),
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"]["t.c"] == {"unit": "EUR"}
+
+    def test_composes_with_type_pattern_on_same_file(self) -> None:
+        """``unit`` (overrides.units) and ``type_pattern`` (overrides.patterns) share the
+        file but write disjoint keys, so the dispatcher applies both without clobbering."""
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="type_pattern", payload={"name": "p", "pattern": "^x$"}),
+                OverlayRow(type="unit", payload={"table": "t", "column": "c", "unit": "kg"}),
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["patterns"]["p"] == {"pattern": "^x$"}
+        assert merged["overrides"]["units"]["t.c"] == {"unit": "kg"}
+
+    def test_ignores_rows_missing_fields(self) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="unit", payload={"column": "c", "unit": "EUR"}),  # no table
+                OverlayRow(type="unit", payload={"table": "t", "unit": "EUR"}),  # no column
+                OverlayRow(type="unit", payload={"table": "t", "column": "c"}),  # no unit
+            ]
+        )
+        merged = apply_overlay("phases/typing.yaml", {})
+        assert merged["overrides"]["units"] == {}
 
 
 class TestApplyConcept:
@@ -379,6 +433,141 @@ class TestApplyConceptProperty:
         )
         merged = apply_overlay("verticals/finance/ontology.yaml", base)
         assert merged["concepts"] == base["concepts"]
+
+
+class TestApplyRebind:
+    """``rebind`` rows append a column name to a concept's ``indicators``.
+
+    The column-grain re-grounding teach (temporal_behavior's ignorance-branch
+    suggestion): the appended indicator reaches the next run's grounding
+    prompt, steering the LLM witness — never writing ``business_concept``.
+    """
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    @staticmethod
+    def _row(column: str, concept: str, vertical: str = "finance") -> OverlayRow:
+        return OverlayRow(
+            type="rebind",
+            payload={"vertical": vertical, "concept": concept, "column": column},
+        )
+
+    def test_appends_column_to_concept_indicators(self) -> None:
+        base = {
+            "name": "finance",
+            "concepts": [{"name": "account_balance", "indicators": ["balance"]}],
+        }
+        set_overlay_resolver(lambda: [self._row("debit_balance", "account_balance")])
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged["concepts"][0]["indicators"] == ["balance", "debit_balance"]
+        # Base list untouched (no aliasing).
+        assert base["concepts"][0]["indicators"] == ["balance"]
+
+    def test_creates_indicators_when_concept_has_none(self) -> None:
+        base = {"concepts": [{"name": "revenue"}]}
+        set_overlay_resolver(lambda: [self._row("rev_amt", "revenue")])
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged["concepts"][0]["indicators"] == ["rev_amt"]
+
+    def test_duplicate_rebind_is_idempotent(self) -> None:
+        base = {"concepts": [{"name": "revenue", "indicators": ["rev_amt"]}]}
+        set_overlay_resolver(
+            lambda: [
+                self._row("rev_amt", "revenue"),
+                self._row("rev_amt", "revenue"),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged["concepts"][0]["indicators"] == ["rev_amt"]
+
+    def test_last_rebind_wins_moves_column_between_concepts(self) -> None:
+        """A later rebind for the same column MOVES it — the column lands only
+        on its final target among rebind rows."""
+        base = {
+            "concepts": [
+                {"name": "account_balance", "indicators": []},
+                {"name": "transaction_amount", "indicators": []},
+            ],
+        }
+        set_overlay_resolver(
+            lambda: [
+                self._row("debit_balance", "account_balance"),
+                self._row("debit_balance", "transaction_amount"),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        balance = next(c for c in merged["concepts"] if c["name"] == "account_balance")
+        amount = next(c for c in merged["concepts"] if c["name"] == "transaction_amount")
+        assert balance["indicators"] == []
+        assert amount["indicators"] == ["debit_balance"]
+
+    def test_unknown_concept_ignored_defensively(self) -> None:
+        base = {"concepts": [{"name": "revenue", "indicators": ["rev"]}]}
+        set_overlay_resolver(lambda: [self._row("col", "nonexistent")])
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged["concepts"] == base["concepts"]
+
+    def test_skips_row_targeting_other_vertical(self) -> None:
+        base = {"concepts": [{"name": "revenue", "indicators": []}]}
+        set_overlay_resolver(lambda: [self._row("col", "revenue", vertical="marketing")])
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged is base  # no matching rows → identity short-circuit
+
+    def test_row_without_column_or_concept_ignored(self) -> None:
+        base = {"concepts": [{"name": "revenue", "indicators": []}]}
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(type="rebind", payload={"vertical": "finance", "column": "c"}),
+                OverlayRow(type="rebind", payload={"vertical": "finance", "concept": "revenue"}),
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert merged["concepts"][0]["indicators"] == []
+
+    def test_rebind_applies_after_concept_rows(self) -> None:
+        """Family order: a rebind may pull a column onto a concept defined or
+        replaced by a ``concept`` row in the same merge pass."""
+        base = {"name": "_adhoc", "concepts": []}
+        set_overlay_resolver(
+            lambda: [
+                self._row("gross_take", "revenue", vertical="_adhoc"),
+                OverlayRow(
+                    type="concept",
+                    payload={"vertical": "_adhoc", "name": "revenue", "indicators": ["rev"]},
+                ),
+            ]
+        )
+        merged = apply_overlay("verticals/_adhoc/ontology.yaml", base)
+        revenue = next(c for c in merged["concepts"] if c["name"] == "revenue")
+        assert revenue["indicators"] == ["rev", "gross_take"]
+
+
+class TestAppliableTeachTypes:
+    """``appliable_teach_types`` derives the executable vocabulary from the registries."""
+
+    def test_contains_every_registered_applier_type(self) -> None:
+        assert appliable_teach_types() == frozenset(
+            {
+                "type_pattern",
+                "null_value",
+                "unit",
+                "concept",
+                "concept_property",
+                "rebind",
+                "validation",
+                "cycle",
+                "metric",
+            }
+        )
+
+    def test_excludes_types_without_appliers(self) -> None:
+        # ``explanation`` is fully deferred; ``relationship`` and
+        # ``expected_dependency`` are direct config_overlay reads, not
+        # layered-read appliers.
+        assert "explanation" not in appliable_teach_types()
+        assert "relationship" not in appliable_teach_types()
+        assert "expected_dependency" not in appliable_teach_types()
 
 
 # ---------------------------------------------------------------------------

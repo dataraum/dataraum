@@ -151,24 +151,22 @@ flowchart TB
         SE3["time_role"]
         SE4["cross_column_patterns"]
         SE5["dimension_coverage"]
-        SE6["business_cycle_health"]
     end
 
     subgraph V["<b>Value</b> — data quality"]
         V1["null_ratio"]
-        V2["outlier_rate"]
-        V3["temporal_drift"]
-        V4["benford_compliance"]
-        V5["slice_stability"]
+        V2["null_semantics"]
+        V3["benford_compliance"]
     end
 
     subgraph C["<b>Computational</b> — aggregation safety"]
         C1["formula_match"]
         C2["cross_table_consistency"]
+        C3["temporal_behavior"]
     end
 ```
 
-Structural entropy is high when types don't parse and joins are ambiguous. Semantic entropy is high when columns lack business meaning, units are undeclared, or detected cycles are incomplete. Value entropy is high when values are missing, outlying, drifting, or distributionally suspicious. Computational entropy is high when derived columns don't match their formulas or values disagree across tables.
+Structural entropy is high when types don't parse and joins are ambiguous. Semantic entropy is high when columns lack business meaning, units are undeclared, or cross-column dependence is undocumented. Value entropy is high when values are missing, when quarantined tokens are contested between missing and genuine, or when distributions are suspicious. Computational entropy is high when derived columns don't match their formulas, values disagree across tables, or a measure's stock/flow behavior is contested.
 
 Entropy is a scalar in the range 0.0 (deterministic, fully understood) to 1.0 (maximum uncertainty).
 
@@ -176,9 +174,9 @@ Entropy is a scalar in the range 0.0 (deterministic, fully understood) to 1.0 (m
 
 Dimensions are scored at the granularity that fits what they measure:
 
-- **Per-column** — type_fidelity, naming_clarity, unit_declaration, time_role, null_ratio, outlier_rate, benford_compliance, formula_match.
+- **Per-column** — type_fidelity, naming_clarity, unit_declaration, time_role, null_ratio, null_semantics, benford_compliance, formula_match, temporal_behavior.
 - **Per-relationship** — join_path_determinism, relationship_quality, cross_column_patterns, cross_table_consistency.
-- **Per-table or per-workspace** — dimension_coverage, slice_stability, temporal_drift, business_cycle_health.
+- **Per-table or per-workspace** — dimension_coverage.
 
 The layers are *kinds of uncertainty*. The dimensions within layers live at the granularity that makes them measurable. Aggregations roll up: a table's overall entropy summarizes its columns', relationships' and table-level scores.
 
@@ -216,7 +214,7 @@ This is the architecture's core operational principle, and it has three conseque
 
 **Explanations frame; they do not suppress.** An agent encountering high entropy can declare an `explanation` that adds domain context — *"this column has 70% nulls because we only track that field for enterprise customers, which are 30% of the base."* The explanation does not lower the entropy score. The 70% nulls are still 70% nulls. The system reports the same elevated value with the explanation attached as context, and the human reading the report is better equipped to decide what to do. This is the Goodhart firewall holding: words don't move scores.
 
-**The why-look surface is the user's window into state.** The `why` operation produces structured evidence — observations from detectors, scored states (low/medium/high), causal impact estimates from a probabilistic model over the entropy graph (currently a Bayesian network), and a ranked list of teach operations that would resolve the elevated dimensions. The `look` operation surfaces the current state of an artifact or a workspace. Both inform; neither acts. The user (or the agent on their behalf) chooses what to do with the information.
+**The why-look surface is the user's window into state.** The `why` operation produces structured evidence — observations from detectors, scored states (low/medium/high), per-intent risk derived from the loss tables, and a ranked list of teach operations that would resolve the elevated dimensions. The `look` operation surfaces the current state of an artifact or a workspace. Both inform; neither acts. The user (or the agent on their behalf) chooses what to do with the information.
 
 The inform-don't-block discipline is what keeps the system honest in two directions at once: the agent cannot make false progress by hiding uncertainty, and the user is never forced into a corner by the system's measurements. The substrate of trust is *visibility of state*, not *correctness of automatic decisions*.
 

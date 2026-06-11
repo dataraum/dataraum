@@ -16,29 +16,6 @@ export const metadataSchema = pgSchema(
 	"ws_00000000_0000_0000_0000_000000000001_read",
 );
 
-export const columnSliceProfiles = metadataSchema
-	.view("column_slice_profiles", {
-		profileId: varchar("profile_id"),
-		sessionId: varchar("session_id"),
-		sourceColumnId: varchar("source_column_id"),
-		sliceColumnId: varchar("slice_column_id"),
-		sourceTableName: varchar("source_table_name"),
-		columnName: varchar("column_name"),
-		sliceColumnName: varchar("slice_column_name"),
-		sliceValue: varchar("slice_value"),
-		rowCount: integer("row_count"),
-		nullRatio: doublePrecision("null_ratio"),
-		distinctCount: integer("distinct_count"),
-		qualityScore: doublePrecision("quality_score"),
-		hasIssues: integer("has_issues"),
-		issueCount: integer("issue_count"),
-		profileData: json("profile_data"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT profile_id, session_id, source_column_id, slice_column_id, source_table_name, column_name, slice_column_name, slice_value, row_count, null_ratio, distinct_count, quality_score, has_issues, issue_count, profile_data, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_slice_profiles`,
-	);
-
 export const columns = metadataSchema
 	.view("columns", {
 		columnId: varchar("column_id"),
@@ -66,6 +43,28 @@ export const configOverlay = metadataSchema
 		sql`SELECT overlay_id, session_id, type, payload, created_at, superseded_at FROM ws_00000000_0000_0000_0000_000000000001.config_overlay`,
 	);
 
+export const currentClaimWitnesses = metadataSchema
+	.view("current_claim_witnesses", {
+		claimWitnessId: varchar("claim_witness_id"),
+		sessionId: varchar("session_id"),
+		tableId: varchar("table_id"),
+		columnId: varchar("column_id"),
+		runId: varchar("run_id"),
+		target: varchar(),
+		claimField: varchar("claim_field"),
+		witnessId: varchar("witness_id"),
+		distribution: jsonb(),
+		reliability: doublePrecision(),
+		detectorId: varchar("detector_id"),
+		computedAt: timestamp("computed_at"),
+		viaTableHead: boolean("via_table_head"),
+		viaSessionHead: boolean("via_session_head"),
+		viaOperatingModelHead: boolean("via_operating_model_head"),
+	})
+	.as(
+		sql`SELECT claim_witness_id, session_id, table_id, column_id, run_id, target, claim_field, witness_id, distribution, reliability, detector_id, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_operating_model_head FROM ws_00000000_0000_0000_0000_000000000001.claim_witnesses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'detect'::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text)) OR h.stage::text = 'operating_model'::text AND h.target::text = ('session:'::text || r.session_id::text))))`,
+	);
+
 export const currentColumnDriftSummaries = metadataSchema
 	.view("current_column_drift_summaries", {
 		id: varchar(),
@@ -76,13 +75,14 @@ export const currentColumnDriftSummaries = metadataSchema
 		timeColumn: varchar("time_column", { length: 255 }),
 		maxJsDivergence: doublePrecision("max_js_divergence"),
 		meanJsDivergence: doublePrecision("mean_js_divergence"),
+		driftDivergence: doublePrecision("drift_divergence"),
 		periodsAnalyzed: integer("periods_analyzed"),
 		periodsWithDrift: integer("periods_with_drift"),
 		driftEvidenceJson: json("drift_evidence_json"),
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT id, session_id, run_id, slice_table_name, column_name, time_column, max_js_divergence, mean_js_divergence, periods_analyzed, periods_with_drift, drift_evidence_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_drift_summaries r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT id, session_id, run_id, slice_table_name, column_name, time_column, max_js_divergence, mean_js_divergence, drift_divergence, periods_analyzed, periods_with_drift, drift_evidence_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_drift_summaries r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentColumnEligibility = metadataSchema
@@ -192,9 +192,10 @@ export const currentEntropyObjects = metadataSchema
 		computedAt: timestamp("computed_at"),
 		viaTableHead: boolean("via_table_head"),
 		viaSessionHead: boolean("via_session_head"),
+		viaOperatingModelHead: boolean("via_operating_model_head"),
 	})
 	.as(
-		sql`SELECT object_id, session_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+		sql`SELECT object_id, session_id, layer, dimension, sub_dimension, target, table_id, column_id, run_id, score, evidence, detector_id, source_analysis_ids, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_operating_model_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_objects r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'detect'::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text)) OR h.stage::text = 'operating_model'::text AND h.target::text = ('session:'::text || r.session_id::text))))`,
 	);
 
 export const currentEntropyReadiness = metadataSchema
@@ -212,9 +213,10 @@ export const currentEntropyReadiness = metadataSchema
 		computedAt: timestamp("computed_at"),
 		viaTableHead: boolean("via_table_head"),
 		viaSessionHead: boolean("via_session_head"),
+		viaOperatingModelHead: boolean("via_operating_model_head"),
 	})
 	.as(
-		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text))))`,
+		sql`SELECT readiness_id, session_id, target, table_id, column_id, run_id, band, worst_intent_risk, intents, top_drivers, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_operating_model_head FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'detect'::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text)) OR h.stage::text = 'operating_model'::text AND h.target::text = ('session:'::text || r.session_id::text)))) AND (NOT (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = ('session:'::text || r.session_id::text) AND (h3.stage::text = ANY (ARRAY['detect'::character varying, 'operating_model'::character varying]::text[])))) OR NOT (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.entropy_readiness r2 JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h2 ON h2.run_id::text = r2.run_id::text AND h2.target::text = ('session:'::text || r2.session_id::text) AND (h2.stage::text = ANY (ARRAY['detect'::character varying, 'operating_model'::character varying]::text[])) WHERE r2.session_id::text = r.session_id::text AND r2.target::text = r.target::text AND r2.run_id::text <> r.run_id::text AND h2.promoted_at > (( SELECT max(h3.promoted_at) AS max FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h3 WHERE h3.run_id::text = r.run_id::text AND h3.target::text = ('session:'::text || r.session_id::text) AND (h3.stage::text = ANY (ARRAY['detect'::character varying, 'operating_model'::character varying]::text[])))))))`,
 	);
 
 export const currentLifecycleArtifacts = metadataSchema
@@ -253,6 +255,29 @@ export const currentMaterializationRecipes = metadataSchema
 		sql`SELECT recipe_id, session_id, table_id, layer, run_id, target_fqn, ddl, depends_on, created_at FROM ws_00000000_0000_0000_0000_000000000001.materialization_recipes r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('table:'::text || r.table_id::text) AND h.stage::text = 'typing'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentMeasureAggregationLineage = metadataSchema
+	.view("current_measure_aggregation_lineage", {
+		lineageId: varchar("lineage_id"),
+		sessionId: varchar("session_id"),
+		runId: varchar("run_id"),
+		measureTableId: varchar("measure_table_id"),
+		measureColumnId: varchar("measure_column_id"),
+		eventTableId: varchar("event_table_id"),
+		sliceDimension: varchar("slice_dimension"),
+		conventionSql: text("convention_sql"),
+		periodGrain: varchar("period_grain"),
+		pattern: varchar(),
+		matchRate: doublePrecision("match_rate"),
+		rFlowMedian: doublePrecision("r_flow_median"),
+		rStockMedian: doublePrecision("r_stock_median"),
+		nEntities: integer("n_entities"),
+		nEntitiesFired: integer("n_entities_fired"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	})
+	.as(
+		sql`SELECT lineage_id, session_id, run_id, measure_table_id, measure_column_id, event_table_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at FROM ws_00000000_0000_0000_0000_000000000001.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentRelationships = metadataSchema
 	.view("current_relationships", {
 		relationshipId: varchar("relationship_id"),
@@ -288,14 +313,22 @@ export const currentSemanticAnnotations = metadataSchema
 		businessDescription: text("business_description"),
 		businessConcept: varchar("business_concept"),
 		temporalBehavior: varchar("temporal_behavior"),
+		temporalBehaviorClaim: varchar("temporal_behavior_claim"),
+		temporalBehaviorClaimConfidence: doublePrecision(
+			"temporal_behavior_claim_confidence",
+		),
+		temporalBehaviorContested: boolean("temporal_behavior_contested"),
+		derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
+		derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
 		unitSourceColumn: varchar("unit_source_column"),
+		nullTokens: json("null_tokens"),
 		annotationSource: varchar("annotation_source"),
 		annotatedAt: timestamp("annotated_at"),
 		annotatedBy: varchar("annotated_by"),
 		confidence: doublePrecision(),
 	})
 	.as(
-		sql`SELECT annotation_id, session_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, unit_source_column, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'semantic_per_column'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT annotation_id, session_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, temporal_behavior_claim, temporal_behavior_claim_confidence, temporal_behavior_contested, derived_formula_hypothesis, derived_formula_confidence, unit_source_column, null_tokens, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'semantic_per_column'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSliceDefinitions = metadataSchema
@@ -434,6 +467,7 @@ export const currentTemporalSliceAnalyses = metadataSchema
 		hasEarlyCutoff: integer("has_early_cutoff"),
 		daysMissingAtEnd: integer("days_missing_at_end"),
 		lastDayRatio: doublePrecision("last_day_ratio"),
+		columnSums: json("column_sums"),
 		zScore: doublePrecision("z_score"),
 		rollingAvg: doublePrecision("rolling_avg"),
 		rollingStd: doublePrecision("rolling_std"),
@@ -444,7 +478,7 @@ export const currentTemporalSliceAnalyses = metadataSchema
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT id, session_id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, expected_days, observed_days, coverage_ratio, is_complete, has_early_cutoff, days_missing_at_end, last_day_ratio, z_score, rolling_avg, rolling_std, is_volume_anomaly, anomaly_type, period_over_period_change, issues_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT id, session_id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, expected_days, observed_days, coverage_ratio, is_complete, has_early_cutoff, days_missing_at_end, last_day_ratio, column_sums, z_score, rolling_avg, rolling_std, is_volume_anomaly, anomaly_type, period_over_period_change, issues_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema
@@ -493,6 +527,7 @@ export const currentValidationResults = metadataSchema
 		runId: varchar("run_id"),
 		validationId: varchar("validation_id"),
 		tableIds: json("table_ids"),
+		columnsUsed: json("columns_used"),
 		status: varchar(),
 		severity: varchar(),
 		passed: boolean(),
@@ -502,7 +537,7 @@ export const currentValidationResults = metadataSchema
 		details: json(),
 	})
 	.as(
-		sql`SELECT result_id, session_id, run_id, validation_id, table_ids, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT result_id, session_id, run_id, validation_id, table_ids, columns_used, status, severity, passed, message, executed_at, sql_used, details FROM ws_00000000_0000_0000_0000_000000000001.validation_results r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const fixLedger = metadataSchema

@@ -4,11 +4,11 @@ Source of truth:
   - Phases: subclasses of BasePhase under src/dataraum/pipeline/phases/
   - Detectors: distinct `detector_id = "..."` literals under src/dataraum/entropy/detectors/
                 (excluding the abstract "base" default)
-  - MCP tools: `name="..."` registrations in src/dataraum/mcp/server.py
 
 We scan a fixed set of doc files for numbered claims like
-`18 phases`, `17-phase pipeline`, `10 MCP tools`, `16 detectors`, etc., and
+`18 phases`, `17-phase pipeline`, `16 detectors`, etc., and
 fail if the number disagrees with the truth.
+(The MCP tool count check died with the MCP surface — DAT-487.)
 
 Run locally:  uv run python scripts/check_doc_counts.py
 Used in CI by .github/workflows/release.yml (preflight job).
@@ -38,7 +38,6 @@ DOC_FILES = [
 # alternation (longest first wins inside a group).
 KINDS: dict[str, tuple[str, ...]] = {
     "phase": ("phases", "phase"),
-    "tool": ("MCP tools", "mcp tools", "tools", "tool"),
     "detector": ("entropy detectors", "detectors", "detector"),
 }
 
@@ -46,7 +45,6 @@ KINDS: dict[str, tuple[str, ...]] = {
 @dataclass(frozen=True)
 class Truth:
     phase: int
-    tool: int
     detector: int
 
 
@@ -69,17 +67,8 @@ def count_detectors() -> int:
     return len(ids)
 
 
-def tool_names() -> set[str]:
-    server = (ROOT / "src/dataraum/mcp/server.py").read_text(encoding="utf-8")
-    return set(re.findall(r'\bname\s*=\s*"([a-z_]+)"', server))
-
-
-def count_tools() -> int:
-    return len(tool_names())
-
-
 def truth() -> Truth:
-    return Truth(phase=count_phases(), tool=count_tools(), detector=count_detectors())
+    return Truth(phase=count_phases(), detector=count_detectors())
 
 
 def _kind_alternation() -> str:
@@ -132,29 +121,11 @@ def find_claims(path: Path) -> list[Claim]:
     return claims
 
 
-def check_readme_tool_table() -> list[str]:
-    """Assert every registered MCP tool appears as a row in the README tool table."""
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    registered = tool_names()
-    documented = set(re.findall(r"^\|\s*`([a-z_]+)`\s*\|", readme, re.MULTILINE))
-    missing = registered - documented
-    extra = documented - registered
-    errors: list[str] = []
-    if missing:
-        errors.append("README.md tool table is missing rows for: " + ", ".join(sorted(missing)))
-    if extra:
-        errors.append(
-            "README.md tool table lists tools not registered in the server: "
-            + ", ".join(sorted(extra))
-        )
-    return errors
-
-
 def check() -> int:
     t = truth()
-    expected = {"phase": t.phase, "tool": t.tool, "detector": t.detector}
+    expected = {"phase": t.phase, "detector": t.detector}
 
-    print(f"source of truth: {t.phase} phases, {t.tool} MCP tools, {t.detector} detectors")
+    print(f"source of truth: {t.phase} phases, {t.detector} detectors")
 
     mismatches: list[tuple[Claim, int]] = []
     scanned = 0
@@ -170,25 +141,15 @@ def check() -> int:
 
     print(f"scanned {scanned} doc files")
 
-    table_errors = check_readme_tool_table()
-
-    if not mismatches and not table_errors:
-        print("OK — all numbered claims match and README tool table is complete.")
+    if not mismatches:
+        print("OK — all numbered claims match.")
         return 0
 
-    if mismatches:
-        print()
-        print(f"{len(mismatches)} stale claim(s):")
-        for claim, want in mismatches:
-            print(
-                f"  {claim.file}:{claim.line}  says {claim.number} {claim.kind}(s), truth is {want}"
-            )
-            print(f"    >> {claim.text}")
-
-    if table_errors:
-        print()
-        for err in table_errors:
-            print(f"  {err}")
+    print()
+    print(f"{len(mismatches)} stale claim(s):")
+    for claim, want in mismatches:
+        print(f"  {claim.file}:{claim.line}  says {claim.number} {claim.kind}(s), truth is {want}")
+        print(f"    >> {claim.text}")
 
     return 1
 

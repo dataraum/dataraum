@@ -4,15 +4,16 @@ Measures uncertainty in unit declarations for numeric columns.
 Columns with undeclared or low-confidence units in measure roles
 have higher entropy when used in calculations.
 
-Supports cross-column unit inference: if a dimension column (e.g. 'currency')
-defines the unit for measure columns, entropy is reduced to 0.2 (inferred)
-instead of 0.8 (missing).
+The score is 1 - unit_confidence (stats.confidence_entropy): a confidently-detected
+unit → ~0, an undeclared unit → 1.0. Cross-column inference: when a dimension column
+(e.g. 'currency') defines the unit, or the measure is inherently dimensionless, the
+unit is resolved → entropy 0.
 
 Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role,
         semantic.unit_source_column
 """
 
-from dataraum.entropy.config import get_entropy_config
+from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
@@ -25,12 +26,10 @@ class UnitEntropyDetector(EntropyDetector):
     Undeclared units on measure columns create high entropy when
     those columns are used in aggregations or calculations.
 
-    When a unit_source_column is identified (e.g., a 'currency' dimension
-    defines the unit for monetary measures), the score is reduced to
-    score_inferred (default 0.2) instead of score_no_unit (0.8).
+    Score = 1 - unit_confidence (no 0.8/0.5/0.1 buckets); a unit resolved by
+    cross-column inference (a 'currency' dimension, or a dimensionless measure) → 0.
 
     Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role
-    Scores configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "unit_entropy"
@@ -68,16 +67,6 @@ class UnitEntropyDetector(EntropyDetector):
             List with single EntropyObject for unit declaration entropy,
             or empty list if not applicable (non-measure column)
         """
-        config = get_entropy_config()
-        detector_config = config.detector("unit_entropy")
-
-        # Configurable scores
-        score_no_unit = detector_config.get("score_no_unit", 0.8)
-        score_low_confidence = detector_config.get("score_low_confidence", 0.5)
-        score_declared = detector_config.get("score_declared", 0.1)
-        score_inferred = detector_config.get("score_inferred", 0.1)
-        confidence_threshold = detector_config.get("confidence_threshold", 0.5)
-
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
 
@@ -105,25 +94,22 @@ class UnitEntropyDetector(EntropyDetector):
         else:
             unit_source_column = semantic.get("unit_source_column")
 
-        # Determine score based on unit status
-        if detected_unit and unit_confidence >= confidence_threshold:
-            score = score_declared
-            unit_status = "declared"
-        elif detected_unit and unit_confidence < confidence_threshold:
-            score = score_low_confidence
-            unit_status = "low_confidence"
+        # A measure's unit-declaration entropy. The unit is KNOWN (→ 0) when it is
+        # inherently dimensionless or inferred from a dimension column (cross-column
+        # resolution). Otherwise the entropy is the model's uncertainty about the unit
+        # = 1 - unit_confidence (stats.confidence_entropy): a confidently-detected unit
+        # → ~0, an undeclared unit (unit_confidence 0) → 1.0. No 0.8/0.5/0.1 buckets
+        # (DAT-442 two-table). Teach: declare the unit.
+        if detected_unit:
+            # A directly-declared unit takes precedence over cross-column inference.
+            score = stats.confidence_entropy(unit_confidence)
+            unit_status = "declared" if unit_confidence >= 0.5 else "low_confidence"
         elif unit_source_column == "dimensionless":
-            # Measure is inherently dimensionless (ratio, rate, index, etc.)
-            # Having no unit is correct — not a quality issue
-            score = score_declared
-            unit_status = "dimensionless"
+            score, unit_status = 0.0, "dimensionless"
         elif unit_source_column:
-            # Unit is inferred from a dimension column — lower entropy than missing
-            score = score_inferred
-            unit_status = "inferred_from_dimension"
+            score, unit_status = 0.0, "inferred_from_dimension"
         else:
-            score = score_no_unit
-            unit_status = "missing"
+            score, unit_status = 1.0, "missing"
 
         # Build evidence
         evidence_dict = {

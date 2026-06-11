@@ -1,7 +1,8 @@
 """Entropy context for the readiness rollup — per-column design.
 
-Rolls detector scores up the entropy network independently for each column
-target, then aggregates intent readiness and cross-column fix priorities.
+Rolls detector scores up the LOSS table (entropy/loss.yaml) independently for each
+column target: per-intent risk = clamp01(Σ weight·value), banded ready/investigate/
+blocked. No network DAG — the per-intent loss weights ARE the rollup (DAT-442).
 
 Follows the build_for_* pattern from graph_context.py and query_context.py.
 """
@@ -18,14 +19,13 @@ from sqlalchemy.orm import Session
 from dataraum.core.logging import get_logger
 from dataraum.entropy.core.storage import EntropyRepository
 from dataraum.entropy.db_models import EntropyReadinessRecord
-from dataraum.entropy.models import EntropyObject
-from dataraum.entropy.network.bridge import (
-    build_dimension_path_to_node_map,
-    discretize_score,
-    entropy_objects_to_scores,
+from dataraum.entropy.loss import (
+    LossConfig,
+    compute_loss_risk,
+    get_loss_config,
+    loss_risk_for_object,
 )
-from dataraum.entropy.network.model import EntropyNetwork
-from dataraum.entropy.network.rollup import compute_priorities, roll_up
+from dataraum.entropy.models import EntropyObject
 from dataraum.storage import Column, Table
 from dataraum.storage.snapshot_head import head_run_id
 
@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class DirectSignal:
-    """Entropy signal not mapped to any network node."""
+    """Entropy signal with no loss measurement (informative context, not a band driver)."""
 
     dimension_path: str = ""
     target: str = ""
@@ -50,14 +50,13 @@ class DirectSignal:
 
 @dataclass
 class IntentDriver:
-    """One observed node's causal contribution to a specific intent's risk.
+    """One measurement's contribution to a specific intent's risk.
 
-    ``impact_delta`` is how much THIS intent's risk would drop if the node were
-    fixed to clean (from ``compute_priorities``' per-intent ``affected_intents``)
-    — the per-intent split the collapsed ``ColumnNodeEvidence.impact_delta`` (a
-    max across intents) loses. ``dimension_path`` + ``label`` make the driver
-    self-describing so the cockpit needs no node→label dictionary (the network
-    vocabulary stays in the engine).
+    ``impact_delta`` is this measurement's per-intent loss risk
+    (``clamp01(Σ weight·value)`` for the intent). The worst measurement sets the
+    band, so the top driver's delta equals the intent risk. ``dimension_path`` +
+    ``label`` make the driver self-describing so the cockpit needs no
+    detector→label dictionary.
     """
 
     node: str = ""
@@ -79,14 +78,14 @@ class IntentReadiness:
 
 @dataclass
 class ColumnNodeEvidence:
-    """One network node's evidence within a specific column."""
+    """One measurement's evidence within a specific column."""
 
     node_name: str = ""
     dimension_path: str = ""
     label: str = ""
     state: str = "low"
     score: float = 0.0
-    impact_delta: float = 0.0  # causal impact of fixing this node (from priorities)
+    impact_delta: float = 0.0  # worst per-intent loss this measurement contributes
     evidence: list[dict[str, Any]] = field(default_factory=list)
     detector_id: str = ""
 
@@ -133,12 +132,26 @@ class EntropyForReadiness:
 
 
 def _node_label(node: str) -> str:
-    """Human-readable label for a network node (humanized node name).
+    """Human-readable label for a measurement (humanized detector_id).
 
-    Keeps the network vocabulary in the engine so the cockpit can render a
-    driver without its own node→label dictionary.
+    Keeps the vocabulary in the engine so the cockpit can render a driver
+    without its own detector→label dictionary.
     """
     return node.replace("_", " ").capitalize()
+
+
+def _state_from_score(score: float, low_upper: float, medium_upper: float) -> str:
+    """Driver STATE bucket (low/medium/high) from a raw measurement score.
+
+    Distinct vocabulary from the readiness band (ready/investigate/blocked); same
+    0.3/0.6 edges. ``state`` reflects the raw measurement severity, the band the
+    per-intent expected loss.
+    """
+    if score > medium_upper:
+        return "high"
+    if score > low_upper:
+        return "medium"
+    return "low"
 
 
 def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
@@ -152,173 +165,122 @@ def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
     )
 
 
-def _readiness_from_risk(
-    risk: float,
-    disc_medium_upper: float = 0.6,
-    disc_low_upper: float = 0.3,
-) -> str:
-    """Determine readiness from an intent's risk score.
-
-    Uses the same thresholds as score discretization:
-    - risk > medium_upper -> blocked
-    - risk > low_upper -> investigate
-    - else -> ready
-    """
-    if risk > disc_medium_upper:
-        return "blocked"
-    if risk > disc_low_upper:
-        return "investigate"
-    return "ready"
-
-
 def _build_column_result(
     target: str,
     objects: list[EntropyObject],
-    network: EntropyNetwork,
-    path_map: dict[str, str],
+    loss_config: LossConfig,
     *,
     compute_rollup: bool = True,
 ) -> tuple[ColumnReadinessResult | None, list[DirectSignal]]:
-    """Run network inference for a single column's objects.
+    """Roll a single target's objects up the LOSS table into per-intent readiness.
+
+    Every tunable measurement (a detector with a ``loss.yaml`` row) contributes
+    ``risk(intent) = clamp01(Σ weight·value)``; the column's per-intent risk is the
+    worst measurement (max). Detectors with no loss row (informative signals like
+    benford) fall through to direct signals — context, never a band driver.
 
     Args:
-        target: Column target string (e.g. "column:table.col").
-        objects: EntropyObjects for this column only.
-        network: The entropy network.
-        path_map: Pre-built dimension_path -> node_name map.
-        compute_rollup: Run the noisy-OR rollup (intents + causal priorities).
-            When False, only the raw per-node evidence + direct signals are
-            built — the cheap half the contract gate needs at query time, which
-            never went through the rollup. The persisted ``entropy_readiness``
-            rows are the source of truth for the banded result, so the rollup
-            runs only at the terminal ``detect`` step (DAT-399 slice D).
+        target: Target string (e.g. "column:table.col", "relationship:..", "table:..").
+        objects: EntropyObjects for this target only.
+        loss_config: The loss table (weights + bands).
+        compute_rollup: Build the per-intent bands + drivers. When False only the
+            raw per-measurement node evidence + direct signals are built — the cheap
+            half the query-time contract gate reads (DAT-399 slice D). The persisted
+            ``entropy_readiness`` rows are the source of truth for the banded result.
 
     Returns:
-        Tuple of (ColumnReadinessResult or None, list of DirectSignals).
-        Returns None for the result if no objects map to network nodes.
+        Tuple of (ColumnReadinessResult or None, list of DirectSignals). None when no
+        object maps to a loss measurement (nothing to band).
     """
-    disc = network.config.discretization
+    low_upper = loss_config.readiness_bands["low_upper"]
+    medium_upper = loss_config.readiness_bands["medium_upper"]
 
-    # Split into mapped vs unmapped
-    mapped: list[EntropyObject] = []
+    loss_objects: list[EntropyObject] = []
     direct_signals: list[DirectSignal] = []
-
     for obj in objects:
-        if obj.dimension_path in path_map:
-            mapped.append(obj)
+        if loss_config.is_loss_measurement(obj.detector_id):
+            loss_objects.append(obj)
         else:
             direct_signals.append(_object_to_direct_signal(obj))
 
-    if not mapped:
+    if not loss_objects:
         return None, direct_signals
 
-    # Per-column: no collisions within a target, safe to use bridge directly.
-    # The rollup consumes raw scores; states are derived only for display.
-    scores = entropy_objects_to_scores(mapped, network)
-    if not scores:
-        return None, direct_signals
-
-    states = {
-        node: discretize_score(score, disc.low_upper, disc.medium_upper)
-        for node, score in scores.items()
-    }
-
-    # Build lookup: node_name -> source object (for raw score + evidence).
-    node_to_obj: dict[str, EntropyObject] = {}
-    for obj in mapped:
-        node_name = path_map.get(obj.dimension_path)
-        if node_name:
-            node_to_obj[node_name] = obj
-
-    risk: dict[str, float] = {}
-    priorities: list[Any] = []
-    node_to_delta: dict[str, float] = {}
-    if compute_rollup:
-        # Roll observed scores up the DAG. Unobserved nodes with no resolved
-        # parents are simply absent — no prior leakage, so no subgraph pruning.
-        risk = roll_up(network.config, scores, _pmap=network.parent_map, _order=network.topo_order)
-        # Causal fix priorities: how much each observed node lowers intent risk.
-        priorities = compute_priorities(network.config, scores, low_upper=disc.low_upper)
-        node_to_delta = {pr.node: pr.impact_delta for pr in priorities}
-
+    # Per-measurement node evidence (the raw half — always built). One node per loss
+    # object; its impact is the worst per-intent loss it contributes (a rollup product,
+    # so 0.0 on the cheap query-time path).
     node_evidence: list[ColumnNodeEvidence] = []
-    for node_name, state in states.items():
-        source_obj = node_to_obj.get(node_name)
-        node_ev = ColumnNodeEvidence(
-            node_name=node_name,
-            dimension_path=network.get_node_config(node_name).dimension_path,
-            label=_node_label(node_name),
-            state=state,
-            score=source_obj.score if source_obj else 0.0,
-            impact_delta=node_to_delta.get(node_name, 0.0),
-            evidence=list(source_obj.evidence) if source_obj else [],
-            detector_id=source_obj.detector_id if source_obj else "",
+    for obj in loss_objects:
+        impact = (
+            max(loss_risk_for_object(obj, loss_config).values(), default=0.0)
+            if compute_rollup
+            else 0.0
         )
-        node_evidence.append(node_ev)
+        node_evidence.append(
+            ColumnNodeEvidence(
+                node_name=obj.detector_id,
+                dimension_path=obj.dimension_path,
+                label=_node_label(obj.detector_id),
+                state=_state_from_score(obj.score, low_upper, medium_upper),
+                score=obj.score,
+                impact_delta=impact,
+                evidence=list(obj.evidence),
+                detector_id=obj.detector_id,
+            )
+        )
 
-    # Build per-column IntentReadiness. Intents with no resolved parents from the
-    # observed evidence are absent from `risk` and skipped (same as before).
+    nodes_high = sum(1 for ne in node_evidence if ne.state == "high")
+    if not compute_rollup:
+        # Cheap evidence-only path (query-time contract gate): raw node evidence +
+        # direct signals, no intents/bands.
+        return ColumnReadinessResult(
+            target=target,
+            node_evidence=node_evidence,
+            nodes_observed=len(node_evidence),
+            nodes_high=nodes_high,
+        ), direct_signals
+
+    # Per-intent risk = worst measurement (max across objects). Drivers = each
+    # measurement's contribution to that intent, ranked; the top one sets the band.
+    loss_risk = compute_loss_risk(loss_objects, loss_config)
     intents: list[IntentReadiness] = []
-
-    for intent_name in network.get_intent_nodes():
-        if intent_name not in risk:
+    for intent_name in loss_config.intents():
+        if intent_name not in loss_risk:
             continue
-
-        intent_risk = risk[intent_name]
-        readiness = _readiness_from_risk(intent_risk, disc.medium_upper, disc.low_upper)
-        # Per-intent drivers: nodes that lower THIS intent's risk, ranked by how
-        # much. ``affected_intents`` carries the per-intent split that the
-        # collapsed ColumnNodeEvidence.impact_delta (a max across intents) drops.
-        # Each driver carries dimension_path + label so the payload is
-        # self-describing (the cockpit needs no node vocabulary).
+        intent_risk = loss_risk[intent_name]
         drivers = [
             IntentDriver(
-                node=pr.node,
-                dimension_path=network.get_node_config(pr.node).dimension_path,
-                label=_node_label(pr.node),
-                state=pr.current_state,
-                impact_delta=pr.affected_intents[intent_name],
+                node=obj.detector_id,
+                dimension_path=obj.dimension_path,
+                label=_node_label(obj.detector_id),
+                state=_state_from_score(obj.score, low_upper, medium_upper),
+                impact_delta=per,
             )
-            for pr in priorities
-            if intent_name in pr.affected_intents
+            for obj in loss_objects
+            if (per := loss_risk_for_object(obj, loss_config).get(intent_name, 0.0)) > 0.0
         ]
         drivers.sort(key=lambda d: d.impact_delta, reverse=True)
         intents.append(
             IntentReadiness(
                 intent_name=intent_name,
                 risk=intent_risk,
-                readiness=readiness,
+                readiness=loss_config.band(intent_risk),
                 drivers=drivers,
             )
         )
 
-    # Summary stats
-    nodes_observed = len(scores)
-    nodes_high = sum(1 for s in states.values() if s == "high")
     worst_intent_risk = max((i.risk for i in intents), default=0.0)
-    readiness = _readiness_from_risk(
-        worst_intent_risk,
-        disc.medium_upper,
-        disc.low_upper,
-    )
-
-    # Top priority node
-    top_priority_node = ""
-    top_priority_impact = 0.0
-    if priorities:
-        top_priority_node = priorities[0].node
-        top_priority_impact = priorities[0].impact_delta
-
+    top_node = max(node_evidence, key=lambda ne: ne.impact_delta, default=None)
     return ColumnReadinessResult(
         target=target,
         node_evidence=node_evidence,
         intents=intents,
-        top_priority_node=top_priority_node,
-        top_priority_impact=top_priority_impact,
-        nodes_observed=nodes_observed,
+        top_priority_node=top_node.node_name if top_node else "",
+        top_priority_impact=top_node.impact_delta if top_node else 0.0,
+        nodes_observed=len(node_evidence),
         nodes_high=nodes_high,
         worst_intent_risk=worst_intent_risk,
-        readiness=readiness,
+        readiness=loss_config.band(worst_intent_risk),
     ), direct_signals
 
 
@@ -329,21 +291,19 @@ def _build_column_result(
 
 def assemble_readiness_context(
     objects: list[EntropyObject],
-    network: EntropyNetwork,
     *,
     compute_rollup: bool = True,
 ) -> EntropyForReadiness:
-    """Assemble readiness context from entropy objects and network.
+    """Assemble readiness context from entropy objects via the loss table.
 
-    Rolls scores up the entropy network independently per column target. Per-column
+    Rolls scores up the loss table independently per column target. Per-column
     results + source-wide summary stats only; cross-column aggregation is DAT-396.
 
     Args:
         objects: All EntropyObject instances for the tables being analyzed.
-        network: The entropy network.
-        compute_rollup: Run the noisy-OR rollup. When False, per-column results
-            carry only raw node evidence (no intents/bands) — the cheap evidence
-            half for the query-time contract gate (DAT-399 slice D).
+        compute_rollup: Build the per-intent bands + drivers. When False, per-column
+            results carry only raw node evidence (no intents/bands) — the cheap
+            evidence half for the query-time contract gate (DAT-399 slice D).
 
     Returns:
         EntropyForReadiness with per-column results + source-wide summaries.
@@ -351,20 +311,19 @@ def assemble_readiness_context(
     if not objects:
         return EntropyForReadiness()
 
-    # Step 1: Build path map once
-    path_map = build_dimension_path_to_node_map(network)
+    loss_config = get_loss_config()
 
-    # Step 2: Group objects by target
+    # Step 1: Group objects by target
     by_target: dict[str, list[EntropyObject]] = {}
     for obj in objects:
         by_target.setdefault(obj.target, []).append(obj)
 
-    # Step 3: Targets that roll up the network — column, relationship (DAT-408)
+    # Step 2: Targets that roll up the loss table — column, relationship (DAT-408)
     # AND table (DAT-415) granularity — vs the rest (view:), which stay raw
     # DirectSignals. The rollup (``_build_column_result``) is target-agnostic, so
     # a relationship's or a table's objects roll up the same intents as a
-    # column's. ``table:`` carries the fact table's dimension_coverage, which maps
-    # to the ``dimension_coverage`` network node → query/reporting intent bands.
+    # column's. ``table:`` carries the fact table's dimension_coverage measurement
+    # → query/reporting intent bands.
     rollup_targets: dict[str, list[EntropyObject]] = {}
     other_targets: dict[str, list[EntropyObject]] = {}
     for target, target_objects in by_target.items():
@@ -377,8 +336,8 @@ def assemble_readiness_context(
         else:
             other_targets[target] = target_objects
 
-    # Step 4: Per-target network inference. ``columns`` is keyed by target string
-    # and may hold ``relationship:`` targets alongside ``column:`` ones (DAT-408).
+    # Step 3: Per-target loss rollup. ``columns`` is keyed by target string and may
+    # hold ``relationship:`` targets alongside ``column:`` ones (DAT-408).
     columns: dict[str, ColumnReadinessResult] = {}
     all_direct_signals: list[DirectSignal] = []
 
@@ -386,8 +345,7 @@ def assemble_readiness_context(
         col_result, col_signals = _build_column_result(
             target,
             target_objects,
-            network,
-            path_map,
+            loss_config,
             compute_rollup=compute_rollup,
         )
         all_direct_signals.extend(col_signals)
@@ -448,7 +406,13 @@ def assemble_readiness_context(
 # ---------------------------------------------------------------------------
 
 
-def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[EntropyObject]:
+def _load_entropy_objects(
+    session: Session,
+    table_ids: list[str],
+    *,
+    current_run_id: str | None = None,
+    session_id: str | None = None,
+) -> list[EntropyObject]:
     """Load entropy objects for the typed tables among ``table_ids`` (or empty)."""
     if not table_ids:
         return []
@@ -459,7 +423,12 @@ def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[Entrop
         logger.warning("No typed tables found for readiness context")
         return []
 
-    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
+    entropy_objects = repo.load_for_tables(
+        typed_table_ids,
+        enforce_typed=True,
+        current_run_id=current_run_id,
+        session_id=session_id,
+    )
     if not entropy_objects:
         logger.debug("No entropy objects found for readiness context")
     return entropy_objects
@@ -468,31 +437,40 @@ def _load_entropy_objects(session: Session, table_ids: list[str]) -> list[Entrop
 def build_for_readiness(
     session: Session,
     table_ids: list[str],
+    *,
+    current_run_id: str | None = None,
+    session_id: str | None = None,
 ) -> EntropyForReadiness:
     """Build the full readiness rollup (intents + bands) for typed tables.
 
-    Runs the noisy-OR rollup. This is the terminal ``detect`` step's computation
+    Runs the loss rollup. This is the terminal ``detect`` step's computation
     (persisted to ``entropy_readiness``); query-time consumers read the persisted
     band instead and use :func:`build_column_evidence` for the contract gate.
 
     Args:
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
+        current_run_id: The in-flight detect run whose rows take precedence.
+        session_id: Scope for resolving the promoted session detect head.
 
     Returns:
         EntropyForReadiness with computed context.
     """
-    entropy_objects = _load_entropy_objects(session, table_ids)
+    entropy_objects = _load_entropy_objects(
+        session, table_ids, current_run_id=current_run_id, session_id=session_id
+    )
     if not entropy_objects:
         return EntropyForReadiness()
-    return assemble_readiness_context(entropy_objects, EntropyNetwork())
+    return assemble_readiness_context(entropy_objects)
 
 
 def build_column_evidence(
     session: Session,
     table_ids: list[str],
+    *,
+    session_id: str | None = None,
 ) -> EntropyForReadiness:
-    """Build raw per-column entropy evidence WITHOUT the noisy-OR rollup.
+    """Build raw per-column entropy evidence WITHOUT the loss rollup.
 
     The contract gate (``query_context.network_to_column_summaries``) only reads
     raw per-node scores + direct signals, never the rollup. This loads exactly
@@ -503,14 +481,20 @@ def build_column_evidence(
     Args:
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
+        session_id: Analytical session — resolves rows to the promoted session
+            detect head (then table heads/legacy) instead of loading blindly.
+            After a begin_session promote, add_source and session rows coexist
+            for re-adjudicated detectors; omitted ⇒ the legacy blind load.
 
     Returns:
         EntropyForReadiness with per-column node evidence + direct signals only.
     """
-    entropy_objects = _load_entropy_objects(session, table_ids)
+    # Query time has no in-flight detect run, so only session_id is threaded —
+    # resolution degrades to: session detect head > table heads/legacy.
+    entropy_objects = _load_entropy_objects(session, table_ids, session_id=session_id)
     if not entropy_objects:
         return EntropyForReadiness()
-    return assemble_readiness_context(entropy_objects, EntropyNetwork(), compute_rollup=False)
+    return assemble_readiness_context(entropy_objects, compute_rollup=False)
 
 
 def load_persisted_readiness(

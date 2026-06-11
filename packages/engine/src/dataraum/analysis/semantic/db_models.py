@@ -75,9 +75,36 @@ class SemanticAnnotation(Base):
     # Temporal behavior from ontology: 'additive' or 'point_in_time'
     temporal_behavior: Mapped[str | None] = mapped_column(String)
 
+    # Independent LLM stock/flow read (ADR-0009 / DAT-445), pooled against the
+    # ontology prior above in the temporal_behavior adjudication. The claim
+    # ('stock'/'flow'/'unsure') + its confidence are the LLM witness, written by
+    # semantic_per_column. ``temporal_behavior_contested`` is written back by the
+    # resolved-layer pass (dataraum.entropy.resolve) when the pooled conflict is
+    # non-trivial — it flags the resolved temporal_behavior so a downstream SQL
+    # agent treats a contested stock with caution. None = no claim / not resolved.
+    temporal_behavior_claim: Mapped[str | None] = mapped_column(String)
+    temporal_behavior_claim_confidence: Mapped[float | None] = mapped_column(Float)
+    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
+
+    # Independent LLM formula hypothesis (ADR-0009, derived_value second witness):
+    # the within-table arithmetic expression this column SHOULD obey from its
+    # name + concept context (e.g. 'subtotal + tax_amount'), with the LLM's
+    # confidence. Written by semantic_per_column alongside the stock/flow claim;
+    # pooled against the data-discovered formula (correlation phase) in the
+    # derived_value adjudication. None = no hypothesis (the witness abstains).
+    derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
+    derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
+
     # Cross-column unit inference: column name that defines the unit for this measure
     # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
     unit_source_column: Mapped[str | None] = mapped_column(String)
+
+    # Resolved null-marker tokens (ADR-0009 / DAT-457): the rejected tokens the
+    # null_semantics adjudication resolved to is-null (pooled posterior past
+    # threshold). Written by the resolved-layer pass inside the terminal detect
+    # (dataraum.entropy.resolve), updating THIS run's annotation. The query agent
+    # treats these as NULL in generated SQL. None = not resolved / no rejects.
+    null_tokens: Mapped[list[str] | None] = mapped_column(JSON)
 
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(

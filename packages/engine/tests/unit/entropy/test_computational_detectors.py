@@ -17,7 +17,11 @@ class TestDerivedValueDetector:
         return DerivedValueDetector()
 
     def test_no_formula_detected(self, detector: DerivedValueDetector):
-        """Test max entropy when no formula is detected."""
+        """No formula detected → nothing to measure: ignorance, not a fabricated 1.0.
+
+        The old no_formula→score=1.0 branch was theater (DAT-442 two-table): a column
+        with no detected derived formula is not a 100%-broken derivation.
+        """
         context = DetectorContext(
             table_name="orders",
             column_name="total",
@@ -28,11 +32,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert results[0].evidence[0]["status"] == "no_formula"
+        assert detector.detect(context) == []
 
     def test_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for exact formula match."""
@@ -82,8 +82,8 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Boosted: mismatch_rate=0.03 → ~0.20 (notable, not noise)
-        assert results[0].score == pytest.approx(0.20, abs=0.02)
+        # Honest mismatch rate=0.03 (no boost, DAT-442)
+        assert results[0].score == pytest.approx(0.03, abs=0.01)
         assert results[0].evidence[0]["status"] == "near_exact"
 
     def test_approximate_formula_match(self, detector: DerivedValueDetector):
@@ -107,8 +107,8 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Boosted: mismatch_rate=0.15 → 1.0 (severe — 15% formula errors)
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
+        # Honest mismatch rate=0.15 (no boost, DAT-442)
+        assert results[0].score == pytest.approx(0.15, abs=0.01)
         assert results[0].evidence[0]["status"] == "approximate"
 
     def test_poor_formula_match(self, detector: DerivedValueDetector):
@@ -132,12 +132,12 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Boosted: mismatch_rate=0.40 → 1.0 (severe — 40% formula errors)
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
+        # Honest mismatch rate=0.40 (no boost, DAT-442)
+        assert results[0].score == pytest.approx(0.40, abs=0.01)
         assert results[0].evidence[0]["status"] == "poor"
 
     def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
-        """Test entropy when column is not in derived columns list."""
+        """Column not in the derived list → no formula → nothing to measure (empty)."""
         context = DetectorContext(
             table_name="orders",
             column_name="other_col",
@@ -154,12 +154,8 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = detector.detect(context)
-
-        # Column not in derived list = no formula detected
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert results[0].evidence[0]["status"] == "no_formula"
+        # Column not in derived list = no formula → ignorance, not a fabricated 1.0.
+        assert detector.detect(context) == []
 
     def test_evidence_includes_source_columns(self, detector: DerivedValueDetector):
         """Test evidence includes source columns."""
@@ -190,4 +186,7 @@ class TestDerivedValueDetector:
         assert detector.detector_id == "derived_value"
         assert detector.layer == "computational"
         assert detector.dimension == "derived_values"
-        assert detector.required_analyses == ["correlation"]
+        # No required_analyses (second-witness landing): either witness path may
+        # be absent — load_data self-loads correlation AND the semantic
+        # hypothesis; detect() measures whatever is present.
+        assert detector.required_analyses == []

@@ -58,6 +58,10 @@ def _col(name: str, role: str, **kw) -> ColumnSemanticOutput:
         description=kw.get("description", f"{name} column"),
         confidence=kw.get("confidence", 0.9),
         unit_source_column=kw.get("unit_source_column"),
+        temporal_behavior_claim=kw.get("temporal_behavior_claim", "unsure"),
+        temporal_behavior_claim_confidence=kw.get("temporal_behavior_claim_confidence", 0.0),
+        derived_formula_hypothesis=kw.get("derived_formula_hypothesis"),
+        derived_formula_confidence=kw.get("derived_formula_confidence", 0.0),
     )
 
 
@@ -117,6 +121,46 @@ class TestPersistColumnAnnotations:
             session_id=baseline_session_id(),
         )
         assert count == 1
+
+    def test_persists_derived_formula_hypothesis(self, session) -> None:
+        """The formula-hypothesis witness lands on the annotation row (ADR-0009).
+
+        Whitespace-only hypotheses normalize to None so the detector's
+        truthiness read ("no hypothesis → witness abstains") holds.
+        """
+        table = _table_with_columns(session, "orders", ["total", "discount"])
+        output = ColumnAnnotationOutput(
+            tables=[
+                TableColumnAnnotation(
+                    table_name="orders",
+                    columns=[
+                        _col(
+                            "total",
+                            "measure",
+                            derived_formula_hypothesis="subtotal + tax",
+                            derived_formula_confidence=0.85,
+                        ),
+                        _col("discount", "measure", derived_formula_hypothesis="   "),
+                    ],
+                )
+            ]
+        )
+
+        persist_column_annotations(
+            session,
+            output,
+            [table.table_id],
+            annotated_by="m",
+            session_id=baseline_session_id(),
+        )
+        session.flush()
+
+        rows = {r.column_id: r for r in session.execute(select(AnnotationDB)).scalars()}
+        cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
+        total = rows[cols["total"]]
+        assert total.derived_formula_hypothesis == "subtotal + tax"
+        assert total.derived_formula_confidence == 0.85
+        assert rows[cols["discount"]].derived_formula_hypothesis is None
 
 
 # ---------------------------------------------------------------------------

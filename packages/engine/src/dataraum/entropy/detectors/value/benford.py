@@ -1,15 +1,20 @@
-"""Benford's Law compliance entropy detector.
+"""Benford's Law surprise detector.
 
-Measures deviation from Benford's Law for numeric columns.
-Non-compliance in financial/accounting data can indicate data quality
-issues, fabrication, or systematic rounding.
+Measures how far a numeric measure column's leading-digit distribution sits from
+Benford's Law — financial/accounting data that doesn't follow it can indicate
+fabrication, systematic rounding, or a quality problem.
 
-For non-compliant columns, severity is computed using Cramér's V
-(chi-square normalized by sample size) instead of raw chi-square.
-This prevents large datasets from inflating scores — a chi_sq of 1917
-with n=8000 is a small effect (V=0.17), not a catastrophic one.
+The score is the KL surprise ``D_KL(observed ‖ benford)`` over the leading-digit
+distribution (see :mod:`dataraum.entropy.surprise`), NOT a chi-square / Cramér's-V
+boost curve. KL is intensive (a per-observation average), so it is sample-size
+invariant: clean Benford-following data scores ~0 whether n=100 or n=8000. The old
+chi-square path could not — at large n the compliance test rejects any deviation,
+dumping every clean column at the non-compliant floor (clean columns baselined at
+0.7–0.8). Severity per intent now lives in the loss table (entropy/loss.yaml), so
+this detector emits a pure surprise score and feeds the loss path, not a network
+node.
 
-Source: statistics/quality.benford_analysis (via quality_data JSON)
+Source: statistics/quality.benford_analysis (digit_distribution, via quality_data)
 """
 
 import math
@@ -18,24 +23,21 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.surprise import kl_divergence, surprise_score
 
-# Benford's Law uses digits 1-9, so df = k - 1 = 8
-_BENFORD_DF = 8
+# Benford's Law expected leading-digit (1..9) probabilities.
+_BENFORD_REFERENCE = [math.log10(1 + 1 / d) for d in range(1, 10)]
 
 
 class BenfordDetector(EntropyDetector):
-    """Detector for Benford's Law compliance entropy.
+    """Detector for Benford's Law surprise.
 
-    Only applies to numeric columns with semantic_role = "measure".
-    Uses chi-square test results from statistical quality analysis
-    to determine if the digit distribution follows Benford's Law.
-
-    Severity scaling uses Cramér's V (effect size) rather than raw
-    chi-square, so scores reflect practical significance, not just
-    statistical significance inflated by sample size.
+    Only applies to numeric columns with semantic_role = "measure". Scores the KL
+    divergence of the observed leading-digit distribution from Benford's Law, so
+    the score reflects practical departure, not sample-size-inflated statistical
+    significance.
 
     Source: statistics/quality.benford_analysis
-    Scores configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "benford"
@@ -43,7 +45,7 @@ class BenfordDetector(EntropyDetector):
     dimension = Dimension.DISTRIBUTION
     sub_dimension = SubDimension.BENFORD_COMPLIANCE
     required_analyses = [AnalysisKey.STATISTICS, AnalysisKey.SEMANTIC]
-    description = "Measures deviation from Benford's Law for numeric columns"
+    description = "Measures KL surprise from Benford's Law for numeric measure columns"
 
     # Only measure columns benefit from Benford analysis
     _APPLICABLE_ROLES = frozenset({"measure"})
@@ -70,17 +72,18 @@ class BenfordDetector(EntropyDetector):
             context.analysis_results["semantic"] = sem
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
-        """Detect Benford's Law compliance entropy.
+        """Detect Benford's Law surprise.
 
-        Skips columns that are not numeric measures. Uses pre-computed
-        Benford analysis from the statistics quality phase.
+        Skips columns that are not numeric measures. Scores the KL divergence of
+        the observed leading-digit distribution (from the statistics quality
+        phase) against Benford's Law.
 
         Args:
             context: Detector context with statistics and semantic analysis
 
         Returns:
-            List with single EntropyObject for Benford compliance,
-            or empty list if not applicable
+            List with a single EntropyObject for Benford surprise, or empty list
+            if not applicable.
         """
         # Only apply to measure columns
         semantic = context.get_analysis("semantic", {})
@@ -100,98 +103,43 @@ class BenfordDetector(EntropyDetector):
         if unit_src in self._SKIP_UNIT_SOURCES:
             return []
 
-        # Load configuration
         config = get_entropy_config()
         detector_config = config.detector("benford")
-
-        score_compliant = detector_config.get("score_compliant", 0.1)
-        score_non_compliant = detector_config.get("score_non_compliant", 0.7)
-        chi_sq_escalation_threshold = detector_config.get("chi_sq_escalation_threshold", 0.01)
-        v_max = detector_config.get("cramers_v_max", 0.5)
         min_sample_size = detector_config.get("min_sample_size", 100)
+
         stats = context.get_analysis("statistics", {})
         n_values = stats.get("total_count", 0) or 0
         quality = stats.get("quality", stats)
 
-        # Try to get Benford analysis from quality data
-        benford_analysis = None
-        benford_compliant = None
-
-        if isinstance(quality, dict):
-            benford_analysis = quality.get("benford_analysis")
-            benford_compliant = quality.get("benford_compliant")
-
-        # If no Benford data available, skip
-        if benford_compliant is None and benford_analysis is None:
+        benford_analysis = quality.get("benford_analysis") if isinstance(quality, dict) else None
+        # The observed leading-digit distribution is required for a surprise score.
+        if not isinstance(benford_analysis, dict):
+            return []
+        digit_distribution = benford_analysis.get("digit_distribution")
+        if not isinstance(digit_distribution, dict):
             return []
 
-        # Skip unreliable small samples
+        # Unreliable small samples: leading-digit frequencies are too noisy.
         if n_values < min_sample_size:
             return []
 
-        # Determine compliance
-        if benford_analysis and isinstance(benford_analysis, dict):
-            is_compliant = benford_analysis.get("is_compliant", benford_compliant)
-            chi_square = benford_analysis.get("chi_square")
-            p_value = benford_analysis.get("p_value")
-            digit_distribution = benford_analysis.get("digit_distribution")
-            interpretation = benford_analysis.get("interpretation", "")
-        else:
-            is_compliant = benford_compliant
-            chi_square = None
-            p_value = None
-            digit_distribution = None
-            interpretation = ""
+        # Align observed frequencies to digits 1..9 (missing digit → 0 observed).
+        observed = [float(digit_distribution.get(str(d), 0.0)) for d in range(1, 10)]
+        if math.fsum(observed) <= 0.0:
+            return []
 
-        # Calculate Cramér's V (effect size normalized for sample size)
-        cramers_v: float | None = None
-        if chi_square and chi_square > 0 and n_values > 0:
-            cramers_v = math.sqrt(chi_square / (n_values * _BENFORD_DF))
+        score = surprise_score(observed, _BENFORD_REFERENCE)
+        kl_bits = kl_divergence(observed, _BENFORD_REFERENCE)
 
-        # Calculate score
-        if p_value is not None and isinstance(p_value, (int, float)):
-            if p_value > chi_sq_escalation_threshold:
-                # Mild: p-value gradient maps to [score_compliant, score_non_compliant]
-                score = score_compliant + (score_non_compliant - score_compliant) * (1.0 - p_value)
-                score = max(score_compliant, min(score_non_compliant, score))
-            else:
-                # Non-compliant: use Cramér's V for practical significance
-                # V < 0.1 = negligible, 0.1-0.3 = small, 0.3-0.5 = medium, >0.5 = large
-                if cramers_v is not None:
-                    severity = min(1.0, cramers_v / v_max)
-                    score = score_non_compliant + (1.0 - score_non_compliant) * severity
-                else:
-                    score = score_non_compliant
-                score = max(score_compliant, min(1.0, score))
-        elif is_compliant:
-            score = score_compliant
-        else:
-            score = score_non_compliant
-
-        # Classify effect size
-        if cramers_v is not None:
-            if cramers_v < 0.1:
-                effect_size = "negligible"
-            elif cramers_v < 0.3:
-                effect_size = "small"
-            elif cramers_v < 0.5:
-                effect_size = "medium"
-            else:
-                effect_size = "large"
-        else:
-            effect_size = None
-
-        # Build evidence
         evidence = [
             {
-                "is_compliant": is_compliant,
-                "chi_square": chi_square,
-                "p_value": p_value,
-                "n_values": n_values,
-                "cramers_v": round(cramers_v, 4) if cramers_v is not None else None,
-                "effect_size": effect_size,
+                "kl_bits": round(kl_bits, 4),
                 "digit_distribution": digit_distribution,
-                "interpretation": interpretation,
+                "n_values": n_values,
+                "is_compliant": benford_analysis.get("is_compliant"),
+                "chi_square": benford_analysis.get("chi_square"),
+                "p_value": benford_analysis.get("p_value"),
+                "interpretation": benford_analysis.get("interpretation", ""),
             }
         ]
 

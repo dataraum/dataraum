@@ -16,7 +16,7 @@ phases:
 
   typing:
     description: Type inference and resolution
-    detectors: [type_fidelity]
+    detectors: [type_fidelity, null_semantics]
 
   statistics:
     description: Statistical profiling of typed tables
@@ -36,12 +36,20 @@ phases:
 
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
-    detectors: [business_meaning, unit_entropy, temporal_entropy,
-                outlier_rate, benford]
+    # temporal_behavior (DAT-445) is declared here — per column it pools the ontology
+    # temporal_behavior prior these annotations carry against the LLM's independent
+    # stock/flow claim. It runs at the terminal source-wide detect, after every
+    # column's annotation is written, so load_semantic resolves both witnesses; the
+    # resolved layer then writes the adjudicated behaviour + contested flag back.
+    detectors: [business_meaning, unit_entropy, temporal_entropy, benford, temporal_behavior]
 
   semantic_per_table:
     description: Per-table LLM synthesis (entities, relationships) over annotations
-    detectors: [join_path_determinism, relationship_entropy]
+    # relationship_discovery (ADR-0009): pools the witness classes already on the
+    # focal pair's rows (candidate value-overlap stats, llm confirmation, manual/
+    # keeper teaches) into {genuine, spurious} — runs at the terminal session
+    # detect, after the catalog (llm + materialized overlays) is complete.
+    detectors: [join_path_determinism, relationship_entropy, relationship_discovery]
 
   # =========================================================================
   # Zone 2: Enrichment
@@ -58,11 +66,22 @@ phases:
 
   slice_analysis:
     description: Execute slice SQL and analyze slice tables
-    detectors: [slice_variance]
+    # No detector: slice_variance was cut (DAT-442 reset). The phase still runs
+    # to build the slice profiles dimensional_entropy reads in
+    # temporal_slice_analysis.
 
   temporal_slice_analysis:
     description: Distribution drift analysis on slices
-    detectors: [temporal_drift, dimensional_entropy]
+    detectors: [dimensional_entropy]  # temporal_drift cut (DAT-442 reset)
+
+  aggregation_lineage:
+    description: Events→measure rollup discovery over the slice substrate (deterministic)
+    # temporal_behavior is declared HERE TOO (DAT-491): at the session detect
+    # the measurement re-adjudicates with the data-grounded
+    # structural_reconciliation witness this phase just persisted — the witness
+    # that escapes name-anchoring. At add_source detect (no lineage rows for
+    # that run) the witness abstains and the two-witness behaviour is unchanged.
+    detectors: [temporal_behavior]
 
   correlations:
     description: Within-table correlation analysis
@@ -73,7 +92,7 @@ phases:
   # =========================================================================
   business_cycles:
     description: Expert LLM cycle detection
-    detectors: [business_cycle_health]
+    detectors: []  # business_cycle_health cut (DAT-442); the cycle analysis stays
 
   validation:
     description: LLM-powered validation checks

@@ -1,21 +1,19 @@
 """Relationship quality entropy detector.
 
-Measures uncertainty in relationships based on actual evaluation metrics:
-- Referential integrity (orphan ratio) — primary signal, sqrt-boosted
-- Cardinality verification
-- Semantic clarity (relationship type, confirmation status)
-
-Uses max aggregation (not weighted average) so the worst component drives
-the score. RI is sqrt-boosted because orphan rates >5% are genuinely bad
-for FK relationships, not noise.
+The measurement is the raw referential-integrity ORPHAN RATE (``stats.orphan_rate``):
+20% orphans scores 0.20, no boost. That single rate IS the score — the old
+cardinality / semantic-clarity component scores and their max() aggregation are gone
+(DAT-442 two-table). Cardinality + confirmation are relationship CONTEXT carried in
+evidence, not score; an absent RI metric is ignorance, not a fabricated mid-score.
+The eval asserts the ordering vs clean; severity per intent lives in the loss table.
+Teach: define / fix the FK.
 
 Source: relationships.Relationship.evidence (contains JoinCandidate metrics)
 """
 
-import math
 from typing import Any
 
-from dataraum.entropy.config import get_entropy_config
+from dataraum.entropy import stats
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
@@ -75,102 +73,49 @@ class RelationshipEntropyDetector(EntropyDetector):
 
         Relationship-scoped: measures the one directional column pair in context →
         a single EntropyObject keyed ``relationship:{from}::{to}``. Components:
-        - ri_entropy: from referential integrity / orphan metrics
-        - card_entropy: from cardinality_verified flag
-        - semantic_entropy: from confirmation + relationship_type.
+        The measurement is the raw referential-integrity ORPHAN RATE
+        (``stats.orphan_rate`` over the evaluator's metrics) — the honest tunable
+        entropy a teach (define / fix the FK) closes. The old card_entropy /
+        semantic_entropy components and their invented constants + max() are gone
+        (DAT-442 two-table): cardinality + confirmation are relationship CONTEXT,
+        not score; an absent RI metric is ignorance, not a fabricated 0.5.
 
         DAT-372/409: confirmation is read from ``ConfigOverlay(type='relationship')``
-        via ``load_confirmed_relationship_pairs`` (keyed on the focal column pair) —
-        the dead ``Relationship.is_confirmed`` branch is gone. ``join_path_determinism``
-        reads the same overlays, so the two agree on "confirmed."
+        via ``load_confirmed_relationship_pairs`` (keyed on the focal column pair).
         """
-        config = get_entropy_config()
-        detector_config = config.detector("relationship_entropy")
-
-        # Configurable scores for unknown values
-        score_unknown_ri = detector_config.get("score_unknown_ri", 0.5)
-        score_unverified_cardinality = detector_config.get("score_unverified_cardinality", 0.4)
-        score_cardinality_mismatch = detector_config.get("score_cardinality_mismatch", 0.7)
-        score_unconfirmed = detector_config.get("score_unconfirmed", 0.3)
-        score_unknown_type = detector_config.get("score_unknown_type", 0.6)
-
-        # RI boost factor: sqrt amplifies small orphan rates
-        ri_boost = detector_config.get("ri_boost", True)
-
         rel = context.get_analysis(AnalysisKey.RELATIONSHIPS, None)
         if not rel:
             return []
 
-        # DAT-372: user confirmation lives in ConfigOverlay, not Relationship.is_confirmed.
-        is_confirmed = self._is_confirmed_via_overlay(context)
-
-        # Extract relationship metadata
-        rel_type = self._get_value(rel, "relationship_type", "unknown")
-        confidence = self._get_value(rel, "confidence", 0.5)
         evidence = self._get_value(rel, "evidence", {}) or {}
-        cardinality = self._get_value(rel, "cardinality", None)
-
-        # Get evaluation metrics from evidence (JoinCandidate fields)
         left_ri = evidence.get("left_referential_integrity")
         orphan_count = evidence.get("orphan_count")
         total_count = evidence.get("total_count") or evidence.get("left_total_count")
-        cardinality_verified = evidence.get("cardinality_verified")
 
-        # 1. Compute referential integrity entropy
         if left_ri is not None:
-            ri_entropy = 1.0 - (left_ri / 100.0)
-        elif orphan_count is not None and total_count and total_count > 0:
-            ri_entropy = min(1.0, orphan_count / total_count)
-        elif orphan_count is not None and orphan_count > 0:
-            ri_entropy = min(1.0, 0.3 + (orphan_count / 1000.0))
+            score = max(0.0, min(1.0, 1.0 - left_ri / 100.0))
+        elif orphan_count is not None and total_count:
+            score = stats.rate(orphan_count, total_count)
         else:
-            ri_entropy = score_unknown_ri
-
-        # Boost RI: sqrt amplifies small-but-real orphan rates.
-        # 5% orphans → 0.22, 10% → 0.32, 20% → 0.45, 50% → 0.71
-        if ri_boost and ri_entropy > 0:
-            ri_entropy = min(1.0, math.sqrt(ri_entropy))
-
-        # 2. Compute cardinality entropy
-        if cardinality_verified is True:
-            card_entropy = 0.1
-        elif cardinality_verified is False:
-            card_entropy = score_cardinality_mismatch
-        else:
-            card_entropy = score_unverified_cardinality
-
-        # 3. Compute semantic clarity entropy
-        if is_confirmed and rel_type not in ("unknown", "candidate"):
-            semantic_entropy = 0.1
-        elif rel_type == "foreign_key" and ri_entropy < 0.05:
-            # High-RI foreign key: the semantic agent classified it as FK
-            # and RI proves the data matches. No human confirmation needed.
-            semantic_entropy = 0.1
-        elif rel_type not in ("unknown", "candidate"):
-            semantic_entropy = score_unconfirmed
-        else:
-            semantic_entropy = score_unknown_type
-
-        # Max aggregation: worst component drives the score.
-        # Weighted average was too forgiving — it diluted real RI problems.
-        score = max(ri_entropy, card_entropy, semantic_entropy)
+            # No referential-integrity metric → nothing measurable. Absence is ignorance,
+            # not a fabricated mid-score (the old score_unknown_ri=0.5 and the
+            # 0.3 + orphan/1000 count fallback are deleted).
+            return []
 
         rel_evidence: dict[str, Any] = {
             "from_table": context.from_table_name or self._get_value(rel, "from_table", "unknown"),
             "to_table": context.to_table_name or self._get_value(rel, "to_table", "unknown"),
-            "relationship_type": rel_type,
-            "cardinality": cardinality,
-            "confidence": confidence,
-            "is_confirmed": is_confirmed,
-            "ri_entropy": round(ri_entropy, 3),
-            "card_entropy": round(card_entropy, 3),
-            "semantic_entropy": round(semantic_entropy, 3),
-            "aggregation_method": "max",
-            "ri_boosted": ri_boost,
+            "relationship_type": self._get_value(rel, "relationship_type", "unknown"),
+            "cardinality": self._get_value(rel, "cardinality", None),
+            "confidence": self._get_value(rel, "confidence", 0.5),
+            "is_confirmed": self._is_confirmed_via_overlay(context),
+            "orphan_rate": round(score, 3),
+            "ri_entropy": round(score, 3),  # canonical evidence key (back-compat)
             "evaluation_metrics": {
                 "left_referential_integrity": left_ri,
                 "orphan_count": orphan_count,
-                "cardinality_verified": cardinality_verified,
+                "total_count": total_count,
+                "cardinality_verified": evidence.get("cardinality_verified"),
             },
         }
 

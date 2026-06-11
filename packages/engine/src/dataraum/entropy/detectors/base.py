@@ -279,8 +279,12 @@ def get_default_registry() -> DetectorRegistry:
     """
     global _default_registry
     if _default_registry is None:
-        _default_registry = DetectorRegistry()
-        _register_builtin_detectors(_default_registry)
+        # Build fully, THEN publish: a concurrent ThreadPoolExecutor activity
+        # observing a partially-populated registry would silently skip its
+        # detector for that run (post_step_detector_not_found).
+        registry = DetectorRegistry()
+        _register_builtin_detectors(registry)
+        _default_registry = registry
     return _default_registry
 
 
@@ -292,6 +296,9 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     """
     # Structural layer detectors
     from dataraum.entropy.detectors.structural.relations import JoinPathDeterminismDetector
+    from dataraum.entropy.detectors.structural.relationship_discovery import (
+        RelationshipDiscoveryDetector,
+    )
     from dataraum.entropy.detectors.structural.relationship_entropy import (
         RelationshipEntropyDetector,
     )
@@ -300,19 +307,16 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     registry.register(TypeFidelityDetector())
     registry.register(JoinPathDeterminismDetector())
     registry.register(RelationshipEntropyDetector())
+    registry.register(RelationshipDiscoveryDetector())
 
     # Value layer detectors
     from dataraum.entropy.detectors.value.benford import BenfordDetector
     from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
-    from dataraum.entropy.detectors.value.outliers import OutlierRateDetector
-    from dataraum.entropy.detectors.value.slice_variance import SliceVarianceDetector
-    from dataraum.entropy.detectors.value.temporal_drift import TemporalDriftDetector
+    from dataraum.entropy.detectors.value.null_token_adjudication import NullSemanticsDetector
 
     registry.register(NullRatioDetector())
-    registry.register(OutlierRateDetector())
+    registry.register(NullSemanticsDetector())
     registry.register(BenfordDetector())
-    registry.register(TemporalDriftDetector())
-    registry.register(SliceVarianceDetector())
 
     # Semantic layer detectors
     from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector
@@ -329,13 +333,6 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
 
     registry.register(DimensionCoverageDetector())
 
-    # Semantic layer detectors (table-scoped, Zone 3)
-    from dataraum.entropy.detectors.semantic.business_cycle_health import (
-        BusinessCycleHealthDetector,
-    )
-
-    registry.register(BusinessCycleHealthDetector())
-
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.cross_table_consistency import (
         CrossTableConsistencyDetector,
@@ -343,6 +340,10 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     from dataraum.entropy.detectors.computational.derived_values import (
         DerivedValueDetector,
     )
+    from dataraum.entropy.detectors.computational.temporal_behavior import (
+        TemporalBehaviorDetector,
+    )
 
     registry.register(CrossTableConsistencyDetector())
     registry.register(DerivedValueDetector())
+    registry.register(TemporalBehaviorDetector())

@@ -17,6 +17,7 @@ How well-defined is the data's structure?
 | TypeFidelityDetector | `types > type_fidelity` | Type consistency — what fraction of values fail to parse as their declared type |
 | JoinPathDeterminismDetector | `relations > join_path_determinism` | Relationship ambiguity — are join paths between tables deterministic or ambiguous? |
 | RelationshipEntropyDetector | `relations > relationship_quality` | Referential integrity, cardinality verification, and semantic clarity of relationships |
+| RelationshipDiscoveryDetector | `relations > relationship_discovery` | Whether a confirmed relationship is genuine — value-overlap data witness and the LLM selector's judgment (plus human teaches) pooled per pair, conflicts surfaced |
 
 ### Semantic (Business Meaning)
 
@@ -27,9 +28,8 @@ How well-documented is what the data means?
 | BusinessMeaningDetector | `business_meaning > naming_clarity` | Whether columns have clear descriptions and business context |
 | UnitEntropyDetector | `units > unit_declaration` | Whether numeric measures have declared units (USD, kg, etc.) |
 | TemporalEntropyDetector | `temporal > time_role` | Whether temporal columns are properly identified and typed |
-| DimensionalEntropyDetector | `dimensional > cross_column_patterns` | Undocumented business rules between columns (mutual exclusivity, conditional dependencies) |
+| DimensionalEntropyDetector | `dimensional > cross_column_patterns` | Undocumented statistical dependence between columns (normalized mutual information) |
 | DimensionCoverageDetector | `coverage > dimension_coverage` | Whether enriched views adequately cover the available dimensions |
-| BusinessCycleHealthDetector | `cycles > business_cycle_health` | Whether detected business cycles have complete, healthy data |
 
 ### Value (Data Quality)
 
@@ -38,10 +38,8 @@ How clean and reliable are the actual values?
 | Detector | Dimension | What It Measures |
 |----------|-----------|-----------------|
 | NullRatioDetector | `nulls > null_ratio` | Proportion of missing values |
-| OutlierRateDetector | `outliers > outlier_rate` | Proportion of statistical outliers, attenuated for high-variance columns |
-| TemporalDriftDetector | `temporal > temporal_drift` | Changes in data distribution over time |
+| NullSemanticsDetector | `nulls > null_semantics` | Whether quarantined tokens mean *missing* or are genuine values — several witnesses pooled, with conflicts surfaced rather than averaged away |
 | BenfordDetector | `distribution > benford_compliance` | Whether first-digit distribution follows Benford's Law (applicable to financial/count data) |
-| SliceVarianceDetector | `variance > slice_stability` | Whether data quality is consistent across slices (segments) of the data |
 
 ### Computational (Aggregation Safety)
 
@@ -50,6 +48,7 @@ Can you safely compute on this data?
 | Detector | Dimension | What It Measures |
 |----------|-----------|-----------------|
 | DerivedValueDetector | `derived_values > formula_match` | Whether calculated columns match their source formula |
+| TemporalBehaviorDetector | `temporal > temporal_behavior` | Whether a measure is a stock (point-in-time level) or a flow (per-period movement) — the ontology's prior and the LLM's independent claim are adjudicated; contested columns are flagged so agents don't, e.g., SUM a stock over time |
 | CrossTableConsistencyDetector | `reconciliation > cross_table_consistency` | Whether values that should agree across tables actually do |
 
 ## Score Interpretation
@@ -104,7 +103,7 @@ measure()
 
 ## Readiness
 
-Per-column readiness is derived from the Bayesian entropy network:
+Per-column readiness is derived from per-intent loss tables: each measurement contributes a weighted loss for every usage intent, and the column's risk per intent is banded into a readiness level:
 
 | Level | Meaning |
 |-------|---------|

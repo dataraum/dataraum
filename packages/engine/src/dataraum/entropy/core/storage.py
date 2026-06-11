@@ -64,13 +64,30 @@ class EntropyRepository:
         table_ids: list[str],
         *,
         enforce_typed: bool = True,
+        current_run_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[EntropyObject]:
-        """Load entropy objects for the given tables.
+        """Load entropy objects for the given tables, run-resolved when asked.
+
+        With ``current_run_id`` and/or ``session_id`` set, rows are RESOLVED
+        per ``(target, detector_id)`` instead of loaded blindly: the in-flight
+        run's rows win (they are not promoted yet during their own detect),
+        then rows under the promoted session detect head, then rows under the
+        promoted table detect heads (plus legacy unstamped rows). At query
+        time there is no in-flight run — passing only ``session_id`` resolves
+        to the promoted session detect head first. With neither id, every
+        row loads — the pre-DAT-491 behavior, when no detector lived on both
+        the add_source and session detect paths and a blind load was safe.
+        A session-detect re-adjudication (e.g. temporal_behavior's third
+        witness) therefore supersedes the add_source rows for the same target
+        instead of losing to a max-score dedup downstream.
 
         Args:
             table_ids: List of table IDs to load entropy for
             enforce_typed: If True, validates all tables have layer="typed"
                 and filters to only typed tables. Default True.
+            current_run_id: The in-flight detect run whose rows take precedence.
+            session_id: Scope for resolving the promoted session detect head.
 
         Returns:
             List of EntropyObject instances with full data
@@ -94,14 +111,61 @@ class EntropyRepository:
 
         # Load entropy records
         stmt = select(EntropyObjectRecord).where(EntropyObjectRecord.table_id.in_(table_ids))
-        records = self.session.execute(stmt).scalars().all()
+        records = list(self.session.execute(stmt).scalars().all())
 
         if not records:
             logger.debug(f"No entropy objects found for {len(table_ids)} tables")
             return []
 
+        if current_run_id is not None or session_id is not None:
+            records = self._resolve_runs(records, table_ids, current_run_id, session_id)
+
         # Convert records to EntropyObjects
         return [self._record_to_object(r) for r in records]
+
+    def _resolve_runs(
+        self,
+        records: list[EntropyObjectRecord],
+        table_ids: list[str],
+        current_run_id: str | None,
+        session_id: str | None,
+    ) -> list[EntropyObjectRecord]:
+        """Per ``(target, detector_id)``: current run > session head > table heads/legacy."""
+        from dataraum.storage.snapshot_head import head_run_id, session_head_target
+
+        session_head: str | None = None
+        if session_id is not None:
+            session_head = head_run_id(self.session, session_head_target(session_id), "detect")
+        table_heads = {
+            rid
+            for tid in table_ids
+            if (rid := head_run_id(self.session, f"table:{tid}", "detect")) is not None
+        }
+
+        def rank(record: EntropyObjectRecord) -> int | None:
+            # None-guarded: at query time the in-flight slot is vacant, and a
+            # legacy unstamped row (run_id None) must not match it and outrank
+            # the session head.
+            if current_run_id is not None and record.run_id == current_run_id:
+                return 0
+            if session_head is not None and record.run_id == session_head:
+                return 1
+            if record.run_id in table_heads or record.run_id is None:
+                return 2
+            return None  # superseded run — not a head, not in flight
+
+        by_key: dict[tuple[str, str], tuple[int, list[EntropyObjectRecord]]] = {}
+        for record in records:
+            r = rank(record)
+            if r is None:
+                continue
+            key = (record.target, record.detector_id)
+            best = by_key.get(key)
+            if best is None or r < best[0]:
+                by_key[key] = (r, [record])
+            elif r == best[0]:
+                best[1].append(record)
+        return [record for _, rows in by_key.values() for record in rows]
 
     def _record_to_object(self, record: EntropyObjectRecord) -> EntropyObject:
         """Convert a database record to an EntropyObject.

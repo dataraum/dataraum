@@ -17,7 +17,11 @@ import {
 
 const OPERATING_MODEL_GROUPS = [
 	{ key: "set-up", label: "Set up", phases: ["operating_model_resolve"] },
-	{ key: "validations", label: "Validations", phases: ["validation"] },
+	{
+		key: "validations",
+		label: "Validations",
+		phases: ["validation", "operating_model_detect"],
+	},
 	{ key: "cycles", label: "Business cycles", phases: ["business_cycles"] },
 	{ key: "metrics", label: "Metrics", phases: ["metrics"] },
 	{ key: "finalize", label: "Finalize", phases: ["operating_model_promote"] },
@@ -27,6 +31,7 @@ const OPERATING_MODEL_GROUPS = [
 const OPERATING_MODEL_CAPTIONS: Record<string, string> = {
 	operating_model_resolve: "Reading the session's tables and pinned runs…",
 	validation: "Grounding and executing the declared validations…",
+	operating_model_detect: "Scoring the executed validations…",
 	business_cycles: "Grounding and measuring the declared business cycles…",
 	metrics: "Composing and executing the declared metrics…",
 	operating_model_promote: "Publishing results…",

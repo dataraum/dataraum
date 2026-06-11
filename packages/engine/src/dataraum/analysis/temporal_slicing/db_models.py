@@ -44,6 +44,9 @@ class ColumnDriftSummary(Base):
     # Core metrics
     max_js_divergence: Mapped[float] = mapped_column(Float, nullable=False)
     mean_js_divergence: Mapped[float] = mapped_column(Float, nullable=False)
+    # Drift score (DAT-442): periods-as-witnesses generalized JSD vs the pooled
+    # distribution, normalized to [0, 1]. Nullable for pre-existing rows.
+    drift_divergence: Mapped[float | None] = mapped_column(Float, nullable=True, default=0.0)
     periods_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
     periods_with_drift: Mapped[int] = mapped_column(Integer, nullable=False)
 
@@ -99,6 +102,10 @@ class TemporalSliceAnalysis(Base):
     has_early_cutoff: Mapped[int | None] = mapped_column(Integer, nullable=True)  # SQLite bool
     days_missing_at_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_day_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Per-period SUM of each numeric column of the slice table (DAT-491) —
+    # the aggregation-lineage reconciliation's substrate.
+    column_sums: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)
 
     # Volume anomaly metrics
     z_score: Mapped[float | None] = mapped_column(Float, nullable=True)

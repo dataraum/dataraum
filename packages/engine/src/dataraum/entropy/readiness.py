@@ -1,7 +1,7 @@
 """Persist per-column readiness — the terminal detect step's snapshot (DAT-394).
 
 The readiness-v2 rollup (``entropy/views/readiness_context.py``) rolls the persisted
-entropy objects up the network into per-column, per-intent readiness.
+entropy objects through the per-intent loss tables into per-column readiness.
 :func:`persist_readiness` writes that rollup to ``entropy_readiness`` (one row per
 analyzed column) so the cockpit ``why`` / ``look`` tools read it via Drizzle with no
 engine round-trip, and as agent context.
@@ -68,7 +68,7 @@ def persist_readiness(
     session.execute(col_del)
     session.execute(rel_del)
 
-    ctx = build_for_readiness(session, table_ids)
+    ctx = build_for_readiness(session, table_ids, current_run_id=run_id, session_id=session_id)
     if not ctx.columns:
         return 0
 

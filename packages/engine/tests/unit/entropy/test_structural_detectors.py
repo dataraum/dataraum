@@ -239,8 +239,8 @@ class TestRelationshipEntropyDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # sqrt(1.0 - 95/100) = sqrt(0.05) ~= 0.224
-        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.224, abs=0.01)
+        # honest orphan rate: 1.0 - 95/100 = 0.05 (no sqrt boost, DAT-442)
+        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.05, abs=0.01)
 
     def test_orphan_with_total_uses_ratio(self, detector: RelationshipEntropyDetector):
         """Orphan count with total_count uses the ratio formula."""
@@ -253,15 +253,17 @@ class TestRelationshipEntropyDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.224, abs=0.01)
+        # honest orphan rate: 50/1000 = 0.05 (no sqrt boost, DAT-442)
+        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.05, abs=0.01)
 
-    def test_orphan_without_total_uses_count_formula(self, detector: RelationshipEntropyDetector):
-        """Orphan count without total falls back to the count formula."""
+    def test_orphan_count_without_total_is_not_scored(self, detector: RelationshipEntropyDetector):
+        """Orphan count with no denominator → no rate → ignorance, not a fabricated score.
+
+        The old `0.3 + orphan/1000` count fallback was theater (DAT-442 two-table); with
+        no total_count and no left_referential_integrity there is nothing to measure.
+        """
         context = self._context({"orphan_count": 50, "cardinality_verified": True})
-        results = detector.detect(context)
-        assert len(results) == 1
-        # sqrt(0.3 + 50/1000) = sqrt(0.35) ~= 0.592
-        assert results[0].evidence[0]["ri_entropy"] == pytest.approx(0.592, abs=0.01)
+        assert detector.detect(context) == []
 
     def test_no_relationship_empty(self, detector: RelationshipEntropyDetector):
         """No focal relationship in context -> empty result."""

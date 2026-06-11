@@ -100,10 +100,11 @@ def test_terminal_detect_step_runs_every_wired_detector() -> None:
     """The terminal step picks up the union of the executed chain's detectors."""
     assert set(declared_detector_ids(_DETECTOR_PHASES)) == {
         "type_fidelity",
+        "null_semantics",
         "null_ratio",
         "business_meaning",
         "unit_entropy",
         "temporal_entropy",
-        "outlier_rate",
         "benford",
+        "temporal_behavior",
     }

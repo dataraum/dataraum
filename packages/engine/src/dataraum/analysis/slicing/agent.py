@@ -241,6 +241,13 @@ class SlicingAgent(LLMFeature):
         result = SlicingAnalysisResult(
             recommendations=recommendations,
             slice_queries=slice_queries,
+            # The per-table time-axis judgments (DAT-491); only tables the agent
+            # actually analyzed count — hallucinated names resolve to nothing.
+            time_columns={
+                tc.table_name: tc.column_name
+                for tc in output.time_columns
+                if tc.table_name in table_map
+            },
             source=DecisionSource.LLM,
             tables_analyzed=len(table_map),
             columns_considered=len(column_map),

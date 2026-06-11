@@ -10,7 +10,6 @@ from sqlalchemy.pool import StaticPool
 
 from dataraum.entropy.detectors.loaders import (
     load_correlation,
-    load_drift_summaries,
     load_semantic,
     load_statistics,
     load_typing,
@@ -21,7 +20,7 @@ from dataraum.storage import init_database
 class TestLoadTyping:
     def test_returns_none_when_no_data(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_typing(session, "col1") is None
 
     def test_returns_decision_with_candidate(self):
@@ -40,7 +39,7 @@ class TestLoadTyping:
         tc.detected_unit = "USD"
         tc.unit_confidence = 0.8
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [td, tc]
+        session.execute.return_value.scalars.return_value.first.side_effect = [td, tc]
 
         result = load_typing(session, "col1")
         assert result is not None
@@ -60,7 +59,7 @@ class TestLoadTyping:
         tc.detected_unit = None
         tc.unit_confidence = None
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [None, tc]
+        session.execute.return_value.scalars.return_value.first.side_effect = [None, tc]
 
         result = load_typing(session, "col1")
         assert result is not None
@@ -71,7 +70,7 @@ class TestLoadTyping:
 class TestLoadStatistics:
     def test_returns_none_when_no_profile(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_statistics(session, "col1") is None
 
     def test_returns_stats_with_quality(self):
@@ -90,7 +89,7 @@ class TestLoadStatistics:
         qm.benford_compliant = True
         qm.quality_data = {"outlier_detection": {"iqr_outlier_count": 2}}
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [sp, qm]
+        session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
 
         result = load_statistics(session, "col1")
         assert result is not None
@@ -117,7 +116,7 @@ class TestLoadStatistics:
         qm.benford_compliant = True
         qm.quality_data = {"benford_analysis": {"is_compliant": True}}
 
-        session.execute.return_value.scalar_one_or_none.side_effect = [sp, qm]
+        session.execute.return_value.scalars.return_value.first.side_effect = [sp, qm]
 
         result = load_statistics(session, "col1")
         assert result is not None
@@ -128,7 +127,7 @@ class TestLoadStatistics:
 class TestLoadSemantic:
     def test_returns_none_when_no_annotation(self):
         session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
+        session.execute.return_value.scalars.return_value.first.return_value = None
         assert load_semantic(session, "col1") is None
 
     def test_returns_semantic_dict(self):
@@ -142,7 +141,7 @@ class TestLoadSemantic:
         sa.business_concept = "revenue"
         sa.unit_source_column = None
 
-        session.execute.return_value.scalar_one_or_none.return_value = sa
+        session.execute.return_value.scalars.return_value.first.return_value = sa
 
         result = load_semantic(session, "col1")
         assert result is not None
@@ -160,7 +159,7 @@ class TestLoadSemantic:
         sa.business_concept = None
         sa.unit_source_column = "currency"
 
-        session.execute.return_value.scalar_one_or_none.return_value = sa
+        session.execute.return_value.scalars.return_value.first.return_value = sa
 
         result = load_semantic(session, "col1")
         assert result is not None
@@ -188,31 +187,6 @@ class TestLoadCorrelation:
         assert len(result["derived_columns"]) == 1
         assert result["derived_columns"][0]["derived_column_name"] == "total"
         assert result["derived_columns"][0]["match_rate"] == 0.98
-
-
-class TestLoadDriftSummaries:
-    def test_returns_none_when_no_column(self):
-        session = MagicMock()
-        session.execute.return_value.scalar_one_or_none.return_value = None
-        assert load_drift_summaries(session, "col1", "tbl1") is None
-
-    def test_returns_none_when_no_slice_tables(self):
-        session = MagicMock()
-        col = MagicMock()
-        col.column_name = "amount"
-
-        col_result = MagicMock()
-        col_result.scalar_one_or_none.return_value = col
-
-        slice_result = MagicMock()
-        slice_result.scalars.return_value.all.return_value = []
-
-        cols_result = MagicMock()
-        cols_result.scalars.return_value.all.return_value = []
-
-        session.execute.side_effect = [col_result, slice_result, cols_result]
-
-        assert load_drift_summaries(session, "col1", "tbl1") is None
 
 
 @pytest.fixture
@@ -413,3 +387,117 @@ class TestLoaderHeadFallback:
         sem = load_semantic(real_session, "col-h4", run_id="run-session", base_runs=base_runs)
         assert sem is not None
         assert sem["semantic_role"] == "measure"
+
+
+class TestLoadHypothesisMatchRate:
+    """The hypothesis-grading loader (derived_value second witness, ADR-0009).
+
+    Real sqlite session (Column/Table resolution + name validation) + an
+    in-memory DuckDB with a ``lake.typed`` table — the loader must grade the
+    LLM-hypothesized formula with the discovery's own row statistic, resolve
+    source names case-insensitively against REAL columns, and return ``None``
+    (witness abstains) for anything it cannot ground.
+    """
+
+    def _seed(self, session, rows: list[tuple[float, float, float]]):
+        import duckdb
+
+        from dataraum.storage import Column as ColumnModel
+        from dataraum.storage import Table as TableModel
+        from dataraum.storage.models import Source
+
+        session.add(Source(source_id="src-h", name="src-h", source_type="csv"))
+        session.add(
+            TableModel(
+                table_id="tbl-hyp",
+                source_id="src-h",
+                table_name="orders",
+                layer="typed",
+                duckdb_path="orders_t",
+                row_count=len(rows),
+            )
+        )
+        for i, name in enumerate(["total", "Subtotal", "tax"]):
+            session.add(
+                ColumnModel(
+                    column_id=f"col-hyp-{name.lower()}",
+                    table_id="tbl-hyp",
+                    column_name=name,
+                    column_position=i,
+                    raw_type="VARCHAR",
+                    resolved_type="DOUBLE",
+                )
+            )
+        session.flush()
+
+        conn = duckdb.connect()
+        conn.execute("ATTACH ':memory:' AS lake")
+        conn.execute("CREATE SCHEMA lake.typed")
+        conn.execute(
+            'CREATE TABLE lake.typed."orders_t" (total DOUBLE, "Subtotal" DOUBLE, tax DOUBLE)'
+        )
+        conn.executemany('INSERT INTO lake.typed."orders_t" VALUES (?, ?, ?)', rows)
+        return conn
+
+    def test_grades_with_the_discovery_statistic(self, real_session):
+        from dataraum.entropy.detectors.loaders import load_hypothesis_match_rate
+
+        # 3 matching rows, 1 broken row, 1 zero-target row (excluded — carries
+        # no discriminative power, same rule as the discovery sweep).
+        conn = self._seed(
+            real_session,
+            [
+                (30.0, 20.0, 10.0),
+                (5.5, 3.0, 2.5),
+                (7.0, 6.0, 1.0),
+                (99.0, 1.0, 1.0),
+                (0.0, 1.0, 1.0),
+            ],
+        )
+        graded = load_hypothesis_match_rate(
+            real_session, "col-hyp-total", conn, ("subtotal", "TAX"), "sum"
+        )
+        assert graded is not None
+        assert graded["total"] == 4
+        assert graded["matches"] == 3
+        assert graded["match_rate"] == pytest.approx(0.75)
+
+    def test_unknown_source_column_abstains(self, real_session):
+        from dataraum.entropy.detectors.loaders import load_hypothesis_match_rate
+
+        conn = self._seed(real_session, [(30.0, 20.0, 10.0)])
+        assert (
+            load_hypothesis_match_rate(
+                real_session, "col-hyp-total", conn, ("phantom", "tax"), "sum"
+            )
+            is None
+        )
+
+    def test_unknown_operation_or_missing_conn_abstains(self, real_session):
+        from dataraum.entropy.detectors.loaders import load_hypothesis_match_rate
+
+        conn = self._seed(real_session, [(30.0, 20.0, 10.0)])
+        assert (
+            load_hypothesis_match_rate(
+                real_session, "col-hyp-total", conn, ("subtotal", "tax"), "weird"
+            )
+            is None
+        )
+        assert (
+            load_hypothesis_match_rate(
+                real_session, "col-hyp-total", None, ("subtotal", "tax"), "sum"
+            )
+            is None
+        )
+
+    def test_nothing_gradable_abstains(self, real_session):
+        from dataraum.entropy.detectors.loaders import load_hypothesis_match_rate
+
+        # Only zero-target rows → total 0 → None, not a fake 0% match rate.
+        conn = self._seed(real_session, [(0.0, 1.0, 2.0), (0.0, 3.0, 4.0)])
+        assert (
+            load_hypothesis_match_rate(
+                real_session, "col-hyp-total", conn, ("subtotal", "tax"), "sum"
+            )
+            is None
+        )

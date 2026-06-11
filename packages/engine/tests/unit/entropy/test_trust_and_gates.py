@@ -9,19 +9,18 @@ ALL_DETECTOR_IDS = {
     "type_fidelity",
     "join_path_determinism",
     "relationship_entropy",
+    "relationship_discovery",
     "null_ratio",
-    "outlier_rate",
+    "null_semantics",
     "benford",
-    "temporal_drift",
-    "slice_variance",
     "derived_value",
     "business_meaning",
     "unit_entropy",
     "temporal_entropy",
     "dimensional_entropy",
     "dimension_coverage",
-    "business_cycle_health",
     "cross_table_consistency",
+    "temporal_behavior",
 }
 
 

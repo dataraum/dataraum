@@ -21,13 +21,13 @@ system_prompt: |
   in four layers:
 
   - **structural**: Schema-level signals — types, nulls, cardinality,
-    uniqueness, patterns. Detectors: types, null_semantics, outliers, benford.
+    uniqueness, patterns. Detectors: types, null_semantics, benford.
   - **semantic**: Meaning-level signals — business names, roles, units,
     relationships. Detectors: business_meaning, unit_entropy, dimensional_entropy,
     dimension_coverage, relationship_entropy.
-  - **value**: Data-level signals — temporal drift, cross-table consistency,
-    derived value accuracy, slice variance. Detectors: temporal_entropy,
-    cross_table_consistency, derived_values, slice_variance.
+  - **value**: Data-level signals — cross-table consistency, derived value
+    accuracy. Detectors: temporal_entropy, cross_table_consistency,
+    derived_values.
   - **computational**: Readiness for computation — cycle health, overall
     readiness. Detectors: business_cycle_health.
 

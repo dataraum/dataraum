@@ -1,162 +1,290 @@
-"""Derived value entropy detector.
+"""Derived value detector — formula mismatch rate + the formula adjudication.
 
-Measures uncertainty in derived/computed columns.
-Low match rate indicates the detected formula may not be correct.
+Two signals per derived column (ADR-0009, derived-value second witness):
 
-Uses non-linear scoring: a 5% formula mismatch rate is a real problem,
-not 0.05 severity. The boost function maps small mismatch rates to scores
-that reflect actual severity (same approach as type_fidelity).
+* ``obj.score`` is the WORSE of two honest statistics: the formula-mismatch rate
+  ``1 − match_rate`` of the best GRADED formula, and the pooled name-vs-data
+  identity conflict on a hygiene-passing claim (wholesale divergence: the data
+  follows B perfectly, so the mismatch leg is 0.0, while the name advertises A —
+  the disagreement IS the entropy). Both legs share the hypothesis hygiene gate.
+  The mismatch leg is grounded because grading is data:
+  the rate is measured over the actual rows; the LLM only chose which identity
+  to test (DAT-442 reset: no boost; a 10% mismatch scores 0.10). The eval
+  asserts this as the ordering "injected separates from clean"; severity per
+  intent lives in the loss table.
+* The POOLED second axis (``entropy/measurements/derived_value.py``): per
+  canonical formula identity, the data witness (discovered/graded match rate)
+  vs the LLM's name-based formula hypothesis (``derived_formula_hypothesis``
+  from ``semantic_per_column``). The pooled ``formula_conflict`` /
+  ``formula_ignorance`` ride in evidence — loss.yaml scores them as secondary
+  signals — and the witness distributions persist via ``obj.witnesses``.
+
+A column with neither a discovered formula nor a graded hypothesis emits
+nothing (absence of a formula is ignorance, not a 100%-broken column). An
+UNGRADED hypothesis never moves the scalar — the hallucination guard abstains
+when its source columns don't resolve, so an LLM guess alone cannot flag a
+column (no deterministic override, no unilateral LLM claim).
+
+Match-quality status thresholds remain in config/entropy/thresholds.yaml.
 """
 
-import math
+from __future__ import annotations
+
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject
+from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
+from dataraum.entropy.measurements.derived_value import (
+    CLAIM_SPACE,
+    canonicalize_discovered,
+    measure_derived_value,
+    parse_formula,
+)
+from dataraum.entropy.models import EntropyObject, WitnessClaim
 
 
-def _boost_mismatch_rate(rate: float) -> float:
-    """Amplify small but significant formula mismatch rates.
-
-    5% of rows failing a formula check is a real problem, not noise.
-    Same log-based boost as type_fidelity._boost_rate():
-
-        0.01 → 0.01  (noise — rounding errors)
-        0.03 → 0.20  (notable — worth investigating)
-        0.05 → 0.35  (fires at 0.3 threshold)
-        0.08 → 0.56  (clearly broken)
-        0.15 → 1.00  (severe)
-    """
-    if rate <= 0:
-        return 0.0
-    boosted = ((1 + rate) ** 2 / -math.log10(rate)) - 0.5
-    return max(0.0, min(1.0, boosted))
+def _derived_entries(correlation: Any, column_name: str) -> list[dict[str, Any]]:
+    """This column's discovered-formula entries from the correlation analysis."""
+    if hasattr(correlation, "derived_columns"):
+        raw = correlation.derived_columns or []
+    elif isinstance(correlation, dict):
+        raw = correlation.get("derived_columns", [])
+    else:
+        raw = []
+    entries: list[dict[str, Any]] = []
+    for dc in raw:
+        if hasattr(dc, "derived_column_name"):
+            if dc.derived_column_name != column_name:
+                continue
+            entries.append(
+                {
+                    "formula": getattr(dc, "formula", None),
+                    "match_rate": getattr(dc, "match_rate", None),
+                    "derivation_type": getattr(dc, "derivation_type", None),
+                    "source_column_names": getattr(dc, "source_column_names", []) or [],
+                }
+            )
+        elif isinstance(dc, dict):
+            if dc.get("derived_column_name") != column_name:
+                continue
+            entries.append(
+                {
+                    "formula": dc.get("formula"),
+                    "match_rate": dc.get("match_rate"),
+                    "derivation_type": dc.get("derivation_type"),
+                    "source_column_names": dc.get("source_column_names", []) or [],
+                }
+            )
+    return entries
 
 
 class DerivedValueDetector(EntropyDetector):
-    """Detector for derived column correctness.
-
-    Uses DerivedColumn detection from correlation analysis to measure
-    how reliably a column matches its detected formula.
-
-    Source: correlation/DerivedColumn.formula, match_rate
-    Formula: entropy = boost(1.0 - match_rate) with log-based amplification
-
-    Thresholds configurable in config/entropy/thresholds.yaml.
-    """
+    """Formula mismatch rate, pooled with the LLM formula-hypothesis witness."""
 
     detector_id = "derived_value"
     layer = Layer.COMPUTATIONAL
     dimension = Dimension.DERIVED_VALUES
     sub_dimension = SubDimension.FORMULA_MATCH
-    required_analyses = [AnalysisKey.CORRELATION]
-    description = "Measures reliability of detected derived column formulas"
+    # No required_analyses: either witness path may be absent — load_data reads
+    # what exists (correlation rows are session-run-written; the semantic
+    # hypothesis is add_source-written) and detect() measures what it got.
+    required_analyses = []
+    description = "Measures reliability of derived column formulas (data vs LLM hypothesis)"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load correlation (derived column) data for this column."""
+        """Load discovered formulas, the LLM hypothesis, reliabilities + grading.
+
+        A NOVEL hypothesis (parsed, not self-referential, not matching any
+        discovered formula) is row-graded over the typed table with the same
+        statistic the discovery uses — "the data grounds the LLM hypothesis".
+        """
         if context.session is None or context.column_id is None:
             return
-        from dataraum.entropy.detectors.loaders import load_correlation
+        from dataraum.entropy.detectors.loaders import (
+            load_correlation,
+            load_hypothesis_match_rate,
+            load_semantic,
+        )
+        from dataraum.entropy.reliabilities import get_reliability_config
 
-        result = load_correlation(
+        correlation = load_correlation(
             context.session, context.column_id, context.column_name, run_id=context.run_id
         )
-        if result is not None:
-            context.analysis_results["correlation"] = result
+        if correlation is not None:
+            context.analysis_results["correlation"] = correlation
+        semantic = load_semantic(
+            context.session, context.column_id, context.run_id, context.base_runs
+        )
+        if semantic is not None:
+            context.analysis_results["semantic"] = semantic
+        context.analysis_results["reliabilities"] = get_reliability_config().for_measurement(
+            self.detector_id
+        )
+
+        hyp = parse_formula((semantic or {}).get("derived_formula_hypothesis"))
+        if hyp is None or context.column_name.strip().lower() in hyp.operands:
+            return
+        discovered_identities = {
+            c.identity
+            for entry in _derived_entries(correlation or {}, context.column_name)
+            if (c := canonicalize_discovered(entry)) is not None
+        }
+        if hyp.identity in discovered_identities:
+            return  # already graded by the discovery's own match rate
+        grading = load_hypothesis_match_rate(
+            context.session,
+            context.column_id,
+            context.duckdb_conn,
+            hyp.operands,
+            hyp.operation,
+        )
+        if grading is not None:
+            context.analysis_results["hypothesis_grading"] = grading
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
-        """Detect derived value entropy.
+        """Adjudicate the column's formula claims; emit one witnessed object.
 
         Args:
-            context: Detector context with correlation analysis results
+            context: Detector context with correlation/semantic analysis results.
 
         Returns:
-            List with single EntropyObject for derived value reliability
+            List with a single EntropyObject, or empty when no formula claim
+            exists for this column.
         """
-        # Load configuration
-        config = get_entropy_config()
-        detector_config = config.detector("derived_value")
+        correlation = context.get_analysis("correlation", {})
+        semantic = context.get_analysis("semantic", {}) or {}
+        reliabilities = context.get_analysis("reliabilities", None) or None
+        grading = context.get_analysis("hypothesis_grading", {}) or {}
 
-        # Get configurable thresholds
+        discovered = _derived_entries(correlation, context.column_name)
+        hypothesis = None
+        if semantic.get("derived_formula_hypothesis"):
+            hypothesis = {
+                "formula": semantic["derived_formula_hypothesis"],
+                "confidence": semantic.get("derived_formula_confidence"),
+                "match_rate": grading.get("match_rate"),
+            }
+
+        adjudications = measure_derived_value(
+            context.table_name,
+            context.column_name,
+            discovered,
+            hypothesis,
+            reliabilities=reliabilities,
+        )
+        if not adjudications:
+            return []
+
+        # Honest mismatch rate of the best GRADED formula — discovered or
+        # hypothesis, because grading is DATA: the match rate is measured over
+        # the actual rows; the LLM only chose WHICH identity to test (the same
+        # division of labor as validation SQL). Hallucinations never get here —
+        # unresolvable source columns abstain upstream. Without the hypothesis
+        # leg, an injection that pushes the discovered formula below the
+        # persistence cut scored 0.0 while 13% of rows measurably violated the
+        # identity (the batch-1 recall miss on journal_lines.net_amount).
+        detector_config = get_entropy_config().detector("derived_value")
+        # Statistical hygiene on the hypothesis leg of the SCALAR (review
+        # wave-1): a low-confidence guess ("guessing among several plausible
+        # formulas") or a handful of gradable rows must not band a clean column
+        # whose true derivation is simply richer than two terms. The pooled
+        # axis keeps weighing every graded hypothesis — this gates the scalar.
+        hyp_min_rows = int(detector_config.get("hypothesis_min_rows", 20))
+        hyp_min_confidence = float(detector_config.get("hypothesis_min_confidence", 0.5))
+        hypothesis_scalar_ok = (
+            hypothesis is not None
+            and int(grading.get("total") or 0) >= hyp_min_rows
+            and float(hypothesis.get("confidence") or 0.0) >= hyp_min_confidence
+        )
+        graded_rates = [a.match_rate for a in adjudications if a.discovered or hypothesis_scalar_ok]
+        best_rate = max((r for r in graded_rates if r is not None), default=None)
+        scalar = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
+        # The name-vs-data identity conflict joins the score (wave-2 cal corpus
+        # finding): under WHOLESALE divergence every row follows formula B, so
+        # the best graded formula matches perfectly and the scalar is 0.0 while
+        # the NAMED claim carries the real entropy — the LLM hypothesis (what
+        # the name advertises) leans holds, the row grading says fails, pooled
+        # C ≈ 0.8. That disagreement was evidence-only and thus invisible to
+        # the loss rollup — a silent false negative on 3/3 wholesale columns
+        # (detection-derived-cal-v1). The conflict leg honours the same
+        # hypothesis-hygiene gate as the scalar: a low-confidence guess or a
+        # thin grading sample must not band a clean column through this door
+        # either (review wave-1 blocker).
+        identity_conflict = max(
+            (a.result.conflict for a in adjudications if a.discovered or hypothesis_scalar_ok),
+            default=0.0,
+        )
+        score = max(scalar, identity_conflict)
+
+        # Match-quality labels (display only), configurable thresholds.
         match_exact = detector_config.get("match_exact", 0.99)
         match_near_exact = detector_config.get("match_near_exact", 0.95)
         match_approximate = detector_config.get("match_approximate", 0.80)
-        correlation = context.get_analysis("correlation", {})
 
-        # Extract derived column information
-        derived_columns: list[Any] = []
-        if hasattr(correlation, "derived_columns"):
-            derived_columns = correlation.derived_columns or []
-        elif isinstance(correlation, dict):
-            derived_columns = correlation.get("derived_columns", [])
+        def _status(rate: float | None) -> str | None:
+            if rate is None:
+                return None
+            if rate >= match_exact:
+                return "exact"
+            if rate >= match_near_exact:
+                return "near_exact"
+            if rate >= match_approximate:
+                return "approximate"
+            return "poor"
 
-        # Find derived column info for current column
-        current_derived = None
-        for dc in derived_columns:
-            if hasattr(dc, "derived_column_name"):
-                if dc.derived_column_name == context.column_name:
-                    current_derived = dc
-                    break
-            elif isinstance(dc, dict):
-                if dc.get("derived_column_name") == context.column_name:
-                    current_derived = dc
-                    break
-
-        # Calculate entropy based on derived column status
-        if current_derived is None:
-            # No formula detected - highest uncertainty for computational layer
-            score = 1.0
-            status = "no_formula"
-            formula: str | None = None
-            match_rate: float | None = None
-            source_columns: list[str] = []
-        else:
-            # Extract match rate
-            if hasattr(current_derived, "match_rate"):
-                match_rate = current_derived.match_rate
-                formula = getattr(current_derived, "formula", None)
-                source_columns = getattr(current_derived, "source_column_names", [])
-            else:
-                match_rate = current_derived.get("match_rate", 0.0)
-                formula = current_derived.get("formula")
-                source_columns = current_derived.get("source_column_names", [])
-
-            # Calculate entropy from mismatch rate with non-linear boost
-            mismatch_rate = 1.0 - match_rate
-            score = _boost_mismatch_rate(mismatch_rate)
-
-            # Classify match quality using configurable thresholds
-            if match_rate >= match_exact:
-                status = "exact"
-            elif match_rate >= match_near_exact:
-                status = "near_exact"
-            elif match_rate >= match_approximate:
-                status = "approximate"
-            else:
-                status = "poor"
-
-        # Build evidence
-        evidence = [
-            {
-                "status": status,
-                "formula": formula,
-                "match_rate": match_rate,
-                "source_columns": source_columns,
+        evidence: list[dict[str, Any]] = []
+        for adj in adjudications:
+            entry: dict[str, Any] = {
+                "claim_field": adj.claim_field,
+                "formula": adj.formula_display,
+                "formula_canonical": adj.formula,
+                "discovered": adj.discovered,
+                "hypothesized": adj.hypothesized,
+                "match_rate": adj.match_rate,
+                # Loss-readable secondary signals (loss.yaml scores the worst
+                # value of each key across evidence; "conflict" would alias to
+                # obj.score — the mismatch rate — hence the distinct names).
+                "formula_conflict": adj.result.conflict,
+                "formula_ignorance": adj.result.ignorance,
+                "posterior": dict(zip(CLAIM_SPACE, adj.result.posterior, strict=False)),
             }
-        ]
+            status = _status(adj.match_rate) if adj.discovered else None
+            if status is not None:
+                entry["status"] = status
+            evidence.append(entry)
+        # Keep the legacy display keys on the first discovered entry's source.
+        for entry, adj in zip(evidence, adjudications, strict=True):
+            if adj.discovered:
+                src = next(
+                    (
+                        e.get("source_column_names")
+                        for e in discovered
+                        if e.get("formula") == adj.formula_display
+                    ),
+                    None,
+                )
+                entry["source_columns"] = src or []
+                dtype = next(
+                    (
+                        e.get("derivation_type")
+                        for e in discovered
+                        if e.get("formula") == adj.formula_display
+                    ),
+                    None,
+                )
+                if dtype is not None:
+                    entry["derivation_type"] = dtype
 
-        if current_derived:
-            if hasattr(current_derived, "derivation_type"):
-                evidence[0]["derivation_type"] = current_derived.derivation_type
-            elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
-                evidence[0]["derivation_type"] = current_derived["derivation_type"]
-
-        return [
-            self.create_entropy_object(
-                context=context,
-                score=score,
-                evidence=evidence,
+        obj = self.create_entropy_object(context=context, score=score, evidence=evidence)
+        obj.witnesses = [
+            WitnessClaim(
+                claim_field=adj.claim_field,
+                witness_id=w.witness_id,
+                distribution=dict(zip(CLAIM_SPACE, w.distribution, strict=True)),
+                reliability=w.reliability,
             )
+            for adj in adjudications
+            for w in adj.witnesses
         ]
+        return [obj]

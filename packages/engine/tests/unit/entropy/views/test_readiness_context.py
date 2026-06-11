@@ -1,13 +1,14 @@
-"""Tests for entropy readiness context assembler (per-column design).
+"""Tests for the entropy readiness context assembler (loss-only, per-column).
 
-Test categories:
+Readiness rolls detector scores up the LOSS table (entropy/loss.yaml): per-intent
+risk = clamp01(Σ weight·value), banded ready/investigate/blocked. No network DAG
+(DAT-442). Test categories:
 A. Dataclass defaults
 B. Helper functions
-C. Per-column assembly with small_network (4-node)
-E. Assembly with full_network (15-node)
+C. Per-column assembly
+D. Multi-measurement / multi-intent assembly
 """
 
-from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.views.readiness_context import (
     ColumnNodeEvidence,
     ColumnReadinessResult,
@@ -35,7 +36,7 @@ class TestDataclassDefaults:
         assert cne.evidence == []
         assert cne.detector_id == ""
 
-    def test_column_network_result_defaults(self):
+    def test_column_result_defaults(self):
         cnr = ColumnReadinessResult()
         assert cnr.target == ""
         assert cnr.node_evidence == []
@@ -60,7 +61,7 @@ class TestDataclassDefaults:
         assert ir.risk == 0.0
         assert ir.drivers == []
 
-    def test_entropy_for_network_defaults(self):
+    def test_entropy_for_readiness_defaults(self):
         efn = EntropyForReadiness()
         assert efn.columns == {}
         assert efn.direct_signals == []
@@ -98,94 +99,49 @@ class TestObjectToDirectSignal:
 
 
 # ===================================================================
-# C. Per-column assembly with small_network (4-node)
+# C. Per-column assembly (loss table)
 # ===================================================================
 
 
 class TestPerColumnAssembly:
-    def test_empty_objects_returns_default(self, small_network):
-        result = assemble_readiness_context([], small_network)
+    def test_empty_objects_returns_default(self):
+        result = assemble_readiness_context([])
         assert result.total_columns == 0
         assert result.columns == {}
         assert result.overall_readiness == "ready"
 
-    def test_single_column_produces_column_result(self, small_network):
-        """One column with two mapped objects -> one ColumnReadinessResult."""
+    def test_single_column_produces_column_result(self):
+        """Two loss measurements on one column -> one ColumnReadinessResult."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.8,
-                target="column:t.c1",
-            ),
-            make_entropy_object(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="root_b",
-                score=0.2,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.8, target="column:t.c1"),
+            make_entropy_object(detector_id="type_fidelity", score=0.8, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 1
-        assert "column:t.c1" in result.columns
         col = result.columns["column:t.c1"]
         assert col.nodes_observed == 2
-        node_names = {ne.node_name for ne in col.node_evidence}
-        assert "root_a" in node_names
-        assert "root_b" in node_names
+        assert {ne.node_name for ne in col.node_evidence} == {"null_ratio", "type_fidelity"}
 
-    def test_relationship_target_produces_readiness_result(self, small_network):
-        """A ``relationship:`` target rolls up like a column (DAT-408), not dropped.
-
-        Pre-DAT-408 only ``column:`` targets produced readiness results; everything
-        else became a dropped ``DirectSignal``. Relationship-granularity readiness
-        routes ``relationship:`` targets through the same target-agnostic rollup.
-        """
+    def test_relationship_target_produces_readiness_result(self):
+        """A ``relationship:`` target rolls up like a column (DAT-408), not dropped."""
         rel = "relationship:orders.customer_id-customers.id"
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.8,
-                target=rel,
-            ),
-            make_entropy_object(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="root_b",
-                score=0.2,
-                target=rel,
-            ),
+            make_entropy_object(detector_id="relationship_entropy", score=0.8, target=rel),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert rel in result.columns, "relationship target must produce a readiness result"
         res = result.columns[rel]
         assert res.target == rel
-        assert res.nodes_observed == 2
-        # Not leaked into the dropped direct-signal bucket.
+        assert res.nodes_observed == 1
         assert all(ds.target != rel for ds in result.direct_signals)
 
-    def test_compute_rollup_false_keeps_evidence_drops_intents(self, small_network):
-        """Rollup-free assembly (DAT-399 slice D) yields raw evidence, no bands.
-
-        The query-time contract gate uses this cheap half: node evidence (raw
-        scores keyed by dimension_path) must survive, while the noisy-OR products
-        (intents, per-node impact_delta, banded readiness) are absent.
-        """
+    def test_compute_rollup_false_keeps_evidence_drops_intents(self):
+        """Rollup-free assembly (DAT-399 slice D) yields raw evidence, no bands."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.9,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.9, target="column:t.c1"),
         ]
-        full = assemble_readiness_context(objects, small_network)
-        cheap = assemble_readiness_context(objects, small_network, compute_rollup=False)
+        full = assemble_readiness_context(objects)
+        cheap = assemble_readiness_context(objects, compute_rollup=False)
 
         # Same columns + same raw scores (the contract gate reads these).
         assert cheap.columns.keys() == full.columns.keys()
@@ -196,7 +152,6 @@ class TestPerColumnAssembly:
             ne.dimension_path: ne.score for ne in cheap.columns["column:t.c1"].node_evidence
         }
         assert cheap_scores == full_scores
-        # avg_entropy_score is raw-derived -> still populated and identical.
         assert cheap.avg_entropy_score == full.avg_entropy_score
 
         # Rollup products are absent on the cheap path.
@@ -208,376 +163,192 @@ class TestPerColumnAssembly:
         # ...but the full rollup did produce intents for the same input.
         assert full.columns["column:t.c1"].intents
 
-    def test_two_columns_independent_results(self, small_network):
+    def test_two_columns_independent_results(self):
         """Two columns with different scores -> independent results."""
         objects = [
-            # Column 1: root_a high
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.9,
-                target="column:t.c1",
-            ),
-            # Column 2: root_a low
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.1,
-                target="column:t.c2",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.9, target="column:t.c1"),
+            make_entropy_object(detector_id="null_ratio", score=0.1, target="column:t.c2"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 2
         c1 = result.columns["column:t.c1"]
         c2 = result.columns["column:t.c2"]
-        # c1 should have higher risk than c2
         assert c1.worst_intent_risk > c2.worst_intent_risk
-        assert c1.readiness != "ready" or c1.worst_intent_risk > 0
         assert c2.readiness == "ready"
 
-    def test_column_only_unmapped_no_column_result(self, small_network):
-        """Column with only unmapped objects -> no ColumnReadinessResult, only DirectSignals."""
+    def test_non_loss_detector_no_column_result(self):
+        """Column with only an informative-signal detector -> only DirectSignals."""
         objects = [
             make_entropy_object(
-                layer="semantic",
-                dimension="dimensional",
-                sub_dimension="cross_column_patterns",
+                layer="value",
+                dimension="distribution",
+                sub_dimension="benford_compliance",
+                detector_id="benford",
                 score=0.6,
                 target="column:t.c1",
             ),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 0
         assert "column:t.c1" not in result.columns
         assert len(result.direct_signals) == 1
-        assert (
-            result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
-        )
+        assert result.direct_signals[0].detector_id == "benford"
 
-    def test_mixed_mapped_and_unmapped_within_column(self, small_network):
-        """Mapped objects go to network, unmapped become direct signals."""
+    def test_mixed_loss_and_signal_within_column(self):
+        """Loss measurements roll up; informative signals become direct signals."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.7,
-                target="column:t.c1",
-            ),
-            make_entropy_object(
-                layer="semantic",
-                dimension="dimensional",
-                sub_dimension="quality_assessment",
-                score=0.5,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.7, target="column:t.c1"),
+            make_entropy_object(detector_id="benford", score=0.5, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 1
         assert len(result.direct_signals) == 1
+        assert result.direct_signals[0].detector_id == "benford"
 
-    def test_all_low_column_ready(self, small_network):
-        """Column with all low evidence -> readiness='ready'."""
+    def test_all_low_column_ready(self):
+        """Column with all low scores -> readiness='ready'."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.1,
-                target="column:t.c1",
-            ),
-            make_entropy_object(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="root_b",
-                score=0.1,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.1, target="column:t.c1"),
+            make_entropy_object(detector_id="type_fidelity", score=0.1, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
         assert col.readiness == "ready"
         assert result.overall_readiness == "ready"
-        for ne in col.node_evidence:
-            assert ne.state == "low"
+        assert all(ne.state == "low" for ne in col.node_evidence)
 
-    def test_high_column_has_intent_readiness(self, small_network):
-        """Column with high evidence -> intent readiness reflects P(high)."""
+    def test_high_column_has_intent_readiness(self):
+        """Column with a high measurement -> per-intent readiness with positive risk."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.8,
-                target="column:t.c1",
-            ),
-            make_entropy_object(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="root_b",
-                score=0.7,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.8, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        assert len(col.intents) == 1
-        intent = col.intents[0]
-        assert intent.intent_name == "leaf_z"
-        assert intent.risk > 0
-        assert intent.readiness in ("ready", "investigate", "blocked")
+        assert col.intents
+        for intent in col.intents:
+            assert intent.risk > 0
+            assert intent.readiness in ("ready", "investigate", "blocked")
 
-    def test_intent_carries_per_intent_drivers(self, small_network):
-        """Each intent lists the observed nodes that lower ITS risk, ranked (DAT-394)."""
+    def test_intent_carries_per_intent_drivers(self):
+        """Each intent lists the measurements that drive ITS risk, ranked (DAT-394)."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.8,
-                target="column:t.c1",
-            ),
-            make_entropy_object(
-                layer="value",
-                dimension="nulls",
-                sub_dimension="root_b",
-                score=0.7,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.8, target="column:t.c1"),
+            make_entropy_object(detector_id="type_fidelity", score=0.8, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
-        intent = result.columns["column:t.c1"].intents[0]
+        result = assemble_readiness_context(objects)
+        col = result.columns["column:t.c1"]
+        query = next(i for i in col.intents if i.intent_name == "query_intent")
 
-        # Both observed roots feed leaf_z through child_x, so both are drivers.
-        driver_nodes = {d.node for d in intent.drivers}
-        assert driver_nodes == {"root_a", "root_b"}
-        # Each driver carries its discretized state and a positive per-intent impact.
-        assert all(d.impact_delta > 0 for d in intent.drivers)
-        assert all(d.state == "high" for d in intent.drivers)
-        # Each driver is self-describing: non-empty dimension_path + humanized label.
-        assert all(d.dimension_path for d in intent.drivers)
-        labels = {d.node: d.label for d in intent.drivers}
-        assert labels["root_a"] == "Root a"
-        assert labels["root_b"] == "Root b"
+        # Both measurements weight query_intent in loss.yaml -> both are drivers.
+        assert {d.node for d in query.drivers} == {"null_ratio", "type_fidelity"}
+        assert all(d.impact_delta > 0 for d in query.drivers)
+        assert all(d.state == "high" for d in query.drivers)  # 0.8 > 0.6
+        # Self-describing: non-empty dimension_path + humanized label.
+        assert all(d.dimension_path for d in query.drivers)
+        labels = {d.node: d.label for d in query.drivers}
+        assert labels["null_ratio"] == "Null ratio"
+        assert labels["type_fidelity"] == "Type fidelity"
         # Ranked by impact, descending.
-        deltas = [d.impact_delta for d in intent.drivers]
+        deltas = [d.impact_delta for d in query.drivers]
         assert deltas == sorted(deltas, reverse=True)
 
-    def test_table_target_rolls_up(self, small_network):
-        """A table: target rolls up the network like a column (DAT-415).
-
-        Table-grain readiness (the fact table's dimension_coverage) rolls into a
-        banded result keyed by the ``table:`` target, not a raw DirectSignal.
-        """
+    def test_table_target_rolls_up(self):
+        """A ``table:`` target rolls up like a column (DAT-415)."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.8,
-                target="table:sales",
-            ),
+            make_entropy_object(detector_id="dimensional_entropy", score=0.8, target="table:sales"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 1
         assert "table:sales" in result.columns
         assert all(ds.target != "table:sales" for ds in result.direct_signals)
 
-    def test_node_evidence_carries_raw_data(self, small_network):
-        """ColumnNodeEvidence has score, evidence from source object."""
-        evidence_data = [{"metric": "type_mismatch_ratio", "value": 0.3}]
+    def test_node_evidence_carries_raw_data(self):
+        """ColumnNodeEvidence carries score, evidence, detector_id from the object."""
+        evidence_data = [{"metric": "null_fraction", "value": 0.75}]
         objects = [
             make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
+                detector_id="null_ratio",
                 score=0.75,
                 evidence=evidence_data,
-                detector_id="type_detector",
                 target="column:t.c1",
             ),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        ne = next(n for n in col.node_evidence if n.node_name == "root_a")
+        ne = next(n for n in col.node_evidence if n.node_name == "null_ratio")
         assert ne.score == 0.75
         assert ne.evidence == evidence_data
-        assert ne.detector_id == "type_detector"
-        # Non-low evidence carries a humanized label and its dimension_path.
-        assert ne.state != "low"
-        assert ne.label == "Root a"
+        assert ne.detector_id == "null_ratio"
+        assert ne.state != "low"  # 0.75 > 0.6
+        assert ne.label == "Null ratio"
         assert ne.dimension_path
 
-    def test_column_top_priority_set(self, small_network):
-        """Column with high node should have top_priority_node populated."""
+    def test_column_top_priority_set(self):
+        """A high measurement populates top_priority_node + a positive impact."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.9,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.9, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        assert col.top_priority_node == "root_a"
+        assert col.top_priority_node == "null_ratio"
         assert col.top_priority_impact > 0
 
-    def test_node_evidence_has_impact_delta(self, small_network):
-        """High node should have non-zero impact_delta from priorities."""
+    def test_zero_score_node_zero_impact(self):
+        """A zero-score measurement contributes zero loss -> zero impact_delta."""
         objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.9,
-                target="column:t.c1",
-            ),
+            make_entropy_object(detector_id="null_ratio", score=0.0, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, small_network)
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        ne = next(n for n in col.node_evidence if n.node_name == "root_a")
-        assert ne.impact_delta > 0
-
-    def test_low_node_has_zero_impact_delta(self, small_network):
-        """Low node should have zero impact_delta (no fix needed)."""
-        objects = [
-            make_entropy_object(
-                layer="structural",
-                dimension="types",
-                sub_dimension="root_a",
-                score=0.1,
-                target="column:t.c1",
-            ),
-        ]
-        result = assemble_readiness_context(objects, small_network)
-        col = result.columns["column:t.c1"]
-        ne = next(n for n in col.node_evidence if n.node_name == "root_a")
+        ne = next(n for n in col.node_evidence if n.node_name == "null_ratio")
         assert ne.impact_delta == 0.0
 
 
 # ===================================================================
-# E. Assembly with full_network (15-node)
+# D. Multi-intent assembly over the loss table
 # ===================================================================
 
 
-class TestAssembleFullNetwork:
-    def _make_root_objects(
-        self,
-        score: float = 0.7,
-        target: str = "column:t.c1",
-    ) -> list[EntropyObject]:
-        """Create objects for all 8 root nodes targeting a single column."""
-        roots = [
-            ("structural", "types", "type_fidelity"),
-            ("value", "nulls", "null_ratio"),
-            ("value", "outliers", "outlier_rate"),
-            ("semantic", "business_meaning", "naming_clarity"),
-            ("semantic", "units", "unit_declaration"),
-            ("semantic", "temporal", "time_role"),
-            ("value", "temporal", "temporal_drift"),
-            ("value", "distribution", "benford_compliance"),
+class TestMultiIntentAssembly:
+    def test_null_ratio_produces_all_three_intents(self):
+        """null_ratio weights all three intents -> all three are produced."""
+        objects = [
+            make_entropy_object(detector_id="null_ratio", score=0.7, target="column:t.c1"),
         ]
-        return [
-            make_entropy_object(
-                layer=layer,
-                dimension=dim,
-                sub_dimension=sub,
-                score=score,
-                target=target,
-            )
-            for layer, dim, sub in roots
-        ]
-
-    def test_all_roots_one_column_produces_3_intents(self, full_network):
-        """With all 8 roots observed for one column, all 3 intents computed."""
-        objects = self._make_root_objects(score=0.7)
-        result = assemble_readiness_context(objects, full_network)
-        assert result.total_columns == 1
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        intent_names = {i.intent_name for i in col.intents}
-        assert intent_names == {"query_intent", "aggregation_intent", "reporting_intent"}
+        assert {i.intent_name for i in col.intents} == {
+            "query_intent",
+            "aggregation_intent",
+            "reporting_intent",
+        }
 
-    def test_multiple_columns_compute_per_column_intents(self, full_network):
+    def test_multiple_columns_independent_intents(self):
         """Each column computes its own per-column intents independently."""
-        objects = self._make_root_objects(
-            score=0.8, target="column:t.c1"
-        ) + self._make_root_objects(score=0.8, target="column:t.c2")
-        result = assemble_readiness_context(objects, full_network)
+        objects = [
+            make_entropy_object(detector_id="null_ratio", score=0.8, target="column:t.c1"),
+            make_entropy_object(detector_id="null_ratio", score=0.8, target="column:t.c2"),
+        ]
+        result = assemble_readiness_context(objects)
         assert result.total_columns == 2
         for target in ("column:t.c1", "column:t.c2"):
             names = {i.intent_name for i in result.columns[target].intents}
             assert names == {"query_intent", "aggregation_intent", "reporting_intent"}
 
-    def test_unmapped_dimensional_signal(self, full_network):
-        """A dimensional signal with no network node surfaces as a direct signal.
-
-        (``cross_column_patterns`` is now wired as a node for dimensional_entropy,
-        DAT-403 — use a still-unmapped dimensional sub-signal to exercise the path.)
-        """
-        objects = self._make_root_objects(score=0.3)
-        objects.append(
-            make_entropy_object(
-                layer="semantic",
-                dimension="dimensional",
-                sub_dimension="column_interaction",
-                score=0.6,
-                target="table:sales",
-            )
-        )
-        result = assemble_readiness_context(objects, full_network)
-        assert result.total_direct_signals == 1
-        assert result.direct_signals[0].dimension_path == "semantic.dimensional.column_interaction"
-
-    def test_overall_readiness_blocked_when_high(self, full_network):
-        """With very high scores, overall readiness should be blocked."""
-        objects = self._make_root_objects(score=0.95)
-        result = assemble_readiness_context(objects, full_network)
+    def test_overall_readiness_blocked_when_high(self):
+        """A very high measurement pushes its worst intent to blocked."""
+        objects = [
+            make_entropy_object(detector_id="null_ratio", score=0.95, target="column:t.c1"),
+        ]
+        result = assemble_readiness_context(objects)
         col = result.columns["column:t.c1"]
-        blocked_intents = [i for i in col.intents if i.readiness == "blocked"]
-        assert len(blocked_intents) > 0
+        assert any(i.readiness == "blocked" for i in col.intents)
         assert result.overall_readiness == "blocked"
 
-    def test_all_low_roots_ready(self, full_network):
-        """With all roots at low scores, should be ready."""
-        objects = self._make_root_objects(score=0.1)
-        result = assemble_readiness_context(objects, full_network)
-        assert result.overall_readiness == "ready"
-
-    def test_partial_low_evidence_subgraph_inference(self, full_network):
-        """Column with partial low evidence uses dynamic subgraph.
-
-        When only 4 of 9 root detectors fire (all with low scores), the
-        dynamic subgraph removes unobserved roots. Remaining P(high)
-        comes from CPT pessimistic shift — genuine conservatism, not
-        prior leakage. The network may classify as "investigate" for
-        intents where the pessimistic shift pushes P(high) just above 0.3.
-        """
-        # Only 4 roots — the common pattern for many baseline columns
-        partial_roots = [
-            ("structural", "types", "type_fidelity"),
-            ("value", "nulls", "null_ratio"),
-            ("value", "outliers", "outlier_rate"),
-            ("semantic", "business_meaning", "naming_clarity"),
-        ]
+    def test_all_low_ready(self):
+        """All-low measurements -> ready."""
         objects = [
-            make_entropy_object(
-                layer=layer,
-                dimension=dim,
-                sub_dimension=sub,
-                score=0.0,
-                target="column:t.c1",
-            )
-            for layer, dim, sub in partial_roots
+            make_entropy_object(detector_id="null_ratio", score=0.1, target="column:t.c1"),
         ]
-        result = assemble_readiness_context(objects, full_network)
-        col = result.columns["column:t.c1"]
-
-        # With dynamic subgraph, unobserved roots are excluded.
-        # Remaining P(high) is from CPT pessimistic shift, not prior noise.
-        # Most intents should be ready; some may be marginal "investigate".
-        assert col.readiness in ("ready", "investigate")
-        assert col.worst_intent_risk < 0.5  # No intent near "blocked"
+        result = assemble_readiness_context(objects)
+        assert result.overall_readiness == "ready"

@@ -64,6 +64,7 @@ _PHASE_ORDER = [
     "slicing_view",
     "slice_analysis",
     "temporal_slice_analysis",
+    "aggregation_lineage",
     "correlations",
     "session_detect",
     "session_write_keepers",

@@ -130,7 +130,7 @@ def enable_file_logging(path: Any) -> None:
     global _active_log_file
     _active_log_file = open(path, "a")  # noqa: SIM115
 
-    # Also route stdlib logging to the file (for library output like httpx, mcp)
+    # Also route stdlib logging to the file (for library output like httpx)
     file_handler = logging.FileHandler(path)
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s  %(message)s")

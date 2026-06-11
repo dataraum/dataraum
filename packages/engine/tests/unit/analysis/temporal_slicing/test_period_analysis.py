@@ -655,3 +655,43 @@ class TestPersistPeriodResults:
         assert "incomplete" in issue_types
         assert "early_cutoff" in issue_types
         assert "volume_drop" in issue_types
+
+
+class TestPeriodColumnSums:
+    """Per-period numeric sums — the DAT-491 lineage substrate, real DuckDB."""
+
+    def test_sums_per_numeric_column(self) -> None:
+        import duckdb
+
+        from dataraum.analysis.temporal_slicing.analyzer import _numeric_columns
+
+        conn = duckdb.connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE slice_t AS
+            SELECT CAST(strptime('2024-01-' || lpad(CAST(d AS VARCHAR), 2, '0'),
+                                 '%Y-%m-%d') AS DATE) AS ts,
+                   10.0 AS debit, 4.0 AS credit, 'x' AS label
+            FROM (SELECT UNNEST(range(1, 11)) AS d) t(d)
+            """
+        )
+        numeric = _numeric_columns(conn, "slice_t")
+        assert numeric == ["debit", "credit"]
+
+        periods = [(date(2024, 1, 1), date(2024, 2, 1), "2024-01")]
+        result = _compute_period_metrics("slice_t", "ts", conn, periods, numeric_columns=numeric)
+        assert len(result) == 1
+        assert result[0].column_sums == {"debit": 100.0, "credit": 40.0}
+        conn.close()
+
+    def test_no_numeric_columns_yields_empty_sums(self) -> None:
+        import duckdb
+
+        conn = duckdb.connect(":memory:")
+        conn.execute(
+            "CREATE TABLE slice_t AS SELECT CAST('2024-01-05' AS DATE) AS ts, 'x' AS label"
+        )
+        periods = [(date(2024, 1, 1), date(2024, 2, 1), "2024-01")]
+        result = _compute_period_metrics("slice_t", "ts", conn, periods, numeric_columns=[])
+        assert result[0].column_sums == {}
+        conn.close()

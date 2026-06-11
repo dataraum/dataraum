@@ -28,6 +28,7 @@ from temporalio.exceptions import ApplicationError
 from dataraum.llm.providers.base import is_transient_error
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
+    OPERATING_MODEL_DETECTOR_PHASES,
     SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
@@ -223,6 +224,21 @@ class PhaseActivities:
         )
         return self._outcome_or_raise(run, "semantic_per_table")
 
+    @activity.defn(name="aggregation_lineage")
+    def run_aggregation_lineage(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Aggregation-lineage activity — events→measure rollup discovery (DAT-491).
+
+        Deterministic arithmetic over the slice substrate (per-period sums
+        persisted by ``temporal_slice_analysis``, paired across facts by their
+        shared slice dimensions) — NO LLM call. Reconciled lineage persists
+        run-versioned, feeding the ``structural_reconciliation`` witness at the
+        terminal ``session_detect``.
+        """
+        run = run_session_phase(
+            self._manager, "aggregation_lineage", payload.identity, payload.table_ids
+        )
+        return self._outcome_or_raise(run, "aggregation_lineage")
+
     @activity.defn(name="enriched_views")
     def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Enriched-views activity — grain-preserving fact×dimension views (DAT-415).
@@ -280,8 +296,8 @@ class PhaseActivities:
         """Temporal-slice-analysis activity — drift/period metrics on the slice tables.
 
         Runs JS-divergence drift detection and period completeness/anomaly analysis
-        per slice, and builds the ``ColumnSliceProfile`` records the
-        ``dimensional_entropy`` detector consumes. No LLM call.
+        per slice. No LLM call. (Per-column ColumnSliceProfile production was cut in
+        the DAT-442 reset; dimensional_entropy reads typed values directly via NMI.)
         """
         run = run_session_phase(
             self._manager, "temporal_slice_analysis", payload.identity, payload.table_ids
@@ -451,6 +467,31 @@ class PhaseActivities:
             },
         )
         return self._outcome_or_raise(run, "metrics")
+
+    @activity.defn(name="operating_model_detect")
+    def run_operating_model_detect(self, identity: SessionIdentity) -> PhaseOutcome:
+        """Terminal detector pass for operating_model (DAT-432/L7).
+
+        Scores this run's executed validation results — cross_table_consistency,
+        declared on the ``validation`` phase — into table + column entropy
+        objects and persists readiness under the OM run. Pure scoring over
+        persisted rows, zero LLM calls. Runs right after ``validation`` so the
+        expensive evidence is computed before the LLM-heavy families can fail —
+        but like every run-stamped row, the bands become VISIBLE to
+        head-resolved readers only after the terminal promote flips the
+        ``operating_model`` head (failed runs never surface; review wave-1
+        corrected an overclaim here).
+        """
+        count = run_detectors(
+            self._manager,
+            session_id=identity.session_id,
+            run_id=identity.run_id,
+            detector_phases=OPERATING_MODEL_DETECTOR_PHASES,
+        )
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"{count} validation detector records for session {identity.session_id}",
+        )
 
     @activity.defn(name="operating_model_promote")
     def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:

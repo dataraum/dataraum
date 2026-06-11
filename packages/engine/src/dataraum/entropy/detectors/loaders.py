@@ -79,23 +79,22 @@ def load_typing(
 
     ``run_id`` (DAT-413): when set, restrict to THIS run's typing output — the
     detect path always passes the run's run_id so a detector reads its own run's
-    upstream metadata. ``None`` (non-detect / test callers) adds no filter, so
-    they stay behavior-preserving.
+    upstream metadata. ``None`` (non-detect / test callers) reads the MOST RECENT
+    typing for the column — which is the promoted re-run after a teach cycle — so a
+    read across coexisting runs returns the current one rather than raising
+    ``MultipleResultsFound`` (DAT-447).
     """
     from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 
     td_stmt = select(TypeDecision).where(TypeDecision.column_id == column_id)
-    tc_stmt = (
-        select(TypeCandidate)
-        .where(TypeCandidate.column_id == column_id)
-        .order_by(TypeCandidate.confidence.desc())
-        .limit(1)
-    )
+    tc_stmt = select(TypeCandidate).where(TypeCandidate.column_id == column_id)
     if run_id is not None:
         td_stmt = td_stmt.where(TypeDecision.run_id == run_id)
         tc_stmt = tc_stmt.where(TypeCandidate.run_id == run_id)
-    td = session.execute(td_stmt).scalar_one_or_none()
-    tc = session.execute(tc_stmt).scalar_one_or_none()
+    # Most-recent decision, highest-confidence candidate — ``.first()`` never raises
+    # on coexisting runs (a teach re-run leaves the prior run's typing rows in place).
+    td = session.execute(td_stmt.order_by(TypeDecision.decided_at.desc())).scalars().first()
+    tc = session.execute(tc_stmt.order_by(TypeCandidate.confidence.desc())).scalars().first()
 
     if td:
         typing_dict: dict[str, Any] = {
@@ -129,6 +128,78 @@ def load_typing(
             "quarantine_rate": tc.quarantine_rate,
         }
     return None
+
+
+_TEXT_RESOLVED_TYPES = frozenset({"VARCHAR", "TEXT", "STRING", "CHAR"})
+
+
+def rejected_token_counts(
+    duckdb_conn: Any, raw_table_fqn: str, column_name: str, resolved_type: str
+) -> list[tuple[str, int]]:
+    """Distinct values of a column that fail ``TRY_CAST`` to its resolved type.
+
+    Queries the RAW (VARCHAR) table, not the row-level quarantine table: a row is
+    quarantined if ANY column failed, so a per-column read must apply the
+    column's OWN cast. Returns ``[(token, count), …]`` (descending) for non-null
+    values that do not parse — empty for a VARCHAR column (every cast succeeds).
+
+    ``resolved_type`` is a DuckDB type keyword from the type decision (e.g.
+    ``DECIMAL(18,2)``), not user input.
+    """
+    col = column_name.replace('"', '""')
+    rows = duckdb_conn.execute(
+        f'SELECT "{col}" AS token, COUNT(*) AS n FROM {raw_table_fqn} '
+        f'WHERE "{col}" IS NOT NULL AND TRY_CAST("{col}" AS {resolved_type}) IS NULL '
+        f'GROUP BY "{col}" ORDER BY n DESC'
+    ).fetchall()
+    return [(str(token), int(n)) for token, n in rows]
+
+
+def load_quarantine_tokens(
+    session: Session,
+    column_id: str,
+    duckdb_conn: Any,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Per-token cast-failure counts for a column — the quarantine witness input.
+
+    Resolves the column's raw table + resolved type, then counts the distinct
+    tokens that fail the cast. ``None`` if the column/table is unresolved;
+    ``{"rejected_tokens": [], "total_rejected": 0}`` for a VARCHAR column (no
+    inferred type → no rejects → no null-token signal).
+    """
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+    from dataraum.storage import Column, Table
+
+    if duckdb_conn is None:
+        return None
+    col = session.get(Column, column_id)
+    if col is None:
+        return None
+    table = session.get(Table, col.table_id)
+    if table is None or not table.duckdb_path:
+        return None
+
+    typing = load_typing(session, column_id, run_id)
+    resolved_type = (typing or {}).get("resolved_type")
+    if not resolved_type or str(resolved_type).upper() in _TEXT_RESOLVED_TYPES:
+        return {"rejected_tokens": [], "total_rejected": 0}
+    # Typing is the authority on rejection. When it quarantined NOTHING for this
+    # column, a plain TRY_CAST below would still over-reject formats typing's
+    # pattern parser accepts — a DATE column of "2025-02" parses for typing but
+    # not a bare CAST — minting phantom null tokens on a clean column. No typing
+    # rejects → no candidates. (Live-run finding, DAT-457: trial_balance.period
+    # typed cleanly as DATE, quarantine_rate 0, yet the bare cast "found" rejects.)
+    if not (typing or {}).get("quarantine_rate"):
+        return {"rejected_tokens": [], "total_rejected": 0}
+
+    raw_fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{table.duckdb_path}"'
+    counts = rejected_token_counts(duckdb_conn, raw_fqn, col.column_name, str(resolved_type))
+    return {
+        "rejected_tokens": [{"token": token, "count": n} for token, n in counts],
+        "total_rejected": sum(n for _, n in counts),
+    }
 
 
 def load_statistics(
@@ -165,7 +236,13 @@ def load_statistics(
                     sp_stmt.where(StatisticalProfile.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        sp = session.execute(sp_stmt).scalar_one_or_none()
+        # No run pinned: most recent (= the promoted re-run), never scalar_one_or_none
+        # — profiles coexist across re-runs (upsert is per (column_id, run_id)) (DAT-447).
+        sp = (
+            session.execute(sp_stmt.order_by(StatisticalProfile.profiled_at.desc()))
+            .scalars()
+            .first()
+        )
 
     if not sp:
         return None
@@ -192,7 +269,11 @@ def load_statistics(
                     qm_stmt.where(StatisticalQualityMetrics.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        qm = session.execute(qm_stmt).scalar_one_or_none()
+        qm = (
+            session.execute(qm_stmt.order_by(StatisticalQualityMetrics.computed_at.desc()))
+            .scalars()
+            .first()
+        )
     if qm:
         qd = qm.quality_data or {}
         quality_dict: dict[str, Any] = {
@@ -237,10 +318,10 @@ def load_semantic(
     Pinned fallback (DAT-405/448): a begin_session detect carries the SESSION
     run's ``run_id``, but annotations are written by the add_source run — a
     strict this-run read finds nothing and silently disabled every
-    semantic-gated session detector (temporal_drift scored 0 records;
-    slice_variance lost its role gate and over-fired on ID columns). When this
-    run has no annotation, read the run the orchestrator pinned for the
-    column's table at ``semantic_per_column``; no pin → ``None`` as before.
+    semantic-gated session detector (dimensional_entropy and derived_value lose
+    the role/semantic context their detect step needs). When this run has no
+    annotation, read the run the orchestrator pinned for the column's table at
+    ``semantic_per_column``; no pin → ``None`` as before.
     """
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
 
@@ -256,7 +337,11 @@ def load_semantic(
                     sa_stmt.where(SemanticAnnotation.run_id == pinned)
                 ).scalar_one_or_none()
     else:
-        sa = session.execute(sa_stmt).scalar_one_or_none()
+        sa = (
+            session.execute(sa_stmt.order_by(SemanticAnnotation.annotated_at.desc()))
+            .scalars()
+            .first()
+        )
     if not sa:
         return None
 
@@ -272,6 +357,16 @@ def load_semantic(
         semantic_dict["unit_source_column"] = sa.unit_source_column
     if sa.temporal_behavior:
         semantic_dict["temporal_behavior"] = sa.temporal_behavior
+    # The LLM stock/flow witness (DAT-445), read alongside the ontology prior.
+    if sa.temporal_behavior_claim:
+        semantic_dict["temporal_behavior_claim"] = sa.temporal_behavior_claim
+    if sa.temporal_behavior_claim_confidence is not None:
+        semantic_dict["temporal_behavior_claim_confidence"] = sa.temporal_behavior_claim_confidence
+    # The LLM formula-hypothesis witness (derived_value second witness, ADR-0009).
+    if sa.derived_formula_hypothesis:
+        semantic_dict["derived_formula_hypothesis"] = sa.derived_formula_hypothesis
+    if sa.derived_formula_confidence is not None:
+        semantic_dict["derived_formula_confidence"] = sa.derived_formula_confidence
     return semantic_dict
 
 
@@ -290,6 +385,23 @@ def _relationship_to_dict(rel: Any, table_names: dict[str, str]) -> dict[str, An
     }
 
 
+# The measured referential-integrity evidence keys the relationships analyzer
+# writes (``detector._store_candidates`` / ``evaluator.compute_ri_metrics``) and
+# ``relationship_entropy`` scores. Teach-materialized rows (manual/keeper,
+# ``materialize_relationship_overlays``) carry overlay provenance only — never
+# these — so the representative backfills them from the measured rows of the
+# same pair. Without the backfill, teaching a relationship silently deleted its
+# orphan-rate measurement (recall = 0 on every taught pair, no error anywhere).
+_RI_EVIDENCE_KEYS = (
+    "left_referential_integrity",
+    "right_referential_integrity",
+    "orphan_count",
+    "total_count",
+    "left_total_count",
+    "cardinality_verified",
+)
+
+
 def load_relationship_for_pair(
     session: Session,
     from_column_id: str,
@@ -303,6 +415,13 @@ def load_relationship_for_pair(
     representative is the highest-precedence one (manual > keeper > llm > candidate)
     — that is the relationship the readiness measures. ``session_id`` + ``run_id``
     scope to this run's catalog (rows coexist across runs/sessions).
+
+    The representative keeps its IDENTITY (method, confidence, confirmation), but
+    measured RI evidence (:data:`_RI_EVIDENCE_KEYS`) is backfilled from the
+    highest-precedence row of the pair that carries it: the data witness lives on
+    the candidate/llm rows, and an overlay-materialized representative must not
+    shadow it into a silent no-measure. ``ri_evidence_source`` records the donor
+    method when a backfill happened.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
@@ -319,7 +438,8 @@ def load_relationship_for_pair(
     if not rels:
         return None
     precedence = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
-    rel = max(rels, key=lambda r: precedence.get(r.detection_method or "", 0))
+    ranked = sorted(rels, key=lambda r: precedence.get(r.detection_method or "", 0), reverse=True)
+    rel = ranked[0]
     table_names = dict(
         session.execute(
             select(Table.table_id, Table.table_name).where(
@@ -329,7 +449,88 @@ def load_relationship_for_pair(
         .tuples()
         .all()
     )
-    return _relationship_to_dict(rel, table_names)
+    result = _relationship_to_dict(rel, table_names)
+    evidence: dict[str, Any] = dict(result.get("evidence") or {})
+    for donor in ranked[1:]:
+        donor_evidence = donor.evidence or {}
+        backfilled = [
+            key for key in _RI_EVIDENCE_KEYS if key not in evidence and key in donor_evidence
+        ]
+        for key in backfilled:
+            evidence[key] = donor_evidence[key]
+        if backfilled:
+            evidence.setdefault("ri_evidence_source", donor.detection_method)
+    result["evidence"] = evidence
+    return result
+
+
+def load_relationship_rows_for_pair(
+    session: Session,
+    from_column_id: str,
+    to_column_id: str,
+    session_id: str | None = None,
+    run_id: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """ALL method-rows for one column pair, keyed by detection method.
+
+    The relationship_discovery adjudication reads every witness class the pair
+    carries — the structural ``candidate`` (value-overlap statistics), the
+    ``llm`` confirmation, and the teach-materialized ``manual``/``keeper`` rows
+    — so it needs the per-method rows side by side, NOT the single
+    highest-precedence representative :func:`load_relationship_for_pair`
+    returns. Same session/run scoping.
+
+    Direction-AGNOSTIC by design (wave-2 cal finding): candidate rows can be
+    persisted parent→child while the defined pair is child→parent, and the
+    one-way match left the value_overlap witness silently uniform (dropped
+    before persisting) on every such pair — a false-negative machine. The same
+    column pair is one relationship; when both directions carry a row for the
+    same method, the exact requested direction wins.
+    """
+    from sqlalchemy import and_, or_
+
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.storage import Table
+
+    stmt = select(Relationship).where(
+        or_(
+            and_(
+                Relationship.from_column_id == from_column_id,
+                Relationship.to_column_id == to_column_id,
+            ),
+            and_(
+                Relationship.from_column_id == to_column_id,
+                Relationship.to_column_id == from_column_id,
+            ),
+        )
+    )
+    if session_id is not None:
+        stmt = stmt.where(Relationship.session_id == session_id)
+    if run_id is not None:
+        stmt = stmt.where(Relationship.run_id == run_id)
+    rels = list(session.execute(stmt).scalars())
+    if not rels:
+        return {}
+    table_ids = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
+    table_names = dict(
+        session.execute(
+            select(Table.table_id, Table.table_name).where(Table.table_id.in_(table_ids))
+        )
+        .tuples()
+        .all()
+    )
+    out: dict[str, dict[str, Any]] = {}
+    exact_direction: dict[str, bool] = {}
+    for rel in rels:
+        if not rel.detection_method:
+            continue
+        method = str(rel.detection_method)
+        is_exact = rel.from_column_id == from_column_id
+        if method in out and exact_direction[method] and not is_exact:
+            continue
+        out[method] = _relationship_to_dict(rel, table_names)
+        exact_direction[method] = is_exact
+    return out
 
 
 def load_session_relationships(
@@ -408,67 +609,133 @@ def load_correlation(
     }
 
 
-def load_drift_summaries(
+def load_hypothesis_match_rate(
     session: Session,
     column_id: str,
-    table_id: str,
-    run_id: str | None = None,
-) -> list[Any] | None:
-    """Load temporal drift summaries for a column across slice tables.
+    duckdb_conn: Any,
+    source_columns: tuple[str, str],
+    operation: str,
+) -> dict[str, Any] | None:
+    """Row-grade an LLM-hypothesized formula over the column's typed table.
 
-    Returns list of ColumnDriftSummary ORM objects or None if none found.
+    The derived_value second witness (ADR-0009): the LLM hypothesizes
+    ``column = col1 op col2``; the data grounds it with the SAME row statistic
+    the formula discovery uses (``formula_match_counts`` — shared tolerance,
+    shared zero-target exclusion). Source names are resolved case-insensitively
+    against the table's actual columns — an unknown name (hallucinated source)
+    returns ``None`` so the data witness abstains instead of guessing; the same
+    for a non-numeric target (nothing gradable → total 0).
 
-    ``run_id`` (DAT-448): slice definitions AND drift summaries are
-    run-versioned and written by the SAME begin_session run that detects
-    against them — a plain this-run filter; the read was fully unscoped before
-    (stale definitions + duplicated append-only summaries leaked cross-run).
-    ``None`` (test callers) matches unstamped rows.
+    Returns ``{"match_rate", "matches", "total"}`` or ``None`` when ungradable.
     """
-    from dataraum.analysis.slicing.db_models import SliceDefinition
-    from dataraum.analysis.slicing.naming import slice_table_name
-    from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
+    from dataraum.analysis.correlation.within_table.derived_columns import formula_match_counts
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.entropy.measurements.derived_value import OPERATION_SYMBOL
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
     from dataraum.storage import Column, Table
 
-    col = session.execute(select(Column).where(Column.column_id == column_id)).scalar_one_or_none()
-    if not col:
+    op = OPERATION_SYMBOL.get(operation)
+    if duckdb_conn is None or op is None:
+        return None
+    col = session.get(Column, column_id)
+    if col is None:
+        return None
+    table = session.get(Table, col.table_id)
+    if table is None or not table.duckdb_path:
         return None
 
-    col_name = col.column_name
+    # Resolve hypothesis source names against the table's REAL columns (the
+    # actual stored spelling is what gets quoted into SQL — never the LLM text)
+    # — NUMERIC columns only, mirroring the discovery sweep's filter
+    # (derived_columns.py numeric_cols). Without the type gate a hypothesis
+    # over DATE/VARCHAR sources (e.g. "end_date - start_date" for a duration
+    # column) TRY_CASTs every row to NULL, grades match_rate 0.0, and a
+    # perfectly clean column scores 1.0 (review wave-1 blocker).
+    _numeric_types = ("INTEGER", "BIGINT", "DOUBLE", "DECIMAL")
+    if col.resolved_type not in _numeric_types:
+        return None
+    siblings = {
+        c.column_name.strip().lower(): c.column_name
+        for c in session.execute(select(Column).where(Column.table_id == col.table_id)).scalars()
+        if c.resolved_type in _numeric_types
+    }
+    resolved = [siblings.get(name.strip().lower()) for name in source_columns]
+    if any(name is None for name in resolved) or len(resolved) != 2:
+        return None
 
-    # Find THIS run's slice tables for this table (run-versioned, DAT-448)
-    slice_defs = (
+    fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{table.duckdb_path}"'
+    matches, total = formula_match_counts(
+        duckdb_conn, fqn, col.column_name, str(resolved[0]), str(resolved[1]), op
+    )
+    if total == 0:
+        return None
+    return {"match_rate": matches / total, "matches": matches, "total": total}
+
+
+# load_drift_summaries removed with the temporal_drift detector (DAT-442 reset).
+# dimensional_entropy reads ColumnDriftSummary directly; real drift moves to DAT-445.
+
+
+def load_documented_dependencies(session: Session) -> set[frozenset[str]]:
+    """Undirected column pairs a ``document_business_rule`` teach marked EXPECTED.
+
+    A documented cross-column dependency (e.g. the debit/credit double-entry mutex) is
+    expected structure, NOT undocumented entropy — ``dimensional_entropy`` excludes these
+    pairs from its NMI score, so a teach closes the measurement. Mirrors
+    ``load_confirmed_relationship_pairs`` (DAT-409): one overlay type, undirected, and
+    ``superseded_at IS NULL`` filters undone teaches out.
+
+    Overlay shape: ``ConfigOverlay(type='expected_dependency',
+    payload={'column_ids': [col_a, col_b], 'rule': <text>})``.
+    """
+    from dataraum.storage import ConfigOverlay
+
+    rows = list(
         session.execute(
-            select(SliceDefinition).where(
-                SliceDefinition.table_id == table_id,
-                SliceDefinition.run_id == run_id,
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "expected_dependency",
+                ConfigOverlay.superseded_at.is_(None),
             )
-        )
-        .scalars()
-        .all()
+        ).scalars()
     )
-    # Load all columns in the table for name resolution
-    all_cols = session.execute(select(Column).where(Column.table_id == table_id)).scalars().all()
-    col_name_map = {c.column_id: c.column_name for c in all_cols}
+    out: set[frozenset[str]] = set()
+    for row in rows:
+        cols = (row.payload or {}).get("column_ids") or []
+        if len(cols) == 2 and all(cols):
+            out.add(frozenset(cols))
+    return out
 
-    # Slice tables are named off the fact's source-qualified duckdb_path (DAT-356),
-    # resolved from table_id — never the bare ``table_name``.
-    source_table = session.get(Table, table_id)
-    source_key = (source_table.duckdb_path if source_table else None) or ""
 
-    slice_table_names: list[str] = []
-    for sd in slice_defs:
-        sd_col_name = sd.column_name or col_name_map.get(sd.column_id)
-        if sd_col_name and sd.distinct_values and source_key:
-            for value in sd.distinct_values:
-                slice_table_names.append(slice_table_name(source_key, sd_col_name, value))
+def load_structural_reconciliation(
+    session: Session, column_id: str, run_id: str | None
+) -> dict[str, Any] | None:
+    """The column's reconciled aggregation lineage for THIS run (DAT-491).
 
-    if not slice_table_names:
+    Exact-run by design, NO pinned fallback: lineage rows are written by the
+    begin_session ``aggregation_lineage`` phase under the session run's
+    ``run_id``, so the ``structural_reconciliation`` witness fires at that run's
+    ``session_detect`` and abstains everywhere else (every add_source detect in
+    particular — the two-witness behaviour there is unchanged). A cross-run
+    fallback would re-introduce the stale-immortal-artifact failure mode the
+    slice definitions hit (DAT-405); revisit only with head-promotion semantics
+    for lineage.
+    """
+    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
+
+    if run_id is None:
         return None
-
-    drift_stmt = select(ColumnDriftSummary).where(
-        ColumnDriftSummary.slice_table_name.in_(slice_table_names),
-        ColumnDriftSummary.column_name == col_name,
-        ColumnDriftSummary.run_id == run_id,
-    )
-    drift_summaries = session.execute(drift_stmt).scalars().all()
-    return list(drift_summaries) if drift_summaries else None
+    row = session.execute(
+        select(MeasureAggregationLineage).where(
+            MeasureAggregationLineage.measure_column_id == column_id,
+            MeasureAggregationLineage.run_id == run_id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return {
+        "pattern": row.pattern,
+        "match_rate": row.match_rate,
+        "event_table_id": row.event_table_id,
+        "r_flow_median": row.r_flow_median,
+        "r_stock_median": row.r_stock_median,
+    }

@@ -390,8 +390,10 @@ class AddSourceWorkflow:
 
 # The begin_session chain, in dependency order: structural relationship
 # detection, then the LLM table-synthesis that confirms a subset of those
-# candidates. ``begin_session_select`` precedes both as the always-run scope
+# candidates. ``begin_session_select`` precedes all as the always-run scope
 # setup. The body iterates this tuple to execute the chain sequentially.
+# (aggregation_lineage lives in the VALUE order below — its dependency is the
+# slice substrate, not this spine.)
 _SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
 
 # The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:
@@ -403,6 +405,9 @@ _SESSION_VALUE_PHASE_ORDER = (
     "slicing_view",
     "slice_analysis",
     "temporal_slice_analysis",
+    # DAT-491: pairs the per-period slice sums temporal_slice_analysis just
+    # persisted — must follow it.
+    "aggregation_lineage",
     "correlations",
 )
 
@@ -682,6 +687,21 @@ class OperatingModelWorkflow:
         outcome = await workflow.execute_activity(
             "validation",
             scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Terminal-for-evidence detect (DAT-432/L7): score this run's executed
+        # validation results (cross_table_consistency → table + column bands)
+        # and persist readiness BEFORE the LLM-heavy families. NOTE: the rows
+        # become visible to head-resolved readers only at the terminal promote
+        # — a cycles/metrics failure still loses the run's visibility (the
+        # failed-runs-never-surface invariant), it just doesn't recompute this.
+        self._progress.phase = "operating_model_detect"
+        await workflow.execute_activity(
+            "operating_model_detect",
+            identity,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

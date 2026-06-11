@@ -69,6 +69,17 @@ def test_dual_grain_accepts_either_head_and_discriminates() -> None:
     assert "AS via_session_head" in sql
 
 
+def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
+    """ClaimWitnessRecord (ADR-0009, DAT-457) is written by both detect paths
+    like entropy_objects, so its view joins either head and carries both
+    discriminators — the witness provenance behind every pooled (C, U)."""
+    sql = dict(read_view_statements())["current_claim_witnesses"]
+    assert "'table:' || r.table_id" in sql
+    assert "'session:' || r.session_id" in sql
+    assert "AS via_table_head" in sql
+    assert "AS via_session_head" in sql
+
+
 def test_unclassified_versioned_table_fails_loud() -> None:
     """A new run-stamped table without a grain classification breaks generation."""
     from sqlalchemy import Column as SAColumn

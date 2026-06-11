@@ -65,6 +65,7 @@ CREATE TABLE column_drift_summaries (
 	time_column VARCHAR(255) NOT NULL, 
 	max_js_divergence FLOAT NOT NULL, 
 	mean_js_divergence FLOAT NOT NULL, 
+	drift_divergence FLOAT, 
 	periods_analyzed INTEGER NOT NULL, 
 	periods_with_drift INTEGER NOT NULL, 
 	drift_evidence_json JSON, 
@@ -249,6 +250,7 @@ CREATE TABLE temporal_slice_analyses (
 	has_early_cutoff INTEGER, 
 	days_missing_at_end INTEGER, 
 	last_day_ratio FLOAT, 
+	column_sums JSON, 
 	z_score FLOAT, 
 	rolling_avg FLOAT, 
 	rolling_std FLOAT, 
@@ -273,6 +275,7 @@ CREATE TABLE validation_results (
 	run_id VARCHAR NOT NULL, 
 	validation_id VARCHAR NOT NULL, 
 	table_ids JSON NOT NULL, 
+	columns_used JSON NOT NULL, 
 	status VARCHAR NOT NULL, 
 	severity VARCHAR NOT NULL, 
 	passed BOOLEAN NOT NULL, 
@@ -456,36 +459,33 @@ CREATE TABLE table_entities (
 
 CREATE INDEX ix_table_entities_session_id ON table_entities (session_id);
 
-CREATE TABLE column_slice_profiles (
-	profile_id VARCHAR NOT NULL, 
+CREATE TABLE claim_witnesses (
+	claim_witness_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
-	source_column_id VARCHAR NOT NULL, 
-	slice_column_id VARCHAR NOT NULL, 
-	source_table_name VARCHAR NOT NULL, 
-	column_name VARCHAR NOT NULL, 
-	slice_column_name VARCHAR NOT NULL, 
-	slice_value VARCHAR NOT NULL, 
-	row_count INTEGER NOT NULL, 
-	null_ratio FLOAT, 
-	distinct_count INTEGER, 
-	quality_score FLOAT, 
-	has_issues INTEGER NOT NULL, 
-	issue_count INTEGER NOT NULL, 
-	profile_data JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_column_slice_profiles PRIMARY KEY (profile_id), 
-	CONSTRAINT fk_column_slice_profiles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_column_slice_profiles_source_column_id_columns FOREIGN KEY(source_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_column_slice_profiles_slice_column_id_columns FOREIGN KEY(slice_column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	table_id VARCHAR, 
+	column_id VARCHAR, 
+	run_id VARCHAR, 
+	target VARCHAR NOT NULL, 
+	claim_field VARCHAR NOT NULL, 
+	witness_id VARCHAR NOT NULL, 
+	distribution JSONB, 
+	reliability FLOAT NOT NULL, 
+	detector_id VARCHAR NOT NULL, 
+	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_claim_witnesses PRIMARY KEY (claim_witness_id), 
+	CONSTRAINT uq_claim_witness_target_field_witness_run UNIQUE (target, claim_field, witness_id, run_id), 
+	CONSTRAINT fk_claim_witnesses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
+	CONSTRAINT fk_claim_witnesses_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_claim_witnesses_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_slice_profiles_lookup ON column_slice_profiles (source_column_id, slice_column_id, slice_value);
+CREATE INDEX idx_claim_witness_column ON claim_witnesses (column_id);
 
-CREATE INDEX idx_slice_profiles_slice_column ON column_slice_profiles (slice_column_id);
+CREATE INDEX idx_claim_witness_table ON claim_witnesses (table_id);
 
-CREATE INDEX idx_slice_profiles_source_column ON column_slice_profiles (source_column_id);
+CREATE INDEX idx_claim_witness_target ON claim_witnesses (target);
 
-CREATE INDEX ix_column_slice_profiles_session_id ON column_slice_profiles (session_id);
+CREATE INDEX ix_claim_witnesses_session_id ON claim_witnesses (session_id);
 
 CREATE TABLE derived_columns (
 	derived_id VARCHAR NOT NULL, 
@@ -572,6 +572,37 @@ CREATE INDEX idx_readiness_target ON entropy_readiness (target);
 
 CREATE INDEX ix_entropy_readiness_session_id ON entropy_readiness (session_id);
 
+CREATE TABLE measure_aggregation_lineage (
+	lineage_id VARCHAR NOT NULL, 
+	session_id VARCHAR NOT NULL, 
+	run_id VARCHAR, 
+	measure_table_id VARCHAR NOT NULL, 
+	measure_column_id VARCHAR NOT NULL, 
+	event_table_id VARCHAR NOT NULL, 
+	slice_dimension VARCHAR NOT NULL, 
+	convention_sql TEXT NOT NULL, 
+	period_grain VARCHAR NOT NULL, 
+	pattern VARCHAR NOT NULL, 
+	match_rate FLOAT NOT NULL, 
+	r_flow_median FLOAT NOT NULL, 
+	r_stock_median FLOAT NOT NULL, 
+	n_entities INTEGER NOT NULL, 
+	n_entities_fired INTEGER NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_measure_aggregation_lineage PRIMARY KEY (lineage_id), 
+	CONSTRAINT uq_measure_lineage_column_run UNIQUE (measure_column_id, run_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_session_id_investigation_af01 FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
+	CONSTRAINT fk_measure_aggregation_lineage_event_table_id_tables FOREIGN KEY(event_table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_measure_aggregation_lineage_measure_column_id ON measure_aggregation_lineage (measure_column_id);
+
+CREATE INDEX ix_measure_aggregation_lineage_run_id ON measure_aggregation_lineage (run_id);
+
+CREATE INDEX ix_measure_aggregation_lineage_session_id ON measure_aggregation_lineage (session_id);
+
 CREATE TABLE relationships (
 	relationship_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
@@ -625,7 +656,13 @@ CREATE TABLE semantic_annotations (
 	business_description TEXT, 
 	business_concept VARCHAR, 
 	temporal_behavior VARCHAR, 
+	temporal_behavior_claim VARCHAR, 
+	temporal_behavior_claim_confidence FLOAT, 
+	temporal_behavior_contested BOOLEAN, 
+	derived_formula_hypothesis VARCHAR, 
+	derived_formula_confidence FLOAT, 
 	unit_source_column VARCHAR, 
+	null_tokens JSON, 
 	annotation_source VARCHAR, 
 	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	annotated_by VARCHAR, 

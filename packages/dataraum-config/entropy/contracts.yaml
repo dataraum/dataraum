@@ -26,9 +26,7 @@ contracts:
       semantic.dimensional: 0.5  # Cross-column patterns and business rules
       semantic.coverage: 0.5    # Dimension column NULL rates on enriched views
       value.nulls: 0.5
-      value.outliers: 0.5
       value.distribution: 0.8   # Benford's Law compliance
-      value.temporal: 0.5       # Distribution drift over time
       computational.derived_values: 0.5
       computational.reconciliation: 0.5  # Cross-table validation failures
       semantic.cycles: 0.5              # Business cycle detection quality
@@ -56,9 +54,7 @@ contracts:
       semantic.dimensional: 0.4   # Cross-column patterns for feature engineering
       semantic.coverage: 0.4     # NULLs in dimensions affect feature quality
       value.nulls: 0.3           # Nulls affect model quality
-      value.outliers: 0.3        # Outliers affect training
       value.distribution: 0.4   # Benford deviations — informational for ML
-      value.temporal: 0.3       # Distribution drift affects training data
       computational.derived_values: 0.4
       computational.reconciliation: 0.4  # Cross-table validation failures
       semantic.cycles: 0.4              # Business cycle detection quality
@@ -86,9 +82,7 @@ contracts:
       semantic.dimensional: 0.35  # Cross-column patterns affect operational reports
       semantic.coverage: 0.35    # Ops reports need reliable dimension columns
       value.nulls: 0.4
-      value.outliers: 0.4
       value.distribution: 0.4   # Benford compliance
-      value.temporal: 0.4       # Distribution drift
       computational.derived_values: 0.3
       computational.reconciliation: 0.4  # Cross-table validation failures
       semantic.cycles: 0.4              # Business cycle detection quality
@@ -103,7 +97,7 @@ contracts:
   # For SUM, AVG, COUNT queries — focuses on value dimensions
   aggregation_safe:
     display_name: "Aggregation Safe"
-    description: "For SUM/AVG/COUNT queries — ensures numeric types, nulls, outliers, and units are under control"
+    description: "For SUM/AVG/COUNT queries — ensures numeric types, nulls, and units are under control"
     overall_threshold: 0.35
 
     dimension_thresholds:
@@ -115,9 +109,7 @@ contracts:
       semantic.dimensional: 0.4   # Cross-column patterns moderately important
       semantic.coverage: 0.4     # Dims used for GROUP BY need coverage
       value.nulls: 0.25          # Nulls directly distort COUNT/AVG
-      value.outliers: 0.3        # Outliers skew averages
       value.distribution: 0.4   # Benford less critical for aggregation
-      value.temporal: 0.5       # Drift less critical for point-in-time aggregates
       computational.derived_values: 0.3
 
     blocking_conditions:
@@ -143,9 +135,7 @@ contracts:
       semantic.dimensional: 0.25  # Cross-column patterns must be documented for executives
       semantic.coverage: 0.25    # Execs need complete dimension data
       value.nulls: 0.3
-      value.outliers: 0.3
       value.distribution: 0.3   # Benford compliance for executive reporting
-      value.temporal: 0.3       # Drift must be controlled for KPI tracking
       computational.derived_values: 0.2
       computational.reconciliation: 0.2  # Cross-table validation failures — execs can't see mismatches
       semantic.cycles: 0.3              # Business cycle detection quality
@@ -172,9 +162,7 @@ contracts:
       semantic.dimensional: 0.1  # All cross-column business rules must be documented
       semantic.coverage: 0.1    # Near-zero tolerance for dimension NULLs
       value.nulls: 0.1
-      value.outliers: 0.2      # Slightly more tolerance for outliers
       value.distribution: 0.2  # Benford deviations need investigation for compliance
-      value.temporal: 0.2      # Distribution drift unacceptable for regulatory
       computational.derived_values: 0.1
       computational.reconciliation: 0.1  # Cross-table validation failures — zero tolerance for regulatory
       semantic.cycles: 0.2              # Business cycle detection quality
@@ -195,4 +183,3 @@ contracts:
 #     extends: regulatory_reporting
 #     overrides:
 #       dimension_thresholds:
-#         value.outliers: 0.1  # Stricter outlier threshold

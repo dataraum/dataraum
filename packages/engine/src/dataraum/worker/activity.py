@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 __all__ = [
+    "OPERATING_MODEL_DETECTOR_PHASES",
     "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
@@ -109,10 +110,15 @@ _PROMOTE_STAGES = (
 # ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
 # declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
-# DAT-415); the value layer (DAT-403) declares ``slice_variance`` (slice_analysis),
-# ``temporal_drift`` + ``dimensional_entropy`` (temporal_slice_analysis), and
-# ``derived_value`` (correlations) — column/table-grain value-readiness signals over
-# the slices + enriched views the begin_session spine just built. Distinct from the
+# DAT-415); the value layer (DAT-403) declares ``dimensional_entropy``
+# (temporal_slice_analysis), ``temporal_behavior`` (aggregation_lineage,
+# DAT-491 — the session re-adjudication with the structural witness) and
+# ``derived_value`` (correlations) — column/table-grain
+# value-readiness signals over the slices + enriched views the begin_session spine
+# just built. (slice_analysis still runs — temporal_slice_analysis + validation read
+# its slice tables — but it produces no entropy detector now: dimensional_entropy reads
+# typed values directly via NMI (DAT-442/472), and slice_variance / temporal_drift / the
+# per-column ColumnSliceProfile production were cut in the DAT-442 reset.) Distinct from the
 # source-scoped ``_DETECTOR_PHASES`` so add_source never runs these and begin_session
 # never runs the column-profiling ones. A declared detector whose inputs are absent
 # (no slice profiles / drift / derived columns) simply produces no objects — the
@@ -121,11 +127,19 @@ _PROMOTE_STAGES = (
 SESSION_DETECTOR_PHASES = (
     "relationships",
     "semantic_per_table",
+    "aggregation_lineage",
     "enriched_views",
     "slice_analysis",
     "temporal_slice_analysis",
     "correlations",
 )
+
+# The operating_model terminal detect (DAT-432/L7): scores the validation
+# phase's declared detectors (cross_table_consistency). Named here beside its
+# siblings so the no-orphan guard can assert every pipeline.yaml phase that
+# declares detectors is covered by SOME detect path — the gap that left
+# cross_table_consistency silently scoreless for weeks.
+OPERATING_MODEL_DETECTOR_PHASES = ("validation",)
 
 
 @dataclass
@@ -530,6 +544,7 @@ def run_detectors(
     resolution in the loaders let a concurrent promote tear reads mid-run.
     """
     from dataraum.entropy.detectors.loaders import resolve_base_runs
+    from dataraum.entropy.resolve import resolve_null_tokens, resolve_temporal_behavior
 
     detector_ids = declared_detector_ids(detector_phases)
     if not detector_ids:
@@ -562,12 +577,20 @@ def run_detectors(
         # transaction (DAT-394). flush() makes the just-added rows visible to the
         # rollup's repository select before we read them back.
         session.flush()
+        # Resolved layer (ADR-0009 / DAT-457): collapse this run's adjudications
+        # onto the semantic rows semantic_per_column already wrote — null_semantics
+        # → SemanticAnnotation.null_tokens, temporal_behavior → the adjudicated
+        # stock/flow + contested flag (DAT-445). No-op when no adjudication ran.
+        resolved = resolve_null_tokens(session, run_id)
+        resolved_tb = resolve_temporal_behavior(session, run_id)
         readiness_rows = persist_readiness(session, session_id, table_ids, run_id=run_id)
         logger.info(
             "terminal_detect_done",
             session_id=session_id,
             detector_records=total,
             readiness_rows=readiness_rows,
+            resolved_annotations=resolved,
+            resolved_temporal_behavior=resolved_tb,
         )
     return total
 

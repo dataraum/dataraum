@@ -497,7 +497,7 @@ def test_persisted_readiness_is_single_source_of_truth(
     """Query-time reads of the persisted band match the live rollup (DAT-399 slice D).
 
     After terminal detect persists readiness, the query-time consumers no longer
-    recompute the noisy-OR: they read ``load_persisted_readiness`` for the band and
+    recompute the loss rollup: they read ``load_persisted_readiness`` for the band and
     ``build_column_evidence`` (rollup-free) for the contract gate. Both must equal
     what the full ``build_for_readiness`` rollup produced — proving the persisted
     snapshot IS the source of truth and the contract dimension_scores are unchanged

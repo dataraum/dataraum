@@ -4,6 +4,231 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
+
+LANE-NOTES.md (lane scratch, deleted at merge) was the only record of three
+relationship_discovery remainders — preserved here so they don't vanish:
+
+- **Resolve write-back (ADR-0009 piece 5) NOT built — by design, for now.** No
+  consumer field exists for the genuineness verdict: `Relationship.is_confirmed`
+  is the human flag, not a resolve target; `SemanticAnnotation` is column-grain.
+  Candidate surface: a contested/genuineness field on the Relationship row (or
+  the cockpit reading the entropy object + `claim_witnesses` directly). Needs a
+  ticket when the consumer is designed.
+- **Pure-decline focal pairs are structurally unmeasurable.** engine.py
+  enumerates `detection_method != 'candidate'` pairs only (the DAT-405
+  defined-catalog contract), so "data says strong overlap, the selector said no"
+  never becomes a focal pair; on keeper/manual pairs the llm witness ABSTAINS on
+  declines (a decline's strength is uncalibrated). Measuring it = focal-pair
+  enumeration change + rig calibration of the decline witness.
+- **Confirm-overlay human witness:** an explicit `confirm` teach only flips
+  `is_confirmed` evidence — it never materializes a row, so a confirm-taught
+  pair's human witness is silent (also noted in the eval state-of-the-union).
+
+Ticket hygiene: the join_path two-distinct-FK fixture gap is cited against
+DAT-419, which is **Cancelled** — it has no live tracker. LANE-NOTES' two
+shared-change requests (relationship-grain witness persistence in engine.py;
+`_REL_METHOD_PRECEDENCE` keeper alignment in snapshot.py) were both DONE on
+this branch before merge.
+
+- **Status**: pending (ticket filing only — no code change expected)
+
+## 2026-06-11 (wave 2): derived_value score = max(mismatch, identity conflict)
+
+The detection-derived-cal-v1 corpus exposed a silent false negative: under
+WHOLESALE divergence (all rows follow formula B while the NAME advertises A)
+the best graded formula matches perfectly → the scalar was 0.0 and the column
+banded ready, while the pooled name-vs-data conflict (C ≈ 0.8 on the named
+claim) rode in evidence only. `obj.score` is now the WORSE of the two honest
+statistics — best-graded mismatch rate and the identity conflict — with the
+conflict leg behind the same hypothesis-hygiene gate as the scalar (review
+wave-1 blocker stays closed). Eval implications: wholesale recall flips green;
+corroborated clean columns score the residual pooled conflict (~0.01-0.05,
+below every floor); ORDERING_DETECTORS semantics unchanged. Also:
+stage_date_ordering sql_hints no longer present due_date as a process stage
+(A4 sweep caught the validation LLM flagging the 65% of clean payments that
+arrive EARLY on 2 of 4 seeds).
+
+## 2026-06-11: calibration program wave 1 + the TB↔GL watcher (DAT-432/442/444, lanes L2/L3/L9 + L7)
+
+**Four witnessed measurements now** (was two): `relationship_discovery` (lane L2 —
+genuineness pool over existing rows: value_overlap data witness + llm/manual/keeper;
+also FIXED the silent recall=0: teach-materialized rows shadowed measured RI evidence
+in `load_relationship_for_pair`, so the orphan measurement died exactly on taught
+pairs) and `derived_value`'s `llm_hypothesis` witness (lane L3 — the
+`column_annotation` prompt gains a `derived_formula_hypothesis` field pair;
+hypothesis graded over `lake.typed` by the discovery match-rate statistic; `obj.score`
+semantics unchanged). Lane L9: `rebind` teach applier (appends the column to the
+target concept's `indicators` — steers the grounding LLM's input, never writes
+`business_concept`) + an AST guard: every `teach_suggestion` must name an appliable
+teach type. ADR-0009 records the 7-piece measurement pack; ALL new numbers are
+uncalibrated placeholders in `loss.yaml`/`reliabilities.yaml` pending the batch rig.
+
+**L7 — cross_table_consistency is live end-to-end:** `OperatingModelWorkflow` gains a
+terminal `operating_model_detect` right after `validation` (pure scoring, zero LLM);
+the dual-grain read views accept the `(session:{id}, "operating_model")` head
+(`via_operating_model_head`); `ValidationResultRecord.columns_used` is persisted and
+failed checks fan out to COLUMN-grain entropy objects, so bands reach the GL columns
+deliverable metrics flow through. NEW finance spec `tb_gl_reconciliation.yaml`
+(critical): per-(account, period) TB vs SUM(journal_lines) — none of the nine specs
+reconciled TB↔GL before. Score shape: failed CRITICAL = categorical 1.0 (rates put the
+injected 10% break at risk 0.08, invisible, while 8/8 GL-derived deliverable numbers
+were wrong — the scoreboard finding); ERROR/inconclusive = 0.0 + `validation_unassessed`
+warning (was 0.5 = clean-leg false alarms from LLM SQL nondeterminism).
+
+**Calibrate:** the eval runner now drives `operatingModelWorkflow` third;
+`cross_table_consistency` is in `CURRENT_SLICE_DETECTORS` + `ORDERING_DETECTORS`;
+DAT-444 remap done. The first full batch (clean + detection-v1) validates recall,
+clean-leg precision (watch `validation_unassessed` + relationship_discovery quiet),
+and whether the outcomes scoreboard moves off 0 right / 0 prevented / 8
+wrong-delivered. Deferred: generative families for the three new witness sets
+(relationship, formula-divergence, events-backed stock/flow), confirm-overlay human
+witness, pure-decline focal pairs.
+
+- **Status**: pending
+
+
+
+## 2026-06-10: run-resolved entropy load actually wired — detect path was inert (DAT-491)
+
+**The review-C2 fix shipped in name only and is now real.** `build_for_readiness`
+accepted `current_run_id`/`session_id` but dropped both at the `_load_entropy_objects`
+call — the run-resolution `load_for_tables` gained for DAT-491 never executed, so
+every readiness rollup since that commit still blind-loaded (stale add_source rows
+coexisting with session re-adjudications, max-score dedup deciding). Fixed +
+regression-pinned, and the QUERY-TIME half is now threaded too:
+
+- `storage.py load_for_tables`: resolution now also triggers on `session_id` alone
+  (query time has no in-flight run): session detect head > table heads/legacy.
+  Rank 0 is None-guarded — legacy unstamped rows (`run_id IS NULL`) no longer match
+  a vacant in-flight slot (`None == None`) and outrank the session head.
+- `build_for_readiness` forwards the ids (the inert hop); `build_column_evidence`
+  gained `session_id=None` kwarg; `build_for_query` exposes it as public API;
+  `graphs/context.py build_execution_context` passes its existing `session_id`
+  through — the metrics/agent path now sees the session-head verdict for
+  re-adjudicated detectors (temporal_behavior is the first).
+- Omitting the ids keeps the legacy blind load everywhere (single-path callers,
+  harnesses that skip promote).
+
+**Calibrate:** any eval reading evidence through `build_column_evidence`/
+`build_for_query` on a session that ran begin_session should now see the
+re-adjudicated temporal_behavior conflict (e.g. debit_balance C≈0.36), not the
+stale add_source pair. CAUTION: with `session_id` passed, stamped non-head rows
+are DROPPED, not blind-loaded — probes that call `persist_readiness` without
+`promote_run` must keep omitting `session_id` (or promote first).
+5 new tests in `tests/unit/entropy/test_persist_readiness_scope.py::TestRunResolvedLoad`.
+
+**Review wave-1 fix pass (2026-06-11, fc7a549b) — cockpit-facing:** the dual-grain
+read views gained `via_operating_model_head` AND `current_entropy_readiness` now has
+latest-promoted-wins precedence between the session-grain heads (detect vs
+operating_model) — regenerate the drizzle mirror (`bun run db:pull:metadata`) and
+audit unpinned readiness reads (why-table.ts) which previously picked one of two
+'current' rows nondeterministically. `validation_results.columns_used` is a new
+NOT-NULL JSON column — existing workspaces need the column added before the next
+validation run writes.
+
+- **Status**: pending
+
+## 2026-06-09: unit_consistency — measurement #2 on the witness template (DAT-428)
+
+**The generalization test passed at the measurement layer.** `entropy/measurements/
+unit_consistency.py` adds the second pooled measurement on the SAME pooling engine —
+a new claim space `{consistent, mixed}` + two witness extractors, zero engine-core
+change (the DAT-457 promise: "a measurement is a claim space + witness extractors").
+
+- **magnitude_modality** witness: log10|v| bimodality via Pearson's coefficient
+  `(skew²+1)/kurtosis` (grounded, the uniform reference 0.555 is the pivot; no boost
+  curve). Reads a SCALE mix (kEUR among EUR) as `mixed`, a single scale as `consistent`.
+- **declared_unit** witness: the column's claim to one unit (Pint/LLM confidence);
+  abstains when none. Conflict is born when magnitude reads MIXED but the unit insists
+  SINGLE. 6 unit tests green.
+
+**Scope decision (grounded in mix_units):** the old `mix_units` injector does a ×1.1
+CURRENCY mix — a 10% shift is undetectable from values (the unit_entropy misalignment).
+So unit_consistency targets SCALE mixes only; the DAT-450 mixed-units family must
+inject ×1000-ish scale corruption, not currency.
+
+**Open precision risk to validate:** a clean financial column with both small fees and
+large invoices is naturally multimodal in log-magnitude → magnitude witness may read
+`mixed` → false conflict. The clean-baseline run is the precision check (must stay
+quiet); do NOT pre-tune — measure it. This is the same wall outlier_rate/temporal_drift
+hit; the disagreement framing (vs the declared unit) helps but doesn't fully resolve it.
+
+**Next phase (not yet done — the plumbing, needs its own e2e run):** column-scoped
+detector (layer SEMANTIC, dimension UNITS, new sub_dimension UNIT_CONSISTENCY) reading
+typed values + `load_typing` unit_confidence → measure_unit_consistency → witnessed
+EntropyObject; register it and CLEAN-CUT the old single-LLM `unit_entropy` (+ its
+loss.yaml entry + eval intent_readiness expectation, per ADR-0009's
+declaration[U]/consistency[C] split); the mixed-units scale family (testdata) + a rig
+block + a recall test (DAT-450).
+
+**SUPERSEDED (2026-06-11, design v6 kill gate):** the bimodality measurement was
+FALSIFIED and cut (149fb379) — the "next phase" above is dead, do NOT build it.
+At tip there is no `measurements/unit_consistency.py`, no detector, no config
+rows; `unit_entropy` stays the single-witness scalar until a data-grounded
+second witness passes the OQ6 entry criterion (every pooled measurement needs a
+witness whose input is the data, not the name). DAT-450's mixed-units SCALE
+family is obsolete in that form.
+
+## 2026-06-09: witness reliabilities are a CALIBRATED ARTIFACT, not inline constants (DAT-450)
+
+**The placeholder `DEFAULT_RELIABILITIES` are no longer the shipped values.** Per
+ADR-0009 reliabilities are "estimated quantities with provenance, never inline
+constants." New engine pieces:
+
+- **`dataraum-config/entropy/reliabilities.yaml`** — the shipped artifact:
+  `witnesses[measurement_id][witness_id] = r` + a `provenance` block (calibrated
+  flag, corpus version, sample size, seed range, held-out Brier, date). Currently
+  carries the **measured** null_semantics values from the eval rig.
+- **`entropy/reliabilities.py`** — loader (sibling of `loss.py`):
+  `get_reliability_config()` / `ReliabilityConfig.for_measurement(id)` /
+  `reset_reliability_config_cache()`.
+- **`null_token_adjudication.py`** — `load_data` loads the artifact and threads
+  `reliabilities=` into `measure_null_semantics`; absent → the measurement's
+  neutral fallback. `DEFAULT_RELIABILITIES` reframed as that fallback only.
+
+**Measured values (corpus null_tokens-v2, Laplace accuracy on opinionated votes):**
+`quarantine_clustering 0.868`, `null_vocabulary 0.944`, **`type_claim 0.266`**.
+Held-out pooled Brier: measured **0.115** < placeholder 0.189 < uniform 0.191 — the
+measured weights resolve strictly better than the constants they replace (DAT-450
+AC4). The estimator is plain accuracy, chosen by held-out proper scoring (a balanced
+variant pooled worse and laundered the next finding — the rig MEASURES, it does not
+flatter a witness). v2 adds a disclosed ~20% clustered-decoy minority so
+quarantine's false-positive rate enters the estimate; provenance now ships
+`per_class_accuracy` (sensitivity/specificity) per witness.
+
+**LIVE-PROVEN end-to-end (2026-06-09).** A real `addSourceWorkflow` over
+detection-null-v1 persisted `claim_witnesses` whose `reliability` equals the
+shipped values (NOT the `0.8/0.7/0.6` fallback) — the artifact is consumed by the
+live pipeline. The adjudication-recall test passes (injected C > clean C on both
+injected columns). The live run also surfaced a calibration bug the isolated rig
+structurally couldn't: the family's combined marker+decoy ratio must keep
+`parse_success ≥ min_confidence` (0.85, `phases/typing.yaml`) — at 16% corruption
+`journal_lines.debit` fell to VARCHAR, never quarantined, and the detector was
+skipped. The family ratio is now ENFORCED (combined upper bound ≤0.12 raises at
+construction; defaults ≤0.10 → parse ≥0.90); both columns resolve DOUBLE and fire.
+Verify with `scripts/check_reliability_consumption.py`.
+
+**Findings for witness design (DAT-457)** — two witnesses have **0% specificity**,
+now MEASURED (provenance `per_class_accuracy`), not hidden:
+- **`type_claim`** votes is-null on everything in `failed_examples[:5]` (it can only
+  return 0.5 or `0.5+0.5·psr`, never argues is-value) → it cannot tell a sentinel
+  from a genuine-but-unparseable value. `r≈0.27`, per-witness Brier worse than
+  always-abstain. If its signal should count, it needs a real is-value path.
+- **`quarantine_clustering`** votes is-null on any CLUSTER → on the v2 corpus's
+  clustered-decoy minority it mistakes a recurring genuine value for a sentinel
+  (specificity 0). Its `r` dropped 0.999→0.868 once that exposure entered the
+  estimate (the decoy-clustering stress family, DAT-450 follow-up). It is a
+  clustering detector, not a marker/genuine discriminator.
+
+Both are correctly down-weighted by the pool, and conflict C stays weight-robust so
+a contested genuine value still fires `investigate` via the vocabulary witness's
+dissent. Fixing either is a witness-design change, not a calibration one.
+
+**Re-run:** `python scripts/calibrate_reliabilities.py` in dataraum-eval rewrites
+the artifact. Add a new measurement's witnesses to `reliabilities.yaml` + the rig
+when its witnesses land (unit/temporal_behavior/concept are still single-LLM).
+
 ## 2026-06-08: metric pre-gate REMOVED — metrics ground agentically (DAT-456 fix)
 
 **Supersedes the `can_execute_metric` born-loud-gate claim further below.** A live

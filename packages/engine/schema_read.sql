@@ -4,6 +4,36 @@
 -- Tokenized: __WS__ = raw workspace schema, __READ__ = read schema.
 -- Appliers substitute both (engine bootstrap; pull-metadata.sh via sed).
 
+DROP VIEW IF EXISTS __READ__.current_claim_witnesses;
+CREATE VIEW __READ__.current_claim_witnesses AS
+SELECT r.*,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'table:' || r.table_id
+  ) AS via_table_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
+FROM __WS__.claim_witnesses r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
+)
+;
+
 DROP VIEW IF EXISTS __READ__.current_column_drift_summaries;
 CREATE VIEW __READ__.current_column_drift_summaries AS
 SELECT r.* FROM __WS__.column_drift_summaries r
@@ -23,10 +53,6 @@ WHERE EXISTS (
     AND h.stage = 'column_eligibility'
     AND h.run_id = r.run_id
 );
-
-DROP VIEW IF EXISTS __READ__.column_slice_profiles;
-CREATE VIEW __READ__.column_slice_profiles AS
-SELECT * FROM __WS__.column_slice_profiles;
 
 DROP VIEW IF EXISTS __READ__.columns;
 CREATE VIEW __READ__.columns AS
@@ -78,15 +104,23 @@ SELECT r.*,
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'detect' AND h.run_id = r.run_id
       AND h.target = 'session:' || r.session_id
-  ) AS via_session_head
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
 FROM __WS__.entropy_objects r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.stage = 'detect'
-    AND h.run_id = r.run_id
-    AND (h.target = 'table:' || r.table_id
-      OR h.target = 'session:' || r.session_id)
-);
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
+)
+;
 
 DROP VIEW IF EXISTS __READ__.current_entropy_readiness;
 CREATE VIEW __READ__.current_entropy_readiness AS
@@ -100,15 +134,48 @@ SELECT r.*,
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'detect' AND h.run_id = r.run_id
       AND h.target = 'session:' || r.session_id
-  ) AS via_session_head
+  ) AS via_session_head,
+  EXISTS (
+    SELECT 1 FROM __WS__.metadata_snapshot_head h
+    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
+      AND h.target = 'session:' || r.session_id
+  ) AS via_operating_model_head
 FROM __WS__.entropy_readiness r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.stage = 'detect'
-    AND h.run_id = r.run_id
-    AND (h.target = 'table:' || r.table_id
-      OR h.target = 'session:' || r.session_id)
-);
+  WHERE h.run_id = r.run_id
+    AND ((h.stage = 'detect'
+      AND (h.target = 'table:' || r.table_id
+        OR h.target = 'session:' || r.session_id))
+     OR (h.stage = 'operating_model'
+      AND h.target = 'session:' || r.session_id))
+)
+  AND (
+    NOT EXISTS (
+      SELECT 1 FROM __WS__.metadata_snapshot_head h3
+      WHERE h3.run_id = r.run_id
+        AND h3.target = 'session:' || r.session_id
+        AND h3.stage IN ('detect', 'operating_model')
+    )
+    OR NOT EXISTS (
+      SELECT 1 FROM __WS__.entropy_readiness r2
+      JOIN __WS__.metadata_snapshot_head h2
+        ON h2.run_id = r2.run_id
+       AND h2.target = 'session:' || r2.session_id
+       AND h2.stage IN ('detect', 'operating_model')
+      WHERE r2.session_id = r.session_id
+        AND r2.target = r.target
+        AND r2.run_id <> r.run_id
+        AND h2.promoted_at > (
+          SELECT MAX(h3.promoted_at)
+          FROM __WS__.metadata_snapshot_head h3
+          WHERE h3.run_id = r.run_id
+            AND h3.target = 'session:' || r.session_id
+            AND h3.stage IN ('detect', 'operating_model')
+        )
+    )
+  )
+;
 
 DROP VIEW IF EXISTS __READ__.fix_ledger;
 CREATE VIEW __READ__.fix_ledger AS
@@ -139,6 +206,16 @@ WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.target = 'table:' || r.table_id
     AND h.stage = 'typing'
+    AND h.run_id = r.run_id
+);
+
+DROP VIEW IF EXISTS __READ__.current_measure_aggregation_lineage;
+CREATE VIEW __READ__.current_measure_aggregation_lineage AS
+SELECT r.* FROM __WS__.measure_aggregation_lineage r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'session:' || r.session_id
+    AND h.stage = 'detect'
     AND h.run_id = r.run_id
 );
 

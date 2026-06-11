@@ -1,0 +1,133 @@
+# Witness reliabilities for pooled (adjudication) measurements — ADR-0009, DAT-457/450.
+#
+# A pooled measurement adjudicates a claim by pooling several WITNESSES, each
+# weighted by a reliability r ∈ [0, 1] (the log-linear pooling exponent — see
+# entropy/pooling/pool.py). Per ADR-0009 these r are "estimated quantities with
+# provenance, never inline constants": they are MEASURED by the eval reliability
+# rig (dataraum-eval scripts/calibrate_reliabilities.py) — each witness run over
+# the generative injection families against ground truth, r = its agreement
+# accuracy (Beta-smoothed). This file is the shipped artifact that run produces;
+# the engine loads it via entropy/reliabilities.py and the detector threads the
+# values into the measurement.
+#
+# Reliability is the resolution weight only: conflict C is weight-robust (two
+# disjoint one-hot witnesses give C=1 for any r), so a wrong/uncalibrated r never
+# hides a disagreement — it only mis-resolves the posterior + ignorance U. That
+# is why cold-start on placeholder priors is safe.
+#
+# `provenance` records WHERE these numbers came from. Until the rig has run,
+# `calibrated: false` and the values are the DAT-457 placeholder priors (NOT
+# tuned to pass any metric). After a rig run, eval overwrites both the values and
+# this block with the measured corpus version, sample size, seed range, and date.
+
+provenance:
+  calibrated: true
+  # Per-measurement granularity (review wave-1): the file-global flag above was
+  # written by the null_tokens rig and must not vouch for other measurements'
+  # placeholders. Consumers read ReliabilityConfig.calibrated_for(<id>).
+  measurements:
+    null_semantics: { calibrated: true }
+    temporal_behavior: { calibrated: true } # all three witnesses measured (wave-2: structural 0.889, events-backed corpus)
+    relationship_discovery: { calibrated: false } # value_overlap + llm_judgment measured in contract (0.923 each, post-fix re-run); manual/keeper still need the teach protocol
+    derived_value: { calibrated: true } # wave-2 rig, detection-derived-cal-v1 (2026-06-11)
+  source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
+  corpus_version: null_tokens-v2
+  estimator: Laplace-smoothed accuracy on opinionated votes; abstentions excluded
+  corpus_composition: 400 distinct-decoy + 100 clustered-decoy stress samples (~20%
+    minority, disclosed not tuned)
+  rows_per_sample: 2000
+  sample_size_per_witness:
+    quarantine_clustering: 2273
+    type_claim: 2492
+    null_vocabulary: 18161
+  per_class_accuracy:
+    quarantine_clustering:
+      sensitivity: 1.0
+      specificity: 0.0
+    type_claim:
+      sensitivity: 1.0
+      specificity: 0.0
+    null_vocabulary:
+      sensitivity: 0.485
+      specificity: 1.0
+  pooled_brier_holdout: 0.1145
+  pooled_brier_holdout_uniform: 0.1908
+  pooled_brier_holdout_placeholder: 0.1895
+  notes: "type_claim votes is-null on everything in failed_examples \u2192 it cannot\
+    \ separate a sentinel from a genuine-but-unparseable value (specificity ~0) \u2192\
+    \ low r, correctly down-weighted. quarantine_clustering votes is-null on any CLUSTER,\
+    \ so on the clustered-decoy minority its specificity is < 1 (it mistakes a recurring\
+    \ genuine value for a sentinel) \u2014 now measured, not hidden. Both are witness-design\
+    \ findings for DAT-457, surfaced not tuned. Conflict C stays weight-robust, so\
+    \ a contested genuine value still fires investigate via the vocabulary witness's\
+    \ dissent."
+  date: '2026-06-09'
+witnesses:
+  null_semantics:
+    quarantine_clustering: 0.8681
+    type_claim: 0.2658
+    null_vocabulary: 0.944
+  # temporal_behavior (DAT-445, teach-first): MEASURED 2026-06-10 by the eval rig
+  # (scripts/calibrate_temporal_reliabilities.py) over the generative stock/flow corpus
+  # detection-stockflow-cal-v1 — 40 probe columns (24 clear / 16 ambiguous), Laplace-
+  # smoothed accuracy over opinionated votes (abstentions excluded), the same estimator
+  # as null_semantics. Stratified clear vs ambiguous (the hard, conflicting-cue regime):
+  #   ontology_prior: clear 92% (n=24) | ambiguous 56% (n=16)  → blended 0.762
+  #   llm_claim:      clear 100% (n=24) | ambiguous 55% (n=11)  → blended 0.838
+  # The ambiguous stratum is where the name-anchored LLM falls to ~chance — so these are
+  # FAITHFUL (not the best-case ~1.0 the clear-only corpus measured), NOT tuned to a metric.
+  # Small first sample; re-measure over more seeds before treating as final.
+  # structural_reconciliation (DAT-491): MEASURED 2026-06-11 by the wave-2 rig
+  # (scripts/calibrate_wave2_reliabilities.py structural) over the events-backed
+  # corpus detection-stockflow-events-v1 — exactly the re-measure condition the
+  # old probe-derived 0.85 placeholder named. 20 probe columns (4 backed-
+  # reconciling / 3 backed-broken / 3 unbacked stocks / 10 flows): opined on
+  # precisely the 7 backed columns (100% accuracy incl. all broken ones — match
+  # rate cleanly separated, 1.000 reconciling vs 0.20-0.40 broken), abstained on
+  # every unbacked/flow slot; Laplace over the 7 opinions → 0.889. Small n —
+  # widen the corpus before treating as final. Slicing picked series_id on both
+  # tables (the lane-F1 e2e dependency held). ontology_prior/llm_claim re-read
+  # 0.955 here but that is the CLEAR-cue best case — the shipped 0.762/0.838
+  # keep the ambiguous-stratified faithful blend (detection-stockflow-cal-v1).
+  temporal_behavior:
+    ontology_prior: 0.762
+    llm_claim: 0.838
+    structural_reconciliation: 0.889
+  # relationship_discovery: value_overlap + llm_judgment MEASURED IN CONTRACT
+  # 2026-06-11 (wave-2 rig, claim rows only) on the post-fix re-run of
+  # detection-relationship-cal-v1 — after the evidence-hierarchy selector fix
+  # (semantic_per_table prompt) and the direction-agnostic pair lookup
+  # (loaders). The selector confirmed 11/11 genuine pairs (was 4/15 — every
+  # suffix-mismatched pair recovered) and still rejected 4/4 designed spurious;
+  # value_overlap fired live on all 11 catalog pairs (was 0). Both witnesses:
+  # 11/11 correct over genuine_clean + genuine_broken strata → Laplace 0.923.
+  # The population is CONDITIONAL ON THE CATALOG by design — spurious pairs the
+  # selector rejects never reach adjudication, so these r are accurate for the
+  # surface the witnesses actually vote on. Small n=11; widen over seeds.
+  # (A 0.615 synthesized from candidate rows of REJECTED pairs was shipped and
+  # withdrawn the same day — candidates are never a calibration surface.)
+  # manual_curation / keeper_retention: UNMEASURABLE on a calibration run (no
+  #   teach/keep actions) — placeholders stand until the teach protocol runs;
+  #   measurement-level calibrated stays false until they are measured.
+  relationship_discovery:
+    value_overlap: 0.923
+    llm_judgment: 0.923
+    manual_curation: 0.9
+    keeper_retention: 0.5
+
+  # derived_value: MEASURED 2026-06-11 by the wave-2 rig
+  # (scripts/calibrate_wave2_reliabilities.py derived) over the formula-divergence
+  # corpus detection-derived-cal-v1 — 13 labelled columns, 15 claim slots
+  # (7 holds / 8 fails; adversarial by design, disclosed). Laplace over
+  # opinionated votes, same estimator as the other measurements.
+  #   formula_discovery: 0.750 (14 opinions) — 100% on agree AND wholesale; 0%
+  #     on partial (n=3 opined): match-rate grading tolerates ~20% divergence,
+  #     claiming holds at divergence_ratio≈0.2. Witness-design finding,
+  #     surfaced not tuned — the old 0.9 prior overstated it.
+  #   llm_hypothesis: 0.357 (12 opinions) — 100% on agree, 0% on every
+  #     wholesale/partial slot it opined on: the name-reader is exactly as
+  #     defeatable as the family was designed to measure (the type_claim
+  #     precedent: a low r is a finding, correctly down-weighted, not hidden).
+  derived_value:
+    formula_discovery: 0.75
+    llm_hypothesis: 0.357

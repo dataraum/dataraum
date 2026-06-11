@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import delete, select
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.db_models import EntropyObjectRecord
+from dataraum.entropy.db_models import ClaimWitnessRecord, EntropyObjectRecord
 from dataraum.entropy.models import EntropyObject, relationship_target_key
 from dataraum.entropy.snapshot import take_snapshot
 
@@ -79,6 +79,16 @@ def run_detector_post_step(
             EntropyObjectRecord.run_id == run_id,
         )
     )
+    # Same run-scoped clear for the pooled-witness provenance (ADR-0009): a
+    # no-op for non-adjudication detectors (they write none), so it stays a
+    # single generic step rather than a per-detector side effect.
+    session.execute(
+        delete(ClaimWitnessRecord).where(
+            ClaimWitnessRecord.detector_id == detector_id,
+            ClaimWitnessRecord.table_id.in_(table_ids),
+            ClaimWitnessRecord.run_id == run_id,
+        )
+    )
 
     # Typed tables in scope — the run's table set (source-free).
     typed_stmt = select(Table).where(Table.table_id.in_(table_ids), Table.layer == "typed")
@@ -88,6 +98,7 @@ def run_detector_post_step(
 
     table_id_by_name = {t.table_name: t.table_id for t in typed_tables}
     all_records: list[EntropyObjectRecord] = []
+    all_witnesses: list[ClaimWitnessRecord] = []
 
     if detector.scope == "column":
         # Column-scoped: run on each column of each table
@@ -113,6 +124,15 @@ def run_detector_post_step(
                             session_id=session_id,
                             run_id=run_id,
                             entropy_obj=obj,
+                            table_id=table.table_id,
+                            column_id=col.column_id,
+                        )
+                    )
+                    all_witnesses.extend(
+                        _make_witness_records(
+                            obj,
+                            session_id=session_id,
+                            run_id=run_id,
                             table_id=table.table_id,
                             column_id=col.column_id,
                         )
@@ -208,6 +228,19 @@ def run_detector_post_step(
                         column_id=from_col,
                     )
                 )
+                # Witness provenance at relationship grain (lane L2 request):
+                # same from-endpoint anchoring as the object record — without
+                # this, a pooled relationship measurement's WitnessClaims were
+                # silently discarded and claim_witnesses stayed column-only.
+                all_witnesses.extend(
+                    _make_witness_records(
+                        obj,
+                        session_id=session_id,
+                        run_id=run_id,
+                        table_id=from_table,
+                        column_id=from_col,
+                    )
+                )
 
     elif detector.scope == "view":
         # View-scoped: run on enriched views
@@ -244,12 +277,15 @@ def run_detector_post_step(
                 )
 
     persist_records(session, all_records)
+    if all_witnesses:
+        session.add_all(all_witnesses)
 
     if all_records:
         logger.info(
             "post_step_detector_done",
             detector_id=detector_id,
             records=len(all_records),
+            witnesses=len(all_witnesses),
         )
 
     return len(all_records)
@@ -298,6 +334,37 @@ def _make_record(
         evidence=entropy_obj.evidence,
         detector_id=entropy_obj.detector_id,
     )
+
+
+def _make_witness_records(
+    entropy_obj: EntropyObject,
+    *,
+    session_id: str,
+    table_id: str | None,
+    column_id: str | None,
+    run_id: str | None,
+) -> list[ClaimWitnessRecord]:
+    """The run-versioned witness rows behind a pooled EntropyObject (ADR-0009).
+
+    Same ``(session_id, table_id, column_id, run_id)`` anchoring as the object's
+    record, so the head-joined ``current_claim_witnesses`` view resolves them on
+    the same grain. Empty for non-adjudication detectors.
+    """
+    return [
+        ClaimWitnessRecord(
+            session_id=session_id,
+            table_id=table_id,
+            column_id=column_id,
+            run_id=run_id,
+            target=entropy_obj.target,
+            claim_field=witness.claim_field,
+            witness_id=witness.witness_id,
+            distribution=witness.distribution,
+            reliability=witness.reliability,
+            detector_id=entropy_obj.detector_id,
+        )
+        for witness in entropy_obj.witnesses
+    ]
 
 
 def _resolve_table_id_from_target(

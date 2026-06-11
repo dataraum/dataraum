@@ -163,14 +163,16 @@ const ConceptPayload = z
 	})
 	.passthrough();
 
-// Five still-deferred types — slice 1 proves the write path only; consumers
-// either land in slice 2+ or already read ConfigOverlay directly
-// (relationship's join_path_determinism detector). Generic object passthrough
-// until each type's consumer is wired, then we tighten here.
+// validation/cycle/metric overlays ARE applied — the engine's overlay
+// appliers (_apply_validation/_apply_cycle/_apply_metric, DAT-438..466) feed
+// them into the operating_model lifecycle; closure proof is the open remainder
+// (DAT-447). Generic object passthrough until each payload's shape is pinned
+// engine-side, then we tighten here.
 const GenericPayload = z
 	.record(z.string(), z.unknown())
 	.describe(
-		"Free-form object — used by the not-yet-applied teach types (validation, cycle, metric, explanation).",
+		"Free-form object — payload for the validation, cycle, and metric teach types " +
+			"(applied by the engine's operating_model overlay appliers).",
 	);
 
 // `relationship` overlays are directional column-pair teaches (DAT-409). The

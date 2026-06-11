@@ -36,3 +36,5 @@ record). When code and an ADR disagree, the code wins and the ADR needs a supers
 - [0006 — Team-lead operating model: parallel lanes, gates at the intent layer](./0006-team-lead-operating-model.md)
 - [0007 — Frame frozen-artifact contract: concept overlay rows as the engine↔cockpit grounding input](./0007-frame-frozen-artifact-contract.md)
 - [0008 — Promoted reads are enforced by the database (head-joined views + grants), not by reader convention](./0008-promoted-read-views.md)
+- [0009 — Entropy measurements ship as the 7-piece measurement pack; all numbers live in config](./0009-measurement-pack.md)
+- [0010 — Failure contract: (key, run_id) idempotent writers; skips and deletes are exceptions](./0010-failure-contract-idempotent-writers.md)

@@ -2,7 +2,7 @@
 
 Resolves connection URLs by source name from the
 ``DATARAUM_{SOURCE_NAME}_URL`` environment variable. Secrets are never
-serialized to MCP responses or logged.
+serialized to tool responses or logged.
 
 Resolution order:
 
@@ -30,7 +30,7 @@ class CredentialProvider(Protocol):
 
 @dataclass(frozen=True)
 class ResolvedCredential:
-    """A resolved connection URL. Never serialized to MCP responses."""
+    """A resolved connection URL. Never serialized to tool responses or logs."""
 
     url: str
     source: str  # "env"

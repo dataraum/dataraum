@@ -1,7 +1,7 @@
 """Investigation session database models.
 
-SQLAlchemy models for tracking MCP investigation sessions and individual
-tool invocations within them. Provides the audit trail for reproducibility,
+SQLAlchemy models for tracking analytical investigation sessions and
+individual tool invocations within them. Provides the audit trail for reproducibility,
 outcome justification, and investigation pattern analysis.
 """
 

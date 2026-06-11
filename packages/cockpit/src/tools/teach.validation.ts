@@ -170,7 +170,7 @@ const ConceptPayload = z
 const GenericPayload = z
 	.record(z.string(), z.unknown())
 	.describe(
-		"Free-form object — used by the not-yet-applied teach types (validation, cycle, metric, explanation).",
+		"Free-form object — used by the not-yet-applied teach types (validation, cycle, metric).",
 	);
 
 // `relationship` overlays are directional column-pair teaches (DAT-409). The

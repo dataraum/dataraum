@@ -70,8 +70,8 @@ Two further types have NO layered-read applier here but ARE consumed by direct
 ``analysis.relationships.utils.load_confirmed_relationship_pairs``, read by the
 ``join_path_determinism`` detector) and ``expected_dependency``
 (``entropy.detectors.loaders.load_documented_dependencies``, read by
-``dimensional_entropy``). ``explanation`` remains fully deferred: the cockpit
-may write rows, but nothing consumes them yet.
+``dimensional_entropy``). ``explanation`` was removed (DAT-343 registry cut:
+no typed tool, no applier — the cockpit's validateTeach rejects it).
 """
 
 from __future__ import annotations

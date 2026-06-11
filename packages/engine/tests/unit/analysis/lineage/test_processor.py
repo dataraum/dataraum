@@ -246,12 +246,16 @@ class TestDiscoverAggregationLineage:
         assert _discover(real_session, ids) == 0
 
     def test_rerun_is_idempotent(self, real_session: Session) -> None:
+        """Success-redelivery (same run_id, committed rows) converges by upsert (DAT-502)."""
         ids = _seed(real_session)
         first = _discover(real_session, ids)
+        real_session.commit()  # the redelivered attempt sees committed rows
         second = _discover(real_session, ids)
+        real_session.commit()
         assert first == second
         rows = real_session.execute(select(MeasureAggregationLineage)).scalars().all()
         assert len(rows) == first
+        assert all(r.run_id == _RUN for r in rows)
 
     def test_loader_is_exact_run(self, real_session: Session) -> None:
         ids = _seed(real_session)

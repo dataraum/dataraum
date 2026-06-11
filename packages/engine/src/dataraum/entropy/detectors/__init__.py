@@ -36,6 +36,7 @@ from dataraum.entropy.detectors.base import (
 from dataraum.entropy.detectors.computational import (
     CrossTableConsistencyDetector,
     DerivedValueDetector,
+    TemporalBehaviorDetector,
 )
 
 # Semantic layer detectors
@@ -50,6 +51,7 @@ from dataraum.entropy.detectors.semantic import (
 # Structural layer detectors
 from dataraum.entropy.detectors.structural import (
     JoinPathDeterminismDetector,
+    RelationshipDiscoveryDetector,
     RelationshipEntropyDetector,
     TypeFidelityDetector,
 )
@@ -58,16 +60,21 @@ from dataraum.entropy.detectors.structural import (
 from dataraum.entropy.detectors.value import (
     BenfordDetector,
     NullRatioDetector,
+    NullSemanticsDetector,
 )
 
-# All built-in detector classes (column, table, and view scoped)
+# All built-in detector classes (column, table, relationship, and view scoped).
+# Must stay in sync with base.py's _register_builtin_detectors (the production
+# registration path) — test_builtin_detectors pins the two against each other.
 BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Structural
     TypeFidelityDetector,
     JoinPathDeterminismDetector,
     RelationshipEntropyDetector,
+    RelationshipDiscoveryDetector,
     # Value
     NullRatioDetector,
+    NullSemanticsDetector,
     BenfordDetector,
     # Semantic (column-scoped)
     BusinessMeaningDetector,
@@ -79,6 +86,7 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     DimensionCoverageDetector,
     # Computational
     DerivedValueDetector,
+    TemporalBehaviorDetector,
     CrossTableConsistencyDetector,
 ]
 
@@ -110,10 +118,12 @@ __all__ = [
     # Structural detectors
     "TypeFidelityDetector",
     "JoinPathDeterminismDetector",
+    "RelationshipDiscoveryDetector",
     "RelationshipEntropyDetector",
     # Value detectors
     "BenfordDetector",
     "NullRatioDetector",
+    "NullSemanticsDetector",
     # Semantic detectors
     "BusinessMeaningDetector",
     "UnitEntropyDetector",
@@ -123,4 +133,5 @@ __all__ = [
     # Computational detectors
     "CrossTableConsistencyDetector",
     "DerivedValueDetector",
+    "TemporalBehaviorDetector",
 ]

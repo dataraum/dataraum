@@ -17,6 +17,7 @@ How well-defined is the data's structure?
 | TypeFidelityDetector | `types > type_fidelity` | Type consistency — what fraction of values fail to parse as their declared type |
 | JoinPathDeterminismDetector | `relations > join_path_determinism` | Relationship ambiguity — are join paths between tables deterministic or ambiguous? |
 | RelationshipEntropyDetector | `relations > relationship_quality` | Referential integrity, cardinality verification, and semantic clarity of relationships |
+| RelationshipDiscoveryDetector | `relations > relationship_discovery` | Whether a confirmed relationship is genuine — value-overlap data witness and the LLM selector's judgment (plus human teaches) pooled per pair, conflicts surfaced |
 
 ### Semantic (Business Meaning)
 

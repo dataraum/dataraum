@@ -20,7 +20,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ENTROPY LAYER                                     │
 │                                                                             │
-│   14 Detectors (4 layers)           ──▶  Contracts (6 built-in)             │
+│   15 Detectors (4 layers)           ──▶  Contracts (6 built-in)             │
 │   Loss Tables (per intent)          ──▶  Readiness (ready/investigate/      │
 │   Post-phase measurement            ──▶    blocked per column)              │
 │                                          Confidence Levels (traffic light)  │
@@ -184,7 +184,7 @@ src/dataraum/
 │   ├── eligibility/       # Column eligibility evaluation
 │   └── views/             # Enriched view construction
 ├── entropy/               # Uncertainty quantification
-│   ├── detectors/         # 14 detectors across 4 layers
+│   ├── detectors/         # 15 detectors across 4 layers
 │   │   ├── structural/    # Type fidelity, join paths, relationship quality
 │   │   ├── semantic/      # Business meaning, units, temporal, dimensional, coverage
 │   │   ├── value/         # Nulls, null semantics, Benford

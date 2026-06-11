@@ -13,10 +13,14 @@ from dataraum.entropy.detectors import (
     DimensionCoverageDetector,
     JoinPathDeterminismDetector,
     NullRatioDetector,
+    NullSemanticsDetector,
+    RelationshipDiscoveryDetector,
     RelationshipEntropyDetector,
+    TemporalBehaviorDetector,
     TemporalEntropyDetector,
     TypeFidelityDetector,
     UnitEntropyDetector,
+    get_default_registry,
     register_builtin_detectors,
 )
 
@@ -31,8 +35,10 @@ class TestBuiltinDetectors:
             TypeFidelityDetector,
             JoinPathDeterminismDetector,
             RelationshipEntropyDetector,
+            RelationshipDiscoveryDetector,
             # Value
             NullRatioDetector,
+            NullSemanticsDetector,
             BenfordDetector,
             # Semantic (column-scoped)
             BusinessMeaningDetector,
@@ -44,12 +50,25 @@ class TestBuiltinDetectors:
             DimensionCoverageDetector,
             # Computational
             DerivedValueDetector,
+            TemporalBehaviorDetector,
             CrossTableConsistencyDetector,
         ]
 
         assert len(BUILTIN_DETECTORS) == len(expected_detectors)
         for detector_class in expected_detectors:
             assert detector_class in BUILTIN_DETECTORS
+
+    def test_matches_default_registry(self):
+        """BUILTIN_DETECTORS mirrors the production registration path.
+
+        base.py's _register_builtin_detectors (what get_default_registry uses)
+        and this public list must register the same detector set — the list
+        went stale once (12 vs 15) when three DAT-442 detectors landed only
+        in base.py.
+        """
+        registry = DetectorRegistry()
+        register_builtin_detectors(registry)
+        assert set(registry.get_detector_ids()) == set(get_default_registry().get_detector_ids())
 
     def test_register_builtin_detectors(self):
         """Test registering all builtin detectors to a registry."""
@@ -99,11 +118,12 @@ class TestBuiltinDetectors:
         structural_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "structural"
         ]
-        assert len(structural_detectors) == 3
+        assert len(structural_detectors) == 4
         detector_ids = [d.detector_id for d in structural_detectors]
         assert "type_fidelity" in detector_ids
         assert "join_path_determinism" in detector_ids
         assert "relationship_entropy" in detector_ids
+        assert "relationship_discovery" in detector_ids
 
     def test_value_detectors(self):
         """Test value layer detectors."""
@@ -111,12 +131,11 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         value_detectors = [d for d in registry.get_all_detectors() if d.layer.value == "value"]
-        # BUILTIN_DETECTORS value layer: null_ratio, benford — temporal_drift,
-        # slice_variance, and outlier_rate cut (DAT-442 reset). (null_semantics is
-        # registered via the default registry, not BUILTIN_DETECTORS.)
-        assert len(value_detectors) == 2
+        # temporal_drift, slice_variance, and outlier_rate cut (DAT-442 reset).
+        assert len(value_detectors) == 3
         detector_ids = [d.detector_id for d in value_detectors]
         assert "null_ratio" in detector_ids
+        assert "null_semantics" in detector_ids
         assert "benford" in detector_ids
 
     def test_semantic_detectors(self):
@@ -127,11 +146,12 @@ class TestBuiltinDetectors:
         semantic_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "semantic"
         ]
-        assert len(semantic_detectors) == 5
+        assert len(semantic_detectors) == 6
         detector_ids = [d.detector_id for d in semantic_detectors]
         assert "business_meaning" in detector_ids
         assert "unit_entropy" in detector_ids
         assert "temporal_entropy" in detector_ids
+        assert "temporal_behavior" in detector_ids
         assert "dimensional_entropy" in detector_ids
         assert "dimension_coverage" in detector_ids
 
@@ -143,6 +163,8 @@ class TestBuiltinDetectors:
         computational_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "computational"
         ]
+        # temporal_behavior declares layer SEMANTIC despite living in
+        # computational/ — counted under semantic below.
         assert len(computational_detectors) == 2
         detector_ids = [d.detector_id for d in computational_detectors]
         assert "derived_value" in detector_ids

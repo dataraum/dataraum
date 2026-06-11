@@ -1,7 +1,8 @@
 """Value layer entropy detectors.
 
 Detectors for value-level uncertainty:
-- Null semantics
+- Null ratio
+- Null-token adjudication (null_semantics — pooled witnesses)
 - Benford's Law compliance
 
 (temporal_drift, slice_variance, and outlier_rate were cut — DAT-442 reset.
@@ -21,8 +22,10 @@ dimensional_entropy, which reads them directly.)
 
 from dataraum.entropy.detectors.value.benford import BenfordDetector
 from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
+from dataraum.entropy.detectors.value.null_token_adjudication import NullSemanticsDetector
 
 __all__ = [
     "BenfordDetector",
     "NullRatioDetector",
+    "NullSemanticsDetector",
 ]

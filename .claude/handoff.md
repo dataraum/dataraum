@@ -4,6 +4,35 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
+
+LANE-NOTES.md (lane scratch, deleted at merge) was the only record of three
+relationship_discovery remainders — preserved here so they don't vanish:
+
+- **Resolve write-back (ADR-0009 piece 5) NOT built — by design, for now.** No
+  consumer field exists for the genuineness verdict: `Relationship.is_confirmed`
+  is the human flag, not a resolve target; `SemanticAnnotation` is column-grain.
+  Candidate surface: a contested/genuineness field on the Relationship row (or
+  the cockpit reading the entropy object + `claim_witnesses` directly). Needs a
+  ticket when the consumer is designed.
+- **Pure-decline focal pairs are structurally unmeasurable.** engine.py
+  enumerates `detection_method != 'candidate'` pairs only (the DAT-405
+  defined-catalog contract), so "data says strong overlap, the selector said no"
+  never becomes a focal pair; on keeper/manual pairs the llm witness ABSTAINS on
+  declines (a decline's strength is uncalibrated). Measuring it = focal-pair
+  enumeration change + rig calibration of the decline witness.
+- **Confirm-overlay human witness:** an explicit `confirm` teach only flips
+  `is_confirmed` evidence — it never materializes a row, so a confirm-taught
+  pair's human witness is silent (also noted in the eval state-of-the-union).
+
+Ticket hygiene: the join_path two-distinct-FK fixture gap is cited against
+DAT-419, which is **Cancelled** — it has no live tracker. LANE-NOTES' two
+shared-change requests (relationship-grain witness persistence in engine.py;
+`_REL_METHOD_PRECEDENCE` keeper alignment in snapshot.py) were both DONE on
+this branch before merge.
+
+- **Status**: pending (ticket filing only — no code change expected)
+
 ## 2026-06-11 (wave 2): derived_value score = max(mismatch, identity conflict)
 
 The detection-derived-cal-v1 corpus exposed a silent false negative: under
@@ -132,6 +161,14 @@ EntropyObject; register it and CLEAN-CUT the old single-LLM `unit_entropy` (+ it
 loss.yaml entry + eval intent_readiness expectation, per ADR-0009's
 declaration[U]/consistency[C] split); the mixed-units scale family (testdata) + a rig
 block + a recall test (DAT-450).
+
+**SUPERSEDED (2026-06-11, design v6 kill gate):** the bimodality measurement was
+FALSIFIED and cut (149fb379) — the "next phase" above is dead, do NOT build it.
+At tip there is no `measurements/unit_consistency.py`, no detector, no config
+rows; `unit_entropy` stays the single-witness scalar until a data-grounded
+second witness passes the OQ6 entry criterion (every pooled measurement needs a
+witness whose input is the data, not the name). DAT-450's mixed-units SCALE
+family is obsolete in that form.
 
 ## 2026-06-09: witness reliabilities are a CALIBRATED ARTIFACT, not inline constants (DAT-450)
 

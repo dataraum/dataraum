@@ -115,50 +115,76 @@ def quarantine_and_drop_columns(
     conn: Any,  # DuckDB connection
     typed_table: str,
     columns_data: list[tuple[Any, str]],
+    *,
+    typed_recipe_ddl: str,
 ) -> None:
-    """Move column data to quarantine and drop from typed table.
+    """Quarantine ineligible columns and drop them from the typed table (DAT-504).
+
+    Convergent under Temporal at-least-once redelivery — every lake write is an
+    idempotent overwrite under a run-stable name:
+
+    1. Re-execute the run's stored typed ``MaterializationRecipe`` DDL, restoring
+       the full-column typed table regardless of what a prior partial attempt
+       left behind. The recipe row is READ-only — it must keep reproducing the
+       full-column table for exactly this convergence to work.
+    2. ``CREATE OR REPLACE`` the companion quarantine table in
+       ``lake.quarantine`` in one shot (no append — a re-run replaces, never
+       duplicates).
+    3. ``ALTER TABLE … DROP COLUMN`` each quarantined column — guaranteed
+       present after the rebuild, so the drop can't error on a re-run.
+
+    Any failure propagates to the caller — a lake failure fails the phase
+    (no swallowed-warning downgrade).
 
     Args:
-        conn: DuckDB connection
+        conn: DuckDB connection with the ``lake`` catalog attached.
         typed_table: Bare name of the typed table (e.g., ``"source__orders"``
             — the ``<source>__<table>`` form stored on ``Table.duckdb_path``
             post-DAT-341).
-        columns_data: List of (Column, reason) tuples to drop
+        columns_data: List of (Column, reason) tuples to drop.
+        typed_recipe_ddl: The run's stored typed-layer materialization DDL
+            (``CREATE OR REPLACE TABLE lake.typed.… AS SELECT …``), re-executed
+            verbatim to restore the full-column table.
     """
-    # ``typed_table`` is already the bare name post-DAT-341 (no ``typed_``
-    # prefix to strip). The companion quarantine-helper table uses the same
-    # base so layer-aware cleanup locates it.
-    quarantine_table = f"quarantine_columns_{typed_table}"
+    # Lazy imports, mirroring the loaders: avoid pulling the DuckLake bootstrap
+    # surface into module-load.
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
-    # Create quarantine table if not exists
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS "{quarantine_table}" (
-            _row_id INTEGER,
-            _column_name VARCHAR,
-            _value VARCHAR,
-            _quarantine_reason VARCHAR,
-            _quarantined_at TIMESTAMP
-        )
-    """)
+    typed_fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{typed_table}"'
+    # Run-stable companion name in the quarantine layer schema — same bare base
+    # as the typed table so layer-aware cleanup locates it. The typing phase's
+    # cast-failure quarantine already owns ``lake.quarantine."<bare>"``, so the
+    # column-quarantine keeps its distinct ``quarantine_columns_`` prefix.
+    quarantine_fqn = (
+        f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("quarantine")}."quarantine_columns_{typed_table}"'
+    )
 
-    # For each column, insert data then drop
+    # 1. Restore the full-column typed table from the run's recipe.
+    conn.execute(typed_recipe_ddl)
+
+    # 2. One-shot quarantine snapshot: one SELECT per quarantined column,
+    # unioned, replacing the table as a whole.
+    selects = []
     for column, reason in columns_data:
-        # Escape reason for SQL
         escaped_reason = reason.replace("'", "''") if reason else "Unknown"
-
-        # Insert column data into quarantine
-        conn.execute(f"""
-            INSERT INTO "{quarantine_table}"
+        # Column names can legitimately contain quotes (CSV headers, MSSQL) —
+        # escape per context: '' inside the single-quoted literal, "" inside
+        # the double-quoted identifiers.
+        escaped_col = column.column_name.replace("'", "''")
+        escaped_col_ident = column.column_name.replace('"', '""')
+        selects.append(f"""
             SELECT
                 ROW_NUMBER() OVER () as _row_id,
-                '{column.column_name}' as _column_name,
-                CAST("{column.column_name}" AS VARCHAR) as _value,
+                '{escaped_col}' as _column_name,
+                CAST("{escaped_col_ident}" AS VARCHAR) as _value,
                 '{escaped_reason}' as _quarantine_reason,
                 CURRENT_TIMESTAMP as _quarantined_at
-            FROM "{typed_table}"
+            FROM {typed_fqn}
         """)
+    conn.execute(f"CREATE OR REPLACE TABLE {quarantine_fqn} AS {' UNION ALL '.join(selects)}")
 
-        # Drop column from typed table
-        conn.execute(f"""
-            ALTER TABLE "{typed_table}" DROP COLUMN "{column.column_name}"
-        """)
+    # 3. Drop the quarantined columns — present for sure after step 1.
+    for column, _reason in columns_data:
+        escaped_col_ident = column.column_name.replace('"', '""')
+        conn.execute(f'ALTER TABLE {typed_fqn} DROP COLUMN "{escaped_col_ident}"')

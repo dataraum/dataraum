@@ -4,6 +4,12 @@ Sqlite is a real backend (not a mock) so these tests exercise the
 actual INSTALL/LOAD/ATTACH/CREATE TABLE/DETACH pipeline end-to-end.
 The mssql-specific behavior is covered in the integration smoke test
 in Phase 7.
+
+Post-DAT-504 the extraction targets ``lake.raw`` FQNs (the same convergent
+write the csv/json/parquet loaders do). These unit tests keep that cheap with
+an in-memory ``ATTACH ':memory:' AS lake`` + ``CREATE SCHEMA lake.raw`` —
+the real DuckLake catalog is exercised in
+``tests/integration/sources/test_db_recipe_lake.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +26,13 @@ from dataraum.sources.backends import (
     extract_backend,
 )
 from dataraum.sources.db_recipe import RecipeTable
+
+
+def _attach_lake(conn: duckdb.DuckDBPyConnection) -> None:
+    """Stand in for the production lake catalog on a unit-test connection."""
+    conn.execute("ATTACH ':memory:' AS lake")
+    conn.execute("CREATE SCHEMA lake.raw")
+    conn.execute("CREATE SCHEMA lake.typed")
 
 
 @pytest.fixture
@@ -60,6 +73,7 @@ def sqlite_source(tmp_path: Path) -> str:
 @pytest.fixture
 def duckdb_conn():
     conn = duckdb.connect(":memory:")
+    _attach_lake(conn)
     yield conn
     conn.close()
 
@@ -112,16 +126,53 @@ class TestExtractBackendHappyPath:
         rows_by_name = {t.name: t.row_count for t in result.unwrap().tables}
         assert rows_by_name == {"customers": 3, "orders": 4}
 
-    def test_creates_real_duckdb_tables(self, sqlite_source, duckdb_conn):
+    def test_creates_real_duckdb_tables_in_lake_raw(self, sqlite_source, duckdb_conn):
         extract_backend(
             backend="sqlite",
             url=sqlite_source,
             queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
             duckdb_conn=duckdb_conn,
         )
-        # After extraction, the DuckDB connection should hold the raw table.
-        actual_rows = duckdb_conn.execute("SELECT count(*) FROM raw_customers").fetchone()
+        # After extraction, the raw table lives in lake.raw (DAT-504).
+        actual_rows = duckdb_conn.execute(
+            'SELECT count(*) FROM lake.raw."raw_customers"'
+        ).fetchone()
         assert actual_rows[0] == 3
+
+    def test_no_stray_table_outside_lake_raw(self, sqlite_source, duckdb_conn):
+        """The DAT-504 live bug: tables used to land in ``<catalog>.main`` while
+        metadata registered layer="raw" → ``lake.raw``. Pin that NOTHING lands
+        outside the raw schema."""
+        extract_backend(
+            backend="sqlite",
+            url=sqlite_source,
+            queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
+            duckdb_conn=duckdb_conn,
+        )
+        strays = duckdb_conn.execute(
+            "SELECT database_name, schema_name, table_name FROM duckdb_tables() "
+            "WHERE NOT (database_name = 'lake' AND schema_name = 'raw')"
+        ).fetchall()
+        assert strays == []
+
+    def test_second_execution_with_leftovers_converges(self, sqlite_source, duckdb_conn):
+        """CREATE OR REPLACE: a redelivery overwrites the leftover raw table
+        instead of colliding (lake convergence rule)."""
+        for _ in range(2):
+            result = extract_backend(
+                backend="sqlite",
+                url=sqlite_source,
+                queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
+                duckdb_conn=duckdb_conn,
+            )
+            assert result.success, result.error
+            assert result.unwrap().tables[0].row_count == 3
+        count = duckdb_conn.execute(
+            "SELECT count(*) FROM duckdb_tables() "
+            "WHERE database_name = 'lake' AND schema_name = 'raw' "
+            "AND table_name = 'raw_customers'"
+        ).fetchone()
+        assert count[0] == 1
 
     def test_user_sql_with_where_clause(self, sqlite_source, duckdb_conn):
         result = extract_backend(
@@ -156,7 +207,7 @@ class TestExtractBackendHappyPath:
         )
         assert result.success, result.error
         rows = duckdb_conn.execute(
-            "SELECT customer_name FROM raw_orders_with_customer ORDER BY order_id"
+            'SELECT customer_name FROM lake.raw."raw_orders_with_customer" ORDER BY order_id'
         ).fetchall()
         assert [r[0] for r in rows] == ["Acme Corp", "Acme Corp", "Globex", "Initech"]
 
@@ -266,6 +317,33 @@ class TestExtractBackendCleanup:
         result = duckdb_conn.execute("SELECT current_catalog()").fetchone()
         assert result[0] == "memory"
 
+    def test_use_restore_keeps_catalog_and_schema_pair(self, sqlite_source, duckdb_conn):
+        """The third DAT-504 bug: the old ``USE {catalog}`` restore stranded the
+        connection at ``<catalog>.main``. Production sits at ``lake.typed`` —
+        the restore must bring back the snapshotted (catalog, schema) PAIR."""
+        duckdb_conn.execute("USE lake.typed")
+        result = extract_backend(
+            backend="sqlite",
+            url=sqlite_source,
+            queries=[RecipeTable(name="customers", sql="SELECT * FROM customers")],
+            duckdb_conn=duckdb_conn,
+        )
+        assert result.success, result.error
+        pair = duckdb_conn.execute("SELECT current_catalog(), current_schema()").fetchone()
+        assert pair == ("lake", "typed")
+
+    def test_use_restore_keeps_pair_after_sql_failure(self, sqlite_source, duckdb_conn):
+        duckdb_conn.execute("USE lake.typed")
+        result = extract_backend(
+            backend="sqlite",
+            url=sqlite_source,
+            queries=[RecipeTable(name="bad", sql="SELECT * FROM no_such_table")],
+            duckdb_conn=duckdb_conn,
+        )
+        assert not result.success
+        pair = duckdb_conn.execute("SELECT current_catalog(), current_schema()").fetchone()
+        assert pair == ("lake", "typed")
+
 
 class TestExtensionCachePreBake:
     """The image pre-bakes extensions (worker.Dockerfile): extract_backend must
@@ -305,6 +383,7 @@ class TestExtensionCachePreBake:
         monkeypatch.setenv("DUCKDB_EXTENSION_DIRECTORY", str(ext_dir))
         monkeypatch.setenv("DUCKLAKE_SKIP_INSTALL", "1")
         conn = duckdb.connect(":memory:")
+        _attach_lake(conn)
         try:
             result = extract_backend(
                 backend="sqlite",
@@ -319,17 +398,15 @@ class TestExtensionCachePreBake:
 
 
 class TestExtractBackendFileBackedConnection:
-    """In production the DuckDB connection is file-backed (session data.duckdb),
-    not :memory:. extract_backend must use the connection's actual catalog name
-    rather than a hardcoded "memory" — otherwise CREATE TABLE fails with
-    "Catalog Error: Catalog with name memory does not exist".
-    """
+    """A file-backed connection (its default catalog named after the file) must
+    behave exactly like :memory:: extraction lands in ``lake.raw`` regardless of
+    the connection's own catalog, and the USE-restore brings back the file
+    catalog afterwards."""
 
-    def test_extracts_into_file_backed_catalog(self, sqlite_source, tmp_path):
-        """File-backed DuckDB has a catalog named after the file. Recipe tables
-        must materialize there, not in a phantom 'memory' catalog."""
+    def test_extracts_into_lake_raw_not_file_catalog(self, sqlite_source, tmp_path):
         db_path = tmp_path / "session_data.duckdb"
         conn = duckdb.connect(str(db_path))
+        _attach_lake(conn)
         try:
             result = extract_backend(
                 backend="sqlite",
@@ -343,13 +420,16 @@ class TestExtractBackendFileBackedConnection:
             assert len(result.value.tables) == 1
             assert result.value.tables[0].duckdb_table == "aw_customers"
 
-            # The materialized table lives in the file-backed catalog, not in "memory".
-            current_catalog = conn.execute("SELECT current_catalog()").fetchone()[0]
-            count = conn.execute(
-                f'SELECT count(*) FROM {current_catalog}.main."aw_customers"'
-            ).fetchone()
+            # The materialized table lives in lake.raw, NOT in the file catalog.
+            count = conn.execute('SELECT count(*) FROM lake.raw."aw_customers"').fetchone()
             assert count is not None
             assert count[0] >= 1
+            file_catalog = conn.execute("SELECT current_catalog()").fetchone()[0]
+            strays = conn.execute(
+                "SELECT table_name FROM duckdb_tables() WHERE database_name = ?",
+                [file_catalog],
+            ).fetchall()
+            assert strays == []
         finally:
             conn.close()
 
@@ -357,6 +437,7 @@ class TestExtractBackendFileBackedConnection:
         """The finally-block USE must restore the file-backed catalog, not 'memory'."""
         db_path = tmp_path / "session_data.duckdb"
         conn = duckdb.connect(str(db_path))
+        _attach_lake(conn)
         try:
             expected_catalog = conn.execute("SELECT current_catalog()").fetchone()[0]
             extract_backend(

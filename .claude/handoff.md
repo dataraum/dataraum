@@ -4,6 +4,20 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (DAT-504): lake convergence — db_recipe raw-schema write + eligibility quarantine idempotency
+
+No detector or recall impact — substrate-placement and idempotency fixes only.
+`extract_backend` now writes recipe tables into `lake.raw` via
+`CREATE OR REPLACE` (they used to land in `lake.main` in production while
+metadata claimed layer="raw") and restores the connection's (catalog, schema)
+pair after extraction. Eligibility's column drop is now the convergent
+rebuild-from-recipe → one-shot `lake.quarantine."quarantine_columns_<bare>"`
+replace → drop sequence; lake failures fail the activity instead of degrading
+to warnings. Shipped `lake.main` strays are NOT cleaned up (workspaces are
+disposable per DD/34045953) — a wiped stack is the clean baseline.
+
+- **Status**: no action needed in eval/testdata
+
 ## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511
 
 The deferred live operating_model smoke ran end-to-end on a wiped stack (main =

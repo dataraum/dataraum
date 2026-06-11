@@ -6,6 +6,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import select
 
 from dataraum.analysis.temporal_slicing.analyzer import (
     _analyze_completeness,
@@ -529,9 +530,8 @@ class TestPersistPeriodResults:
         import dataraum.analysis.validation.db_models  # noqa: F401
         import dataraum.storage.models  # noqa: F401
 
-    def test_persists_correct_count(self):
-        """Creates one DB record per period."""
-        session = MagicMock()
+    def test_persists_correct_count(self, session):
+        """Creates one DB record per period (real session — the writer upserts)."""
         result = PeriodAnalysisResult(
             slice_table_name="slice_status_active",
             time_column="ts",
@@ -598,16 +598,11 @@ class TestPersistPeriodResults:
 
         assert persist_result.success
         assert persist_result.value == 2
-        assert session.add.call_count == 2
+        rows = session.execute(select(TemporalSliceAnalysis)).scalars().all()
+        assert {r.period_label for r in rows} == {"2024-01", "2024-02"}
 
-        # Verify the records passed to session.add are TemporalSliceAnalysis instances
-        for call in session.add.call_args_list:
-            record = call[0][0]
-            assert isinstance(record, TemporalSliceAnalysis)
-
-    def test_issues_json_populated_for_incomplete(self):
+    def test_issues_json_populated_for_incomplete(self, session):
         """Issues JSON is populated for incomplete period with early cutoff."""
-        session = MagicMock()
         result = PeriodAnalysisResult(
             slice_table_name="slice_t",
             time_column="ts",
@@ -649,7 +644,7 @@ class TestPersistPeriodResults:
         persist_result = persist_period_results(result, session, session_id=baseline_session_id())
 
         assert persist_result.success
-        record = session.add.call_args_list[0][0][0]
+        record = session.execute(select(TemporalSliceAnalysis)).scalars().one()
         assert record.issues_json is not None
         issue_types = [i["type"] for i in record.issues_json]
         assert "incomplete" in issue_types

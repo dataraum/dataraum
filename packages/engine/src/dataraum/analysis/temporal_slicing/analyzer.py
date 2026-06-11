@@ -974,9 +974,11 @@ def persist_period_results(
 ) -> Result[int]:
     """Persist period analysis results to database.
 
-    Run-versioned (DAT-448): same discipline as :func:`persist_drift_results` —
-    rows stamped with ``run_id``, this run's prior rows for the slice table
-    replaced first (idempotent under Temporal retry, prior runs untouched).
+    Run-versioned (DAT-448) form-(a) writer (DAT-502): same discipline as
+    :func:`persist_drift_results` — rows dedup in-batch on
+    ``uq_tsa_slice_period_run`` (slice_table_name, period_label, run_id), then
+    UPSERT. A Temporal success-redelivery (same ``run_id``) converges in place
+    (no run-scoped clear); a new run's rows coexist with prior runs'.
 
     Args:
         result: PeriodAnalysisResult from analyze_period_metrics
@@ -988,19 +990,11 @@ def persist_period_results(
         Result containing number of records created
     """
     try:
-        session.execute(
-            delete(TemporalSliceAnalysis).where(
-                TemporalSliceAnalysis.slice_table_name == result.slice_table_name,
-                TemporalSliceAnalysis.session_id == session_id,
-                TemporalSliceAnalysis.run_id == run_id,
-            )
-        )
-
-        count = 0
         # Build lookup maps for completeness and anomaly results
         completeness_map = {c.period_label: c for c in result.completeness_results}
         anomaly_map = {a.period_label: a for a in result.volume_anomalies}
 
+        rows: dict[tuple[str, str, str | None], dict[str, Any]] = {}
         for m in result.period_metrics:
             comp = completeness_map.get(m.period_label)
             anom = anomaly_map.get(m.period_label)
@@ -1020,35 +1014,40 @@ def persist_period_results(
                     {"type": f"volume_{anom.anomaly_type}", "detail": f"z_score={anom.z_score:.2f}"}
                 )
 
-            record = TemporalSliceAnalysis(
-                session_id=session_id,
-                run_id=run_id,
-                slice_table_name=result.slice_table_name,
-                time_column=result.time_column,
-                period_label=m.period_label,
-                period_start=m.period_start,
-                period_end=m.period_end,
-                row_count=m.row_count,
-                column_sums=m.column_sums or None,
-                expected_days=m.expected_days,
-                observed_days=m.observed_days,
-                coverage_ratio=m.coverage_ratio,
-                is_complete=int(comp.is_complete) if comp else None,
-                has_early_cutoff=int(comp.has_early_cutoff) if comp else None,
-                days_missing_at_end=comp.days_missing_at_end if comp else None,
-                last_day_ratio=m.last_day_ratio,
-                z_score=m.z_score,
-                rolling_avg=m.rolling_avg,
-                rolling_std=m.rolling_std,
-                is_volume_anomaly=int(anom.is_anomaly) if anom else None,
-                anomaly_type=anom.anomaly_type if anom else None,
-                period_over_period_change=m.period_over_period_change,
-                issues_json=issues if issues else None,
-            )
-            session.add(record)
-            count += 1
+            # PK omitted so the model's Python-side default applies.
+            rows[(result.slice_table_name, m.period_label, run_id)] = {
+                "session_id": session_id,
+                "run_id": run_id,
+                "slice_table_name": result.slice_table_name,
+                "time_column": result.time_column,
+                "period_label": m.period_label,
+                "period_start": m.period_start,
+                "period_end": m.period_end,
+                "row_count": m.row_count,
+                "column_sums": m.column_sums or None,
+                "expected_days": m.expected_days,
+                "observed_days": m.observed_days,
+                "coverage_ratio": m.coverage_ratio,
+                "is_complete": int(comp.is_complete) if comp else None,
+                "has_early_cutoff": int(comp.has_early_cutoff) if comp else None,
+                "days_missing_at_end": comp.days_missing_at_end if comp else None,
+                "last_day_ratio": m.last_day_ratio,
+                "z_score": m.z_score,
+                "rolling_avg": m.rolling_avg,
+                "rolling_std": m.rolling_std,
+                "is_volume_anomaly": int(anom.is_anomaly) if anom else None,
+                "anomaly_type": anom.anomaly_type if anom else None,
+                "period_over_period_change": m.period_over_period_change,
+                "issues_json": issues if issues else None,
+            }
 
-        return Result.ok(count)
+        upsert(
+            session,
+            TemporalSliceAnalysis,
+            list(rows.values()),
+            index_elements=["slice_table_name", "period_label", "run_id"],
+        )
+        return Result.ok(len(rows))
 
     except Exception as e:
         logger.error("persist_period_results_failed", error=str(e))

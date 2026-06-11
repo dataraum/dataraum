@@ -259,6 +259,7 @@ CREATE TABLE temporal_slice_analyses (
 	issues_json JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
+	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id), 
 	CONSTRAINT fk_temporal_slice_analyses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
 );
 

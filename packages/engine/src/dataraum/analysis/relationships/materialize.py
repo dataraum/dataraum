@@ -3,17 +3,25 @@
 The relationship catalog of a begin_session run is built in layers: ``relationships``
 derives ephemeral ``candidate`` rows, ``semantic_per_table`` confirms a subset as
 ``llm``, and THIS step materializes the user's durable teaches —
-``ConfigOverlay(type='relationship')`` with ``action`` ``add`` (→ ``manual``) or
-``keep`` (→ ``keeper``, the silent-accept method, DAT-409 C3) — as run-stamped
-``Relationship`` rows so they re-appear in every run without ever mutating derived
-metadata.
+``ConfigOverlay(type='relationship')`` with ``action`` ``add`` or ``confirm``
+(→ ``manual``, the explicit human assertion) or ``keep`` (→ ``keeper``, the
+silent-accept method, DAT-409 C3) — as run-stamped ``Relationship`` rows so they
+re-appear in every run without ever mutating derived metadata.
 
 Runs AFTER ``semantic_per_table`` (so the ``llm`` set exists) and before
-``session_detect``: an overlay whose pair the current run already produced as
-``llm`` is skipped, so the catalog never carries two rows for one pair. Rejected
-pairs are skipped too (a reject wins over a stale add/keep). Re-running the same
-``run_id`` (a Temporal retry) clears only this run's own ``manual``/``keeper`` rows
-first, so it is idempotent and non-destructive to other runs.
+``session_detect``. Dedup is per (pair, METHOD), not per pair (DAT-447): the
+relationship_discovery adjudication reads the per-method rows side by side, so a
+human verdict must be able to coexist with the ``llm`` row it confirms — the old
+skip-any-defined-pair rule made the ``manual_curation`` witness structurally
+impossible on exactly the pairs the system asks the user to confirm, breaking the
+teach circuit (system asks for the verdict → the verdict becomes a witness → the
+witness's reliability gets measured). One row per (pair, method) is still
+guaranteed (the ``uq_relationship_columns_method`` key); the catalog enumeration
+de-duplicates pairs, and join-path counting collapses methods by column pair.
+Rejected pairs are skipped (a reject wins over a stale add/confirm/keep).
+Re-running the same ``run_id`` (a Temporal retry) clears only this run's own
+``manual``/``keeper`` rows first, so it is idempotent and non-destructive to
+other runs.
 """
 
 from __future__ import annotations
@@ -33,8 +41,10 @@ from dataraum.storage import Column
 
 logger = get_logger(__name__)
 
-# action → the durable detection_method it materializes as.
-_ACTION_METHOD = {"add": "manual", "keep": "keeper"}
+# action → the durable detection_method it materializes as. ``add`` and
+# ``confirm`` are both explicit human assertions (manual); ``add`` is listed
+# first so it wins the per-(pair, method) dedup when both overlays exist.
+_ACTION_METHOD = {"add": "manual", "confirm": "manual", "keep": "keeper"}
 
 
 def materialize_relationship_overlays(
@@ -61,15 +71,23 @@ def materialize_relationship_overlays(
 
     suppressed = load_suppressed_relationship_pairs(session)
 
-    # The run's DEFINED catalog so far (llm; candidates are ephemeral and excluded).
-    # A pair already defined this run must not be duplicated by an overlay.
-    defined_stmt = select(Relationship.from_column_id, Relationship.to_column_id).where(
+    # The run's DEFINED rows so far, keyed (pair, method) — candidates are
+    # ephemeral and excluded. Dedup is per METHOD: an overlay row may join a
+    # pair the llm already confirmed (that coexistence IS the witness pool),
+    # but never duplicate a row of its own method.
+    defined_stmt = select(
+        Relationship.from_column_id,
+        Relationship.to_column_id,
+        Relationship.detection_method,
+    ).where(
         Relationship.session_id == session_id,
         Relationship.detection_method != "candidate",
     )
     if run_id is not None:
         defined_stmt = defined_stmt.where(Relationship.run_id == run_id)
-    existing: set[tuple[str, str]] = set(session.execute(defined_stmt).tuples())
+    written: set[tuple[str, str, str]] = {
+        (f, t, str(m)) for f, t, m in session.execute(defined_stmt).tuples()
+    }
 
     # Resolve column → owning table for every column an overlay references, bounded
     # to the session's tables — an overlay pointing outside the selection is skipped.
@@ -79,7 +97,7 @@ def materialize_relationship_overlays(
     for action, method in _ACTION_METHOD.items():
         for from_col, to_col in relationship_overlay_pairs(session, action):
             pair = (from_col, to_col)
-            if pair in suppressed or pair in existing:
+            if pair in suppressed or (from_col, to_col, method) in written:
                 continue
             from_table = table_by_column.get(from_col)
             to_table = table_by_column.get(to_col)
@@ -104,7 +122,7 @@ def materialize_relationship_overlays(
                     is_confirmed=True,
                 )
             )
-            existing.add(pair)
+            written.add((from_col, to_col, method))
             count += 1
 
     logger.info(

@@ -272,8 +272,14 @@ def test_materialize_keep_overlay_creates_keeper(session: Session) -> None:
     assert [r.detection_method for r in rows] == ["keeper"]
 
 
-def test_materialize_skips_pair_already_llm_this_run(session: Session) -> None:
-    """No duplicate: an overlay for a pair the run already produced as llm is skipped."""
+def test_materialize_joins_a_pair_already_llm_this_run(session: Session) -> None:
+    """Human-witness rows COEXIST with the llm row (DAT-447 — the teach circuit).
+
+    The old skip-any-defined-pair rule made manual/keeper structurally
+    impossible on exactly the pairs the system asks the user to confirm. Dedup
+    is per (pair, method): the keeper row joins the llm row; the adjudication
+    reads them side by side.
+    """
     _seed_tables_columns(session)
     _rel(session, "ca", "cb", "llm", run_id="r1")
     _overlay(session, "keep", "ca", "cb")
@@ -284,10 +290,50 @@ def test_materialize_skips_pair_already_llm_this_run(session: Session) -> None:
     )
     session.flush()
 
-    assert count == 0
-    # The pair stays a single llm row — never duplicated as keeper.
+    assert count == 1
     pairs = session.query(Relationship).filter(Relationship.run_id == "r1").all()
-    assert [p.detection_method for p in pairs] == ["llm"]
+    assert sorted(p.detection_method for p in pairs) == ["keeper", "llm"]
+
+
+def test_confirm_overlay_materializes_a_manual_row_beside_llm(session: Session) -> None:
+    """An explicit confirm becomes the manual_curation witness on the confirmed pair.
+
+    Before DAT-447 a confirm materialized NOTHING — the human verdict the
+    system itself asked for vanished instead of becoming a witness.
+    """
+    _seed_tables_columns(session)
+    _rel(session, "ca", "cb", "llm", run_id="r1")
+    _overlay(session, "confirm", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 1
+    pairs = session.query(Relationship).filter(Relationship.run_id == "r1").all()
+    by_method = {p.detection_method: p for p in pairs}
+    assert set(by_method) == {"llm", "manual"}
+    assert by_method["manual"].evidence == {"source": "config_overlay", "action": "confirm"}
+
+
+def test_add_and_confirm_overlays_never_duplicate_the_manual_row(session: Session) -> None:
+    """Both map to manual; the per-(pair, method) dedup keeps exactly one row."""
+    _seed_tables_columns(session)
+    _overlay(session, "add", "ca", "cb")
+    _overlay(session, "confirm", "ca", "cb")
+    session.flush()
+
+    count = materialize_relationship_overlays(
+        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
+    )
+    session.flush()
+
+    assert count == 1
+    pairs = session.query(Relationship).filter(Relationship.run_id == "r1").all()
+    assert [p.detection_method for p in pairs] == ["manual"]
+    assert pairs[0].evidence["action"] == "add"  # listed first, wins the dedup
 
 
 def test_materialize_skips_a_rejected_pair(session: Session) -> None:

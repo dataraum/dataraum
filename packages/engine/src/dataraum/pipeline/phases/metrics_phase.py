@@ -175,10 +175,12 @@ class MetricsPhase(BasePhase):
         snippet_library = SnippetLibrary(ctx.session, session_id=session_id)
 
         # declare: every declared graph_id becomes a declared artifact for THIS
-        # run — supersession across runs, UNIQUE identity within one.
+        # run — supersession across runs; a success-redelivery RESETS the same
+        # run's row to declared (declare-or-reuse, DAT-502).
         artifacts: dict[str, LifecycleArtifact] = {}
         for graph_id, defn in declared_defs.items():
-            artifact = declare_artifact(
+            artifacts[graph_id] = declare_artifact(
+                ctx.session,
                 session_id=session_id,
                 artifact_type="metric",
                 artifact_key=graph_id,
@@ -190,8 +192,6 @@ class MetricsPhase(BasePhase):
                     "category": (defn.get("metadata") or {}).get("category"),
                 },
             )
-            ctx.session.add(artifact)
-            artifacts[graph_id] = artifact
 
         # Parse declared definitions into graphs. A definition that won't parse
         # stays declared with the parse error recorded — visibly impossible.

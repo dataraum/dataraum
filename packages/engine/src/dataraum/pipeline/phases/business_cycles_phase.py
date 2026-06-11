@@ -31,7 +31,7 @@ outcome.
 from __future__ import annotations
 
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from dataraum.analysis.cycles import BusinessCycleAgent
 from dataraum.analysis.cycles.config import get_cycle_types
@@ -43,6 +43,7 @@ from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -138,10 +139,12 @@ class BusinessCyclesPhase(BasePhase):
         )
 
         # declare: every declared cycle type becomes a declared artifact for THIS
-        # run — supersession across runs, UNIQUE identity within one.
+        # run — supersession across runs; a success-redelivery RESETS the same
+        # run's row to declared (declare-or-reuse, DAT-502).
         artifacts = {}
         for canonical_type, defn in declared_types.items():
-            artifact = declare_artifact(
+            artifacts[canonical_type] = declare_artifact(
+                ctx.session,
                 session_id=session_id,
                 artifact_type="cycle",
                 artifact_key=canonical_type,
@@ -153,8 +156,6 @@ class BusinessCyclesPhase(BasePhase):
                     "business_value": defn.get("business_value", "medium"),
                 },
             )
-            ctx.session.add(artifact)
-            artifacts[canonical_type] = artifact
 
         # bind: ONE synthesis call grounds the declared vocabulary against the
         # workspace. A hard synthesis failure (no tool call / LLM error) fails
@@ -264,31 +265,45 @@ def _persist_cycles(
     session_id: str,
     run_id: str,
 ) -> None:
-    """Persist one run-stamped ``DetectedBusinessCycle`` per grounded cycle."""
-    for cycle in cycles:
-        session.add(
-            DetectedBusinessCycle(
-                cycle_id=cycle.cycle_id,
-                session_id=session_id,
-                run_id=run_id,
-                cycle_name=cycle.cycle_name,
-                cycle_type=cycle.cycle_type,
-                canonical_type=cycle.canonical_type,
-                is_known_type=cycle.is_known_type,
-                description=cycle.description,
-                business_value=cycle.business_value,
-                confidence=cycle.confidence,
-                tables_involved=cycle.tables_involved,
-                stages=[s.model_dump() for s in cycle.stages],
-                entity_flows=[ef.model_dump() for ef in cycle.entity_flows],
-                status_table=cycle.status_table,
-                status_column=cycle.status_column,
-                completion_value=cycle.completion_value,
-                total_records=cycle.total_records,
-                completed_cycles=cycle.completed_cycles,
-                completion_rate=cycle.completion_rate,
-                evidence=cycle.evidence,
-            )
-        )
+    """Persist one run-stamped ``DetectedBusinessCycle`` per grounded cycle.
+
+    Form-(a) upsert on ``uq_detected_cycle_run`` (DAT-502): a Temporal
+    success-redelivery re-runs the whole phase under the same ``run_id`` and
+    re-detects the declared vocabulary — converging in place (the existing
+    row keeps its ``cycle_id``; the fresh detection's fields win) instead of
+    violating the UNIQUE. ``detected_by_type`` already dedups the batch per
+    canonical type.
+    """
+    rows: list[dict[str, Any]] = [
+        {
+            "cycle_id": cycle.cycle_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "cycle_name": cycle.cycle_name,
+            "cycle_type": cycle.cycle_type,
+            "canonical_type": cycle.canonical_type,
+            "is_known_type": cycle.is_known_type,
+            "description": cycle.description,
+            "business_value": cycle.business_value,
+            "confidence": cycle.confidence,
+            "tables_involved": cycle.tables_involved,
+            "stages": [s.model_dump() for s in cycle.stages],
+            "entity_flows": [ef.model_dump() for ef in cycle.entity_flows],
+            "status_table": cycle.status_table,
+            "status_column": cycle.status_column,
+            "completion_value": cycle.completion_value,
+            "total_records": cycle.total_records,
+            "completed_cycles": cycle.completed_cycles,
+            "completion_rate": cycle.completion_rate,
+            "evidence": cycle.evidence,
+        }
+        for cycle in cycles
+    ]
+    upsert(
+        session,
+        DetectedBusinessCycle,
+        rows,
+        index_elements=["session_id", "canonical_type", "run_id"],
+    )
 
     _log.debug("detected_cycles_persisted", run_id=run_id, count=len(cycles))

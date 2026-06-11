@@ -30,9 +30,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
+from sqlalchemy import select
+
 from dataraum.core.logging import get_logger
 
 if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
     from dataraum.lifecycle.db_models import LifecycleArtifact
 
 logger = get_logger(__name__)
@@ -123,6 +127,7 @@ def authorize(artifact_type: str, operation: str, stage: str) -> None:
 
 
 def declare_artifact(
+    session: Session,
     *,
     session_id: str,
     artifact_type: str,
@@ -132,12 +137,20 @@ def declare_artifact(
     teaches: dict[str, Any] | None = None,
     strictness: float | None = None,
 ) -> LifecycleArtifact:
-    """Create a ``declared`` artifact row for this run.
+    """Declare-or-reuse: this run's ``declared`` artifact row (DAT-502).
 
-    The caller adds the returned (transient) row to its SQLAlchemy session;
-    the identity UNIQUE rejects a duplicate declare within one run at flush.
-    A re-run declares anew under its fresh ``run_id`` — supersession, not
-    mutation.
+    Temporal activities are at-least-once: a success-redelivery (committed
+    rows, ack lost) re-declares the same ``(session, type, key, run)``
+    identity. Instead of violating the identity UNIQUE, the existing row is
+    RESET to ``declared`` — ``state_reason``/``grounded_against`` cleared,
+    ``teaches``/``strictness`` refreshed — because :func:`transition` requires
+    exact from-states: a leftover ``grounded``/``executed`` state from the
+    first delivery would reject the redelivered bind. The redelivered run then
+    re-flows the whole lifecycle on the same row. A NEW run still declares
+    anew under its fresh ``run_id`` — supersession across runs, never
+    mutation of a prior run's row.
+
+    The row is added to ``session`` here (no caller-side ``session.add``).
 
     Raises:
         StageNotAuthorizedError: the stage may not declare this type.
@@ -145,7 +158,31 @@ def declare_artifact(
     from dataraum.lifecycle.db_models import LifecycleArtifact
 
     authorize(artifact_type, "declare", stage)
-    return LifecycleArtifact(
+
+    existing = session.execute(
+        select(LifecycleArtifact).where(
+            LifecycleArtifact.session_id == session_id,
+            LifecycleArtifact.artifact_type == artifact_type,
+            LifecycleArtifact.artifact_key == artifact_key,
+            LifecycleArtifact.run_id == run_id,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.state = ArtifactState.DECLARED.value
+        existing.state_reason = None
+        existing.grounded_against = None
+        existing.teaches = teaches
+        existing.strictness = strictness
+        existing.state_changed_at = datetime.now(UTC)
+        logger.debug(
+            "lifecycle_declare_reused",
+            artifact_type=artifact_type,
+            artifact_key=artifact_key,
+            run_id=run_id,
+        )
+        return existing
+
+    artifact = LifecycleArtifact(
         session_id=session_id,
         artifact_type=artifact_type,
         artifact_key=artifact_key,
@@ -155,6 +192,8 @@ def declare_artifact(
         teaches=teaches,
         strictness=strictness,
     )
+    session.add(artifact)
+    return artifact
 
 
 def transition(

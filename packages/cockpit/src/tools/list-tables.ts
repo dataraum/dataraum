@@ -32,8 +32,8 @@ import {
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
-import { pickCurrentRow } from "./readiness-grain";
 import { fileName } from "../lib/file-uri";
+import { pickCurrentRow } from "./readiness-grain";
 
 // The calibrated bands the engine emits (entropy_readiness.band). A column with
 // no readiness row (left-join miss) counts as `unanalyzed`, never as a band.

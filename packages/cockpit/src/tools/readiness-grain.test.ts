@@ -12,10 +12,7 @@ import {
 
 type Row = GrainRow & { id: string; detectorId: string | null };
 
-function row(
-	id: string,
-	overrides: Partial<Omit<Row, "id">> = {},
-): Row {
+function row(id: string, overrides: Partial<Omit<Row, "id">> = {}): Row {
 	return {
 		id,
 		detectorId: null,
@@ -118,10 +115,7 @@ describe("mergeCurrentEvidence", () => {
 			}),
 			row("tf", { detectorId: "type_fidelity", viaTableHead: true }),
 		];
-		expect(mergeCurrentEvidence(rows).map((r) => r.id)).toEqual([
-			"ctc",
-			"tf",
-		]);
+		expect(mergeCurrentEvidence(rows).map((r) => r.id)).toEqual(["ctc", "tf"]);
 	});
 
 	it("preserves the input's first-occurrence detector order", () => {

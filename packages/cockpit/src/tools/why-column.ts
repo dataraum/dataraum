@@ -33,8 +33,8 @@ import {
 import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
-import { mergeCurrentEvidence, pickCurrentRow } from "./readiness-grain";
 import { getWhyInstructions } from "../prompts";
+import { mergeCurrentEvidence, pickCurrentRow } from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / drivers) is shared with look_table —
 // see `db/metadata/readiness-schemas.ts`. Parsed leniently below.

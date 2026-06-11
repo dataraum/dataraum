@@ -125,10 +125,17 @@ export interface SchemaColumnRow {
 	resolvedType: string | null;
 }
 
-/** The promoted semantic concept for a column (the field-mapping replacement). */
+/** The promoted semantic concept for a column (the field-mapping replacement),
+ * plus the resolved stock/flow adjudication (DAT-509): `temporalBehavior` is
+ * the pooled-resolved value the resolve layer wrote onto the annotation
+ * (`additive` = flow, `point_in_time` = stock — never SUM a stock across
+ * periods), and `temporalBehaviorContested` marks an open witness conflict the
+ * agent must caveat instead of silently aggregating over. */
 export interface SchemaConceptRow {
 	columnId: string;
 	businessConcept: string | null;
+	temporalBehavior: string | null;
+	temporalBehaviorContested: boolean | null;
 }
 
 /**
@@ -146,9 +153,10 @@ export function formatSchema(
 		return "<schema>\n(No queryable tables in the workspace yet — nothing to query.)\n</schema>";
 	}
 
-	const conceptByColumn = new Map<string, string>();
+	const conceptByColumn = new Map<string, SchemaConceptRow>();
 	for (const c of conceptRows) {
-		if (c.businessConcept) conceptByColumn.set(c.columnId, c.businessConcept);
+		if (c.businessConcept || c.temporalBehavior)
+			conceptByColumn.set(c.columnId, c);
 	}
 
 	const columnsByTable = new Map<string, SchemaColumnRow[]>();
@@ -169,9 +177,20 @@ export function formatSchema(
 		const address = `${LAKE_ALIAS}.${schemaForLayer(t.layer)}.${t.physicalName}`;
 		const colLines = cols.map((c) => {
 			const type = c.resolvedType ?? "unknown";
-			const concept = conceptByColumn.get(c.columnId);
-			const conceptTag = concept ? `  [concept: ${concept}]` : "";
-			return `  - "${c.name}" :: ${type}${conceptTag}`;
+			const semantic = conceptByColumn.get(c.columnId);
+			const conceptTag = semantic?.businessConcept
+				? `  [concept: ${semantic.businessConcept}]`
+				: "";
+			// Mirror the engine's render (graphs/context.py): the resolved
+			// stock/flow behaviour as a parenthesized marker; an open witness
+			// conflict becomes an explicit caveat tag (DAT-509).
+			const temporalTag = semantic?.temporalBehavior
+				? ` (${semantic.temporalBehavior})`
+				: "";
+			const contestedTag = semantic?.temporalBehaviorContested
+				? "  [stock/flow contested]"
+				: "";
+			return `  - "${c.name}" :: ${type}${conceptTag}${temporalTag}${contestedTag}`;
 		});
 		return `Table ${address}:\n${colLines.join("\n")}`;
 	});
@@ -180,7 +199,11 @@ export function formatSchema(
 		"<schema>\n" +
 		`Address each table in SQL as ${LAKE_ALIAS}.<layer>.<name> exactly as shown ` +
 		"(quote column names with double quotes). Use a column's [concept: …] tag to " +
-		"map a question's business terms to the concrete column.\n\n" +
+		"map a question's business terms to the concrete column. A column marked " +
+		"(point_in_time) is a stock — never SUM it across periods (use the last or " +
+		"average value); (additive) is a flow and sums safely. A column tagged " +
+		"[stock/flow contested] has disagreeing evidence about which it is — state " +
+		"that caveat in your answer when aggregating over it.\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</schema>"
 	);
@@ -246,6 +269,9 @@ export async function buildSchemaBlock(): Promise<string> {
 		.select({
 			columnId: currentSemanticAnnotations.columnId,
 			businessConcept: currentSemanticAnnotations.businessConcept,
+			temporalBehavior: currentSemanticAnnotations.temporalBehavior,
+			temporalBehaviorContested:
+				currentSemanticAnnotations.temporalBehaviorContested,
 		})
 		.from(currentSemanticAnnotations);
 
@@ -260,6 +286,8 @@ export async function buildSchemaBlock(): Promise<string> {
 		conceptRows.map((c) => ({
 			columnId: c.columnId ?? "",
 			businessConcept: c.businessConcept ?? null,
+			temporalBehavior: c.temporalBehavior ?? null,
+			temporalBehaviorContested: c.temporalBehaviorContested ?? null,
 		})),
 	);
 }

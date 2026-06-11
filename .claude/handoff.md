@@ -4,6 +4,33 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-11 (live smoke): first full clean-corpus journey on main — numbers SUSPECT until DAT-511
+
+The deferred live operating_model smoke ran end-to-end on a wiped stack (main =
+DAT-442 #284 + DAT-509 #285): 5 clean finance CSVs → add_source ×5 →
+begin_session → operating_model, real LLM throughout. The spine works; the
+TB↔GL watcher executed; columns_used fan-out reached the exact TB columns
+(cross_table_consistency 1.0 on account_id/period/debit_balance/credit_balance
+under the operating_model head); debit_balance/credit_balance resolved
+point_in_time UNCONTESTED (witnesses agree on clean data — the contested tag
+correctly stays off).
+
+**DO NOT ingest the validation outcomes as calibration signal yet.** The run
+surfaced a sequencing bug (DAT-511): the operating model was started ~90s
+BEFORE begin_session's detect head promoted (caused by the cockpit narrating
+completions one stage early, DAT-510), so validation GROUNDING ran against
+pre-promote session state. The clean-leg outcomes — TB↔GL 91.7% match,
+GL↔invoice 98.5%, 1 sign-convention violation, 2 date-ordering violations,
+and 5/9 metrics failing execution (the income-statement family: Net Income,
+EBITDA Margin, Net/Operating Margin, Operating Income) — may be artifacts of
+that early grounding rather than engine behavior. Re-run the clean leg after
+DAT-511's guard lands; THEN compare against the clean bands. If the noise
+reproduces post-fix, the date-ordering count (2) and the metric grounding
+failures become real precision findings (the A4 due-date fix was supposed to
+zero the former).
+
+- **Status**: pending (blocked on DAT-511; smoke rerun owes eval the clean-leg verdict)
+
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 
 LANE-NOTES.md (lane scratch, deleted at merge) was the only record of three

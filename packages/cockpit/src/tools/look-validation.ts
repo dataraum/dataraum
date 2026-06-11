@@ -54,6 +54,11 @@ const ValidationOverview = z.object({
 	status: z.string().nullable(),
 	passed: z.boolean().nullable(),
 	message: z.string().nullable(),
+	// The exact "table.column" entries the executed check read (DAT-509) — the
+	// same set a failed critical fans its column-grain entropy out to, so the
+	// agent can name the implicated columns (and drill in via look_table).
+	// Empty until executed.
+	columns_used: z.array(z.string()),
 });
 export type ValidationOverview = z.infer<typeof ValidationOverview>;
 
@@ -67,12 +72,27 @@ const LookValidationResult = z.object({
 });
 export type LookValidationResult = z.infer<typeof LookValidationResult>;
 
+/**
+ * Narrow the `columns_used` JSON column to its engine contract: a list of
+ * LLM-declared "table.column" strings, possibly carrying the physical
+ * `src_<digest>__` prefix — digest-stripped like every engine string surfaced
+ * to the agent. Anything off-contract degrades to empty, never throws.
+ */
+export function columnsUsedStrings(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map((entry) => stripSrcDigests(entry));
+}
+
 /** One current_validation_results row, keyed by its validation_id. */
 export interface ValidationResultRow {
 	status: string | null;
 	severity: string | null;
 	passed: boolean | null;
 	message: string | null;
+	// JSON column — unknown at the boundary, narrowed in the projector.
+	columnsUsed: unknown;
 }
 
 /**
@@ -97,6 +117,7 @@ export function projectValidationOverview(
 		status: result?.status ?? null,
 		passed: result?.passed ?? null,
 		message: result?.message == null ? null : stripSrcDigests(result.message),
+		columns_used: columnsUsedStrings(result?.columnsUsed),
 	};
 }
 
@@ -137,6 +158,7 @@ export async function lookValidation(
 			severity: currentValidationResults.severity,
 			passed: currentValidationResults.passed,
 			message: currentValidationResults.message,
+			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults)
 		.where(eq(currentValidationResults.sessionId, input.session_id));
@@ -148,6 +170,7 @@ export async function lookValidation(
 				severity: r.severity,
 				passed: r.passed,
 				message: r.message,
+				columnsUsed: r.columnsUsed,
 			},
 		]),
 	);

@@ -250,6 +250,7 @@ describe("agent name-leak property (DAT-433)", () => {
 				severity: "error",
 				passed: false,
 				message: `12 rows in ${RAW_ORDERS} have no match`,
+				columnsUsed: [`${RAW_ORDERS}.customer_id`],
 			},
 		);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
@@ -280,6 +281,7 @@ describe("agent name-leak property (DAT-433)", () => {
 				sqlUsed: `SELECT count(*) FROM lake.typed.${RAW_ORDERS} o LEFT JOIN lake.typed.${RAW_CUSTOMERS} c ON o.customer_id = c.id`,
 				executedAt: new Date("2026-06-07T12:00:00Z"),
 				details: { table: RAW_ORDERS, failing_rows: 12 },
+				columnsUsed: [`${RAW_ORDERS}.customer_id`],
 			},
 			0,
 		);

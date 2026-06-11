@@ -68,6 +68,15 @@ export function ValidationWhyWidget({
 				</Text>
 			)}
 
+			{/* The exact columns the executed check read (DAT-509) — a failed
+			    critical fans its column-grain entropy out to these, so they name
+			    where to look next. */}
+			{why.columns_used.length > 0 && (
+				<Text size="xs" c="dimmed" data-testid="canvas-validation-why-columns">
+					Columns checked: {why.columns_used.join(", ")}
+				</Text>
+			)}
+
 			<Group gap="md" wrap="wrap">
 				{why.severity && (
 					<Text

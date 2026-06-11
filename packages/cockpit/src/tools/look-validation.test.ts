@@ -34,6 +34,7 @@ describe("projectValidationOverview (DAT-440)", () => {
 			severity: "error",
 			passed: false,
 			message: "12 invoices have no matching journal entry",
+			columnsUsed: ["invoices.amount", "journal_lines.debit"],
 		};
 
 		expect(projectValidationOverview(artifact, result)).toEqual({
@@ -44,6 +45,7 @@ describe("projectValidationOverview (DAT-440)", () => {
 			status: "executed",
 			passed: false,
 			message: "12 invoices have no matching journal entry",
+			columns_used: ["invoices.amount", "journal_lines.debit"],
 		});
 	});
 
@@ -78,11 +80,13 @@ describe("projectValidationOverview (DAT-440)", () => {
 			severity: null,
 			passed: true,
 			message: `checked src_${D1}__orders rows`,
+			columnsUsed: [`src_${D1}__orders.amount`],
 		};
 
 		const projected = projectValidationOverview(artifact, result);
 		expect(projected.state_reason).toBe("Missing required tables: orders");
 		expect(projected.message).toBe("checked orders rows");
+		expect(projected.columns_used).toEqual(["orders.amount"]);
 		expect(JSON.stringify(projected)).not.toMatch(/src_[0-9a-f]{40}/);
 	});
 

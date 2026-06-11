@@ -36,6 +36,7 @@ const executedResult: WhyValidationResultRow = {
 	sqlUsed: "SELECT i.id FROM invoices i LEFT JOIN payments p ON …",
 	executedAt: new Date("2026-06-07T12:00:00Z"),
 	details: { failing_rows: 12 },
+	columnsUsed: ["invoices.id", "payments.invoice_id"],
 };
 
 describe("projectWhyValidation (DAT-440)", () => {
@@ -61,6 +62,7 @@ describe("projectWhyValidation (DAT-440)", () => {
 			sql_used: "SELECT i.id FROM invoices i LEFT JOIN payments p ON …",
 			executed_at: "2026-06-07T12:00:00.000Z",
 			details: JSON.stringify({ failing_rows: 12 }),
+			columns_used: ["invoices.id", "payments.invoice_id"],
 			pending_teaches: 2,
 		});
 	});
@@ -120,6 +122,7 @@ describe("projectWhyValidation (DAT-440)", () => {
 				sqlUsed: `SELECT count(*) FROM lake.typed.src_${D1}__orders`,
 				executedAt: null,
 				details: { table: `src_${D1}__orders` },
+				columnsUsed: [`src_${D1}__orders.amount`],
 			},
 			0,
 		);

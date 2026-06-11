@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from temporalio.exceptions import ApplicationError
 
 from dataraum.investigation.db_models import InvestigationSession, SessionTable
 from dataraum.storage import MetadataSnapshotHead, Table, init_database, session_head_target
@@ -104,14 +105,18 @@ class TestResolveOperatingModelScope:
         # tbl-2 has no promoted semantic head → absent, never guessed.
         assert scope.semantic_runs == {"tbl-1": "run-sem-1"}
 
-    def test_unpromoted_session_pins_nothing(self, monkeypatch, session_factory):
+    def test_unpromoted_session_fails_born_loud(self, monkeypatch, session_factory):
+        """Linked tables but no promoted begin_session head = mid-flight or
+        failed session (DAT-511) — refuse to ground over a partial workspace
+        instead of pinning None and warning (the 2026-06-11 live-smoke bug).
+        Non-retryable: deterministic until begin_session promotes."""
         monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
         _seed_session(session_factory, ["tbl-1"])
 
-        scope = resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
-
-        assert scope.relationship_run_id is None  # fail-closed at the readers
-        assert scope.semantic_runs == {}
+        with pytest.raises(ApplicationError, match="no promoted begin_session") as exc:
+            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+        assert exc.value.non_retryable is True
+        assert exc.value.type == "PhaseFailed"
 
     def test_no_linked_tables_fails_loud(self, monkeypatch, session_factory):
         monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")

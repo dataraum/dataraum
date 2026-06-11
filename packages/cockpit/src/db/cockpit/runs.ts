@@ -214,3 +214,32 @@ export async function listWatchableRuns(
 		.limit(limit);
 	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
 }
+
+/**
+ * Whether the engine session has an in-flight run at `stage` (DAT-511). The
+ * `operating_model` tool pre-checks `begin_session` here so a user (or the
+ * agent, mis-narrated per DAT-510) can't start the operating model against a
+ * session that hasn't promoted yet — the engine guards the same precondition
+ * born-loud (`resolve_operating_model_scope`); this check just turns the
+ * workflow failure into a friendly in-chat sentence. Conservative on staleness:
+ * a crashed run lingering as `running` blocks until the reload reconcile
+ * (`reconcileActiveRuns`) sweeps it terminal.
+ */
+export async function hasRunningRun(
+	engineSessionId: string,
+	stage: RunStage,
+): Promise<boolean> {
+	const [row] = await cockpitDb
+		.select({ id: sessionRuns.id })
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(
+			and(
+				eq(sessions.engineSessionId, engineSessionId),
+				eq(sessionRuns.stage, stage),
+				eq(sessionRuns.status, "running"),
+			),
+		)
+		.limit(1);
+	return row !== undefined;
+}

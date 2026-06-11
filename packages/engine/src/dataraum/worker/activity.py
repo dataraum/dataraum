@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
+from temporalio.exceptions import ApplicationError
 
 from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
@@ -768,6 +769,9 @@ def resolve_operating_model_scope(
         RuntimeError: workspace mismatch, unknown session, or a session with
             no linked tables (begin_session must have run) — fail loud, the
             workflow has nothing to operate on.
+        ApplicationError: linked tables but no promoted begin_session head —
+            the session is mid-flight or failed (DAT-511); non-retryable
+            (``PhaseFailed``), grounding must not run over a partial workspace.
     """
     from dataraum.lifecycle import resolve_operating_model_base_runs
 
@@ -797,6 +801,22 @@ def resolve_operating_model_scope(
                 "begin_session must compose the workspace before operating_model runs."
             )
         base_runs = resolve_operating_model_base_runs(session, identity.session_id, table_ids)
+        if base_runs.relationship_run_id is None:
+            # Born-loud (DAT-511): linked tables but no promoted begin_session
+            # head means the session is mid-flight or failed — grounding would
+            # run with empty relationship/enriched-view context and band over a
+            # partial workspace (the 2026-06-11 live-smoke failure). The
+            # `session_tables` check above can't catch this: begin_session's
+            # SELECT phase writes those rows minutes before its promote.
+            # Non-retryable — deterministic until begin_session promotes; the
+            # caller re-runs once it has (the cockpit tool pre-checks this).
+            raise ApplicationError(
+                f"Session '{identity.session_id}' has no promoted begin_session "
+                "run — begin_session is still running or failed. Let it finish, "
+                "then re-run operating_model.",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
 
     logger.info(
         "operating_model_scope_resolved",

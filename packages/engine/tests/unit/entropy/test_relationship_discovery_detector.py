@@ -114,6 +114,12 @@ class TestRelationshipDiscoveryWiring:
         assert evidence["llm_confirmed_this_run"] is True
         assert evidence["value_overlap"]["join_confidence"] == 0.59
         assert set(evidence["posterior"]) == {"genuine", "spurious"}
+        # C/U → teach routing (DAT-447): an adjudicated pair always hands the
+        # user an executable relationship-overlay action on the column pair.
+        teach = evidence["teach_suggestion"]
+        assert teach["type"] == "relationship"
+        assert teach["action"] in ("confirm", "reject")
+        assert (teach["from_column_id"], teach["to_column_id"]) == ("c-fk", "c-pk")
 
     def test_keeper_pair_without_llm_row_marks_unconfirmed(self, session: Session) -> None:
         _add_relationship(

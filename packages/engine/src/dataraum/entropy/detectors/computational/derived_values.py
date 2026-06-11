@@ -25,6 +25,14 @@ UNGRADED hypothesis never moves the scalar — the hallucination guard abstains
 when its source columns don't resolve, so an LLM guess alone cannot flag a
 column (no deterministic override, no unilateral LLM claim).
 
+Teach routing (DAT-447, Option B): every emitted evidence entry carries a
+``validation`` teach suggestion — the user resolves a contested formula by
+DECLARING the expected one (an expected formula IS a check, executed every run
+by the validation phase). The declaration comes back through
+``load_declared_formula`` as the ``human_declaration`` witness on the declared
+formula's claim, row-graded like any hypothesis: corroborated → the claim's
+conflict collapses; violated → the human is contested, never obeyed.
+
 Match-quality status thresholds remain in config/entropy/thresholds.yaml.
 """
 
@@ -80,7 +88,7 @@ def _derived_entries(correlation: Any, column_name: str) -> list[dict[str, Any]]
 
 
 class DerivedValueDetector(EntropyDetector):
-    """Formula mismatch rate, pooled with the LLM formula-hypothesis witness."""
+    """Formula mismatch rate, pooled with the LLM-hypothesis + declaration witnesses."""
 
     detector_id = "derived_value"
     layer = Layer.COMPUTATIONAL
@@ -90,19 +98,26 @@ class DerivedValueDetector(EntropyDetector):
     # what exists (correlation rows are session-run-written; the semantic
     # hypothesis is add_source-written) and detect() measures what it got.
     required_analyses = []
-    description = "Measures reliability of derived column formulas (data vs LLM hypothesis)"
+    description = (
+        "Measures reliability of derived column formulas (data vs LLM hypothesis vs declaration)"
+    )
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load discovered formulas, the LLM hypothesis, reliabilities + grading.
+        """Load discovered formulas, the LLM hypothesis, the declaration + grading.
 
         A NOVEL hypothesis (parsed, not self-referential, not matching any
         discovered formula) is row-graded over the typed table with the same
         statistic the discovery uses — "the data grounds the LLM hypothesis".
+        A user-declared expected formula (the ``validation`` teach, DAT-447)
+        loads alongside and a novel declared formula is row-graded the same
+        way, so a declaration the data violates is honestly contested rather
+        than silently trusted.
         """
         if context.session is None or context.column_id is None:
             return
         from dataraum.entropy.detectors.loaders import (
             load_correlation,
+            load_declared_formula,
             load_hypothesis_match_rate,
             load_semantic,
         )
@@ -121,26 +136,58 @@ class DerivedValueDetector(EntropyDetector):
         context.analysis_results["reliabilities"] = get_reliability_config().for_measurement(
             self.detector_id
         )
+        declaration = load_declared_formula(
+            context.session, context.table_name, context.column_name
+        )
+        if declaration is not None:
+            context.analysis_results["declaration"] = declaration
 
-        hyp = parse_formula((semantic or {}).get("derived_formula_hypothesis"))
-        if hyp is None or context.column_name.strip().lower() in hyp.operands:
-            return
         discovered_identities = {
             c.identity
             for entry in _derived_entries(correlation or {}, context.column_name)
             if (c := canonicalize_discovered(entry)) is not None
         }
-        if hyp.identity in discovered_identities:
-            return  # already graded by the discovery's own match rate
-        grading = load_hypothesis_match_rate(
-            context.session,
-            context.column_id,
-            context.duckdb_conn,
-            hyp.operands,
-            hyp.operation,
-        )
-        if grading is not None:
-            context.analysis_results["hypothesis_grading"] = grading
+        focal = context.column_name.strip().lower()
+
+        hyp = parse_formula((semantic or {}).get("derived_formula_hypothesis"))
+        # A discovered formula is already graded by its own match rate; only a
+        # NOVEL, non-self-referential hypothesis gets the loader's row grading.
+        if (
+            hyp is not None
+            and focal not in hyp.operands
+            and hyp.identity not in discovered_identities
+        ):
+            grading = load_hypothesis_match_rate(
+                context.session,
+                context.column_id,
+                context.duckdb_conn,
+                hyp.operands,
+                hyp.operation,
+            )
+            if grading is not None:
+                context.analysis_results["hypothesis_grading"] = grading
+
+        decl = parse_formula((declaration or {}).get("formula"))
+        if (
+            declaration is not None
+            and decl is not None
+            and focal not in decl.operands
+            and decl.identity not in discovered_identities
+        ):
+            hypothesis_grading = context.analysis_results.get("hypothesis_grading")
+            if hyp is not None and decl.identity == hyp.identity and hypothesis_grading:
+                # Same canonical identity → the same row statistic; reuse it.
+                declaration["match_rate"] = hypothesis_grading.get("match_rate")
+            else:
+                decl_grading = load_hypothesis_match_rate(
+                    context.session,
+                    context.column_id,
+                    context.duckdb_conn,
+                    decl.operands,
+                    decl.operation,
+                )
+                if decl_grading is not None:
+                    declaration["match_rate"] = decl_grading.get("match_rate")
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Adjudicate the column's formula claims; emit one witnessed object.
@@ -156,6 +203,7 @@ class DerivedValueDetector(EntropyDetector):
         semantic = context.get_analysis("semantic", {}) or {}
         reliabilities = context.get_analysis("reliabilities", None) or None
         grading = context.get_analysis("hypothesis_grading", {}) or {}
+        declaration = context.get_analysis("declaration", None) or None
 
         discovered = _derived_entries(correlation, context.column_name)
         hypothesis = None
@@ -171,6 +219,7 @@ class DerivedValueDetector(EntropyDetector):
             context.column_name,
             discovered,
             hypothesis,
+            declaration=declaration,
             reliabilities=reliabilities,
         )
         if not adjudications:
@@ -197,7 +246,15 @@ class DerivedValueDetector(EntropyDetector):
             and int(grading.get("total") or 0) >= hyp_min_rows
             and float(hypothesis.get("confidence") or 0.0) >= hyp_min_confidence
         )
-        graded_rates = [a.match_rate for a in adjudications if a.discovered or hypothesis_scalar_ok]
+        # A DECLARED slot is first-class in both score legs (DAT-447): the user
+        # deliberately chose the identity (no guessy-confidence hygiene to
+        # apply) and its grading is data — a declared check the rows violate is
+        # the quality finding, not silent trust in the human.
+        graded_rates = [
+            a.match_rate
+            for a in adjudications
+            if a.discovered or a.declared or hypothesis_scalar_ok
+        ]
         best_rate = max((r for r in graded_rates if r is not None), default=None)
         scalar = max(0.0, min(1.0, 1.0 - best_rate)) if best_rate is not None else 0.0
         # The name-vs-data identity conflict joins the score (wave-2 cal corpus
@@ -211,10 +268,22 @@ class DerivedValueDetector(EntropyDetector):
         # hypothesis-hygiene gate as the scalar: a low-confidence guess or a
         # thin grading sample must not band a clean column through this door
         # either (review wave-1 blocker).
-        identity_conflict = max(
-            (a.result.conflict for a in adjudications if a.discovered or hypothesis_scalar_ok),
-            default=0.0,
-        )
+        # CLOSURE (DAT-447): once the user has DECLARED the expected formula,
+        # the identity question has its human answer — the declared claim IS
+        # the column's identity risk, so the conflict leg aggregates over the
+        # declared slot(s) only. This is aggregation semantics, not an
+        # override: every witness still votes on every claim (the name-vs-data
+        # conflict on the hypothesis claim stays in evidence — it is a NAMING
+        # finding once the formula is settled), and a VIOLATED declaration
+        # bands harder, not softer (row grading fails vs the human's holds →
+        # high pooled conflict on exactly the claim the human anchored).
+        # Without this, a correct declaration left the column banded forever —
+        # a teach that cannot close, breaking the eval contract's "stable".
+        declared_slots = [a for a in adjudications if a.declared]
+        conflict_pool = declared_slots or [
+            a for a in adjudications if a.discovered or hypothesis_scalar_ok
+        ]
+        identity_conflict = max((a.result.conflict for a in conflict_pool), default=0.0)
         score = max(scalar, identity_conflict)
 
         # Match-quality labels (display only), configurable thresholds.
@@ -233,6 +302,24 @@ class DerivedValueDetector(EntropyDetector):
                 return "approximate"
             return "poor"
 
+        # Option B design call (Philipp, 2026-06-11): the user's "the expected
+        # formula for this column IS X" declaration rides the EXISTING
+        # `validation` teach rather than a new expected_formula family — the
+        # applier is proven, and the declaration doubles as a continuously
+        # executed check (the validation phase runs it every run). Caveat: this
+        # conflates a quality check with a semantic declaration about a column —
+        # revisit if concept-level formula declarations arrive in the ontology.
+        # Always-emit, like temporal_behavior: no thresholds, no gating — the
+        # consumer surfaces the suggestion per band. The payload names the
+        # column and the check intent only; it picks NO truth (the user
+        # declares; both candidate formulas already ride the per-claim
+        # evidence).
+        teach: dict[str, Any] = {
+            "type": "validation",
+            "check": "expected_formula",
+            "table": context.table_name,
+            "column": context.column_name,
+        }
         evidence: list[dict[str, Any]] = []
         for adj in adjudications:
             entry: dict[str, Any] = {
@@ -241,6 +328,7 @@ class DerivedValueDetector(EntropyDetector):
                 "formula_canonical": adj.formula,
                 "discovered": adj.discovered,
                 "hypothesized": adj.hypothesized,
+                "declared": adj.declared,
                 "match_rate": adj.match_rate,
                 # Loss-readable secondary signals (loss.yaml scores the worst
                 # value of each key across evidence; "conflict" would alias to
@@ -248,6 +336,7 @@ class DerivedValueDetector(EntropyDetector):
                 "formula_conflict": adj.result.conflict,
                 "formula_ignorance": adj.result.ignorance,
                 "posterior": dict(zip(CLAIM_SPACE, adj.result.posterior, strict=False)),
+                "teach_suggestion": teach,
             }
             status = _status(adj.match_rate) if adj.discovered else None
             if status is not None:

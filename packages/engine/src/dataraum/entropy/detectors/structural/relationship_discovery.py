@@ -93,6 +93,29 @@ class RelationshipDiscoveryDetector(EntropyDetector):
 
         result = adjudication.result
         any_row = next(iter(rows.values()))
+        # C/U → teach routing (DAT-447, same shape as temporal_behavior):
+        # conflict means the witnesses disagree about genuineness — when the
+        # posterior leans spurious, the resolving human verdict is ``reject``;
+        # otherwise (contested-but-leaning-genuine, or pure ignorance where
+        # nobody qualified weighed in) an explicit ``confirm`` is the missing
+        # human witness. Both actions are the relationship overlay's executable
+        # vocabulary (relationship_overlay_pairs: confirm/reject/add/keep on
+        # the directional column pair).
+        p_genuine = result.posterior[CLAIM_SPACE.index("genuine")]
+        if result.conflict >= result.ignorance and p_genuine < 0.5:
+            teach: dict[str, Any] = {
+                "type": "relationship",
+                "action": "reject",
+                "from_column_id": context.from_column_id,
+                "to_column_id": context.to_column_id,
+            }
+        else:
+            teach = {
+                "type": "relationship",
+                "action": "confirm",
+                "from_column_id": context.from_column_id,
+                "to_column_id": context.to_column_id,
+            }
         evidence = [
             {
                 "claim_field": adjudication.claim_field,
@@ -106,6 +129,7 @@ class RelationshipDiscoveryDetector(EntropyDetector):
                 # opinion): a pair in the catalog without an llm row this run
                 # was NOT (re-)confirmed by the selector.
                 "llm_confirmed_this_run": llm_row is not None,
+                "teach_suggestion": teach,
                 "value_overlap": {
                     "join_confidence": candidate_evidence.get("join_confidence"),
                     "statistical_confidence": candidate_evidence.get("statistical_confidence"),

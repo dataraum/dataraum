@@ -2,7 +2,7 @@
 
 Is a column governed by a within-table arithmetic formula? For each canonical
 formula identity in play the claim space is {``holds``, ``fails``} — "this
-formula governs the column's values" — and up to two witnesses opine:
+formula governs the column's values" — and up to three witnesses opine:
 
 * **formula discovery** — the DATA witness (exists today): the correlation
   phase's deterministic formula search read every row, and its match rate IS its
@@ -16,6 +16,15 @@ formula governs the column's values" — and up to two witnesses opine:
   scaled by its confidence, and ABSTAINS on every other formula: not having
   thought of the discovered formula is no evidence against it (the type_claim
   lesson — absence is not dissent). It abstains everywhere when no hypothesis.
+* **human declaration** — the TEACH witness (DAT-447, Option B): a ``validation``
+  teach declaring "the expected formula for this column IS X" leans ``holds``
+  on the declared canonical formula's claim and abstains on every other slot
+  (declaring X is not evidence against Y). Grading the declared formula against
+  the rows stays the data witness's business — the detector's loader row-grades
+  a novel declared formula with the same statistic, so a declaration the data
+  violates produces honest conflict, never silent trust. The pool's log floor
+  keeps even this one-hot witness from vetoing the data: a witness, not an
+  oracle.
 
 The divergence case is the whole point: the LLM confidently expects
 ``subtotal + tax`` but the data grades that formula broken while the discovery
@@ -74,6 +83,10 @@ _NODE_OPERATION: dict[type[exp.Expr], str] = {
 DEFAULT_RELIABILITIES: dict[str, float] = {
     "formula_discovery": 0.9,
     "llm_hypothesis": 0.6,
+    # Same class as relationship manual_curation: an explicit human assertion —
+    # "quite low but not zero" error. Placeholder until the teach protocol
+    # measures it (the shipped value lives in reliabilities.yaml).
+    "human_declaration": 0.875,
 }
 
 
@@ -184,6 +197,7 @@ class FormulaAdjudication:
     claim_field: str  # "derived_formula:{table}.{column}:{formula}"
     discovered: bool
     hypothesized: bool
+    declared: bool  # a validation teach declared this formula expected (DAT-447)
     match_rate: float | None  # the row grading the data witness used (None = ungraded)
     witnesses: tuple[Witness, ...]
     result: PoolResult
@@ -221,6 +235,19 @@ def discovery_distribution(match_rate: float | None) -> dict[str, float]:
     return _distribution(match_rate)
 
 
+def human_declaration_distribution(declared: bool) -> dict[str, float]:
+    """The user's expected-formula declaration on its OWN claim slot (DAT-447).
+
+    A declaration is a deliberate, explicit human assertion that the formula
+    governs the column — full lean ``holds`` on the declared canonical slot,
+    abstain on every other (declaring X is not evidence against Y — the
+    type_claim lesson). Trust lives in the per-witness reliability, never the
+    lean, and the pool's log floor keeps a one-hot human witness from vetoing
+    the data: the declaration is a witness the rows still grade, not an oracle.
+    """
+    return _distribution(1.0 if declared else 0.5)
+
+
 def llm_hypothesis_distribution(confidence: float | None) -> dict[str, float]:
     """The LLM's name-based lean that ITS hypothesized formula holds.
 
@@ -245,6 +272,7 @@ class _Slot:
     discovered_match: float | None = None
     discovered: bool = False
     hypothesized: bool = False
+    declared: bool = False
     hypothesis_confidence: float | None = None
     graded_match: float | None = None
 
@@ -259,6 +287,7 @@ def measure_derived_value(
     discovered: Sequence[Mapping[str, Any]],
     hypothesis: Mapping[str, Any] | None = None,
     *,
+    declaration: Mapping[str, Any] | None = None,
     reliabilities: Mapping[str, float] | None = None,
 ) -> list[FormulaAdjudication]:
     """Adjudicate every formula claim on one column into ``(C, U)`` + posterior.
@@ -274,16 +303,22 @@ def measure_derived_value(
             loader-computed row grading of a NOVEL hypothesis (``None`` when it
             matched a discovered formula or could not be graded). ``None`` /
             absent formula → the LLM witness abstains everywhere.
+        declaration: the user's expected-formula declaration for this column
+            (a ``validation`` teach, DAT-447 Option B) —
+            ``{"formula": str | None, "match_rate": float | None}`` where
+            ``match_rate`` is the loader's row grading of a NOVEL declared
+            formula. ``None`` / absent / unparseable formula → the human
+            witness abstains everywhere.
         reliabilities: per-witness reliability overrides; defaults to
             :data:`DEFAULT_RELIABILITIES`.
 
     Returns:
         One :class:`FormulaAdjudication` per canonical formula in play —
-        discovered formulas first (input order), then a novel hypothesis. High
-        ``result.conflict`` means the name-expected formula and the data
-        disagree (the grounded-divergence case); high ``ignorance`` means no
-        qualified witness weighed in. Empty when nothing was discovered and
-        nothing was hypothesized.
+        discovered formulas first (input order), then a novel hypothesis, then
+        a novel declaration. High ``result.conflict`` means the expected
+        formula (named or declared) and the data disagree (the grounded-
+        divergence case); high ``ignorance`` means no qualified witness weighed
+        in. Empty when nothing was discovered, hypothesized, or declared.
     """
     rel = reliabilities or DEFAULT_RELIABILITIES
     slots: dict[str, _Slot] = {}
@@ -321,6 +356,26 @@ def measure_derived_value(
         if not slot.discovered and graded is not None:
             slot.graded_match = float(graded)
 
+    decl_canonical = None
+    if declaration is not None:
+        decl_canonical = parse_formula(declaration.get("formula"))
+        # A self-referential declaration (the column among its own operands) is
+        # degenerate, not a derivation claim — same rule as the hypothesis.
+        if decl_canonical is not None and column.strip().lower() in decl_canonical.operands:
+            decl_canonical = None
+    if decl_canonical is not None and declaration is not None:
+        slot = slots.setdefault(
+            decl_canonical.identity,
+            _Slot(
+                identity=decl_canonical.identity,
+                display=str(declaration.get("formula") or decl_canonical.identity),
+            ),
+        )
+        slot.declared = True
+        graded = declaration.get("match_rate")
+        if not slot.discovered and graded is not None and slot.graded_match is None:
+            slot.graded_match = float(graded)
+
     adjudications: list[FormulaAdjudication] = []
     for slot in slots.values():
         data_rate = slot.discovered_match if slot.discovered else slot.graded_match
@@ -337,6 +392,11 @@ def measure_derived_value(
                 else _distribution(0.5),
                 rel.get("llm_hypothesis", DEFAULT_RELIABILITIES["llm_hypothesis"]),
             ),
+            _witness(
+                "human_declaration",
+                human_declaration_distribution(slot.declared),
+                rel.get("human_declaration", DEFAULT_RELIABILITIES["human_declaration"]),
+            ),
         )
         # Only witnesses that take a position are pooled — abstention is
         # ignorance, not a conflicting party (same convention as the siblings).
@@ -350,6 +410,7 @@ def measure_derived_value(
                 claim_field=f"derived_formula:{table}.{column}:{slot.identity}",
                 discovered=slot.discovered,
                 hypothesized=slot.hypothesized,
+                declared=slot.declared,
                 match_rate=data_rate,
                 witnesses=witnesses,
                 result=pool(witnesses),

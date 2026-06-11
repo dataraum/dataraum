@@ -28,7 +28,7 @@ provenance:
   measurements:
     null_semantics: { calibrated: true }
     temporal_behavior: { calibrated: true } # all three witnesses measured (wave-2: structural 0.889, events-backed corpus)
-    relationship_discovery: { calibrated: false } # value_overlap + llm_judgment measured in contract (0.923 each, post-fix re-run); manual/keeper still need the teach protocol
+    relationship_discovery: { calibrated: true } # all four witnesses measured (teach protocol closed the circuit); keeper's 0.5 is a documented stance on real silence atop its measured 0.857 plumbing ceiling
     derived_value: { calibrated: true } # wave-2 rig, detection-derived-cal-v1 (2026-06-11)
   source: eval reliability rig (scripts/calibrate_reliabilities.py), DAT-450
   corpus_version: null_tokens-v2
@@ -106,13 +106,27 @@ witnesses:
   # surface the witnesses actually vote on. Small n=11; widen over seeds.
   # (A 0.615 synthesized from candidate rows of REJECTED pairs was shipped and
   # withdrawn the same day — candidates are never a calibration surface.)
-  # manual_curation / keeper_retention: UNMEASURABLE on a calibration run (no
-  #   teach/keep actions) — placeholders stand until the teach protocol runs;
-  #   measurement-level calibrated stays false until they are measured.
+  # manual_curation / keeper_retention: MEASURED 2026-06-11 via the teach
+  # protocol (scripts/calibrate_teach_protocol.py: 11 ground-truth verdicts on
+  # the genuine pairs — 6 confirm → manual, 5 keep → keeper — then a same-
+  # session re-run; the wave-2 rig scored the post-teach claim rows). Both
+  # witnesses 100% accurate over their verdicts and abstained elsewhere —
+  # Laplace ceilings 0.875 (n=6) and 0.857 (n=5). These are PLUMBING CEILINGS:
+  # the simulated teacher follows ground truth, so they prove verdict → row →
+  # witness → pool, not human error ("quite low but not zero" — Philipp;
+  # Laplace keeps every witness below 1.0, a certain witness would be an
+  # override). Differentiated application:
+  #   manual_curation 0.875 — an explicit confirm/add click is close to the
+  #     protocol's deliberate verdict; re-measure from real-user telemetry.
+  #   keeper_retention stays 0.5 — real silence is NOT the protocol's
+  #     deliberate keep (the user may never have looked); the plumbing is
+  #     proven at its 0.857 ceiling, the discount is the documented epistemic
+  #     stance on inattentive silence, re-measured when the context lane's
+  #     test users generate real keep/ignore telemetry.
   relationship_discovery:
     value_overlap: 0.923
     llm_judgment: 0.923
-    manual_curation: 0.9
+    manual_curation: 0.875
     keeper_retention: 0.5
 
   # derived_value: MEASURED 2026-06-11 by the wave-2 rig
@@ -131,3 +145,10 @@ witnesses:
   derived_value:
     formula_discovery: 0.75
     llm_hypothesis: 0.357
+    # human_declaration: PLACEHOLDER prior, NOT rig-measured (DAT-447 Option B
+    # — the expected-formula declaration riding the validation teach). Same
+    # class as relationship manual_curation's measured ceiling: an explicit
+    # human assertion, "quite low but not zero" error (Philipp). Uncalibrated
+    # until the teach protocol measures this witness; the derived_value
+    # calibrated flag above vouches for the two rig-measured witnesses only.
+    human_declaration: 0.875

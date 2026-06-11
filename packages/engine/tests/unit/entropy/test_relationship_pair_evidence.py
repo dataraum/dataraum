@@ -207,3 +207,64 @@ class TestLoaderRepresentativeMerge:
         assert rel["detection_method"] == "llm"
         assert rel["evidence"]["left_referential_integrity"] == 85.0
         assert "ri_evidence_source" not in rel["evidence"]
+
+
+class TestRowsForPairDirectionAgnostic:
+    """``load_relationship_rows_for_pair`` finds rows in EITHER direction.
+
+    Wave-2 cal finding: candidate rows persisted parent→child were invisible to
+    the child→parent defined-pair lookup, so the value_overlap witness collapsed
+    to uniform and was dropped before persisting — silent on every such pair.
+    """
+
+    def test_reversed_candidate_row_is_found(self, session: Session) -> None:
+        from dataraum.entropy.detectors.loaders import load_relationship_rows_for_pair
+
+        # Candidate persisted parent→child (reversed); llm in the exact direction.
+        session.add(
+            Relationship(
+                session_id="sess-1",
+                run_id="run-1",
+                from_table_id="t-inv",
+                from_column_id="c-pk",
+                to_table_id="t-pay",
+                to_column_id="c-fk",
+                relationship_type="foreign_key",
+                confidence=0.93,
+                detection_method="candidate",
+                evidence={"jaccard_similarity": 0.62},
+            )
+        )
+        session.commit()
+        _add_relationship(session, method="llm", evidence={}, confidence=0.9)
+
+        rows = load_relationship_rows_for_pair(
+            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
+        )
+        assert set(rows) == {"candidate", "llm"}
+        assert rows["candidate"]["confidence"] == 0.93
+
+    def test_exact_direction_wins_over_reversed_for_same_method(self, session: Session) -> None:
+        from dataraum.entropy.detectors.loaders import load_relationship_rows_for_pair
+
+        _add_relationship(session, method="candidate", evidence={}, confidence=0.59)
+        session.add(
+            Relationship(
+                session_id="sess-1",
+                run_id="run-1",
+                from_table_id="t-inv",
+                from_column_id="c-pk",
+                to_table_id="t-pay",
+                to_column_id="c-fk",
+                relationship_type="foreign_key",
+                confidence=0.93,
+                detection_method="candidate",
+                evidence={},
+            )
+        )
+        session.commit()
+
+        rows = load_relationship_rows_for_pair(
+            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
+        )
+        assert rows["candidate"]["confidence"] == 0.59  # the requested direction's row

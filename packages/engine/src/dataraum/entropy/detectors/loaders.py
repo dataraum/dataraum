@@ -471,22 +471,38 @@ def load_relationship_rows_for_pair(
     session_id: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """ALL method-rows for one directional column pair, keyed by detection method.
+    """ALL method-rows for one column pair, keyed by detection method.
 
     The relationship_discovery adjudication reads every witness class the pair
     carries — the structural ``candidate`` (value-overlap statistics), the
     ``llm`` confirmation, and the teach-materialized ``manual``/``keeper`` rows
     — so it needs the per-method rows side by side, NOT the single
     highest-precedence representative :func:`load_relationship_for_pair`
-    returns. Same session/run scoping. At most one row per method exists per
-    ``(session, run, pair)`` (the ``uq_relationship_columns_method`` key).
+    returns. Same session/run scoping.
+
+    Direction-AGNOSTIC by design (wave-2 cal finding): candidate rows can be
+    persisted parent→child while the defined pair is child→parent, and the
+    one-way match left the value_overlap witness silently uniform (dropped
+    before persisting) on every such pair — a false-negative machine. The same
+    column pair is one relationship; when both directions carry a row for the
+    same method, the exact requested direction wins.
     """
+    from sqlalchemy import and_, or_
+
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
     stmt = select(Relationship).where(
-        Relationship.from_column_id == from_column_id,
-        Relationship.to_column_id == to_column_id,
+        or_(
+            and_(
+                Relationship.from_column_id == from_column_id,
+                Relationship.to_column_id == to_column_id,
+            ),
+            and_(
+                Relationship.from_column_id == to_column_id,
+                Relationship.to_column_id == from_column_id,
+            ),
+        )
     )
     if session_id is not None:
         stmt = stmt.where(Relationship.session_id == session_id)
@@ -503,11 +519,18 @@ def load_relationship_rows_for_pair(
         .tuples()
         .all()
     )
-    return {
-        str(rel.detection_method): _relationship_to_dict(rel, table_names)
-        for rel in rels
-        if rel.detection_method
-    }
+    out: dict[str, dict[str, Any]] = {}
+    exact_direction: dict[str, bool] = {}
+    for rel in rels:
+        if not rel.detection_method:
+            continue
+        method = str(rel.detection_method)
+        is_exact = rel.from_column_id == from_column_id
+        if method in out and exact_direction[method] and not is_exact:
+            continue
+        out[method] = _relationship_to_dict(rel, table_names)
+        exact_direction[method] = is_exact
+    return out
 
 
 def load_session_relationships(

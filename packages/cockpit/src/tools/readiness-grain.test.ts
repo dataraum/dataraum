@@ -188,7 +188,7 @@ describe("projectVerdictHistory", () => {
 		expect(history.every((h) => h.signals === null)).toBe(true);
 	});
 
-	it("counts distinct detectors per run from unmerged evidence", () => {
+	it("counts detectors CUMULATIVELY by stage — the scope each rollup ran over", () => {
 		const history = projectVerdictHistory(
 			[
 				histRow("run-add", { viaTableHead: true }),
@@ -196,15 +196,33 @@ describe("projectVerdictHistory", () => {
 					viaSessionHead: true,
 					computedAt: new Date("2026-06-11T10:00:00Z"),
 				}),
+				histRow("run-om", {
+					viaOperatingModelHead: true,
+					computedAt: new Date("2026-06-11T11:00:00Z"),
+				}),
 			],
 			[
-				{ runId: "run-add", detectorId: "null_ratio" },
-				{ runId: "run-add", detectorId: "type_fidelity" },
-				{ runId: "run-add", detectorId: "type_fidelity" }, // dup → 1
-				{ runId: "run-ses", detectorId: "temporal_behavior" },
+				row("e1", { detectorId: "null_ratio", viaTableHead: true }),
+				row("e2", { detectorId: "type_fidelity", viaTableHead: true }),
+				row("e3", { detectorId: "type_fidelity", viaTableHead: true }), // dup → 1
+				row("e4", { detectorId: "temporal_behavior", viaSessionHead: true }),
+				row("e5", {
+					detectorId: "cross_table_consistency",
+					viaOperatingModelHead: true,
+				}),
 			],
 		);
-		expect(history.map((h) => h.signals)).toEqual([2, 1]);
+		// add_source sees its own 2; session adds temporal_behavior (3); the
+		// operating_model rollup ran over everything (4).
+		expect(history.map((h) => h.signals)).toEqual([2, 3, 4]);
+	});
+
+	it("emits null signals for a row whose stage is unknown", () => {
+		const history = projectVerdictHistory(
+			[histRow("legacy", { runId: null })], // no grain bits → unknown
+			[row("e1", { detectorId: "null_ratio", viaTableHead: true })],
+		);
+		expect(history[0]?.signals).toBeNull();
 	});
 
 	it("keeps cross-session rows visible — the disclosure surface", () => {

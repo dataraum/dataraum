@@ -211,7 +211,7 @@ export function VerdictProvenance({
 						<Group
 							gap="xs"
 							wrap="nowrap"
-							key={`${h.run_id ?? h.stage}-${h.computed_at ?? ""}`}
+							key={h.run_id ?? `${h.stage}-${h.computed_at ?? ""}`}
 						>
 							<Text size="xs" c="dimmed" w={140}>
 								{stageLabel(h.stage)}

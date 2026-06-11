@@ -40,6 +40,7 @@ import {
 	projectVerdictHistory,
 	stageOfRow,
 	type VerdictHistoryEntry,
+	VerdictHistorySchema,
 } from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / drivers) is shared with look_table —
@@ -63,16 +64,6 @@ const EvidenceSignal = z.object({
 	// detector), rendered agent-safe via `renderEvidenceDetail` (DAT-433) — the
 	// narrative + the widget render it as-is.
 	detail: z.string(),
-});
-
-const VerdictHistory = z.object({
-	stage: z.string(),
-	band: z.string(),
-	worst_intent_risk: z.number().nullable(),
-	computed_at: z.string().nullable(),
-	session_id: z.string().nullable(),
-	run_id: z.string().nullable(),
-	signals: z.number().nullable(),
 });
 
 const WhyColumnResult = z.object({
@@ -101,7 +92,7 @@ const WhyColumnResult = z.object({
 	// Every coexisting readiness snapshot for this column (add_source →
 	// session → operating_model, oldest first), each labeled with its stage,
 	// session, run, and detector count — the disclosure for the pick above.
-	verdict_history: z.array(VerdictHistory),
+	verdict_history: z.array(VerdictHistorySchema),
 	analysis: z.string(),
 	pending_teaches: z.number(),
 });
@@ -368,8 +359,9 @@ export const whyColumnTool = toolDefinition({
 		"names the pipeline stage that sealed the shown verdict (add_source / " +
 		"session_detect / operating_model), and verdict_history lists every " +
 		"coexisting snapshot (oldest first) so you can see how the verdict " +
-		"evolved as evidence accrued — later stages are computed over strictly " +
-		"more evidence; they supersede, they don't disagree.",
+		"evolved as evidence accrued — each entry's signals counts the detectors " +
+		"its rollup ran over, so later stages carry strictly more; they " +
+		"supersede earlier ones, they don't disagree.",
 	inputSchema: z.object({
 		column_id: z
 			.string()

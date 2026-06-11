@@ -163,7 +163,9 @@ export interface ReadinessRow {
 	columnName: string;
 	resolvedType: string | null;
 	band: string | null;
-	/** Stage of the picked verdict (DAT-513); null/absent when unanalyzed. */
+	/** Stage of the picked verdict (DAT-513); null/absent when unanalyzed.
+	 * No run_id/history here by design — the grid labels the pick, why_column
+	 * carries the full verdict history. */
 	bandStage?: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;

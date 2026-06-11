@@ -41,6 +41,7 @@ import {
 	projectVerdictHistory,
 	stageOfRow,
 	type VerdictHistoryEntry,
+	VerdictHistorySchema,
 } from "./readiness-grain";
 
 // --- Tool output (mirrors why_column / why_relationship, keyed on the table).
@@ -57,16 +58,6 @@ const EvidenceSignal = z.object({
 	detector_id: z.string(),
 	score: z.number(),
 	detail: z.string(),
-});
-
-const VerdictHistory = z.object({
-	stage: z.string(),
-	band: z.string(),
-	worst_intent_risk: z.number().nullable(),
-	computed_at: z.string().nullable(),
-	session_id: z.string().nullable(),
-	run_id: z.string().nullable(),
-	signals: z.number().nullable(),
 });
 
 const WhyTableResult = z.object({
@@ -90,7 +81,7 @@ const WhyTableResult = z.object({
 	signal_count: z.number(),
 	// Every coexisting readiness snapshot for this target, oldest first — the
 	// disclosure for the pick above.
-	verdict_history: z.array(VerdictHistory),
+	verdict_history: z.array(VerdictHistorySchema),
 	analysis: z.string(),
 	pending_teaches: z.number(),
 });

@@ -43,7 +43,14 @@ reproduces post-fix, the date-ordering count (2) and the metric grounding
 failures become real precision findings (the A4 due-date fix was supposed to
 zero the former).
 
-- **Status**: pending (blocked on DAT-511; smoke rerun owes eval the clean-leg verdict)
+**DAT-511 guard landed**: `resolve_operating_model_scope` now fails born-loud
+(non-retryable `PhaseFailed`) when the session has linked tables but no promoted
+begin_session head — operating_model can no longer ground over a partial
+workspace. Eval drivers must await `beginSessionWorkflow` completion before
+starting `operatingModelWorkflow` (the sequential runner already does); a driver
+that pipelines them will now fail fast instead of producing quiet noise.
+
+- **Status**: pending (DAT-511 merged; smoke rerun owes eval the clean-leg verdict)
 
 ## 2026-06-11 (pre-merge sweep): relationship_discovery gaps preserved from LANE-NOTES
 

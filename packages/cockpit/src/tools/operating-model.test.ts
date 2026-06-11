@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
 		temporalTaskQueue: "dataraum-pipeline",
 	} as Record<string, unknown>,
 	recordRun: vi.fn(async () => {}),
+	hasRunningRun: vi.fn(async () => false),
 }));
 
 vi.mock("#/config", () => ({
@@ -32,7 +33,10 @@ vi.mock("#/config", () => ({
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
 }));
-vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
+vi.mock("#/db/cockpit/runs", () => ({
+	recordRun: h.recordRun,
+	hasRunningRun: h.hasRunningRun,
+}));
 
 const startMock = vi.fn(async (_name: string, _opts: unknown) => ({
 	firstExecutionRunId: "run-xyz",
@@ -113,5 +117,23 @@ describe("operatingModel (DAT-440)", () => {
 			workflowId: `operatingmodel-${WS}-sess-1`,
 			runId: "run-xyz",
 		});
+	});
+
+	it("refuses with { error } while begin_session is still running (DAT-511)", async () => {
+		// The engine guards the same precondition born-loud; the tool turns the
+		// would-be workflow failure into an agent-actionable sentence — and
+		// must NOT start the workflow or record a run.
+		h.hasRunningRun.mockResolvedValueOnce(true);
+		const result = await operatingModel({ session_id: "sess-1" });
+		expect(result).toMatchObject({
+			error: expect.stringContaining("begin_session is still running"),
+		});
+		expect(startMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
+	});
+
+	it("checks the begin_session stage for the requested session", async () => {
+		await operatingModel({ session_id: "sess-1" });
+		expect(h.hasRunningRun).toHaveBeenCalledWith("sess-1", "begin_session");
 	});
 });

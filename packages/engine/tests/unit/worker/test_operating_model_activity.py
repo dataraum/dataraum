@@ -124,13 +124,13 @@ class TestResolveOperatingModelScope:
             s.add(InvestigationSession(session_id=_IDENTITY.session_id, intent="test"))
             s.commit()
 
-        with pytest.raises(RuntimeError, match="no linked tables"):
+        with pytest.raises(ApplicationError, match="no linked tables"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
     def test_unknown_session_fails_loud(self, monkeypatch, session_factory):
         monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
 
-        with pytest.raises(RuntimeError, match="not found"):
+        with pytest.raises(ApplicationError, match="not found"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
     def test_typod_vertical_fails_born_loud(self, monkeypatch, session_factory):
@@ -153,7 +153,7 @@ class TestResolveOperatingModelScope:
     def test_workspace_mismatch_refused(self, monkeypatch, session_factory):
         monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-OTHER")
 
-        with pytest.raises(RuntimeError, match="Workspace mismatch"):
+        with pytest.raises(ApplicationError, match="Workspace mismatch"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
 

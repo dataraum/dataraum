@@ -766,28 +766,33 @@ def resolve_operating_model_scope(
     resolution downstream.
 
     Raises:
-        RuntimeError: workspace mismatch, unknown session, or a session with
-            no linked tables (begin_session must have run) — fail loud, the
-            workflow has nothing to operate on.
-        ApplicationError: linked tables but no promoted begin_session head —
-            the session is mid-flight or failed (DAT-511); non-retryable
-            (``PhaseFailed``), grounding must not run over a partial workspace.
+        ApplicationError: every pre-flight refusal — workspace mismatch,
+            unknown session, no linked tables, or (DAT-511) linked tables but
+            no promoted begin_session head (mid-flight or failed session;
+            grounding must not run over a partial workspace). All deterministic
+            until the world changes, hence non-retryable ``PhaseFailed`` —
+            a plain ``RuntimeError`` would burn the retry policy's 5 attempts
+            on a structurally-impossible state.
     """
     from dataraum.lifecycle import resolve_operating_model_base_runs
 
     active_workspace_id = get_active_workspace_id()
     if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
+        raise ApplicationError(
             f"Workspace mismatch: operating_model resolve targets '{identity.workspace_id}' "
-            f"but this worker is bound to '{active_workspace_id}'."
+            f"but this worker is bound to '{active_workspace_id}'.",
+            type="PhaseFailed",
+            non_retryable=True,
         )
 
     with manager.session_scope() as session:
         inv_session = session.get(InvestigationSession, identity.session_id)
         if inv_session is None:
-            raise RuntimeError(
+            raise ApplicationError(
                 f"InvestigationSession '{identity.session_id}' not found — "
-                "operating_model runs over an existing journey session."
+                "operating_model runs over an existing journey session.",
+                type="PhaseFailed",
+                non_retryable=True,
             )
         # Born-loud on a typo'd / never-framed vertical (DAT-480): an unknown
         # name would silently resolve to no declared validations/cycles/metrics
@@ -796,9 +801,11 @@ def resolve_operating_model_scope(
         require_known_vertical(inv_session.vertical)
         table_ids = tables_for_session(session, identity.session_id)
         if not table_ids:
-            raise RuntimeError(
+            raise ApplicationError(
                 f"Session '{identity.session_id}' has no linked tables — "
-                "begin_session must compose the workspace before operating_model runs."
+                "begin_session must compose the workspace before operating_model runs.",
+                type="PhaseFailed",
+                non_retryable=True,
             )
         base_runs = resolve_operating_model_base_runs(session, identity.session_id, table_ids)
         if base_runs.relationship_run_id is None:

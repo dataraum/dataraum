@@ -15,6 +15,7 @@ import {
 	IntentDriversBlock,
 	PendingTeachAlert,
 	SignalsCaption,
+	VerdictProvenance,
 } from "#/ui/cockpit/widgets/why-detail";
 
 export function ColumnWhyWidget({
@@ -63,6 +64,13 @@ export function ColumnWhyWidget({
 				</Text>
 				<BandBadge band={why.band} />
 			</Group>
+
+			<VerdictProvenance
+				stage={why.band_stage}
+				computedAt={why.band_computed_at}
+				history={why.verdict_history}
+				testId="canvas-column-why-provenance"
+			/>
 
 			<SignalsCaption
 				count={why.signal_count}

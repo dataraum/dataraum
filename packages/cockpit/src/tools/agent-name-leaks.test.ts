@@ -114,6 +114,8 @@ describe("agent name-leak property (DAT-433)", () => {
 			columnName: "amount",
 			tableName: RAW_ORDERS,
 			band: "investigate",
+			bandStage: "add_source",
+			bandComputedAt: null,
 			worstIntentRisk: 0.42,
 			intents: [],
 		};
@@ -129,7 +131,13 @@ describe("agent name-leak property (DAT-433)", () => {
 		const out = projectWhyTable(
 			"t_orders",
 			RAW_ORDERS,
-			{ band: "investigate", worstIntentRisk: 0.42, intents: [] },
+			{
+				band: "investigate",
+				bandStage: "session_detect",
+				bandComputedAt: null,
+				worstIntentRisk: 0.42,
+				intents: [],
+			},
 			evidenceRows,
 			0,
 		);
@@ -158,7 +166,13 @@ describe("agent name-leak property (DAT-433)", () => {
 			"c_from",
 			"c_to",
 			endpoints,
-			{ band: "investigate", worstIntentRisk: 0.3, intents: [] },
+			{
+				band: "investigate",
+				bandStage: "session_detect",
+				bandComputedAt: null,
+				worstIntentRisk: 0.3,
+				intents: [],
+			},
 			evidenceRows,
 			0,
 		);

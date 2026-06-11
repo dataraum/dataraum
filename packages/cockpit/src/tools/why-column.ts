@@ -34,7 +34,13 @@ import { linkedAbortController } from "../lib/abort";
 import { displayTableName, renderEvidenceDetail } from "../lib/display-names";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { getWhyInstructions } from "../prompts";
-import { mergeCurrentEvidence, pickCurrentRow } from "./readiness-grain";
+import {
+	mergeCurrentEvidence,
+	pickCurrentRow,
+	projectVerdictHistory,
+	stageOfRow,
+	type VerdictHistoryEntry,
+} from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / drivers) is shared with look_table —
 // see `db/metadata/readiness-schemas.ts`. Parsed leniently below.
@@ -59,6 +65,16 @@ const EvidenceSignal = z.object({
 	detail: z.string(),
 });
 
+const VerdictHistory = z.object({
+	stage: z.string(),
+	band: z.string(),
+	worst_intent_risk: z.number().nullable(),
+	computed_at: z.string().nullable(),
+	session_id: z.string().nullable(),
+	run_id: z.string().nullable(),
+	signals: z.number().nullable(),
+});
+
 const WhyColumnResult = z.object({
 	column_id: z.string(),
 	column_name: z.string(),
@@ -71,6 +87,10 @@ const WhyColumnResult = z.object({
 	found: z.boolean(),
 	// null band = no readiness row yet (not analyzed).
 	band: z.string().nullable(),
+	// WHICH pipeline stage sealed the shown verdict (DAT-513) — the pick is
+	// only evaluable if the caller can see it. null when unanalyzed.
+	band_stage: z.string().nullable(),
+	band_computed_at: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	analyzed: z.boolean(),
 	intents: z.array(IntentExplanation),
@@ -78,6 +98,10 @@ const WhyColumnResult = z.object({
 	// How many detector signals back this explanation — surfaced so the narrative
 	// (and the reader) can see when the picture is partial (orphaned detectors).
 	signal_count: z.number(),
+	// Every coexisting readiness snapshot for this column (add_source →
+	// session → operating_model, oldest first), each labeled with its stage,
+	// session, run, and detector count — the disclosure for the pick above.
+	verdict_history: z.array(VerdictHistory),
 	analysis: z.string(),
 	pending_teaches: z.number(),
 });
@@ -93,6 +117,9 @@ export interface WhyReadinessRow {
 	/** Raw physical table name (`src_<digest>__<stem>`) — projected to display form. */
 	tableName: string;
 	band: string | null;
+	/** Stage that sealed the picked verdict (DAT-513); null when unanalyzed. */
+	bandStage: string | null;
+	bandComputedAt: Date | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 }
@@ -117,6 +144,7 @@ export function projectWhyData(
 	readiness: WhyReadinessRow,
 	evidenceRows: WhyEvidenceRow[],
 	pendingTeaches: number,
+	verdictHistory: VerdictHistoryEntry[] = [],
 ): WhyColumnData {
 	const parsed = PersistedIntent.array().safeParse(readiness.intents);
 	const intents: z.infer<typeof IntentExplanation>[] = parsed.success
@@ -147,11 +175,17 @@ export function projectWhyData(
 		table_name: displayTableName(readiness.tableName),
 		found: true,
 		band: readiness.band ?? null,
+		band_stage: readiness.band === null ? null : (readiness.bandStage ?? null),
+		band_computed_at:
+			readiness.band === null
+				? null
+				: (readiness.bandComputedAt?.toISOString() ?? null),
 		worst_intent_risk: readiness.worstIntentRisk ?? null,
 		analyzed: readiness.band !== null,
 		intents,
 		evidence,
 		signal_count: evidence.length,
+		verdict_history: verdictHistory,
 		pending_teaches: pendingTeaches,
 	};
 }
@@ -227,11 +261,14 @@ export async function whyColumn(
 			table_name: "",
 			found: false,
 			band: null,
+			band_stage: null,
+			band_computed_at: null,
 			worst_intent_risk: null,
 			analyzed: false,
 			intents: [],
 			evidence: [],
 			signal_count: 0,
+			verdict_history: [],
 			analysis: "",
 			pending_teaches: 0,
 		};
@@ -242,20 +279,21 @@ export async function whyColumn(
 	// run → empty views → unanalyzed (null band). The view is multi-grain
 	// (add_source table head + session-grain heads coexist) — fetch all grains
 	// and pick explicitly: session re-roll supersedes the add_source verdict.
-	const readinessRow = pickCurrentRow(
-		await metadataDb
-			.select({
-				band: currentEntropyReadiness.band,
-				worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
-				intents: currentEntropyReadiness.intents,
-				computedAt: currentEntropyReadiness.computedAt,
-				viaTableHead: currentEntropyReadiness.viaTableHead,
-				viaSessionHead: currentEntropyReadiness.viaSessionHead,
-				viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
-			})
-			.from(currentEntropyReadiness)
-			.where(eq(currentEntropyReadiness.columnId, input.column_id)),
-	);
+	const allReadinessRows = await metadataDb
+		.select({
+			band: currentEntropyReadiness.band,
+			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
+			intents: currentEntropyReadiness.intents,
+			computedAt: currentEntropyReadiness.computedAt,
+			sessionId: currentEntropyReadiness.sessionId,
+			runId: currentEntropyReadiness.runId,
+			viaTableHead: currentEntropyReadiness.viaTableHead,
+			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
+		})
+		.from(currentEntropyReadiness)
+		.where(eq(currentEntropyReadiness.columnId, input.column_id));
+	const readinessRow = pickCurrentRow(allReadinessRows);
 
 	// View columns type as nullable (Postgres views carry no NOT NULL); the
 	// underlying tables guarantee these — coalesce at the edge.
@@ -264,6 +302,8 @@ export async function whyColumn(
 		columnName: col.columnName ?? "",
 		tableName: col.tableName ?? "",
 		band: readinessRow?.band ?? null,
+		bandStage: readinessRow === undefined ? null : stageOfRow(readinessRow),
+		bandComputedAt: readinessRow?.computedAt ?? null,
 		worstIntentRisk: readinessRow?.worstIntentRisk ?? null,
 		intents: readinessRow?.intents ?? null,
 	};
@@ -273,24 +313,24 @@ export async function whyColumn(
 	// detectors keep their table-head row; re-adjudicated detectors (e.g.
 	// temporal_behavior's session pass) and operating_model fan-out rows
 	// (cross_table_consistency on failed criticals) show the session verdict.
-	const rawEvidence = mergeCurrentEvidence(
-		await metadataDb
-			.select({
-				layer: currentEntropyObjects.layer,
-				dimension: currentEntropyObjects.dimension,
-				subDimension: currentEntropyObjects.subDimension,
-				score: currentEntropyObjects.score,
-				detectorId: currentEntropyObjects.detectorId,
-				evidence: currentEntropyObjects.evidence,
-				computedAt: currentEntropyObjects.computedAt,
-				viaTableHead: currentEntropyObjects.viaTableHead,
-				viaSessionHead: currentEntropyObjects.viaSessionHead,
-				viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
-			})
-			.from(currentEntropyObjects)
-			.where(eq(currentEntropyObjects.columnId, input.column_id))
-			.orderBy(asc(currentEntropyObjects.dimension)),
-	);
+	const unmergedEvidence = await metadataDb
+		.select({
+			layer: currentEntropyObjects.layer,
+			dimension: currentEntropyObjects.dimension,
+			subDimension: currentEntropyObjects.subDimension,
+			score: currentEntropyObjects.score,
+			detectorId: currentEntropyObjects.detectorId,
+			evidence: currentEntropyObjects.evidence,
+			computedAt: currentEntropyObjects.computedAt,
+			runId: currentEntropyObjects.runId,
+			viaTableHead: currentEntropyObjects.viaTableHead,
+			viaSessionHead: currentEntropyObjects.viaSessionHead,
+			viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
+		})
+		.from(currentEntropyObjects)
+		.where(eq(currentEntropyObjects.columnId, input.column_id))
+		.orderBy(asc(currentEntropyObjects.dimension));
+	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
 	const evidenceRows = rawEvidence.map((e) => ({
 		layer: e.layer ?? "",
 		dimension: e.dimension ?? "",
@@ -301,7 +341,12 @@ export async function whyColumn(
 	}));
 
 	const pending = await getPendingOverlays();
-	const data = projectWhyData(readiness, evidenceRows, pending.length);
+	const data = projectWhyData(
+		readiness,
+		evidenceRows,
+		pending.length,
+		projectVerdictHistory(allReadinessRows, unmergedEvidence),
+	);
 
 	// Nothing to explain when the column has no readiness row — skip the LLM call
 	// (no cost, no risk of fabricating an explanation for absent data).
@@ -319,7 +364,12 @@ export const whyColumnTool = toolDefinition({
 		"evidence, with a short synthesized explanation. Read-only. Use after " +
 		"look_table to drill into a specific column. Identify the column by its " +
 		"column_id (from look_table). signal_count shows how many detector signals " +
-		"back the explanation — a low count means the picture is partial.",
+		"back the explanation — a low count means the picture is partial. band_stage " +
+		"names the pipeline stage that sealed the shown verdict (add_source / " +
+		"session_detect / operating_model), and verdict_history lists every " +
+		"coexisting snapshot (oldest first) so you can see how the verdict " +
+		"evolved as evidence accrued — later stages are computed over strictly " +
+		"more evidence; they supersede, they don't disagree.",
 	inputSchema: z.object({
 		column_id: z
 			.string()

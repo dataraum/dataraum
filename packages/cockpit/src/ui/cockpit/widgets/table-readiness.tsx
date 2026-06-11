@@ -21,7 +21,7 @@ import {
 	INTENT_LABEL,
 	INTENTS,
 } from "#/ui/cockpit/widgets/band-badge";
-import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
+import { PendingTeachAlert, stageLabel } from "#/ui/cockpit/widgets/why-detail";
 
 // The begin_session whole-table band (DAT-415): the `dimension_coverage` rollup
 // for the table, sealed at the session head — distinct from, and shown above, the
@@ -251,7 +251,16 @@ export function TableReadinessWidget({
 											{c.resolved_type ?? "—"}
 										</Text>
 									</Table.Td>
-									<Table.Td>
+									<Table.Td
+										// The band's provenance (DAT-513): which pipeline stage
+										// sealed the shown verdict — visible on hover, drilled via
+										// why_column's verdict history.
+										title={
+											c.band_stage === null
+												? undefined
+												: `as of ${stageLabel(c.band_stage)}`
+										}
+									>
 										<BandBadge band={c.band} />
 									</Table.Td>
 									{INTENTS.map((intent) => (

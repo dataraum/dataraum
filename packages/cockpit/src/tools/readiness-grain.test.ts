@@ -8,6 +8,8 @@ import {
 	type GrainRow,
 	mergeCurrentEvidence,
 	pickCurrentRow,
+	projectVerdictHistory,
+	stageOfRow,
 } from "./readiness-grain";
 
 type Row = GrainRow & { id: string; detectorId: string | null };
@@ -130,5 +132,90 @@ describe("mergeCurrentEvidence", () => {
 
 	it("returns empty for empty input", () => {
 		expect(mergeCurrentEvidence([])).toEqual([]);
+	});
+});
+
+describe("stageOfRow", () => {
+	it("labels each head bit, operating_model first", () => {
+		expect(stageOfRow(row("a", { viaTableHead: true }))).toBe("add_source");
+		expect(stageOfRow(row("b", { viaSessionHead: true }))).toBe(
+			"session_detect",
+		);
+		expect(stageOfRow(row("c", { viaOperatingModelHead: true }))).toBe(
+			"operating_model",
+		);
+		expect(stageOfRow(row("d"))).toBe("unknown");
+	});
+});
+
+describe("projectVerdictHistory", () => {
+	const histRow = (
+		id: string,
+		overrides: Partial<
+			GrainRow & {
+				band: string | null;
+				worstIntentRisk: number | null;
+				sessionId: string | null;
+				runId: string | null;
+			}
+		> = {},
+	) => ({
+		...row(id),
+		band: "blocked",
+		worstIntentRisk: 0.8,
+		sessionId: "sess-1",
+		runId: id,
+		...overrides,
+	});
+
+	it("labels every snapshot and sorts oldest first", () => {
+		const history = projectVerdictHistory([
+			histRow("run-ses", {
+				viaSessionHead: true,
+				band: "ready",
+				computedAt: new Date("2026-06-11T10:00:00Z"),
+			}),
+			histRow("run-add", {
+				viaTableHead: true,
+				computedAt: new Date("2026-06-11T09:00:00Z"),
+			}),
+		]);
+		expect(history.map((h) => [h.stage, h.band])).toEqual([
+			["add_source", "blocked"],
+			["session_detect", "ready"],
+		]);
+		// No evidence rows passed → signal counts honestly absent, not 0.
+		expect(history.every((h) => h.signals === null)).toBe(true);
+	});
+
+	it("counts distinct detectors per run from unmerged evidence", () => {
+		const history = projectVerdictHistory(
+			[
+				histRow("run-add", { viaTableHead: true }),
+				histRow("run-ses", {
+					viaSessionHead: true,
+					computedAt: new Date("2026-06-11T10:00:00Z"),
+				}),
+			],
+			[
+				{ runId: "run-add", detectorId: "null_ratio" },
+				{ runId: "run-add", detectorId: "type_fidelity" },
+				{ runId: "run-add", detectorId: "type_fidelity" }, // dup → 1
+				{ runId: "run-ses", detectorId: "temporal_behavior" },
+			],
+		);
+		expect(history.map((h) => h.signals)).toEqual([2, 1]);
+	});
+
+	it("keeps cross-session rows visible — the disclosure surface", () => {
+		const history = projectVerdictHistory([
+			histRow("s1-run", { viaSessionHead: true, sessionId: "sess-1" }),
+			histRow("s2-run", {
+				viaSessionHead: true,
+				sessionId: "sess-2",
+				computedAt: new Date("2026-06-11T11:00:00Z"),
+			}),
+		]);
+		expect(history.map((h) => h.session_id)).toEqual(["sess-1", "sess-2"]);
 	});
 });

@@ -26,6 +26,8 @@ const analyzed: WhyTableResult = {
 	table_name: "orders",
 	found: true,
 	band: "investigate",
+	band_stage: "session_detect",
+	band_computed_at: "2026-06-11T10:00:00.000Z",
 	worst_intent_risk: 0.42,
 	analyzed: true,
 	intents: [
@@ -53,6 +55,7 @@ const analyzed: WhyTableResult = {
 		},
 	],
 	signal_count: 1,
+	verdict_history: [],
 	analysis: "orders lacks dimensional coverage for reliable aggregation.",
 	pending_teaches: 0,
 };

@@ -34,7 +34,7 @@ import {
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName, stripSrcDigests } from "../lib/display-names";
-import { pickCurrentRow } from "./readiness-grain";
+import { pickCurrentRow, stageOfRow } from "./readiness-grain";
 
 // The persisted JSONB grammar (intents / top_drivers) lives in
 // `readiness-schemas.ts`, shared with why_column. Parsed leniently below: a
@@ -73,6 +73,9 @@ const ColumnReadiness = z.object({
 	resolved_type: z.string().nullable(),
 	// null band = this column has no readiness row yet (not analyzed).
 	band: z.string().nullable(),
+	// WHICH pipeline stage sealed the shown band (DAT-513): add_source /
+	// session_detect / operating_model — the grain pick made visible.
+	band_stage: z.string().nullable(),
 	worst_intent_risk: z.number().nullable(),
 	intents: z.array(IntentBand),
 	top_drivers: z.array(TopDriver),
@@ -160,6 +163,8 @@ export interface ReadinessRow {
 	columnName: string;
 	resolvedType: string | null;
 	band: string | null;
+	/** Stage of the picked verdict (DAT-513); null/absent when unanalyzed. */
+	bandStage?: string | null;
 	worstIntentRisk: number | null;
 	intents: unknown;
 	topDrivers: unknown;
@@ -214,6 +219,7 @@ export function projectColumnReadiness(row: ReadinessRow): ColumnReadiness {
 		column_name: row.columnName,
 		resolved_type: row.resolvedType,
 		band: row.band ?? null,
+		band_stage: row.band == null ? null : (row.bandStage ?? null),
 		worst_intent_risk: row.worstIntentRisk ?? null,
 		intents: intents.success
 			? intents.data.map((i) => ({
@@ -465,6 +471,7 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		return projectColumnReadiness({
 			...r,
 			band: readiness?.band ?? null,
+			bandStage: readiness === undefined ? null : stageOfRow(readiness),
 			worstIntentRisk: readiness?.worstIntentRisk ?? null,
 			intents: readiness?.intents ?? null,
 			topDrivers: readiness?.topDrivers ?? null,

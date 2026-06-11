@@ -49,6 +49,7 @@ const analyzed: LookTableResult = {
 			column_name: "amount",
 			resolved_type: "DECIMAL(18,2)",
 			band: "investigate",
+			band_stage: "session_detect",
 			worst_intent_risk: 0.42,
 			// The persisted intent keys are the engine's network NODE names
 			// (`*_intent`), not the bare words — the widget matches on these.
@@ -66,6 +67,7 @@ const analyzed: LookTableResult = {
 			column_name: "id",
 			resolved_type: "INTEGER",
 			band: "ready",
+			band_stage: "add_source",
 			worst_intent_risk: 0.05,
 			intents: [{ intent: "query_intent", band: "ready", risk: 0.05 }],
 			top_drivers: [],
@@ -144,6 +146,7 @@ describe("TableReadinessWidget (DAT-350)", () => {
 					column_name: "x",
 					resolved_type: null,
 					band: null,
+					band_stage: null,
 					worst_intent_risk: null,
 					intents: [],
 					top_drivers: [],

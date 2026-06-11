@@ -31,6 +31,8 @@ function readiness(
 	overrides: Partial<WhyRelReadinessRow> = {},
 ): WhyRelReadinessRow {
 	return {
+		bandStage: "session_detect",
+		bandComputedAt: new Date("2026-06-11T10:00:00Z"),
 		band: "investigate",
 		worstIntentRisk: 0.42,
 		intents: [

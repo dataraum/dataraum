@@ -215,6 +215,12 @@ class ColumnEligibilityPhase(BasePhase):
                 typed_recipe_ddl=self._typed_recipe_ddl(ctx, table),
             )
 
+            # A dropped column is junk — its dependent run-stamped metadata is
+            # meaningless and must go with it. The FK children of ``columns`` no
+            # longer ``ON DELETE CASCADE`` (DAT-506 torn-window cut), so the
+            # deliberate column drop deletes them explicitly here rather than
+            # relying on a DB cascade.
+            _delete_column_dependents(ctx, [c.column_id for c, _ in columns_data])
             for column, _ in columns_data:
                 ctx.session.delete(column)
 
@@ -236,3 +242,66 @@ class ColumnEligibilityPhase(BasePhase):
             warnings=warnings if warnings else None,
             summary=f"{counts['ELIGIBLE']} eligible, {counts['WARN']} warned, {counts['INELIGIBLE']} dropped",
         )
+
+
+def _delete_column_dependents(ctx: PhaseContext, column_ids: list[str]) -> None:
+    """Delete every run-stamped row that FK-references the dropped columns (DAT-506).
+
+    The metadata children of ``columns`` no longer ``ON DELETE CASCADE`` (the
+    torn-window cut), so a deliberate column drop must remove their dependent
+    rows itself. The dropped columns are junk — all of their derived metadata,
+    across every run, is meaningless. Run BEFORE ``session.delete(column)`` so the
+    FK constraints are satisfied when the column row goes.
+    """
+    if not column_ids:
+        return
+    from sqlalchemy import delete, or_
+
+    from dataraum.analysis.correlation.db_models import DerivedColumn
+    from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
+    from dataraum.analysis.relationships.db_models import Relationship
+    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+    from dataraum.analysis.slicing.db_models import SliceDefinition
+    from dataraum.analysis.statistics.db_models import StatisticalProfile as _StatProfile
+    from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
+    from dataraum.analysis.temporal.db_models import TemporalColumnProfile
+    from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
+    from dataraum.entropy.db_models import (
+        ClaimWitnessRecord,
+        EntropyObjectRecord,
+        EntropyReadinessRecord,
+    )
+
+    column_keyed = (
+        TypeCandidate,
+        TypeDecision,
+        _StatProfile,
+        StatisticalQualityMetrics,
+        TemporalColumnProfile,
+        SemanticAnnotation,
+        SliceDefinition,
+        EntropyObjectRecord,
+        EntropyReadinessRecord,
+        ClaimWitnessRecord,
+    )
+    for model in column_keyed:
+        ctx.session.execute(delete(model).where(model.column_id.in_(column_ids)))
+    # Differently-named column FKs.
+    ctx.session.execute(
+        delete(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
+    )
+    ctx.session.execute(
+        delete(MeasureAggregationLineage).where(
+            MeasureAggregationLineage.measure_column_id.in_(column_ids)
+        )
+    )
+    # Relationships reach a column through either endpoint.
+    ctx.session.execute(
+        delete(Relationship).where(
+            or_(
+                Relationship.from_column_id.in_(column_ids),
+                Relationship.to_column_id.in_(column_ids),
+            )
+        )
+    )
+    ctx.session.flush()

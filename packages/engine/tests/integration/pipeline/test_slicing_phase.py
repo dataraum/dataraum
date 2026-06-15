@@ -11,6 +11,7 @@ from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_phase import SlicingPhase
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_run_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -31,6 +32,7 @@ class TestSlicingPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -94,6 +96,7 @@ class TestSlicingPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -111,6 +114,7 @@ class TestSlicingPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)
@@ -188,6 +192,7 @@ class TestSlicingPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table_id],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)

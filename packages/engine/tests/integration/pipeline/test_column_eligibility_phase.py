@@ -28,6 +28,8 @@ from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.storage import Column, Table
 
+from tests.conftest import baseline_run_id
+
 
 @pytest.fixture
 def csv_with_all_null_id_column(tmp_path):
@@ -243,7 +245,7 @@ class TestLakeConvergence:
                 select(MaterializationRecipe).where(
                     MaterializationRecipe.table_id == typed_table.table_id,
                     MaterializationRecipe.layer == "typed",
-                    MaterializationRecipe.run_id.is_(None),
+                    MaterializationRecipe.run_id == baseline_run_id(),
                 )
             ).scalar_one()
             session.delete(recipe)

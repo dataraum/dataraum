@@ -155,7 +155,7 @@ class TypingPhase(BasePhase):
             ctx.session,
             table_id=typed_table.table_id,
             layer="typed",
-            run_id=ctx.run_id,
+            run_id=ctx.require_run_id(),
             target_fqn=typed_target,
             ddl=typed_sql,
             depends_on=[raw_target],
@@ -287,7 +287,7 @@ class TypingPhase(BasePhase):
                 table=table,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
-                run_id=ctx.run_id,
+                run_id=ctx.require_run_id(),
             )
 
             if not inference_result.success:
@@ -313,7 +313,7 @@ class TypingPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 min_confidence=min_confidence,
-                run_id=ctx.run_id,
+                run_id=ctx.require_run_id(),
             )
 
             if not resolution_result.success:

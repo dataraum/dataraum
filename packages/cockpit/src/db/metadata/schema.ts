@@ -65,26 +65,6 @@ export const currentClaimWitnesses = metadataSchema
 		sql`SELECT claim_witness_id, session_id, table_id, column_id, run_id, target, claim_field, witness_id, distribution, reliability, detector_id, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_session_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('session:'::text || r.session_id::text))) AS via_operating_model_head FROM ws_00000000_0000_0000_0000_000000000001.claim_witnesses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'detect'::text AND (h.target::text = ('table:'::text || r.table_id::text) OR h.target::text = ('session:'::text || r.session_id::text)) OR h.stage::text = 'operating_model'::text AND h.target::text = ('session:'::text || r.session_id::text))))`,
 	);
 
-export const currentColumnDriftSummaries = metadataSchema
-	.view("current_column_drift_summaries", {
-		id: varchar(),
-		sessionId: varchar("session_id"),
-		runId: varchar("run_id"),
-		sliceTableName: varchar("slice_table_name", { length: 255 }),
-		columnName: varchar("column_name", { length: 255 }),
-		timeColumn: varchar("time_column", { length: 255 }),
-		maxJsDivergence: doublePrecision("max_js_divergence"),
-		meanJsDivergence: doublePrecision("mean_js_divergence"),
-		driftDivergence: doublePrecision("drift_divergence"),
-		periodsAnalyzed: integer("periods_analyzed"),
-		periodsWithDrift: integer("periods_with_drift"),
-		driftEvidenceJson: json("drift_evidence_json"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT id, session_id, run_id, slice_table_name, column_name, time_column, max_js_divergence, mean_js_divergence, drift_divergence, periods_analyzed, periods_with_drift, drift_evidence_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.column_drift_summaries r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
-	);
-
 export const currentColumnEligibility = metadataSchema
 	.view("current_column_eligibility", {
 		eligibilityId: varchar("eligibility_id", { length: 36 }),
@@ -460,25 +440,11 @@ export const currentTemporalSliceAnalyses = metadataSchema
 		periodStart: date("period_start"),
 		periodEnd: date("period_end"),
 		rowCount: integer("row_count"),
-		expectedDays: integer("expected_days"),
-		observedDays: integer("observed_days"),
-		coverageRatio: doublePrecision("coverage_ratio"),
-		isComplete: integer("is_complete"),
-		hasEarlyCutoff: integer("has_early_cutoff"),
-		daysMissingAtEnd: integer("days_missing_at_end"),
-		lastDayRatio: doublePrecision("last_day_ratio"),
 		columnSums: json("column_sums"),
-		zScore: doublePrecision("z_score"),
-		rollingAvg: doublePrecision("rolling_avg"),
-		rollingStd: doublePrecision("rolling_std"),
-		isVolumeAnomaly: integer("is_volume_anomaly"),
-		anomalyType: varchar("anomaly_type", { length: 20 }),
-		periodOverPeriodChange: doublePrecision("period_over_period_change"),
-		issuesJson: json("issues_json"),
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT id, session_id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, expected_days, observed_days, coverage_ratio, is_complete, has_early_cutoff, days_missing_at_end, last_day_ratio, column_sums, z_score, rolling_avg, rolling_std, is_volume_anomaly, anomaly_type, period_over_period_change, issues_json, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT id, session_id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, column_sums, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = ('session:'::text || r.session_id::text) AND h.stage::text = 'detect'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema

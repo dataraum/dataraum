@@ -32,7 +32,7 @@ from dataraum.pipeline.phases.temporal_phase import TemporalPhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.storage import Table, init_database
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 # Paths to test data
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -128,7 +128,7 @@ class PipelineTestHarness:
                 source_id=None,
                 table_ids=scoped_table_ids,
                 config=config or {},
-                session_id=baseline_session_id(),
+                run_id=baseline_run_id(),
             )
 
             # Check skip condition
@@ -159,8 +159,8 @@ class PipelineTestHarness:
                             detector_session,
                             detector_id,
                             self.duckdb_conn,
-                            session_id=baseline_session_id(),
                             table_ids=table_ids,
+                            run_id=baseline_run_id(),
                         )
                     detector_session.commit()
 
@@ -276,7 +276,7 @@ class PipelineTestHarness:
                 duckdb_conn=self.duckdb_conn,
                 source_id=self.source_id,
                 config={"junk_columns": junk_columns or []},
-                session_id=baseline_session_id(),
+                run_id=baseline_run_id(),
             )
 
             # The per-URI loop is the production multi-file path (DAT-378): one
@@ -352,19 +352,15 @@ def _make_workspace_engine(pg_url: str) -> Engine:
     Mirrors ``ConnectionManager._init_sqlalchemy`` schema-per-workspace
     bootstrap (post-DAT-339 Commit B): attaches the search-path connect
     listener, creates the workspace schema, runs ``init_database``, and seeds
-    a baseline ``Source`` + ``InvestigationSession`` so the global
-    ``before_flush`` autofill hook in ``tests/conftest.py`` has a valid FK
-    target for any per-session row a test constructs without explicit
-    ``session_id=`` (production code always sets it explicitly).
+    a baseline ``Source``. Sessions live in cockpit_db now (DAT-506) — no
+    ``InvestigationSession`` row; run-versioned rows scope by ``run_id`` via the
+    global ``before_flush`` autofill hook in ``tests/conftest.py``.
 
     Shared by the function-scoped ``integration_engine`` and the module-scoped
     read-only ``analyzed_small_finance`` fixture.
     """
-    from datetime import UTC, datetime
-
     from sqlalchemy import event, text
 
-    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.server.workspace import schema_name_for
     from dataraum.storage import Source
 
@@ -394,15 +390,6 @@ def _make_workspace_engine(pg_url: str) -> Engine:
                 source_id="00000000-0000-0000-0000-000000000002",
                 name="test_baseline",
                 source_type="csv",
-            )
-        )
-        sess.flush()
-        sess.add(
-            InvestigationSession(
-                session_id=baseline_session_id(),
-                intent="integration baseline",
-                status="active",
-                started_at=datetime.now(UTC),
             )
         )
         sess.commit()

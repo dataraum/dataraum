@@ -223,7 +223,7 @@ describe("projectVerdictHistory", () => {
 
 	it("keeps coexisting catalog-grain runs visible — the disclosure surface", () => {
 		// The catalog views carry no session_id post-DAT-506; run_id is the
-		// per-snapshot discriminator and session_id is always null in the history.
+		// per-snapshot discriminator.
 		const history = projectVerdictHistory([
 			histRow("r1-run", { viaCatalogHead: true }),
 			histRow("r2-run", {
@@ -232,6 +232,5 @@ describe("projectVerdictHistory", () => {
 			}),
 		]);
 		expect(history.map((h) => h.run_id)).toEqual(["r1-run", "r2-run"]);
-		expect(history.every((h) => h.session_id === null)).toBe(true);
 	});
 });

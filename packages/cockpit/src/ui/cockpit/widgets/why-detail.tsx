@@ -165,7 +165,6 @@ export interface VerdictHistoryRow {
 	band: string;
 	worst_intent_risk: number | null;
 	computed_at: string | null;
-	session_id: string | null;
 	run_id: string | null;
 	signals: number | null;
 }

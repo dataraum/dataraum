@@ -121,7 +121,6 @@ export interface VerdictHistoryEntry {
 	band: string;
 	worst_intent_risk: number | null;
 	computed_at: string | null;
-	session_id: string | null;
 	run_id: string | null;
 	/** Distinct detectors the stage's rollup drew on — CUMULATIVE by stage,
 	 * because each stage's readiness is recomputed over the run-resolved merge
@@ -173,10 +172,8 @@ export function projectVerdictHistory(
 					band: r.band ?? "",
 					worst_intent_risk: r.worstIntentRisk ?? null,
 					computed_at: r.computedAt?.toISOString() ?? null,
-					// session_id is gone from the catalog-grain views (DAT-506); the
-					// run_id remains the per-snapshot discriminator. Field kept for the
-					// DAT-513 history API shape (now always null).
-					session_id: null,
+					// run_id is the per-snapshot discriminator (catalog-grain views
+					// carry no session_id post-DAT-506).
 					run_id: r.runId ?? null,
 					signals: signalsAtOrBelow(stage),
 				};
@@ -193,7 +190,6 @@ export const VerdictHistorySchema = z.object({
 	band: z.string(),
 	worst_intent_risk: z.number().nullable(),
 	computed_at: z.string().nullable(),
-	session_id: z.string().nullable(),
 	run_id: z.string().nullable(),
 	signals: z.number().nullable(),
 });

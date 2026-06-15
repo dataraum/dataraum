@@ -106,7 +106,6 @@ class ValidationPhase(BasePhase):
                 summary=f"0 declared validations ({outcome}) — nothing to ground or execute",
             )
 
-        session_id = ctx.require_session_id()
         run_id = ctx.require_run_id()
         # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
         # workflow's pre-flight ``operating_model_resolve`` activity and
@@ -150,7 +149,6 @@ class ValidationPhase(BasePhase):
         for validation_id, spec in specs.items():
             artifacts[validation_id] = declare_artifact(
                 ctx.session,
-                session_id=session_id,
                 artifact_type="validation",
                 artifact_key=validation_id,
                 run_id=run_id,
@@ -209,7 +207,7 @@ class ValidationPhase(BasePhase):
             started_at=started_at,
             results=results,
         )
-        _persist_results(ctx.session, run_result, session_id=session_id)
+        _persist_results(ctx.session, run_result)
 
         # Two distinct axes in the outputs below: the LIFECYCLE counts
         # (declared/executed/stuck_* — where each artifact landed; stuck_declared
@@ -250,7 +248,7 @@ class ValidationPhase(BasePhase):
         )
 
 
-def _persist_results(session: Session, run_result: ValidationRunResult, *, session_id: str) -> None:
+def _persist_results(session: Session, run_result: ValidationRunResult) -> None:
     """Persist one run-stamped ``ValidationResultRecord`` per result.
 
     Form-(a) upsert on ``uq_validation_result_run`` (DAT-502): a Temporal
@@ -258,12 +256,11 @@ def _persist_results(session: Session, run_result: ValidationRunResult, *, sessi
     re-persists every check — converging in place instead of violating the
     UNIQUE. PK omitted so the model's Python-side default applies.
     """
-    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
     for result in run_result.results:
         # Serialize details to ensure JSON compatibility
         result_data = result.model_dump(mode="json")
-        rows[(session_id, result.validation_id, run_result.run_id)] = {
-            "session_id": session_id,
+        rows[(result.validation_id, run_result.run_id)] = {
             "run_id": run_result.run_id,
             "validation_id": result.validation_id,
             "table_ids": result.table_ids,
@@ -280,7 +277,7 @@ def _persist_results(session: Session, run_result: ValidationRunResult, *, sessi
         session,
         ValidationResultRecord,
         list(rows.values()),
-        index_elements=["session_id", "validation_id", "run_id"],
+        index_elements=["validation_id", "run_id"],
     )
 
     _log.debug(

@@ -59,9 +59,7 @@ class SQLSnippetRecord(Base):
     )
 
     snippet_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # Discriminator: extract | constant | formula | query
     snippet_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -123,9 +121,7 @@ class SnippetUsageRecord(Base):
     __tablename__ = "snippet_usage"
 
     usage_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
+    workspace_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # --- Execution link ---
     execution_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

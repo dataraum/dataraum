@@ -106,7 +106,6 @@ class RelationshipsPhase(BasePhase):
             table_ids=table_ids,
             duckdb_conn=ctx.duckdb_conn,
             session=ctx.session,
-            session_id=ctx.require_session_id(),
             min_confidence=min_confidence,
             sample_percent=sample_percent,
             evaluate=True,

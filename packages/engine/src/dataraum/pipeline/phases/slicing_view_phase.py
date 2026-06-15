@@ -271,10 +271,9 @@ class SlicingViewPhase(BasePhase):
             if latest_recipe is None or not sql_equivalent(latest_recipe.ddl, view_sql):
                 store_recipe(
                     ctx.session,
-                    session_id=ctx.require_session_id(),
                     table_id=fact_table_id,
                     layer="slicing",
-                    run_id=ctx.run_id,
+                    run_id=ctx.require_run_id(),
                     target_fqn=view_fqn,
                     ddl=view_sql,
                     depends_on=[source_fqn],
@@ -291,12 +290,10 @@ class SlicingViewPhase(BasePhase):
             ).scalar_one_or_none()
             if slicing_view is None:
                 slicing_view = SlicingView(
-                    session_id=ctx.require_session_id(),
                     fact_table_id=fact_table_id,
                 )
                 ctx.session.add(slicing_view)
-            slicing_view.session_id = ctx.require_session_id()
-            slicing_view.run_id = ctx.run_id
+            slicing_view.run_id = ctx.require_run_id()
             slicing_view.view_name = view_name
             slicing_view.slice_definition_ids = slice_def_ids
             slicing_view.slice_columns = slice_dim_cols

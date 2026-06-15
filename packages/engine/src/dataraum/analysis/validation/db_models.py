@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
@@ -26,14 +26,9 @@ class ValidationResultRecord(Base):
     """
 
     __tablename__ = "validation_results"
-    __table_args__ = (
-        UniqueConstraint("session_id", "validation_id", "run_id", name="uq_validation_result_run"),
-    )
+    __table_args__ = (UniqueConstraint("validation_id", "run_id", name="uq_validation_result_run"),)
 
     result_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

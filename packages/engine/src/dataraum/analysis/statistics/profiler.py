@@ -286,7 +286,6 @@ def profile_statistics(
     max_workers: int = 8,
     config: dict[str, Any] | None = None,
     *,
-    session_id: str,
     run_id: str | None = None,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.
@@ -385,7 +384,6 @@ def profile_statistics(
                     # PK omitted so the model's Python-side default applies.
                     rows.append(
                         {
-                            "session_id": session_id,
                             "column_id": profile.column_id,
                             "run_id": run_id,
                             "profiled_at": profiled_at,

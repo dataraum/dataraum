@@ -30,21 +30,14 @@ class MeasureAggregationLineage(Base):
     )
 
     lineage_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     # Snapshot version axis (DAT-413): the begin_session run that discovered this.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
-    measure_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    measure_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     measure_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("columns.column_id"), nullable=False, index=True
     )
-    event_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    event_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
     # The pairing the verdict was computed under (audit + re-run reproducibility):
     # the shared slice dimension the two facts were partitioned by, the signed

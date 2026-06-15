@@ -71,7 +71,6 @@ class BusinessCycleAgent(LLMFeature):
         table_ids: list[str],
         *,
         vertical: str,
-        session_id: str,
         base_runs: BaseRunMap,
     ) -> Result[BusinessCycleAnalysis]:
         """Ground the declared cycle vocabulary against the workspace (DAT-455).
@@ -106,7 +105,6 @@ class BusinessCycleAgent(LLMFeature):
             duckdb_conn,
             table_ids,
             vertical=vertical,
-            session_id=session_id,
             base_runs=base_runs,
         )
         context_str = format_context_for_prompt(context)

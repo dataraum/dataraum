@@ -38,19 +38,11 @@ class ColumnEligibilityRecord(Base):
     eligibility_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     column_id: Mapped[str] = mapped_column(String(36), nullable=False)  # Preserved for audit, no FK
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    source_id: Mapped[str] = mapped_column(
-        ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False
-    )
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Denormalized column metadata (survives column deletion)
     column_name: Mapped[str] = mapped_column(String, nullable=False)

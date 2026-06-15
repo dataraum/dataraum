@@ -122,8 +122,7 @@ class TemporalPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 config=ctx.config if "processing" in ctx.config else None,
-                session_id=ctx.require_session_id(),
-                run_id=ctx.run_id,
+                run_id=ctx.require_run_id(),
             )
 
             if not profile_result.success:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -33,13 +33,9 @@ class TemporalSliceAnalysis(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     # Snapshot version axis (DAT-448): the begin_session run that computed these
-    # sums. Nullable for the legacy/test path; the unique constraint guards the
-    # grain for stamped rows (NULL run_id rows are NULLS-DISTINCT).
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # sums. The unique constraint guards the grain per run.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     time_column: Mapped[str] = mapped_column(String(255), nullable=False)

@@ -158,7 +158,6 @@ class ColumnEligibilityPhase(BasePhase):
             # PK omitted so the model's Python-side default applies.
             rows.append(
                 {
-                    "session_id": ctx.require_session_id(),
                     "column_id": column.column_id,
                     "table_id": table.table_id,
                     # The column's source is its table's source — derived from the
@@ -167,7 +166,7 @@ class ColumnEligibilityPhase(BasePhase):
                     # span multiple per-object sources, so there is no single run
                     # source to record).
                     "source_id": table.source_id,
-                    "run_id": ctx.run_id,
+                    "run_id": ctx.require_run_id(),
                     "column_name": column.column_name,
                     "table_name": table.table_name,
                     "resolved_type": column.resolved_type,

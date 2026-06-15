@@ -21,7 +21,7 @@ from sqlalchemy.orm import selectinload
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.core.logging import get_logger
-from dataraum.investigation.queries import link_session_tables
+from dataraum.investigation.queries import link_run_tables
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -153,7 +153,6 @@ class TypingPhase(BasePhase):
 
         store_recipe(
             ctx.session,
-            session_id=ctx.require_session_id(),
             table_id=typed_table.table_id,
             layer="typed",
             run_id=ctx.run_id,
@@ -192,7 +191,6 @@ class TypingPhase(BasePhase):
             # PK omitted so the model's Python-side default applies.
             td_rows.append(
                 {
-                    "session_id": ctx.require_session_id(),
                     "column_id": typed_col_id,
                     "run_id": ctx.run_id,
                     "decided_type": resolved,
@@ -289,7 +287,6 @@ class TypingPhase(BasePhase):
                 table=table,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
-                session_id=ctx.require_session_id(),
                 run_id=ctx.run_id,
             )
 
@@ -316,7 +313,6 @@ class TypingPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 min_confidence=min_confidence,
-                session_id=ctx.require_session_id(),
                 run_id=ctx.run_id,
             )
 
@@ -352,11 +348,11 @@ class TypingPhase(BasePhase):
         if not typed_tables:
             return PhaseResult.failed("No tables were successfully typed")
 
-        # Link the run's session to the tables it just typed (DAT-407) so the
-        # session's source is derivable without a stored ``source_id``. Written
-        # here — a side-effect of typed-table creation, same transaction — rather
-        # than as a separate workflow activity. Idempotent across teach re-types.
-        link_session_tables(ctx.session, ctx.require_session_id(), typed_tables)
+        # Link the run to the tables it just typed (DAT-407) so the run's source
+        # is derivable without a stored ``source_id``. Written here — a side-effect
+        # of typed-table creation, same transaction — rather than as a separate
+        # workflow activity. Idempotent across teach re-types.
+        link_run_tables(ctx.session, ctx.require_run_id(), typed_tables)
 
         return PhaseResult.success(
             outputs={

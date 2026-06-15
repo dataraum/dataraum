@@ -212,8 +212,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             slice_table_name=slice_table_name,
                             time_column=time_column,
                             session=ctx.session,
-                            session_id=ctx.require_session_id(),
-                            run_id=ctx.run_id,
+                            run_id=ctx.require_run_id(),
                         )
                         if persisted.success and persisted.value is not None:
                             total_period_analyses += persisted.value

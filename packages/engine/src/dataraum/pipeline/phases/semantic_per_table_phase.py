@@ -118,8 +118,7 @@ class SemanticPerTablePhase(BasePhase):
             ontology=ontology,
             relationship_candidates=relationship_candidates,
             duckdb_conn=ctx.duckdb_conn,
-            session_id=ctx.require_session_id(),
-            run_id=ctx.run_id,
+            run_id=ctx.require_run_id(),
         )
         if not result.success:
             return PhaseResult.failed(result.error or "Table synthesis failed")

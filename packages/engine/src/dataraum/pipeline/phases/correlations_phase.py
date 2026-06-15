@@ -113,8 +113,7 @@ class CorrelationsPhase(BasePhase):
                     fact_table=typed_table,
                     duckdb_conn=ctx.duckdb_conn,
                     session=ctx.session,
-                    session_id=ctx.require_session_id(),
-                    run_id=ctx.run_id,
+                    run_id=ctx.require_run_id(),
                 )
             else:
                 # No enriched view — fallback to typed table only
@@ -122,8 +121,7 @@ class CorrelationsPhase(BasePhase):
                     table_id=typed_table.table_id,
                     duckdb_conn=ctx.duckdb_conn,
                     session=ctx.session,
-                    session_id=ctx.require_session_id(),
-                    run_id=ctx.run_id,
+                    run_id=ctx.require_run_id(),
                 )
 
             if not corr_result.success:

@@ -14,9 +14,9 @@ Versioning contract (DAT-408/413 + ADR-0008):
   its fresh ``run_id``; a prior run's rows are never mutated. Within the
   *active* run the row's ``state`` advances in place (declared → grounded →
   executed happen during one ``OperatingModelWorkflow`` run on one row); the
-  identity UNIQUE makes that one row per ``(session, type, key, run)``.
-* **Born view-ready** — ``run_id``-stamped with the session-grain head
-  (``session:{session_id}``, stage ``operating_model``), so the ADR-0008
+  identity UNIQUE makes that one row per ``(type, key, run)``.
+* **Born view-ready** — ``run_id``-stamped under the workspace catalog head
+  (target ``catalog``, stage ``operating_model``), so the ADR-0008
   ``current_*`` view generator covers it with the standard head join; no
   reader needs hand-rolled head resolution.
 
@@ -44,8 +44,6 @@ class LifecycleArtifact(Base):
 
     Columns:
         artifact_id: uuid4 primary key.
-        session_id: the owning journey session (``executed`` is session-local —
-            refine decision D1; a working-vertical promotion is a later, new scope).
         artifact_type: the teach type — ``"validation"`` in slice 1.
         artifact_key: the artifact's identity within its type (e.g. ``validation_id``).
         run_id: the ``OperatingModelWorkflow`` run that wrote this row.
@@ -64,7 +62,6 @@ class LifecycleArtifact(Base):
     __tablename__ = "lifecycle_artifacts"
     __table_args__ = (
         UniqueConstraint(
-            "session_id",
             "artifact_type",
             "artifact_key",
             "run_id",
@@ -73,11 +70,6 @@ class LifecycleArtifact(Base):
     )
 
     artifact_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     artifact_type: Mapped[str] = mapped_column(String, nullable=False)
     artifact_key: Mapped[str] = mapped_column(String, nullable=False)
     run_id: Mapped[str] = mapped_column(String, nullable=False)

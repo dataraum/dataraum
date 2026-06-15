@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from dataraum.core.logging import get_logger
-from dataraum.storage.snapshot_head import head_run_id, session_head_target
+from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -35,10 +35,10 @@ class BaseRunMap(BaseModel):
     """The run_ids an operating_model run reads upstream state at.
 
     Attributes:
-        relationship_run_id: begin_session's promoted ``(session:{id}, detect)``
-            head — scopes defined-relationship reads. ``None`` when the session
-            has no promoted begin_session run yet: relationship context stays
-            EMPTY (fail-closed, DAT-429), never a cross-run read.
+        relationship_run_id: begin_session's promoted ``(catalog, catalog)``
+            head — scopes defined-relationship reads. ``None`` when the
+            workspace has no promoted begin_session run yet: relationship context
+            stays EMPTY (fail-closed, DAT-429), never a cross-run read.
         semantic_runs: per-table promoted ``(table:{id}, semantic_per_column)``
             heads — scope the per-column semantic-annotation reads. A table
             with no promoted head is absent: its annotations stay empty.
@@ -48,15 +48,12 @@ class BaseRunMap(BaseModel):
     semantic_runs: dict[str, str] = Field(default_factory=dict)
 
 
-def resolve_operating_model_base_runs(
-    session: Session, session_id: str, table_ids: list[str]
-) -> BaseRunMap:
+def resolve_operating_model_base_runs(session: Session, table_ids: list[str]) -> BaseRunMap:
     """Resolve the promoted upstream heads ONCE for this run.
 
     Args:
         session: SQLAlchemy session.
-        session_id: the journey session (same id begin_session ran under).
-        table_ids: the session's typed tables.
+        table_ids: the catalog's typed tables.
 
     Returns:
         The pinned map. An unresolved SEMANTIC head is recorded as absent
@@ -65,16 +62,15 @@ def resolve_operating_model_base_runs(
         here but REFUSED by the only caller (``resolve_operating_model_scope``,
         DAT-511) — it is not a state downstream code handles.
     """
-    # "detect" is begin_session's promoted stage on the session target (see
-    # promote_session_run) — distinct from operating_model's own head, which
+    # "catalog" is begin_session's promoted stage on the workspace catalog head
+    # (see promote_catalog_run) — distinct from operating_model's own head, which
     # this run WRITES at terminal promote and never reads from.
-    relationship_run_id = head_run_id(session, session_head_target(session_id), "detect")
+    relationship_run_id = head_run_id(session, catalog_head_target(), "catalog")
     if relationship_run_id is None:
         logger.warning(
             "base_run_unresolved",
-            session_id=session_id,
-            target="session",
-            stage="detect",
+            target="catalog",
+            stage="catalog",
             detail="no promoted begin_session run; relationship context will be empty",
         )
 
@@ -84,7 +80,6 @@ def resolve_operating_model_base_runs(
         if run is None:
             logger.warning(
                 "base_run_unresolved",
-                session_id=session_id,
                 target=f"table:{table_id}",
                 stage="semantic_per_column",
                 detail="no promoted semantic run; this table's annotations will be empty",

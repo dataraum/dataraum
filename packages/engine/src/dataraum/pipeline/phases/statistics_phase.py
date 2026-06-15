@@ -74,7 +74,6 @@ class StatisticsPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 config=ctx.config,
-                session_id=ctx.require_session_id(),
                 run_id=ctx.run_id,
             )
 

@@ -302,10 +302,9 @@ class EnrichedViewsPhase(BasePhase):
             if latest_recipe is None or not sql_equivalent(latest_recipe.ddl, view_sql):
                 store_recipe(
                     ctx.session,
-                    session_id=ctx.require_session_id(),
                     table_id=fact_table.table_id,
                     layer="enriched",
-                    run_id=ctx.run_id,
+                    run_id=ctx.require_run_id(),
                     target_fqn=view_fqn,
                     ddl=view_sql,
                     depends_on=[fact_fqn, *dim_fqns],
@@ -326,12 +325,10 @@ class EnrichedViewsPhase(BasePhase):
             ).scalar_one_or_none()
             if view_record is None:
                 view_record = EnrichedView(
-                    session_id=ctx.require_session_id(),
                     fact_table_id=fact_table.table_id,
                 )
                 ctx.session.add(view_record)
-            view_record.session_id = ctx.require_session_id()
-            view_record.run_id = ctx.run_id
+            view_record.run_id = ctx.require_run_id()
             view_record.view_name = view_name
             view_record.relationship_ids = [j.relationship_id for j in dimension_joins]
             view_record.dimension_table_ids = list(
@@ -467,7 +464,6 @@ class EnrichedViewsPhase(BasePhase):
                     is_unique = profile.distinct_count == non_null if non_null > 0 else False
                     db_profile = StatisticalProfile(
                         profile_id=str(uuid4()),
-                        session_id=ctx.require_session_id(),
                         column_id=col.column_id,
                         profiled_at=profiled_at,
                         layer="enriched",

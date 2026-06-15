@@ -73,15 +73,9 @@ class TypeCandidate(Base):
     candidate_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
     detected_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -131,15 +125,9 @@ class TypeDecision(Base):
     __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_type_decision"),)
 
     decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     decided_type: Mapped[str] = mapped_column(String, nullable=False)
     decision_source: Mapped[str] = mapped_column(
@@ -192,19 +180,12 @@ class MaterializationRecipe(Base):
     )
 
     recipe_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    # The typed Table whose physical artifact this DDL materializes. CASCADE so a
-    # dropped typed Table takes its recipes with it.
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    # The typed Table whose physical artifact this DDL materializes.
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     # Produced lake layer: ``"typed"`` or ``"quarantine"``.
     layer: Mapped[str] = mapped_column(String, nullable=False)
-    # Snapshot version axis (DAT-413): the run that emitted this DDL. Nullable to
-    # mirror TypeDecision/TypeCandidate (a non-run caller writes a NULL run).
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Snapshot version axis (DAT-413): the run that emitted this DDL.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # The fully-qualified DuckDB target the DDL creates
     # (e.g. ``lake.typed."csv__orders"``), captured so a rebuild can verify /

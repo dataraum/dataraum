@@ -9,37 +9,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/db/cockpit/runs", () => ({
 	listNonTerminalRuns: vi.fn(),
 	markRunStatus: vi.fn(),
-	attachEngineRunId: vi.fn(),
 }));
 vi.mock("#/temporal/progress", () => ({
 	getWorkflowProgress: vi.fn(),
-	getEngineRunId: vi.fn(),
 	// Echo a deterministic classification off the fed progress shape — the real
 	// terminalRunStatus is exercised by the progress poll + smoke.
 	terminalRunStatus: (p: { status?: string }) =>
 		p.status === "FAILED" ? "failed" : "completed",
 }));
 
-import {
-	attachEngineRunId,
-	listNonTerminalRuns,
-	markRunStatus,
-} from "#/db/cockpit/runs";
-import { getEngineRunId, getWorkflowProgress } from "#/temporal/progress";
+import { listNonTerminalRuns, markRunStatus } from "#/db/cockpit/runs";
+import { getWorkflowProgress } from "#/temporal/progress";
 import { reconcileActiveRuns } from "./reconcile";
 
 const list = vi.mocked(listNonTerminalRuns);
 const mark = vi.mocked(markRunStatus);
 const progress = vi.mocked(getWorkflowProgress);
-const engineRunId = vi.mocked(getEngineRunId);
-const attachEngine = vi.mocked(attachEngineRunId);
 
 beforeEach(() => {
 	list.mockReset();
 	mark.mockReset().mockResolvedValue(undefined);
 	progress.mockReset();
-	engineRunId.mockReset().mockResolvedValue("engine-run-1");
-	attachEngine.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -60,25 +50,15 @@ describe("reconcileActiveRuns", () => {
 
 		expect(mark).toHaveBeenCalledTimes(1);
 		expect(mark).toHaveBeenCalledWith("wf-1", "r-1", "completed");
-		// A clean completion that landed while the tab was closed stamps the
-		// engine-minted metadata run_id (DAT-506).
-		expect(engineRunId).toHaveBeenCalledWith({
-			workflow_id: "wf-1",
-			run_id: "r-1",
-		});
-		expect(attachEngine).toHaveBeenCalledWith("wf-1", "r-1", "engine-run-1");
 	});
 
-	it("classifies a failed run as failed and does NOT stamp an engine run_id", async () => {
+	it("classifies a failed run as failed", async () => {
 		list.mockResolvedValue([{ workflowId: "wf-9", runId: "r-9" }]);
 		progress.mockResolvedValue(prog(true, "FAILED"));
 
 		await reconcileActiveRuns("ws-1");
 
 		expect(mark).toHaveBeenCalledWith("wf-9", "r-9", "failed");
-		// A failed run never returned an engine run_id — nothing to stamp.
-		expect(engineRunId).not.toHaveBeenCalled();
-		expect(attachEngine).not.toHaveBeenCalled();
 	});
 
 	it("swallows a per-run query error and still reconciles the others", async () => {

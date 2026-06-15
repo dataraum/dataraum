@@ -149,8 +149,8 @@ export async function triggerAddSource(
 		});
 
 		// Finalize the provisional Temporal execution runId on the pre-recorded run
-		// (best-effort — the orphan-critical rows already exist). The engine-minted
-		// metadata run_id lands later, on the completion edge (attachEngineRunId).
+		// (best-effort — the orphan-critical rows already exist). The engine mints its
+		// own internal metadata run_id; the cockpit does not store it (DAT-506).
 		await attachRunId(workflowId, handle.firstExecutionRunId);
 
 		return {

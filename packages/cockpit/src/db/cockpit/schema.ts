@@ -107,13 +107,10 @@ export const sessions = pgTable(
  * Temporal identity the progress widget polls, UNIQUE so an idempotent record
  * call can't double-insert.
  *
- * Two distinct run ids (DAT-506): `runId` is Temporal's EXECUTION runId
- * (`firstExecutionRunId`) — what `getHandle(workflowId, runId)` pins for the
- * progress poll / reconcile. `engineRunId` is the run id the ENGINE mints inside
- * the workflow and returns in its result — the metadata version axis (DAT-413)
- * the cockpit correlates persisted metadata by. It's NULL until the workflow's
- * result lands (the completion edge captures it via `attachEngineRunId`); a
- * non-blocking start can't know it.
+ * `runId` is Temporal's EXECUTION runId (`firstExecutionRunId`) — what
+ * `getHandle(workflowId, runId)` pins for the progress poll / reconcile. The engine
+ * mints its OWN internal metadata `run_id` (the version axis, DAT-413) and resolves
+ * replay from the generation heads, so the cockpit does not store it (DAT-506).
  */
 export const sessionRuns = pgTable(
 	"session_runs",
@@ -125,10 +122,6 @@ export const sessionRuns = pgTable(
 		stage: varchar("stage").notNull(),
 		workflowId: varchar("workflow_id").notNull(),
 		runId: varchar("run_id").notNull(),
-		// The engine-minted metadata run_id, captured from the workflow result on the
-		// completion edge — NULL while the run is in flight (a non-blocking start
-		// returns before the result exists). The replay/metadata-correlation axis.
-		engineRunId: varchar("engine_run_id"),
 		status: varchar("status").notNull().default("running"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
 		// The atomic claim for the run-completion narration (Phase 2A): the server

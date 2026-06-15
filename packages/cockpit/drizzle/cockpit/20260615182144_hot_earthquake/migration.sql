@@ -1,1 +1,0 @@
-ALTER TABLE "session_runs" ADD COLUMN "engine_run_id" varchar;

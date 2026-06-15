@@ -169,7 +169,8 @@ describe("frame (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
 		expect(conceptRows).toHaveLength(2);
 		for (const row of conceptRows) {
 			expect((row.payload as { vertical: string }).vertical).toBe("_adhoc");
-			expect(row.sessionId).toBeNull();
+			// config_overlay carries no session_id post-DAT-506.
+			expect(row.sessionId).toBeUndefined();
 		}
 		const revenue = conceptRows[0].payload as Record<string, unknown>;
 		expect(revenue.name).toBe("revenue");

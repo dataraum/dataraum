@@ -32,12 +32,10 @@ import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { recordRun } from "#/db/cockpit/runs";
 import { metadataDb } from "#/db/metadata/client";
 import { configOverlay } from "#/db/metadata/schema";
-import {
-	investigationSessionsWrite,
-	sourcesWrite,
-} from "#/db/metadata/write-surface";
+import { sourcesWrite } from "#/db/metadata/write-surface";
 import { replay } from "#/tools/replay";
 import { teach } from "#/tools/teach";
 import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
@@ -64,13 +62,11 @@ const fileUris = env.SOURCE_PATH.split(",")
 	.filter(Boolean);
 
 async function seed(sourceId: string, sessionId: string): Promise<void> {
-	// Seed through the SAME Drizzle metadata client the cockpit's write seams use
-	// (the one-gate `select` writes `sources` and seeds `investigation_sessions`
-	// via triggerAddSource — DAT-436); the client targets the active workspace's
-	// `ws_<id>` schema via pgSchema, so no raw connection / search_path juggling.
-	// This driver seeds DIRECTLY (not through select): its `_adhoc` cold-start
-	// run must bypass select's zero-concept pre-flight — induction generating
-	// concepts from the data is exactly what this smoke proves (DAT-371).
+	// Seed the `sources` row through the Drizzle metadata write seam (the one-gate
+	// `select` writes it the same way). No engine session seed (DAT-506): sessions
+	// live in cockpit_db. This driver seeds DIRECTLY (not through select), then
+	// records the run in cockpit_db so replay can resolve the session's sources
+	// (replay reads cockpit_db sessions/session_runs → engine run_tables).
 	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
@@ -86,19 +82,15 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	// No source_id on the session (DAT-407): a session's source is derived from
-	// its linked tables. The add_source workflow writes the session_tables links
-	// once the per-table fan-out resolves typed ids.
-	await metadataDb
-		.insert(investigationSessionsWrite)
-		.values({
-			sessionId,
-			intent: "e4a drive",
-			status: "active",
-			startedAt: now,
-			stepCount: 0,
-		})
-		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
+	// Record the cockpit session + run (DAT-506) keyed by this session id, so the
+	// replay step below resolves the session's sources from cockpit_db.
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		engineSessionId: sessionId,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+	});
 }
 
 async function countOverlays(): Promise<number> {

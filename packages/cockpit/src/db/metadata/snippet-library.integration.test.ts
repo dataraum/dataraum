@@ -10,8 +10,9 @@
 // schema_mapping_id ("dat484-test") so it never interacts with real producer
 // rows (which carry the real workspace_id). Seeding writes the underlying
 // ws_<id>.sql_snippets TABLE directly via raw bun SQL (P0 has no write path);
-// the lib reads it through the `sqlSnippets` view. All seeded rows share one
-// investigation_sessions FK parent, so cleanup is a single delete-by-session.
+// the lib reads it through the `sqlSnippets` view. All seeded rows carry one
+// synthetic workspace_id (DAT-506: snippets are workspace-scoped, no
+// investigation_sessions FK), so cleanup is a single delete-by-workspace_id.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -52,7 +53,8 @@ const SCHEMA = STACK_AVAILABLE
 	? `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll("-", "_")}`
 	: "";
 
-const TEST_SESSION = "dat484-test-session";
+// A synthetic workspace_id the seeded rows carry (DAT-506) — cleanup is by it.
+const TEST_WORKSPACE = "dat484-test-workspace";
 // Synthetic schema_mapping_id — isolates this fixture from real producer rows
 // (which carry the real workspace_id). The lib filters on it, so our queries see
 // only our rows, and a real producer run never perturbs these assertions.
@@ -75,12 +77,6 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 		sql = new SQL(process.env.METADATA_DATABASE_URL as string);
 
 		await cleanup();
-		await sql.unsafe(
-			`INSERT INTO "${SCHEMA}".investigation_sessions
-			 (session_id, status, started_at, intent, step_count)
-			 VALUES ($1, 'complete', now(), 'test', 0)`,
-			[TEST_SESSION],
-		);
 		await seedFixture();
 		// The keying-trap guard: a row under the REAL workspace_id value, with a
 		// unique source so it never collides with real producer data.
@@ -104,14 +100,9 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 	});
 
 	async function cleanup(): Promise<void> {
-		// Children (snippets) before the FK parent (session).
 		await sql.unsafe(
-			`DELETE FROM "${SCHEMA}".sql_snippets WHERE session_id = $1`,
-			[TEST_SESSION],
-		);
-		await sql.unsafe(
-			`DELETE FROM "${SCHEMA}".investigation_sessions WHERE session_id = $1`,
-			[TEST_SESSION],
+			`DELETE FROM "${SCHEMA}".sql_snippets WHERE workspace_id = $1`,
+			[TEST_WORKSPACE],
 		);
 	}
 
@@ -130,14 +121,14 @@ describe.skipIf(!STACK_AVAILABLE)("snippet-library reads (DAT-484)", () => {
 		const id = crypto.randomUUID();
 		await sql.unsafe(
 			`INSERT INTO "${SCHEMA}".sql_snippets
-			 (snippet_id, session_id, snippet_type, standard_field, statement,
+			 (snippet_id, workspace_id, snippet_type, standard_field, statement,
 			  aggregation, schema_mapping_id, parameter_value, normalized_expression,
 			  sql, description, column_mappings, source, execution_count,
 			  failure_count, created_at, updated_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'{}'::json,$12,0,0,now(),now())`,
 			[
 				id,
-				TEST_SESSION,
+				TEST_WORKSPACE,
 				o.snippetType,
 				o.standardField ?? null,
 				o.statement ?? null,

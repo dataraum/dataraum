@@ -16,9 +16,10 @@ const h = vi.hoisted(() => ({
 		dataraumWorkspaceId: "00000000-0000-0000-0000-000000000001",
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	} as Record<string, unknown>,
+	vertical: "_adhoc" as string,
 	recordRun: vi.fn(async () => {}),
+	attachRunId: vi.fn(async () => {}),
 	hasRunningRun: vi.fn(async () => false),
 }));
 
@@ -35,11 +36,12 @@ vi.mock("#/db/cockpit/registry", () => ({
 		id: h.config.dataraumWorkspaceId,
 		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
-		vertical: "_adhoc",
+		vertical: h.vertical,
 	})),
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: h.recordRun,
+	attachRunId: h.attachRunId,
 	hasRunningRun: h.hasRunningRun,
 }));
 
@@ -64,25 +66,31 @@ beforeEach(() => {
 		dataraumWorkspaceId: WS,
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	};
+	h.vertical = "_adhoc";
 	startMock.mockClear();
 	closeMock.mockClear();
 	h.recordRun.mockClear();
+	h.attachRunId.mockClear();
+	h.hasRunningRun.mockClear();
+	h.hasRunningRun.mockResolvedValue(false);
 });
 
-describe("operatingModel (DAT-440)", () => {
-	it("starts operatingModelWorkflow with IDENTITY ONLY — no table set rides in", async () => {
+describe("operatingModel (DAT-440, DAT-506)", () => {
+	it("starts operatingModelWorkflow with IDENTITY + vertical — no table set rides in", async () => {
+		h.vertical = "finance";
 		const result = await operatingModel({ session_id: "sess-1" });
 
 		expect(startMock).toHaveBeenCalledTimes(1);
 		expect(startMock.mock.calls[0][0]).toBe("operatingModelWorkflow");
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [Record<string, unknown>];
-		// The payload is exactly { identity } — the engine re-reads the session's
-		// table set from session_tables (DAT-438); a `tables` copy could diverge.
+		// The payload is { identity, vertical } — the engine re-reads the session's
+		// table set from the catalog head's run_tables (DAT-506); a `tables` copy
+		// could diverge. The vertical comes from the workspace registry.
 		expect(args[0]).toEqual({
 			identity: { workspace_id: WS, session_id: "sess-1" },
+			vertical: "finance",
 		});
 		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
 		expect(opts.taskQueue).toBe(`engine-${WS}`);
@@ -112,7 +120,7 @@ describe("operatingModel (DAT-440)", () => {
 		expect(h.recordRun).not.toHaveBeenCalled();
 	});
 
-	it("records an operating_model run on the begin_session session (DAT-461)", async () => {
+	it("records an operating_model run on the begin_session session before start", async () => {
 		await operatingModel({ session_id: "sess-1" });
 		expect(h.recordRun).toHaveBeenCalledTimes(1);
 		expect(h.recordRun).toHaveBeenCalledWith({
@@ -121,8 +129,11 @@ describe("operatingModel (DAT-440)", () => {
 			kind: "begin_session",
 			stage: "operating_model",
 			workflowId: `operatingmodel-${WS}-sess-1`,
-			runId: "run-xyz",
 		});
+		expect(h.attachRunId).toHaveBeenCalledWith(
+			`operatingmodel-${WS}-sess-1`,
+			"run-xyz",
+		);
 	});
 
 	it("refuses with { error } while begin_session is still running (DAT-511)", async () => {

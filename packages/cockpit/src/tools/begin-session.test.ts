@@ -1,11 +1,10 @@
-// Unit tests for the begin_session tool (DAT-409).
+// Unit tests for the begin_session tool (DAT-409, DAT-506).
 //
-// Mirrors replay.test.ts: mock `#/config`, the Drizzle metadata client (record the
-// seeded investigation_sessions row + the resolveSelectionVertical read), and
-// `@temporalio/client` (record the start call). The regression this guards: the
-// workflow's begin_session_select FKs session_tables to investigation_sessions and
-// fails loud if the session row is missing — so begin_session MUST seed that parent
-// row BEFORE starting, with the SAME session_id it hands the workflow.
+// DAT-506: no engine seed — sessions live in cockpit_db and the run is recorded
+// there BEFORE the workflow starts (recordRun is authoritative). The vertical is
+// the workspace property from the registry, not a per-session input. Mocked seams
+// (no DB / no Temporal in units): the cockpit registry (workspace + vertical), the
+// cockpit runs writer (recordRun/attachRunId), and `@temporalio/client`.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,12 +15,15 @@ const h = vi.hoisted(() => ({
 		dataraumWorkspaceId: "00000000-0000-0000-0000-000000000001",
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	} as Record<string, unknown>,
+	vertical: "_adhoc" as string,
 	calls: [] as string[],
-	seededRow: null as Record<string, unknown> | null,
-	verticalRows: [] as Array<{ vertical: string }>,
-	recordRun: vi.fn(async () => {}),
+	recordedRun: null as Record<string, unknown> | null,
+	recordRun: vi.fn(async (input: Record<string, unknown>) => {
+		h.recordedRun = input;
+		h.calls.push("record");
+	}),
+	attachRunId: vi.fn(async () => {}),
 }));
 
 vi.mock("#/config", () => ({
@@ -30,55 +32,19 @@ vi.mock("#/config", () => ({
 	},
 }));
 
-// cockpit_db control plane (DAT-461): workspace via the registry, run recorded
-// after start — both mocked at the seam (no DB in units).
+// cockpit_db control plane (DAT-461/505/506): workspace + its vertical via the
+// registry, run recorded BEFORE start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
 		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
-		vertical: "_adhoc",
+		vertical: h.vertical,
 	})),
 }));
-vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
-
-const onConflictMock = vi.fn(async () => {});
-const valuesMock = vi.fn((row: Record<string, unknown>) => {
-	h.seededRow = row;
-	h.calls.push("seed");
-	return { onConflictDoNothing: onConflictMock };
-});
-// resolveSelectionVertical's read chain: select().from().innerJoin().where()
-// .orderBy().limit() → rows. limit() resolves the rows.
-const selectChain: Record<string, unknown> = {};
-for (const m of ["from", "innerJoin", "where", "orderBy"]) {
-	selectChain[m] = () => selectChain;
-}
-selectChain.limit = () => {
-	h.calls.push("resolveVertical");
-	return Promise.resolve(h.verticalRows);
-};
-vi.mock("#/db/metadata/client", () => ({
-	metadataDb: {
-		insert: vi.fn(() => ({ values: valuesMock })),
-		select: vi.fn(() => selectChain),
-	},
-}));
-vi.mock("#/db/metadata/schema", () => ({
-	investigationSessions: {
-		sessionId: "session_id",
-		vertical: "vertical",
-		startedAt: "started_at",
-	},
-	sessionTables: { sessionId: "session_id", tableId: "table_id" },
-}));
-vi.mock("drizzle-orm", () => ({
-	and: (...a: unknown[]) => a,
-	desc: (x: unknown) => x,
-	eq: (...a: unknown[]) => a,
-	inArray: (...a: unknown[]) => a,
-	isNotNull: (x: unknown) => x,
-	ne: (...a: unknown[]) => a,
+vi.mock("#/db/cockpit/runs", () => ({
+	recordRun: h.recordRun,
+	attachRunId: h.attachRunId,
 }));
 
 const startMock = vi.fn(async (_name: string, _opts: unknown) => {
@@ -103,117 +69,81 @@ beforeEach(() => {
 		dataraumWorkspaceId: WS,
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	};
+	h.vertical = "_adhoc";
 	h.calls = [];
-	h.seededRow = null;
-	h.verticalRows = [];
-	valuesMock.mockClear();
-	onConflictMock.mockClear();
+	h.recordedRun = null;
 	startMock.mockClear();
 	closeMock.mockClear();
 	h.recordRun.mockClear();
+	h.attachRunId.mockClear();
 });
 
-describe("beginSession (DAT-409)", () => {
-	it("seeds the investigation_sessions row BEFORE starting the workflow", async () => {
-		await beginSession({ table_ids: ["t1", "t2"], vertical: "finance" });
-
-		expect(h.calls).toEqual(["seed", "start"]);
-		expect(onConflictMock).toHaveBeenCalledTimes(1);
-		expect(h.seededRow?.status).toBe("active");
-		expect(h.seededRow?.stepCount).toBe(0);
-		expect(h.seededRow?.intent).toBe("begin_session");
-		expect(h.seededRow?.vertical).toBe("finance");
-		expect(h.seededRow?.startedAt).toBeInstanceOf(Date);
-		expect(typeof h.seededRow?.sessionId).toBe("string");
+describe("beginSession (DAT-409, DAT-506)", () => {
+	it("records the run BEFORE starting the workflow (no orphaned run)", async () => {
+		await beginSession({ table_ids: ["t1", "t2"] });
+		expect(h.calls).toEqual(["record", "start"]);
 	});
 
-	it("hands the workflow the seeded session_id + the table set, and returns them", async () => {
-		const result = await beginSession({
-			table_ids: ["t1", "t2"],
-			vertical: "finance",
-		});
+	it("hands the workflow the session_id + the table set + workspace vertical, and returns them", async () => {
+		h.vertical = "finance";
+		const result = await beginSession({ table_ids: ["t1", "t2"] });
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [
-			{ identity: Record<string, unknown>; tables: string[] },
+			{
+				identity: Record<string, unknown>;
+				tables: string[];
+				vertical: string;
+			},
 		];
-		expect(args[0].identity.session_id).toBe(h.seededRow?.sessionId);
+		expect(args[0].identity.session_id).toBe(result.session_id);
 		expect(args[0].tables).toEqual(["t1", "t2"]);
-		expect(result.session_id).toBe(h.seededRow?.sessionId);
+		// Vertical rides on the INPUT (DAT-506), not the identity.
+		expect(args[0].vertical).toBe("finance");
+		expect(
+			(args[0].identity as { vertical?: string }).vertical,
+		).toBeUndefined();
 		expect(result.table_ids).toEqual(["t1", "t2"]);
-		expect(opts.workflowId).toBe(
-			`beginsession-${WS}-${h.seededRow?.sessionId}`,
-		);
+		expect(opts.workflowId).toBe(`beginsession-${WS}-${result.session_id}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("reuses a caller-supplied session_id (seed stays conflict-safe)", async () => {
-		await beginSession({
+	it("reuses a caller-supplied session_id", async () => {
+		const result = await beginSession({
 			table_ids: ["t1"],
 			session_id: "sess-reuse",
-			vertical: "finance",
 		});
-		expect(h.seededRow?.sessionId).toBe("sess-reuse");
+		expect(result.session_id).toBe("sess-reuse");
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [{ identity: Record<string, unknown> }];
 		expect(args[0].identity.session_id).toBe("sess-reuse");
 		expect(opts.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
-		expect(onConflictMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("throws when Temporal is unconfigured and does NOT seed or start", async () => {
+	it("throws when Temporal is unconfigured and records nothing / starts nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(beginSession({ table_ids: ["t1"] })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
-		expect(valuesMock).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
 		expect(h.recordRun).not.toHaveBeenCalled();
 	});
 
-	it("records the cockpit session + run after starting (DAT-461)", async () => {
-		await beginSession({ table_ids: ["t1", "t2"], vertical: "finance" });
-		const sessionId = h.seededRow?.sessionId as string;
+	it("records the cockpit session + run before start, then attaches the runId", async () => {
+		const result = await beginSession({ table_ids: ["t1", "t2"] });
 		expect(h.recordRun).toHaveBeenCalledTimes(1);
-		expect(h.recordRun).toHaveBeenCalledWith({
+		expect(h.recordedRun).toEqual({
 			workspaceId: WS,
-			engineSessionId: sessionId,
+			engineSessionId: result.session_id,
 			kind: "begin_session",
 			stage: "begin_session",
-			workflowId: `beginsession-${WS}-${sessionId}`,
-			runId: "run-xyz",
+			workflowId: `beginsession-${WS}-${result.session_id}`,
 		});
-	});
-
-	it("resolves the selection's framed vertical when vertical is OMITTED", async () => {
-		h.verticalRows = [{ vertical: "finance" }];
-		await beginSession({ table_ids: ["t1", "t2"] });
-
-		expect(h.calls).toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("finance");
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ identity: Record<string, unknown> }];
-		expect(
-			(args[0].identity as { vertical?: string }).vertical,
-		).toBeUndefined();
-	});
-
-	it("falls back to _adhoc only when the selection has no framed vertical", async () => {
-		h.verticalRows = [];
-		await beginSession({ table_ids: ["t1"] });
-
-		expect(h.calls).toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("_adhoc");
-	});
-
-	it("an explicit vertical OVERRIDES resolution (no resolver query)", async () => {
-		h.verticalRows = [{ vertical: "finance" }];
-		await beginSession({ table_ids: ["t1"], vertical: "marketing" });
-
-		expect(h.calls).not.toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("marketing");
+		expect(h.attachRunId).toHaveBeenCalledWith(
+			`beginsession-${WS}-${result.session_id}`,
+			"run-xyz",
+		);
 	});
 });

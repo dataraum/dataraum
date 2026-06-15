@@ -28,16 +28,15 @@ import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
-import { eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { cockpitDb } from "../db/cockpit/client";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { attachRunId, recordRun } from "../db/cockpit/runs";
-import { sessionRuns, sessions } from "../db/cockpit/schema";
+import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataDb } from "../db/metadata/client";
-import { runTables, tables } from "../db/metadata/schema";
+import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
 import { currentSessionId } from "../prompts/workspace-context";
 import type {
 	AddSourceInput,
@@ -52,27 +51,29 @@ import {
 } from "./agent-error";
 
 /**
- * The distinct sources a session was built from — the source ids of the tables its
- * runs anchored. A run is over a SET of objects from 1–N sources (DAT-422), so a
- * session can span sources; replay re-runs add_source over exactly that set. The
- * session→runs linkage lives in cockpit_db (`sessions`/`session_runs`, DAT-506);
- * the run's tables live in the engine `run_tables` view. Empty when the session has
- * no linked tables yet (the caller rejects that — nothing to replay).
+ * The distinct sources currently imported into the workspace — the source ids of
+ * the tables at the live per-table GENERATION heads (DAT-506). A run is over a SET
+ * of objects from 1–N sources (DAT-422); replay re-runs add_source over exactly
+ * the workspace's current set.
+ *
+ * Why the generation heads, not a per-session join: post-DAT-506 the engine mints
+ * its own internal `run_id` (the version axis) and persists `run_tables` keyed by
+ * it — the cockpit never sees that id (it only holds the Temporal execution runId),
+ * and no engine table carries the cockpit `session_id`. So a session→run_tables
+ * join is impossible at the cockpit edge. The live generation heads ARE the
+ * workspace's current typed-table set (one head per table → its run_id → run_tables
+ * → tables → source), which in single-active-workspace (Phase 1) is exactly the
+ * session's sources. The `session_id` argument is kept for the contract/log; the
+ * resolution is workspace-current (the multi-workspace switcher is DAT-357).
+ * Empty when nothing is imported yet (the caller rejects that — nothing to replay).
  */
-async function sourcesForSession(engineSessionId: string): Promise<string[]> {
-	const runRows = await cockpitDb
-		.select({ runId: sessionRuns.runId })
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
-		.where(eq(sessions.engineSessionId, engineSessionId));
-	const runIds = runRows.map((r) => r.runId).filter((id) => id.length > 0);
-	if (runIds.length === 0) return [];
-
+async function sourcesForSession(_engineSessionId: string): Promise<string[]> {
 	const rows = await metadataDb
 		.selectDistinct({ sourceId: tables.sourceId })
-		.from(runTables)
+		.from(metadataSnapshotHead)
+		.innerJoin(runTables, eq(runTables.runId, metadataSnapshotHead.runId))
 		.innerJoin(tables, eq(tables.tableId, runTables.tableId))
-		.where(inArray(runTables.runId, runIds));
+		.where(eq(metadataSnapshotHead.stage, GENERATION_STAGE));
 	return rows
 		.map((r) => r.sourceId)
 		.filter((id): id is string => id !== null && id !== undefined);

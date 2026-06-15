@@ -13,10 +13,10 @@
 // config + the metadata client (and `../duckdb/connect` for ConnectSchema), so
 // both are mocked at the `#/` alias — same approach as frame.test.ts.
 //
-// The one-call suite drives the composed `select`: the vertical pre-flight
-// (mocked `#/tools/list-verticals`) BEFORE any write, then persist, then the
-// injected trigger stub — asserting order, the no-half-state refusal, and the
-// merged run identity in the result.
+// The one-call suite drives the composed `select`: persist, then the injected
+// trigger stub — asserting order and the merged run identity in the result.
+// DAT-506 retired the per-add_source vertical pre-flight (vertical is a workspace
+// property the trigger reads from the registry).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -35,18 +35,10 @@ vi.mock("#/db/cockpit/registry", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
 
-// Pre-flight effective-concept count (relocated into select by DAT-436).
-// Default >0 so the gate's happy path passes; the refusal test flips it to 0.
+// Records the order of side effects in the one-call suite (the trigger fires
+// AFTER the persist). DAT-506 retired the per-add_source concept pre-flight.
 const preflight = vi.hoisted(() => ({
-	conceptCount: 1,
 	calls: [] as string[],
-}));
-const countMock = vi.fn(async (vertical: string) => {
-	preflight.calls.push(`count:${vertical}`);
-	return preflight.conceptCount;
-});
-vi.mock("#/tools/list-verticals", () => ({
-	verticalConceptCount: (vertical: string) => countMock(vertical),
 }));
 
 // Capture EVERY inserted row + each conflict-update set; `.returning()` echoes
@@ -130,13 +122,11 @@ beforeEach(() => {
 	insertedRows = [];
 	conflictConfigs = [];
 	existingRows = [];
-	preflight.conceptCount = 1;
 	preflight.calls = [];
 	valuesMock.mockClear();
 	onConflictMock.mockClear();
 	returningMock.mockClear();
 	limitMock.mockClear();
-	countMock.mockClear();
 });
 
 describe("select (DAT-422) — file source is content-keyed", () => {
@@ -166,7 +156,6 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 		expect(result.recipe_tables).toBeNull();
 		expect(result.backend).toBeNull();
 		expect(result.stage).toBe("add_source");
-		expect(result.vertical).toBe("_adhoc");
 	});
 
 	it("registers the single connected file as one content-keyed source", async () => {
@@ -240,24 +229,9 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 		expect(result.source_ids).toHaveLength(1);
 	});
 
-	it("echoes the chosen vertical (adopted builtin or framed) in the result", async () => {
-		const adopted = await persistSelection({
-			schema: FILE_SCHEMA,
-			vertical: "finance",
-		});
-		expect(adopted.vertical).toBe("finance");
-		const framed = await persistSelection({
-			schema: FILE_SCHEMA,
-			vertical: "sales",
-		});
-		expect(framed.vertical).toBe("sales");
-	});
-
-	it("rejects an unsafe vertical", async () => {
-		await expect(
-			persistSelection({ schema: FILE_SCHEMA, vertical: "../x" }),
-		).rejects.toThrow(/Invalid vertical/);
-	});
+	// DAT-506: the vertical is a workspace property (the trigger sources it from
+	// the registry) — no longer a select input, so persistSelection neither echoes
+	// nor validates one.
 });
 
 describe("select (DAT-398) — database source", () => {
@@ -471,7 +445,7 @@ describe("select — one call (DAT-436)", () => {
 	// back a fixed run identity (the real triggerAddSource seeds the session +
 	// starts addSourceWorkflow — its own unit test covers that).
 	function makeTrigger() {
-		return vi.fn(async (input: { source_ids: string[]; vertical?: string }) => {
+		return vi.fn(async (input: { source_ids: string[] }) => {
 			preflight.calls.push("trigger");
 			return {
 				workflow_id: "addsource-ws-sess",
@@ -482,23 +456,19 @@ describe("select — one call (DAT-436)", () => {
 		});
 	}
 
-	it("pre-flights the vertical, persists, then triggers — in that order", async () => {
+	it("persists, then triggers — in that order (no per-add_source vertical pick)", async () => {
 		const trigger = makeTrigger();
-		const result = await select(
-			{ schema: FILE_SCHEMA, vertical: "finance" },
-			undefined,
-			trigger,
-		);
+		const result = await select({ schema: FILE_SCHEMA }, undefined, trigger);
 
-		// Order is the contract: count BEFORE any write, trigger AFTER the upsert.
-		expect(preflight.calls[0]).toBe("count:finance");
+		// Order is the contract: the upsert BEFORE the trigger. There is no concept
+		// pre-flight (DAT-506: vertical is a workspace property the trigger sources).
 		expect(preflight.calls.at(-1)).toBe("trigger");
 		expect(valuesMock).toHaveBeenCalledTimes(1);
 
-		// The trigger runs over the persisted SET with the resolved vertical.
+		// The trigger runs over the persisted SET (no vertical input — the trigger
+		// reads it from the workspace registry).
 		expect(trigger).toHaveBeenCalledWith({
 			source_ids: result.source_ids,
-			vertical: "finance",
 		});
 
 		// The result merges the persisted descriptor with the run identity — the
@@ -507,19 +477,6 @@ describe("select — one call (DAT-436)", () => {
 		expect(result.run_id).toBe("run-1");
 		expect(result.session_id).toBe("sess-1");
 		expect(result.name).toBe("orders.csv");
-	});
-
-	it("refuses a zero-concept vertical BEFORE any write (no source row, no trigger)", async () => {
-		preflight.conceptCount = 0;
-		const trigger = makeTrigger();
-		await expect(
-			select({ schema: FILE_SCHEMA }, undefined, trigger),
-		).rejects.toThrow(/No concepts declared yet/);
-
-		// No half-state: the refusal happened before the upsert and the trigger.
-		expect(valuesMock).not.toHaveBeenCalled();
-		expect(trigger).not.toHaveBeenCalled();
-		expect(preflight.calls).toEqual(["count:_adhoc"]);
 	});
 
 	it("does not trigger when persistence fails (validation rejects first)", async () => {
@@ -544,11 +501,7 @@ describe("select — one call (DAT-436)", () => {
 			throw new Error("TransportError: failed to connect to Temporal");
 		});
 		await expect(
-			select(
-				{ schema: FILE_SCHEMA, vertical: "finance" },
-				undefined,
-				failingTrigger,
-			),
+			select({ schema: FILE_SCHEMA }, undefined, failingTrigger),
 		).rejects.toThrow(/failed to connect to Temporal/);
 
 		// The half-state: the source row WAS written (persist precedes trigger in
@@ -561,17 +514,12 @@ describe("select — one call (DAT-436)", () => {
 		// same content-keyed name (the conflict path, not a duplicate row) and a
 		// fresh trigger starts the run — nothing about the half-state blocks it.
 		const trigger = makeTrigger();
-		const result = await select(
-			{ schema: FILE_SCHEMA, vertical: "finance" },
-			undefined,
-			trigger,
-		);
+		const result = await select({ schema: FILE_SCHEMA }, undefined, trigger);
 		expect(valuesMock).toHaveBeenCalledTimes(2);
 		expect(insertedRows[1].name).toBe(insertedRows[0].name);
 		expect(onConflictMock).toHaveBeenCalledTimes(2);
 		expect(trigger).toHaveBeenCalledWith({
 			source_ids: result.source_ids,
-			vertical: "finance",
 		});
 		expect(result.workflow_id).toBe("addsource-ws-sess");
 		expect(result.run_id).toBe("run-1");

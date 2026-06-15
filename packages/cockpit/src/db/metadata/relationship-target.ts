@@ -52,3 +52,8 @@ export const CATALOG_HEAD_TARGET = "catalog";
 export function catalogHeadTarget(): string {
 	return CATALOG_HEAD_TARGET;
 }
+
+/** The per-table generation head stage (DAT-506) — add_source seals one
+ * `(table:{table_id}, "generation")` head per typed table. Mirrors the engine's
+ * `GENERATION_STAGE` (`storage/snapshot_head.py`). */
+export const GENERATION_STAGE = "generation";

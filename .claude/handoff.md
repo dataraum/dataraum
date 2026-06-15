@@ -4,6 +4,25 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-15: slicing agent grounds recommendations — no empty-FK crash (fix)
+
+The slicing agent built a `SliceRecommendation` with `column_id=''` whenever the
+LLM's recommended column could not be resolved in this run's context (a
+hallucination, or a cross-run enriched-view shape change — a fact's dimension
+join drops to a passthrough view on a re-run, so its `fk__dim` columns vanish).
+That empty id is a guaranteed FK violation on `slice_definitions` →
+`PhaseFailed` → the whole begin_session crashes. Surfaced on a DAT-473 teach
+re-run: `account_id__account_type` recommended for a now-passthrough
+journal_lines view. Fix (`analysis/slicing/agent.py::_convert_output_to_result`):
+drop — with a `slice_recommendation_ungrounded` warning — any recommendation
+that does not ground to a real `table_id` + `column_id`, mirroring the existing
+time-axis validation (the propagation path already guarded empty FK ids). Eval
+impact: begin_session re-runs (every teach-and-rerun closure) no longer crash on
+an ungroundable slice recommendation. NOTE (separate, not fixed here): the
+*reason* journal_lines lost its account dimension join across runs is
+enriched-view / relationship-discovery nondeterminism — a deeper determinism
+question; this fix makes slicing robust to it rather than papering it over.
+
 ## 2026-06-15: slice_conditional_null detector — nulls concentrated in a slice (DAT-473)
 
 New value-layer, column-scoped detector `slice_conditional_null` (declared in

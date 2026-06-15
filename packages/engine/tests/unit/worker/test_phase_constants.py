@@ -102,6 +102,7 @@ def test_terminal_detect_step_runs_every_wired_detector() -> None:
         "type_fidelity",
         "null_semantics",
         "null_ratio",
+        "slice_conditional_null",
         "business_meaning",
         "unit_entropy",
         "temporal_entropy",

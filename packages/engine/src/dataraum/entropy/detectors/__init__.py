@@ -61,6 +61,7 @@ from dataraum.entropy.detectors.value import (
     BenfordDetector,
     NullRatioDetector,
     NullSemanticsDetector,
+    SliceConditionalNullDetector,
 )
 
 # All built-in detector classes (column, table, relationship, and view scoped).
@@ -75,6 +76,7 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Value
     NullRatioDetector,
     NullSemanticsDetector,
+    SliceConditionalNullDetector,
     BenfordDetector,
     # Semantic (column-scoped)
     BusinessMeaningDetector,
@@ -124,6 +126,7 @@ __all__ = [
     "BenfordDetector",
     "NullRatioDetector",
     "NullSemanticsDetector",
+    "SliceConditionalNullDetector",
     # Semantic detectors
     "BusinessMeaningDetector",
     "UnitEntropyDetector",

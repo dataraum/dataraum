@@ -82,9 +82,19 @@ measurements:
   # varying columns). No grounded statistic rescues it; the old max-of-normalized-
   # spreads also fired only on non-injected columns (distinct-ratio artifacts on
   # categorical dimensions). The null-rate-across-slices sliver — the one defensible
-  # signal — is a proportions question (Cramér's V on null×slice), deferred to
-  # DAT-473 (grounded, teach-closeable loss measurement) + a slice-conditional-null
-  # injection.
+  # signal — became slice_conditional_null below (DAT-473): a proportions question
+  # (bias-corrected Cramér's V on is-null × slice), grounded + teach-closeable.
+
+  slice_conditional_null:
+    # Nulls concentrated in a slice (bias-corrected Cramér's V of is-null × slice) — the
+    # flat null_ratio reads 5% while one slice is 60% null, silently biasing that slice's
+    # aggregates. Worst for aggregation (a sliced sum over the biased dimension) and
+    # reporting (a per-slice breakdown); a query can caveat the gap. Shaped after the
+    # null_ratio row (a per-column NULLS rate, not a divergence). PLACEHOLDER priors,
+    # calibrated: false — not tuned to pass any metric; recall is separation from clean.
+    query_intent: { score: 0.4 }
+    aggregation_intent: { score: 0.7 }
+    reporting_intent: { score: 0.6 }
 
   # Rates / magnitudes (not divergences): the "score" weight scores the detector's
   # existing [0,1] score directly. These three left the network with the dissolved

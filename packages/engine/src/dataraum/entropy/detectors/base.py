@@ -313,10 +313,14 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     from dataraum.entropy.detectors.value.benford import BenfordDetector
     from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
     from dataraum.entropy.detectors.value.null_token_adjudication import NullSemanticsDetector
+    from dataraum.entropy.detectors.value.slice_conditional_null import (
+        SliceConditionalNullDetector,
+    )
 
     registry.register(NullRatioDetector())
     registry.register(NullSemanticsDetector())
     registry.register(BenfordDetector())
+    registry.register(SliceConditionalNullDetector())
 
     # Semantic layer detectors
     from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector

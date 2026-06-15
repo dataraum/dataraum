@@ -118,3 +118,57 @@ def nmi(x: Sequence[Hashable], y: Sequence[Hashable]) -> float:
         (c / n) * math.log2((c / n) / ((px[a] / n) * (py[b] / n))) for (a, b), c in pxy.items()
     )
     return max(0.0, mi / math.sqrt(hx * hy))
+
+
+# chi^2 validity rule: a cell whose EXPECTED count is below this makes the
+# association estimate unreliable (small-cell inflation) → the statistic abstains.
+COCHRAN_MIN_EXPECTED = 5.0
+
+
+def cramers_v(is_null: Sequence[bool], slices: Sequence[Hashable]) -> float | None:
+    """Bias-corrected Cramér's V (Bergsma) of an is-null indicator vs a slice label.
+
+    The slice-conditional-null statistic (DAT-473): association in ``[0, 1]`` over the
+    2×K contingency of ``(value IS NULL) × slice``. ``0.0`` = missingness is independent
+    of the slice (MCAR — a flat null rate everywhere); ``→1.0`` = nulls concentrate in
+    particular slices (a 60%-null slice hiding behind a 5% overall rate, silently biasing
+    that slice's aggregates). The dataset-level ``null_ratio`` is blind to this; V reads it.
+
+    Bias correction (Bergsma 2013) removes the finite-sample inflation that lifts a raw
+    V on many small slices, and the **Cochran validity rule** abstains (returns ``None``)
+    when any expected cell < ``COCHRAN_MIN_EXPECTED`` — the small-slice regime where the
+    estimate is untrustworthy. Also abstains on a degenerate table (< 2 slices, or a
+    column that is all-null / no-null): the association is undefined, not 0-vs-1.
+
+    Returns the association in ``[0, 1]``, or ``None`` to abstain (invalid/degenerate).
+    HIGHER = nulls more concentrated in a slice = more concern (teach: document the
+    conditional-missingness rule). Mirrors the kill-gate reference pinned in
+    dataraum-eval ``calibration/unit/test_slice_null_gate.py``.
+    """
+    n = len(is_null)
+    cats = sorted(set(slices), key=lambda c: (c is not None, str(c)))
+    if n == 0 or len(cats) < 2:
+        return None
+    obs: dict[tuple[bool, Hashable], int] = {}
+    row_tot = {True: 0, False: 0}
+    col_tot: dict[Hashable, int] = dict.fromkeys(cats, 0)
+    for flag, cat in zip(is_null, slices, strict=True):
+        obs[(flag, cat)] = obs.get((flag, cat), 0) + 1
+        row_tot[flag] += 1
+        col_tot[cat] += 1
+    if row_tot[True] == 0 or row_tot[False] == 0:
+        return None  # all-null or no-null column: association undefined
+    chi2 = 0.0
+    for flag in (True, False):
+        for cat in cats:
+            expected = row_tot[flag] * col_tot[cat] / n
+            if expected < COCHRAN_MIN_EXPECTED:
+                return None  # Cochran: a small expected cell → estimate untrustworthy
+            chi2 += (obs.get((flag, cat), 0) - expected) ** 2 / expected
+    phi2 = chi2 / n
+    r, k = 2, len(cats)
+    phi2c = max(0.0, phi2 - (r - 1) * (k - 1) / (n - 1))
+    rc = r - (r - 1) ** 2 / (n - 1)
+    kc = k - (k - 1) ** 2 / (n - 1)
+    denom = min(rc - 1, kc - 1)
+    return math.sqrt(phi2c / denom) if denom > 0 else None

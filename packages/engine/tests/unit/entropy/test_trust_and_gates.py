@@ -12,6 +12,7 @@ ALL_DETECTOR_IDS = {
     "relationship_discovery",
     "null_ratio",
     "null_semantics",
+    "slice_conditional_null",
     "benford",
     "derived_value",
     "business_meaning",

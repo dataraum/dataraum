@@ -80,4 +80,5 @@ class SubDimension(_StrValueMixin):
     DIMENSION_COVERAGE = "dimension_coverage"
     CROSS_TABLE_CONSISTENCY = "cross_table_consistency"
     SLICE_STABILITY = "slice_stability"
+    SLICE_CONDITIONAL_NULL = "slice_conditional_null"
     TEMPORAL_BEHAVIOR = "temporal_behavior"

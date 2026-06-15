@@ -15,10 +15,8 @@ from dataraum.analysis.slicing.models import (
     SlicingAnalysisResult,
 )
 from dataraum.analysis.slicing.slice_runner import (
-    SliceAnalysisResult,
     SliceTableInfo,
     register_slice_tables,
-    run_analysis_on_slices,
 )
 
 __all__ = [
@@ -26,9 +24,7 @@ __all__ = [
     "SlicingAgent",
     # Slice runner
     "register_slice_tables",
-    "run_analysis_on_slices",
     "SliceTableInfo",
-    "SliceAnalysisResult",
     # Models
     "SliceRecommendation",
     "SliceSQL",

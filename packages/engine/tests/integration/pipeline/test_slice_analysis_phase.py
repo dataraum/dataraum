@@ -201,5 +201,5 @@ class TestSliceAnalysisPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs["slice_profiles"] == 0
+        assert result.outputs["slices_registered"] == 0
         assert "No slice definitions" in result.outputs.get("message", "")

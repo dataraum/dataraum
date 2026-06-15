@@ -40,6 +40,7 @@ from dataraum.core.logging import get_logger
 from dataraum.core.sql_normalize import sql_equivalent
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._column_cleanup import delete_column_dependents
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.server.storage import LAKE_CATALOG_ALIAS
@@ -383,10 +384,13 @@ class EnrichedViewsPhase(BasePhase):
 
         Latest-only substrate (DAT-415): the enriched ``Table`` is reconciled on
         its ``(source, view_name, "enriched")`` unique key — reused across runs,
-        with its prior ``Column``s (and cascaded ``StatisticalProfile``s) replaced
-        — rather than minting a fresh row each run. The view *definition* is what
-        is run-versioned (``EnrichedView`` + recipe DDL); the lake substrate stays
-        latest-only and is re-materialized from the versioned recipe on a reset.
+        with its prior ``Column``s replaced. Since the FK children of ``columns``
+        no longer ``ON DELETE CASCADE`` (DAT-506), the prior run's
+        ``StatisticalProfile``s (and every other child) are deleted explicitly via
+        ``delete_column_dependents`` before the columns go. The view *definition*
+        is what is run-versioned (``EnrichedView`` + recipe DDL); the lake
+        substrate stays latest-only and is re-materialized from the versioned
+        recipe on a reset.
 
         Args:
             ctx: Phase context.
@@ -401,107 +405,113 @@ class EnrichedViewsPhase(BasePhase):
         if not dim_columns:
             return None
 
-        try:
-            view_table = ctx.session.execute(
-                select(Table).where(
-                    Table.source_id == fact_table.source_id,
-                    Table.table_name == view_name,
-                    Table.layer == "enriched",
-                )
-            ).scalar_one_or_none()
-            if view_table is None:
-                view_table = Table(
-                    table_id=str(uuid4()),
-                    source_id=fact_table.source_id,
-                    table_name=view_name,
-                    layer="enriched",
-                    duckdb_path=view_name,
-                    row_count=fact_table.row_count,
-                )
-                ctx.session.add(view_table)
-                ctx.session.flush()
-            else:
-                # Reuse the row, drop its prior columns (profiles cascade) so the
-                # latest run's dimension set replaces the last one's.
-                view_table.duckdb_path = view_name
-                view_table.row_count = fact_table.row_count
-                ctx.session.execute(delete(Column).where(Column.table_id == view_table.table_id))
-                ctx.session.flush()
+        view_table = ctx.session.execute(
+            select(Table).where(
+                Table.source_id == fact_table.source_id,
+                Table.table_name == view_name,
+                Table.layer == "enriched",
+            )
+        ).scalar_one_or_none()
+        if view_table is None:
+            view_table = Table(
+                table_id=str(uuid4()),
+                source_id=fact_table.source_id,
+                table_name=view_name,
+                layer="enriched",
+                duckdb_path=view_name,
+                row_count=fact_table.row_count,
+            )
+            ctx.session.add(view_table)
+            ctx.session.flush()
+        else:
+            # Reuse the row; drop its prior columns so the latest run's dimension
+            # set replaces the last one's. The FK children of ``columns`` no
+            # longer ``ON DELETE CASCADE`` (DAT-506 torn-window cut), so the prior
+            # run's statistical_profiles (and every other child) must be deleted
+            # explicitly first — otherwise the ``delete(Column)`` FK-violates and
+            # the dimension columns are never refreshed.
+            view_table.duckdb_path = view_name
+            view_table.row_count = fact_table.row_count
+            old_col_ids = [
+                cid
+                for (cid,) in ctx.session.execute(
+                    select(Column.column_id).where(Column.table_id == view_table.table_id)
+                ).all()
+            ]
+            delete_column_dependents(ctx, old_col_ids)
+            ctx.session.execute(delete(Column).where(Column.table_id == view_table.table_id))
+            ctx.session.flush()
 
-            # Get DuckDB types for dimension columns
-            duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
-            type_by_name = {row[0]: row[1] for row in duckdb_cols}
+        # Get DuckDB types for dimension columns
+        duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
+        type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
-            registered_columns: list[Column] = []
-            for pos, col_name in enumerate(dim_columns):
-                col_type = type_by_name.get(col_name, "VARCHAR")
-                col = Column(
-                    column_id=str(uuid4()),
-                    table_id=view_table.table_id,
-                    column_name=col_name,
-                    column_position=pos,
-                    raw_type=col_type,
-                    resolved_type=col_type,
-                )
-                ctx.session.add(col)
-                registered_columns.append(col)
+        registered_columns: list[Column] = []
+        for pos, col_name in enumerate(dim_columns):
+            col_type = type_by_name.get(col_name, "VARCHAR")
+            col = Column(
+                column_id=str(uuid4()),
+                table_id=view_table.table_id,
+                column_name=col_name,
+                column_position=pos,
+                raw_type=col_type,
+                resolved_type=col_type,
+            )
+            ctx.session.add(col)
+            registered_columns.append(col)
 
-            # Profile each dimension column inline
-            profiled_at = datetime.now(UTC)
-            profiled_count = 0
-            for col in registered_columns:
-                # Bare name, NOT view_fqn: the profiler interpolates the path as
-                # ONE quoted identifier, so a pre-quoted catalog.schema."name"
-                # FQN parses as a zero-length identifier and every dim-column
-                # profile fails (eval DAT-405 finding). Bare lake-view names
-                # resolve on ctx.duckdb_conn (same as DESCRIBE in slicing_view),
-                # and match the Table.duckdb_path the row persists.
-                profile = _profile_column_stats_parallel(
-                    duckdb_conn=ctx.duckdb_conn,
-                    table_name=view_name,
-                    table_duckdb_path=view_name,
+        # Profile each dimension column inline. Per-column profiling failures are
+        # absorbed inside ``_profile_column_stats_parallel`` (returns None →
+        # skipped here); a genuine DB / IntegrityError on the column-set
+        # delete/registration above is NOT swallowed — it propagates and fails the
+        # activity loud, rather than silently leaving stale dimension columns.
+        profiled_at = datetime.now(UTC)
+        profiled_count = 0
+        for col in registered_columns:
+            # Bare name, NOT view_fqn: the profiler interpolates the path as
+            # ONE quoted identifier, so a pre-quoted catalog.schema."name"
+            # FQN parses as a zero-length identifier and every dim-column
+            # profile fails (eval DAT-405 finding). Bare lake-view names
+            # resolve on ctx.duckdb_conn (same as DESCRIBE in slicing_view),
+            # and match the Table.duckdb_path the row persists.
+            profile = _profile_column_stats_parallel(
+                duckdb_conn=ctx.duckdb_conn,
+                table_name=view_name,
+                table_duckdb_path=view_name,
+                column_id=col.column_id,
+                column_name=col.column_name,
+                resolved_type=col.resolved_type or "VARCHAR",
+                profiled_at=profiled_at,
+                top_k=10,
+            )
+            if profile:
+                non_null = profile.total_count - profile.null_count
+                is_unique = profile.distinct_count == non_null if non_null > 0 else False
+                db_profile = StatisticalProfile(
+                    profile_id=str(uuid4()),
                     column_id=col.column_id,
-                    column_name=col.column_name,
-                    resolved_type=col.resolved_type or "VARCHAR",
+                    run_id=ctx.require_run_id(),
                     profiled_at=profiled_at,
-                    top_k=10,
+                    layer="enriched",
+                    total_count=profile.total_count,
+                    null_count=profile.null_count,
+                    distinct_count=profile.distinct_count,
+                    null_ratio=profile.null_ratio,
+                    cardinality_ratio=profile.cardinality_ratio,
+                    is_unique=is_unique,
+                    is_numeric=profile.numeric_stats is not None,
+                    profile_data=profile.model_dump(mode="json"),
                 )
-                if profile:
-                    non_null = profile.total_count - profile.null_count
-                    is_unique = profile.distinct_count == non_null if non_null > 0 else False
-                    db_profile = StatisticalProfile(
-                        profile_id=str(uuid4()),
-                        column_id=col.column_id,
-                        run_id=ctx.require_run_id(),
-                        profiled_at=profiled_at,
-                        layer="enriched",
-                        total_count=profile.total_count,
-                        null_count=profile.null_count,
-                        distinct_count=profile.distinct_count,
-                        null_ratio=profile.null_ratio,
-                        cardinality_ratio=profile.cardinality_ratio,
-                        is_unique=is_unique,
-                        is_numeric=profile.numeric_stats is not None,
-                        profile_data=profile.model_dump(mode="json"),
-                    )
-                    ctx.session.add(db_profile)
-                    profiled_count += 1
+                ctx.session.add(db_profile)
+                profiled_count += 1
 
-            logger.info(
-                "dim_columns_profiled",
-                view_name=view_name,
-                columns=len(registered_columns),
-                profiles=profiled_count,
-            )
-            return view_table
-
-        except Exception as e:
-            logger.warning(
-                "dim_column_registration_failed",
-                view_name=view_name,
-                error=str(e),
-            )
-            return None
+        logger.info(
+            "dim_columns_profiled",
+            view_name=view_name,
+            columns=len(registered_columns),
+            profiles=profiled_count,
+        )
+        return view_table
 
     def _get_llm_recommendations(
         self,

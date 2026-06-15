@@ -31,6 +31,7 @@ from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
 from dataraum.core.sql_normalize import sql_equivalent
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._column_cleanup import delete_column_dependents
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.server.storage import LAKE_CATALOG_ALIAS
@@ -328,6 +329,16 @@ class SlicingViewPhase(BasePhase):
             else:
                 sv_table.duckdb_path = view_name
                 sv_table.row_count = fact_table.row_count
+                # FK children of ``columns`` no longer cascade (DAT-506): delete
+                # the prior run's dependents explicitly before the columns go, or
+                # the ``delete(Column)`` FK-violates on stale child rows.
+                old_col_ids = [
+                    cid
+                    for (cid,) in ctx.session.execute(
+                        select(Column.column_id).where(Column.table_id == sv_table.table_id)
+                    ).all()
+                ]
+                delete_column_dependents(ctx, old_col_ids)
                 ctx.session.execute(delete(Column).where(Column.table_id == sv_table.table_id))
                 ctx.session.flush()
 

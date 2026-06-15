@@ -492,6 +492,96 @@ class TestEnrichedViewsPhaseDuckLake:
         assert view is not None
         assert view.run_id == "run-2"
 
+    def test_rerun_refreshes_dim_columns_despite_prior_profiles(
+        self, session, duckdb_conn, monkeypatch
+    ):
+        """Re-running over a view that ALREADY has dim columns + profiles must
+        refresh them, not FK-violate (C1, DAT-506).
+
+        The enriched ``Table`` is reused across runs; its prior ``Column``s are
+        deleted and re-minted. Since the FK children of ``columns`` no longer
+        ``ON DELETE CASCADE``, the prior run's ``StatisticalProfile``s would block
+        the ``delete(Column)`` with an ``IntegrityError`` — and the old code
+        swallowed that (``warning`` + ``return None``), so the dimension columns
+        were silently never refreshed. This test exercises that exact re-run.
+
+        Fails on the pre-fix code: under SQLite's FK enforcement the column delete
+        raises, and the swallow (now removed) hid it while leaving stale columns.
+        Passes after ``delete_column_dependents`` clears the prior profiles first
+        and the IntegrityError is no longer swallowed.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from dataraum.storage import Column, Table
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+
+        def run(run_id: str) -> PhaseStatus:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            ctx = PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
+            )
+            result = EnrichedViewsPhase().run(ctx)
+            session.flush()
+            return result.status
+
+        def view_table() -> Table:
+            return session.execute(select(Table).where(Table.layer == "enriched")).scalar_one()
+
+        def dim_profiles(view_table_id: str) -> list[StatisticalProfile]:
+            col_ids = [
+                cid
+                for (cid,) in session.execute(
+                    select(Column.column_id).where(Column.table_id == view_table_id)
+                ).all()
+            ]
+            return (
+                session.execute(
+                    select(StatisticalProfile).where(StatisticalProfile.column_id.in_(col_ids))
+                )
+                .scalars()
+                .all()
+            )
+
+        # Run 1 seeds the enriched Table + dim columns + their profiles.
+        assert run("run-1") == PhaseStatus.COMPLETED
+        vt = view_table()
+        run1_cols = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == vt.table_id)
+            ).all()
+        ]
+        assert run1_cols, "run-1 must register dimension columns"
+        run1_profiles = dim_profiles(vt.table_id)
+        assert run1_profiles, "run-1 must profile the dimension columns"
+        assert {p.run_id for p in run1_profiles} == {"run-1"}
+
+        # Run 2 over the SAME view: the prior run's columns (and the profiles that
+        # FK-reference them) must be cleared and re-minted under run-2 — NOT a
+        # swallowed FK violation that leaves the run-1 columns stale.
+        assert run("run-2") == PhaseStatus.COMPLETED
+        vt2 = view_table()
+        assert vt2.table_id == vt.table_id, "the enriched Table row is reused across runs"
+        run2_cols = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == vt2.table_id)
+            ).all()
+        ]
+        # The columns were refreshed: brand-new ids, none of the run-1 set survive.
+        assert run2_cols, "run-2 must re-register dimension columns"
+        assert not (set(run1_cols) & set(run2_cols)), "prior run's columns must be replaced"
+        # And the stale run-1 profiles are gone — only run-2's profiles remain.
+        run2_profiles = dim_profiles(vt2.table_id)
+        assert run2_profiles, "run-2 must re-profile the dimension columns"
+        assert {p.run_id for p in run2_profiles} == {"run-2"}
+
 
 class TestVersionedGrainConstraints:
     """The latest-only / run-grain invariants are DB-enforced, not app-level only.

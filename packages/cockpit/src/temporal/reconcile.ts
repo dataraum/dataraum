@@ -13,10 +13,15 @@
 
 import {
 	type ActiveRun,
+	attachEngineRunId,
 	listNonTerminalRuns,
 	markRunStatus,
 } from "#/db/cockpit/runs";
-import { getWorkflowProgress, terminalRunStatus } from "#/temporal/progress";
+import {
+	getEngineRunId,
+	getWorkflowProgress,
+	terminalRunStatus,
+} from "#/temporal/progress";
 
 /** Cap the per-load sweep so a stale backlog can't fan out unboundedly. */
 export const RECONCILE_LIMIT = 20;
@@ -39,11 +44,19 @@ async function reconcileOne(run: ActiveRun): Promise<void> {
 			run_id: run.runId,
 		});
 		if (progress.done) {
-			await markRunStatus(
-				run.workflowId,
-				run.runId,
-				terminalRunStatus(progress),
-			);
+			const status = terminalRunStatus(progress);
+			await markRunStatus(run.workflowId, run.runId, status);
+			// Capture the engine-minted metadata run_id off a clean completion that
+			// landed while the tab was closed (DAT-506) — best-effort, like the watcher.
+			if (status === "completed") {
+				const engineRunId = await getEngineRunId({
+					workflow_id: run.workflowId,
+					run_id: run.runId,
+				}).catch(() => null);
+				if (engineRunId) {
+					await attachEngineRunId(run.workflowId, run.runId, engineRunId);
+				}
+			}
 		}
 	} catch (err) {
 		// A missing/expired run or a Temporal hiccup — leave it for the next load.

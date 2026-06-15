@@ -31,11 +31,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { attachRunId, recordRun } from "../db/cockpit/runs";
-import type {
-	BeginSessionInput,
-	BeginSessionResult,
-	SessionIdentity,
-} from "../temporal/types";
+import type { BeginSessionInput, BeginSessionResult } from "../temporal/types";
 import { beginSessionWorkflowId } from "../temporal/workflow-id";
 
 export interface BeginSessionToolInput {
@@ -92,14 +88,13 @@ export async function beginSession(
 		workflowId,
 	});
 
-	const identity: SessionIdentity = {
-		workspace_id: workspaceId,
-		session_id: sessionId,
-	};
+	// FLAT, source-free input (DAT-506): no identity envelope, no session id on the
+	// wire — the table selection + the workspace verticals (one element today; the
+	// engine raises born-loud on >1, the array is forward-compat).
 	const payload: BeginSessionInput = {
-		identity,
+		workspace_id: workspaceId,
 		tables: input.table_ids,
-		vertical,
+		verticals: [vertical],
 	};
 
 	const connection = await Connection.connect({ address: config.temporalHost });

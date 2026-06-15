@@ -30,7 +30,6 @@ import { attachRunId, hasRunningRun, recordRun } from "../db/cockpit/runs";
 import type {
 	OperatingModelInput,
 	OperatingModelResult,
-	SessionIdentity,
 } from "../temporal/types";
 import { operatingModelWorkflowId } from "../temporal/workflow-id";
 import { type AgentError, withAgentError } from "./agent-error";
@@ -92,15 +91,14 @@ export async function operatingModel(
 		workflowId,
 	});
 
-	const identity: SessionIdentity = {
-		workspace_id: workspaceId,
-		session_id: input.session_id,
-	};
-	// The vertical drives the declared validations/cycles/metrics — sourced from
-	// the workspace registry (DAT-506), not re-passed by the agent.
+	// FLAT, source-free input (DAT-506): no identity envelope, no session id on the
+	// wire — begin_session ESTABLISHED the table set; the engine's pre-flight resolve
+	// re-reads it from the catalog head's run_tables. The `verticals` drive the
+	// declared validations/cycles/metrics — sourced from the workspace registry (one
+	// element today; the engine raises born-loud on >1, the array is forward-compat).
 	const payload: OperatingModelInput = {
-		identity,
-		vertical: workspace.vertical,
+		workspace_id: workspaceId,
+		verticals: [workspace.vertical],
 	};
 
 	const connection = await Connection.connect({ address: config.temporalHost });

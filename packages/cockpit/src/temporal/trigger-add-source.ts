@@ -16,11 +16,12 @@
 // The start is NON-blocking (`workflow.start`, not `.execute`): it returns the
 // workflow + run id immediately so the cockpit polls progress via the
 // `get_progress` query (see `progress.ts`). A run ingests a SET of objects from
-// 1–N sources (DAT-422), so the workflow id is keyed by the run's `session_id`
-// (addsource-<workspace_id>-<session_id>), mirroring begin_session, and reused
+// 1–N sources (DAT-422), so the workflow id is keyed by the cockpit session id
+// (addsource-<workspace_id>-<cockpitSessionId>), mirroring begin_session, and reused
 // under ALLOW_DUPLICATE so replays group under one id — callers MUST target the
-// precise `run_id` when querying. The `vertical` rides on the workflow INPUT,
-// sourced from the workspace registry (DAT-506), NOT picked per add_source.
+// precise `run_id` when querying. The `verticals` ride on the FLAT workflow INPUT,
+// sourced from the workspace registry (DAT-506), NOT picked per add_source — there
+// is no identity envelope and no session/source id on the wire.
 
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
@@ -29,21 +30,23 @@ import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { attachRunId, recordRun } from "../db/cockpit/runs";
-import type { AddSourceInput, AddSourceResult, SourceIdentity } from "./types";
+import type { AddSourceInput, AddSourceResult } from "./types";
 import { addSourceWorkflowId } from "./workflow-id";
 
 export interface TriggerAddSourceInput {
 	// The sources this run imports (DAT-422): a run is over a SET of objects from
 	// 1–N sources. One file-upload `select` mints one content-keyed source per file;
 	// a database `select` mints one. Must be non-empty.
-	source_ids: string[];
+	sources: string[];
 }
 
 export interface TriggerAddSourceResult {
 	workflow_id: string;
 	run_id: string;
-	source_ids: string[];
-	session_id: string;
+	sources: string[];
+	// The cockpit-side session-of-record id (cockpit_db `sessions`), NOT a wire
+	// field — the run's correlation key + the workflow-id segment.
+	cockpit_session_id: string;
 }
 
 /** The Temporal-unconfigured guard, identical to replay.ts: Temporal config is
@@ -84,7 +87,7 @@ export async function triggerAddSource(
 ): Promise<TriggerAddSourceResult> {
 	const { host, namespace } = requireTemporalConfig();
 
-	const sessionId = randomUUID();
+	const cockpitSessionId = randomUUID();
 
 	// The active workspace ROW, from the cockpit_db registry (DAT-461/505/506):
 	// the source of truth for the recorded run, the per-workspace task queue the
@@ -94,7 +97,7 @@ export async function triggerAddSource(
 	const workspaceId = workspace.id;
 	const vertical = workspace.vertical;
 
-	const workflowId = addSourceWorkflowId(workspaceId, sessionId);
+	const workflowId = addSourceWorkflowId(workspaceId, cockpitSessionId);
 
 	// Record the cockpit-side session + run BEFORE starting the workflow (Q4): an
 	// unrecorded run is orphaned (the reload-recovery substrate can't re-attach to
@@ -102,24 +105,21 @@ export async function triggerAddSource(
 	// start. Idempotent upserts keep a retried start safe.
 	await recordRun({
 		workspaceId,
-		engineSessionId: sessionId,
+		engineSessionId: cockpitSessionId,
 		kind: "onboarding",
 		stage: "add_source",
 		workflowId,
 	});
 
-	// Source-free identity (DAT-422): the per-source ids ride in `source_ids`; the
-	// engine scopes each `import` to one of them and the run-level reduce/detect are
-	// run-scoped. The run is keyed by `session_id`, not a source. The `vertical`
-	// rides on the workflow INPUT (DAT-506), not the identity.
-	const identity: SourceIdentity = {
-		workspace_id: workspaceId,
-		session_id: sessionId,
-	};
+	// FLAT, source-free input (DAT-506): no identity envelope, no session/source id
+	// on the wire. The per-source ids ride in `sources` (DAT-422); the engine scopes
+	// each `import` to one and resolves provenance relationally (`tables.source_id`)
+	// past import. `verticals` is a one-element array of the workspace ontology (the
+	// engine raises born-loud on >1); the array is forward-compat.
 	const payload: AddSourceInput = {
-		identity,
-		source_ids: input.source_ids,
-		vertical,
+		workspace_id: workspaceId,
+		sources: input.sources,
+		verticals: [vertical],
 	};
 
 	const connection = await Connection.connect({ address: host });
@@ -134,11 +134,11 @@ export async function triggerAddSource(
 			taskQueue: workspace.taskQueue,
 			workflowId,
 			args: [payload],
-			// Reused per run (keyed by session) across replays so Temporal UI groups
-			// iterations under one id — same policy the replay tool uses.
+			// Reused per run (keyed by the cockpit session) across replays so Temporal
+			// UI groups iterations under one id — same policy the replay tool uses.
 			//
 			// DUPLICATE RUNS ARE BY DESIGN (decision pinned in the PR #231 review):
-			// every select call mints a fresh session_id, so a re-called select
+			// every select call mints a fresh cockpit session id, so a re-called select
 			// starts an INDEPENDENT full run. Under the versioned-snapshot model
 			// (DAT-412) runs coexist — each writes its own run_id-stamped metadata,
 			// none clobbers another — so there is nothing to guard. The human control
@@ -148,14 +148,16 @@ export async function triggerAddSource(
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 
-		// Finalize the provisional runId on the pre-recorded run (best-effort).
+		// Finalize the provisional Temporal execution runId on the pre-recorded run
+		// (best-effort — the orphan-critical rows already exist). The engine-minted
+		// metadata run_id lands later, on the completion edge (attachEngineRunId).
 		await attachRunId(workflowId, handle.firstExecutionRunId);
 
 		return {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
-			source_ids: input.source_ids,
-			session_id: sessionId,
+			sources: input.sources,
+			cockpit_session_id: cockpitSessionId,
 		};
 	} finally {
 		await connection.close();

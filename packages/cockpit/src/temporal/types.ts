@@ -1,81 +1,83 @@
-// Shared shapes for the addSourceWorkflow ↔ Python worker (DAT-344, per-table DAT-370).
+// Shared shapes for the cockpit-triggered workflows ↔ Python worker (DAT-344,
+// per-table DAT-370, identity collapsed DAT-506).
 //
 // Hand-mirrored from the engine's Pydantic contracts (dataraum.worker.contracts)
 // carried over Temporal's Pydantic data converter — field names are snake_case to
 // match, no key remapping across the boundary. The cockpit is the Client: it starts
-// addSourceWorkflow with AddSourceInput and renders AddSourceResult. The per-table
-// fan-out (ProcessTableWorkflow) and the activity-level messages are engine-internal,
-// so only the parent workflow's input/result are mirrored here.
-
-export interface SourceIdentity {
-	workspace_id: string;
-	// OPTIONAL (DAT-422): a run ingests a SET of objects from 1–N sources, not one
-	// source — the per-source ids ride in `AddSourceInput.source_ids`. Left unset by
-	// the trigger; the engine scopes each `import` to a source from that set and the
-	// run-level reduce/detect are run-scoped.
-	source_id?: string | null;
-	// The cockpit's run-correlation key (the workflow id segment + the value echoed
-	// back in results); sessions live in cockpit_db, not the engine (DAT-506), so it
-	// is no longer a DB scope key — the run's table set is anchored by `run_id`.
-	session_id: string;
-	// Snapshot version axis (DAT-413): the cockpit leaves it unset; the workflow
-	// mints it before the first activity. The `vertical` rides on the workflow
-	// INPUT now (DAT-506), not the identity.
-	run_id?: string | null;
-}
+// the workflows and renders their results. The per-table fan-out
+// (ProcessTableWorkflow) and the activity-level messages are engine-internal, so
+// only the parent workflows' inputs/results are mirrored here.
+//
+// The wire is FLAT and source-free / session-free (DAT-506): there is NO `identity`
+// envelope, no `session_id`, no per-source `vertical`. Every input carries
+// `workspace_id` (the routing key) directly; `verticals` is an array (a workspace
+// has one today — the engine raises born-loud on >1 — but the array is forward-compat).
+// Results now carry the engine-minted `run_id` (the metadata version axis, distinct
+// from Temporal's execution runId), which the cockpit stores for replay + metadata
+// correlation. Source provenance past `import` is resolved relationally engine-side
+// (`tables.source_id`); the cockpit never threads a source/session id on the wire.
 
 export interface AddSourceInput {
-	identity: SourceIdentity;
+	workspace_id: string;
 	// The sources this run imports, in order (DAT-422) — at least one. `import` runs
-	// once per source; the per-table fan-out + the run-scoped reduce/detect run
-	// over the union.
-	source_ids: string[];
-	// The workspace's frame ontology (by name, DAT-506) — drives per-column semantic
-	// grounding. Sourced by the driver from `workspaces.vertical` (cockpit-owned).
-	vertical: string;
+	// once per source; the per-table fan-out + the run-scoped reduce/detect run over
+	// the union.
+	sources: string[];
+	// The workspace's frame ontologies (by name, DAT-506) — drive per-column semantic
+	// grounding. Sourced by the driver from the workspace registry; exactly one today
+	// (the engine raises born-loud on >1), the array is forward-compat.
+	verticals: string[];
+}
+
+export interface AddSourceResult {
+	// The engine-minted run_id — the metadata version axis (DAT-413), the id the
+	// cockpit stores + correlates metadata by. Distinct from Temporal's execution
+	// runId.
+	run_id: string;
+	// The raw tables import discovered (the fan-out source).
+	raw_table_ids: string[];
+	// One entry per processed table; tables.length === raw_table_ids.length on success.
+	tables: ProcessTableResult[];
 }
 
 // begin_session (DAT-409) — the analytical pass over a SELECTED set of typed
-// tables (cross-source by nature). Mirrors `worker.contracts.{SessionIdentity,
-// BeginSessionInput,BeginSessionResult}`. The `vertical` rides on the workflow
-// INPUT (DAT-506), sourced by the driver from `workspaces.vertical` (cockpit-owned).
-export interface SessionIdentity {
-	workspace_id: string;
-	session_id: string;
-	// Minted by the workflow on its first activity; the client leaves it unset.
-	run_id?: string | null;
-}
-
+// tables (cross-source by nature). Mirrors `worker.contracts.{BeginSessionInput,
+// BeginSessionResult}`. Flat + source-free (DAT-506): the table selection +
+// the workspace verticals; no identity, no session_id on the wire.
 export interface BeginSessionInput {
-	identity: SessionIdentity;
+	workspace_id: string;
 	// The user's explicit selection — an array of typed table ids.
 	tables: string[];
-	// The workspace's frame ontology (by name, DAT-506) — drives the LLM table
-	// synthesis / relationship reasoning. Sourced from `workspaces.vertical`.
-	vertical: string;
+	// The workspace's frame ontologies (by name, DAT-506) — drive the LLM table
+	// synthesis / relationship reasoning. One today; the array is forward-compat.
+	verticals: string[];
 }
 
 export interface BeginSessionResult {
-	session_id: string;
+	// The engine-minted run_id — the version axis the cockpit stores + replays by;
+	// there is no session_id on the wire (DAT-506).
+	run_id: string;
 	table_ids: string[];
 }
 
 // operating_model (DAT-438) — the journey's third stage: validations (and later
 // cycles/metrics) through the typed artifact lifecycle. Mirrors
-// `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Identity +
-// vertical: begin_session ESTABLISHES the table set; this stage re-reads it from
-// the workspace catalog head's `run_tables` via its pre-flight resolve activity
-// (DAT-506) — the client never re-passes a copy that could diverge. The
-// activity-level messages (OperatingModelScope/ScopedInput) are engine-internal.
+// `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Flat +
+// source-free (DAT-506): begin_session ESTABLISHES the table set; this stage
+// re-reads it from the workspace catalog head's `run_tables` via its pre-flight
+// resolve activity — the client never re-passes a copy that could diverge, so the
+// input is just the workspace + its verticals.
 export interface OperatingModelInput {
-	identity: SessionIdentity;
-	// The workspace's frame ontology (by name, DAT-506) — drives the declared
-	// validations/cycles/metrics. Sourced from `workspaces.vertical`.
-	vertical: string;
+	workspace_id: string;
+	// The workspace's frame ontologies (by name, DAT-506) — drive the declared
+	// validations/cycles/metrics. One today; the array is forward-compat.
+	verticals: string[];
 }
 
 export interface OperatingModelResult {
-	session_id: string;
+	// The engine-minted run_id — the version axis the cockpit stores + replays by
+	// (DAT-506; replaces the old session_id on the result).
+	run_id: string;
 	// The validation phase's explicit outcome verbatim — including the loud
 	// "no declared validations" case — render it, don't re-derive it. No
 	// table_ids (DAT-506): operating_model carries no table set — the cockpit
@@ -87,13 +89,6 @@ export interface OperatingModelResult {
 export interface ProcessTableResult {
 	raw_table_id: string;
 	typed_table_id: string;
-}
-
-export interface AddSourceResult {
-	// The raw tables import discovered (the fan-out source).
-	raw_table_ids: string[];
-	// One entry per processed table; tables.length === raw_table_ids.length on success.
-	tables: ProcessTableResult[];
 }
 
 // One fanned-out table's status — mirrors `worker.contracts.TableProgress`.

@@ -113,12 +113,10 @@ async function ingest(client: Client): Promise<string[]> {
 	});
 
 	const input: AddSourceInput = {
-		identity: {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			session_id: sessionId,
-		},
-		source_ids: [sourceId],
-		vertical: VERTICAL,
+		// FLAT, source-free input (DAT-506): no identity, no session/source id.
+		workspace_id: env.DATARAUM_WORKSPACE_ID,
+		sources: [sourceId],
+		verticals: [VERTICAL],
 	};
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>
@@ -154,16 +152,13 @@ async function main(): Promise<void> {
 		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
 		console.log(`✓ begin_session completed: session=${begun.session_id}`);
 
-		// ---- operatingModelWorkflow: identity + vertical (DAT-438, DAT-506) -------
+		// ---- operatingModelWorkflow: flat input (DAT-438, DAT-506) ----------------
 		// The stage re-reads the session's table set from the catalog head's
 		// run_tables and pins the base-run map in its resolve activity — only the
-		// identity + the workspace vertical travel in.
+		// workspace id + verticals travel in (no identity, no session id on the wire).
 		const input: OperatingModelInput = {
-			identity: {
-				workspace_id: env.DATARAUM_WORKSPACE_ID,
-				session_id: begun.session_id,
-			},
-			vertical: VERTICAL,
+			workspace_id: env.DATARAUM_WORKSPACE_ID,
+			verticals: [VERTICAL],
 		};
 		const handle = await client.workflow.start<
 			(p: OperatingModelInput) => Promise<OperatingModelResult>

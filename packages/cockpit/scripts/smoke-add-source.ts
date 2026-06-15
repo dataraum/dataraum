@@ -112,18 +112,15 @@ async function runInitial(
 	sessionId: string,
 ): Promise<{ result: AddSourceResult; runId: string }> {
 	const input: AddSourceInput = {
-		// Source-free identity + the run's source SET (DAT-422): one source here,
-		// so a 1-element set. The run is keyed by its session, not a source.
-		identity: {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			session_id: sessionId,
-		},
-		source_ids: [sourceId],
+		// FLAT, source-free input (DAT-506): no identity, no session/source id on the
+		// wire. The run's source SET (DAT-422) — one source here, so a 1-element set.
+		workspace_id: env.DATARAUM_WORKSPACE_ID,
+		sources: [sourceId],
 		// `_adhoc` is the empty / start-here vertical (DAT-371), on the workflow INPUT
 		// now (DAT-506): cold-start induction generates concepts from the data and
 		// stores them as `concept` overlay rows. This smoke is the real DAT-371
 		// acceptance test — a clean run proves induction works against the mounted config.
-		vertical: "_adhoc",
+		verticals: ["_adhoc"],
 	};
 	// `start` (not `execute`) so we can capture the run id — the replay
 	// assertion compares its fresh run_id against the initial one.

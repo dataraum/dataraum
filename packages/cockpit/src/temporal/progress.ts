@@ -218,6 +218,28 @@ export async function getWorkflowProgress(
 	};
 }
 
+/**
+ * The engine-minted metadata `run_id` from a COMPLETED workflow's result — the
+ * version axis the cockpit stores + correlates metadata by (DAT-506). All three
+ * parent workflows return a result whose first field is `run_id`. Returns null when
+ * the run isn't (cleanly) completed yet or the result has no `run_id` (a failed run
+ * never returns one) — the caller stamps it best-effort, so a null is a skip, not an
+ * error. Pins the precise `(workflowId, runId)` execution, like the progress query.
+ */
+export async function getEngineRunId(
+	input: WorkflowProgressInput,
+): Promise<string | null> {
+	const client = await getTemporalClient();
+	const handle = client.workflow.getHandle(input.workflow_id, input.run_id);
+	try {
+		const result = (await handle.result()) as { run_id?: unknown };
+		return typeof result?.run_id === "string" ? result.run_id : null;
+	} catch {
+		// A failed/terminated run rejects from result() — no engine run_id to stamp.
+		return null;
+	}
+}
+
 /** Request-body schema for `POST /api/workflow-progress` — the API route
  * validates the polled `{workflow_id, run_id}` against this before querying. */
 export const WorkflowProgressInputSchema = z.object({

@@ -103,15 +103,12 @@ async function ingest(client: Client): Promise<string[]> {
 	});
 
 	const input: AddSourceInput = {
-		// Source-free identity + the run's source SET (DAT-422): one source here, so
-		// a 1-element set; the run is keyed by its session, not a source. The vertical
-		// rides on the INPUT now (DAT-506).
-		identity: {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			session_id: sessionId,
-		},
-		source_ids: [sourceId],
-		vertical: VERTICAL,
+		// FLAT, source-free input (DAT-506): no identity, no session/source id on the
+		// wire. The run's source SET (DAT-422) — one source here, so a 1-element set;
+		// `verticals` is a one-element array of the workspace ontology.
+		workspace_id: env.DATARAUM_WORKSPACE_ID,
+		sources: [sourceId],
+		verticals: [VERTICAL],
 	};
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>

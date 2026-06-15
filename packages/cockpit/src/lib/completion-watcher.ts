@@ -30,6 +30,7 @@ import {
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
 import {
+	attachEngineRunId,
 	claimRunNarration,
 	listRunningStages,
 	listWatchableRuns,
@@ -44,6 +45,7 @@ import { buildModelMessages } from "#/lib/model-messages";
 import { WORKFLOW_PROGRESS_EVENT } from "#/lib/workflow-progress-event";
 import { buildWorkspaceContext } from "#/prompts/workspace-context";
 import {
+	getEngineRunId,
 	getWorkflowProgress,
 	terminalRunStatus,
 	type WorkflowProgress,
@@ -167,6 +169,19 @@ async function watchLoop(
 				run.runId,
 				terminalRunStatus(progress),
 			);
+			// Stamp the engine-minted metadata run_id from the workflow result — the
+			// version axis the cockpit correlates by (DAT-506). Best-effort: a failed
+			// run returns none (getEngineRunId yields null), and a stamp failure must
+			// not block narration.
+			if (terminalRunStatus(progress) === "completed") {
+				const engineRunId = await getEngineRunId({
+					workflow_id: run.workflowId,
+					run_id: run.runId,
+				}).catch(() => null);
+				if (engineRunId) {
+					await attachEngineRunId(run.workflowId, run.runId, engineRunId);
+				}
+			}
 			// The atomic claim is the once-only guard across tabs.
 			if (await claimRunNarration(run.workflowId, run.runId)) {
 				await narrateCompletion(

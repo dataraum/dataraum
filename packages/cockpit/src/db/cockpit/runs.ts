@@ -15,11 +15,15 @@
 // so a repeated record is a no-op. The COMPLETION-side writers (`markRunStatus` /
 // `claimRunNarration`) stay best-effort — by then the run is recorded and live.
 //
-// runId provisional-vs-final: Temporal mints the execution `runId` only at
-// `workflow.start`, so the pre-start call records the run keyed by its
-// deterministic `workflowId` with `runId` left as the workflowId placeholder;
-// `attachRunId` rewrites it to the real execution id right after start (a no-op
-// best-effort touch — the orphan-critical session + run rows already exist).
+// Two run ids (DAT-506): `runId` is Temporal's EXECUTION id (`firstExecutionRunId`,
+// minted only at `workflow.start`) — the poll/reconcile identity. The pre-start
+// call records the run keyed by its deterministic `workflowId` with `runId` left as
+// the workflowId placeholder; `attachRunId` rewrites it to the real execution id
+// right after start. `engineRunId` is the run id the ENGINE mints inside the
+// workflow and RETURNS in its result — the metadata version axis the cockpit
+// correlates by; it's NULL until the result lands, so `attachEngineRunId` stamps it
+// on the completion edge (the watcher / reconcile). Both post-record writers are
+// best-effort — the orphan-critical session + run rows already exist by then.
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
@@ -119,6 +123,35 @@ export async function attachRunId(
 	} catch (err) {
 		console.warn(
 			`[cockpit] attachRunId failed for ${workflowId} (run ${runId}): ${err}`,
+		);
+	}
+}
+
+/**
+ * Stamp the engine-minted metadata `run_id` (from the workflow result) onto a
+ * recorded run, on the completion edge. Best-effort: the run is already recorded +
+ * live; this only records the version axis the cockpit correlates metadata / replays
+ * by. Keyed by `(workflowId, runId)` — the Temporal identity the completion edge
+ * already holds.
+ */
+export async function attachEngineRunId(
+	workflowId: string,
+	runId: string,
+	engineRunId: string,
+): Promise<void> {
+	try {
+		await cockpitDb
+			.update(sessionRuns)
+			.set({ engineRunId })
+			.where(
+				and(
+					eq(sessionRuns.workflowId, workflowId),
+					eq(sessionRuns.runId, runId),
+				),
+			);
+	} catch (err) {
+		console.warn(
+			`[cockpit] attachEngineRunId failed for ${workflowId} (run ${runId}): ${err}`,
 		);
 	}
 }

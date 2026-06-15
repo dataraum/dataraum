@@ -32,7 +32,7 @@
 //               digest) UPSERT one row (re-upload dedup); two distinct files never
 //               collide on a raw table even with matching basenames (the digests
 //               differ), so no basename rejection is needed. A run then ingests
-//               the SET of these source ids (`source_ids`).
+//               the SET of these source ids (`sources`).
 //   - database: ONE source — `source_type='db_recipe'`, the `backend` COLUMN, and
 //               `connection_config.tables` synthesized from the picked tables,
 //               plus `recipe_hash` (sha256 over the canonical {backend, tables}
@@ -93,7 +93,7 @@ export const SelectResult = z.object({
 	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
 	// source per uploaded file), 1 for a database selection; always ≥1 (a select
 	// that registered nothing is a loud failure), matching the trigger contract.
-	source_ids: z.array(z.string()).min(1),
+	sources: z.array(z.string()).min(1),
 	// A human display label for the selection — NOT a source name (file sources
 	// are content-keyed, so there is no single user-chosen name): the database
 	// source name, or the filename / "N files" for a file selection.
@@ -282,9 +282,9 @@ export async function persistSelection(
 		}
 
 		const persisted = [...byName.entries()];
-		const sourceIds: string[] = [];
+		const sourceIdSet: string[] = [];
 		for (const [name, { uri, sourceType }] of persisted) {
-			sourceIds.push(
+			sourceIdSet.push(
 				await upsertSource({
 					name,
 					sourceType,
@@ -301,7 +301,7 @@ export async function persistSelection(
 			...new Set(persisted.map(([, p]) => p.sourceType)),
 		].sort();
 		return {
-			source_ids: sourceIds,
+			sources: sourceIdSet,
 			name:
 				fileUris.length === 1
 					? basename(fileUris[0])
@@ -378,7 +378,7 @@ export async function persistSelection(
 	});
 
 	return {
-		source_ids: [sourceId],
+		sources: [sourceId],
 		name,
 		source_type: "db_recipe",
 		backend: input.backend,
@@ -408,14 +408,14 @@ export async function select(
 	// cockpit_db before it starts). Non-blocking: the ids come back immediately and
 	// the progress canvas member (keyed on workflow_id + run_id) follows the run.
 	const run = await trigger({
-		source_ids: selection.source_ids,
+		sources: selection.sources,
 	});
 
 	return {
 		...selection,
 		workflow_id: run.workflow_id,
 		run_id: run.run_id,
-		session_id: run.session_id,
+		session_id: run.cockpit_session_id,
 	};
 }
 

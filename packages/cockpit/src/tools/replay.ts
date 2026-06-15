@@ -38,11 +38,7 @@ import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
 import { currentSessionId } from "../prompts/workspace-context";
-import type {
-	AddSourceInput,
-	AddSourceResult,
-	SourceIdentity,
-} from "../temporal/types";
+import type { AddSourceInput, AddSourceResult } from "../temporal/types";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 import {
 	AgentActionableError,
@@ -91,7 +87,7 @@ export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
 	// The sources the new run re-ingested (resolved from the replayed session).
-	source_ids: string[];
+	sources: string[];
 	// The NEW session the replay created (≠ the replayed session_id).
 	session_id: string;
 }
@@ -123,8 +119,8 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	}
 
 	// Resolve what to replay FROM the session — the sources it was built on.
-	const sourceIds = await sourcesForSession(sessionId);
-	if (sourceIds.length === 0) {
+	const replaySources = await sourcesForSession(sessionId);
+	if (replaySources.length === 0) {
 		throw new AgentActionableError(
 			`Session '${sessionId}' has no sources to replay — it has no ` +
 				"linked tables yet (nothing was added to it).",
@@ -152,16 +148,14 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		workflowId,
 	});
 
-	// Source-free identity (DAT-422): the sources ride in `source_ids`; the engine
-	// scopes each `import` to one and the run-level reduce/detect are run-scoped.
-	const identity: SourceIdentity = {
-		workspace_id: workspaceId,
-		session_id: newSessionId,
-	};
+	// FLAT, source-free input (DAT-506): no identity envelope, no session/source id
+	// on the wire. The resolved sources ride in `sources`; the engine scopes each
+	// `import` to one and resolves provenance relationally past import. `verticals`
+	// is a one-element array of the workspace ontology (born-loud on >1).
 	const payload: AddSourceInput = {
-		identity,
-		source_ids: sourceIds,
-		vertical,
+		workspace_id: workspaceId,
+		sources: replaySources,
+		verticals: [vertical],
 	};
 
 	const connection = await Connection.connect({ address: config.temporalHost });
@@ -180,13 +174,14 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 
-		// Finalize the provisional runId on the pre-recorded run (best-effort).
+		// Finalize the provisional Temporal execution runId (best-effort); the
+		// engine-minted metadata run_id lands on the completion edge.
 		await attachRunId(workflowId, handle.firstExecutionRunId);
 
 		return {
 			workflow_id: workflowId,
 			run_id: handle.firstExecutionRunId,
-			source_ids: sourceIds,
+			sources: replaySources,
 			session_id: newSessionId,
 		};
 	} finally {
@@ -218,7 +213,7 @@ export const replayTool = toolDefinition({
 		z.object({
 			workflow_id: z.string(),
 			run_id: z.string(),
-			source_ids: z.array(z.string()),
+			sources: z.array(z.string()),
 			session_id: z.string(),
 		}),
 	),

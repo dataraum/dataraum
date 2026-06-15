@@ -4,6 +4,22 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-15: DAT-506 — sessions leave the engine; manifest entry shape; head re-grain (BREAKS the eval driver → DAT-508)
+
+The engine no longer models investigation sessions. The eval driver must be re-pointed (tracked as **DAT-508**). What changed for eval:
+
+- **Entry shape is a flat MANIFEST (no identity envelope, no `session_id`/`source_id` on the wire):**
+  - `AddSourceInput { workspace_id, sources[], verticals[] }` → `AddSourceResult { run_id, raw_table_ids[], tables[] }`
+  - `BeginSessionInput { workspace_id, tables[], verticals[] }` → `BeginSessionResult { run_id, table_ids[] }`
+  - `OperatingModelInput { workspace_id, verticals[] }` → `OperatingModelResult { run_id, validation_summary }`
+  - `verticals[]` is by name (resolved engine-side via `VerticalLoader`); the engine born-loud guards `len > 1` (multi-vertical grounding not built); empty → `_adhoc`. The driver must pass the workspace's framed vertical (e.g. `["finance"]`) — `_adhoc` fails loud ("run frame first").
+  - The engine MINTS `run_id` inside the workflow and RETURNS it; the run is identified by `run_id`. `import` is the only source-bearing activity (explicit arg from `sources[]`).
+- **`investigation_sessions` / `investigation_steps` / `session_tables` tables are DELETED.** New `run_tables(run_id, table_id)`. Any eval seeding/asserting against those tables breaks — drop it. The driver no longer seeds an investigation_sessions row.
+- **Version axis = per-table generation head + ONE workspace catalog head** (`metadata_snapshot_head`: `target="table:{id}"` stage `"generation"`; `target="catalog"` stages `"catalog"`/`"operating_model"`). All `session:{id}` head targets are gone. `current_*` read views carry NO `session_id` column — one row per entity at the workspace catalog head. The dual-grain discriminator renamed `via_session_head` → `via_catalog_head`. `current_entropy_readiness` precedence is catalog-vs-operating_model (in the view).
+- **`PhaseContext.source_id`/`.session_id` deleted** (DAT-426 folded in). All `session_id` metadata columns dropped; `sql_snippets`/`snippet_usage` re-keyed `session_id` → `workspace_id`. `run_id` is NOT NULL on run-stamped tables; `ondelete=CASCADE` dropped from `columns`/`tables` run-stamped children (GC is DAT-507).
+- **Eval coverage ask (see DAT-508 comment):** include a dataset that produces a competing **operating_model** `entropy_readiness` band so the catalog-vs-OM precedence clause gets real-data coverage — the DAT-506 live smoke (finance/2-table) produced zero OM-band readiness rows, so that path is only unit-tested. Possibly related to DAT-515 (entropy objects under-promoted to the read view).
+- **No detector behavior changed** — this is a contract/persistence re-grain, not a measurement change; recall/precision baselines should hold once the driver speaks the manifest. testdata unaffected.
+
 ## 2026-06-15: slicing agent grounds recommendations — no empty-FK crash (fix)
 
 The slicing agent built a `SliceRecommendation` with `column_id=''` whenever the

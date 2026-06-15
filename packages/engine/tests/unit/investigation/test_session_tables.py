@@ -1,24 +1,22 @@
-"""Session ⇿ table M:N model + source derivation (DAT-407).
+"""Run ⇿ table anchor model (DAT-506).
 
-A session carries no ``source_id``; it links typed tables through
-``session_tables`` and its source(s) are derived by joining to
-``Table.source_id``. An ``add_source`` run links one source's tables; a
-``begin_session`` run may link tables spanning sources.
+A run carries no ``source_id``; it links typed tables through ``run_tables`` and
+reads them back via ``tables_for_run``. An ``add_source`` run links one source's
+tables; a ``begin_session`` run may link tables spanning sources. Sessions live
+in cockpit_db now (DAT-506) — the engine only records the per-run typed-table
+set.
 """
 
 from __future__ import annotations
-
-from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.investigation import (
-    link_session_tables,
-    sources_for_session,
-    tables_for_session,
+    link_run_tables,
+    tables_for_run,
 )
-from dataraum.investigation.db_models import InvestigationSession, SessionTable
+from dataraum.investigation.db_models import RunTable
 from dataraum.storage import Source
 from dataraum.storage.models import Table
 
@@ -29,17 +27,6 @@ def _source(session: Session, source_id: str) -> None:
 
 def _typed_table(session: Session, table_id: str, source_id: str) -> None:
     session.add(Table(table_id=table_id, source_id=source_id, table_name=table_id, layer="typed"))
-
-
-def _make_session(session: Session, session_id: str) -> None:
-    session.add(
-        InvestigationSession(
-            session_id=session_id,
-            intent="test",
-            status="active",
-            started_at=datetime.now(UTC),
-        )
-    )
 
 
 @pytest.fixture
@@ -54,119 +41,67 @@ def seeded(session: Session) -> Session:
     return session
 
 
-def _link(session: Session, session_id: str, table_id: str) -> None:
-    session.add(SessionTable(session_id=session_id, table_id=table_id))
+def _link(session: Session, run_id: str, table_id: str) -> None:
+    session.add(RunTable(run_id=run_id, table_id=table_id))
 
 
-def test_single_source_session_derives_one_source(seeded: Session) -> None:
-    _make_session(seeded, "sess_single")
-    _link(seeded, "sess_single", "t_a1")
-    _link(seeded, "sess_single", "t_a2")
+def test_table_links_to_multiple_runs(seeded: Session) -> None:
+    """A typed table can be composed into more than one run (M:N)."""
+    _link(seeded, "run_one", "t_a1")
+    _link(seeded, "run_two", "t_a1")
     seeded.flush()
 
-    assert sources_for_session(seeded, "sess_single") == {"src_a"}
+    assert tables_for_run(seeded, "run_one") == ["t_a1"]
+    assert tables_for_run(seeded, "run_two") == ["t_a1"]
 
 
-def test_multi_source_session_derives_all_sources(seeded: Session) -> None:
-    _make_session(seeded, "sess_multi")
-    _link(seeded, "sess_multi", "t_a1")
-    _link(seeded, "sess_multi", "t_b1")
-    seeded.flush()
-
-    assert sources_for_session(seeded, "sess_multi") == {"src_a", "src_b"}
+# --- link_run_tables (the add_source/begin_session anchor write helper) -----
 
 
-def test_session_with_no_tables_derives_empty(seeded: Session) -> None:
-    _make_session(seeded, "sess_empty")
-    seeded.flush()
-
-    assert sources_for_session(seeded, "sess_empty") == set()
-
-
-def test_table_links_to_multiple_sessions(seeded: Session) -> None:
-    """A typed table can be composed into more than one session (M:N)."""
-    _make_session(seeded, "sess_one")
-    _make_session(seeded, "sess_two")
-    _link(seeded, "sess_one", "t_a1")
-    _link(seeded, "sess_two", "t_a1")
-    seeded.flush()
-
-    assert sources_for_session(seeded, "sess_one") == {"src_a"}
-    assert sources_for_session(seeded, "sess_two") == {"src_a"}
-
-
-def test_ending_a_session_removes_only_its_links(seeded: Session) -> None:
-    """Deleting a session cascades to its links; the typed table survives."""
-    _make_session(seeded, "sess_doomed")
-    _link(seeded, "sess_doomed", "t_a1")
-    seeded.flush()
-
-    doomed = seeded.get(InvestigationSession, "sess_doomed")
-    seeded.delete(doomed)
-    seeded.flush()
-
-    # Link gone, table untouched.
-    assert seeded.query(SessionTable).filter_by(session_id="sess_doomed").count() == 0
-    assert seeded.get(Table, "t_a1") is not None
-
-
-# --- link_session_tables (the typing-phase write helper) --------------------
-
-
-def test_link_session_tables_writes_links_and_derives_source(seeded: Session) -> None:
-    _make_session(seeded, "sess_link")
-
-    count = link_session_tables(seeded, "sess_link", ["t_a1", "t_b1"])
+def test_link_run_tables_writes_links(seeded: Session) -> None:
+    count = link_run_tables(seeded, "run_link", ["t_a1", "t_b1"])
     seeded.flush()
 
     assert count == 2
-    assert seeded.query(SessionTable).filter_by(session_id="sess_link").count() == 2
-    assert sources_for_session(seeded, "sess_link") == {"src_a", "src_b"}
+    assert seeded.query(RunTable).filter_by(run_id="run_link").count() == 2
+    assert set(tables_for_run(seeded, "run_link")) == {"t_a1", "t_b1"}
 
 
-def test_link_session_tables_is_idempotent(seeded: Session) -> None:
-    """A teach re-type re-links the same tables — must not raise on the PK."""
-    _make_session(seeded, "sess_idem")
-
-    link_session_tables(seeded, "sess_idem", ["t_a1", "t_a2"])
-    link_session_tables(seeded, "sess_idem", ["t_a1"])
+def test_link_run_tables_is_idempotent(seeded: Session) -> None:
+    """A teach re-run re-links the same tables — must not raise on the PK."""
+    link_run_tables(seeded, "run_idem", ["t_a1", "t_a2"])
+    link_run_tables(seeded, "run_idem", ["t_a1"])
     seeded.flush()
 
-    assert seeded.query(SessionTable).filter_by(session_id="sess_idem").count() == 2
+    assert seeded.query(RunTable).filter_by(run_id="run_idem").count() == 2
 
 
-def test_link_session_tables_empty_is_noop(seeded: Session) -> None:
-    _make_session(seeded, "sess_empty_link")
-
-    assert link_session_tables(seeded, "sess_empty_link", []) == 0
-    assert seeded.query(SessionTable).filter_by(session_id="sess_empty_link").count() == 0
+def test_link_run_tables_empty_is_noop(seeded: Session) -> None:
+    assert link_run_tables(seeded, "run_empty_link", []) == 0
+    assert seeded.query(RunTable).filter_by(run_id="run_empty_link").count() == 0
 
 
-# --- tables_for_session (the detect/readiness scope key, DAT-410) -----------
+# --- tables_for_run (the detect/readiness scope key, DAT-410/506) -----------
 
 
-def test_tables_for_session_returns_linked_typed_tables(seeded: Session) -> None:
-    _make_session(seeded, "sess_scope")
-    _link(seeded, "sess_scope", "t_a1")
-    _link(seeded, "sess_scope", "t_b1")
+def test_tables_for_run_returns_linked_typed_tables(seeded: Session) -> None:
+    _link(seeded, "run_scope", "t_a1")
+    _link(seeded, "run_scope", "t_b1")
     seeded.flush()
 
-    assert set(tables_for_session(seeded, "sess_scope")) == {"t_a1", "t_b1"}
+    assert set(tables_for_run(seeded, "run_scope")) == {"t_a1", "t_b1"}
 
 
-def test_tables_for_session_empty_when_no_links(seeded: Session) -> None:
-    _make_session(seeded, "sess_none")
-    seeded.flush()
-
-    assert tables_for_session(seeded, "sess_none") == []
+def test_tables_for_run_empty_when_no_links(seeded: Session) -> None:
+    assert tables_for_run(seeded, "run_none") == []
 
 
-def test_tables_for_session_excludes_raw_layer(seeded: Session) -> None:
+def test_tables_for_run_excludes_raw_layer(seeded: Session) -> None:
     """A link to a non-typed table is not returned (scope is typed only)."""
     seeded.add(Table(table_id="t_raw", source_id="src_a", table_name="t_raw", layer="raw"))
-    _make_session(seeded, "sess_raw")
-    _link(seeded, "sess_raw", "t_a1")
-    _link(seeded, "sess_raw", "t_raw")
+    seeded.flush()
+    _link(seeded, "run_raw", "t_a1")
+    _link(seeded, "run_raw", "t_raw")
     seeded.flush()
 
-    assert tables_for_session(seeded, "sess_raw") == ["t_a1"]
+    assert tables_for_run(seeded, "run_raw") == ["t_a1"]

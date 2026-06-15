@@ -119,7 +119,7 @@ class TestBuilderExtractsSemanticFields:
         head is ignored and both builds return the same value, so one assert fails.
         """
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 
         _source_id, table_id, column_id = _insert_source_table_column(session)
         for rid, name in (("new", "NEW name"), ("old", "OLD name")):
@@ -134,7 +134,7 @@ class TestBuilderExtractsSemanticFields:
                 )
             )
         head = MetadataSnapshotHead(
-            head_id=_id(), target=f"table:{table_id}", stage="detect", run_id="new"
+            head_id=_id(), target=f"table:{table_id}", stage=GENERATION_STAGE, run_id="new"
         )
         session.add(head)
         session.flush()
@@ -153,17 +153,15 @@ class TestBuilderExtractsTableEntity:
 
     def test_table_description_and_grain(self, session: Session) -> None:
         from dataraum.analysis.semantic.db_models import TableEntity
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
-        sess_id = "sess-fields"
         source_id, table_id, column_id = _insert_source_table_column(session)
 
-        # Entity fields only flow into the context when the session's run resolves
-        # (DAT-429 fail-closed), so seed a promoted head + run-stamped entity.
+        # Entity fields only flow into the context when the catalog run resolves
+        # (DAT-429 fail-closed), so seed a promoted catalog head + run-stamped entity.
         session.add(
             TableEntity(
                 entity_id=_id(),
-                session_id=sess_id,
                 table_id=table_id,
                 run_id="r1",
                 detected_entity_type="financial_transaction",
@@ -175,24 +173,24 @@ class TestBuilderExtractsTableEntity:
         )
         session.add(
             MetadataSnapshotHead(
-                head_id=_id(), target=session_head_target(sess_id), stage="detect", run_id="r1"
+                head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="r1"
             )
         )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id], session_id=sess_id)
+        ctx = build_execution_context(session, [table_id])
 
         table = ctx.tables[0]
         assert table.table_description == "Records of all financial transactions"
         assert table.grain_columns == ["invoice_id"]
         assert table.time_column == "created_at"
 
-    def test_unresolved_session_reads_no_run_versioned_data(self, session: Session) -> None:
-        """Fail-closed (DAT-429): no resolved run ⇒ no entities/relationships, never cross-run.
+    def test_unresolved_catalog_reads_no_run_versioned_data(self, session: Session) -> None:
+        """Fail-closed (DAT-429): no resolved catalog run ⇒ no entities/relationships.
 
-        Entities exist under runs, but with no promoted head for the queried
-        session the context must surface NONE of them — reading cross-run here is
-        the session-isolation leak this guards against.
+        Entities exist under runs, but with no promoted catalog head the context
+        must surface NONE of them — reading cross-run here is the isolation leak
+        this guards against.
         """
         from dataraum.analysis.semantic.db_models import TableEntity
 
@@ -201,7 +199,6 @@ class TestBuilderExtractsTableEntity:
             session.add(
                 TableEntity(
                     entity_id=_id(),
-                    session_id="sX",
                     table_id=table_id,
                     run_id=rid,
                     detected_entity_type="fact",
@@ -211,36 +208,30 @@ class TestBuilderExtractsTableEntity:
             )
         session.flush()
 
-        # No session_id ⇒ unresolved run ⇒ no entity data, no relationships.
+        # No promoted catalog head ⇒ unresolved run ⇒ no entity data, no relationships.
         ctx_none = build_execution_context(session, [table_id])
         assert ctx_none.tables[0].table_description is None
         assert ctx_none.relationships == []
-
-        # A session_id whose head was never promoted is equally unresolved.
-        ctx_unpromoted = build_execution_context(session, [table_id], session_id="sX")
-        assert ctx_unpromoted.tables[0].table_description is None
-        assert ctx_unpromoted.relationships == []
 
     def test_run_scoped_to_promoted_head(self, session: Session) -> None:
         """Coexisting runs' classifications must not bleed in — read the promoted run.
 
         Regression: TableEntity is run-versioned and coexists across runs
-        (DAT-408/413). ``build_execution_context`` must read only the session's
-        promoted run (per the snapshot head) — exactly like its relationship read —
-        not last-write an arbitrary run's classification into the context dict.
+        (DAT-408/413). ``build_execution_context`` must read only the workspace's
+        promoted catalog run (per the snapshot head) — exactly like its relationship
+        read — not last-write an arbitrary run's classification into the context dict.
 
-        Deterministic guard: with identical seeded data, flipping the head between
-        the two runs must flip the context. Without run-scoping the head is ignored,
-        so both builds return the same last-write-wins value and one assert fails.
+        Deterministic guard: with identical seeded data, flipping the catalog head
+        between the two runs must flip the context. Without run-scoping the head is
+        ignored, so both builds return the same last-write-wins value and one fails.
         """
         from dataraum.analysis.semantic.db_models import TableEntity
         from dataraum.storage.snapshot_head import (
             MetadataSnapshotHead,
+            catalog_head_target,
             head_run_id,
-            session_head_target,
         )
 
-        sess_id = "sess-multirun"
         _source_id, table_id, _column_id = _insert_source_table_column(session)
 
         for run_id, desc, is_fact in (
@@ -250,7 +241,6 @@ class TestBuilderExtractsTableEntity:
             session.add(
                 TableEntity(
                     entity_id=_id(),
-                    session_id=sess_id,
                     table_id=table_id,
                     run_id=run_id,
                     detected_entity_type="fact" if is_fact else "dimension",
@@ -259,21 +249,21 @@ class TestBuilderExtractsTableEntity:
                 )
             )
         head = MetadataSnapshotHead(
-            head_id=_id(), target=session_head_target(sess_id), stage="detect", run_id="run-2"
+            head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="run-2"
         )
         session.add(head)
         session.flush()
 
         # Head → run-2: context reflects run-2's classification.
-        ctx2 = build_execution_context(session, [table_id], session_id=sess_id)
+        ctx2 = build_execution_context(session, [table_id])
         assert ctx2.tables[0].table_description == "RUN TWO classification"
         assert ctx2.tables[0].is_fact_table is True
 
         # Flip head → run-1: same data, the context must follow the promoted run.
         head.run_id = "run-1"
         session.flush()
-        assert head_run_id(session, session_head_target(sess_id), "detect") == "run-1"
-        ctx1 = build_execution_context(session, [table_id], session_id=sess_id)
+        assert head_run_id(session, catalog_head_target(), "catalog") == "run-1"
+        ctx1 = build_execution_context(session, [table_id])
         assert ctx1.tables[0].table_description == "RUN ONE classification"
         assert ctx1.tables[0].is_fact_table is False
 
@@ -282,23 +272,19 @@ class TestBuilderExtractsValidationDetails:
     """Verify builder reads ValidationResultRecord.details.
 
     Run-versioned since DAT-438: the builder reads validation results only at
-    the session's promoted operating_model head — the test seeds the head and
-    passes the session_id. Without either, the read is fail-closed empty.
+    the workspace's promoted operating_model catalog head — the test seeds the
+    head. Without it, the read is fail-closed empty.
     """
 
     def test_validation_details(self, session: Session) -> None:
         from dataraum.analysis.validation.db_models import ValidationResultRecord
-        from dataraum.investigation.db_models import InvestigationSession
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
-        sess_id = "sess-validation-details"
-        session.add(InvestigationSession(session_id=sess_id, intent="test"))
         session.add(
             ValidationResultRecord(
                 result_id=_id(),
-                session_id=sess_id,
                 run_id="run-om",
                 validation_id="balance_check",
                 table_ids=[table_id],
@@ -311,43 +297,34 @@ class TestBuilderExtractsValidationDetails:
         )
         session.add(
             MetadataSnapshotHead(
-                target=session_head_target(sess_id), stage="operating_model", run_id="run-om"
+                target=catalog_head_target(), stage="operating_model", run_id="run-om"
             )
         )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id], session_id=sess_id)
+        ctx = build_execution_context(session, [table_id])
 
         assert len(ctx.validations) == 1
         assert ctx.validations[0].details == {"summary": "Off by 42.50", "affected_rows": 3}
-
-        # Fail-closed: no session_id → no promoted head to read at → empty.
-        unscoped = build_execution_context(session, [table_id])
-        assert unscoped.validations == []
 
 
 class TestBuilderExtractsCycleVolume:
     """Verify builder reads total_records, completed_cycles, evidence.
 
-    Run-versioned + session-scoped since DAT-455: the builder reads detected
-    cycles only at the session's promoted operating_model head — the test seeds
-    the head and passes the session_id. Without either, the read is fail-closed
-    empty (mirrors the validation-details test).
+    Run-versioned since DAT-455: the builder reads detected cycles only at the
+    workspace's promoted operating_model catalog head — the test seeds the head.
+    Without it, the read is fail-closed empty (mirrors the validation-details test).
     """
 
     def test_cycle_volume_fields(self, session: Session) -> None:
         from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-        from dataraum.investigation.db_models import InvestigationSession
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
+        from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
-        sess_id = "sess-cycle-volume"
-        session.add(InvestigationSession(session_id=sess_id, intent="test"))
         session.add(
             DetectedBusinessCycle(
                 cycle_id=_id(),
-                session_id=sess_id,
                 run_id="run-om",
                 cycle_name="Accounts Receivable",
                 cycle_type="accounts_receivable",
@@ -361,22 +338,18 @@ class TestBuilderExtractsCycleVolume:
         )
         session.add(
             MetadataSnapshotHead(
-                target=session_head_target(sess_id), stage="operating_model", run_id="run-om"
+                target=catalog_head_target(), stage="operating_model", run_id="run-om"
             )
         )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id], session_id=sess_id)
+        ctx = build_execution_context(session, [table_id])
 
         assert len(ctx.business_cycles) == 1
         cycle = ctx.business_cycles[0]
         assert cycle.total_records == 10000
         assert cycle.completed_cycles == 8500
         assert cycle.evidence == ["Status column tracks lifecycle", "Payment dates correlate"]
-
-        # Fail-closed: no session_id → no promoted head to read at → empty.
-        unscoped = build_execution_context(session, [table_id])
-        assert unscoped.business_cycles == []
 
 
 class TestBuilderOmRunIdOverride:
@@ -391,15 +364,11 @@ class TestBuilderOmRunIdOverride:
         self, session: Session
     ) -> None:
         from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-        from dataraum.investigation.db_models import InvestigationSession
 
         _source_id, table_id, _column_id = _insert_source_table_column(session)
-        sess_id = "sess-om-inrun"
-        session.add(InvestigationSession(session_id=sess_id, intent="test"))
         session.add(
             DetectedBusinessCycle(
                 cycle_id=_id(),
-                session_id=sess_id,
                 run_id="run-current",
                 cycle_name="Order to Cash",
                 cycle_type="order_to_cash",
@@ -410,12 +379,10 @@ class TestBuilderOmRunIdOverride:
         session.flush()  # NB: no promoted operating_model head seeded.
 
         # Default derivation: no promoted operating_model head → reads nothing.
-        ctx_default = build_execution_context(session, [table_id], session_id=sess_id)
+        ctx_default = build_execution_context(session, [table_id])
         assert ctx_default.business_cycles == []
 
         # In-run override: read this run's cycle directly, head or not.
-        ctx_override = build_execution_context(
-            session, [table_id], session_id=sess_id, om_run_id="run-current"
-        )
+        ctx_override = build_execution_context(session, [table_id], om_run_id="run-current")
         assert len(ctx_override.business_cycles) == 1
         assert ctx_override.business_cycles[0].cycle_name == "Order to Cash"

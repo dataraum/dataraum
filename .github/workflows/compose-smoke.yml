@@ -120,7 +120,14 @@ jobs:
                   METADATA_DATABASE_URL: postgres://dataraum:dataraum@127.0.0.1:5432/dataraum
                   DATARAUM_WORKSPACE_ID: 00000000-0000-0000-0000-000000000001
                   DATARAUM_CONFIG_PATH: ../dataraum-config
-                  DATARAUM_LAKE_PATH: s3://dataraum-lake/lake
+                  # Per-workspace lake prefix (DAT-505): the engine-worker writes
+                  # workspace 1's parquet under s3://<bucket>/<ws>/lake, and DuckLake
+                  # resolves DATA_PATH eagerly against the catalog — so the cockpit's
+                  # READ_ONLY ATTACH must point at the SAME per-workspace prefix, not
+                  # the old shared s3://<bucket>/lake. Catalog DB stays the base name
+                  # (workspace 1 uses ${DUCKLAKE_CATALOG_DB}; the _<n> suffix is for
+                  # the multi-workspace profile only).
+                  DATARAUM_LAKE_PATH: s3://dataraum-lake/00000000-0000-0000-0000-000000000001/lake
                   DUCKLAKE_CATALOG_URL: postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum_lake_catalog
                   ANTHROPIC_API_KEY: sk-ant-placeholder-replace-me
                   S3_ENDPOINT: 127.0.0.1:8333

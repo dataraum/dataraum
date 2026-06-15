@@ -14,12 +14,23 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
-// The driver tools (via the registry) import the cockpit control plane
-// (DAT-461); mock the seam so the route import never loads the cockpit_db client.
+// The driver tools (via the registry) + workspace-context import the cockpit
+// control plane (DAT-461/506); mock the seams so the route import never loads the
+// cockpit_db (bun:sql) client.
+vi.mock("#/db/cockpit/client", () => ({ cockpitDb: {} }));
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspace: async () => "ws-test",
+	resolveActiveWorkspaceRow: async () => ({
+		id: "ws-test",
+		taskQueue: "engine-ws-test",
+		vertical: "_adhoc",
+	}),
 }));
-vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
+vi.mock("#/db/cockpit/runs", () => ({
+	recordRun: async () => {},
+	attachRunId: async () => {},
+	hasRunningRun: async () => false,
+}));
 // The server-owned chat loop (DAT-462) persists via the conversations seam —
 // mock it so the route import never loads the cockpit_db (bun:sql) client.
 vi.mock("#/db/cockpit/conversations", () => ({

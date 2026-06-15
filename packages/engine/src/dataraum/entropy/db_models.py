@@ -31,13 +31,6 @@ class EntropyObjectRecord(Base):
     __tablename__ = "entropy_objects"
 
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    # Workspace scope is structural: this row lives in its workspace's Postgres
-    # schema. session_id stays NOT NULL but is no longer load-bearing post-DAT-341;
-    # entropy/engine.py scopes by (detector_id, table_ids, run_id) — source-free
-    # (DAT-408). Source provenance, when needed, is reachable via ``table_id``.
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
 
     # Identity - what is being measured
     layer: Mapped[str] = mapped_column(
@@ -54,14 +47,11 @@ class EntropyObjectRecord(Base):
     # Foreign keys to link to analyzed data. No ``source_id`` (DAT-408): a
     # measurement is about a table/column/relationship; its source is reachable via
     # ``table_id`` and was never read off this row.
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
-    column_id: Mapped[str | None] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE")
-    )
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
+    column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
 
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Measurement
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -109,11 +99,6 @@ class EntropyReadinessRecord(Base):
     readiness_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    # Per-run FK, consistent with EntropyObjectRecord.session_id.
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-
     # Target identity (DAT-408): the single key the cockpit reads (DAT-399 D),
     # carrying ``column:`` / ``relationship:`` / ``table:`` uniformly. For column
     # rows it mirrors the ``(table_id, column_id)`` pair below; for relationship
@@ -121,17 +106,14 @@ class EntropyReadinessRecord(Base):
     target: Mapped[str] = mapped_column(String, nullable=False)
 
     # Scope. ``table_id`` is the column-row delete-before-insert scope key (DAT-410);
-    # relationship rows carry no ``table_id`` and scope by ``(session_id, target)``.
+    # relationship rows carry no ``table_id`` and scope by ``(run_id, target)``.
     # No ``source_id`` (DAT-408): source is reachable via ``table_id`` and was never
     # read off this row.
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
-    column_id: Mapped[str | None] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE")
-    )
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
+    column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
 
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Collapsed worst-of-intents band ("ready" / "investigate" / "blocked") — the
     # signal the contract gate consumes — plus the worst per-intent risk behind it.
@@ -168,9 +150,9 @@ class ClaimWitnessRecord(Base):
     never write here.
 
     Dual-grain like :class:`EntropyObjectRecord`: written by both detect paths
-    (add_source per ``table:{id}``, begin_session per ``session:{id}``), so it
-    carries ``session_id`` + ``table_id`` and is classified ``_DUAL_GRAIN`` on
-    the promoted-read surface (ADR-0008).
+    (add_source per ``table:{id}``, begin_session per the workspace ``catalog``
+    head), so it carries ``table_id`` and is classified ``_DUAL_GRAIN`` on the
+    promoted-read surface (ADR-0008).
     """
 
     __tablename__ = "claim_witnesses"
@@ -187,18 +169,12 @@ class ClaimWitnessRecord(Base):
     claim_witness_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    # Mirrors EntropyObjectRecord scoping: session_id is the via_session_head
-    # grain key (NOT NULL), table_id the via_table_head key.
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
-    column_id: Mapped[str | None] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE")
-    )
+    # Mirrors EntropyObjectRecord scoping: table_id is the via_table_head grain key.
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
+    column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
 
     # Snapshot version axis (DAT-448): the run that wrote this witness opinion.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Identity: what is being witnessed, and by whom.
     target: Mapped[str] = mapped_column(String, nullable=False)  # column:{t}.{c}, table:{t}, ...

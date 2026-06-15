@@ -23,9 +23,9 @@ from sqlalchemy.pool import StaticPool
 from dataraum.storage import Column, Table, init_database
 from dataraum.worker import activity as activity_mod
 from dataraum.worker.activity import check_run_column_limit
-from dataraum.worker.contracts import SourceIdentity
+from dataraum.worker.contracts import RunRef
 
-IDENTITY = SourceIdentity(workspace_id="ws-1", session_id="sess-1", run_id="run-A")
+IDENTITY = RunRef(workspace_id="ws-1", run_id="run-A")
 
 
 @pytest.fixture

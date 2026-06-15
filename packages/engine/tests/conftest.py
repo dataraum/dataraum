@@ -66,7 +66,7 @@ from dataraum.storage import init_database  # noqa: E402
 
 _ws_mod._active_workspace_id = os.environ["DATARAUM_WORKSPACE_ID"]
 
-_TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
+_TEST_RUN_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
 
 
@@ -86,23 +86,22 @@ def _reset_settings_cache() -> Generator[None]:
 
 
 @event.listens_for(Session, "before_flush")
-def _autofill_fks_globally(sess, _flush_ctx, _instances):
-    """Auto-fill the ``session_id`` FK on any pending row that left it None.
+def _autofill_run_id_globally(sess, _flush_ctx, _instances):
+    """Auto-fill the ``run_id`` version axis on any pending row that left it None.
 
-    Pure test convenience — production code always sets ``session_id`` (DAT-321
-    plumbing). This hook keeps test fixtures that construct DB rows directly
-    from having to know about the FK.
-
-    Excludes ``InvestigationSession`` itself — its ``session_id`` is a PK,
-    not a FK, so autofilling would collide with the baseline row.
+    Pure test convenience (DAT-506) — production code always stamps ``run_id``
+    (the workflow mints it). Run-versioned models now carry a NOT NULL ``run_id``;
+    this hook keeps test fixtures that construct those rows directly from having
+    to set it. ``RunTable`` carries ``run_id`` as a PK (not a fillable default),
+    so it is left alone — tests anchor it explicitly via ``link_run_tables``.
     """
-    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.investigation.db_models import RunTable
 
     for obj in sess.new:
-        if isinstance(obj, InvestigationSession):
+        if isinstance(obj, RunTable):
             continue
-        if hasattr(obj, "session_id") and getattr(obj, "session_id", None) is None:
-            obj.session_id = _TEST_SESSION_ID
+        if hasattr(obj, "run_id") and getattr(obj, "run_id", None) is None:
+            obj.run_id = _TEST_RUN_ID
 
 
 @pytest.fixture(scope="function")
@@ -139,14 +138,11 @@ def engine() -> Engine:
 def session(engine: Engine) -> Session:
     """Create a test database session.
 
-    Seeds a baseline ``Source`` + ``InvestigationSession`` row so tests that
-    construct per-session DB models have a valid FK target. The
-    ``session_id`` is auto-populated by the global ``before_flush`` hook
-    above; tests that need the value explicitly call ``baseline_session_id()``.
+    Seeds a baseline ``Source`` row so tests that construct source-scoped DB
+    models have a valid FK target. Sessions live in cockpit_db now (DAT-506) —
+    the engine has no ``InvestigationSession`` row; run-versioned models scope by
+    ``run_id`` (``baseline_run_id()``).
     """
-    from datetime import UTC, datetime
-
-    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.storage import Source
 
     factory = sessionmaker(
@@ -156,26 +152,17 @@ def session(engine: Engine) -> Session:
     with factory() as sess:
         sess.add(Source(source_id=_TEST_SOURCE_ID, name="test_baseline", source_type="csv"))
         sess.flush()
-        sess.add(
-            InvestigationSession(
-                session_id=_TEST_SESSION_ID,
-                intent="conftest baseline",
-                status="active",
-                started_at=datetime.now(UTC),
-            )
-        )
-        sess.flush()
         yield sess
 
 
-def baseline_session_id() -> str:
-    """Return the baseline InvestigationSession id seeded by the ``session`` fixture.
+def baseline_run_id() -> str:
+    """Return the baseline run_id for run-versioned test rows (DAT-506).
 
-    Per-session DB models post-DAT-321 carry a NOT NULL FK to
-    ``investigation_sessions.session_id``; tests that ``session.add(...)``
-    one of those rows should set ``session_id=baseline_session_id()``.
+    Run-versioned DB models carry a NOT NULL ``run_id``; tests that
+    ``session.add(...)`` one of those rows should set ``run_id=baseline_run_id()``
+    (and anchor tables via ``link_run_tables(sess, baseline_run_id(), [...])``).
     """
-    return _TEST_SESSION_ID
+    return _TEST_RUN_ID
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 // why_validation tool (DAT-440) — explain one validation's state.
 //
 // The per-validation drill-down behind look_validation, mirroring
-// why_relationship / why_table in shape (found discriminant, session-scoped
-// read over the promoted run, pure unit-tested projection). It differs in ONE
+// why_relationship / why_table in shape (found discriminant, a read over the
+// workspace's promoted run, pure unit-tested projection). It differs in ONE
 // deliberate way: NO LLM synthesis. The why_* readiness tools narrate
 // structured numeric drivers/evidence; a validation's rows are already
 // engine-authored prose — `state_reason` says exactly why it could not run,
@@ -16,7 +16,7 @@
 // integration-smoke-covered (scripts/smoke-operating-model.ts).
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -121,7 +121,6 @@ export function projectWhyValidation(
 }
 
 export interface WhyValidationInput {
-	session_id: string;
 	validation_id: string;
 }
 
@@ -135,7 +134,6 @@ export async function whyValidation(
 	// 'validation' (the key is unique only WITHIN a type — cycles/metrics share
 	// this view).
 	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
 		"validation",
 		input.validation_id,
 	);
@@ -152,12 +150,7 @@ export async function whyValidation(
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults)
-		.where(
-			and(
-				eq(currentValidationResults.sessionId, input.session_id),
-				eq(currentValidationResults.validationId, input.validation_id),
-			),
-		)
+		.where(eq(currentValidationResults.validationId, input.validation_id))
 		.limit(1);
 
 	const pending = await getPendingOverlays();
@@ -177,12 +170,8 @@ export const whyValidationTool = toolDefinition({
 		"lifecycle state with the reason it could not run (when it stopped short " +
 		"of executed), what it bound against, the SQL that executed, and the " +
 		"result's message and details. Read-only. Use after look_validation to " +
-		"drill into a specific validation; identify it by its validation_id and " +
-		"the session_id.",
+		"drill into a specific validation; identify it by its validation_id.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the validation belongs to."),
 		validation_id: z
 			.string()
 			.describe(

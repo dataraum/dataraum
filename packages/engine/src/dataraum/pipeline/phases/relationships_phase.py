@@ -53,7 +53,7 @@ class RelationshipsPhase(BasePhase):
         may span sources. The ids are already validated as typed by
         ``begin_session_select``'s pre-flight (the single enforcement point), so
         no ``layer`` filter is repeated here. A source is meaningless past
-        add_source, so this phase never reads ``ctx.source_id``
+        add_source, so this phase is source-free
         (feedback-source-dies-at-addsource).
         """
         if not ctx.table_ids:
@@ -106,7 +106,6 @@ class RelationshipsPhase(BasePhase):
             table_ids=table_ids,
             duckdb_conn=ctx.duckdb_conn,
             session=ctx.session,
-            session_id=ctx.require_session_id(),
             min_confidence=min_confidence,
             sample_percent=sample_percent,
             evaluate=True,

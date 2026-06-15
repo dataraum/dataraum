@@ -149,7 +149,6 @@ export function projectWhyMetric(
 }
 
 export interface WhyMetricInput {
-	session_id: string;
 	graph_id: string;
 }
 
@@ -160,11 +159,7 @@ export async function whyMetric(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution. No promoted run → empty views →
 	// not found. The shared reader pins artifact_type = 'metric'.
-	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
-		"metric",
-		input.graph_id,
-	);
+	const artifactRow = await readLifecycleArtifact("metric", input.graph_id);
 
 	// The metric's persisted SQL fragments — workspace-durable, keyed by
 	// `source='graph:<graph_id>'` (NOT run-versioned; the cross-run reuse base).
@@ -212,12 +207,8 @@ export const whyMetricTool = toolDefinition({
 		"per-step SQL fragments the engine saved for the metric's DAG (extract / " +
 		"formula steps). Read-only. The metric's numeric VALUE is not shown — it " +
 		"is re-computed on demand by running the metric, not stored. Use after " +
-		"look_metric to drill into a specific metric; identify it by its graph_id " +
-		"and the session_id.",
+		"look_metric to drill into a specific metric; identify it by its graph_id.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the metric belongs to."),
 		graph_id: z
 			.string()
 			.describe("The metric to explain (a graph_id from look_metric)."),

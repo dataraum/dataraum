@@ -379,8 +379,7 @@ class ConnectionManager:
 
         The long-lived Temporal activity worker (DAT-344) calls this once at
         startup. The lake ``USE`` scope (``lake.typed``) is workspace-stable
-        post-DAT-341, so one connection serves every activity and ``session_id``
-        stays a per-activity data tag (``PhaseContext.session_id``) rather than
+        post-DAT-341, so one connection serves every activity rather than being
         a gate on having DuckDB at all.
 
         DuckDB-open is opt-in (not folded into ``initialize()``) because it

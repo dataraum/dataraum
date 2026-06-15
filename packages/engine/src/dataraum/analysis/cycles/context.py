@@ -51,7 +51,6 @@ def build_cycle_detection_context(
     table_ids: list[str],
     *,
     vertical: str,
-    session_id: str | None = None,
     base_runs: BaseRunMap,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
@@ -65,7 +64,6 @@ def build_cycle_detection_context(
         duckdb_conn: DuckDB connection for row counts
         table_ids: Tables to analyze
         vertical: Vertical name (e.g. 'finance')
-        session_id: the owning journey session (provenance / logging only).
         base_runs: the run's pinned upstream heads (ADR-0008 in-run mode).
             ``relationship_run_id`` scopes the defined relationships, entity
             classifications, and slice definitions; ``semantic_runs`` scopes
@@ -138,15 +136,13 @@ def build_cycle_detection_context(
     # The pinned begin_session run (ADR-0008 in-run mode): the run-versioned
     # reads below — entity classifications, the defined relationships, AND slice
     # definitions (run-versioned since DAT-448: table-scoped + immortal was the
-    # cross-session leak) — scope to the SAME run. **Fail-closed (DAT-429,
-    # session isolation):** with no pinned run we MUST NOT fall back to a
-    # cross-run read — that would mix OTHER sessions' rows into this context.
-    # Leave them empty instead.
+    # cross-session leak) — scope to the SAME run. **Fail-closed (DAT-429):**
+    # with no pinned run we MUST NOT fall back to a cross-run read — that would
+    # mix OTHER runs' rows into this context. Leave them empty instead.
     run_id = base_runs.relationship_run_id
-    if session_id and run_id is None:
+    if run_id is None:
         logger.warning(
             "session_run_unresolved",
-            session_id=session_id,
             detail="no pinned begin_session run; entity/relationship context is empty",
         )
 

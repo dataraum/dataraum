@@ -155,7 +155,7 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 						name: "select",
 						state: "complete",
 						output: {
-							source_ids: ["s1"],
+							sources: ["s1"],
 							workflow_id: "wf1",
 							run_id: "run1",
 							session_id: "sess1",

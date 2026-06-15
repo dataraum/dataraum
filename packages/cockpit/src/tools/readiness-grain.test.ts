@@ -19,7 +19,7 @@ function row(id: string, overrides: Partial<Omit<Row, "id">> = {}): Row {
 		id,
 		detectorId: null,
 		viaTableHead: false,
-		viaSessionHead: false,
+		viaCatalogHead: false,
 		viaOperatingModelHead: false,
 		computedAt: new Date("2026-06-01T00:00:00Z"),
 		...overrides,
@@ -40,7 +40,7 @@ describe("pickCurrentRow", () => {
 			computedAt: new Date("2026-06-10T00:00:00Z"),
 		});
 		const sessionRow = row("session", {
-			viaSessionHead: true,
+			viaCatalogHead: true,
 			computedAt: new Date("2026-06-05T00:00:00Z"),
 		});
 		expect(pickCurrentRow([tableRow, sessionRow])?.id).toBe("session");
@@ -57,11 +57,11 @@ describe("pickCurrentRow", () => {
 		// view's per-session dedup — the cockpit read (no session input) takes the
 		// most recent verdict.
 		const older = row("s1", {
-			viaSessionHead: true,
+			viaCatalogHead: true,
 			computedAt: new Date("2026-06-03T00:00:00Z"),
 		});
 		const newer = row("s2", {
-			viaSessionHead: true,
+			viaCatalogHead: true,
 			computedAt: new Date("2026-06-09T00:00:00Z"),
 		});
 		expect(pickCurrentRow([older, newer])?.id).toBe("s2");
@@ -81,14 +81,14 @@ describe("pickCurrentRow", () => {
 
 	it("sorts null computedAt as oldest and keeps the first row on ties", () => {
 		const dated = row("dated", {
-			viaSessionHead: true,
+			viaCatalogHead: true,
 			computedAt: new Date("2026-06-01T00:00:00Z"),
 		});
-		const undated = row("undated", { viaSessionHead: true, computedAt: null });
+		const undated = row("undated", { viaCatalogHead: true, computedAt: null });
 		expect(pickCurrentRow([undated, dated])?.id).toBe("dated");
 
-		const tieA = row("a", { viaSessionHead: true });
-		const tieB = row("b", { viaSessionHead: true });
+		const tieA = row("a", { viaCatalogHead: true });
+		const tieB = row("b", { viaCatalogHead: true });
 		expect(pickCurrentRow([tieA, tieB])?.id).toBe("a");
 	});
 });
@@ -101,7 +101,7 @@ describe("mergeCurrentEvidence", () => {
 			row("tb-stale", { detectorId: "temporal_behavior", viaTableHead: true }),
 			row("tb-fresh", {
 				detectorId: "temporal_behavior",
-				viaSessionHead: true,
+				viaCatalogHead: true,
 			}),
 			row("nr", { detectorId: "null_ratio", viaTableHead: true }),
 		];
@@ -125,7 +125,7 @@ describe("mergeCurrentEvidence", () => {
 		const rows = [
 			row("b1", { detectorId: "benford", viaTableHead: true }),
 			row("a1", { detectorId: "null_ratio", viaTableHead: true }),
-			row("b2", { detectorId: "benford", viaSessionHead: true }),
+			row("b2", { detectorId: "benford", viaCatalogHead: true }),
 		];
 		expect(mergeCurrentEvidence(rows).map((r) => r.id)).toEqual(["b2", "a1"]);
 	});
@@ -138,9 +138,7 @@ describe("mergeCurrentEvidence", () => {
 describe("stageOfRow", () => {
 	it("labels each head bit, operating_model first", () => {
 		expect(stageOfRow(row("a", { viaTableHead: true }))).toBe("add_source");
-		expect(stageOfRow(row("b", { viaSessionHead: true }))).toBe(
-			"session_detect",
-		);
+		expect(stageOfRow(row("b", { viaCatalogHead: true }))).toBe("catalog");
 		expect(stageOfRow(row("c", { viaOperatingModelHead: true }))).toBe(
 			"operating_model",
 		);
@@ -155,7 +153,6 @@ describe("projectVerdictHistory", () => {
 			GrainRow & {
 				band: string | null;
 				worstIntentRisk: number | null;
-				sessionId: string | null;
 				runId: string | null;
 			}
 		> = {},
@@ -163,7 +160,6 @@ describe("projectVerdictHistory", () => {
 		...row(id),
 		band: "blocked",
 		worstIntentRisk: 0.8,
-		sessionId: "sess-1",
 		runId: id,
 		...overrides,
 	});
@@ -171,7 +167,7 @@ describe("projectVerdictHistory", () => {
 	it("labels every snapshot and sorts oldest first", () => {
 		const history = projectVerdictHistory([
 			histRow("run-ses", {
-				viaSessionHead: true,
+				viaCatalogHead: true,
 				band: "ready",
 				computedAt: new Date("2026-06-11T10:00:00Z"),
 			}),
@@ -182,7 +178,7 @@ describe("projectVerdictHistory", () => {
 		]);
 		expect(history.map((h) => [h.stage, h.band])).toEqual([
 			["add_source", "blocked"],
-			["session_detect", "ready"],
+			["catalog", "ready"],
 		]);
 		// No evidence rows passed → signal counts honestly absent, not 0.
 		expect(history.every((h) => h.signals === null)).toBe(true);
@@ -193,7 +189,7 @@ describe("projectVerdictHistory", () => {
 			[
 				histRow("run-add", { viaTableHead: true }),
 				histRow("run-ses", {
-					viaSessionHead: true,
+					viaCatalogHead: true,
 					computedAt: new Date("2026-06-11T10:00:00Z"),
 				}),
 				histRow("run-om", {
@@ -205,7 +201,7 @@ describe("projectVerdictHistory", () => {
 				row("e1", { detectorId: "null_ratio", viaTableHead: true }),
 				row("e2", { detectorId: "type_fidelity", viaTableHead: true }),
 				row("e3", { detectorId: "type_fidelity", viaTableHead: true }), // dup → 1
-				row("e4", { detectorId: "temporal_behavior", viaSessionHead: true }),
+				row("e4", { detectorId: "temporal_behavior", viaCatalogHead: true }),
 				row("e5", {
 					detectorId: "cross_table_consistency",
 					viaOperatingModelHead: true,
@@ -225,15 +221,16 @@ describe("projectVerdictHistory", () => {
 		expect(history[0]?.signals).toBeNull();
 	});
 
-	it("keeps cross-session rows visible — the disclosure surface", () => {
+	it("keeps coexisting catalog-grain runs visible — the disclosure surface", () => {
+		// The catalog views carry no session_id post-DAT-506; run_id is the
+		// per-snapshot discriminator.
 		const history = projectVerdictHistory([
-			histRow("s1-run", { viaSessionHead: true, sessionId: "sess-1" }),
-			histRow("s2-run", {
-				viaSessionHead: true,
-				sessionId: "sess-2",
+			histRow("r1-run", { viaCatalogHead: true }),
+			histRow("r2-run", {
+				viaCatalogHead: true,
 				computedAt: new Date("2026-06-11T11:00:00Z"),
 			}),
 		]);
-		expect(history.map((h) => h.session_id)).toEqual(["sess-1", "sess-2"]);
+		expect(history.map((h) => h.run_id)).toEqual(["r1-run", "r2-run"]);
 	});
 });

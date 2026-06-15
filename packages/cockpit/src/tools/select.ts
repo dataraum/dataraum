@@ -16,12 +16,12 @@
 // documented policy break (the metadata client is otherwise read-only; the engine
 // owns the schema, and these onboarding writes flow through this one seam).
 //
-// Order inside the call: the vertical PRE-FLIGHT (NoConceptsError when it
-// resolves to zero concepts) runs BEFORE any write, so a refused vertical
-// leaves no half-state; then the source upsert(s); then the trigger (the
-// investigation_sessions seed + the non-blocking workflow.start —
-// temporal/trigger-add-source.ts). The result carries the workflow/run/session
-// ids so the progress canvas member follows immediately.
+// Order inside the call: the source upsert(s); then the trigger (records the run
+// in cockpit_db, then the non-blocking workflow.start — temporal/trigger-add-
+// source.ts). The result carries the workflow/run/session ids so the progress
+// canvas member follows immediately. The vertical is a workspace property now
+// (DAT-506) — sourced by the trigger from the registry, NOT a select input, so
+// there is no per-add_source concept pre-flight.
 //
 // Dispatch is on `ConnectSchema.sourceKind`:
 //   - file:     each uploaded file is its OWN content-keyed source (DAT-422 — the
@@ -32,7 +32,7 @@
 //               digest) UPSERT one row (re-upload dedup); two distinct files never
 //               collide on a raw table even with matching basenames (the digests
 //               differ), so no basename rejection is needed. A run then ingests
-//               the SET of these source ids (`source_ids`).
+//               the SET of these source ids (`sources`).
 //   - database: ONE source — `source_type='db_recipe'`, the `backend` COLUMN, and
 //               `connection_config.tables` synthesized from the picked tables,
 //               plus `recipe_hash` (sha256 over the canonical {backend, tables}
@@ -68,16 +68,12 @@ import {
 	SOURCE_NAME_PATTERN,
 	sourceTypeForUri,
 } from "../select/mappers";
-import {
-	NoConceptsError,
-	triggerAddSource,
-} from "../temporal/trigger-add-source";
+import { triggerAddSource } from "../temporal/trigger-add-source";
 import {
 	AgentActionableError,
 	catchActionable,
 	withAgentError,
 } from "./agent-error";
-import { verticalConceptCount } from "./list-verticals";
 
 // The onboarding stage `select` leaves the source(s) at. The cockpit drives a
 // source `connect → frame → select → add_source` BEFORE the workflow triggers;
@@ -89,29 +85,6 @@ const STAGE_AFTER_SELECT = "add_source";
 // yet imported reads `configured`.
 const INITIAL_STATUS = "configured";
 
-// The default vertical when none is chosen — the unnamed cold-start ontology.
-const DEFAULT_VERTICAL = "_adhoc";
-// A chosen vertical keys the engine's `verticals/<name>` config resolution, so a
-// supplied name must be a safe segment + engine-valid (lowercase, starts with a
-// letter) — or the `_adhoc` default (exempt: the built-in leading-underscore key).
-const VERTICAL_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
-
-/** The vertical the run grounds against — a builtin the user adopted (e.g.
- * finance), a vertical just framed, or `_adhoc`. Seeded onto the run's session
- * by the trigger and echoed in the result (it isn't persisted on the source
- * row — the conversation carries it). */
-function resolveVertical(name?: string | null): string {
-	const trimmed = name?.trim();
-	if (!trimmed || trimmed === DEFAULT_VERTICAL) return DEFAULT_VERTICAL;
-	if (!VERTICAL_NAME_PATTERN.test(trimmed)) {
-		throw new AgentActionableError(
-			`Invalid vertical '${trimmed}'. Must match ${VERTICAL_NAME_PATTERN.source} ` +
-				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]) or be '_adhoc'.",
-		);
-	}
-	return trimmed;
-}
-
 /** The persisted Source descriptor + the started run's identity. The
  * workflow/run/session ids are what the progress canvas member keys its
  * `get_progress` poll on (tool-result-to-canvas.ts, replay precedent). */
@@ -120,7 +93,7 @@ export const SelectResult = z.object({
 	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
 	// source per uploaded file), 1 for a database selection; always ≥1 (a select
 	// that registered nothing is a loud failure), matching the trigger contract.
-	source_ids: z.array(z.string()).min(1),
+	sources: z.array(z.string()).min(1),
 	// A human display label for the selection — NOT a source name (file sources
 	// are content-keyed, so there is no single user-chosen name): the database
 	// source name, or the filename / "N files" for a file selection.
@@ -130,9 +103,6 @@ export const SelectResult = z.object({
 	source_type: z.string(),
 	backend: z.string().nullable(),
 	stage: z.string(),
-	// The vertical the run grounds against (adopted builtin / framed / `_adhoc`),
-	// pre-flighted against the effective concept count BEFORE any write.
-	vertical: z.string(),
 	// The concrete file URIs persisted (file source), else null (db source).
 	file_uris: z.array(z.string()).nullable(),
 	// The synthesized recipe tables persisted (db source), else null (file).
@@ -141,7 +111,7 @@ export const SelectResult = z.object({
 		.nullable(),
 	// The started addSourceWorkflow run (DAT-436: calling select STARTS the
 	// import). workflow_id + run_id pin the precise execution the progress
-	// canvas polls; session_id is the run's seeded investigation session.
+	// canvas polls; session_id is the run's cockpit_db session.
 	workflow_id: z.string(),
 	run_id: z.string(),
 	session_id: z.string(),
@@ -180,11 +150,6 @@ export interface SelectInput {
 	// Database backend, persisted as the `backend` COLUMN (required for db sources;
 	// the engine import fails loud without it). For a file source it is ignored.
 	backend?: string | null;
-	// The vertical the run grounds against: a builtin the user adopted (e.g.
-	// finance), a vertical just framed (the SAME `vertical_name` passed to frame),
-	// or omitted → `_adhoc`. Pre-flighted before any write; not persisted.
-	vertical?: string | null;
-	session_id?: string | null;
 }
 
 /** Build the file-source URI list for a connect schema. Precedence: an explicit
@@ -295,7 +260,6 @@ export async function persistSelection(
 	input: SelectInput,
 	enumerate: typeof enumeratePrefixUris = enumeratePrefixUris,
 ): Promise<PersistedSelection> {
-	const vertical = resolveVertical(input.vertical);
 	const schema = ConnectSchema.parse(input.schema);
 	const now = new Date();
 
@@ -317,9 +281,9 @@ export async function persistSelection(
 		}
 
 		const persisted = [...byName.entries()];
-		const sourceIds: string[] = [];
+		const sourceIdSet: string[] = [];
 		for (const [name, { uri, sourceType }] of persisted) {
-			sourceIds.push(
+			sourceIdSet.push(
 				await upsertSource({
 					name,
 					sourceType,
@@ -336,7 +300,7 @@ export async function persistSelection(
 			...new Set(persisted.map(([, p]) => p.sourceType)),
 		].sort();
 		return {
-			source_ids: sourceIds,
+			sources: sourceIdSet,
 			name:
 				fileUris.length === 1
 					? basename(fileUris[0])
@@ -344,7 +308,6 @@ export async function persistSelection(
 			source_type: distinctTypes.join("+"),
 			backend: null,
 			stage: STAGE_AFTER_SELECT,
-			vertical,
 			file_uris: fileUris,
 			recipe_tables: null,
 		};
@@ -414,26 +377,23 @@ export async function persistSelection(
 	});
 
 	return {
-		source_ids: [sourceId],
+		sources: [sourceId],
 		name,
 		source_type: "db_recipe",
 		backend: input.backend,
 		stage: STAGE_AFTER_SELECT,
-		vertical,
 		file_uris: null,
 		recipe_tables: recipeTables,
 	};
 }
 
 /**
- * The one-call select (DAT-436): vertical pre-flight → source upsert(s) →
- * investigation_sessions seed + non-blocking workflow.start. Calling the
- * `select` tool is the single step that starts the import — mirroring
- * `replay` / `begin_session`, which also seed + start in one call.
+ * The one-call select (DAT-436): source upsert(s) → non-blocking workflow.start.
+ * Calling the `select` tool is the single step that starts the import — mirroring
+ * `replay` / `begin_session`, which also record + start in one call.
  *
- * Ordering is load-bearing: the pre-flight runs BEFORE any write so a refused
- * vertical (NoConceptsError) leaves no half-state — no source row, no orphan
- * session, no doomed workflow. `trigger` is injected for testability; the
+ * The vertical is a WORKSPACE property now (DAT-506) — sourced by the trigger from
+ * the registry, NOT picked here. `trigger` is injected for testability; the
  * default is the real `triggerAddSource`.
  */
 export async function select(
@@ -441,33 +401,20 @@ export async function select(
 	enumerate: typeof enumeratePrefixUris = enumeratePrefixUris,
 	trigger: typeof triggerAddSource = triggerAddSource,
 ): Promise<SelectResult> {
-	// PRE-FLIGHT (Theme A guard, relocated from the retired trigger hop): refuse
-	// early when the chosen vertical resolves to zero concepts — builtin
-	// ontology.yaml concepts PLUS active overlay rows. The engine fails loud on
-	// this deep in semantic_per_column, surfacing only as a dead Temporal run;
-	// catching it here gives the user a readable message BEFORE anything is
-	// written. An adopted builtin (finance) ships concepts → passes; an empty
-	// _adhoc or an un-framed vertical → refused.
-	const vertical = resolveVertical(input.vertical);
-	if ((await verticalConceptCount(vertical)) === 0) {
-		throw new NoConceptsError(vertical);
-	}
-
 	const selection = await persistSelection(input, enumerate);
 
-	// Seed the run's session + start addSourceWorkflow over the persisted SET.
-	// Non-blocking: the ids come back immediately and the progress canvas member
-	// (keyed on workflow_id + run_id) follows the run.
+	// Start addSourceWorkflow over the persisted SET (the run is recorded in
+	// cockpit_db before it starts). Non-blocking: the ids come back immediately and
+	// the progress canvas member (keyed on workflow_id + run_id) follows the run.
 	const run = await trigger({
-		source_ids: selection.source_ids,
-		vertical: selection.vertical,
+		sources: selection.sources,
 	});
 
 	return {
 		...selection,
 		workflow_id: run.workflow_id,
 		run_id: run.run_id,
-		session_id: run.session_id,
+		session_id: run.cockpit_session_id,
 	};
 }
 
@@ -532,30 +479,18 @@ export const selectTool = toolDefinition({
 			.describe(
 				"Database source only: the backend (required for a db source).",
 			),
-		vertical: z
-			.string()
-			.nullish()
-			.describe(
-				"The vertical add_source grounds against. Pass a builtin from " +
-					"`list_verticals` with a non-zero concept_count (e.g. finance) to " +
-					"ADOPT it — no frame needed, it ships its concepts. Pass the SAME " +
-					"`vertical_name` you gave `frame` for a newly framed vertical. Omit " +
-					"only for an unnamed cold-start (_adhoc).",
-			),
-		session_id: z.string().nullish(),
 	}),
-	// Success OR `{ error }`: the actionable pre-flight failures (bad vertical /
-	// source_name / reserved prefix / unsupported backend / no matching tables /
-	// NoConceptsError) come back as data so the model fixes the input and retries.
-	// They all raise BEFORE any write, so there's no half-state. A Temporal
-	// workflow.start failure is infra → still throws (re-invoking recovers).
+	// Success OR `{ error }`: the actionable failures (bad source_name / reserved
+	// prefix / unsupported backend / no matching tables) come back as data so the
+	// model fixes the input and retries. They all raise BEFORE any write, so
+	// there's no half-state. A Temporal workflow.start failure is infra → still
+	// throws (re-invoking recovers). The vertical is a workspace property now
+	// (DAT-506) — not a select input, so there's no per-add_source concept pre-flight.
 	outputSchema: withAgentError(SelectResult),
 	// The lambda is load-bearing: .server() calls its handler as (input, context)
 	// — passing `select` bare would shove the SDK's context object into select's
 	// injectable `enumerate` test-seam parameter, clobbering its default.
 	// ctx.abortSignal deliberately NOT forwarded (DAT-449): the trigger's
 	// `workflow.start` is a short, non-blocking gRPC call — an abort mid-start
-	// can't un-start the Temporal workflow and would only orphan the seeded
-	// investigation_sessions row (the exact failure seam trigger-add-source.ts
-	// guards against).
+	// can't un-start the Temporal workflow.
 }).server((input) => catchActionable(() => select(input)));

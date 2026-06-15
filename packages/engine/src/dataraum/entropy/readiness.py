@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 
 def persist_readiness(
     session: Session,
-    session_id: str,
     table_ids: list[str],
     *,
     run_id: str | None = None,
@@ -52,7 +51,7 @@ def persist_readiness(
     # path) — never an unscoped delete, which would wipe every run's readiness.
     # Two scopes (DAT-408): column rows carry ``table_id`` so they delete by the
     # table set; relationship rows carry no ``table_id`` (the identity is in
-    # ``target``), so they delete by ``(session_id, relationship:%)``.
+    # ``target``), so they delete by ``(relationship:%, run_id)``.
     col_del = delete(EntropyReadinessRecord).where(
         EntropyReadinessRecord.table_id.in_(table_ids),
         EntropyReadinessRecord.run_id == run_id,
@@ -61,14 +60,13 @@ def persist_readiness(
     # runs no relationship detectors — so this is a begin_session-only delete in
     # practice; the run_id scope keeps it harmless on the shared add_source path.
     rel_del = delete(EntropyReadinessRecord).where(
-        EntropyReadinessRecord.session_id == session_id,
         EntropyReadinessRecord.target.like("relationship:%"),
         EntropyReadinessRecord.run_id == run_id,
     )
     session.execute(col_del)
     session.execute(rel_del)
 
-    ctx = build_for_readiness(session, table_ids, current_run_id=run_id, session_id=session_id)
+    ctx = build_for_readiness(session, table_ids, current_run_id=run_id)
     if not ctx.columns:
         return 0
 
@@ -101,7 +99,6 @@ def persist_readiness(
             table_id, column_id = ids
         rows.append(
             EntropyReadinessRecord(
-                session_id=session_id,
                 target=target,
                 table_id=table_id,
                 column_id=column_id,

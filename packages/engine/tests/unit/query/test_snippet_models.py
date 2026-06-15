@@ -12,6 +12,7 @@ class TestSQLSnippetRecord:
     def test_create_extract_snippet(self, session):
         """Create an extract-type snippet."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="extract",
             standard_field="revenue",
             statement="income_statement",
@@ -32,6 +33,7 @@ class TestSQLSnippetRecord:
     def test_create_constant_snippet(self, session):
         """Create a constant-type snippet."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="constant",
             standard_field="days_in_period",
             parameter_value="30",
@@ -49,6 +51,7 @@ class TestSQLSnippetRecord:
     def test_create_formula_snippet(self, session):
         """Create a formula-type snippet."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="formula",
             schema_mapping_id="schema_abc",
             normalized_expression="({A} / {B}) * {C}",
@@ -70,6 +73,7 @@ class TestSQLSnippetRecord:
     def test_create_query_snippet(self, session):
         """Create a query-derived snippet."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="query",
             schema_mapping_id="schema_abc",
             sql='SELECT DATE_TRUNC(\'month\', "Datum") as month, SUM("Betrag") as total FROM typed_transactions GROUP BY 1',
@@ -90,6 +94,7 @@ class TestSQLSnippetRecord:
         We set parameter_value="" to ensure all fields are non-NULL.
         """
         base_args = {
+            "workspace_id": "ws_test",
             "snippet_type": "extract",
             "standard_field": "revenue",
             "statement": "income_statement",
@@ -112,6 +117,7 @@ class TestSQLSnippetRecord:
     def test_different_schema_allowed(self, session):
         """Same standard_field but different schema_mapping_id is allowed."""
         base_args = {
+            "workspace_id": "ws_test",
             "snippet_type": "extract",
             "standard_field": "revenue",
             "statement": "income_statement",
@@ -128,6 +134,7 @@ class TestSQLSnippetRecord:
     def test_different_parameter_value_allowed(self, session):
         """Same constant with different parameter values is allowed."""
         common_args = {
+            "workspace_id": "ws_test",
             "snippet_type": "constant",
             "standard_field": "days_in_period",
             "schema_mapping_id": "schema_abc",
@@ -144,6 +151,7 @@ class TestSQLSnippetRecord:
     def test_column_mappings_json(self, session):
         """Column mappings are stored as JSON."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="extract",
             standard_field="revenue",
             schema_mapping_id="schema_abc",
@@ -165,6 +173,7 @@ class TestSnippetUsageRecord:
     def _create_snippet(self, session) -> SQLSnippetRecord:
         """Helper to create a snippet for usage tests."""
         record = SQLSnippetRecord(
+            workspace_id="ws_test",
             snippet_type="extract",
             standard_field="revenue",
             schema_mapping_id="schema_abc",
@@ -180,6 +189,7 @@ class TestSnippetUsageRecord:
         """Record an exact reuse."""
         snippet = self._create_snippet(session)
         usage = SnippetUsageRecord(
+            workspace_id="ws_test",
             execution_id="exec_001",
             execution_type="graph",
             snippet_id=snippet.snippet_id,
@@ -197,6 +207,7 @@ class TestSnippetUsageRecord:
     def test_create_newly_generated(self, session):
         """Record a newly generated step (no snippet)."""
         usage = SnippetUsageRecord(
+            workspace_id="ws_test",
             execution_id="exec_002",
             execution_type="query",
             snippet_id=None,
@@ -215,6 +226,7 @@ class TestSnippetUsageRecord:
         """Usage record links back to snippet."""
         snippet = self._create_snippet(session)
         usage = SnippetUsageRecord(
+            workspace_id="ws_test",
             execution_id="exec_003",
             execution_type="graph",
             snippet_id=snippet.snippet_id,
@@ -233,6 +245,7 @@ class TestSnippetUsageRecord:
         """Deleting snippet cascades to usage records."""
         snippet = self._create_snippet(session)
         usage = SnippetUsageRecord(
+            workspace_id="ws_test",
             execution_id="exec_004",
             execution_type="graph",
             snippet_id=snippet.snippet_id,

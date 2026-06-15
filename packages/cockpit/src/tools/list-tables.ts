@@ -397,7 +397,7 @@ export async function listTables(
 						band: currentEntropyReadiness.band,
 						computedAt: currentEntropyReadiness.computedAt,
 						viaTableHead: currentEntropyReadiness.viaTableHead,
-						viaSessionHead: currentEntropyReadiness.viaSessionHead,
+						viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
 						viaOperatingModelHead:
 							currentEntropyReadiness.viaOperatingModelHead,
 					})

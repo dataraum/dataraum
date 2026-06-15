@@ -25,16 +25,13 @@ vi.mock("#/tools/list-tables", () => ({
 	listTables: () => listTablesMock(),
 }));
 
-// save-on-clean: saveQuerySnippet is the write boundary, currentSessionId the FK
-// anchor — both mocked so the persist GATING/skip/best-effort logic is testable.
+// save-on-clean: saveQuerySnippet is the write boundary — mocked so the persist
+// gating/best-effort logic is testable. DAT-506: snippets are workspace-scoped
+// (the `workspace_id` column replaced the session FK), so there's no session gate.
 const saveQuerySnippetMock = vi.fn();
 vi.mock("#/db/metadata/snippet-writer", () => ({
 	// biome-ignore lint/suspicious/noExplicitAny: passthrough to the spy.
 	saveQuerySnippet: (...a: any[]) => saveQuerySnippetMock(...a),
-}));
-const currentSessionIdMock = vi.fn();
-vi.mock("#/prompts/workspace-context", () => ({
-	currentSessionId: () => currentSessionIdMock(),
 }));
 
 import {
@@ -271,11 +268,9 @@ describe("componentsToSave (save-on-clean gate)", () => {
 describe("persistLearnedSnippets (save-on-clean)", () => {
 	beforeEach(() => {
 		saveQuerySnippetMock.mockReset();
-		currentSessionIdMock.mockReset();
 	});
 
-	it("saves only fresh/adapted under the current session, sharing one query: source", async () => {
-		currentSessionIdMock.mockResolvedValue("sess-1");
+	it("saves only fresh/adapted under the workspace, sharing one query: source", async () => {
 		saveQuerySnippetMock.mockResolvedValue({ snippetId: "x", deduped: false });
 
 		await persistLearnedSnippets({
@@ -291,7 +286,9 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 		expect(saveQuerySnippetMock).toHaveBeenCalledTimes(2);
 		const args = saveQuerySnippetMock.mock.calls.map((c) => c[0]);
 		expect(args.map((a) => a.standardField)).toEqual(["revenue", "margin"]);
-		expect(args.every((a) => a.sessionId === "sess-1")).toBe(true);
+		// Workspace-scoped (DAT-506): both the workspace_id column and the
+		// schema_mapping_id key value are the active workspace id.
+		expect(args.every((a) => a.workspaceId === "ws-test")).toBe(true);
 		expect(args.every((a) => a.schemaMappingId === "ws-test")).toBe(true);
 		// one provenance group per answer; the executable sql is carried through.
 		expect(args[0].source).toMatch(/^query:/);
@@ -299,27 +296,16 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 		expect(args[0].sql).toBe("SELECT SUM(rev) AS value");
 	});
 
-	it("skips entirely when there is no current session (the NOT-NULL FK anchor)", async () => {
-		currentSessionIdMock.mockResolvedValue(null);
-		await persistLearnedSnippets({
-			composedSql: "x",
-			components: [comp("a", "fresh")],
-		});
-		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
-	});
-
-	it("is a no-op for a null run or no fresh/adapted components (before touching the session)", async () => {
+	it("is a no-op for a null run or no fresh/adapted components", async () => {
 		await persistLearnedSnippets(null);
 		await persistLearnedSnippets({
 			composedSql: "x",
 			components: [comp("a", "exact_reuse")],
 		});
-		expect(currentSessionIdMock).not.toHaveBeenCalled();
 		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
 	});
 
 	it("best-effort: swallows a save failure (never fails the answer)", async () => {
-		currentSessionIdMock.mockResolvedValue("sess-1");
 		saveQuerySnippetMock.mockRejectedValue(new Error("permission denied"));
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 

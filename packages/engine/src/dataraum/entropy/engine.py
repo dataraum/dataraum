@@ -27,10 +27,9 @@ def run_detector_post_step(
     detector_id: str,
     duckdb_conn: Any = None,
     *,
-    session_id: str,
     table_ids: list[str],
     run_id: str | None = None,
-    base_runs: dict[tuple[str, str], str] | None = None,
+    base_runs: dict[str, str] | None = None,
 ) -> int:
     """Run a single detector as a phase post-step — source-free (DAT-408).
 
@@ -46,14 +45,14 @@ def run_detector_post_step(
         session: SQLAlchemy session (caller manages commit).
         detector_id: ID of the detector to run.
         duckdb_conn: DuckDB connection for detectors that query data directly.
-        session_id: Per-run FK for the persisted records.
         table_ids: The typed-table scope — the run's table set (delete + scan).
         run_id: Snapshot version axis (DAT-413); stamped on each record and ALWAYS
             the delete scope, so a re-run clears only its OWN prior rows
             (non-destructive). ``None`` (tests) scopes to ``run_id IS NULL``.
-        base_runs: pinned ``(table_id, stage) → run_id`` map (DAT-448) resolved
-            once at detect start (``loaders.resolve_base_runs``); threaded onto
-            every snapshot so loader fallbacks read one consistent base.
+        base_runs: pinned ``table_id → run_id`` generation-head map (DAT-448/506)
+            resolved once at detect start (``loaders.resolve_base_runs``);
+            threaded onto every snapshot so loader fallbacks read one consistent
+            base.
 
     Returns:
         Number of records created.
@@ -131,7 +130,6 @@ def run_detector_post_step(
                 for obj in snapshot.objects:
                     all_records.append(
                         _make_record(
-                            session_id=session_id,
                             run_id=run_id,
                             entropy_obj=obj,
                             table_id=table.table_id,
@@ -141,7 +139,6 @@ def run_detector_post_step(
                     all_witnesses.extend(
                         _make_witness_records(
                             obj,
-                            session_id=session_id,
                             run_id=run_id,
                             table_id=table.table_id,
                             column_id=col.column_id,
@@ -166,7 +163,6 @@ def run_detector_post_step(
                 )
                 all_records.append(
                     _make_record(
-                        session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
                         table_id=resolved_table_id,
@@ -189,14 +185,13 @@ def run_detector_post_step(
                 Relationship.from_table_id,
             )
             .where(
-                # This run's catalog (DAT-408): scoped to the session AND the current
-                # run_id — rows coexist across runs, so reads pick the current one.
-                # Durable manual/keeper rows are materialized into this run (DAT-409),
-                # so a single current-run read sees the whole catalog. BOTH endpoints
-                # must be in scope: an intra-selection relationship has both, and it
-                # keeps the from-endpoint anchor (object table_id) inside table_ids so
-                # the run_id-scoped delete reliably clears it on retry.
-                Relationship.session_id == session_id,
+                # This run's catalog (DAT-408): scoped to the current run_id — rows
+                # coexist across runs, so reads pick the current one. Durable
+                # manual/keeper rows are materialized into this run (DAT-409), so a
+                # single current-run read sees the whole catalog. BOTH endpoints must
+                # be in scope: an intra-selection relationship has both, and it keeps
+                # the from-endpoint anchor (object table_id) inside table_ids so the
+                # run_id-scoped delete reliably clears it on retry.
                 # Defined catalog only (DAT-408 contract — see db_models.py /
                 # relationships.utils): the LLM in semantic_per_table is the selector,
                 # so the relationship detectors measure what it confirmed (llm +
@@ -225,13 +220,11 @@ def run_detector_post_step(
                 duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
                 run_id=run_id,
-                session_id=session_id,
                 base_runs=base_runs,
             )
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
-                        session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
                         table_id=from_table,
@@ -245,7 +238,6 @@ def run_detector_post_step(
                 all_witnesses.extend(
                     _make_witness_records(
                         obj,
-                        session_id=session_id,
                         run_id=run_id,
                         table_id=from_table,
                         column_id=from_col,
@@ -278,7 +270,6 @@ def run_detector_post_step(
             for obj in snapshot.objects:
                 all_records.append(
                     _make_record(
-                        session_id=session_id,
                         run_id=run_id,
                         entropy_obj=obj,
                         table_id=ev.fact_table_id,
@@ -327,12 +318,10 @@ def _make_record(
     table_id: str | None,
     column_id: str | None,
     *,
-    session_id: str,
     run_id: str | None = None,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
-        session_id=session_id,
         table_id=table_id,
         column_id=column_id,
         run_id=run_id,
@@ -349,20 +338,18 @@ def _make_record(
 def _make_witness_records(
     entropy_obj: EntropyObject,
     *,
-    session_id: str,
     table_id: str | None,
     column_id: str | None,
     run_id: str | None,
 ) -> list[ClaimWitnessRecord]:
     """The run-versioned witness rows behind a pooled EntropyObject (ADR-0009).
 
-    Same ``(session_id, table_id, column_id, run_id)`` anchoring as the object's
-    record, so the head-joined ``current_claim_witnesses`` view resolves them on
-    the same grain. Empty for non-adjudication detectors.
+    Same ``(table_id, column_id, run_id)`` anchoring as the object's record, so
+    the head-joined ``current_claim_witnesses`` view resolves them on the same
+    grain. Empty for non-adjudication detectors.
     """
     return [
         ClaimWitnessRecord(
-            session_id=session_id,
             table_id=table_id,
             column_id=column_id,
             run_id=run_id,

@@ -391,7 +391,6 @@ def assess_statistical_quality(
     max_workers: int = 8,
     exclude_outlier_columns: set[str] | None = None,
     *,
-    session_id: str,
     run_id: str | None = None,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.
@@ -493,7 +492,6 @@ def assess_statistical_quality(
                     # PK omitted so the model's Python-side default applies.
                     rows.append(
                         {
-                            "session_id": session_id,
                             "column_id": column_id,
                             "run_id": run_id,
                             "computed_at": computed_at,

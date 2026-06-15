@@ -21,7 +21,7 @@ from dataraum.analysis.temporal import TemporalColumnProfile
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.temporal_slice_analysis_phase import TemporalSliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -132,14 +132,18 @@ def _make_ctx(
     config: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> PhaseContext:
-    """Build a PhaseContext over the SQLite session fixture."""
+    """Build a PhaseContext over the SQLite session fixture.
+
+    ``run_id`` defaults to ``baseline_run_id()`` — the before_flush autofill
+    stamps seeded run-versioned rows (slice definitions, entities) with the same
+    baseline, so the phase's run-scoped reads resolve them (DAT-506).
+    """
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         config=config or {},
-        session_id=baseline_session_id(),
-        run_id=run_id,
+        run_id=run_id if run_id is not None else baseline_run_id(),
     )
 
 

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.statistics import assess_statistical_quality
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ class TestAssessStatisticalQualityParallel:
             duckdb_conn=test_duckdb,
             session=session,
             max_workers=4,
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert result.success
@@ -138,7 +138,7 @@ class TestAssessStatisticalQualityParallel:
             duckdb_conn=test_duckdb,
             session=session,
             max_workers=4,
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert result.success
@@ -167,7 +167,7 @@ class TestAssessStatisticalQualityParallel:
             duckdb_conn=test_duckdb,
             session=session,
             max_workers=4,
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert result.success
@@ -181,7 +181,7 @@ class TestAssessStatisticalQualityParallel:
             duckdb_conn=test_duckdb,
             session=session,
             max_workers=4,
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert result.success

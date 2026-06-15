@@ -34,9 +34,6 @@ class ConfigOverlay(Base):
 
     Columns:
         overlay_id: uuid4 primary key.
-        session_id: NULL for workspace-scoped teaches (``type_pattern``,
-            ``null_value``, ``concept_property``); non-NULL for session-scoped
-            teaches (slice-2+: ``metric``, ``validation``, ``cycle``).
         type: the teach type — one of the registered teach types
             (validated by the cockpit's write path, not by the DB).
         payload: per-type JSON payload; shape is owned by the matching
@@ -51,7 +48,6 @@ class ConfigOverlay(Base):
     __tablename__ = "config_overlay"
 
     overlay_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

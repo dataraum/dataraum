@@ -46,7 +46,6 @@ const UNGROUNDABLE = {
 };
 
 const analyzed: LookMetricResult = {
-	session_id: "sess-1",
 	analyzed: true,
 	pending_teaches: 0,
 	metrics: [EXECUTED, UNGROUNDABLE],
@@ -118,7 +117,7 @@ describe("MetricListWidget (DAT-466)", () => {
 		expect(bubble).toContain("Ebitda");
 		expect(bubble).toContain("why_metric");
 		expect(bubble).not.toContain("sess-1");
-		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).not.toContain("session_id");
 		expect(opts.refs).toContain("graph_id=ebitda");
 		expect(opts.refs).toContain("Internal only");
 	});

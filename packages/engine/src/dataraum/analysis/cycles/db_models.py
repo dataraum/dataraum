@@ -14,7 +14,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
-    ForeignKey,
     Integer,
     String,
     Text,
@@ -41,14 +40,9 @@ class DetectedBusinessCycle(Base):
     """
 
     __tablename__ = "detected_business_cycles"
-    __table_args__ = (
-        UniqueConstraint("session_id", "canonical_type", "run_id", name="uq_detected_cycle_run"),
-    )
+    __table_args__ = (UniqueConstraint("canonical_type", "run_id", name="uq_detected_cycle_run"),)
 
     cycle_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Classification

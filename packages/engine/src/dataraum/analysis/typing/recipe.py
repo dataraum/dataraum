@@ -3,15 +3,11 @@
 Typing materializes its physical DuckDB tables by executing a
 ``CREATE OR REPLACE TABLE … AS SELECT`` string. This module captures that string
 as versioned metadata: :func:`store_recipe` persists it stamped with the run's
-``run_id``, and :func:`rebuild_from_recipe` re-executes a stored run's DDL to
-rebuild the physical artifact — **without** re-deriving the typing phase.
+``run_id``, captured so a stored run's DDL can be replayed to rebuild the
+physical artifact — **without** re-deriving the typing phase.
 
-Two consumers:
-- The typing phase, which after building each typed/quarantine table records the
-  exact DDL it just executed (emit → store → execute).
-- A physical reset/rebuild, which flips the snapshot head to a prior run and
-  replays that run's stored DDL in dependency order (the lake is latest-only, so
-  a reset is a re-materialization from the versioned recipe, not a re-typing).
+Consumer: the typing phase, which after building each typed/quarantine table
+records the exact DDL it just executed (emit → store → execute).
 """
 
 from __future__ import annotations
@@ -36,10 +32,9 @@ logger = get_logger(__name__)
 def store_recipe(
     session: Session,
     *,
-    session_id: str,
     table_id: str,
     layer: str,
-    run_id: str | None,
+    run_id: str,
     target_fqn: str,
     ddl: str,
     depends_on: list[str] | None = None,
@@ -50,21 +45,16 @@ def store_recipe(
     at-least-once retry (same ``run_id``) is idempotent — re-running typing
     overwrites the run's recipe rather than duplicating it — while a NEW run's
     recipe coexists with prior runs'. The promoted snapshot head names which run
-    is current (DAT-413). ``run_id=None`` (non-run callers) is NOT dedup-keyed —
-    Postgres treats a NULL ``run_id`` as distinct in the unique constraint, so
-    repeated NULL-run writes accrue rows; the Temporal path always stamps a
-    ``run_id``, so production never hits this.
+    is current (DAT-413).
 
     Args:
         session: Active SQLAlchemy session.
-        session_id: Owning investigation session.
         table_id: The *typed* Table id whose physical artifact the DDL produces
             (stable across re-types, DAT-373).
         layer: Produced lake layer — ``"typed"`` / ``"quarantine"`` (typing) or the
             view layers ``"enriched"`` / ``"slicing"`` (DAT-415). An open VARCHAR,
             not an enum; the dependency-order rebuild is layer-aware via the FQNs.
-        run_id: The run that emitted this DDL (DAT-413). ``None`` for non-run
-            callers, matching the TypeDecision/TypeCandidate convention.
+        run_id: The run that emitted this DDL (DAT-413).
         target_fqn: Fully-qualified DuckDB target the DDL creates.
         ddl: The exact ``CREATE OR REPLACE TABLE … AS SELECT`` string.
         depends_on: Fully-qualified DuckDB names this DDL reads from
@@ -77,7 +67,6 @@ def store_recipe(
         MaterializationRecipe,
         [
             {
-                "session_id": session_id,
                 "table_id": table_id,
                 "layer": layer,
                 "run_id": run_id,
@@ -173,107 +162,6 @@ def _replay(
     return rebuilt
 
 
-def rebuild_from_recipe(
-    session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    *,
-    table_id: str,
-    run_id: str,
-) -> list[str]:
-    """Rebuild one Table's physical artifact from a run's stored DDL.
-
-    Re-executes the ``(table_id, run_id)`` recipes against DuckDB in dependency
-    order, reproducing the table's DATA as the original run produced it — no
-    typing re-derivation. The recipe versions the *transformation*, not the data:
-    a faithful re-execution reproduces identical rows, while audit columns the DDL
-    writes (the quarantine ``_quarantined_at`` ``CURRENT_TIMESTAMP``) re-stamp to
-    the rebuild time.
-
-    Args:
-        session: Active SQLAlchemy session.
-        duckdb_conn: DuckDB connection to execute the DDL against.
-        table_id: The Table whose artifact to rebuild.
-        run_id: The run whose stored recipes to replay.
-
-    Returns:
-        The ``target_fqn``s rebuilt, in execution order.
-
-    Raises:
-        RuntimeError: If no recipe is stored for ``(table_id, run_id)``.
-    """
-    recipes = _load_recipes(session, table_id, run_id)
-    if not recipes:
-        raise RuntimeError(
-            f"No materialization recipe for table {table_id} at run {run_id} — "
-            "nothing to rebuild (was the recipe stored during typing?)."
-        )
-    rebuilt = _replay(duckdb_conn, recipes)
-    logger.info(
-        "materialization_rebuilt",
-        table_id=table_id,
-        run_id=run_id,
-        artifacts=len(rebuilt),
-    )
-    return rebuilt
-
-
-def reset_to_run(
-    session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    *,
-    table_id: str,
-    run_id: str,
-) -> list[str]:
-    """Reset a typed Table's physical artifacts to a prior run (DAT-414 AC#3).
-
-    Re-executes ``run_id``'s stored materialization DDL — for the typed artifact
-    AND its quarantine sibling — then flips the typing snapshot head for
-    ``table:{table_id}`` to ``run_id``. Typed and quarantine are separate Table
-    rows (distinct ``table_id``s) for one logical table, so the reset rebuilds the
-    pair together in one transaction; resetting only the typed half would leave the
-    lake at typed@``run_id`` / quarantine@whatever-materialized-last. No phase
-    re-derivation — the versioned recipe is the source of truth; the lake is
-    latest-only, so "reset" re-materializes the target run's recipe over the
-    current physical tables.
-
-    ``table_id`` is the *typed* Table id (the head key). A run with no cast
-    failures — or the strongly-typed copy — has no quarantine recipe, so only the
-    typed artifact is rebuilt.
-
-    Args:
-        session: Active SQLAlchemy session.
-        duckdb_conn: DuckDB connection to execute the DDL against.
-        table_id: The typed Table to reset.
-        run_id: The run to reset the physical artifacts to.
-
-    Returns:
-        The ``target_fqn``s rebuilt, in execution order.
-
-    Raises:
-        RuntimeError: If no recipe is stored for the typed ``(table_id, run_id)``.
-    """
-    recipes = _load_recipes(session, table_id, run_id)
-    if not recipes:
-        raise RuntimeError(
-            f"No materialization recipe for table {table_id} at run {run_id} — "
-            "nothing to reset (was the recipe stored during typing?)."
-        )
-    # The pair resets together: pull the quarantine sibling's recipes (if this run
-    # produced one) so the lake can't end up typed@run / quarantine@another-run.
-    quarantine_id = _quarantine_sibling_id(session, table_id)
-    if quarantine_id is not None and quarantine_id != table_id:
-        recipes += _load_recipes(session, quarantine_id, run_id)
-    rebuilt = _replay(duckdb_conn, recipes)
-    _point_head(session, table_id, run_id)
-    logger.info(
-        "materialization_reset",
-        table_id=table_id,
-        run_id=run_id,
-        artifacts=len(rebuilt),
-    )
-    return rebuilt
-
-
 def _quarantine_sibling_id(session: Session, typed_table_id: str) -> str | None:
     """The quarantine Table id sharing the typed table's ``(source, name)``, or ``None``.
 
@@ -292,35 +180,6 @@ def _quarantine_sibling_id(session: Session, typed_table_id: str) -> str | None:
         )
     ).scalar_one_or_none()
     return quarantine.table_id if quarantine is not None else None
-
-
-def _point_head(session: Session, table_id: str, run_id: str) -> None:
-    """Flip the ``(table:{id}, "typing")`` snapshot head to ``run_id``.
-
-    Mirrors ``worker.activity._upsert_head`` but scoped to the single typing
-    head a physical reset re-points (insert if absent, else re-point). Kept
-    local to the typing module so a reset does not depend on the worker package.
-    """
-    from datetime import UTC, datetime
-
-    from dataraum.storage.snapshot_head import MetadataSnapshotHead
-
-    target = f"table:{table_id}"
-    stage = "typing"
-    now = datetime.now(UTC)
-    head = session.execute(
-        select(MetadataSnapshotHead).where(
-            MetadataSnapshotHead.target == target,
-            MetadataSnapshotHead.stage == stage,
-        )
-    ).scalar_one_or_none()
-    if head is None:
-        session.add(
-            MetadataSnapshotHead(target=target, stage=stage, run_id=run_id, promoted_at=now)
-        )
-    else:
-        head.run_id = run_id
-        head.promoted_at = now
 
 
 def current_typing_run(session: Session, table_id: str) -> str | None:

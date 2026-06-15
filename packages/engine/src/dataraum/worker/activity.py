@@ -2,11 +2,11 @@
 
 One place wires connections to a phase. :func:`run_phase` leases a *scoped*
 SQLAlchemy session + DuckDB cursor from the worker's single
-:class:`~dataraum.core.connections.ConnectionManager`, builds the
-``PhaseContext`` (source identity from the ``Source`` row + the phase's static
-config, scoped to ``table_ids``), and runs the sync phase — without a scheduler
-or ``PipelineRun``/``PhaseLog`` monitoring rows (Temporal's event history is the
-execution log).
+:class:`~dataraum.core.connections.ConnectionManager`, builds the source-free
+``PhaseContext`` (the phase's static config, scoped to ``table_ids``; the one
+per-source ``import`` injects its ``source_id`` into the config), and runs the
+sync phase — without a scheduler or ``PipelineRun``/``PhaseLog`` monitoring rows
+(Temporal's event history is the execution log).
 
 Detectors are **not** run here per phase. Per DAT-394 they run once per workflow
 in a single terminal step: :func:`run_detectors` runs every wired detector over
@@ -30,13 +30,20 @@ from dataraum.core.logging import get_logger
 from dataraum.core.vertical import require_known_vertical
 from dataraum.entropy.engine import run_detector_post_step
 from dataraum.entropy.readiness import persist_readiness
-from dataraum.investigation.db_models import InvestigationSession
-from dataraum.investigation.queries import link_session_tables, tables_for_session
+from dataraum.investigation.queries import link_run_tables, tables_for_run
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
-from dataraum.storage import Column, MetadataSnapshotHead, Source, Table, session_head_target
-from dataraum.worker.contracts import OperatingModelScope, SessionIdentity, SourceIdentity
+from dataraum.storage import (
+    GENERATION_STAGE,
+    Column,
+    MetadataSnapshotHead,
+    Source,
+    Table,
+    catalog_head_target,
+    head_run_id,
+)
+from dataraum.worker.contracts import OperatingModelScope, RunRef
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -90,22 +97,6 @@ _DETECTOR_PHASES = (
     "semantic_per_column",
 )
 
-# The add_source stages whose per-(table, stage) snapshot the terminal
-# ``promote_to_latest`` step flips the head pointer to (DAT-413). This is the
-# producing-stage axis ``MetadataSnapshotHead.stage`` records — every add_source
-# stage that writes run_id-stamped metadata, plus the terminal ``detect``. With
-# exactly one run at a time (Phase 2) nothing reads the head yet, so promoting it
-# is byte-identical to today's delete-then-insert; Phase 3 switches the readers.
-_PROMOTE_STAGES = (
-    "typing",
-    "statistics",
-    "column_eligibility",
-    "statistical_quality",
-    "temporal",
-    "semantic_per_column",
-    "detect",
-)
-
 # The begin_session chain phases whose declared detectors the terminal session
 # ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
@@ -154,8 +145,11 @@ class PhaseRun:
 def run_phase(
     manager: ConnectionManager,
     phase_name: str,
-    identity: SourceIdentity,
+    run: RunRef,
     table_ids: list[str],
+    vertical: str,
+    *,
+    source_id: str | None = None,
 ) -> PhaseRun:
     """Run one pipeline phase scoped to ``table_ids``, leasing connections from ``manager``.
 
@@ -163,9 +157,18 @@ def run_phase(
         manager: the worker's single workspace-level ConnectionManager
             (Postgres + workspace DuckDB already open via ``open_lake``).
         phase_name: a key in pipeline.yaml / the phase registry (e.g. "import").
-        identity: the source-identity header carried by the workflow.
-        table_ids: the phase's table scope. ``[]`` = source-wide (import,
-            semantic_per_column); a single typed id for the analytics phases.
+        run: the source-free run reference carried by the workflow (workspace +
+            run_id).
+        table_ids: the phase's table scope. ``[]`` = run-wide (semantic_per_column);
+            a single typed id for the analytics phases.
+        vertical: the workspace vertical by name (DAT-506), threaded from the
+            workflow input into the phase config (the LLM phases read it; the
+            structural phases ignore it).
+        source_id: set ONLY by the per-source ``import`` activity (DAT-426) — the
+            one phase that runs before any ``Table`` row exists and so cannot
+            resolve its source relationally. It is injected into ``ctx.config``
+            (``import`` reads it there), never onto the source-free ``PhaseContext``.
+            Every other phase resolves source provenance via ``tables.source_id``.
     """
     # Workspace isolation is enforced by the per-workspace task queue (DAT-505):
     # this worker polls only ``engine-<workspace_id>``, so a payload addressed to
@@ -184,35 +187,33 @@ def run_phase(
     # commits on clean exit (so the phase's writes are visible to later
     # activities); duckdb_cursor closes the derived cursor on exit.
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        # Only ``import`` ingests from a ``Source`` (it reads connection_config +
-        # backend to load files); past it the run is source-free (DAT-422), so a
-        # ``None`` source_id means "no Source to resolve" — the config is built from
-        # the phase's static config + the run's vertical. A source_id that IS set
-        # but doesn't resolve is still a fail-loud caller bug (the import caller
-        # must write the Source row before the phase runs).
+        # Only ``import`` carries a ``source_id`` (it reads connection_config +
+        # backend to load files before any Table row exists); past it the run is
+        # source-free (DAT-422/426), so ``source_id`` is ``None`` and the config is
+        # built from the phase's static config + the run's vertical. A source_id
+        # that IS set but doesn't resolve is still a fail-loud caller bug (the
+        # import caller must write the Source row before the phase runs).
         source = None
-        if identity.source_id is not None:
-            source = session.get(Source, identity.source_id)
+        if source_id is not None:
+            source = session.get(Source, source_id)
             if source is None:
                 return PhaseRun(
                     status=PhaseStatus.FAILED.value,
                     error=(
-                        f"Source '{identity.source_id}' not found in workspace "
-                        f"'{identity.workspace_id}'. The workflow caller must write the "
+                        f"Source '{source_id}' not found in workspace "
+                        f"'{run.workspace_id}'. The workflow caller must write the "
                         "Source row before the phase runs."
                     ),
                 )
-        config = _build_phase_config(source, phase_name, identity)
+        config = _build_phase_config(source, phase_name, vertical)
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
-            source_id=identity.source_id,
             table_ids=list(table_ids),
             config=config,
             session_factory=manager.session_scope,
             manager=manager,
-            session_id=identity.session_id,
-            run_id=identity.run_id,
+            run_id=run.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -300,7 +301,7 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
 
 def check_run_column_limit(
     manager: ConnectionManager,
-    identity: SourceIdentity,
+    run: RunRef,
     table_ids: list[str],
 ) -> PhaseRun:
     """Gate the RUN's total raw column count before the per-table fan-out (DAT-430).
@@ -340,35 +341,28 @@ def check_run_column_limit(
 
 def begin_session_select(
     manager: ConnectionManager,
-    identity: SessionIdentity,
+    run: RunRef,
     table_ids: list[str],
 ) -> PhaseRun:
-    """Pre-flight the selected tables + link them to the session (DAT-401).
+    """Pre-flight the selected tables + anchor them to the run (DAT-401/506).
 
     The first step of ``beginSessionWorkflow``: validate every id is a known
     *typed* table (reject unknown — a deterministic FAILED → non-retryable
-    ``PhaseFailed`` in the wrapper) and write the ``session_tables`` links via
-    the same idempotent merge ``typing`` uses for add_source. The session row
-    itself is seeded by the caller (cockpit in 2.0c; the test driver now),
-    mirroring add_source — so its absence is a fail-loud caller error, not a
-    create-on-demand path.
+    ``PhaseFailed`` in the wrapper) and write the ``run_tables`` anchor via the
+    same idempotent merge ``typing`` uses for add_source. Sessions live in
+    cockpit_db now (DAT-506) — the engine only records which typed tables this
+    run operates over.
     """
     if not table_ids:
         return PhaseRun(
             status=PhaseStatus.FAILED.value,
             error="begin_session requires at least one table id.",
         )
+    run_id = run.run_id
+    if run_id is None:
+        raise RuntimeError("begin_session_select requires a stamped run.run_id.")
 
     with manager.session_scope() as session:
-        if session.get(InvestigationSession, identity.session_id) is None:
-            return PhaseRun(
-                status=PhaseStatus.FAILED.value,
-                error=(
-                    f"InvestigationSession '{identity.session_id}' not found — the "
-                    "begin_session caller must seed the session row before the "
-                    "workflow runs (mirrors add_source's cockpit seed)."
-                ),
-            )
         found = set(
             session.execute(
                 select(Table.table_id).where(Table.table_id.in_(table_ids), Table.layer == "typed")
@@ -380,35 +374,36 @@ def begin_session_select(
                 status=PhaseStatus.FAILED.value,
                 error=f"Unknown or non-typed table ids in selection: {unknown}",
             )
-        link_session_tables(session, identity.session_id, table_ids)
+        link_run_tables(session, run_id, table_ids)
 
     logger.info(
         "activity.begin_session_select",
-        session_id=identity.session_id,
+        run_id=run_id,
         table_count=len(table_ids),
     )
     return PhaseRun(
         status=PhaseStatus.COMPLETED.value,
-        summary=f"linked {len(table_ids)} table(s) to session {identity.session_id}",
+        summary=f"anchored {len(table_ids)} table(s) to run {run_id}",
     )
 
 
 def run_session_phase(
     manager: ConnectionManager,
     phase_name: str,
-    identity: SessionIdentity,
+    run: RunRef,
     table_ids: list[str],
+    vertical: str,
     extra_config: dict[str, Any] | None = None,
 ) -> PhaseRun:
-    """Run one begin_session phase over ``table_ids`` — source-free (DAT-401).
+    """Run one begin_session phase over ``table_ids`` — source-free (DAT-401/506).
 
     The session-scoped sibling of :func:`run_phase`. Past the add_source
     boundary a source is meaningless (feedback-source-dies-at-addsource): the
-    phase scopes purely by the typed ``table_ids`` (the session's selection,
-    threaded from the workflow input) and reads the frame ``vertical`` off the
-    ``InvestigationSession`` row — never a ``Source``. The ``PhaseContext`` is
-    built with ``source_id=None`` so the phase body cannot silently fall back to
-    source scoping.
+    phase scopes purely by the typed ``table_ids`` (the user's selection,
+    threaded from the workflow input) and reads the frame ``vertical`` from the
+    workflow INPUT (by name, DAT-506) — never a ``Source`` or a session row. The
+    ``PhaseContext`` is built with ``source_id=None`` so the phase body cannot
+    silently fall back to source scoping.
 
     ``extra_config`` merges runtime keys over the static phase config — e.g.
     the operating_model activities thread the resolved ``base_runs`` pin
@@ -423,29 +418,17 @@ def run_session_phase(
     phase = phase_cls()
 
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        inv_session = session.get(InvestigationSession, identity.session_id)
-        if inv_session is None:
-            return PhaseRun(
-                status=PhaseStatus.FAILED.value,
-                error=(
-                    f"InvestigationSession '{identity.session_id}' not found in "
-                    f"workspace '{identity.workspace_id}'. The begin_session caller "
-                    "must seed the session row before the workflow runs."
-                ),
-            )
-        config = _build_session_phase_config(phase_name, inv_session.vertical)
+        config = _build_session_phase_config(phase_name, vertical)
         if extra_config:
             config.update(extra_config)
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
-            source_id=None,
             table_ids=list(table_ids),
             config=config,
             session_factory=manager.session_scope,
             manager=manager,
-            session_id=identity.session_id,
-            run_id=identity.run_id,
+            run_id=run.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -479,25 +462,23 @@ def run_session_phase(
 def run_detectors(
     manager: ConnectionManager,
     *,
-    session_id: str,
-    run_id: str | None,
+    run_id: str,
     detector_phases: tuple[str, ...] = _DETECTOR_PHASES,
 ) -> int:
-    """Run every wired detector once over the run-session's tables — the terminal ``detect`` step.
+    """Run every wired detector once over the run's tables — the terminal ``detect`` step.
 
     Source-free (DAT-408): the single stage-level detector pass (DAT-394) runs the
-    union of the detectors ``detector_phases`` declare over the tables the run's
-    session composes (``session_tables``, DAT-407/410) — for ``add_source`` that is
-    exactly the source's freshly-typed tables, so the scope is identical to the prior
+    union of the detectors ``detector_phases`` declare over the tables the run
+    composes (``run_tables``, DAT-506) — for ``add_source`` that is exactly the
+    source's freshly-typed tables, so the scope is identical to the prior
     source-wide pass; begin_session passes its own phase set + a multi-source table
     set. It runs once, sequentially, after the per-table fan-out and the reduce — so
     the delete-before-insert is safe (no concurrency) and every detector's inputs are
     present. ``run_id`` stamps the snapshot version axis (DAT-413).
 
-    Base-run pinning (DAT-448): the promoted ``(table:{id}, stage)`` heads for the
-    add_source stages session detects read (semantic_per_column, statistics,
-    statistical_quality) are resolved ONCE here and threaded down — per-call head
-    resolution in the loaders let a concurrent promote tear reads mid-run.
+    Base-run pinning (DAT-448): the promoted per-table generation heads the session
+    detects read are resolved ONCE here and threaded down — per-call head resolution
+    in the loaders let a concurrent promote tear reads mid-run.
     """
     from dataraum.entropy.detectors.loaders import resolve_base_runs
     from dataraum.entropy.resolve import resolve_null_tokens, resolve_temporal_behavior
@@ -508,23 +489,22 @@ def run_detectors(
 
     total = 0
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        table_ids = tables_for_session(session, session_id)
+        table_ids = tables_for_run(session, run_id)
         if not table_ids:
             # add_source links its typed tables in ``typing`` (same transaction as
-            # the Table row), so an empty set here means the session has no tables —
+            # the Table row), so an empty set here means the run has no tables —
             # nothing to detect. Log it: a populated source with no links is a bug.
-            logger.warning("detect_no_session_tables", session_id=session_id)
+            logger.warning("detect_no_run_tables", run_id=run_id)
             return 0
         base_runs = resolve_base_runs(session, table_ids)
         for detector_id in detector_ids:
-            # Scoped to the session's tables. The single terminal pass runs once,
+            # Scoped to the run's tables. The single terminal pass runs once,
             # sequentially after the fan-out — no concurrent writers to collide on
             # the per-(detector, table) delete-before-insert.
             total += run_detector_post_step(
                 session,
                 detector_id,
                 cursor,
-                session_id=session_id,
                 table_ids=table_ids,
                 run_id=run_id,
                 base_runs=base_runs,
@@ -539,10 +519,10 @@ def run_detectors(
         # stock/flow + contested flag (DAT-445). No-op when no adjudication ran.
         resolved = resolve_null_tokens(session, run_id)
         resolved_tb = resolve_temporal_behavior(session, run_id)
-        readiness_rows = persist_readiness(session, session_id, table_ids, run_id=run_id)
+        readiness_rows = persist_readiness(session, table_ids, run_id=run_id)
         logger.info(
             "terminal_detect_done",
-            session_id=session_id,
+            run_id=run_id,
             detector_records=total,
             readiness_rows=readiness_rows,
             resolved_annotations=resolved,
@@ -551,30 +531,31 @@ def run_detectors(
     return total
 
 
-def materialize_session_overlays(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def materialize_session_overlays(manager: ConnectionManager, run: RunRef) -> int:
     """Materialize the session's durable relationship overlays into this run (DAT-409).
 
     Runs between ``semantic_per_table`` and ``session_detect``: writes the user's
     ``add``/``keep`` relationship overlays as run-stamped ``manual``/``keeper``
     ``Relationship`` rows so they re-appear every run (skipping pairs the run already
     produced as ``llm``, and rejected pairs). ``session_detect`` then measures the
-    whole defined catalog. Source-free; tables resolve from ``session_tables``.
+    whole defined catalog. Source-free; tables resolve from ``run_tables``.
     """
     from dataraum.analysis.relationships.materialize import materialize_relationship_overlays
 
+    run_id = run.run_id
+    if run_id is None:
+        raise RuntimeError("materialize_session_overlays requires a stamped run.run_id.")
     with manager.session_scope() as session:
-        table_ids = tables_for_session(session, identity.session_id)
+        table_ids = tables_for_run(session, run_id)
         if not table_ids:
-            logger.warning("materialize_no_session_tables", session_id=identity.session_id)
+            logger.warning("materialize_no_run_tables", run_id=run_id)
             return 0
-        count = materialize_relationship_overlays(
-            session, identity.session_id, run_id=identity.run_id, table_ids=table_ids
-        )
-    logger.info("session_materialize_done", session_id=identity.session_id, count=count)
+        count = materialize_relationship_overlays(session, run_id=run_id, table_ids=table_ids)
+    logger.info("session_materialize_done", run_id=run_id, count=count)
     return count
 
 
-def write_session_keepers(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def write_session_keepers(manager: ConnectionManager, run: RunRef) -> int:
     """Lift silently-accepted relationships into keep overlays (DAT-409 C3).
 
     Pre-promote step: while the per-session head still points at the prior run,
@@ -584,63 +565,54 @@ def write_session_keepers(manager: ConnectionManager, identity: SessionIdentity)
     """
     from dataraum.analysis.relationships.materialize import write_relationship_keepers
 
+    run_id = run.run_id
+    if run_id is None:
+        raise RuntimeError("write_session_keepers requires a stamped run.run_id.")
     with manager.session_scope() as session:
-        count = write_relationship_keepers(
-            session, identity.session_id, current_run_id=identity.run_id
-        )
-    logger.info("session_keepers_done", session_id=identity.session_id, count=count)
+        count = write_relationship_keepers(session, current_run_id=run_id)
+    logger.info("session_keepers_done", run_id=run_id, count=count)
     return count
 
 
-def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
-    """Flip the snapshot head to this run for every ``(table_id, stage)`` — terminal step (DAT-413).
+def promote_run(manager: ConnectionManager, run: RunRef) -> int:
+    """Flip the per-table generation head to this run — terminal step (DAT-413/506).
 
     The single terminal ``promote_to_latest`` step: after ``detect``, record this
-    run as the *current* (promoted) snapshot for each of the run's tables × each
-    add_source stage (``_PROMOTE_STAGES``). It resolves the run's tables via
-    ``session_tables`` (the exact set :func:`run_detectors` scopes to) and
-    **upserts** :class:`MetadataSnapshotHead`: an existing ``(table_id, stage)``
-    row has its ``run_id`` re-pointed + ``version`` bumped; a missing one is
-    inserted at ``version=0``.
-
-    Behavior-preserving in Phase 2: with exactly one run at a time nothing reads
-    the head yet (every phase still does delete-then-insert), so writing it has no
-    effect on downstream output — Phase 3 switches the readers to head-resolution.
+    run as the *current* (promoted) snapshot for each of the run's tables. add_source
+    seals a table's WHOLE run (typing → semantic_per_column → detect) atomically, so
+    it promotes ONE generation head per table — ``(table:{id}, GENERATION_STAGE)`` —
+    not one head per producing phase (DAT-506 collapsed the per-stage head axis). It
+    resolves the run's tables via ``run_tables`` (the exact set
+    :func:`run_detectors` scopes to) and **upserts** :class:`MetadataSnapshotHead`.
 
     Returns:
-        Number of head rows promoted (``len(tables) * len(_PROMOTE_STAGES)``).
+        Number of head rows promoted (one per table).
     """
     # The head names a run, so promote is meaningless without one. The
     # AddSourceWorkflow always mints + stamps ``run_id`` before any activity, so a
     # missing one here is a caller bug — fail loud rather than write a NULL head.
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_run requires a stamped identity.run_id — the workflow mints "
+            "promote_run requires a stamped run.run_id — the workflow mints "
             "it via workflow.uuid4() before the first activity (DAT-413)."
         )
 
     promoted = 0
     with manager.session_scope() as session:
-        table_ids = tables_for_session(session, identity.session_id)
+        table_ids = tables_for_run(session, run_id)
         if not table_ids:
             # Same empty-set signal as run_detectors: a populated source with no
-            # session links is a bug; nothing to promote.
-            logger.warning("promote_no_session_tables", session_id=identity.session_id)
+            # run links is a bug; nothing to promote.
+            logger.warning("promote_no_run_tables", run_id=run_id)
             return 0
         now = datetime.now(UTC)
         for table_id in table_ids:
-            # add_source's per-table stages key the head by the generic
-            # ``table:{id}`` target (DAT-408); relationship targets are promoted by
-            # begin_session's own promote.
-            target = f"table:{table_id}"
-            for stage in _PROMOTE_STAGES:
-                _upsert_head(session, target, stage, run_id, now)
-                promoted += 1
+            _upsert_head(session, f"table:{table_id}", GENERATION_STAGE, run_id, now)
+            promoted += 1
 
     logger.info(
         "promote_to_latest_done",
-        session_id=identity.session_id,
         run_id=run_id,
         heads_promoted=promoted,
     )
@@ -664,88 +636,85 @@ def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: da
         head.promoted_at = now
 
 
-def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
-    """Seal this begin_session run as the session's current run (DAT-408).
+def promote_session_run(manager: ConnectionManager, run: RunRef) -> int:
+    """Seal this begin_session run as the workspace catalog's current run (DAT-408/506).
 
     begin_session's terminal promote: after ``session_detect`` writes this run's
     relationship catalog + readiness (all stamped ``run_id``), point the single
-    per-session head ``(session:{id}, "detect")`` at this run. Readers
-    (``load_relationship_readiness``, the cockpit) resolve the session's current run
-    through it. Per-session (not per-target) because the run is atomic — every run
-    measures the whole catalog.
+    workspace catalog head ``(catalog, "catalog")`` at this run. Readers
+    (``load_relationship_readiness``, the cockpit) resolve the workspace's current
+    catalog run through it. Workspace-grain (not per-target) because the run is
+    atomic — every run measures the whole catalog.
     """
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_session_run requires a stamped identity.run_id — "
+            "promote_session_run requires a stamped run.run_id — "
             "BeginSessionWorkflow mints it before the first activity (DAT-408)."
         )
 
     with manager.session_scope() as session:
-        _upsert_head(
-            session, session_head_target(identity.session_id), "detect", run_id, datetime.now(UTC)
-        )
+        _upsert_head(session, catalog_head_target(), "catalog", run_id, datetime.now(UTC))
 
-    logger.info("session_promote_done", session_id=identity.session_id, run_id=run_id)
+    logger.info("session_promote_done", run_id=run_id)
     return 1
 
 
 def resolve_operating_model_scope(
-    manager: ConnectionManager, identity: SessionIdentity
+    manager: ConnectionManager, run: RunRef, vertical: str
 ) -> OperatingModelScope:
-    """Pre-flight for ``operatingModelWorkflow`` — table set + pinned base runs (DAT-438).
+    """Pre-flight for ``operatingModelWorkflow`` — pinned base runs (DAT-438/506).
 
-    The session anchors its table set (``session_tables``, persisted by
-    ``begin_session_select``); operating_model re-reads it instead of trusting
-    a re-passed copy. The base-run map (ADR-0008 in-run mode) is resolved HERE,
-    once per run, and travels with the workflow's contracts — no per-phase head
-    resolution downstream.
+    operating_model takes NO table set: it reads the workspace catalog head's
+    ``run_tables`` (begin_session's promoted run) — never a re-passed copy. The
+    base-run map (ADR-0008 in-run mode) is resolved HERE, once per run, and
+    travels with the workflow's contracts; the phases read the catalog's tables
+    directly. The catalog head must already point at a promoted begin_session run
+    (its run_id resolves the catalog's table set).
 
     Raises:
-        ApplicationError: every pre-flight refusal — unknown session, no linked
-            tables, or (DAT-511) linked tables but no promoted begin_session head
-            (mid-flight or failed session; grounding must not run over a partial
-            workspace). All deterministic until the world changes, hence
-            non-retryable ``PhaseFailed`` — a plain ``RuntimeError`` would burn
-            the retry policy's 5 attempts on a structurally-impossible state.
+        ApplicationError: every pre-flight refusal — unknown vertical, or no
+            promoted begin_session catalog run (mid-flight or failed; grounding
+            must not run over a partial workspace). All deterministic until the
+            world changes, hence non-retryable ``PhaseFailed`` — a plain
+            ``RuntimeError`` would burn the retry policy's 5 attempts on a
+            structurally-impossible state.
     """
     from dataraum.lifecycle import resolve_operating_model_base_runs
 
     with manager.session_scope() as session:
-        inv_session = session.get(InvestigationSession, identity.session_id)
-        if inv_session is None:
-            raise ApplicationError(
-                f"InvestigationSession '{identity.session_id}' not found — "
-                "operating_model runs over an existing journey session.",
-                type="PhaseFailed",
-                non_retryable=True,
-            )
         # Born-loud on a typo'd / never-framed vertical (DAT-480): an unknown
         # name would silently resolve to no declared validations/cycles/metrics
         # and every phase would emit a benign no_declared_*. A placeholder
         # (_adhoc), shipped, or framed name passes through unchanged.
-        require_known_vertical(inv_session.vertical)
-        table_ids = tables_for_session(session, identity.session_id)
-        if not table_ids:
+        require_known_vertical(vertical)
+        # The catalog head names begin_session's promoted run; its run_tables are
+        # the workspace's composed table set (DAT-506). No promoted run → refuse.
+        catalog_run_id = head_run_id(session, catalog_head_target(), "catalog")
+        if catalog_run_id is None:
             raise ApplicationError(
-                f"Session '{identity.session_id}' has no linked tables — "
-                "begin_session must compose the workspace before operating_model runs.",
+                "Workspace has no promoted begin_session catalog run — "
+                "begin_session is still running or failed. Let it finish, "
+                "then re-run operating_model.",
                 type="PhaseFailed",
                 non_retryable=True,
             )
-        base_runs = resolve_operating_model_base_runs(session, identity.session_id, table_ids)
-        if base_runs.relationship_run_id is None:
-            # Born-loud (DAT-511): linked tables but no promoted begin_session
-            # head means the session is mid-flight or failed — grounding would
-            # run with empty relationship/enriched-view context and band over a
-            # partial workspace (the 2026-06-11 live-smoke failure). The
-            # `session_tables` check above can't catch this: begin_session's
-            # SELECT phase writes those rows minutes before its promote.
-            # Non-retryable — deterministic until begin_session promotes; the
-            # caller re-runs once it has (the cockpit tool pre-checks this).
+        table_ids = tables_for_run(session, catalog_run_id)
+        if not table_ids:
             raise ApplicationError(
-                f"Session '{identity.session_id}' has no promoted begin_session "
-                "run — begin_session is still running or failed. Let it finish, "
+                "Promoted catalog run has no tables — begin_session must compose "
+                "the workspace before operating_model runs.",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
+        base_runs = resolve_operating_model_base_runs(session, table_ids)
+        if base_runs.relationship_run_id is None:
+            # Born-loud (DAT-511): a promoted catalog run with no relationship head
+            # is a structurally-impossible state — refuse rather than band over a
+            # partial workspace.
+            raise ApplicationError(
+                "Workspace catalog has no promoted relationship run — "
+                "begin_session is still running or failed. Let it finish, "
                 "then re-run operating_model.",
                 type="PhaseFailed",
                 non_retryable=True,
@@ -753,52 +722,56 @@ def resolve_operating_model_scope(
 
     logger.info(
         "operating_model_scope_resolved",
-        session_id=identity.session_id,
+        run_id=run.run_id,
         tables=len(table_ids),
         relationship_run=base_runs.relationship_run_id,
         semantic_runs=len(base_runs.semantic_runs),
     )
     return OperatingModelScope(
-        table_ids=table_ids,
         relationship_run_id=base_runs.relationship_run_id,
         semantic_runs=base_runs.semantic_runs,
+        # ADR-0008 pin: the catalog head's table set is resolved ONCE here and
+        # travels on the scope so all three OM phases share one pinned set — a
+        # concurrent begin_session promoting a new head mid-run cannot make them
+        # diverge (the TOCTOU each phase re-reading the catalog head exhibits).
+        table_ids=table_ids,
     )
 
 
-def promote_operating_model_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
     """Seal this operating_model run as the session's current run (DAT-438).
 
-    Terminal promote: point the per-session head ``(session:{id},
+    Terminal promote: point the workspace catalog head ``(catalog,
     "operating_model")`` at this run. Readers (the cockpit's validation
     surfaces, cross_table_consistency's query tier) resolve the current
     lifecycle artifacts + validation results through it. Distinct stage from
-    begin_session's ``"detect"`` head — the two stages' runs coexist on the
-    same session target.
+    begin_session's ``"catalog"`` head — the two stages' runs coexist on the
+    same catalog target.
     """
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_operating_model_run requires a stamped identity.run_id — "
+            "promote_operating_model_run requires a stamped run.run_id — "
             "OperatingModelWorkflow mints it before the first activity (DAT-408)."
         )
 
     with manager.session_scope() as session:
         _upsert_head(
             session,
-            session_head_target(identity.session_id),
+            catalog_head_target(),
             "operating_model",
             run_id,
             datetime.now(UTC),
         )
 
-    logger.info("operating_model_promote_done", session_id=identity.session_id, run_id=run_id)
+    logger.info("operating_model_promote_done", run_id=run_id)
     return 1
 
 
 def _build_phase_config(
     source: Source | None,
     phase_name: str,
-    identity: SourceIdentity,
+    vertical: str,
 ) -> dict[str, Any]:
     """Reconstruct ``ctx.config`` = phase static config + run-identity runtime config.
 
@@ -807,9 +780,10 @@ def _build_phase_config(
     doesn't carry. ``source`` is set only for the per-source ``import`` (DAT-422):
     every downstream phase is source-free, so the source-identity fields are
     omitted and only the static config + the run's ``vertical`` remain — which is
-    all a reduce like ``semantic_per_column`` reads off the config.
+    all a reduce like ``semantic_per_column`` reads off the config. ``vertical``
+    is threaded from the workflow input (by name, DAT-506).
     """
-    runtime_config: dict[str, Any] = {"vertical": identity.vertical or "_adhoc"}
+    runtime_config: dict[str, Any] = {"vertical": vertical or "_adhoc"}
     if source is not None:
         runtime_config.update(
             {

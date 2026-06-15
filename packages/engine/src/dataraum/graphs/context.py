@@ -281,7 +281,7 @@ def build_execution_context(
     *,
     slice_column: str | None = None,
     slice_value: str | None = None,
-    session_id: str | None = None,
+    vertical: str | None = None,
     om_run_id: str | None = None,
 ) -> GraphExecutionContext:
     """Build execution context from all analysis modules.
@@ -299,11 +299,11 @@ def build_execution_context(
         duckdb_conn: Optional DuckDB connection for row counts
         slice_column: Optional column to filter by (for slice metrics)
         slice_value: Optional value to filter on (for slice metrics)
-        session_id: Analytical session — scopes the relationship + operating_model
-            reads to that session (fail-closed without it).
+        vertical: Runtime vertical for the cycle-health computation (passed by the
+            caller — the InvestigationSession lookup is gone, DAT-506).
         om_run_id: Explicit operating_model run for the cycle/validation/health
             reads (the in-run metrics phase passes its current run). Omitted ⇒ the
-            session's promoted operating_model head.
+            promoted operating_model catalog head.
 
     Returns:
         GraphExecutionContext with all relevant metadata
@@ -345,17 +345,18 @@ def build_execution_context(
         columns_by_table[col.table_id].append(col)
 
     # Each table's current (promoted) add_source run names the run that wrote its
-    # column metadata — ``promote_run`` flips every ``(table:{id}, stage)`` head to
-    # that one run. The column-metadata reads below drop rows from STALE earlier
-    # runs (a replay/teach leaves >1 run per column, DAT-413); a table with no
-    # promoted run keeps what's there — there is no "current" to scope to. This is
-    # run-STALENESS scoping: column metadata is add_source-derived and shared across
-    # sessions, so it is NOT the cross-session isolation concern the
-    # entities/relationships read (below) fails closed on.
-    from dataraum.storage.snapshot_head import head_run_id
+    # column metadata — ``promote_run`` flips the single ``(table:{id},
+    # GENERATION_STAGE)`` generation head to that one run (DAT-506). The
+    # column-metadata reads below drop rows from STALE earlier runs (a replay/teach
+    # leaves >1 run per column, DAT-413); a table with no promoted run keeps what's
+    # there — there is no "current" to scope to. This is run-STALENESS scoping:
+    # column metadata is add_source-derived and shared across runs, so it is NOT the
+    # cross-run isolation concern the entities/relationships read (below) fails
+    # closed on.
+    from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
     addsource_run_by_table = {
-        tid: head_run_id(session, f"table:{tid}", "detect") for tid in table_ids
+        tid: head_run_id(session, f"table:{tid}", GENERATION_STAGE) for tid in table_ids
     }
     run_by_column = {col.column_id: addsource_run_by_table.get(col.table_id) for col in columns}
 
@@ -408,33 +409,32 @@ def build_execution_context(
             if _is_current(decision):
                 type_decisions[decision.column_id] = decision
 
-    # Resolve the session's current (promoted) run ONCE via the per-session head
-    # (DAT-409). TableEntity AND the relationship catalog are both run-versioned
-    # and coexist across runs (DAT-408/413), so both reads below must scope to the
-    # SAME run — else the assembled context silently mixes runs. With no session_id
-    # the head is unresolved and reads fall back to the cross-run set.
-    from dataraum.storage.snapshot_head import session_head_target
+    # Resolve the workspace's current (promoted) catalog run ONCE via the catalog
+    # head (DAT-506 — sessions moved to cockpit_db; the version axis is the ONE
+    # workspace catalog head, no session gate). TableEntity AND the relationship
+    # catalog are both run-versioned and coexist across runs (DAT-408/413), so both
+    # reads below must scope to the SAME run — else the assembled context silently
+    # mixes runs. With no promoted catalog run the head is unresolved and the
+    # run-versioned reads fail closed (empty) rather than fall back cross-run.
+    from dataraum.storage.snapshot_head import catalog_head_target
 
-    run_id = head_run_id(session, session_head_target(session_id), "detect") if session_id else None
+    run_id = head_run_id(session, catalog_head_target(), "catalog")
 
-    # Observability (DAT-429): a session was named but its run doesn't resolve —
-    # the context comes back run-versioned-empty by design (fail-closed below), so
-    # surface WHY rather than leave a silent hollow context to debug. A bare
-    # session_id=None (deliberate session-less use) is expected and not flagged.
-    if session_id and run_id is None:
+    # Observability (DAT-429): the catalog head doesn't resolve — the context comes
+    # back run-versioned-empty by design (fail-closed below), so surface WHY rather
+    # than leave a silent hollow context to debug.
+    if run_id is None:
         logger.warning(
-            "session_run_unresolved",
-            session_id=session_id,
-            detail="no promoted run for this session; entity/relationship context is empty",
+            "catalog_run_unresolved",
+            detail="no promoted catalog run; entity/relationship context is empty",
         )
 
     # 8 + 9. The run-versioned context — table entities (fact/dimension) and the
-    # defined relationships — is read ONLY when the session's promoted run resolves.
-    # **Fail-closed (DAT-429, session isolation):** with no resolved run (no
-    # session_id, or the session hasn't promoted one yet) we MUST NOT fall back to a
-    # cross-run read — that would surface OTHER sessions' entities/relationships into
-    # this context. Leave both empty instead. (The non-run-versioned field metadata
-    # above is keyed by the passed table/column ids and is unaffected.)
+    # defined relationships — is read ONLY when the promoted catalog run resolves.
+    # **Fail-closed (DAT-429):** with no resolved catalog run we MUST NOT fall back
+    # to a cross-run read — that would surface superseded entities/relationships
+    # into this context. Leave both empty instead. (The non-run-versioned field
+    # metadata above is keyed by the passed table/column ids and is unaffected.)
     from dataraum.analysis.relationships.utils import load_defined_relationships
 
     table_entities: dict[str, TableEntity] = {}
@@ -481,18 +481,14 @@ def build_execution_context(
                 )
 
     # 10. Load slice definitions — run-versioned since DAT-448: scope to the
-    # session's promoted run (the begin_session run that derived them). These
-    # are SESSION-grain artifacts, so a named session with no promoted run
-    # fails CLOSED (a cross-run fallback would mix other sessions' definitions
-    # — the DAT-429 isolation discipline); only deliberate session-less use
-    # reads the cross-run set.
+    # promoted catalog run (the begin_session run that derived them). With no
+    # resolved catalog run this fails CLOSED (a cross-run read would mix in
+    # superseded definitions — the DAT-429 isolation discipline).
     slice_contexts: list[SliceContext] = []
     slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
     if run_id is not None:
         slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
-    slice_defs = (
-        [] if (session_id and run_id is None) else session.execute(slice_stmt).scalars().all()
-    )
+    slice_defs = [] if run_id is None else session.execute(slice_stmt).scalars().all()
     for slice_def in slice_defs:
         slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
         slice_tbl = table_map.get(slice_def.table_id)
@@ -511,12 +507,12 @@ def build_execution_context(
     slice_contexts.sort(key=lambda s: s.priority, reverse=True)
 
     # 11. Load derived columns from correlation analysis — run-versioned since
-    # DAT-448, same fail-closed session-grain discipline as the slices above.
+    # DAT-448, same fail-closed discipline as the slices above (scoped to the
+    # resolved catalog run; empty when none resolves).
     derived_columns: dict[str, str] = {}  # column_id -> formula
-    if column_ids and not (session_id and run_id is None):
+    if column_ids and run_id is not None:
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
-        if run_id is not None:
-            derived_stmt = derived_stmt.where(DerivedColumn.run_id == run_id)
+        derived_stmt = derived_stmt.where(DerivedColumn.run_id == run_id)
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 
@@ -525,28 +521,20 @@ def build_execution_context(
     # run). An explicit ``om_run_id`` wins: the in-run metrics phase passes its
     # CURRENT run so the graph context sees this run's evidence (the validation +
     # business_cycles activities ran earlier in the same run and committed). With
-    # no override, fall back to the session's PROMOTED operating_model head — the
+    # no override, fall back to the PROMOTED operating_model catalog head — the
     # post-promote current-state read (the query agent's path). **Fail-closed
-    # (DAT-429):** no session_id / no promoted run ⇒ no current operating_model
-    # state, never a cross-run read that would mix superseded (or other sessions')
-    # runs into this context.
+    # (DAT-429):** no promoted run ⇒ no current operating_model state, never a
+    # cross-run read that would mix superseded runs into this context.
     if om_run_id is None:
-        om_run_id = (
-            head_run_id(session, session_head_target(session_id), "operating_model")
-            if session_id
-            else None
-        )
+        om_run_id = head_run_id(session, catalog_head_target(), "operating_model")
 
-    # 13. Load business cycles — run-versioned + session-scoped (DAT-455),
-    # scoped to the promoted operating_model run (fail-closed above).
+    # 13. Load business cycles — run-versioned (DAT-455/DAT-506), scoped to the
+    # promoted operating_model run (fail-closed above).
     business_cycle_contexts: list[BusinessCycleContext] = []
     cycles_iter = (
         session.execute(
             select(DetectedBusinessCycle)
-            .where(
-                DetectedBusinessCycle.session_id == session_id,
-                DetectedBusinessCycle.run_id == om_run_id,
-            )
+            .where(DetectedBusinessCycle.run_id == om_run_id)
             .order_by(DetectedBusinessCycle.detected_at.desc())
         )
         .scalars()
@@ -644,27 +632,18 @@ def build_execution_context(
                 )
             )
 
-    # 13d. Compute cycle health. The runtime vertical comes from the session row
-    # (the same source the phases read via ``inv_session.vertical``), NOT static
-    # phase config — ``business_cycles.yaml`` has no ``vertical`` key, so the old
-    # ``load_phase_config(...).get("vertical")`` was always None and the health
-    # was silently never computed (DAT-456 graphs-migration fix).
+    # 13d. Compute cycle health. The runtime vertical is passed by the caller
+    # (DAT-506 — the InvestigationSession row is gone; sessions live in cockpit_db).
     from dataraum.analysis.cycles.health import compute_cycle_health
-    from dataraum.investigation.db_models import InvestigationSession
 
     cycle_health_report: HealthReport | None = None
-    if session_id and om_run_id is not None:
-        inv = session.get(InvestigationSession, session_id)
-        _vertical = inv.vertical if inv else None
-        if _vertical:
-            try:
-                # Same promoted operating_model run as 13/13b — cycles, their
-                # validation evidence, and health all describe ONE run.
-                cycle_health_report = compute_cycle_health(
-                    session, session_id, vertical=_vertical, run_id=om_run_id
-                )
-            except Exception as e:
-                logger.warning("cycle_health_failed", error=str(e))
+    if vertical and om_run_id is not None:
+        try:
+            # Same promoted operating_model run as 13/13b — cycles, their
+            # validation evidence, and health all describe ONE run.
+            cycle_health_report = compute_cycle_health(session, vertical=vertical, run_id=om_run_id)
+        except Exception as e:
+            logger.warning("cycle_health_failed", error=str(e))
 
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)
@@ -723,10 +702,10 @@ def build_execution_context(
     # from the rollup-free evidence, readiness band from the persisted rows.
     from dataraum.entropy.views.query_context import network_to_column_summaries
 
-    # session_id resolves entropy rows to the promoted session detect head — a
-    # re-adjudicated detector (e.g. temporal_behavior's third witness) must not
-    # show its stale add_source verdict to the agent (DAT-491).
-    evidence = build_column_evidence(session, table_ids, session_id=session_id)
+    # resolve_runs picks the head-resolved entropy rows — a re-adjudicated detector
+    # (e.g. temporal_behavior's third witness) must not show its stale add_source
+    # verdict to the agent (DAT-491). This is a query-time path (DAT-506).
+    evidence = build_column_evidence(session, table_ids, resolve_runs=True)
     band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
     column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)
 

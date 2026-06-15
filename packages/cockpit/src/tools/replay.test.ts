@@ -1,13 +1,17 @@
-// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422).
+// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422, DAT-506).
 //
 // Replay takes a SESSION (the named analytical unit the agent thinks in),
-// resolves the sources it was built from, and re-runs add_source over them as a
-// NEW session. Mocks: `#/config`, the Drizzle metadata client (the source +
-// vertical reads off the replayed session, and the seed of the NEW session), and
-// `@temporalio/client` (record the start). The regression this still guards: a
-// FULL replay re-runs typing, whose per-session rows (type_candidates,
-// session_tables) FK to investigation_sessions — so replay MUST seed the NEW
-// session row BEFORE starting, with the SAME session_id it hands the workflow.
+// resolves the workspace's currently-imported sources, and re-runs add_source over
+// them as a NEW session. DAT-506: the engine mints its own run_id the cockpit never
+// sees, so a per-session join is impossible at the cockpit edge — replay resolves
+// the sources from the live per-table GENERATION heads (metadata_snapshot_head →
+// run_tables → tables → source), which in single-active-workspace are the session's
+// sources. There is NO engine seed; the new replay session/run is recorded in
+// cockpit_db BEFORE the workflow starts, and the vertical is the workspace property
+// from the registry (no per-session pick).
+//
+// Mocks: `#/config`, the cockpit registry + runs writer, the Drizzle metadata
+// client (generation-head → source ids), and `@temporalio/client`.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,18 +22,21 @@ const h = vi.hoisted(() => ({
 		dataraumWorkspaceId: "00000000-0000-0000-0000-000000000001",
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	} as Record<string, unknown>,
-	// Records the order of side effects so we can assert resolve-then-seed-then-start.
+	vertical: "_adhoc" as string,
+	// Records the order of side effects so we can assert resolve-then-record-then-start.
 	calls: [] as string[],
-	seededRow: null as Record<string, unknown> | null,
-	// Rows the sourcesForSession query returns (empty = nothing to replay).
+	recordedRun: null as Record<string, unknown> | null,
+	// Rows the generation-head → run_tables → tables source query returns
+	// (empty = nothing imported = nothing to replay).
 	sourceRows: [] as Array<{ sourceId: string | null }>,
-	// Rows the sessionVertical query returns (empty = session carries no vertical).
-	verticalRows: [] as Array<{ vertical: string | null }>,
 	// The current session currentSessionId() resolves (null = none — replay rejects).
 	currentSession: null as string | null,
-	recordRun: vi.fn(async () => {}),
+	recordRun: vi.fn(async (input: Record<string, unknown>) => {
+		h.recordedRun = input;
+		h.calls.push("record");
+	}),
+	attachRunId: vi.fn(async () => {}),
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -39,64 +46,47 @@ vi.mock("#/config", () => ({
 	},
 }));
 
-// cockpit_db control plane (DAT-461): workspace via the registry, run recorded
-// after start — both mocked at the seam (no DB in units).
+// cockpit_db control plane (DAT-461/505/506): workspace + its vertical via the
+// registry, run recorded BEFORE start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
-		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
-		vertical: "_adhoc",
+		vertical: h.vertical,
 	})),
 }));
-vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
+vi.mock("#/db/cockpit/runs", () => ({
+	recordRun: h.recordRun,
+	attachRunId: h.attachRunId,
+}));
 
-// Metadata client. The NEW session is seeded via insert(...).values(row) — a fresh
-// id, so no onConflict handling. `sourcesForSession` reads via
-// selectDistinct().from().innerJoin().where(); `sessionVertical` via
-// select().from().where().limit().
-const valuesMock = vi.fn(async (row: Record<string, unknown>) => {
-	h.seededRow = row;
-	h.calls.push("seed");
-});
+// Metadata client: generation-head → run_tables → tables source ids via
+// selectDistinct().from().innerJoin().innerJoin().where().
 const distinctChain: Record<string, unknown> = {};
-for (const m of ["from", "innerJoin"]) {
-	distinctChain[m] = () => distinctChain;
-}
+distinctChain.from = () => distinctChain;
+distinctChain.innerJoin = () => distinctChain;
 distinctChain.where = () => {
 	h.calls.push("resolveSources");
 	return Promise.resolve(h.sourceRows);
 };
-const selectChain: Record<string, unknown> = {};
-selectChain.from = () => selectChain;
-selectChain.where = () => selectChain;
-selectChain.limit = () => {
-	h.calls.push("resolveVertical");
-	return Promise.resolve(h.verticalRows);
-};
 vi.mock("#/db/metadata/client", () => ({
-	metadataDb: {
-		insert: vi.fn(() => ({ values: valuesMock })),
-		selectDistinct: vi.fn(() => distinctChain),
-		select: vi.fn(() => selectChain),
-	},
+	metadataDb: { selectDistinct: vi.fn(() => distinctChain) },
 }));
 vi.mock("#/db/metadata/schema", () => ({
-	investigationSessions: {
-		sessionId: "session_id",
-		vertical: "vertical",
-		startedAt: "started_at",
-	},
-	sessionTables: { sessionId: "session_id", tableId: "table_id" },
+	metadataSnapshotHead: { runId: "run_id", stage: "stage" },
+	runTables: { runId: "run_id", tableId: "table_id" },
 	tables: { tableId: "table_id", sourceId: "source_id" },
 }));
-// metadataDb is fully mocked, so the only drizzle operator replay uses (`eq`)
-// just needs to be callable — its return flows into the ignored chain args.
+vi.mock("#/db/metadata/relationship-target", () => ({
+	GENERATION_STAGE: "generation",
+}));
+// metadataDb is fully mocked, so the only operator replay uses just needs to be
+// callable — its return flows into the ignored chain args.
 vi.mock("drizzle-orm", () => ({
 	eq: (...a: unknown[]) => a,
 }));
 
-// Temporal client: record the start args (after the seed) + hand back a run id.
+// Temporal client: record the start args (after the record) + hand back a run id.
 const startMock = vi.fn(async (_name: string, _opts: unknown) => {
 	h.calls.push("start");
 	return { firstExecutionRunId: "run-xyz" };
@@ -123,83 +113,69 @@ beforeEach(() => {
 		dataraumWorkspaceId: WS,
 		temporalHost: "localhost:7233",
 		temporalNamespace: "default",
-		temporalTaskQueue: "dataraum-pipeline",
 	};
+	h.vertical = "_adhoc";
 	h.calls = [];
-	h.seededRow = null;
+	h.recordedRun = null;
 	h.sourceRows = [{ sourceId: "src-1" }];
-	h.verticalRows = [];
 	h.currentSession = null;
-	valuesMock.mockClear();
 	startMock.mockClear();
 	closeMock.mockClear();
 	h.recordRun.mockClear();
+	h.attachRunId.mockClear();
 });
 
-describe("replay (DAT-422)", () => {
-	it("resolves the session's sources, then seeds a FRESH session BEFORE start", async () => {
-		await replay({ session_id: "old-sess", vertical: "finance" });
+describe("replay (DAT-422, DAT-506)", () => {
+	it("resolves the workspace sources, then records a FRESH run BEFORE start", async () => {
+		const result = await replay({ session_id: "old-sess" });
 
-		// Order: read the replayed session's sources, seed the NEW session row (the
-		// typing-phase FK needs it before the run reaches it), then start.
-		expect(h.calls).toEqual(["resolveSources", "seed", "start"]);
-		expect(h.seededRow?.status).toBe("active");
-		expect(h.seededRow?.stepCount).toBe(0);
-		expect(h.seededRow?.intent).toBe("replay");
-		expect(h.seededRow?.vertical).toBe("finance");
-		expect(h.seededRow?.startedAt).toBeInstanceOf(Date);
+		// Order: resolve the workspace's imported sources (generation heads), record
+		// the NEW run (authoritative, no orphan), then start.
+		expect(h.calls).toEqual(["resolveSources", "record", "start"]);
 		// A FRESH session — not the one being replayed.
-		expect(typeof h.seededRow?.sessionId).toBe("string");
-		expect(h.seededRow?.sessionId).not.toBe("old-sess");
+		expect(result.session_id).not.toBe("old-sess");
 	});
 
 	it("re-runs the session's source SET as a new run keyed by the new session", async () => {
 		h.sourceRows = [{ sourceId: "src-1" }, { sourceId: "src-2" }];
-		const result = await replay({
-			session_id: "old-sess",
-			vertical: "finance",
-		});
-		const newSessionId = h.seededRow?.sessionId as string;
+		h.vertical = "finance";
+		const result = await replay({ session_id: "old-sess" });
+		const newSessionId = result.session_id;
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [
-			{ identity: Record<string, unknown>; source_ids: string[] },
+			{ workspace_id: string; sources: string[]; verticals: string[] },
 		];
-		// The run carries the resolved source SET (DAT-422), not a single source.
-		expect(args[0].source_ids).toEqual(["src-1", "src-2"]);
-		// Source-free identity keyed by the NEW session — the FK match.
-		expect(args[0].identity.session_id).toBe(newSessionId);
-		expect(args[0].identity.source_id).toBeUndefined();
-		expect(result.session_id).toBe(newSessionId);
-		expect(result.session_id).not.toBe("old-sess");
-		expect(result.source_ids).toEqual(["src-1", "src-2"]);
-		// Workflow id is keyed by the NEW run's session (DAT-422).
+		// FLAT input (DAT-506): no identity envelope, no session/source id on the
+		// wire — workspace_id + the resolved source SET (DAT-422) + verticals.
+		expect(args[0]).toEqual({
+			workspace_id: WS,
+			sources: ["src-1", "src-2"],
+			verticals: ["finance"],
+		});
+		expect(result.sources).toEqual(["src-1", "src-2"]);
+		// Workflow id is keyed by the NEW run's cockpit session (DAT-422).
 		expect(opts.workflowId).toBe(`addsource-${WS}-${newSessionId}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("rejects a session with no sources (nothing to replay) — no seed, no start", async () => {
+	it("rejects when the workspace has no imported sources (nothing to replay) — no record, no start", async () => {
 		h.sourceRows = [];
 		await expect(replay({ session_id: "empty-sess" })).rejects.toThrow(
-			/has no sources to replay/,
+			/no imported sources/,
 		);
-		expect(valuesMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
 	});
 
 	it("defaults to the CURRENT session when no session_id is given (bare 'replay')", async () => {
-		// The agent omits the id — replay re-runs the session the user is in.
 		h.currentSession = "current-sess";
 		h.sourceRows = [{ sourceId: "src-1" }];
 		const result = await replay({});
-		// It resolved the current session's sources and started a run (no "no session").
 		expect(h.calls).toContain("resolveSources");
-		// No vertical passed → it still resolves the session's OWN framed vertical
-		// (must not silently fall back to _adhoc, which fails the semantic pass).
-		expect(h.calls).toContain("resolveVertical");
 		expect(h.calls).toContain("start");
-		expect(result.source_ids).toEqual(["src-1"]);
+		expect(result.sources).toEqual(["src-1"]);
 		// It re-ran the current session into a FRESH one (replay is non-destructive).
 		expect(result.session_id).not.toBe("current-sess");
 	});
@@ -207,65 +183,42 @@ describe("replay (DAT-422)", () => {
 	it("rejects when there is no current session to replay", async () => {
 		h.currentSession = null;
 		await expect(replay({})).rejects.toThrow(/No session to replay/);
-		expect(valuesMock).not.toHaveBeenCalled();
+		expect(h.recordRun).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();
 	});
 
-	it("throws when Temporal is unconfigured and does NOT read, seed, or start", async () => {
+	it("throws when Temporal is unconfigured and does NOT read, record, or start", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(replay({ session_id: "old-sess" })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		expect(h.calls).toEqual([]); // the guard is first — nothing ran
-		expect(valuesMock).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
 		expect(h.recordRun).not.toHaveBeenCalled();
+		expect(startMock).not.toHaveBeenCalled();
 	});
 
-	it("records the new replay session + run after starting (DAT-461)", async () => {
-		await replay({ session_id: "old-sess", vertical: "finance" });
-		const newSessionId = h.seededRow?.sessionId as string;
+	it("records the new replay session + run before start, then attaches the runId", async () => {
+		const result = await replay({ session_id: "old-sess" });
+		const newSessionId = result.session_id;
 		expect(h.recordRun).toHaveBeenCalledTimes(1);
-		expect(h.recordRun).toHaveBeenCalledWith({
+		expect(h.recordedRun).toEqual({
 			workspaceId: WS,
 			engineSessionId: newSessionId,
 			kind: "replay",
 			stage: "add_source",
 			workflowId: `addsource-${WS}-${newSessionId}`,
-			runId: "run-xyz",
 		});
+		expect(h.attachRunId).toHaveBeenCalledWith(
+			`addsource-${WS}-${newSessionId}`,
+			"run-xyz",
+		);
 	});
 
-	it("resolves the session's framed vertical when vertical is OMITTED", async () => {
-		// An omitted vertical must re-run on the session's OWN framed ontology, not
-		// silently fall back to _adhoc (which fails the semantic pass).
-		h.verticalRows = [{ vertical: "finance" }];
-		await replay({ session_id: "old-sess" }); // no vertical passed
-
-		expect(h.calls).toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("finance");
+	it("re-runs on the WORKSPACE vertical (from the registry) as a one-element array", async () => {
+		h.vertical = "marketing";
+		await replay({ session_id: "old-sess" });
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ identity: Record<string, unknown> }];
-		expect(args[0].identity.vertical).toBe("finance");
-	});
-
-	it("falls back to _adhoc only when the session carries no vertical", async () => {
-		h.verticalRows = []; // session row has no vertical
-		await replay({ session_id: "old-sess" }); // no vertical passed
-
-		expect(h.calls).toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("_adhoc");
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ identity: Record<string, unknown> }];
-		expect(args[0].identity.vertical).toBe("_adhoc");
-	});
-
-	it("an explicit vertical OVERRIDES resolution (no resolver query)", async () => {
-		h.verticalRows = [{ vertical: "finance" }];
-		await replay({ session_id: "old-sess", vertical: "marketing" });
-
-		// Explicit input short-circuits the resolver — it must not even query.
-		expect(h.calls).not.toContain("resolveVertical");
-		expect(h.seededRow?.vertical).toBe("marketing");
+		const args = opts.args as [{ verticals: string[] }];
+		expect(args[0].verticals).toEqual(["marketing"]);
 	});
 });

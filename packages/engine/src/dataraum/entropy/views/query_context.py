@@ -102,7 +102,7 @@ def build_for_query(
     *,
     contract: str | None = None,
     auto_contract: bool = False,
-    session_id: str | None = None,
+    resolve_runs: bool = False,
 ) -> EntropyForQuery:
     """Build entropy context for query-time consumers.
 
@@ -114,8 +114,8 @@ def build_for_query(
         table_ids: List of table IDs to include
         contract: Explicit contract name to evaluate
         auto_contract: If True, find strictest passing contract
-        session_id: Analytical session — resolves entropy rows to the promoted
-            session detect head; omitted ⇒ blind load (single-path sources only)
+        resolve_runs: Resolve entropy rows to the promoted catalog head;
+            omitted ⇒ blind load (single-path sources only)
 
     Returns:
         EntropyForQuery with computed summaries and contract evaluation
@@ -142,7 +142,7 @@ def build_for_query(
     critical_entropy_count = persisted.columns_blocked
 
     # Contract gate: raw dimension scores (rollup-free) + the persisted band.
-    evidence = build_column_evidence(session, table_ids, session_id=session_id)
+    evidence = build_column_evidence(session, table_ids, resolve_runs=resolve_runs)
     overall_entropy_score: float | None = evidence.avg_entropy_score
     band_by_target = {target: col.readiness for target, col in persisted.columns.items()}
     column_summaries = network_to_column_summaries(evidence, band_by_target=band_by_target)

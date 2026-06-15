@@ -202,7 +202,7 @@ class ColumnTypeSpec:
 def _select_best_candidates(
     columns: list[Column],
     min_confidence: float,
-    run_id: str | None,
+    run_id: str,
 ) -> list[ColumnTypeSpec]:
     """Select best type candidate per column for THIS run.
 
@@ -373,8 +373,7 @@ def resolve_types(
     session: Session,
     min_confidence: float,
     *,
-    session_id: str,
-    run_id: str | None = None,
+    run_id: str,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
 
@@ -435,7 +434,6 @@ def resolve_types(
     decided_at = datetime.now(UTC)
     raw_decision_rows: list[dict[str, Any]] = [
         {
-            "session_id": session_id,
             "column_id": spec.column_id,
             "run_id": run_id,
             "decided_type": spec.data_type.value,
@@ -490,7 +488,6 @@ def resolve_types(
     # the same-bare-named typed/quarantine artifacts).
     store_recipe(
         session,
-        session_id=session_id,
         table_id=typed_table_record.table_id,
         layer="typed",
         run_id=run_id,
@@ -500,7 +497,6 @@ def resolve_types(
     )
     store_recipe(
         session,
-        session_id=session_id,
         table_id=quarantine_table_record.table_id,
         layer="quarantine",
         run_id=run_id,
@@ -591,7 +587,7 @@ def resolve_types(
     # names which run is current.
     spec_by_column_id = {spec.column_id: spec for spec in specs}
     type_decision_rows: list[dict[str, Any]] = []
-    type_candidate_rows: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
+    type_candidate_rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:
@@ -604,7 +600,6 @@ def resolve_types(
             # PK omitted so the model's Python-side default applies.
             type_decision_rows.append(
                 {
-                    "session_id": session_id,
                     "column_id": target_col_id,
                     "run_id": run_id,
                     "decided_type": col_spec.data_type.value,
@@ -621,7 +616,6 @@ def resolve_types(
             pattern = tc.detected_pattern or ""
             key = (target_col_id, tc.data_type, pattern, run_id)
             type_candidate_rows[key] = {
-                "session_id": session_id,
                 "column_id": target_col_id,
                 "run_id": run_id,
                 "detected_at": tc.detected_at,

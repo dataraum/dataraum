@@ -22,6 +22,7 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._column_cleanup import delete_column_dependents
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
@@ -158,16 +159,14 @@ class ColumnEligibilityPhase(BasePhase):
             # PK omitted so the model's Python-side default applies.
             rows.append(
                 {
-                    "session_id": ctx.require_session_id(),
                     "column_id": column.column_id,
                     "table_id": table.table_id,
-                    # The column's source is its table's source — derived from the
-                    # table, not the run-level ``ctx.source_id`` (DAT-422: the
-                    # source-free fan-out children leave that None, and a run can
-                    # span multiple per-object sources, so there is no single run
-                    # source to record).
+                    # The column's source is its table's source — resolved
+                    # relationally off the row (DAT-422/426: the identity is
+                    # source-free, and a run can span multiple per-object sources,
+                    # so there is no single run source to record).
                     "source_id": table.source_id,
-                    "run_id": ctx.run_id,
+                    "run_id": ctx.require_run_id(),
                     "column_name": column.column_name,
                     "table_name": table.table_name,
                     "resolved_type": column.resolved_type,
@@ -216,6 +215,12 @@ class ColumnEligibilityPhase(BasePhase):
                 typed_recipe_ddl=self._typed_recipe_ddl(ctx, table),
             )
 
+            # A dropped column is junk — its dependent run-stamped metadata is
+            # meaningless and must go with it. The FK children of ``columns`` no
+            # longer ``ON DELETE CASCADE`` (DAT-506 torn-window cut), so the
+            # deliberate column drop deletes them explicitly here rather than
+            # relying on a DB cascade.
+            delete_column_dependents(ctx, [c.column_id for c, _ in columns_data])
             for column, _ in columns_data:
                 ctx.session.delete(column)
 

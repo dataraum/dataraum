@@ -165,14 +165,13 @@ export interface VerdictHistoryRow {
 	band: string;
 	worst_intent_risk: number | null;
 	computed_at: string | null;
-	session_id: string | null;
 	run_id: string | null;
 	signals: number | null;
 }
 
 const STAGE_LABEL: Record<string, string> = {
 	add_source: "import",
-	session_detect: "session analysis",
+	catalog: "session analysis",
 	operating_model: "operating model",
 };
 

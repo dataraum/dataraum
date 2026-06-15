@@ -148,7 +148,6 @@ def persist_column_annotations(
     table_ids: list[str],
     *,
     annotated_by: str,
-    session_id: str,
     ontology_def: Any = None,
     run_id: str | None = None,
 ) -> int:
@@ -163,7 +162,6 @@ def persist_column_annotations(
         column_output: Per-column tool output (tables -> columns).
         table_ids: Tables the annotations belong to (for column-id resolution).
         annotated_by: Model identifier that produced the annotations.
-        session_id: Per-session FK.
         ontology_def: Loaded ontology, for ``temporal_behavior`` backfill.
 
     Returns:
@@ -183,7 +181,6 @@ def persist_column_annotations(
             # PK omitted so the model's Python-side default applies.
             rows.append(
                 {
-                    "session_id": session_id,
                     "column_id": column_id,
                     "run_id": run_id,
                     "semantic_role": col.semantic_role,
@@ -225,7 +222,6 @@ def ground_columns(
     renderer: PromptRenderer,
     table_ids: list[str],
     ontology: str,
-    session_id: str,
     run_id: str | None = None,
 ) -> Result[int]:
     """Annotate columns against ``ontology`` and persist ``SemanticAnnotation`` rows.
@@ -244,7 +240,6 @@ def ground_columns(
         renderer: Prompt renderer for the annotation agent.
         table_ids: Typed tables to annotate.
         ontology: Vertical name the columns map their concepts into.
-        session_id: Per-session FK for the persisted annotation rows.
 
     Returns:
         ``Result.ok(count)`` with the number of annotation rows persisted, or
@@ -297,7 +292,6 @@ def ground_columns(
         annotation_result.value,
         table_ids,
         annotated_by=model_name,
-        session_id=session_id,
         ontology_def=ontology_def,
         run_id=run_id,
     )
@@ -312,7 +306,6 @@ def synthesize_and_store_tables(
     relationship_candidates: list[dict[str, Any]] | None = None,
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
-    session_id: str,
     run_id: str | None = None,
 ) -> Result[SemanticEnrichmentResult]:
     """Run per-table synthesis and store entities + relationships (DAT-362).
@@ -339,18 +332,14 @@ def synthesize_and_store_tables(
     table_map = load_table_mappings(session, table_ids)
     column_map = load_column_mappings(session, table_ids)
 
-    # Idempotent + non-destructive (DAT-408): TableEntity is versioned by ``run_id``
-    # (a session has MANY runs). Clear only THIS run's prior entities before
-    # re-inserting — a Temporal at-least-once retry (same run_id) is idempotent,
-    # and EARLIER runs in the session survive. Delete-before-insert (not upsert)
-    # because it must also drop tables no longer classified as entities this run;
-    # the ``uq_table_entity_table_run`` constraint then guarantees at most one row
-    # per ``(table_id, run_id)`` so run-scoped readers can trust the grain.
-    session.execute(
-        delete(EntityModel).where(
-            EntityModel.session_id == session_id, EntityModel.run_id == run_id
-        )
-    )
+    # Idempotent + non-destructive (DAT-408): TableEntity is versioned by ``run_id``.
+    # Clear only THIS run's prior entities before re-inserting — a Temporal
+    # at-least-once retry (same run_id) is idempotent, and EARLIER runs survive.
+    # Delete-before-insert (not upsert) because it must also drop tables no longer
+    # classified as entities this run; the ``uq_table_entity_table_run`` constraint
+    # then guarantees at most one row per ``(table_id, run_id)`` so run-scoped
+    # readers can trust the grain.
+    session.execute(delete(EntityModel).where(EntityModel.run_id == run_id))
 
     for entity in enrichment.entity_detections:
         table_id = table_map.get(entity.table_name)
@@ -358,7 +347,6 @@ def synthesize_and_store_tables(
             continue
         session.add(
             EntityModel(
-                session_id=session_id,
                 run_id=run_id,
                 table_id=table_id,
                 detected_entity_type=entity.entity_type,
@@ -415,7 +403,6 @@ def synthesize_and_store_tables(
 
         rel_rows.append(
             {
-                "session_id": session_id,
                 "run_id": run_id,
                 "from_table_id": from_table_id,
                 "from_column_id": from_col_id,
@@ -440,7 +427,6 @@ def synthesize_and_store_tables(
         RelationshipModel,
         rel_rows,
         index_elements=[
-            "session_id",
             "run_id",
             "from_column_id",
             "to_column_id",

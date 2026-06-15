@@ -8,8 +8,8 @@
 //   2. begin_session over those typed tables via the begin_session tool → the
 //      relationships → semantic_per_table → materialize → detect → keepers →
 //      promote chain (real LLM in semantic_per_table).
-//   3. look_relationships(session_id) — asserts the session sealed and reads back
-//      the per-relationship readiness bands.
+//   3. look_relationships — asserts the session sealed and reads back the
+//      per-relationship readiness bands at the workspace catalog head.
 //   4. why_relationship on the first relationship — the grounded drill-down.
 //
 // Run against the published compose ports, e.g.:
@@ -26,11 +26,11 @@ import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
 
+import { cockpitDb } from "#/db/cockpit/client";
+import { recordRun } from "#/db/cockpit/runs";
+import { actors, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
-import {
-	investigationSessionsWrite,
-	sourcesWrite,
-} from "#/db/metadata/write-surface";
+import { sourcesWrite } from "#/db/metadata/write-surface";
 import { beginSession } from "#/tools/begin-session";
 import { lookRelationships } from "#/tools/look-relationships";
 import { lookTable } from "#/tools/look-table";
@@ -56,12 +56,30 @@ const fileUris = env.SOURCE_PATH.split(",")
 // The builtin vertical the smoke grounds against (its ontology ships concepts).
 const VERTICAL = "finance";
 
-/** Seed the `sources` row + the add_source session, then run addSourceWorkflow to
- * type the files. Returns the typed table ids (the begin_session selection). */
+/** Seed the workspace registry (vertical=finance, so the begin_session driver
+ * sources it), the `sources` row, and record the add_source run in cockpit_db,
+ * then run addSourceWorkflow to type the files. Returns the typed table ids. */
 async function ingest(client: Client): Promise<string[]> {
 	const sourceId = randomUUID();
 	const sessionId = randomUUID();
 	const now = new Date();
+
+	// The workspace registry carries the vertical (DAT-506): seed it = finance so
+	// the begin_session driver (and any other driver) sources the right ontology.
+	await cockpitDb
+		.insert(actors)
+		.values({ id: "default", displayName: "Default user" })
+		.onConflictDoNothing();
+	await cockpitDb
+		.insert(workspaces)
+		.values({
+			id: env.DATARAUM_WORKSPACE_ID,
+			name: `Workspace ${env.DATARAUM_WORKSPACE_ID}`,
+			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
+			vertical: VERTICAL,
+		})
+		.onConflictDoNothing();
+
 	await metadataDb
 		.insert(sourcesWrite)
 		.values({
@@ -74,29 +92,23 @@ async function ingest(client: Client): Promise<string[]> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	await metadataDb
-		.insert(investigationSessionsWrite)
-		.values({
-			sessionId,
-			intent: "smoke add_source",
-			status: "active",
-			startedAt: now,
-			stepCount: 0,
-			// Builtin `finance` ontology (22 concepts) — _adhoc induction (DAT-371)
-			// isn't landed, so grounding needs a vertical that already ships concepts.
-			vertical: VERTICAL,
-		})
-		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
+
+	// Record the add_source run in cockpit_db (DAT-506 — the session-of-record).
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		engineSessionId: sessionId,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+	});
 
 	const input: AddSourceInput = {
-		// Source-free identity + the run's source SET (DAT-422): one source here, so
-		// a 1-element set; the run is keyed by its session, not a source.
-		identity: {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			session_id: sessionId,
-			vertical: VERTICAL,
-		},
-		source_ids: [sourceId],
+		// FLAT, source-free input (DAT-506): no identity, no session/source id on the
+		// wire. The run's source SET (DAT-422) — one source here, so a 1-element set;
+		// `verticals` is a one-element array of the workspace ontology.
+		workspace_id: env.DATARAUM_WORKSPACE_ID,
+		sources: [sourceId],
+		verticals: [VERTICAL],
 	};
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>
@@ -125,7 +137,9 @@ async function main(): Promise<void> {
 		const tableIds = await ingest(client);
 
 		// ---- begin_session via the agent tool -----------------------------------
-		const begun = await beginSession({ table_ids: tableIds, vertical: VERTICAL });
+		// The vertical is the WORKSPACE property (seeded = finance in ingest); the
+		// driver sources it from the registry (DAT-506), so no vertical arg here.
+		const begun = await beginSession({ table_ids: tableIds });
 		console.log(
 			`✓ begin_session started: workflow=${begun.workflow_id} session=${begun.session_id}`,
 		);
@@ -134,7 +148,7 @@ async function main(): Promise<void> {
 		console.log("✓ begin_session workflow completed (sealed + promoted)");
 
 		// ---- look_relationships --------------------------------------------------
-		const look = await lookRelationships({ session_id: begun.session_id });
+		const look = await lookRelationships();
 		console.log(
 			`\nlook_relationships → analyzed=${look.analyzed} pending_teaches=${look.pending_teaches} ` +
 				`relationships=${look.relationships.length}`,
@@ -156,7 +170,6 @@ async function main(): Promise<void> {
 		// ---- why_relationship on the first relationship --------------------------
 		const first = look.relationships[0];
 		const why = await whyRelationship({
-			session_id: begun.session_id,
 			from_column_id: first.from_column_id,
 			to_column_id: first.to_column_id,
 		});
@@ -168,14 +181,14 @@ async function main(): Promise<void> {
 				`\n  analysis: ${why.analysis.slice(0, 400)}${why.analysis.length > 400 ? "…" : ""}`,
 		);
 
-		// ---- look_table (session-head table-grain band) + why_table (DAT-415) -----
+		// ---- look_table (table-grain band) + why_table (DAT-415) -----------------
 		// Each typed table gets a begin_session whole-table readiness band (the
-		// dimension_coverage rollup), sealed at the session head; look_table surfaces
-		// it when passed the session_id, why_table explains it.
+		// dimension_coverage rollup), sealed at the workspace catalog head (DAT-506);
+		// look_table surfaces it as table_readiness, why_table explains it.
 		console.log("\nlook_table(table_readiness) per typed table:");
 		let analyzedTableId: string | null = null;
 		for (const tableId of tableIds) {
-			const lt = await lookTable({ table_id: tableId, session_id: begun.session_id });
+			const lt = await lookTable({ table_id: tableId });
 			const band = lt.table_readiness?.band ?? "—";
 			console.log(`  ${lt.table_name}: table_readiness.band=${band}`);
 			if (lt.table_readiness && analyzedTableId === null) analyzedTableId = tableId;
@@ -188,7 +201,6 @@ async function main(): Promise<void> {
 		}
 
 		const wt = await whyTable({
-			session_id: begun.session_id,
 			table_id: analyzedTableId,
 		});
 		console.log(

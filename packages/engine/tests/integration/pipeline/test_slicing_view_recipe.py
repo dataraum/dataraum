@@ -23,7 +23,6 @@ from dataraum.analysis.views.db_models import EnrichedView, SlicingView
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_view_phase import SlicingViewPhase
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -82,7 +81,6 @@ def _seed_fact_with_enriched_view(session: Session, duckdb_conn: duckdb.DuckDBPy
     session.add(
         EnrichedView(
             view_id=str(uuid4()),
-            session_id=baseline_session_id(),
             fact_table_id=fact.table_id,
             view_name="enriched_csv__orders",
             is_grain_verified=True,
@@ -130,7 +128,6 @@ def _seed_fact_entity(session: Session, fact_id: str, run_id: str) -> None:
     session.add(
         TableEntity(
             entity_id=str(uuid4()),
-            session_id=baseline_session_id(),
             table_id=fact_id,
             run_id=run_id,
             detected_entity_type="fact",
@@ -174,7 +171,6 @@ class TestSlicingViewRecipeVersioning:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id],
-            session_id=baseline_session_id(),
             run_id="run-1",
         )
         result = SlicingViewPhase().run(ctx_a)
@@ -210,7 +206,6 @@ class TestSlicingViewRecipeVersioning:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id],
-            session_id=baseline_session_id(),
             run_id="run-2",
         )
         result_b = SlicingViewPhase().run(ctx_b)
@@ -223,4 +218,92 @@ class TestSlicingViewRecipeVersioning:
         recipes = _slicing_recipes(session, fact_id)
         assert {r.run_id for r in recipes} == {"run-1"}, (
             "sqlglot gate: an unchanged re-run stamps no redundant recipe version"
+        )
+
+    def test_rerun_clears_dependents_of_prior_slicing_view_columns(
+        self, session, duckdb_conn
+    ) -> None:
+        """Re-running over a slicing view whose prior columns have FK children must
+        clear those children, not FK-violate (M2, same defect as enriched_views C1).
+
+        The slicing-view ``Table`` is reused across runs; its prior ``Column``s are
+        deleted and re-minted. The FK children of ``columns`` no longer
+        ``ON DELETE CASCADE`` (DAT-506), so a child row (here a
+        ``StatisticalProfile``) on a prior run's slicing-view column would block the
+        ``delete(Column)`` with an ``IntegrityError``. Routing the delete through
+        ``delete_column_dependents`` clears the child first.
+
+        Fails on the pre-fix bare ``delete(Column)`` (SQLite FK enforcement raises);
+        passes once the helper deletes the dependents.
+        """
+        from datetime import UTC, datetime
+
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        fact_id = _seed_fact_with_enriched_view(session, duckdb_conn)
+        _seed_fact_entity(session, fact_id, "run-1")
+        result = SlicingViewPhase().run(
+            PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id], run_id="run-1"
+            )
+        )
+        assert result.status == PhaseStatus.COMPLETED, result.error
+
+        sv_table = session.execute(select(Table).where(Table.layer == "slicing_view")).scalar_one()
+        sv_col_ids = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == sv_table.table_id)
+            ).all()
+        ]
+        assert sv_col_ids, "run-1 must register slicing-view columns"
+        # Attach a run-stamped child to a prior-run slicing-view column — the row
+        # that FK-blocks the re-run's column delete without the helper.
+        session.add(
+            StatisticalProfile(
+                profile_id=str(uuid4()),
+                column_id=sv_col_ids[0],
+                run_id="run-1",
+                profiled_at=datetime.now(UTC),
+                layer="slicing_view",
+                total_count=3,
+                null_count=0,
+                distinct_count=3,
+                null_ratio=0.0,
+                cardinality_ratio=1.0,
+                is_unique=True,
+                is_numeric=False,
+                profile_data={},
+            )
+        )
+        session.flush()
+
+        # Re-run: the prior columns (and the profile FK-referencing them) must be
+        # cleared and re-minted under run-2.
+        _seed_fact_entity(session, fact_id, "run-2")
+        _seed_slice_definition(session, fact_id, "run-2")
+        result_b = SlicingViewPhase().run(
+            PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id], run_id="run-2"
+            )
+        )
+        assert result_b.status == PhaseStatus.COMPLETED, result_b.error
+
+        sv_table2 = session.execute(select(Table).where(Table.layer == "slicing_view")).scalar_one()
+        assert sv_table2.table_id == sv_table.table_id, "the slicing-view Table is reused"
+        new_col_ids = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == sv_table2.table_id)
+            ).all()
+        ]
+        assert new_col_ids and not (set(sv_col_ids) & set(new_col_ids)), (
+            "prior run's slicing-view columns must be replaced"
+        )
+        # The stale child profile is gone with its column.
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id.in_(sv_col_ids))
+            ).first()
+            is None
         )

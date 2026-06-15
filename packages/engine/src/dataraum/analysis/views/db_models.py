@@ -46,26 +46,19 @@ class EnrichedView(Base):
     __table_args__ = (UniqueConstraint("fact_table_id", name="uq_enriched_view_fact_table"),)
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
 
     # The fact table this view is based on
-    fact_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    fact_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
     # The view registered as a Table record (layer="enriched")
-    view_table_id: Mapped[str | None] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="SET NULL")
-    )
+    view_table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
     view_table = relationship("Table", foreign_keys=[view_table_id])
 
     view_name: Mapped[str] = mapped_column(String, nullable=False)
 
     # Snapshot version axis (DAT-413/DAT-415): the begin_session run that
-    # materialized this view definition. None for non-run callers (tests).
-    run_id: Mapped[str | None] = mapped_column(String, index=True)
+    # materialized this view definition.
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # Which relationships were used to build this view
     relationship_ids: Mapped[list[str] | None] = mapped_column(JSON)
@@ -110,20 +103,15 @@ class SlicingView(Base):
     __table_args__ = (UniqueConstraint("fact_table_id", name="uq_slicing_view_fact_table"),)
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
 
     # The fact table this view is based on
-    fact_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    fact_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
     view_name: Mapped[str] = mapped_column(String, nullable=False)
 
     # Snapshot version axis (DAT-415): the begin_session run that materialized this
-    # view definition. None for non-run callers (tests).
-    run_id: Mapped[str | None] = mapped_column(String, index=True)
+    # view definition.
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # Which slice definitions drove column selection
     slice_definition_ids: Mapped[list[str] | None] = mapped_column(JSON)

@@ -19,7 +19,6 @@ the dataraum-eval gate.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,19 +27,18 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
-from dataraum.investigation.db_models import InvestigationSession
-from dataraum.investigation.queries import sources_for_session, tables_for_session
+from dataraum.investigation.queries import tables_for_run
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.storage import Source, Table
 from dataraum.worker import (
-    SessionIdentity,
-    SourceIdentity,
+    RunRef,
     begin_session_select,
     raw_table_ids,
     run_phase,
     run_session_phase,
     typed_table_id_for_raw,
 )
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture(autouse=True)
@@ -73,20 +71,6 @@ def _enumerate_fixture_files(directory: Path) -> list[Path]:
     return files
 
 
-def _seed_session(manager: ConnectionManager, session_id: str, vertical: str | None = None) -> None:
-    """Seed the InvestigationSession the begin_session driver writes (cockpit in 2.0c)."""
-    with manager.session_scope() as session:
-        session.add(
-            InvestigationSession(
-                session_id=session_id,
-                intent="begin_session test",
-                status="active",
-                started_at=datetime.now(UTC),
-                vertical=vertical,
-            )
-        )
-
-
 def _seed_typed_table(
     manager: ConnectionManager, source_id: str, source_name: str, name: str
 ) -> str:
@@ -114,8 +98,16 @@ def _seed_typed_table(
     return table_id
 
 
-def _session_identity(session_id: str) -> SessionIdentity:
-    return SessionIdentity(workspace_id="test", session_id=session_id)
+def _session_identity(session_id: str, run_id: str | None = None) -> RunRef:
+    """A source-free run ref with a stamped run_id (DAT-506).
+
+    ``begin_session_select`` links the selection to ``run_tables`` and raises if
+    ``run_id`` is None, so default to ``baseline_run_id()`` — the same run the
+    ``tables_for_run`` assertions resolve by. (``session_id`` is accepted for the
+    test call sites' readability but no longer rides on the wire — sessions live
+    in cockpit_db, DAT-506.)
+    """
+    return RunRef(workspace_id="test", run_id=run_id or baseline_run_id())
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +118,6 @@ def _session_identity(session_id: str) -> SessionIdentity:
 def test_select_links_a_cross_source_selection(worker_manager: ConnectionManager) -> None:
     """A selection spanning two sources is linked to the session; source is derived."""
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     src_a, src_b = str(uuid4()), str(uuid4())
     a1 = _seed_typed_table(worker_manager, src_a, "src_a", "a_orders")
     a2 = _seed_typed_table(worker_manager, src_a, "src_a", "a_lines")
@@ -136,15 +127,14 @@ def test_select_links_a_cross_source_selection(worker_manager: ConnectionManager
     assert run.status == PhaseStatus.COMPLETED.value, run.error
 
     with worker_manager.session_scope() as session:
-        assert set(tables_for_session(session, session_id)) == {a1, a2, b1}
-        # The session's source is DERIVED from its tables — and spans both.
-        assert sources_for_session(session, session_id) == {src_a, src_b}
+        # The selection is anchored to the run via run_tables (DAT-506),
+        # spanning both sources.
+        assert set(tables_for_run(session, baseline_run_id())) == {a1, a2, b1}
 
 
 def test_select_rejects_unknown_table_ids(worker_manager: ConnectionManager) -> None:
     """An id that is not a known typed table fails loud — nothing is linked."""
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     known = _seed_typed_table(worker_manager, str(uuid4()), "src", "t1")
     ghost = str(uuid4())
 
@@ -153,13 +143,12 @@ def test_select_rejects_unknown_table_ids(worker_manager: ConnectionManager) -> 
     assert ghost in (run.error or "")
 
     with worker_manager.session_scope() as session:
-        assert tables_for_session(session, session_id) == []
+        assert tables_for_run(session, baseline_run_id()) == []
 
 
 def test_select_rejects_raw_table_ids(worker_manager: ConnectionManager) -> None:
     """A non-typed (raw) table is not a valid begin_session selection member."""
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     source_id = str(uuid4())
     raw_id = str(uuid4())
     with worker_manager.session_scope() as session:
@@ -179,19 +168,8 @@ def test_select_rejects_raw_table_ids(worker_manager: ConnectionManager) -> None
     assert run.status == PhaseStatus.FAILED.value
 
 
-def test_select_fails_when_session_not_seeded(worker_manager: ConnectionManager) -> None:
-    """The driver must seed the session row first (mirrors add_source's cockpit seed)."""
-    session_id = str(uuid4())  # never seeded
-    t1 = _seed_typed_table(worker_manager, str(uuid4()), "src", "t1")
-
-    run = begin_session_select(worker_manager, _session_identity(session_id), [t1])
-    assert run.status == PhaseStatus.FAILED.value
-    assert session_id in (run.error or "")
-
-
 def test_select_requires_at_least_one_table(worker_manager: ConnectionManager) -> None:
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     run = begin_session_select(worker_manager, _session_identity(session_id), [])
     assert run.status == PhaseStatus.FAILED.value
 
@@ -202,9 +180,13 @@ def test_select_requires_at_least_one_table(worker_manager: ConnectionManager) -
 
 
 def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) -> list[str]:
-    """Run the add_source import→typing chain to get real DuckDB-backed typed tables."""
+    """Run the add_source import→typing chain to get real DuckDB-backed typed tables.
+
+    Sessions live in cockpit_db now (DAT-506); the engine only needs a stamped
+    ``run_id`` so typing can link the typed tables to the run via ``run_tables``.
+    """
     source_id = str(uuid4())
-    add_session_id = str(uuid4())
+    add_run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     with manager.session_scope() as session:
         session.add(
@@ -216,24 +198,15 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
                 status="configured",
             )
         )
-        session.flush()
-        session.add(
-            InvestigationSession(
-                session_id=add_session_id,
-                intent="add",
-                status="active",
-                started_at=datetime.now(UTC),
-            )
-        )
-    import_identity = SourceIdentity(
-        workspace_id="test", source_id=source_id, session_id=add_session_id
+    run = RunRef(workspace_id="test", run_id=add_run_id)
+    assert (
+        run_phase(manager, "import", run, [], "finance", source_id=source_id).status == "completed"
     )
-    assert run_phase(manager, "import", import_identity, []).status == "completed"
-    # Past import the chain runs source-free (DAT-422), as AddSourceWorkflow threads it.
-    child_identity = SourceIdentity(workspace_id="test", session_id=add_session_id)
+    # Past import the chain runs source-free (DAT-506/426), as AddSourceWorkflow
+    # threads it — the same run ref carries the run_id typing links run_tables by.
     typed: list[str] = []
     for raw_id in raw_table_ids(manager, source_id):
-        assert run_phase(manager, "typing", child_identity, [raw_id]).status == "completed"
+        assert run_phase(manager, "typing", run, [raw_id], "finance").status == "completed"
         typed_id = typed_table_id_for_raw(manager, raw_id)
         assert typed_id is not None
         typed.append(typed_id)
@@ -256,12 +229,11 @@ def test_run_session_phase_relationships_scopes_to_selection(
     excluded = set(typed) - set(selection)
 
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id, vertical="_adhoc")
     sel_run = begin_session_select(worker_manager, _session_identity(session_id), selection)
     assert sel_run.status == PhaseStatus.COMPLETED.value, sel_run.error
 
     run = run_session_phase(
-        worker_manager, "relationships", _session_identity(session_id), selection
+        worker_manager, "relationships", _session_identity(session_id), selection, "_adhoc"
     )
     # Completed (candidates found) or skipped (<2 overlap) — never FAILED.
     assert run.status in (PhaseStatus.COMPLETED.value, PhaseStatus.SKIPPED.value), run.error
@@ -269,7 +241,7 @@ def test_run_session_phase_relationships_scopes_to_selection(
     with worker_manager.session_scope() as session:
         rels = list(
             session.execute(
-                select(Relationship).where(Relationship.session_id == session_id)
+                select(Relationship).where(Relationship.run_id == baseline_run_id())
             ).scalars()
         )
     scoped = set(selection)
@@ -277,18 +249,6 @@ def test_run_session_phase_relationships_scopes_to_selection(
         assert rel.from_table_id in scoped, "candidate references a table outside the selection"
         assert rel.to_table_id in scoped, "candidate references a table outside the selection"
         assert rel.from_table_id not in excluded and rel.to_table_id not in excluded
-
-
-def test_run_session_phase_fails_when_session_not_seeded(
-    worker_manager: ConnectionManager,
-) -> None:
-    """The runner fails loud if the InvestigationSession row is missing."""
-    t1 = _seed_typed_table(worker_manager, str(uuid4()), "src", "t1")
-    t2 = _seed_typed_table(worker_manager, str(uuid4()), "src", "t2")
-    run = run_session_phase(
-        worker_manager, "relationships", _session_identity(str(uuid4())), [t1, t2]
-    )
-    assert run.status == PhaseStatus.FAILED.value
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +271,6 @@ def _seed_column(manager: ConnectionManager, table_id: str, col_name: str) -> st
 
 def _seed_relationship(
     manager: ConnectionManager,
-    session_id: str,
     from_table: str,
     from_col: str,
     to_table: str,
@@ -322,7 +281,6 @@ def _seed_relationship(
     with manager.session_scope() as session:
         session.add(
             Relationship(
-                session_id=session_id,
                 run_id=run_id,
                 from_table_id=from_table,
                 from_column_id=from_col,
@@ -336,8 +294,8 @@ def _seed_relationship(
         )
 
 
-def _session_identity_run(session_id: str, run_id: str) -> SessionIdentity:
-    return SessionIdentity(workspace_id="test", session_id=session_id, run_id=run_id)
+def _session_identity_run(session_id: str, run_id: str) -> RunRef:
+    return RunRef(workspace_id="test", run_id=run_id)
 
 
 def test_begin_session_detect_promote_read_and_nondestructive_rerun(
@@ -354,21 +312,20 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
     )
 
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     src = str(uuid4())
     t1 = _seed_typed_table(worker_manager, src, "src", "orders")
     t2 = _seed_typed_table(worker_manager, src, "src", "customers")
     c1 = _seed_column(worker_manager, t1, "customer_id")
     c2 = _seed_column(worker_manager, t2, "id")
-    begin_session_select(worker_manager, _session_identity(session_id), [t1, t2])
     target = relationship_target_key(c1, c2)
 
-    # Run A: the catalog is materialized per run (DAT-408) — stamp the relationship
-    # with this run's run_id, then terminal detect (relationship readiness) + promote.
-    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-A")
+    # Run A: the catalog is materialized per run (DAT-408/506) — anchor the
+    # selection to this run (run_tables) so detect resolves its scope, stamp the
+    # relationship with this run's run_id, then terminal detect + promote.
+    begin_session_select(worker_manager, _session_identity_run(session_id, "run-A"), [t1, t2])
+    _seed_relationship(worker_manager, t1, c1, t2, c2, "llm", run_id="run-A")
     n = run_detectors(
         worker_manager,
-        session_id=session_id,
         run_id="run-A",
         detector_phases=SESSION_DETECTOR_PHASES,
     )
@@ -376,28 +333,28 @@ def test_begin_session_detect_promote_read_and_nondestructive_rerun(
     promote_session_run(worker_manager, _session_identity_run(session_id, "run-A"))
 
     with worker_manager.session_scope() as session:
-        out = load_relationship_readiness(session, session_id)
+        out = load_relationship_readiness(session)
     assert {r.target for r in out} == {target}
     assert all(r.run_id == "run-A" for r in out)
 
-    # Run B: re-materialize the catalog under a fresh run_id (re-run), detect,
-    # promote — the seal advances, the prior run's rows survive.
-    _seed_relationship(worker_manager, session_id, t1, c1, t2, c2, "llm", run_id="run-B")
+    # Run B: re-materialize the catalog under a fresh run_id (re-run) — anchor the
+    # same selection to run-B, detect, promote — the seal advances, the prior run's
+    # rows survive.
+    begin_session_select(worker_manager, _session_identity_run(session_id, "run-B"), [t1, t2])
+    _seed_relationship(worker_manager, t1, c1, t2, c2, "llm", run_id="run-B")
     run_detectors(
         worker_manager,
-        session_id=session_id,
         run_id="run-B",
         detector_phases=SESSION_DETECTOR_PHASES,
     )
     promote_session_run(worker_manager, _session_identity_run(session_id, "run-B"))
 
     with worker_manager.session_scope() as session:
-        out = load_relationship_readiness(session, session_id)
+        out = load_relationship_readiness(session)
         all_runs = {
             r.run_id
             for r in session.execute(
                 select(EntropyReadinessRecord).where(
-                    EntropyReadinessRecord.session_id == session_id,
                     EntropyReadinessRecord.target == target,
                 )
             ).scalars()
@@ -422,13 +379,13 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
     from dataraum.worker.activity import SESSION_DETECTOR_PHASES, run_detectors
 
     session_id = str(uuid4())
-    _seed_session(worker_manager, session_id)
     src = str(uuid4())
     t1 = _seed_typed_table(worker_manager, src, "src", "orders")
     qty = _seed_column(worker_manager, t1, "qty")
     price = _seed_column(worker_manager, t1, "price")
     total = _seed_column(worker_manager, t1, "total")
-    begin_session_select(worker_manager, _session_identity(session_id), [t1])
+    # Anchor the selection to run-1 (run_tables) so detect resolves its scope (DAT-506).
+    begin_session_select(worker_manager, _session_identity_run(session_id, "run-1"), [t1])
 
     # A poorly-matching derived column → high derived_value entropy on ``total``.
     # Run-stamped (DAT-448): the correlations phase of the same begin_session
@@ -436,7 +393,6 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
     with worker_manager.session_scope() as session:
         session.add(
             DerivedColumn(
-                session_id=session_id,
                 run_id="run-1",
                 table_id=t1,
                 derived_column_id=total,
@@ -451,7 +407,6 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
 
     n = run_detectors(
         worker_manager,
-        session_id=session_id,
         run_id="run-1",
         detector_phases=SESSION_DETECTOR_PHASES,
     )
@@ -461,7 +416,7 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
         produced = list(
             session.execute(
                 select(EntropyObjectRecord).where(
-                    EntropyObjectRecord.session_id == session_id,
+                    EntropyObjectRecord.run_id == "run-1",
                     EntropyObjectRecord.detector_id == "derived_value",
                 )
             ).scalars()
@@ -470,7 +425,6 @@ def test_begin_session_detect_runs_value_detectors_to_column_bands(
 
         band = session.execute(
             select(EntropyReadinessRecord).where(
-                EntropyReadinessRecord.session_id == session_id,
                 EntropyReadinessRecord.column_id == total,
                 EntropyReadinessRecord.run_id == "run-1",
             )

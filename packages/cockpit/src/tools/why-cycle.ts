@@ -13,7 +13,7 @@
 // (scripts/smoke-operating-model.ts).
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -152,7 +152,6 @@ export function projectWhyCycle(
 }
 
 export interface WhyCycleInput {
-	session_id: string;
 	canonical_type: string;
 }
 
@@ -164,7 +163,6 @@ export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
 	// 'cycle' (the key is unique only WITHIN a type — validations/metrics share
 	// this view).
 	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
 		"cycle",
 		input.canonical_type,
 	);
@@ -189,10 +187,7 @@ export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
 		})
 		.from(currentDetectedBusinessCycles)
 		.where(
-			and(
-				eq(currentDetectedBusinessCycles.sessionId, input.session_id),
-				eq(currentDetectedBusinessCycles.canonicalType, input.canonical_type),
-			),
+			eq(currentDetectedBusinessCycles.canonicalType, input.canonical_type),
 		)
 		.limit(1);
 
@@ -215,11 +210,8 @@ export const whyCycleTool = toolDefinition({
 		"completion (rate + counts), the status column it was measured on, and the " +
 		"detected stages, entity flows, and evidence. Read-only. Use after " +
 		"look_cycle to drill into a specific cycle; identify it by its " +
-		"canonical_type and the session_id.",
+		"canonical_type.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the cycle belongs to."),
 		canonical_type: z
 			.string()
 			.describe("The cycle to explain (a canonical_type from look_cycle)."),

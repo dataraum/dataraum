@@ -65,29 +65,29 @@ class EntropyRepository:
         *,
         enforce_typed: bool = True,
         current_run_id: str | None = None,
-        session_id: str | None = None,
+        resolve_runs: bool = False,
     ) -> list[EntropyObject]:
         """Load entropy objects for the given tables, run-resolved when asked.
 
-        With ``current_run_id`` and/or ``session_id`` set, rows are RESOLVED
+        With ``current_run_id`` set or ``resolve_runs=True``, rows are RESOLVED
         per ``(target, detector_id)`` instead of loaded blindly: the in-flight
         run's rows win (they are not promoted yet during their own detect),
-        then rows under the promoted session detect head, then rows under the
-        promoted table detect heads (plus legacy unstamped rows). At query
-        time there is no in-flight run — passing only ``session_id`` resolves
-        to the promoted session detect head first. With neither id, every
-        row loads — the pre-DAT-491 behavior, when no detector lived on both
-        the add_source and session detect paths and a blind load was safe.
-        A session-detect re-adjudication (e.g. temporal_behavior's third
-        witness) therefore supersedes the add_source rows for the same target
-        instead of losing to a max-score dedup downstream.
+        then rows under the promoted catalog head, then rows under the promoted
+        table detect heads (plus legacy unstamped rows). At query time there is
+        no in-flight run — ``resolve_runs=True`` resolves to the promoted
+        catalog head first. With neither, every row loads — the pre-DAT-491
+        behavior, when no detector lived on both the add_source and session
+        detect paths and a blind load was safe. A session-detect re-adjudication
+        (e.g. temporal_behavior's third witness) therefore supersedes the
+        add_source rows for the same target instead of losing to a max-score
+        dedup downstream.
 
         Args:
             table_ids: List of table IDs to load entropy for
             enforce_typed: If True, validates all tables have layer="typed"
                 and filters to only typed tables. Default True.
             current_run_id: The in-flight detect run whose rows take precedence.
-            session_id: Scope for resolving the promoted session detect head.
+            resolve_runs: Resolve to the promoted catalog head (query-time path).
 
         Returns:
             List of EntropyObject instances with full data
@@ -117,8 +117,8 @@ class EntropyRepository:
             logger.debug(f"No entropy objects found for {len(table_ids)} tables")
             return []
 
-        if current_run_id is not None or session_id is not None:
-            records = self._resolve_runs(records, table_ids, current_run_id, session_id)
+        if current_run_id is not None or resolve_runs:
+            records = self._resolve_runs(records, table_ids, current_run_id)
 
         # Convert records to EntropyObjects
         return [self._record_to_object(r) for r in records]
@@ -128,27 +128,28 @@ class EntropyRepository:
         records: list[EntropyObjectRecord],
         table_ids: list[str],
         current_run_id: str | None,
-        session_id: str | None,
     ) -> list[EntropyObjectRecord]:
-        """Per ``(target, detector_id)``: current run > session head > table heads/legacy."""
-        from dataraum.storage.snapshot_head import head_run_id, session_head_target
+        """Per ``(target, detector_id)``: current run > catalog head > table heads/legacy."""
+        from dataraum.storage.snapshot_head import (
+            GENERATION_STAGE,
+            catalog_head_target,
+            head_run_id,
+        )
 
-        session_head: str | None = None
-        if session_id is not None:
-            session_head = head_run_id(self.session, session_head_target(session_id), "detect")
+        catalog_head = head_run_id(self.session, catalog_head_target(), "catalog")
         table_heads = {
             rid
             for tid in table_ids
-            if (rid := head_run_id(self.session, f"table:{tid}", "detect")) is not None
+            if (rid := head_run_id(self.session, f"table:{tid}", GENERATION_STAGE)) is not None
         }
 
         def rank(record: EntropyObjectRecord) -> int | None:
             # None-guarded: at query time the in-flight slot is vacant, and a
             # legacy unstamped row (run_id None) must not match it and outrank
-            # the session head.
+            # the catalog head.
             if current_run_id is not None and record.run_id == current_run_id:
                 return 0
-            if session_head is not None and record.run_id == session_head:
+            if catalog_head is not None and record.run_id == catalog_head:
                 return 1
             if record.run_id in table_heads or record.run_id is None:
                 return 2

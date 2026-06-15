@@ -12,6 +12,7 @@ import pytest
 
 from dataraum.storage.base import Base, load_all_models
 from dataraum.storage.read_views import (
+    _ALWAYS_PASSTHROUGH,
     _RUN_GRAIN_EXEMPT,
     READ_TOKEN,
     WS_TOKEN,
@@ -28,8 +29,8 @@ def test_every_run_stamped_table_gets_a_current_view() -> None:
     names = {name for name, _ in read_view_statements()}
 
     for table in Base.metadata.tables.values():
-        if table.name == "metadata_snapshot_head":
-            assert table.name in names  # pointer: pass-through, not current_*
+        if table.name in _ALWAYS_PASSTHROUGH:
+            assert table.name in names  # run_id is the key, not a version axis: pass-through
             continue
         if "run_id" in {c.name for c in table.columns}:
             assert f"current_{table.name}" in names, table.name
@@ -56,19 +57,19 @@ def test_head_join_shape_for_column_grain() -> None:
     """Spot-check the hard join — written once, here, for everyone."""
     sql = dict(read_view_statements())["current_semantic_annotations"]
     assert "'table:' || c.table_id" in sql
-    assert "h.stage = 'semantic_per_column'" in sql
+    assert "h.stage = 'generation'" in sql
     assert "h.run_id = r.run_id" in sql
 
 
 def test_dual_grain_accepts_either_head_and_discriminates() -> None:
     """entropy objects/readiness: add_source seals per table, begin_session per
-    session — and after both, a column has TWO current rows; the ``via_*``
-    discriminators let consumers pin one grain (review finding, 2026-06-07)."""
+    workspace catalog — and after both, a column has TWO current rows; the
+    ``via_*`` discriminators let consumers pin one grain (DAT-506)."""
     sql = dict(read_view_statements())["current_entropy_objects"]
     assert "'table:' || r.table_id" in sql
-    assert "'session:' || r.session_id" in sql
+    assert "h.target = 'catalog'" in sql
     assert "AS via_table_head" in sql
-    assert "AS via_session_head" in sql
+    assert "AS via_catalog_head" in sql
 
 
 def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
@@ -77,9 +78,9 @@ def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
     discriminators — the witness provenance behind every pooled (C, U)."""
     sql = dict(read_view_statements())["current_claim_witnesses"]
     assert "'table:' || r.table_id" in sql
-    assert "'session:' || r.session_id" in sql
+    assert "h.target = 'catalog'" in sql
     assert "AS via_table_head" in sql
-    assert "AS via_session_head" in sql
+    assert "AS via_catalog_head" in sql
 
 
 def test_unclassified_versioned_table_fails_loud() -> None:
@@ -167,6 +168,65 @@ class TestRunGrainGate:
         )
         with pytest.raises(RuntimeError, match="prune the stale listing"):
             enforce_run_grain([graduated])
+
+
+def test_entropy_readiness_two_conflicting_bands_latest_promoted_wins() -> None:
+    """The L3 precedence AC: when the SAME target has an ``entropy_readiness`` row
+    promoted under the ``catalog`` head AND another under ``operating_model``,
+    ``current_entropy_readiness`` returns EXACTLY ONE row — the latest-promoted.
+
+    Without the catalog-grain precedence clause both rows surface as 'current'
+    and an unpinned reader picks one nondeterministically (review wave-1 blocker).
+    Executed live against in-memory SQLite (the generated DDL is pure SQL: ``||``,
+    correlated ``EXISTS``, ``MAX`` — all SQLite-supported) by substituting the
+    ``__WS__``/``__READ__`` schema tokens to the default schema.
+    """
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    view_ddl = dict(read_view_statements())["current_entropy_readiness"]
+    # Tokens → default schema; the view then references bare table names.
+    view_ddl = view_ddl.replace(f"{READ_TOKEN}.", "").replace(f"{WS_TOKEN}.", "")
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE entropy_readiness ("
+        "  readiness_id TEXT PRIMARY KEY, target TEXT, table_id TEXT, run_id TEXT, band TEXT"
+        ");"
+        "CREATE TABLE metadata_snapshot_head ("
+        "  head_id TEXT PRIMARY KEY, target TEXT, stage TEXT, run_id TEXT, promoted_at TEXT"
+        ");"
+    )
+
+    # Same target, two runs: an older begin_session catalog run + a newer
+    # operating_model run. Both promote the SAME ``catalog`` target, distinct
+    # stages — the conflict the precedence clause resolves.
+    earlier = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    later = earlier + timedelta(hours=1)
+    conn.executemany(
+        "INSERT INTO entropy_readiness VALUES (?, ?, ?, ?, ?)",
+        [
+            ("rd_catalog", "table:t1", "t1", "run_catalog", "ready"),
+            ("rd_om", "table:t1", "t1", "run_om", "investigate"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO metadata_snapshot_head VALUES (?, ?, ?, ?, ?)",
+        [
+            ("h_catalog", "catalog", "catalog", "run_catalog", earlier.isoformat()),
+            ("h_om", "catalog", "operating_model", "run_om", later.isoformat()),
+        ],
+    )
+    conn.execute(view_ddl)
+
+    rows = conn.execute(
+        "SELECT run_id, band FROM current_entropy_readiness WHERE target = 'table:t1'"
+    ).fetchall()
+    conn.close()
+
+    # Exactly one current band for the target — the latest-promoted (operating_model).
+    assert len(rows) == 1, rows
+    assert rows[0] == ("run_om", "investigate")
 
 
 def test_read_schema_name() -> None:

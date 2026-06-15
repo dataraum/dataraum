@@ -2,7 +2,8 @@
 
 from dataraum.query.snippet_library import SnippetLibrary
 from dataraum.query.snippet_models import SQLSnippetRecord
-from tests.conftest import baseline_session_id
+
+WORKSPACE_ID = "test"
 
 
 class TestSnippetLibraryFindById:
@@ -10,7 +11,7 @@ class TestSnippetLibraryFindById:
 
     def test_find_existing_snippet(self, session):
         """Find a snippet by its primary key."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -29,7 +30,7 @@ class TestSnippetLibraryFindById:
 
     def test_find_nonexistent_returns_none(self, session):
         """Unknown snippet_id returns None."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         found = library.find_by_id("nonexistent-id")
         assert found is None
@@ -40,7 +41,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_extract_snippet(self, session):
         """Find an extract snippet by exact key."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         # Save a snippet
         library.save_snippet(
@@ -72,7 +73,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_no_match(self, session):
         """No snippet for this key."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         match = library.find_by_key(
             snippet_type="extract",
@@ -83,7 +84,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_different_schema(self, session):
         """Same field but different schema doesn't match."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         library.save_snippet(
             snippet_type="extract",
@@ -108,7 +109,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_constant_snippet(self, session):
         """Find a constant snippet including parameter value."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         library.save_snippet(
             snippet_type="constant",
@@ -142,7 +143,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_null_fields_match_correctly(self, session):
         """Null fields in key must match null (not anything)."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         # Snippet with no statement
         library.save_snippet(
@@ -182,7 +183,7 @@ class TestSnippetLibrarySave:
 
     def test_save_new_snippet(self, session):
         """Save creates a new record."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -201,7 +202,7 @@ class TestSnippetLibrarySave:
 
     def test_save_keeps_first_writer(self, session):
         """Save with same key keeps original (first writer wins)."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         # First save
         record1 = library.save_snippet(
@@ -246,7 +247,7 @@ class TestSnippetLibrarySave:
 
         from dataraum.query.snippet_models import SQLSnippetRecord
 
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         kwargs = {
             "snippet_type": "extract",
             "description": "metric snippet",
@@ -268,7 +269,7 @@ class TestSnippetLibrarySave:
 
     def test_save_formula_snippet(self, session):
         """Save a formula snippet with normalized expression."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         record = library.save_snippet(
             snippet_type="formula",
@@ -286,7 +287,7 @@ class TestSnippetLibrarySave:
 
     def test_save_with_column_mappings(self, session):
         """Column mappings are persisted."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -310,7 +311,7 @@ class TestSnippetLibraryFindByExpression:
         """Find a formula by normalized expression."""
         from dataraum.query.snippet_utils import normalize_expression
 
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         # Normalize the expression the same way find_by_expression will
         expr = "(accounts_receivable / revenue) * days_in_period"
@@ -338,7 +339,7 @@ class TestSnippetLibraryFindByExpression:
 
     def test_find_formula_no_match(self, session):
         """No formula for a different expression."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         library.save_snippet(
             snippet_type="formula",
@@ -364,7 +365,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_exact_reuse(self, session):
         """Record an exact reuse and update snippet stats."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         snippet = library.save_snippet(
             snippet_type="extract",
@@ -398,7 +399,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_newly_generated(self, session):
         """Record a newly generated step (no snippet)."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         usage = library.record_usage(
             execution_id="exec_002",
@@ -413,7 +414,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_provided_not_used(self, session):
         """Record when snippet was provided but LLM ignored it."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
         snippet = library.save_snippet(
             snippet_type="extract",

@@ -290,7 +290,6 @@ class TestEnrichedViewsPhaseDuckLake:
         from sqlalchemy import delete
 
         from dataraum.analysis.semantic.db_models import TableEntity
-        from tests.conftest import baseline_session_id
 
         session.execute(
             delete(TableEntity).where(
@@ -300,7 +299,6 @@ class TestEnrichedViewsPhaseDuckLake:
         session.add(
             TableEntity(
                 entity_id=str(uuid4()),
-                session_id=baseline_session_id(),
                 table_id=table_id,
                 run_id=run_id,
                 detected_entity_type="fact",
@@ -316,7 +314,6 @@ class TestEnrichedViewsPhaseDuckLake:
         from dataraum.analysis.views.db_models import EnrichedView
         from dataraum.pipeline.base import PhaseContext, PhaseStatus
         from dataraum.storage import Table
-        from tests.conftest import baseline_session_id
 
         fact_id, dim_id, canned = self._seed(session, duckdb_conn)
         rec = {"current": canned}
@@ -332,7 +329,6 @@ class TestEnrichedViewsPhaseDuckLake:
                 session=session,
                 duckdb_conn=duckdb_conn,
                 table_ids=[fact_id, dim_id],
-                session_id=baseline_session_id(),
                 run_id=run_id,
             )
             result = EnrichedViewsPhase().run(ctx)
@@ -466,7 +462,6 @@ class TestEnrichedViewsPhaseDuckLake:
 
         from dataraum.analysis.views.db_models import EnrichedView
         from dataraum.pipeline.base import PhaseContext, PhaseStatus
-        from tests.conftest import baseline_session_id
 
         fact_id, dim_id, canned = self._seed(session, duckdb_conn)
         monkeypatch.setattr(
@@ -481,7 +476,6 @@ class TestEnrichedViewsPhaseDuckLake:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id, dim_id],
-            session_id=baseline_session_id(),
             run_id="run-2",
         )
         result = EnrichedViewsPhase().run(ctx)
@@ -498,152 +492,95 @@ class TestEnrichedViewsPhaseDuckLake:
         assert view is not None
         assert view.run_id == "run-2"
 
-    def test_rebuild_rematerializes_current_and_drops_strays(self, session, duckdb_conn):
-        """rebuild_session_views re-execs the latest recipe per fact + drops strays.
+    def test_rerun_refreshes_dim_columns_despite_prior_profiles(
+        self, session, duckdb_conn, monkeypatch
+    ):
+        """Re-running over a view that ALREADY has dim columns + profiles must
+        refresh them, not FK-violate (C1, DAT-506).
 
-        Two recipes for one fact (an older ``enriched_legacy``, a newer
-        ``enriched_csv__orders``) model a view whose name changed between runs.
-        A reset rebuilds the current target and drops the session's stale view —
-        proving the transactional, dependency-ordered re-materialization + the
-        session-scoped drop-views-not-in-run.
+        The enriched ``Table`` is reused across runs; its prior ``Column``s are
+        deleted and re-minted. Since the FK children of ``columns`` no longer
+        ``ON DELETE CASCADE``, the prior run's ``StatisticalProfile``s would block
+        the ``delete(Column)`` with an ``IntegrityError`` — and the old code
+        swallowed that (``warning`` + ``return None``), so the dimension columns
+        were silently never refreshed. This test exercises that exact re-run.
+
+        Fails on the pre-fix code: under SQLite's FK enforcement the column delete
+        raises, and the swallow (now removed) hid it while leaving stale columns.
+        Passes after ``delete_column_dependents`` clears the prior profiles first
+        and the IntegrityError is no longer swallowed.
         """
-        from datetime import UTC, datetime, timedelta
-        from uuid import uuid4
+        from sqlalchemy import select
 
-        from dataraum.analysis.typing.db_models import MaterializationRecipe
-        from dataraum.analysis.views.recipe import rebuild_session_views
-        from dataraum.storage import Source, Table
-        from tests.conftest import baseline_session_id
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from dataraum.storage import Column, Table
 
-        duckdb_conn.execute(
-            'CREATE OR REPLACE TABLE lake.typed."csv__orders" AS '
-            "SELECT * FROM (VALUES (1, 100.0), (2, 200.0), (3, 150.0)) AS t(order_id, amount)"
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
         )
-        source = Source(source_id=str(uuid4()), name="csv", source_type="csv")
-        session.add(source)
-        session.flush()
-        fact = Table(
-            table_id=str(uuid4()),
-            source_id=source.source_id,
-            table_name="orders",
-            layer="typed",
-            duckdb_path="csv__orders",
-            row_count=3,
-        )
-        session.add(fact)
-        session.flush()
 
-        fact_fqn = 'lake.typed."csv__orders"'
-        legacy_fqn = 'lake.typed."enriched_legacy"'
-        current_fqn = 'lake.typed."enriched_csv__orders"'
-        base = datetime(2026, 6, 4, tzinfo=UTC)
-        session.add_all(
-            [
-                MaterializationRecipe(
-                    session_id=baseline_session_id(),
-                    table_id=fact.table_id,
-                    layer="enriched",
-                    run_id="r0",
-                    target_fqn=legacy_fqn,
-                    ddl=f"CREATE OR REPLACE VIEW {legacy_fqn} AS SELECT * FROM {fact_fqn}",
-                    depends_on=[fact_fqn],
-                    created_at=base,
-                ),
-                MaterializationRecipe(
-                    session_id=baseline_session_id(),
-                    table_id=fact.table_id,
-                    layer="enriched",
-                    run_id="r1",
-                    target_fqn=current_fqn,
-                    ddl=f"CREATE OR REPLACE VIEW {current_fqn} AS SELECT * FROM {fact_fqn}",
-                    depends_on=[fact_fqn],
-                    created_at=base + timedelta(hours=1),
-                ),
+        def run(run_id: str) -> PhaseStatus:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            ctx = PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
+            )
+            result = EnrichedViewsPhase().run(ctx)
+            session.flush()
+            return result.status
+
+        def view_table() -> Table:
+            return session.execute(select(Table).where(Table.layer == "enriched")).scalar_one()
+
+        def dim_profiles(view_table_id: str) -> list[StatisticalProfile]:
+            col_ids = [
+                cid
+                for (cid,) in session.execute(
+                    select(Column.column_id).where(Column.table_id == view_table_id)
+                ).all()
             ]
-        )
-        session.flush()
+            return (
+                session.execute(
+                    select(StatisticalProfile).where(StatisticalProfile.column_id.in_(col_ids))
+                )
+                .scalars()
+                .all()
+            )
 
-        # The stale view physically exists; the current one does not (a lost rebuild).
-        duckdb_conn.execute(f"CREATE OR REPLACE VIEW {legacy_fqn} AS SELECT * FROM {fact_fqn}")
+        # Run 1 seeds the enriched Table + dim columns + their profiles.
+        assert run("run-1") == PhaseStatus.COMPLETED
+        vt = view_table()
+        run1_cols = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == vt.table_id)
+            ).all()
+        ]
+        assert run1_cols, "run-1 must register dimension columns"
+        run1_profiles = dim_profiles(vt.table_id)
+        assert run1_profiles, "run-1 must profile the dimension columns"
+        assert {p.run_id for p in run1_profiles} == {"run-1"}
 
-        rebuilt = rebuild_session_views(session, duckdb_conn, session_id=baseline_session_id())
-
-        assert rebuilt == [current_fqn], "only the latest recipe per fact is re-materialized"
-        assert duckdb_conn.execute(f"SELECT COUNT(*) FROM {current_fqn}").fetchone()[0] == 3
-        remaining = {row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()}
-        assert "enriched_csv__orders" in remaining
-        assert "enriched_legacy" not in remaining, "the session's stray view is dropped"
-
-    def test_rebuild_orders_slicing_after_enriched(self, session, duckdb_conn):
-        """A multi-layer rebuild materializes the enriched view before the slicing view.
-
-        A slicing recipe's ``depends_on`` names the enriched view it projects from,
-        so ``order_recipes_by_dependency`` must rebuild enriched first — else the
-        slicing ``CREATE`` references a view that does not yet exist. Proven by a
-        slicing view that SELECTs from the enriched view: the rebuild succeeds and
-        the slicing view returns the fact's rows.
-        """
-        from datetime import UTC, datetime, timedelta
-        from uuid import uuid4
-
-        from dataraum.analysis.typing.db_models import MaterializationRecipe
-        from dataraum.analysis.views.recipe import rebuild_session_views
-        from dataraum.storage import Source, Table
-        from tests.conftest import baseline_session_id
-
-        duckdb_conn.execute(
-            'CREATE OR REPLACE TABLE lake.typed."csv__orders2" AS '
-            "SELECT * FROM (VALUES (1, 100.0), (2, 200.0)) AS t(order_id, amount)"
-        )
-        source = Source(source_id=str(uuid4()), name="csv2", source_type="csv")
-        session.add(source)
-        session.flush()
-        fact = Table(
-            table_id=str(uuid4()),
-            source_id=source.source_id,
-            table_name="orders2",
-            layer="typed",
-            duckdb_path="csv__orders2",
-            row_count=2,
-        )
-        session.add(fact)
-        session.flush()
-
-        fact_fqn = 'lake.typed."csv__orders2"'
-        enriched_fqn = 'lake.typed."enriched_csv__orders2"'
-        slicing_fqn = 'lake.typed."slicing_orders2"'
-        base = datetime(2026, 6, 5, tzinfo=UTC)
-        session.add_all(
-            [
-                MaterializationRecipe(
-                    session_id=baseline_session_id(),
-                    table_id=fact.table_id,
-                    layer="enriched",
-                    run_id="r1",
-                    target_fqn=enriched_fqn,
-                    ddl=f"CREATE OR REPLACE VIEW {enriched_fqn} AS SELECT * FROM {fact_fqn}",
-                    depends_on=[fact_fqn],
-                    created_at=base,
-                ),
-                MaterializationRecipe(
-                    session_id=baseline_session_id(),
-                    table_id=fact.table_id,
-                    layer="slicing",
-                    run_id="r1",
-                    target_fqn=slicing_fqn,
-                    ddl=f"CREATE OR REPLACE VIEW {slicing_fqn} AS SELECT * FROM {enriched_fqn}",
-                    depends_on=[enriched_fqn],
-                    created_at=base + timedelta(minutes=1),
-                ),
-            ]
-        )
-        session.flush()
-
-        rebuilt = rebuild_session_views(session, duckdb_conn, session_id=baseline_session_id())
-
-        # Enriched must precede slicing — the slicing CREATE reads the enriched view.
-        assert rebuilt.index(enriched_fqn) < rebuilt.index(slicing_fqn)
-        assert duckdb_conn.execute(f"SELECT COUNT(*) FROM {slicing_fqn}").fetchone()[0] == 2
+        # Run 2 over the SAME view: the prior run's columns (and the profiles that
+        # FK-reference them) must be cleared and re-minted under run-2 — NOT a
+        # swallowed FK violation that leaves the run-1 columns stale.
+        assert run("run-2") == PhaseStatus.COMPLETED
+        vt2 = view_table()
+        assert vt2.table_id == vt.table_id, "the enriched Table row is reused across runs"
+        run2_cols = [
+            cid
+            for (cid,) in session.execute(
+                select(Column.column_id).where(Column.table_id == vt2.table_id)
+            ).all()
+        ]
+        # The columns were refreshed: brand-new ids, none of the run-1 set survive.
+        assert run2_cols, "run-2 must re-register dimension columns"
+        assert not (set(run1_cols) & set(run2_cols)), "prior run's columns must be replaced"
+        # And the stale run-1 profiles are gone — only run-2's profiles remain.
+        run2_profiles = dim_profiles(vt2.table_id)
+        assert run2_profiles, "run-2 must re-profile the dimension columns"
+        assert {p.run_id for p in run2_profiles} == {"run-2"}
 
 
 class TestVersionedGrainConstraints:
@@ -681,13 +618,11 @@ class TestVersionedGrainConstraints:
         from sqlalchemy.exc import IntegrityError
 
         from dataraum.analysis.views.db_models import EnrichedView
-        from tests.conftest import baseline_session_id
 
         fact_id = self._fact(session)
         session.add(
             EnrichedView(
                 view_id=str(uuid4()),
-                session_id=baseline_session_id(),
                 fact_table_id=fact_id,
                 view_name="enriched_csv__orders",
             )
@@ -696,7 +631,6 @@ class TestVersionedGrainConstraints:
         session.add(
             EnrichedView(
                 view_id=str(uuid4()),
-                session_id=baseline_session_id(),
                 fact_table_id=fact_id,
                 view_name="enriched_csv__orders_dup",
             )
@@ -712,13 +646,11 @@ class TestVersionedGrainConstraints:
         from sqlalchemy.exc import IntegrityError
 
         from dataraum.analysis.views.db_models import SlicingView
-        from tests.conftest import baseline_session_id
 
         fact_id = self._fact(session)
         session.add(
             SlicingView(
                 view_id=str(uuid4()),
-                session_id=baseline_session_id(),
                 fact_table_id=fact_id,
                 view_name="slicing_orders",
             )
@@ -727,7 +659,6 @@ class TestVersionedGrainConstraints:
         session.add(
             SlicingView(
                 view_id=str(uuid4()),
-                session_id=baseline_session_id(),
                 fact_table_id=fact_id,
                 view_name="slicing_orders_dup",
             )
@@ -743,14 +674,12 @@ class TestVersionedGrainConstraints:
         from sqlalchemy.exc import IntegrityError
 
         from dataraum.analysis.semantic.db_models import TableEntity
-        from tests.conftest import baseline_session_id
 
         fact_id = self._fact(session)
         for _ in range(2):
             session.add(
                 TableEntity(
                     entity_id=str(uuid4()),
-                    session_id=baseline_session_id(),
                     table_id=fact_id,
                     run_id="run-1",
                     detected_entity_type="fact",
@@ -761,21 +690,19 @@ class TestVersionedGrainConstraints:
             session.flush()
         session.rollback()
 
-    def test_table_entity_null_run_id_coexists(self, session):
-        """Run-versioned coexistence is intact: different run_ids (incl. NULL) are allowed."""
+    def test_table_entity_distinct_runs_coexist(self, session):
+        """Run-versioned coexistence is intact: distinct run_ids are allowed."""
         from uuid import uuid4
 
         from sqlalchemy import select
 
         from dataraum.analysis.semantic.db_models import TableEntity
-        from tests.conftest import baseline_session_id
 
         fact_id = self._fact(session)
-        for run_id in ("run-1", "run-2", None, None):
+        for run_id in ("run-1", "run-2", "run-3"):
             session.add(
                 TableEntity(
                     entity_id=str(uuid4()),
-                    session_id=baseline_session_id(),
                     table_id=fact_id,
                     run_id=run_id,
                     detected_entity_type="fact",
@@ -788,4 +715,4 @@ class TestVersionedGrainConstraints:
             .scalars()
             .all()
         )
-        assert len(rows) == 4, "distinct run_ids and NULLs coexist (NULLs are distinct)"
+        assert len(rows) == 3, "distinct run_ids coexist"

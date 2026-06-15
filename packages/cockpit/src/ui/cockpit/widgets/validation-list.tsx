@@ -43,9 +43,9 @@ export function ValidationListWidget({
 			`Explain the "${label}" validation using the why_validation tool.`,
 			{
 				refs:
-					`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+					`Internal only — do not quote in prose: ` +
 					`validation_id=${v.validation_id} ` +
-					`(use as the arguments to the why_validation tool).`,
+					`(use as the argument to the why_validation tool).`,
 				label: "Explaining the validation…",
 			},
 		);

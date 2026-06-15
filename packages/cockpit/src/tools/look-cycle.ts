@@ -18,7 +18,6 @@
 // the pure row→shape projection is unit-tested via `projectCycleOverview`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -59,8 +58,7 @@ const CycleOverview = z.object({
 export type CycleOverview = z.infer<typeof CycleOverview>;
 
 const LookCycleResult = z.object({
-	session_id: z.string(),
-	// False when the session has no promoted operating_model run yet — the widget
+	// False when the workspace has no promoted operating_model run yet — the widget
 	// should say "not run" rather than imply zero declared cycles.
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
@@ -109,21 +107,14 @@ export function projectCycleOverview(
 	};
 }
 
-export interface LookCycleInput {
-	session_id: string;
-}
-
-/** Per-cycle lifecycle + detection for one session's promoted operating_model run. */
-export async function lookCycle(
-	input: LookCycleInput,
-): Promise<LookCycleResult> {
-	// `analyzed` = the session PROMOTED an operating_model run — distinct from
+/** Per-cycle lifecycle + detection for the workspace's promoted operating_model run. */
+export async function lookCycle(): Promise<LookCycleResult> {
+	// `analyzed` = the workspace PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared cycles" (a vertical with none), which must not
 	// read as never-ran.
-	const head = await readOperatingModelHead(input.session_id);
+	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
-			session_id: input.session_id,
 			analyzed: false,
 			pending_teaches: 0,
 			cycles: [],
@@ -133,10 +124,8 @@ export async function lookCycle(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. The shared reader scopes to cycle artifacts — the
 	// authoritative declared set.
-	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
-		input.session_id,
-		"cycle",
-	);
+	const artifacts: LifecycleArtifactRow[] =
+		await readLifecycleArtifactRows("cycle");
 
 	const rawDetected = await metadataDb
 		.select({
@@ -149,8 +138,7 @@ export async function lookCycle(
 			completedCycles: currentDetectedBusinessCycles.completedCycles,
 			totalRecords: currentDetectedBusinessCycles.totalRecords,
 		})
-		.from(currentDetectedBusinessCycles)
-		.where(eq(currentDetectedBusinessCycles.sessionId, input.session_id));
+		.from(currentDetectedBusinessCycles);
 	const detectedByType = new Map<string, CycleDetectionRow>(
 		rawDetected.map((d) => [
 			d.canonicalType ?? "",
@@ -173,7 +161,6 @@ export async function lookCycle(
 	const pending = await getPendingOverlays();
 
 	return {
-		session_id: input.session_id,
 		analyzed: true,
 		pending_teaches: pending.length,
 		cycles,
@@ -183,20 +170,13 @@ export async function lookCycle(
 export const lookCycleTool = toolDefinition({
 	name: "look_cycle",
 	description:
-		"Show a session's operating-model business cycles — every declared cycle " +
+		"Show the workspace's operating-model business cycles — every declared cycle " +
 		"with its lifecycle state (declared / grounded / executed), the reason it " +
 		"could not be measured when it stopped short (e.g. not detected in this " +
 		"workspace), and the structural completion (completion rate + completed / " +
-		"total counts). Read-only; reflects the promoted operating_model run for " +
-		"the session (run the operating_model tool first). pending_teaches counts " +
-		"un-applied teaches across the workspace. Use `why_cycle` to drill into a " +
-		"specific cycle.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe(
-				"The begin_session session whose cycles to inspect (its session_id).",
-			),
-	}),
+		"total counts). Read-only; reflects the promoted operating_model run (run " +
+		"the operating_model tool first). pending_teaches counts un-applied teaches " +
+		"across the workspace. Use `why_cycle` to drill into a specific cycle.",
+	inputSchema: z.object({}),
 	outputSchema: LookCycleResult,
-}).server((input) => lookCycle(input));
+}).server(() => lookCycle());

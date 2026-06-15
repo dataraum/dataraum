@@ -9,28 +9,27 @@ CREATE VIEW __READ__.current_claim_witnesses AS
 SELECT r.*,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+    WHERE h.stage = 'generation' AND h.run_id = r.run_id
       AND h.target = 'table:' || r.table_id
   ) AS via_table_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
-  ) AS via_session_head,
+    WHERE h.stage = 'catalog' AND h.run_id = r.run_id
+      AND h.target = 'catalog'
+  ) AS via_catalog_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
+      AND h.target = 'catalog'
   ) AS via_operating_model_head
 FROM __WS__.claim_witnesses r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.run_id = r.run_id
-    AND ((h.stage = 'detect'
-      AND (h.target = 'table:' || r.table_id
-        OR h.target = 'session:' || r.session_id))
-     OR (h.stage = 'operating_model'
-      AND h.target = 'session:' || r.session_id))
+    AND ((h.stage = 'generation'
+      AND h.target = 'table:' || r.table_id)
+     OR (h.stage = 'catalog' AND h.target = 'catalog')
+     OR (h.stage = 'operating_model' AND h.target = 'catalog'))
 )
 ;
 
@@ -40,7 +39,7 @@ SELECT r.* FROM __WS__.column_eligibility r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.target = 'table:' || r.table_id
-    AND h.stage = 'column_eligibility'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -57,8 +56,8 @@ CREATE VIEW __READ__.current_derived_columns AS
 SELECT r.* FROM __WS__.derived_columns r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -67,7 +66,7 @@ CREATE VIEW __READ__.current_detected_business_cycles AS
 SELECT r.* FROM __WS__.detected_business_cycles r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
+  WHERE h.target = 'catalog'
     AND h.stage = 'operating_model'
     AND h.run_id = r.run_id
 );
@@ -77,8 +76,8 @@ CREATE VIEW __READ__.current_enriched_views AS
 SELECT r.* FROM __WS__.enriched_views r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -87,28 +86,27 @@ CREATE VIEW __READ__.current_entropy_objects AS
 SELECT r.*,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+    WHERE h.stage = 'generation' AND h.run_id = r.run_id
       AND h.target = 'table:' || r.table_id
   ) AS via_table_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
-  ) AS via_session_head,
+    WHERE h.stage = 'catalog' AND h.run_id = r.run_id
+      AND h.target = 'catalog'
+  ) AS via_catalog_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
+      AND h.target = 'catalog'
   ) AS via_operating_model_head
 FROM __WS__.entropy_objects r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.run_id = r.run_id
-    AND ((h.stage = 'detect'
-      AND (h.target = 'table:' || r.table_id
-        OR h.target = 'session:' || r.session_id))
-     OR (h.stage = 'operating_model'
-      AND h.target = 'session:' || r.session_id))
+    AND ((h.stage = 'generation'
+      AND h.target = 'table:' || r.table_id)
+     OR (h.stage = 'catalog' AND h.target = 'catalog')
+     OR (h.stage = 'operating_model' AND h.target = 'catalog'))
 )
 ;
 
@@ -117,51 +115,49 @@ CREATE VIEW __READ__.current_entropy_readiness AS
 SELECT r.*,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
+    WHERE h.stage = 'generation' AND h.run_id = r.run_id
       AND h.target = 'table:' || r.table_id
   ) AS via_table_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
-    WHERE h.stage = 'detect' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
-  ) AS via_session_head,
+    WHERE h.stage = 'catalog' AND h.run_id = r.run_id
+      AND h.target = 'catalog'
+  ) AS via_catalog_head,
   EXISTS (
     SELECT 1 FROM __WS__.metadata_snapshot_head h
     WHERE h.stage = 'operating_model' AND h.run_id = r.run_id
-      AND h.target = 'session:' || r.session_id
+      AND h.target = 'catalog'
   ) AS via_operating_model_head
 FROM __WS__.entropy_readiness r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.run_id = r.run_id
-    AND ((h.stage = 'detect'
-      AND (h.target = 'table:' || r.table_id
-        OR h.target = 'session:' || r.session_id))
-     OR (h.stage = 'operating_model'
-      AND h.target = 'session:' || r.session_id))
+    AND ((h.stage = 'generation'
+      AND h.target = 'table:' || r.table_id)
+     OR (h.stage = 'catalog' AND h.target = 'catalog')
+     OR (h.stage = 'operating_model' AND h.target = 'catalog'))
 )
   AND (
     NOT EXISTS (
       SELECT 1 FROM __WS__.metadata_snapshot_head h3
       WHERE h3.run_id = r.run_id
-        AND h3.target = 'session:' || r.session_id
-        AND h3.stage IN ('detect', 'operating_model')
+        AND h3.target = 'catalog'
+        AND h3.stage IN ('catalog', 'operating_model')
     )
     OR NOT EXISTS (
       SELECT 1 FROM __WS__.entropy_readiness r2
       JOIN __WS__.metadata_snapshot_head h2
         ON h2.run_id = r2.run_id
-       AND h2.target = 'session:' || r2.session_id
-       AND h2.stage IN ('detect', 'operating_model')
-      WHERE r2.session_id = r.session_id
-        AND r2.target = r.target
+       AND h2.target = 'catalog'
+       AND h2.stage IN ('catalog', 'operating_model')
+      WHERE r2.target = r.target
         AND r2.run_id <> r.run_id
         AND h2.promoted_at > (
           SELECT MAX(h3.promoted_at)
           FROM __WS__.metadata_snapshot_head h3
           WHERE h3.run_id = r.run_id
-            AND h3.target = 'session:' || r.session_id
-            AND h3.stage IN ('detect', 'operating_model')
+            AND h3.target = 'catalog'
+            AND h3.stage IN ('catalog', 'operating_model')
         )
     )
   )
@@ -171,20 +167,12 @@ DROP VIEW IF EXISTS __READ__.fix_ledger;
 CREATE VIEW __READ__.fix_ledger AS
 SELECT * FROM __WS__.fix_ledger;
 
-DROP VIEW IF EXISTS __READ__.investigation_sessions;
-CREATE VIEW __READ__.investigation_sessions AS
-SELECT * FROM __WS__.investigation_sessions;
-
-DROP VIEW IF EXISTS __READ__.investigation_steps;
-CREATE VIEW __READ__.investigation_steps AS
-SELECT * FROM __WS__.investigation_steps;
-
 DROP VIEW IF EXISTS __READ__.current_lifecycle_artifacts;
 CREATE VIEW __READ__.current_lifecycle_artifacts AS
 SELECT r.* FROM __WS__.lifecycle_artifacts r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
+  WHERE h.target = 'catalog'
     AND h.stage = 'operating_model'
     AND h.run_id = r.run_id
 );
@@ -195,7 +183,7 @@ SELECT r.* FROM __WS__.materialization_recipes r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.target = 'table:' || r.table_id
-    AND h.stage = 'typing'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -204,8 +192,8 @@ CREATE VIEW __READ__.current_measure_aggregation_lineage AS
 SELECT r.* FROM __WS__.measure_aggregation_lineage r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -218,10 +206,14 @@ CREATE VIEW __READ__.current_relationships AS
 SELECT r.* FROM __WS__.relationships r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
+
+DROP VIEW IF EXISTS __READ__.run_tables;
+CREATE VIEW __READ__.run_tables AS
+SELECT * FROM __WS__.run_tables;
 
 DROP VIEW IF EXISTS __READ__.current_semantic_annotations;
 CREATE VIEW __READ__.current_semantic_annotations AS
@@ -231,21 +223,17 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'semantic_per_column'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
-
-DROP VIEW IF EXISTS __READ__.session_tables;
-CREATE VIEW __READ__.session_tables AS
-SELECT * FROM __WS__.session_tables;
 
 DROP VIEW IF EXISTS __READ__.current_slice_definitions;
 CREATE VIEW __READ__.current_slice_definitions AS
 SELECT r.* FROM __WS__.slice_definitions r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -254,8 +242,8 @@ CREATE VIEW __READ__.current_slicing_views AS
 SELECT r.* FROM __WS__.slicing_views r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -279,7 +267,7 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'statistics'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -291,7 +279,7 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'statistical_quality'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -300,8 +288,8 @@ CREATE VIEW __READ__.current_table_entities AS
 SELECT r.* FROM __WS__.table_entities r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -317,7 +305,7 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'temporal'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -326,8 +314,8 @@ CREATE VIEW __READ__.current_temporal_slice_analyses AS
 SELECT r.* FROM __WS__.temporal_slice_analyses r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
-    AND h.stage = 'detect'
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 
@@ -339,7 +327,7 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'typing'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -351,7 +339,7 @@ WHERE EXISTS (
   JOIN __WS__.metadata_snapshot_head h
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
-    AND h.stage = 'typing'
+    AND h.stage = 'generation'
     AND h.run_id = r.run_id
 );
 
@@ -360,7 +348,7 @@ CREATE VIEW __READ__.current_validation_results AS
 SELECT r.* FROM __WS__.validation_results r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'session:' || r.session_id
+  WHERE h.target = 'catalog'
     AND h.stage = 'operating_model'
     AND h.run_id = r.run_id
 );

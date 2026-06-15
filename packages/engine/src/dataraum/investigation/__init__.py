@@ -1,21 +1,13 @@
-"""Investigation session models — the per-session FK scope for engine rows."""
+"""Run-table anchor — the per-run typed-table scope for engine rows (DAT-506)."""
 
-from dataraum.investigation.db_models import (
-    InvestigationSession,
-    InvestigationStep,
-    SessionTable,
-)
+from dataraum.investigation.db_models import RunTable
 from dataraum.investigation.queries import (
-    link_session_tables,
-    sources_for_session,
-    tables_for_session,
+    link_run_tables,
+    tables_for_run,
 )
 
 __all__ = [
-    "InvestigationSession",
-    "InvestigationStep",
-    "SessionTable",
-    "link_session_tables",
-    "sources_for_session",
-    "tables_for_session",
+    "RunTable",
+    "link_run_tables",
+    "tables_for_run",
 ]

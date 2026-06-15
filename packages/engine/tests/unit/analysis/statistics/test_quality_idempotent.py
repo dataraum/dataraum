@@ -92,7 +92,7 @@ def test_reinsert_same_run_does_not_duplicate(session_factory: Any, duckdb_conn:
 
     with session_factory() as session:
         res = assess_statistical_quality(
-            "tbl-1", duckdb_conn, session, max_workers=1, session_id="sess-1", run_id="run-A"
+            "tbl-1", duckdb_conn, session, max_workers=1, run_id="run-A"
         )
         assert res.success
         session.commit()
@@ -100,7 +100,7 @@ def test_reinsert_same_run_does_not_duplicate(session_factory: Any, duckdb_conn:
     # The at-least-once retry: same run_id.
     with session_factory() as session:
         res = assess_statistical_quality(
-            "tbl-1", duckdb_conn, session, max_workers=1, session_id="sess-1", run_id="run-A"
+            "tbl-1", duckdb_conn, session, max_workers=1, run_id="run-A"
         )
         assert res.success
         session.commit()
@@ -122,14 +122,10 @@ def test_second_run_id_coexists(session_factory: Any, duckdb_conn: Any) -> None:
     _seed(session_factory)
 
     with session_factory() as session:
-        assess_statistical_quality(
-            "tbl-1", duckdb_conn, session, max_workers=1, session_id="sess-1", run_id="run-A"
-        )
+        assess_statistical_quality("tbl-1", duckdb_conn, session, max_workers=1, run_id="run-A")
         session.commit()
     with session_factory() as session:
-        assess_statistical_quality(
-            "tbl-1", duckdb_conn, session, max_workers=1, session_id="sess-1", run_id="run-B"
-        )
+        assess_statistical_quality("tbl-1", duckdb_conn, session, max_workers=1, run_id="run-B")
         session.commit()
 
     with session_factory() as session:

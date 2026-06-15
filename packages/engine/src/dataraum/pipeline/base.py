@@ -37,11 +37,6 @@ class PhaseContext:
 
     session: Session
     duckdb_conn: duckdb.DuckDBPyConnection
-    # The ingestion unit — set for add_source's own phases (import/typing/…).
-    # ``None`` for stages past the add_source boundary (begin_session onward):
-    # a source is meaningless there, so those phases scope by ``table_ids``
-    # alone and never read ``source_id`` (see feedback-source-dies-at-addsource).
-    source_id: str | None = None
     table_ids: list[str] = field(default_factory=list)
 
     # Configuration overrides
@@ -54,27 +49,13 @@ class PhaseContext:
     # Connection manager for vector DB access (optional)
     manager: ConnectionManager | None = None
 
-    # InvestigationSession id for per-session row FK population.
-    # Populated by the scheduler from manager.session_id; tests pass directly.
-    session_id: str | None = None
-
-    # Snapshot version axis (DAT-413). Minted once per workflow execution
-    # (AddSourceWorkflow, via workflow.uuid4) and threaded on the identity into
-    # every activity, so all of a run's metadata rows share one run_id and a later
-    # promote step can flip the per-(table, stage) head. Distinct from session_id
-    # (the analytical-session FK). None for begin_session phases in Slice A.
+    # Snapshot version axis (DAT-413/506). Minted once per workflow execution
+    # (via workflow.uuid4) and threaded on the run ref into every activity, so all
+    # of a run's metadata rows share one run_id and a later promote step can flip
+    # the per-table generation head. This is THE scope key for run-versioned rows
+    # (the identity is source-free + session-free since DAT-506/426; a source id is
+    # carried only in ``config['source_id']`` for the one per-source ``import``).
     run_id: str | None = None
-
-    def require_session_id(self) -> str:
-        """Return ``session_id`` or raise — phases that persist must call this."""
-        if self.session_id:
-            return self.session_id
-        if self.manager and self.manager.session_id:
-            return self.manager.session_id
-        raise RuntimeError(
-            "PhaseContext.session_id is unset — phases persisting per-session rows "
-            "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
-        )
 
     def require_run_id(self) -> str:
         """Return ``run_id`` or raise — for phases that stamp run-versioned rows.
@@ -89,23 +70,6 @@ class PhaseContext:
                 "rows and requires the workflow-minted run_id on its context."
             )
         return self.run_id
-
-    def require_source_id(self) -> str:
-        """Return ``source_id`` or raise — for add_source-lineage phases that need it.
-
-        Source is the ingestion unit; phases past the add_source boundary
-        (begin_session onward) leave it ``None`` and scope by ``table_ids``
-        (feedback-source-dies-at-addsource). A phase that still requires a single
-        source calls this to assert that invariant rather than silently scoping
-        a ``None`` source.
-        """
-        if self.source_id is None:
-            raise RuntimeError(
-                "PhaseContext.source_id is unset — this phase requires a "
-                "source-scoped context (the add_source lineage). Stages past "
-                "add_source must scope by table_ids instead."
-            )
-        return self.source_id
 
 
 @dataclass

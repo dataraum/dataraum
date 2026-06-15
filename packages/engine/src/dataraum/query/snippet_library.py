@@ -12,7 +12,7 @@ Discovery (graph agent only):
 2. Expression pattern match — formula steps (``find_by_expression``, O(N), N < 100)
 
 Usage:
-    library = SnippetLibrary(session, session_id=session_id)
+    library = SnippetLibrary(session, workspace_id=workspace_id)
 
     # Exact lookup (dedup on mint)
     snippet = library.find_by_key(
@@ -75,27 +75,27 @@ class SnippetLibrary:
         self,
         session: Session,
         *,
-        session_id: str | None = None,
+        workspace_id: str | None = None,
     ):
         """Initialize with database session.
 
         Args:
             session: SQLAlchemy session for snippet metadata
-            session_id: InvestigationSession id for per-row FK population.
+            workspace_id: Workspace id for per-row population.
                 Required for paths that create new rows (snippet upsert,
                 usage recording). Read-only paths (find_by_*, record_failure)
                 may pass None.
         """
         self.session = session
-        self.session_id = session_id
+        self.workspace_id = workspace_id
 
-    def _require_session_id(self) -> str:
-        if not self.session_id:
+    def _require_workspace_id(self) -> str:
+        if not self.workspace_id:
             raise RuntimeError(
-                "SnippetLibrary write paths require session_id — "
-                "construct with SnippetLibrary(session, session_id=...)."
+                "SnippetLibrary write paths require workspace_id — "
+                "construct with SnippetLibrary(session, workspace_id=...)."
             )
-        return self.session_id
+        return self.workspace_id
 
     # --- Discovery ---
 
@@ -328,7 +328,7 @@ class SnippetLibrary:
             # Create new snippet
             record = SQLSnippetRecord(
                 snippet_id=str(uuid4()),
-                session_id=self._require_session_id(),
+                workspace_id=self._require_workspace_id(),
                 snippet_type=snippet_type,
                 standard_field=standard_field,
                 statement=statement,
@@ -391,7 +391,7 @@ class SnippetLibrary:
         """
         record = SnippetUsageRecord(
             usage_id=str(uuid4()),
-            session_id=self._require_session_id(),
+            workspace_id=self._require_workspace_id(),
             execution_id=execution_id,
             execution_type=execution_type,
             snippet_id=snippet_id,

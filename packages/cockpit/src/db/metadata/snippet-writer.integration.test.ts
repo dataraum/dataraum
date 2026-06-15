@@ -9,8 +9,9 @@
 //
 // Harness: the established *.integration.test pattern — gated on
 // METADATA_DATABASE_URL, REUSING the running compose Postgres. Rows are written
-// under a synthetic schema_mapping_id + one investigation_sessions FK parent, so
-// cleanup is a single delete-by-session and real producer rows are never touched.
+// under a synthetic schema_mapping_id + a test workspace_id (DAT-506: snippets are
+// workspace-scoped, no investigation_sessions FK), so cleanup is a single
+// delete-by-workspace_id and real producer rows are never touched.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -48,9 +49,11 @@ const SCHEMA = STACK_AVAILABLE
 	? `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll("-", "_")}`
 	: "";
 
-const TEST_SESSION = "dat486-write-test-session";
+// A synthetic workspace_id the test rows carry — isolates them from real producer
+// data; cleanup is by this value (DAT-506: snippets are workspace-scoped).
+const TEST_WORKSPACE = "dat486-write-test-workspace";
 // Synthetic schema_mapping_id — isolates these rows from real producer data and
-// from the P0 read fixture; cleanup is by session, so the value only scopes reads.
+// from the P0 read fixture.
 const MAP = "dat486-write-test";
 
 describe.skipIf(!STACK_AVAILABLE)(
@@ -68,12 +71,6 @@ describe.skipIf(!STACK_AVAILABLE)(
 			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
 
 			await cleanup();
-			await sql.unsafe(
-				`INSERT INTO "${SCHEMA}".investigation_sessions
-			 (session_id, status, started_at, intent, step_count)
-			 VALUES ($1, 'complete', now(), 'test', 0)`,
-				[TEST_SESSION],
-			);
 		});
 
 		afterAll(async () => {
@@ -85,12 +82,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 
 		async function cleanup(): Promise<void> {
 			await sql.unsafe(
-				`DELETE FROM "${SCHEMA}".sql_snippets WHERE session_id = $1`,
-				[TEST_SESSION],
-			);
-			await sql.unsafe(
-				`DELETE FROM "${SCHEMA}".investigation_sessions WHERE session_id = $1`,
-				[TEST_SESSION],
+				`DELETE FROM "${SCHEMA}".sql_snippets WHERE workspace_id = $1`,
+				[TEST_WORKSPACE],
 			);
 		}
 
@@ -109,7 +102,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const res = await writer.saveQuerySnippet({
 				schemaMappingId: MAP,
 				standardField: "learned_revenue",
-				sessionId: TEST_SESSION,
+				workspaceId: TEST_WORKSPACE,
 				sql: "SELECT SUM(rev) AS value FROM lake.typed.orders",
 				description: "Learned: revenue",
 				source: "query:exec_one",
@@ -127,7 +120,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const first = await writer.saveQuerySnippet({
 				schemaMappingId: MAP,
 				standardField: "learned_margin",
-				sessionId: TEST_SESSION,
+				workspaceId: TEST_WORKSPACE,
 				sql: "SELECT 1 AS value",
 				description: "first",
 				source: "query:exec_a",
@@ -138,7 +131,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const second = await writer.saveQuerySnippet({
 				schemaMappingId: MAP,
 				standardField: "learned_margin",
-				sessionId: TEST_SESSION,
+				workspaceId: TEST_WORKSPACE,
 				sql: "SELECT 2 AS value",
 				description: "second",
 				source: "query:exec_b",
@@ -157,7 +150,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const a = await writer.saveQuerySnippet({
 				schemaMappingId: MAP,
 				standardField: "learned_a",
-				sessionId: TEST_SESSION,
+				workspaceId: TEST_WORKSPACE,
 				sql: "SELECT 1 AS value",
 				description: "a",
 				source: "query:exec_x",
@@ -165,7 +158,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const b = await writer.saveQuerySnippet({
 				schemaMappingId: MAP,
 				standardField: "learned_b",
-				sessionId: TEST_SESSION,
+				workspaceId: TEST_WORKSPACE,
 				sql: "SELECT 2 AS value",
 				description: "b",
 				source: "query:exec_x",

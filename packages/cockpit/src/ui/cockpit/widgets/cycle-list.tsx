@@ -37,9 +37,9 @@ export function CycleListWidget({
 			`Explain the "${label}" business cycle using the why_cycle tool.`,
 			{
 				refs:
-					`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+					`Internal only — do not quote in prose: ` +
 					`canonical_type=${c.canonical_type} ` +
-					`(use as the arguments to the why_cycle tool).`,
+					`(use as the argument to the why_cycle tool).`,
 				label: "Explaining the cycle…",
 			},
 		);

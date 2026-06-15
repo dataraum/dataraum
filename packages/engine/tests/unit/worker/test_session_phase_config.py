@@ -1,10 +1,11 @@
-"""Unit test for the source-free begin_session phase config builder (DAT-401).
+"""Unit test for the source-free begin_session phase config builder (DAT-401/506).
 
 ``run_session_phase`` builds a begin_session phase's ``ctx.config`` from the
-phase's static pipeline.yaml config plus the session's frame ``vertical`` (read
-off the ``InvestigationSession`` row) — NOT from a ``Source``. The vertical is
-the one runtime value ``semantic_per_table`` reads (``ctx.config.get("vertical")``
-for its ontology), so pin that threading here; no LLM, no DB.
+phase's static pipeline.yaml config plus the workspace ``vertical`` (threaded
+from the workflow INPUT by name, DAT-506) — NOT from a ``Source`` or a session
+row. The vertical is the one runtime value ``semantic_per_table`` reads
+(``ctx.config.get("vertical")`` for its ontology), so pin that threading here;
+no LLM, no DB.
 """
 
 from __future__ import annotations

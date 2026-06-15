@@ -32,7 +32,7 @@ from dataraum.graphs.models import (
     StepType,
     TransformationGraph,
 )
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture
@@ -277,7 +277,7 @@ class TestGraphAgentIntegration:
         context = _make_execution_context(duckdb_with_data)
 
         # Execute
-        result = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
 
         assert result.success
         assert result.value is not None
@@ -339,7 +339,7 @@ class TestGraphAgentSnippets:
 
         context = _make_execution_context(duckdb_with_data)
 
-        result = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
         assert result.success
 
         # Verify snippet was saved
@@ -373,7 +373,7 @@ class TestGraphAgentSnippets:
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         # Pre-populate snippet library with a matching snippet
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=baseline_run_id())
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -395,7 +395,7 @@ class TestGraphAgentSnippets:
         context = _make_execution_context(duckdb_with_data)
 
         # Execute — should assemble from snippets (no LLM call)
-        result = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
         assert result.success
         assert result.value.output_value == 600.0  # 100 + 200 + 300
         assert agent.provider.converse.call_count == 0  # No LLM call needed
@@ -423,7 +423,7 @@ class TestGraphAgentSnippets:
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         # Pre-populate snippet
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=baseline_run_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -444,7 +444,7 @@ class TestGraphAgentSnippets:
 
         context = _make_execution_context(duckdb_with_data)
 
-        result = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
         assert result.success
 
         # Verify usage record was created
@@ -477,7 +477,7 @@ class TestGraphAgentSnippets:
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         # Pre-populate snippet with column_mappings
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=baseline_run_id())
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -554,7 +554,7 @@ class TestGraphAgentSnippets:
         context = _make_execution_context(duckdb_with_data)
 
         # Execute — no cached snippets (first time), should still track usage
-        result = agent.execute(session, sample_graph, context, session_id=baseline_session_id())
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
         assert result.success
 
         # Verify usage records were created

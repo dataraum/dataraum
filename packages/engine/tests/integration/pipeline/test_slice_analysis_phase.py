@@ -11,6 +11,7 @@ from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slice_analysis_phase import SliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_run_id
 
 
 class TestSliceAnalysisPhase:
@@ -28,6 +29,7 @@ class TestSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -78,6 +80,7 @@ class TestSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -141,6 +144,7 @@ class TestSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table_id],
             config={},
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -158,6 +162,7 @@ class TestSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)
@@ -196,6 +201,7 @@ class TestSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             config={},
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)

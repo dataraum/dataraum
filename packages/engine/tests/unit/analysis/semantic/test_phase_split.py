@@ -28,7 +28,7 @@ from dataraum.analysis.semantic.processor import (
 )
 from dataraum.core.models.base import RelationshipType, Result
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
@@ -90,7 +90,7 @@ class TestPersistColumnAnnotations:
             output,
             [table.table_id],
             annotated_by="test-model",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -118,7 +118,7 @@ class TestPersistColumnAnnotations:
             output,
             [table.table_id],
             annotated_by="m",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         assert count == 1
 
@@ -151,7 +151,7 @@ class TestPersistColumnAnnotations:
             output,
             [table.table_id],
             annotated_by="m",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -210,7 +210,7 @@ class TestSynthesizeAndStoreTables:
             session,
             agent,
             [orders.table_id, customers.table_id],
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -275,12 +275,9 @@ class TestSynthesizeAndStoreTables:
         orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
         customers = _table_with_columns(session, "customers", ["id"])
         tids = [orders.table_id, customers.table_id]
-        sid = baseline_session_id()
 
         def run(run_id: str) -> None:
-            assert synthesize_and_store_tables(
-                session, self._agent(), tids, session_id=sid, run_id=run_id
-            ).success
+            assert synthesize_and_store_tables(session, self._agent(), tids, run_id=run_id).success
             session.flush()
 
         def counts() -> tuple[int, int]:
@@ -317,9 +314,7 @@ class TestSynthesizeAndStoreTables:
         agent = MagicMock()
         agent.synthesize_tables = MagicMock(return_value=Result.fail("LLM down"))
 
-        result = synthesize_and_store_tables(
-            session, agent, ["t1"], session_id=baseline_session_id()
-        )
+        result = synthesize_and_store_tables(session, agent, ["t1"], run_id=baseline_run_id())
         assert not result.success
         assert "LLM down" in (result.error or "")
 

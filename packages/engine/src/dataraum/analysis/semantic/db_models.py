@@ -46,15 +46,9 @@ class SemanticAnnotation(Base):
     annotation_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Classification
     semantic_role: Mapped[str | None] = mapped_column(
@@ -131,20 +125,12 @@ class TableEntity(Base):
     # One entity classification per table PER RUN (DAT-408/413). TableEntity is
     # run-versioned and coexists across runs; this constraint (mirroring
     # ``uq_column_semantic_annotation``) makes "one row per ``(table_id, run_id)``"
-    # a DB guarantee so the run-scoped readers can trust it. ``run_id`` is nullable
-    # (non-run callers/tests) — Postgres/SQLite treat NULLs as distinct, so those
-    # rows are unconstrained, which is intentional.
+    # a DB guarantee so the run-scoped readers can trust it.
     __table_args__ = (UniqueConstraint("table_id", "run_id", name="uq_table_entity_table_run"),)
     entity_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    # Snapshot version axis (DAT-413): the run that wrote this row. Nullable —
-    # additive, behavior-preserving; the head pointer is not consulted yet.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    # Snapshot version axis (DAT-413): the run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
 
     detected_entity_type: Mapped[str] = mapped_column(
         String, nullable=False

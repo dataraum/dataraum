@@ -38,7 +38,6 @@ def _candidate(
     pattern: str | None = None,
 ) -> TypeCandidate:
     return TypeCandidate(
-        session_id="sess-1",
         column_id="col-1",
         run_id=run_id,
         data_type=data_type,
@@ -49,7 +48,6 @@ def _candidate(
 
 def _decision(run_id: str, source: str, decided_type: str) -> TypeDecision:
     return TypeDecision(
-        session_id="sess-1",
         column_id="col-1",
         run_id=run_id,
         decided_type=decided_type,

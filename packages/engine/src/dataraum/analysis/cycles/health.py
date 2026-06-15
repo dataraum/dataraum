@@ -38,14 +38,11 @@ class CycleHealthScore:
 class HealthReport:
     """Aggregate health report for all cycles in a session run."""
 
-    session_id: str
     cycle_scores: list[CycleHealthScore] = field(default_factory=list)
     overall_health: float | None = None
 
 
-def compute_cycle_health(
-    session: Session, session_id: str, *, vertical: str, run_id: str | None
-) -> HealthReport:
+def compute_cycle_health(session: Session, *, vertical: str, run_id: str | None) -> HealthReport:
     """Compute health scores for all detected cycles in a session run (DAT-455).
 
     Combines cycle completion rates (from LLM detection) with validation
@@ -53,32 +50,30 @@ def compute_cycle_health(
 
     Args:
         session: SQLAlchemy session
-        session_id: The journey session to compute health for.
         vertical: Vertical name (e.g. 'finance')
         run_id: The promoted operating_model run to read BOTH the detected
             cycles AND the validation results at. Both are run-versioned
             (DAT-455 / DAT-438); ``None`` (no promoted run) reads NOTHING —
             fail-closed, never a cross-run read that would mix superseded runs
-            (or other sessions') into this report.
+            into this report.
 
     Returns:
         HealthReport with per-cycle scores and overall health.
     """
-    # 1. Query detected cycles for this session run. Both cycles and validation
+    # 1. Query detected cycles for this run. Both cycles and validation
     # results are run-versioned and coexist across runs (DAT-455) — fail-closed
     # on a missing run, never a cross-run read.
     if run_id is None:
-        return HealthReport(session_id=session_id)
+        return HealthReport()
 
     cycles = session.scalars(
         select(DetectedBusinessCycle).where(
-            DetectedBusinessCycle.session_id == session_id,
             DetectedBusinessCycle.run_id == run_id,
         )
     ).all()
 
     if not cycles:
-        return HealthReport(session_id=session_id)
+        return HealthReport()
 
     # 2. Load this run's validation results (run-scoped, same operating_model run
     # as the cycles — their evidence describes one run, never a mix). Cycles
@@ -166,7 +161,6 @@ def compute_cycle_health(
     overall = sum(composites) / len(composites) if composites else None
 
     return HealthReport(
-        session_id=session_id,
         cycle_scores=scores,
         overall_health=overall,
     )

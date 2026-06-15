@@ -37,7 +37,7 @@ from dataraum.pipeline.base import PhaseStatus
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture
@@ -92,11 +92,10 @@ def _resolve_once(
     run_id: str | None = None,
 ) -> str:
     """Infer + resolve types for a raw table, returning the typed table id."""
+    run_id = run_id or baseline_run_id()
     raw_table = session.get(Table, staged_table_id)
     assert raw_table is not None
-    infer = infer_type_candidates(
-        raw_table, duckdb_conn, session, session_id=baseline_session_id(), run_id=run_id
-    )
+    infer = infer_type_candidates(raw_table, duckdb_conn, session, run_id=run_id)
     assert infer.success, infer.error
     session.flush()
     resolve = resolve_types(
@@ -104,7 +103,6 @@ def _resolve_once(
         duckdb_conn,
         session,
         min_confidence=0.85,
-        session_id=baseline_session_id(),
         run_id=run_id,
     )
     assert resolve.success, resolve.error

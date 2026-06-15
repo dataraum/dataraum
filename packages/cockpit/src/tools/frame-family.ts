@@ -89,7 +89,6 @@ export async function frameFamily<T>(opts: {
 	// Map a resolved member → its vertical-tagged `teach` payload.
 	toPayload: (item: T) => Record<string, unknown>;
 	edited?: T[];
-	sessionId?: string | null;
 	signal?: AbortSignal;
 }): Promise<FrameFamilyResult<T>> {
 	const items =
@@ -102,7 +101,6 @@ export async function frameFamily<T>(opts: {
 		const { overlay_id } = await teach({
 			type: opts.teachType,
 			payload: opts.toPayload(item),
-			session_id: opts.sessionId ?? null,
 		});
 		written.push({ ...item, overlay_id });
 	}

@@ -1,17 +1,28 @@
-// Control-plane run recording (DAT-461) — the driver tools call this AFTER a
-// Temporal workflow starts to record the session + its run in cockpit_db.
+// Control-plane run recording (DAT-461, DAT-506) — the driver tools call this
+// BEFORE a Temporal workflow starts to record the session + its run in cockpit_db.
 //
-// Additive to the engine: the tools still seed `investigation_sessions` (the
-// engine's FK anchor) exactly as before; this records the COCKPIT's view —
-// which workspace, who, and the in-flight `(workflowId, runId)` the reload-
-// recovery substrate (DAT-462) reads to re-attach progress.
+// cockpit_db is the session-of-record now (DAT-506): the engine no longer has an
+// `investigation_sessions` table. This records the COCKPIT's view — which
+// workspace, who, and the `(workflowId, runId)` the reload-recovery substrate
+// (DAT-462) reads to re-attach progress.
 //
-// Best-effort by design: a control-plane breadcrumb must NEVER fail the user's
-// workflow (which has already started by the time this runs), so any error is
-// logged and swallowed. Idempotent: the `sessions` upsert is conflict-safe (one
-// row per engine session — operating_model reuses begin_session's, re-runs
-// reuse too), and `(workflowId, runId)` is UNIQUE so a repeated record is a
-// no-op.
+// AUTHORITATIVE, not best-effort (Q4 ruling, DAT-506): an unrecorded run is
+// orphaned — the reload-recovery substrate can't re-attach to it and there is no
+// session-of-record for it — so recordRun runs BEFORE `workflow.start` and THROWS
+// on failure, aborting the start. Idempotent so a retried start is safe: the
+// `sessions` upsert is conflict-safe (one row per engine session — operating_model
+// reuses begin_session's, re-runs reuse too), and `(workflowId, runId)` is UNIQUE
+// so a repeated record is a no-op. The COMPLETION-side writers (`markRunStatus` /
+// `claimRunNarration`) stay best-effort — by then the run is recorded and live.
+//
+// `runId` is Temporal's EXECUTION id (`firstExecutionRunId`, minted only at
+// `workflow.start`) — the poll/reconcile identity. The pre-start call records the
+// run keyed by its deterministic `workflowId` with `runId` left as the workflowId
+// placeholder; `attachRunId` rewrites it to the real execution id right after start.
+// That post-record writer is best-effort — the orphan-critical session + run rows
+// already exist by then. The engine mints its own internal metadata `run_id` (the
+// version axis) and resolves replay from the generation heads, so the cockpit never
+// stores it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
@@ -19,62 +30,98 @@ import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
 import { sessionRuns, sessions } from "./schema";
 
-/** How a cockpit session originated — mirrors the engine seed `intent`. */
+/** How a cockpit session originated — mirrors the run `kind`. */
 export type SessionKind = "onboarding" | "begin_session" | "replay";
 /** Which workflow a run executed. */
 export type RunStage = "add_source" | "begin_session" | "operating_model";
 
 export interface RecordRunInput {
 	workspaceId: string;
-	// The engine's session id (the join into `investigation_sessions`).
+	// The engine's session-correlation id (the workflow-id segment + the value
+	// echoed back in results). The cockpit `sessions` row is keyed by it.
 	engineSessionId: string;
 	// The session's origin — used only when the session row is first created;
 	// ignored (onConflictDoNothing) when it already exists (operating_model /
 	// re-runs reuse the row).
 	kind: SessionKind;
 	stage: RunStage;
+	// The deterministic workflow id (known before start). The run row is keyed by
+	// it; `runId` is the workflowId placeholder until `attachRunId` finalizes it.
 	workflowId: string;
-	runId: string;
 }
 
+/**
+ * Record the session + its run AUTHORITATIVELY, BEFORE `workflow.start`. Throws
+ * on failure (the caller must not start an unrecorded — orphaned — run). The run
+ * row's `runId` is the deterministic `workflowId` until `attachRunId` rewrites it
+ * to the Temporal execution id post-start.
+ */
 export async function recordRun(input: RecordRunInput): Promise<void> {
+	await cockpitDb
+		.insert(sessions)
+		.values({
+			id: randomUUID(),
+			workspaceId: input.workspaceId,
+			engineSessionId: input.engineSessionId,
+			kind: input.kind,
+			status: "active",
+			createdBy: DEFAULT_ACTOR_ID,
+		})
+		.onConflictDoNothing({ target: sessions.engineSessionId });
+
+	const [session] = await cockpitDb
+		.select({ id: sessions.id })
+		.from(sessions)
+		.where(eq(sessions.engineSessionId, input.engineSessionId))
+		.limit(1);
+	if (!session) {
+		throw new Error(
+			`[cockpit] recordRun could not resolve the session row for ` +
+				`${input.engineSessionId} — refusing to start an orphaned run`,
+		);
+	}
+
+	await cockpitDb
+		.insert(sessionRuns)
+		.values({
+			id: randomUUID(),
+			sessionId: session.id,
+			stage: input.stage,
+			workflowId: input.workflowId,
+			// Provisional until attachRunId: the Temporal execution runId isn't known
+			// until after start. Keyed by the deterministic workflowId so the row is
+			// addressable now and the (workflowId, runId) UNIQUE upsert is idempotent.
+			runId: input.workflowId,
+			status: "running",
+		})
+		.onConflictDoNothing({
+			target: [sessionRuns.workflowId, sessionRuns.runId],
+		});
+}
+
+/**
+ * Rewrite a recorded run's provisional `runId` (the workflowId placeholder) to
+ * the real Temporal execution id, right after `workflow.start`. Best-effort: the
+ * orphan-critical session + run rows already exist; this only refines the run's
+ * Temporal identity for the progress poll / reload-recovery.
+ */
+export async function attachRunId(
+	workflowId: string,
+	runId: string,
+): Promise<void> {
 	try {
 		await cockpitDb
-			.insert(sessions)
-			.values({
-				id: randomUUID(),
-				workspaceId: input.workspaceId,
-				engineSessionId: input.engineSessionId,
-				kind: input.kind,
-				status: "active",
-				createdBy: DEFAULT_ACTOR_ID,
-			})
-			.onConflictDoNothing({ target: sessions.engineSessionId });
-
-		const [session] = await cockpitDb
-			.select({ id: sessions.id })
-			.from(sessions)
-			.where(eq(sessions.engineSessionId, input.engineSessionId))
-			.limit(1);
-		if (!session) return;
-
-		await cockpitDb
-			.insert(sessionRuns)
-			.values({
-				id: randomUUID(),
-				sessionId: session.id,
-				stage: input.stage,
-				workflowId: input.workflowId,
-				runId: input.runId,
-				status: "running",
-			})
-			.onConflictDoNothing({
-				target: [sessionRuns.workflowId, sessionRuns.runId],
-			});
+			.update(sessionRuns)
+			.set({ runId })
+			.where(
+				and(
+					eq(sessionRuns.workflowId, workflowId),
+					eq(sessionRuns.runId, workflowId),
+				),
+			);
 	} catch (err) {
 		console.warn(
-			`[cockpit] recordRun failed for ${input.stage} session ` +
-				`${input.engineSessionId} (run ${input.runId}): ${err}`,
+			`[cockpit] attachRunId failed for ${workflowId} (run ${runId}): ${err}`,
 		);
 	}
 }

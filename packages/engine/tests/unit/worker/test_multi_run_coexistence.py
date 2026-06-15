@@ -25,7 +25,14 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.views.readiness_context import load_persisted_readiness
-from dataraum.storage import Column, MetadataSnapshotHead, Table, head_run_id, init_database
+from dataraum.storage import (
+    GENERATION_STAGE,
+    Column,
+    MetadataSnapshotHead,
+    Table,
+    head_run_id,
+    init_database,
+)
 
 
 @pytest.fixture
@@ -58,14 +65,12 @@ def test_two_runs_type_decisions_for_same_column_coexist(session_factory: Any) -
         session.add_all(
             [
                 TypeDecision(
-                    session_id="sess-1",
                     column_id="col-1",
                     run_id="run-A",
                     decided_type="INTEGER",
                     decision_source="automatic",
                 ),
                 TypeDecision(
-                    session_id="sess-1",
                     column_id="col-1",
                     run_id="run-B",
                     decided_type="BIGINT",
@@ -101,7 +106,6 @@ def test_typing_re_derivation_upserts_its_own_run_leaving_prior_run_intact(
 
     def _row(run_id: str, decided_type: str) -> dict[str, Any]:
         return {
-            "session_id": "sess-1",
             "column_id": "col-1",
             "run_id": run_id,
             "decided_type": decided_type,
@@ -150,14 +154,12 @@ def test_two_runs_semantic_annotations_for_same_column_coexist(session_factory: 
         session.add_all(
             [
                 SemanticAnnotation(
-                    session_id="sess-1",
                     column_id="col-1",
                     run_id="run-A",
                     semantic_role="measure",
                     annotation_source="llm",
                 ),
                 SemanticAnnotation(
-                    session_id="sess-1",
                     column_id="col-1",
                     run_id="run-B",
                     semantic_role="dimension",
@@ -206,7 +208,6 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
         session.add_all(
             [
                 EntropyReadinessRecord(
-                    session_id="sess-1",
                     target="column:orders.amount",
                     table_id="tbl-1",
                     column_id="col-1",
@@ -214,14 +215,13 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
                     band="blocked",
                 ),
                 EntropyReadinessRecord(
-                    session_id="sess-1",
                     target="column:orders.amount",
                     table_id="tbl-1",
                     column_id="col-1",
                     run_id="run-B",
                     band="ready",
                 ),
-                MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B"),
+                MetadataSnapshotHead(target="table:tbl-1", stage=GENERATION_STAGE, run_id="run-B"),
             ]
         )
         session.commit()
@@ -242,7 +242,6 @@ def test_load_persisted_readiness_no_promoted_run_is_empty(session_factory: Any)
         _seed_table_and_column(session, "tbl-1", "col-1")
         session.add(
             EntropyReadinessRecord(
-                session_id="sess-1",
                 target="column:orders.amount",
                 table_id="tbl-1",
                 column_id="col-1",
@@ -273,7 +272,6 @@ def test_readiness_run_scoped_delete_leaves_prior_run_intact(session_factory: An
         _seed_table_and_column(session, "tbl-1", "col-1")
         session.add(
             EntropyReadinessRecord(
-                session_id="sess-1",
                 target="column:orders.amount",
                 table_id="tbl-1",
                 column_id="col-1",

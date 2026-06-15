@@ -31,6 +31,7 @@ from dataraum.core.duckdb_naming import schema_for_layer
 from dataraum.core.logging import get_logger
 from dataraum.core.sql_normalize import sql_equivalent
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases._column_cleanup import delete_column_dependents
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.server.storage import LAKE_CATALOG_ALIAS
@@ -271,10 +272,9 @@ class SlicingViewPhase(BasePhase):
             if latest_recipe is None or not sql_equivalent(latest_recipe.ddl, view_sql):
                 store_recipe(
                     ctx.session,
-                    session_id=ctx.require_session_id(),
                     table_id=fact_table_id,
                     layer="slicing",
-                    run_id=ctx.run_id,
+                    run_id=ctx.require_run_id(),
                     target_fqn=view_fqn,
                     ddl=view_sql,
                     depends_on=[source_fqn],
@@ -291,12 +291,10 @@ class SlicingViewPhase(BasePhase):
             ).scalar_one_or_none()
             if slicing_view is None:
                 slicing_view = SlicingView(
-                    session_id=ctx.require_session_id(),
                     fact_table_id=fact_table_id,
                 )
                 ctx.session.add(slicing_view)
-            slicing_view.session_id = ctx.require_session_id()
-            slicing_view.run_id = ctx.run_id
+            slicing_view.run_id = ctx.require_run_id()
             slicing_view.view_name = view_name
             slicing_view.slice_definition_ids = slice_def_ids
             slicing_view.slice_columns = slice_dim_cols
@@ -331,6 +329,16 @@ class SlicingViewPhase(BasePhase):
             else:
                 sv_table.duckdb_path = view_name
                 sv_table.row_count = fact_table.row_count
+                # FK children of ``columns`` no longer cascade (DAT-506): delete
+                # the prior run's dependents explicitly before the columns go, or
+                # the ``delete(Column)`` FK-violates on stale child rows.
+                old_col_ids = [
+                    cid
+                    for (cid,) in ctx.session.execute(
+                        select(Column.column_id).where(Column.table_id == sv_table.table_id)
+                    ).all()
+                ]
+                delete_column_dependents(ctx, old_col_ids)
                 ctx.session.execute(delete(Column).where(Column.table_id == sv_table.table_id))
                 ctx.session.flush()
 
@@ -400,6 +408,11 @@ class SlicingViewPhase(BasePhase):
                 fact_table=fact_table.table_name,
                 slice_dim_columns=len(slice_dim_cols),
             )
+
+        # Atomic-publish visibility (DAT-506): force the DuckLake snapshot after
+        # this run's COMPLETE set of slicing-view DDL is materialized, so the
+        # cockpit's READ_ONLY ATTACH sees the whole batch at once.
+        ctx.duckdb_conn.execute("CHECKPOINT")
 
         return PhaseResult.success(
             outputs={"slicing_views": views_created},

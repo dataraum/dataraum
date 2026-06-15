@@ -177,8 +177,7 @@ def discover_aggregation_lineage(
     session: Session,
     *,
     table_ids: list[str],
-    session_id: str,
-    run_id: str | None,
+    run_id: str,
     period_grain: str = "monthly",
 ) -> int:
     """Reconcile every shared-dimension fact pair and persist the verdicts.
@@ -193,9 +192,6 @@ def discover_aggregation_lineage(
     Returns:
         The number of lineage rows persisted.
     """
-    if run_id is None:
-        raise ValueError("discover_aggregation_lineage requires a run_id (run-versioned rows)")
-
     tables = {
         t.table_id: t
         for t in session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars()
@@ -235,7 +231,6 @@ def discover_aggregation_lineage(
     tsa_rows = (
         session.execute(
             select(TemporalSliceAnalysis).where(
-                TemporalSliceAnalysis.session_id == session_id,
                 TemporalSliceAnalysis.run_id == run_id,
             )
         )
@@ -329,7 +324,6 @@ def discover_aggregation_lineage(
     for measure_column_id, (best, m_table, m_col, dim_col) in best_by_measure.items():
         rows.append(
             {
-                "session_id": session_id,
                 "run_id": run_id,
                 "measure_table_id": m_table.table_id,
                 "measure_column_id": measure_column_id,

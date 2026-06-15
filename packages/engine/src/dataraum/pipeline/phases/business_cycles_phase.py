@@ -102,7 +102,6 @@ class BusinessCyclesPhase(BasePhase):
                 summary=f"0 declared cycles ({outcome}) — nothing to ground or measure",
             )
 
-        session_id = ctx.require_session_id()
         run_id = ctx.require_run_id()
         # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
         # workflow's pre-flight ``operating_model_resolve`` activity and threaded
@@ -145,7 +144,6 @@ class BusinessCyclesPhase(BasePhase):
         for canonical_type, defn in declared_types.items():
             artifacts[canonical_type] = declare_artifact(
                 ctx.session,
-                session_id=session_id,
                 artifact_type="cycle",
                 artifact_key=canonical_type,
                 run_id=run_id,
@@ -165,7 +163,6 @@ class BusinessCyclesPhase(BasePhase):
             ctx.duckdb_conn,
             table_ids,
             vertical=vertical,
-            session_id=session_id,
             base_runs=base_runs,
         )
         if not grounding.success or grounding.value is None:
@@ -220,7 +217,7 @@ class BusinessCyclesPhase(BasePhase):
                 transition(artifact, operation="execute", stage=_STAGE)
             persisted.append(cycle)
 
-        _persist_cycles(ctx.session, persisted, session_id=session_id, run_id=run_id)
+        _persist_cycles(ctx.session, persisted, run_id=run_id)
 
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
@@ -262,7 +259,6 @@ def _persist_cycles(
     session: Session,
     cycles: list[DetectedCycle],
     *,
-    session_id: str,
     run_id: str,
 ) -> None:
     """Persist one run-stamped ``DetectedBusinessCycle`` per grounded cycle.
@@ -277,7 +273,6 @@ def _persist_cycles(
     rows: list[dict[str, Any]] = [
         {
             "cycle_id": cycle.cycle_id,
-            "session_id": session_id,
             "run_id": run_id,
             "cycle_name": cycle.cycle_name,
             "cycle_type": cycle.cycle_type,
@@ -303,7 +298,7 @@ def _persist_cycles(
         session,
         DetectedBusinessCycle,
         rows,
-        index_elements=["session_id", "canonical_type", "run_id"],
+        index_elements=["canonical_type", "run_id"],
     )
 
     _log.debug("detected_cycles_persisted", run_id=run_id, count=len(cycles))

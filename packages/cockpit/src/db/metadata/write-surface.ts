@@ -2,12 +2,14 @@
 //
 // The generated mirror (./schema.ts) introspects the promoted-READ schema —
 // views only, by design: the cockpit_reader role cannot SELECT raw run-stamped
-// tables. But four un-versioned CONTROL tables are deliberate cockpit writes:
+// tables. But three un-versioned CONTROL tables are deliberate cockpit writes:
 //
-//   sources                — register a data source before addSourceWorkflow
-//   investigation_sessions — open the session a workflow runs under
-//   config_overlay         — the teach vocabulary IS overlay rows
-//   sql_snippets           — save-on-clean grows the snippet library (DAT-486)
+//   sources         — register a data source before addSourceWorkflow
+//   config_overlay  — the teach vocabulary IS overlay rows
+//   sql_snippets    — save-on-clean grows the snippet library (DAT-486)
+//
+// (DAT-506 removed `investigation_sessions` — sessions live in cockpit_db now,
+// and the engine dropped the table + its write grant.)
 //
 // The engine bootstrap grants the reader role exactly these verbs on exactly
 // these tables (storage/read_views.py::_CONTROL_WRITE_GRANTS); everything else
@@ -58,27 +60,10 @@ export const sourcesWrite = rawSchema.table("sources", {
 	archivedAt: timestamp("archived_at", { mode: "date" }),
 });
 
-/** Raw `investigation_sessions` — INSERT when opening a session. */
-export const investigationSessionsWrite = rawSchema.table(
-	"investigation_sessions",
-	{
-		sessionId: varchar("session_id").primaryKey(),
-		status: varchar("status").notNull(),
-		startedAt: timestamp("started_at", { mode: "date" }).notNull(),
-		endedAt: timestamp("ended_at", { mode: "date" }),
-		intent: varchar("intent").notNull(),
-		contract: varchar("contract"),
-		vertical: varchar("vertical"),
-		outcomeSummary: varchar("outcome_summary"),
-		outcomePayload: jsonb("outcome_payload"),
-		stepCount: integer("step_count").notNull(),
-	},
-);
-
-/** Raw `config_overlay` — INSERT (teach) + UPDATE (supersede). */
+/** Raw `config_overlay` — INSERT (teach) + UPDATE (supersede). No `session_id`
+ * post-DAT-506 (the overlay vocabulary is workspace-scoped via the ws_<id> schema). */
 export const configOverlayWrite = rawSchema.table("config_overlay", {
 	overlayId: varchar("overlay_id").primaryKey(),
-	sessionId: varchar("session_id"),
 	type: varchar("type").notNull(),
 	payload: jsonb("payload").notNull(),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
@@ -98,7 +83,7 @@ export const configOverlayWrite = rawSchema.table("config_overlay", {
  */
 export const sqlSnippetsWrite = rawSchema.table("sql_snippets", {
 	snippetId: varchar("snippet_id").primaryKey(),
-	sessionId: varchar("session_id").notNull(),
+	workspaceId: varchar("workspace_id").notNull(),
 	snippetType: varchar("snippet_type").notNull(),
 	standardField: varchar("standard_field"),
 	statement: varchar("statement"),

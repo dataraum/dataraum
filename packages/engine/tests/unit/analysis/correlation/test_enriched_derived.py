@@ -15,7 +15,7 @@ from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
 from dataraum.storage.models import Source
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture
@@ -149,7 +149,7 @@ def _create_source(session):
 
 
 class TestDetectsEnrichedDerivedColumns:
-    """Tests for detect_enriched_derived_columns( session_id=baseline_session_id())."""
+    """Tests for detect_enriched_derived_columns( run_id=baseline_run_id())."""
 
     def test_detects_cross_table_derivation(self, enriched_duckdb, session):
         """total = quantity * products__unit_price should be found."""
@@ -173,7 +173,7 @@ class TestDetectsEnrichedDerivedColumns:
         )
 
         result = detect_enriched_derived_columns(
-            ev, table, enriched_duckdb, session, session_id=baseline_session_id()
+            ev, table, enriched_duckdb, session, run_id=baseline_run_id()
         )
         assert result.success
         derived = result.unwrap()
@@ -211,9 +211,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         ev = _make_enriched_view(session, table, "enriched_test", [])
 
-        result = detect_enriched_derived_columns(
-            ev, table, conn, session, session_id=baseline_session_id()
-        )
+        result = detect_enriched_derived_columns(ev, table, conn, session, run_id=baseline_run_id())
         assert result.success
         derived = result.unwrap()
         assert len(derived) >= 1
@@ -239,9 +237,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         ev = _make_enriched_view(session, table, "enriched_nodim", None)
 
-        result = detect_enriched_derived_columns(
-            ev, table, conn, session, session_id=baseline_session_id()
-        )
+        result = detect_enriched_derived_columns(ev, table, conn, session, run_id=baseline_run_id())
         assert result.success
         assert result.unwrap() == []
         conn.close()
@@ -273,9 +269,7 @@ class TestDetectsEnrichedDerivedColumns:
             view_table=view_table,
         )
 
-        result = detect_enriched_derived_columns(
-            ev, table, conn, session, session_id=baseline_session_id()
-        )
+        result = detect_enriched_derived_columns(ev, table, conn, session, run_id=baseline_run_id())
         assert result.success
         # Only 1 numeric column + 0 numeric dim cols → not enough for triples
         assert result.unwrap() == []
@@ -302,7 +296,7 @@ class TestDetectsEnrichedDerivedColumns:
         )
 
         result = detect_enriched_derived_columns(
-            ev, table, enriched_duckdb, session, session_id=baseline_session_id()
+            ev, table, enriched_duckdb, session, run_id=baseline_run_id()
         )
         assert result.success
         fact_col_ids = {col_qty.column_id, col_total.column_id}
@@ -330,7 +324,7 @@ class TestDetectsEnrichedDerivedColumns:
         )
 
         result = detect_enriched_derived_columns(
-            ev, table, enriched_duckdb, session, session_id=baseline_session_id()
+            ev, table, enriched_duckdb, session, run_id=baseline_run_id()
         )
         assert result.success
         derived = result.unwrap()
@@ -364,9 +358,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         ev = _make_enriched_view(session, table, "enriched_dedup", [])
 
-        result = detect_enriched_derived_columns(
-            ev, table, conn, session, session_id=baseline_session_id()
-        )
+        result = detect_enriched_derived_columns(ev, table, conn, session, run_id=baseline_run_id())
         assert result.success
         derived = result.unwrap()
         # Dedup should ensure only one entry per column triple

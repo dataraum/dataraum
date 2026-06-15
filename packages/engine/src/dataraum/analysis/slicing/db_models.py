@@ -49,20 +49,12 @@ class SliceDefinition(Base):
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     # Snapshot version axis (DAT-448): the begin_session run that derived this
     # definition (and its sql_template DDL). Definitions were table-scoped and
-    # immortal before — stale cross-run reuse was the DAT-405 bug class. Nullable
-    # for pre-existing rows; every new write stamps ``ctx.run_id``.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
+    # immortal before — stale cross-run reuse was the DAT-405 bug class.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
     # Actual column name used for slicing — may differ from columns.column_name when the
     # slice dimension is an enriched FK-prefixed dim col (e.g. "kontonummer_des_gegenkontos__land")
     # while column_id points to the underlying FK column record.

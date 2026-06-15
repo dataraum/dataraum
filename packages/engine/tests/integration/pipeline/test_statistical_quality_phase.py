@@ -28,7 +28,6 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={},
         )
 
@@ -76,7 +75,6 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[table.table_id],
             config={},
         )
@@ -94,7 +92,6 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={},
         )
 
@@ -143,7 +140,6 @@ class TestStatisticalQualityPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[table.table_id],
             config={},
         )

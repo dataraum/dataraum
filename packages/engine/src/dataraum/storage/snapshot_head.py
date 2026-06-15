@@ -54,15 +54,30 @@ class MetadataSnapshotHead(Base):
     )
 
 
-def session_head_target(session_id: str) -> str:
-    """The snapshot-head key sealing a begin_session run (DAT-408).
+_CATALOG_TARGET = "catalog"
 
-    begin_session re-runs the whole session atomically (no per-table partial
-    replay), so it seals at **session grain** — one head per session, not per
-    target. The head names the session's current (promoted) run; everything
-    begin_session produces for the session reads at that run_id.
+# The single stage every per-table head is keyed under (DAT-506). add_source
+# promotes ONE generation head per table — ``(table:{id}, GENERATION_STAGE)`` —
+# instead of one head per producing phase. A table's whole add_source run
+# (typing → semantic_per_column → detect) is sealed atomically, so every
+# per-table reader (base-run pins, entropy table heads, the column/table-grain
+# read views) resolves the same head; there is no per-phase head axis anymore.
+GENERATION_STAGE = "generation"
+
+
+def catalog_head_target() -> str:
+    """The snapshot-head key for the workspace catalog (DAT-506).
+
+    begin_session re-runs the whole workspace catalog atomically (no per-table
+    partial replay) and operating_model seals the lifecycle families on top of
+    it, so the engine seals at **workspace grain** — ONE catalog head per
+    workspace schema (each ``ws_<id>`` is one workspace), not per session. The
+    catalog head names the workspace's current (promoted) catalog run under the
+    ``"catalog"`` stage; operating_model promotes the same target under the
+    ``"operating_model"`` stage. Sessions live in cockpit_db now, not the engine
+    (DAT-506 supersedes the per-session ``session:{id}`` head).
     """
-    return f"session:{session_id}"
+    return _CATALOG_TARGET
 
 
 def head_run_id(session: Session, target: str, stage: str) -> str | None:

@@ -25,7 +25,6 @@ export interface PendingOverlay {
 	type: string;
 	payload: Record<string, unknown>;
 	created_at: Date;
-	session_id: string | null;
 }
 
 /**
@@ -40,7 +39,6 @@ export async function getPendingOverlays(): Promise<PendingOverlay[]> {
 			type: configOverlay.type,
 			payload: configOverlay.payload,
 			createdAt: configOverlay.createdAt,
-			sessionId: configOverlay.sessionId,
 		})
 		.from(configOverlay)
 		.where(isNull(configOverlay.supersededAt))
@@ -53,6 +51,5 @@ export async function getPendingOverlays(): Promise<PendingOverlay[]> {
 		type: r.type ?? "",
 		payload: r.payload as Record<string, unknown>,
 		created_at: r.createdAt ?? new Date(0),
-		session_id: r.sessionId,
 	}));
 }

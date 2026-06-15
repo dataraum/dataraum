@@ -263,12 +263,11 @@ class SlicingPhase(BasePhase):
         # emit a dimension twice; propagation adds more), then UPSERT so a
         # Temporal success-redelivery (same run_id) converges. PK omitted so
         # the model's Python-side default applies.
-        sid = ctx.require_session_id()
-        rows: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
+        run_id = ctx.require_run_id()
+        rows: dict[tuple[str, str | None, str], dict[str, Any]] = {}
         for rec in slicing.recommendations:
-            rows[(rec.table_id, rec.column_name, ctx.run_id)] = {
-                "session_id": sid,
-                "run_id": ctx.run_id,
+            rows[(rec.table_id, rec.column_name, run_id)] = {
+                "run_id": run_id,
                 "table_id": rec.table_id,
                 "column_id": rec.column_id,
                 "column_name": rec.column_name,

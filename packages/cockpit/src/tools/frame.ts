@@ -228,7 +228,6 @@ export interface FrameInput {
 	// proposes a name that fits the data; the user can rename. Omitted → `_adhoc`
 	// (the unnamed cold-start fallback). Pass the SAME name to `select`.
 	vertical_name?: string | null;
-	session_id?: string | null;
 }
 
 /**
@@ -397,7 +396,6 @@ export async function frame(
 		induce: (sig) => induceConcepts(schema, sig),
 		toPayload: (c) => ({ vertical, ...stripUndefined(c) }),
 		edited: input.concepts,
-		sessionId: input.session_id,
 		signal,
 	});
 
@@ -416,7 +414,6 @@ export async function frame(
 		induce: (sig) => induceValidations(schema, concepts.items, vertical, sig),
 		toPayload: (v) => ({ vertical, ...stripUndefined(v) }),
 		edited: input.validations,
-		sessionId: input.session_id,
 		signal,
 	});
 
@@ -430,7 +427,6 @@ export async function frame(
 		induce: (sig) => induceCycles(schema, concepts.items, vertical, sig),
 		toPayload: (c) => ({ vertical, ...stripUndefined(c) }),
 		edited: input.cycles,
-		sessionId: input.session_id,
 		signal,
 	});
 
@@ -446,7 +442,6 @@ export async function frame(
 		induce: (sig) => induceMetrics(schema, concepts.items, vertical, sig),
 		toPayload: (m) => ({ vertical, ...stripUndefined(m) }),
 		edited: input.metrics,
-		sessionId: input.session_id,
 		signal,
 	});
 
@@ -523,7 +518,6 @@ export const frameTool = toolDefinition({
 					"induction). Omit to induce metrics over the framed concepts. Each is a " +
 					"TransformationGraph whose extract-step leaves name framed concepts.",
 			),
-		session_id: z.string().nullish(),
 	}),
 	// Success OR `{ error }`: an invalid vertical name or an induction that
 	// returned no concepts is the agent's to fix (rephrase / pick a vertical), so

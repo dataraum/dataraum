@@ -61,9 +61,7 @@ def _periods() -> list[PeriodSums]:
 
 
 def _persist(session, run_id: str) -> None:
-    persist_period_sums(
-        _periods(), "slice_t", "date", session, session_id="s1", run_id=run_id
-    )
+    persist_period_sums(_periods(), "slice_t", "date", session, run_id=run_id)
 
 
 class TestPeriodSumRunVersioning:

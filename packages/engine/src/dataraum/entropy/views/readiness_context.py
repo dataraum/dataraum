@@ -27,7 +27,7 @@ from dataraum.entropy.loss import (
 )
 from dataraum.entropy.models import EntropyObject
 from dataraum.storage import Column, Table
-from dataraum.storage.snapshot_head import head_run_id
+from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
 logger = get_logger(__name__)
 
@@ -411,7 +411,7 @@ def _load_entropy_objects(
     table_ids: list[str],
     *,
     current_run_id: str | None = None,
-    session_id: str | None = None,
+    resolve_runs: bool = False,
 ) -> list[EntropyObject]:
     """Load entropy objects for the typed tables among ``table_ids`` (or empty)."""
     if not table_ids:
@@ -427,7 +427,7 @@ def _load_entropy_objects(
         typed_table_ids,
         enforce_typed=True,
         current_run_id=current_run_id,
-        session_id=session_id,
+        resolve_runs=resolve_runs,
     )
     if not entropy_objects:
         logger.debug("No entropy objects found for readiness context")
@@ -439,7 +439,6 @@ def build_for_readiness(
     table_ids: list[str],
     *,
     current_run_id: str | None = None,
-    session_id: str | None = None,
 ) -> EntropyForReadiness:
     """Build the full readiness rollup (intents + bands) for typed tables.
 
@@ -451,14 +450,11 @@ def build_for_readiness(
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
         current_run_id: The in-flight detect run whose rows take precedence.
-        session_id: Scope for resolving the promoted session detect head.
 
     Returns:
         EntropyForReadiness with computed context.
     """
-    entropy_objects = _load_entropy_objects(
-        session, table_ids, current_run_id=current_run_id, session_id=session_id
-    )
+    entropy_objects = _load_entropy_objects(session, table_ids, current_run_id=current_run_id)
     if not entropy_objects:
         return EntropyForReadiness()
     return assemble_readiness_context(entropy_objects)
@@ -468,7 +464,7 @@ def build_column_evidence(
     session: Session,
     table_ids: list[str],
     *,
-    session_id: str | None = None,
+    resolve_runs: bool = False,
 ) -> EntropyForReadiness:
     """Build raw per-column entropy evidence WITHOUT the loss rollup.
 
@@ -481,17 +477,17 @@ def build_column_evidence(
     Args:
         session: SQLAlchemy session.
         table_ids: List of table IDs to include.
-        session_id: Analytical session — resolves rows to the promoted session
-            detect head (then table heads/legacy) instead of loading blindly.
-            After a begin_session promote, add_source and session rows coexist
-            for re-adjudicated detectors; omitted ⇒ the legacy blind load.
+        resolve_runs: Resolve rows to the promoted catalog head (then table
+            heads/legacy) instead of loading blindly. After a begin_session
+            promote, add_source and session rows coexist for re-adjudicated
+            detectors; omitted ⇒ the legacy blind load.
 
     Returns:
         EntropyForReadiness with per-column node evidence + direct signals only.
     """
-    # Query time has no in-flight detect run, so only session_id is threaded —
-    # resolution degrades to: session detect head > table heads/legacy.
-    entropy_objects = _load_entropy_objects(session, table_ids, session_id=session_id)
+    # Query time has no in-flight detect run, so only resolve_runs is threaded —
+    # resolution degrades to: catalog head > table heads/legacy.
+    entropy_objects = _load_entropy_objects(session, table_ids, resolve_runs=resolve_runs)
     if not entropy_objects:
         return EntropyForReadiness()
     return assemble_readiness_context(entropy_objects, compute_rollup=False)
@@ -518,22 +514,22 @@ def load_persisted_readiness(
     detect in the workflow, so empty here means "no readiness yet" and is
     treated as ready — same as a genuinely clean source.
 
-    Multi-run head-resolution (DAT-413): two add_source runs over the same table
-    leave two readiness snapshots (distinct ``run_id`` under stage ``"detect"``).
-    Per table, the promoted head names the current run, so the query is filtered
-    to ``(table_id, run_id == head)`` — never a blind ``table_id.in_()`` that
-    would mix runs. A table with no promoted detect run yet contributes nothing
-    (graceful ``None`` — treated as "no readiness", i.e. ready).
+    Multi-run head-resolution (DAT-413/506): two add_source runs over the same
+    table leave two readiness snapshots (distinct ``run_id`` under the per-table
+    generation head). Per table, the promoted generation head names the current
+    run, so the query is filtered to ``(table_id, run_id == head)`` — never a
+    blind ``table_id.in_()`` that would mix runs. A table with no promoted run yet
+    contributes nothing (graceful ``None`` — treated as "no readiness", i.e. ready).
     """
     if not table_ids:
         return EntropyForReadiness()
 
-    # Resolve each table's promoted detect run; keep only tables that have one.
-    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-408).
+    # Resolve each table's promoted generation run; keep only tables that have one.
+    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-506).
     head_by_table = {
         table_id: run_id
         for table_id in table_ids
-        if (run_id := head_run_id(session, f"table:{table_id}", "detect")) is not None
+        if (run_id := head_run_id(session, f"table:{table_id}", GENERATION_STAGE)) is not None
     }
     if not head_by_table:
         return EntropyForReadiness()
@@ -584,29 +580,28 @@ def load_persisted_readiness(
     )
 
 
-def load_relationship_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
-    """Current, gated relationship readiness for a session (DAT-408).
+def load_relationship_readiness(session: Session) -> list[EntropyReadinessRecord]:
+    """Current, gated relationship readiness for the workspace (DAT-506).
 
-    Resolves the session's **current run** via the per-session head
-    (``session:{id}``, "detect") — begin_session seals per session, not per target
+    Resolves the workspace's **current run** via the catalog head
+    (``catalog``, "catalog") — begin_session re-runs the whole catalog atomically
     — then returns that run's ``relationship:`` readiness, **gated** on a live,
     non-suppressed ``Relationship`` *in the same run*. A dropped (overlay-rejected)
     relationship keeps its rows for audit but isn't surfaced, so there is no ghost
-    readiness. Returns ``[]`` until the session has a promoted run.
+    readiness. Returns ``[]`` until the workspace has a promoted catalog run.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.relationships.utils import load_suppressed_relationship_pairs
     from dataraum.entropy.models import parse_relationship_target
-    from dataraum.storage import session_head_target
+    from dataraum.storage import catalog_head_target
 
-    current_run = head_run_id(session, session_head_target(session_id), "detect")
+    current_run = head_run_id(session, catalog_head_target(), "catalog")
     if current_run is None:
         return []
 
     rows = list(
         session.execute(
             select(EntropyReadinessRecord).where(
-                EntropyReadinessRecord.session_id == session_id,
                 EntropyReadinessRecord.run_id == current_run,
                 EntropyReadinessRecord.target.like("relationship:%"),
             )
@@ -619,7 +614,6 @@ def load_relationship_readiness(session: Session, session_id: str) -> list[Entro
     live_pairs = set(
         session.execute(
             select(Relationship.from_column_id, Relationship.to_column_id).where(
-                Relationship.session_id == session_id,
                 Relationship.run_id == current_run,
             )
         ).tuples()
@@ -635,28 +629,27 @@ def load_relationship_readiness(session: Session, session_id: str) -> list[Entro
     return gated
 
 
-def load_table_readiness(session: Session, session_id: str) -> list[EntropyReadinessRecord]:
-    """Current table-grain readiness for a begin_session (DAT-415).
+def load_table_readiness(session: Session) -> list[EntropyReadinessRecord]:
+    """Current table-grain readiness for the workspace (DAT-415).
 
-    Resolves the session's **current run** via the per-session head
-    (``session:{id}``, "detect") — begin_session seals per session, not per table,
+    Resolves the workspace's **current run** via the catalog head
+    (``catalog``, "catalog") — begin_session re-runs the whole catalog atomically
     and its terminal promote flips only that head — then returns that run's
     ``table:`` readiness rows (one per fact table whose enriched view the
-    ``dimension_coverage`` detector measured). Returns ``[]`` until the session has
-    a promoted run. Unlike relationships, tables are never user-suppressed, so
-    there is no liveness gate. The cockpit reads these via Drizzle; this is the
-    engine-side reader (tests, agent context).
+    ``dimension_coverage`` detector measured). Returns ``[]`` until the workspace
+    has a promoted catalog run. Unlike relationships, tables are never
+    user-suppressed, so there is no liveness gate. The cockpit reads these via
+    Drizzle; this is the engine-side reader (tests, agent context).
     """
-    from dataraum.storage import session_head_target
+    from dataraum.storage import catalog_head_target
 
-    current_run = head_run_id(session, session_head_target(session_id), "detect")
+    current_run = head_run_id(session, catalog_head_target(), "catalog")
     if current_run is None:
         return []
 
     return list(
         session.execute(
             select(EntropyReadinessRecord).where(
-                EntropyReadinessRecord.session_id == session_id,
                 EntropyReadinessRecord.run_id == current_run,
                 EntropyReadinessRecord.target.like("table:%"),
             )

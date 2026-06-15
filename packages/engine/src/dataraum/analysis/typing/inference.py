@@ -53,8 +53,7 @@ def infer_type_candidates(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     *,
-    session_id: str,
-    run_id: str | None = None,
+    run_id: str,
 ) -> Result[list[TypeCandidateModel]]:
     """Infer type candidates for all VARCHAR columns in a table.
 
@@ -101,7 +100,7 @@ def infer_type_candidates(
         # run_id) converges instead of appending duplicates. PK omitted so the
         # model's Python-side default applies; ``detected_pattern`` coalesces to
         # '' (it is part of the identity — NULL would be NULLS-DISTINCT).
-        rows: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
+        rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
         for column in columns:
             # Infer types for this column
@@ -128,7 +127,6 @@ def infer_type_candidates(
             for candidate in candidates:
                 pattern = candidate.detected_pattern or ""
                 rows[(column.column_id, candidate.data_type.value, pattern, run_id)] = {
-                    "session_id": session_id,
                     "column_id": column.column_id,
                     "run_id": run_id,
                     "detected_at": datetime.now(UTC),

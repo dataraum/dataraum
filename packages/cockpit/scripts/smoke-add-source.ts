@@ -32,12 +32,10 @@ import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { recordRun } from "#/db/cockpit/runs";
 import { metadataDb } from "#/db/metadata/client";
 import { configOverlay } from "#/db/metadata/schema";
-import {
-	investigationSessionsWrite,
-	sourcesWrite,
-} from "#/db/metadata/write-surface";
+import { sourcesWrite } from "#/db/metadata/write-surface";
 import { replay } from "#/tools/replay";
 import { teach } from "#/tools/teach";
 import type { AddSourceInput, AddSourceResult } from "#/temporal/types";
@@ -64,13 +62,11 @@ const fileUris = env.SOURCE_PATH.split(",")
 	.filter(Boolean);
 
 async function seed(sourceId: string, sessionId: string): Promise<void> {
-	// Seed through the SAME Drizzle metadata client the cockpit's write seams use
-	// (the one-gate `select` writes `sources` and seeds `investigation_sessions`
-	// via triggerAddSource — DAT-436); the client targets the active workspace's
-	// `ws_<id>` schema via pgSchema, so no raw connection / search_path juggling.
-	// This driver seeds DIRECTLY (not through select): its `_adhoc` cold-start
-	// run must bypass select's zero-concept pre-flight — induction generating
-	// concepts from the data is exactly what this smoke proves (DAT-371).
+	// Seed the `sources` row through the Drizzle metadata write seam (the one-gate
+	// `select` writes it the same way). No engine session seed (DAT-506): sessions
+	// live in cockpit_db. This driver seeds DIRECTLY (not through select), then
+	// records the run in cockpit_db so replay can resolve the session's sources
+	// (replay reads cockpit_db sessions/session_runs → engine run_tables).
 	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
@@ -86,19 +82,15 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	// No source_id on the session (DAT-407): a session's source is derived from
-	// its linked tables. The add_source workflow writes the session_tables links
-	// once the per-table fan-out resolves typed ids.
-	await metadataDb
-		.insert(investigationSessionsWrite)
-		.values({
-			sessionId,
-			intent: "e4a drive",
-			status: "active",
-			startedAt: now,
-			stepCount: 0,
-		})
-		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
+	// Record the cockpit session + run (DAT-506) keyed by this session id, so the
+	// replay step below resolves the session's sources from cockpit_db.
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		engineSessionId: sessionId,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+	});
 }
 
 async function countOverlays(): Promise<number> {
@@ -120,19 +112,15 @@ async function runInitial(
 	sessionId: string,
 ): Promise<{ result: AddSourceResult; runId: string }> {
 	const input: AddSourceInput = {
-		// Source-free identity + the run's source SET (DAT-422): one source here,
-		// so a 1-element set. The run is keyed by its session, not a source.
-		identity: {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			session_id: sessionId,
-			// `_adhoc` is the empty / start-here vertical (DAT-371): cold-start
-			// induction generates concepts from the data and stores them as
-			// `concept` overlay rows, not as YAML writes. This smoke is the
-			// real DAT-371 acceptance test — a clean run proves induction
-			// works against the read-only mounted config.
-			vertical: "_adhoc",
-		},
-		source_ids: [sourceId],
+		// FLAT, source-free input (DAT-506): no identity, no session/source id on the
+		// wire. The run's source SET (DAT-422) — one source here, so a 1-element set.
+		workspace_id: env.DATARAUM_WORKSPACE_ID,
+		sources: [sourceId],
+		// `_adhoc` is the empty / start-here vertical (DAT-371), on the workflow INPUT
+		// now (DAT-506): cold-start induction generates concepts from the data and
+		// stores them as `concept` overlay rows. This smoke is the real DAT-371
+		// acceptance test — a clean run proves induction works against the mounted config.
+		verticals: ["_adhoc"],
 	};
 	// `start` (not `execute`) so we can capture the run id — the replay
 	// assertion compares its fresh run_id against the initial one.
@@ -222,16 +210,13 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ---- Replay: re-run the SESSION's sources (DAT-422) --------------
-		// Replay takes the session we just built (the named unit), resolves its
-		// sources, and re-runs add_source over them as a NEW session — the engine
-		// mints a fresh run_id internally. There is no scope/from_phase; a replay is
-		// a full, non-destructive re-run. The new session's tables FK against the row
-		// the replay seeds, so the per-table fan-out can't die at that FK.
-		const replayResult = await replay({
-			session_id: sessionId,
-			vertical: "_adhoc",
-		});
+		// ---- Replay: re-run the workspace's sources (DAT-422, DAT-506) ----
+		// Replay takes the session we just built (the named unit), resolves the
+		// workspace's imported sources (the generation heads), and re-runs add_source
+		// over them as a NEW session — the engine mints a fresh run_id internally. No
+		// scope/from_phase; a full, non-destructive re-run. The vertical is the
+		// workspace property (sourced from the registry, not passed here).
+		const replayResult = await replay({ session_id: sessionId });
 		const replayed = await awaitReplay(
 			client,
 			replayResult.workflow_id,

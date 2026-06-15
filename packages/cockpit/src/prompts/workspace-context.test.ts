@@ -5,7 +5,18 @@
 
 import { describe, expect, it, vi } from "vitest";
 
+// Mock every DB seam the module imports so a bare import opens no connection
+// (the DB readers themselves are smoke-covered; only the formatter is unit-tested).
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
+vi.mock("#/db/cockpit/client", () => ({ cockpitDb: {} }));
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspace: async () => "ws-test",
+	resolveActiveWorkspaceRow: async () => ({
+		id: "ws-test",
+		taskQueue: "engine-ws-test",
+		vertical: "_adhoc",
+	}),
+}));
 
 import { formatWorkspaceContext } from "#/prompts/workspace-context";
 

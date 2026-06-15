@@ -1,13 +1,14 @@
 // operating_model tool (DAT-440) — run the journey's third stage over an
 // existing begin_session session: take the vertical's declared validations
 // through the typed lifecycle (declare → ground/bind → execute) and promote the
-// outcome under the session's `operating_model` head.
+// outcome under the workspace `operating_model` catalog head.
 //
-// Identity ONLY (DAT-438): begin_session ESTABLISHES the table set; the
-// workflow's pre-flight resolve activity re-reads it from `session_tables` —
-// the client never re-passes a copy that could diverge. No seeding either: the
-// InvestigationSession row already exists (begin_session created it), and the
-// engine fails loud when the session has no tables.
+// Identity + vertical (DAT-438, DAT-506): begin_session ESTABLISHES the table
+// set; the workflow's pre-flight resolve activity re-reads it from the catalog
+// head's `run_tables` — the client never re-passes a copy that could diverge. The
+// vertical is the workspace property (sourced from the registry). No seeding: the
+// cockpit session row already exists (begin_session recorded it), and the engine
+// fails loud when the catalog has no tables.
 //
 // Non-blocking (`workflow.start`), mirroring begin_session: returns the
 // workflow + run id immediately; the cockpit narrates completion automatically
@@ -25,18 +26,17 @@ import { z } from "zod";
 
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
-import { hasRunningRun, recordRun } from "../db/cockpit/runs";
+import { attachRunId, hasRunningRun, recordRun } from "../db/cockpit/runs";
 import type {
 	OperatingModelInput,
 	OperatingModelResult,
-	SessionIdentity,
 } from "../temporal/types";
 import { operatingModelWorkflowId } from "../temporal/workflow-id";
 import { type AgentError, withAgentError } from "./agent-error";
 
 export interface OperatingModelToolInput {
 	// The begin_session session to run the stage over — its table set anchors
-	// the run; the engine re-reads it from session_tables.
+	// the run; the engine re-reads it from the catalog head's run_tables (DAT-506).
 	session_id: string;
 }
 
@@ -78,13 +78,28 @@ export async function operatingModel(
 	const workspace = await resolveActiveWorkspaceRow();
 	const workspaceId = workspace.id;
 
-	const identity: SessionIdentity = {
-		workspace_id: workspaceId,
-		session_id: input.session_id,
-	};
-	const payload: OperatingModelInput = { identity };
-
 	const workflowId = operatingModelWorkflowId(workspaceId, input.session_id);
+
+	// Append an operating_model run to the session begin_session created BEFORE
+	// starting (Q4): the session row is reused by engine session id (the kind is
+	// ignored on conflict). recordRun is AUTHORITATIVE — it throws on failure.
+	await recordRun({
+		workspaceId,
+		engineSessionId: input.session_id,
+		kind: "begin_session",
+		stage: "operating_model",
+		workflowId,
+	});
+
+	// FLAT, source-free input (DAT-506): no identity envelope, no session id on the
+	// wire — begin_session ESTABLISHED the table set; the engine's pre-flight resolve
+	// re-reads it from the catalog head's run_tables. The `verticals` drive the
+	// declared validations/cycles/metrics — sourced from the workspace registry (one
+	// element today; the engine raises born-loud on >1, the array is forward-compat).
+	const payload: OperatingModelInput = {
+		workspace_id: workspaceId,
+		verticals: [workspace.vertical],
+	};
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {
@@ -102,18 +117,8 @@ export async function operatingModel(
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 
-		// Append an operating_model run to the session begin_session created
-		// (DAT-461) — best-effort; the session row is reused by engine session id.
-		await recordRun({
-			workspaceId,
-			engineSessionId: input.session_id,
-			// Ignored on conflict — the row already exists from begin_session, which
-			// set kind. Passed only for the (unreachable) first-write case.
-			kind: "begin_session",
-			stage: "operating_model",
-			workflowId,
-			runId: handle.firstExecutionRunId,
-		});
+		// Finalize the provisional runId on the pre-recorded run (best-effort).
+		await attachRunId(workflowId, handle.firstExecutionRunId);
 
 		return {
 			workflow_id: workflowId,

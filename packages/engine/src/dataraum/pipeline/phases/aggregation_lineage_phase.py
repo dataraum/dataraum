@@ -61,12 +61,10 @@ class AggregationLineagePhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        session_id = ctx.require_session_id()
         run_id = ctx.require_run_id()
         persisted = discover_aggregation_lineage(
             ctx.session,
             table_ids=ctx.table_ids or [],
-            session_id=session_id,
             run_id=run_id,
             period_grain=str(ctx.config.get("time_grain", "monthly")),
         )

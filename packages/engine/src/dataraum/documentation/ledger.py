@@ -23,8 +23,6 @@ def log_fix(
     user_input: str,
     interpretation: str,
     status: str = "confirmed",
-    *,
-    session_id: str,
 ) -> FixLedgerEntry:
     """Create a fix entry, superseding any prior fix with the same status for same action+scope.
 
@@ -57,7 +55,6 @@ def log_fix(
 
     # Create new entry
     new_entry = FixLedgerEntry(
-        session_id=session_id,
         source_id=source_id,
         action_name=action_name,
         table_name=table_name,

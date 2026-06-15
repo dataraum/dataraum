@@ -259,21 +259,11 @@ function boundValues(predicate: unknown): string[] {
 	return out.sort();
 }
 
-describe("tableEntityWhere (DAT-476 — deterministic entity pick)", () => {
-	it("scopes to the passed session_id (binds both table_id and session_id)", () => {
-		// current_table_entities is session-head-scoped (one row per (table_id,
-		// session)), so a multi-session workspace must filter on the caller's
-		// session_id — not pick an arbitrary session's row. Assert the composed
-		// predicate binds BOTH the table_id and the session_id literals.
-		expect(boundValues(tableEntityWhere("t_orders", "sess_1"))).toEqual([
-			"sess_1",
-			"t_orders",
-		]);
-	});
-
-	it("filters table_id alone when no session_id is passed", () => {
-		// No session filter → the call-site `detected_at desc` order then yields the
-		// deterministic latest entity (not an arbitrary session's row).
+describe("tableEntityWhere (DAT-476, DAT-506 — workspace-catalog entity pick)", () => {
+	it("filters on table_id alone (the view resolves at the workspace catalog head)", () => {
+		// current_table_entities resolves at the workspace catalog head now (one row
+		// per table_id, no session axis), so the predicate binds the table_id only;
+		// the call-site `detected_at desc` order is the defensive tiebreak.
 		expect(boundValues(tableEntityWhere("t_orders"))).toEqual(["t_orders"]);
 	});
 });

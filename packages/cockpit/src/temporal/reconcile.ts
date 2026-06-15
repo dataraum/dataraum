@@ -39,11 +39,8 @@ async function reconcileOne(run: ActiveRun): Promise<void> {
 			run_id: run.runId,
 		});
 		if (progress.done) {
-			await markRunStatus(
-				run.workflowId,
-				run.runId,
-				terminalRunStatus(progress),
-			);
+			const status = terminalRunStatus(progress);
+			await markRunStatus(run.workflowId, run.runId, status);
 		}
 	} catch (err) {
 		// A missing/expired run or a Temporal hiccup — leave it for the next load.

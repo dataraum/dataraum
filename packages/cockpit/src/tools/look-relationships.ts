@@ -15,10 +15,10 @@
 // relationship *catalog* (`current_relationships`) says WHAT each one is
 // (type/cardinality/confidence/detection-method/confirmed). This joins the
 // catalog facts onto the band rows by the directional column-pair so the agent
-// gets what + how-ready in ONE call, at the same session/detect grain. The
-// catalog view is already sealed to the promoted run by its own `session:{id}`
-// head EXISTS clause, so a plain sessionId filter reads the same run. The union
-// is full-outer by column-pair key: a catalog relationship with no readiness row
+// gets what + how-ready in ONE call, at the same workspace catalog grain. The
+// catalog view is already sealed to the promoted run by its own workspace
+// `catalog` head EXISTS clause (DAT-506), so both reads see the same run. The
+// union is full-outer by column-pair key: a catalog relationship with no readiness row
 // surfaces catalog-only (bands null), and a readiness row with no catalog match
 // surfaces bands-only (catalog facts null) — neither side is dropped.
 //
@@ -36,9 +36,9 @@ import {
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
 import {
+	catalogHeadTarget,
 	parseRelationshipTarget,
 	relationshipTargetKey,
-	sessionHeadTarget,
 } from "../db/metadata/relationship-target";
 import {
 	columns,
@@ -93,10 +93,9 @@ const RelationshipReadiness = z.object({
 export type RelationshipReadiness = z.infer<typeof RelationshipReadiness>;
 
 const LookRelationshipsResult = z.object({
-	session_id: z.string(),
-	// False when the session has no promoted relationship-readiness run yet (no
+	// False when the workspace has no promoted relationship-readiness run yet (no
 	// begin_session detect sealed) — the grid should say "not analyzed" rather
-	// than imply the session has no relationships.
+	// than imply the workspace has no relationships.
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
 	relationships: z.array(RelationshipReadiness),
@@ -350,31 +349,25 @@ export function unionRelationships(
 	return out;
 }
 
-export interface LookRelationshipsInput {
-	session_id: string;
-}
-
-/** Per-relationship readiness for one session's promoted detect run. */
-export async function lookRelationships(
-	input: LookRelationshipsInput,
-): Promise<LookRelationshipsResult> {
-	// `analyzed` = the session SEALED a detect run — distinct from "sealed but
-	// zero relationships" (single-table session), which must not read as
+/** Per-relationship readiness for the workspace's promoted detect run. */
+export async function lookRelationships(): Promise<LookRelationshipsResult> {
+	// `analyzed` = a begin_session catalog run SEALED — distinct from "sealed but
+	// zero relationships" (single-table workspace), which must not read as
 	// never-ran. The head pass-through stays on the read surface for exactly
-	// this check; the rows themselves come from the current_* view.
+	// this check; the rows themselves come from the current_* view. Resolved at
+	// the workspace `catalog` head (DAT-506), so it carries no session.
 	const [head] = await metadataDb
 		.select({ runId: metadataSnapshotHead.runId })
 		.from(metadataSnapshotHead)
 		.where(
 			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
-				eq(metadataSnapshotHead.stage, "detect"),
+				eq(metadataSnapshotHead.target, catalogHeadTarget()),
+				eq(metadataSnapshotHead.stage, "catalog"),
 			),
 		)
 		.limit(1);
 	if (!head?.runId) {
 		return {
-			session_id: input.session_id,
 			analyzed: false,
 			pending_teaches: 0,
 			relationships: [],
@@ -383,7 +376,7 @@ export async function lookRelationships(
 
 	// Two independent reads off the same promoted run — the relationship-readiness
 	// bands and the relationship catalog. Fire them in parallel: neither depends on
-	// the other (both key off sessionId; the union joins them in memory afterward).
+	// the other (both read the catalog head; the union joins them in memory afterward).
 	//
 	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. `target` carries the identity (relationship rows
@@ -397,18 +390,13 @@ export async function lookRelationships(
 			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, input.session_id),
-				like(currentEntropyReadiness.target, "relationship:%"),
-			),
-		)
+		.where(like(currentEntropyReadiness.target, "relationship:%"))
 		.orderBy(asc(currentEntropyReadiness.target));
 
-	// The relationship catalog for this session (DAT-478) — WHAT each relationship
-	// is. The view is already sealed to the promoted detect run by its own
-	// `session:{id}` head EXISTS clause, so a sessionId filter reads the same run as
-	// the readiness rows above. Joined onto the bands by the directional column pair.
+	// The relationship catalog (DAT-478) — WHAT each relationship is. The view is
+	// already sealed to the promoted begin_session run by its own workspace
+	// `catalog` head EXISTS clause (DAT-506), so it reads the same run as the
+	// readiness rows above. Joined onto the bands by the directional column pair.
 	const catalogQuery = metadataDb
 		.select({
 			fromColumnId: currentRelationships.fromColumnId,
@@ -420,7 +408,6 @@ export async function lookRelationships(
 			isConfirmed: currentRelationships.isConfirmed,
 		})
 		.from(currentRelationships)
-		.where(eq(currentRelationships.sessionId, input.session_id))
 		// The in-memory fold owns winner selection — `unionRelationships` /
 		// `catalogRowBeats` pick the per-pair representative by the engine's method
 		// precedence (`manual > keeper > llm > candidate`), confidence only as the
@@ -457,7 +444,6 @@ export async function lookRelationships(
 	const pending = await getPendingOverlays();
 
 	return {
-		session_id: input.session_id,
 		analyzed: true,
 		pending_teaches: pending.length,
 		relationships,
@@ -509,19 +495,15 @@ async function loadColumnNames(
 export const lookRelationshipsTool = toolDefinition({
 	name: "look_relationships",
 	description:
-		"Show a begin_session session's per-relationship readiness — ready/investigate/" +
+		"Show the workspace's per-relationship readiness — ready/investigate/" +
 		"blocked across the query, aggregation, and reporting intents — with the top " +
 		"quality drivers per relationship, identified by its directional column pair " +
 		"(from_column_id → to_column_id). Each relationship also carries its catalog " +
 		"facts (relationship_type, cardinality, confidence, detection_method, " +
 		"is_confirmed) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
-		"promoted detect run for the session. pending_teaches counts un-applied teaches " +
+		"promoted begin_session detect run. pending_teaches counts un-applied teaches " +
 		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
 		"`why_relationship` to explain a specific relationship's band.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session to inspect (its session_id)."),
-	}),
+	inputSchema: z.object({}),
 	outputSchema: LookRelationshipsResult,
-}).server((input) => lookRelationships(input));
+}).server(() => lookRelationships());

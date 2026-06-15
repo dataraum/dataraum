@@ -14,7 +14,7 @@
 
 import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -237,7 +237,6 @@ export async function synthesizeAnalysis(
 }
 
 export interface WhyRelationshipInput {
-	session_id: string;
 	from_column_id: string;
 	to_column_id: string;
 }
@@ -261,7 +260,7 @@ export async function whyRelationship(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → unanalyzed.
-	// Relationship targets are written by session-grain runs only, but the pick
+	// Relationship targets are written by catalog-grain runs only, but the pick
 	// keeps the read uniform with why_column/why_table (and deterministic should
 	// a second grain ever appear).
 	const allReadinessRows = await metadataDb
@@ -270,19 +269,13 @@ export async function whyRelationship(
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			computedAt: currentEntropyReadiness.computedAt,
-			sessionId: currentEntropyReadiness.sessionId,
 			runId: currentEntropyReadiness.runId,
 			viaTableHead: currentEntropyReadiness.viaTableHead,
-			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
 		})
 		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, input.session_id),
-				eq(currentEntropyReadiness.target, target),
-			),
-		);
+		.where(eq(currentEntropyReadiness.target, target));
 	const readinessRow = pickCurrentRow(allReadinessRows);
 
 	// Evidence is keyed by the relationship target (relationship rows have no
@@ -300,16 +293,11 @@ export async function whyRelationship(
 			computedAt: currentEntropyObjects.computedAt,
 			runId: currentEntropyObjects.runId,
 			viaTableHead: currentEntropyObjects.viaTableHead,
-			viaSessionHead: currentEntropyObjects.viaSessionHead,
+			viaCatalogHead: currentEntropyObjects.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
 		})
 		.from(currentEntropyObjects)
-		.where(
-			and(
-				eq(currentEntropyObjects.sessionId, input.session_id),
-				eq(currentEntropyObjects.target, target),
-			),
-		)
+		.where(eq(currentEntropyObjects.target, target))
 		.orderBy(asc(currentEntropyObjects.dimension));
 	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
 	const evidenceRows = rawEvidence.map((e) => ({
@@ -383,13 +371,10 @@ export const whyRelationshipTool = toolDefinition({
 		"drivers (ranked by how much fixing each would help) and the underlying " +
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
 		"after look_relationships to drill into a specific relationship; identify it " +
-		"by its directional column pair (from_column_id → to_column_id) and the " +
-		"session_id. signal_count shows how many detector signals back the " +
-		"explanation — a low count means the picture is partial.",
+		"by its directional column pair (from_column_id → to_column_id). signal_count " +
+		"shows how many detector signals back the explanation — a low count means the " +
+		"picture is partial.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the relationship belongs to."),
 		from_column_id: z
 			.string()
 			.describe(

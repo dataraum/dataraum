@@ -8,7 +8,7 @@ would drag the engine into the sandbox.
 
 Topology (DAT-370): the table is the unit of work.
 
-    AddSourceWorkflow(identity)                              [parent]
+    AddSourceWorkflow(workspace_id, sources, verticals)     [parent]
       import() per source_id    -> raw table ids             (per-source enumerator)
       check_column_limit()                                   (run-scoped cost gate, DAT-430)
       fan-out via workflow.as_completed:
@@ -34,6 +34,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from dataraum.worker.contracts import (
@@ -41,6 +42,7 @@ with workflow.unsafe.imports_passed_through():
         AddSourceResult,
         BeginSessionInput,
         BeginSessionResult,
+        ImportInput,
         ImportResult,
         OperatingModelInput,
         OperatingModelResult,
@@ -51,6 +53,8 @@ with workflow.unsafe.imports_passed_through():
         ProcessTableResult,
         ProgressFailure,
         ProgressSnapshot,
+        RunPhaseInput,
+        RunRef,
         RunScopedInput,
         SessionScopedInput,
         TableProgress,
@@ -100,6 +104,27 @@ _ANALYTICS_PHASES = (
 )
 
 
+def _single_vertical(verticals: list[str]) -> str:
+    """Resolve the run's single vertical from the workflow input's ``verticals``.
+
+    The wire carries ``verticals: list[str]`` for forward-compat (DAT-506), but a
+    workspace realistically has ONE vertical today and the LLM grounding has no
+    multi-vertical ontology MERGE. So operate on the resolved single name and fail
+    LOUD on a multi-vertical workspace rather than silently using only the first —
+    a born-loud guard until multi-vertical grounding lands (DAT-357/479 territory).
+    An empty list resolves to the no-vertical default ``"_adhoc"`` (mirrors the
+    activity-side ``vertical or "_adhoc"`` coalesce).
+    """
+    if len(verticals) > 1:
+        raise ApplicationError(
+            f"multi-vertical grounding not yet supported (got {verticals}); a "
+            "workspace must carry exactly one vertical until ontology merge lands.",
+            type="PhaseFailed",
+            non_retryable=True,
+        )
+    return verticals[0] if verticals else "_adhoc"
+
+
 def _failure_message(err: BaseException) -> str:
     """Unwrap a workflow failure to its root-cause message for the snapshot.
 
@@ -144,7 +169,9 @@ class ProcessTableWorkflow:
         )
         typed_table_id = typing.typed_table_id
 
-        scoped = TableScopedInput(identity=payload.identity, table_id=typed_table_id)
+        scoped = TableScopedInput(
+            run=payload.run, table_id=typed_table_id, vertical=payload.vertical
+        )
 
         for phase in _ANALYTICS_PHASES:
             await workflow.execute_activity(
@@ -244,42 +271,39 @@ class AddSourceWorkflow:
                 return
 
     async def _run_inner(self, payload: AddSourceInput) -> AddSourceResult:
-        # Mint the snapshot version axis once per execution (DAT-413) and stamp
-        # it onto the identity threaded into every activity, so all of this run's
+        # Mint the snapshot version axis once per execution (DAT-413) and thread
+        # it into every activity via a source-free ``RunRef``, so all of this run's
         # metadata rows share one run_id. ``workflow.uuid4`` is the deterministic,
         # replay-safe UUID (NEVER ``uuid.uuid4``). The child workflow inherits the
-        # stamped identity via ``ProcessTableInput(identity=identity)``.
+        # run ref via ``ProcessTableInput(run=run)``.
         run_id = str(workflow.uuid4())
-        base = payload.identity.model_copy(update={"run_id": run_id})
+        run = RunRef(workspace_id=payload.workspace_id, run_id=run_id)
+        # The wire carries verticals as a list (forward-compat); resolve the single
+        # one (born-loud on multi-vertical until ontology merge lands).
+        vertical = _single_vertical(payload.verticals)
 
         # A run ingests a SET of objects from 1–N sources (DAT-422). ``import``
         # is the one per-source activity — it loads a source's files into
-        # ``lake.raw.*`` — so it runs once per source in ``payload.source_ids``,
-        # each scoped to that source's id (``base`` carries the workspace/session/
-        # run; only ``source_id`` varies). The cockpit's per-file content-source set
-        # is non-empty by construction (Zod ``min(1)``). Sequential, not fanned out:
-        # imports write to the shared lake, so serial keeps them off each other's
-        # optimistic-commit path and stays determinism-simple. On a teach re-run each
-        # import reuses its already-loaded raw tables (``ImportPhase.should_skip``
-        # bails on re-load); the re-run re-derives the downstream metadata under the
-        # fresh run_id, coexisting with prior runs.
+        # ``lake.raw.*`` — so it runs once per source in ``payload.sources``, each
+        # scoped to that source's id (the ONLY source id on the wire; everything
+        # past import resolves source provenance relationally). The cockpit's
+        # per-file content-source set is non-empty by construction (Zod ``min(1)``).
+        # Sequential, not fanned out: imports write to the shared lake, so serial
+        # keeps them off each other's optimistic-commit path and stays
+        # determinism-simple. On a teach re-run each import reuses its
+        # already-loaded raw tables (``ImportPhase.should_skip`` bails on re-load);
+        # the re-run re-derives the downstream metadata under the fresh run_id,
+        # coexisting with prior runs.
         target_raw_ids: list[str] = []
-        for source_id in payload.source_ids:
+        for source_id in payload.sources:
             imported = await workflow.execute_activity(
                 "import",
-                base.model_copy(update={"source_id": source_id}),
+                ImportInput(run=run, source_id=source_id, vertical=vertical),
                 result_type=ImportResult,
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
             )
             target_raw_ids.extend(imported.raw_table_ids)
-
-        # Past ``import`` the run is source-free (DAT-422): the per-table fan-out
-        # and the session-scoped reduce/detect/promote scope by the session's table
-        # set (``session_tables``), never a source — so the identity threaded onward
-        # drops ``source_id``. ``typing`` links each typed table to the session, so
-        # the reduce/detect see the union across every imported source.
-        identity = base.model_copy(update={"source_id": None})
 
         # Run-scoped column gate (DAT-430): ``limits.max_columns`` bounds the
         # RUN's pipeline/LLM cost, so it must judge the union of the run's raw
@@ -293,7 +317,7 @@ class AddSourceWorkflow:
         self._progress.phase = "check_column_limit"
         await workflow.execute_activity(
             "check_column_limit",
-            RunScopedInput(identity=identity, table_ids=target_raw_ids),
+            RunScopedInput(run=run, table_ids=target_raw_ids),
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -310,12 +334,15 @@ class AddSourceWorkflow:
         ]
         self._progress.phase = "processing_tables"
 
-        # Deterministic, collision-free child ids keep replay stable. The same
-        # id is reused across teach iterations with WorkflowIdReusePolicy.ALLOW_DUPLICATE
-        # on the parent — Temporal UI groups iterations naturally. The id encodes
-        # workspace_id (DAT-364) + the run's session_id (DAT-422) so two workspaces
-        # never collide and per-object sources in one run share the parent prefix;
-        # see process_table_workflow_id for the convention.
+        # Deterministic, collision-free child ids keep replay stable. The child id
+        # is derived from THIS parent's own ``workflow.info().workflow_id``
+        # (DAT-506) — the cockpit owns parent-id naming — so the same raw table
+        # re-runs under the same child id across teach iterations
+        # (WorkflowIdReusePolicy.ALLOW_DUPLICATE on the parent groups them in the
+        # Temporal UI), and two parents never collide on a child id. See
+        # ``process_table_workflow_id`` for the convention.
+        parent_id = workflow.info().workflow_id
+
         async def _process(raw_id: str) -> ProcessTableResult:
             # Wrap the child so a failure is attributed to THIS table before it
             # propagates — ``as_completed`` yields in completion order, not input
@@ -326,14 +353,11 @@ class AddSourceWorkflow:
                 result = await workflow.execute_child_workflow(
                     ProcessTableWorkflow.run,
                     ProcessTableInput(
-                        identity=identity,
+                        run=run,
                         raw_table_id=raw_id,
+                        vertical=vertical,
                     ),
-                    id=process_table_workflow_id(
-                        identity.workspace_id,
-                        identity.session_id,
-                        raw_id,
-                    ),
+                    id=process_table_workflow_id(parent_id, raw_id),
                 )
             except Exception as err:
                 self._mark_table(raw_id, "failed")
@@ -365,7 +389,7 @@ class AddSourceWorkflow:
         self._progress.phase = "semantic_per_column"
         await workflow.execute_activity(
             "semantic_per_column",
-            identity,
+            RunPhaseInput(run=run, vertical=vertical),
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_LLM_RETRY,
@@ -376,7 +400,7 @@ class AddSourceWorkflow:
         self._progress.phase = "detect"
         await workflow.execute_activity(
             "detect",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -389,14 +413,14 @@ class AddSourceWorkflow:
         self._progress.phase = "promote"
         await workflow.execute_activity(
             "promote_to_latest",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
 
         self._progress.phase = "done"
-        return AddSourceResult(raw_table_ids=target_raw_ids, tables=tables)
+        return AddSourceResult(run_id=run_id, raw_table_ids=target_raw_ids, tables=tables)
 
 
 # --- begin_session (DAT-401) -------------------------------------------------
@@ -408,7 +432,7 @@ class AddSourceWorkflow:
 # sequential chain over the whole selection. The selection travels as an array
 # of typed table ids in the workflow input and is threaded to each activity
 # (``SessionScopedInput``); ``begin_session_select`` also persists it to
-# ``session_tables`` for provenance + the downstream readiness layer (DAT-408).
+# ``run_tables`` for provenance + the downstream readiness layer (DAT-408/506).
 
 # The begin_session chain, in dependency order: structural relationship
 # detection, then the LLM table-synthesis that confirms a subset of those
@@ -465,8 +489,8 @@ class BeginSessionWorkflow:
     Temporal's determinism sandbox like the add_source workflows (imports only
     the engine-free contracts).
 
-    ``begin_session_select`` pre-flights the selection + links it to the session
-    (``session_tables``), then ``relationships`` (structural candidates) →
+    ``begin_session_select`` pre-flights the selection + links it to the run
+    (``run_tables``), then ``relationships`` (structural candidates) →
     ``semantic_per_table`` (LLM classification + confirms a subset) run over the
     whole selection, then ``session_materialize_overlays`` (fold the user's durable
     add/keep relationship teaches into this run, DAT-409) → ``enriched_views``
@@ -534,14 +558,16 @@ class BeginSessionWorkflow:
 
     async def _run_inner(self, payload: BeginSessionInput) -> BeginSessionResult:
         # Mint the run's ``run_id`` once (DAT-408), mirroring AddSourceWorkflow, and
-        # thread it through every activity so all of this run's metadata shares it
-        # and the terminal promote can flip the relationship-readiness heads.
-        # ``workflow.uuid4`` is the deterministic, replay-safe source.
+        # thread it through every activity via a source-free ``RunRef`` so all of
+        # this run's metadata shares it and the terminal promote can flip the
+        # relationship-readiness heads. ``workflow.uuid4`` is the deterministic,
+        # replay-safe source.
         run_id = str(workflow.uuid4())
-        identity = payload.identity.model_copy(update={"run_id": run_id})
+        run = RunRef(workspace_id=payload.workspace_id, run_id=run_id)
+        vertical = _single_vertical(payload.verticals)
         # The selection is the execution scope, threaded to every activity. It is
-        # also what ``begin_session_select`` persists to ``session_tables``.
-        scoped = SessionScopedInput(identity=identity, table_ids=payload.tables)
+        # also what ``begin_session_select`` persists to ``run_tables``.
+        scoped = SessionScopedInput(run=run, table_ids=payload.tables, vertical=vertical)
 
         # Scope setup: pre-flight the selection (reject unknown/non-typed ids) and
         # link it to the session. Idempotent, and the phases below read the
@@ -573,7 +599,7 @@ class BeginSessionWorkflow:
         self._progress.phase = "session_materialize_overlays"
         await workflow.execute_activity(
             "session_materialize_overlays",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -614,7 +640,7 @@ class BeginSessionWorkflow:
         self._progress.phase = "session_detect"
         await workflow.execute_activity(
             "session_detect",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -626,7 +652,7 @@ class BeginSessionWorkflow:
         self._progress.phase = "session_write_keepers"
         await workflow.execute_activity(
             "session_write_keepers",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -635,32 +661,32 @@ class BeginSessionWorkflow:
         self._progress.phase = "session_promote_to_latest"
         await workflow.execute_activity(
             "session_promote_to_latest",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
 
         self._progress.phase = "done"
-        return BeginSessionResult(session_id=identity.session_id, table_ids=payload.tables)
+        return BeginSessionResult(run_id=run_id, table_ids=payload.tables)
 
 
 @workflow.defn(name="operatingModelWorkflow")
 class OperatingModelWorkflow:
     """The journey's third stage — executable knowledge over the workspace (DAT-438).
 
-    Mirrors ``BeginSessionWorkflow``'s shape (source-free, session-scoped,
-    sequential, run-versioned) with one structural difference: the input is the
-    ``SessionIdentity`` ONLY. begin_session ESTABLISHES the table set; this
-    stage operates on the set the session already anchors, so the pre-flight
-    ``operating_model_resolve`` re-reads ``session_tables`` AND pins the
-    ADR-0008 base-run map (begin_session's promoted detect head + per-table
-    semantic heads) once — every downstream read scopes to those pins, no
-    per-phase head resolution.
+    Mirrors ``BeginSessionWorkflow``'s shape (source-free, run-versioned,
+    sequential) with one structural difference: the input carries no table set.
+    begin_session ESTABLISHES the table set; this stage operates on the set the
+    workspace catalog already anchors, so the pre-flight
+    ``operating_model_resolve`` reads the catalog head's ``run_tables`` AND pins
+    the ADR-0008 base-run map (begin_session's promoted detect head + per-table
+    semantic heads) AND the table set once — every downstream read scopes to
+    those pins, no per-phase head resolution.
 
     Spine: resolve → validation → business_cycles → metrics (each declare →
     bind/compose → execute through the typed artifact lifecycle) → promote
-    ``(session:{id}, "operating_model")``. ``business_cycles`` (DAT-455) is the
+    ``(catalog, "operating_model")``. ``business_cycles`` (DAT-455) is the
     second family and ``metrics`` (DAT-456) the third, each running after the
     prior so the later families' graph context can read this run's evidence;
     DAT-432 inserts the terminal detect (cross_table_consistency) before promote.
@@ -712,13 +738,15 @@ class OperatingModelWorkflow:
 
     async def _run_inner(self, payload: OperatingModelInput) -> OperatingModelResult:
         run_id = str(workflow.uuid4())
-        identity = payload.identity.model_copy(update={"run_id": run_id})
+        run = RunRef(workspace_id=payload.workspace_id, run_id=run_id)
+        vertical = _single_vertical(payload.verticals)
 
-        # Pre-flight: the session's table set + the run's pinned base heads.
-        # Fails loud (no linked tables / unknown session) — nothing to model.
+        # Pre-flight: validate the vertical + pin the run's base heads off the
+        # workspace catalog run. Fails loud (unknown vertical / no promoted
+        # begin_session catalog run) — nothing to model.
         scope = await workflow.execute_activity(
             "operating_model_resolve",
-            identity,
+            RunPhaseInput(run=run, vertical=vertical),
             result_type=OperatingModelScope,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -726,8 +754,9 @@ class OperatingModelWorkflow:
 
         # First lifecycle family (DAT-438): every declared validation (vertical
         # ⊕ teach rows) is declared for this run, bound (SQL vs workspace),
-        # executed. Ungroundable specs surface as declared-with-reason.
-        scoped = OperatingModelScopedInput(identity=identity, scope=scope)
+        # executed. Ungroundable specs surface as declared-with-reason. The
+        # phases read the catalog head's run_tables (no table set on the wire).
+        scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
         self._progress.phase = "validation"
         outcome = await workflow.execute_activity(
             "validation",
@@ -746,7 +775,7 @@ class OperatingModelWorkflow:
         self._progress.phase = "operating_model_detect"
         await workflow.execute_activity(
             "operating_model_detect",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -781,11 +810,11 @@ class OperatingModelWorkflow:
             retry_policy=_LLM_RETRY,
         )
 
-        # Terminal promote: flip (session:{id}, "operating_model") to this run.
+        # Terminal promote: flip (catalog, "operating_model") to this run.
         self._progress.phase = "operating_model_promote"
         await workflow.execute_activity(
             "operating_model_promote",
-            identity,
+            run,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -793,7 +822,6 @@ class OperatingModelWorkflow:
 
         self._progress.phase = "done"
         return OperatingModelResult(
-            session_id=identity.session_id,
-            table_ids=scope.table_ids,
+            run_id=run_id,
             validation_summary=outcome.summary,
         )

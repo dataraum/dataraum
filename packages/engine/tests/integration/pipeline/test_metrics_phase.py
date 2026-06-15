@@ -20,7 +20,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
-from dataraum.investigation.db_models import InvestigationSession
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.metrics_phase import MetricsPhase
@@ -59,8 +58,7 @@ def _mock_llm():
 
 @pytest.fixture
 def workspace_table(session: Session) -> Table:
-    """A typed table with a column + the journey session the FKs need."""
-    session.add(InvestigationSession(session_id=_SESSION_ID, intent="test"))
+    """A typed table with a column."""
     source = Source(name="test_source", source_type="csv")
     session.add(source)
     session.flush()
@@ -98,9 +96,7 @@ def _make_ctx(
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=None,  # source-free: operating_model scope is table_ids
         table_ids=table_ids,
-        session_id=_SESSION_ID,
         run_id=run_id,
         config=config
         if config is not None

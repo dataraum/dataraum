@@ -5,9 +5,9 @@ table. These tests pin the two load-bearing facts of that substrate:
 
 - ``MetadataSnapshotHead`` is a registered model whose table ``create_all``
   builds, and instances carry the documented columns.
-- ``run_phase`` threads ``SourceIdentity.run_id`` onto ``PhaseContext.run_id``,
+- ``run_phase`` threads ``RunRef.run_id`` onto ``PhaseContext.run_id``,
   so every add_source phase body sees the run's snapshot id (and a ``None``
-  identity stays ``None`` — the cockpit initial-run shape).
+  run_id stays ``None`` — the cockpit initial-run shape).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.storage import MetadataSnapshotHead
 from dataraum.storage.base import init_database
 from dataraum.worker import activity as activity_mod
-from dataraum.worker.contracts import SourceIdentity
+from dataraum.worker.contracts import RunRef
 
 
 def test_snapshot_head_table_created_and_instantiates() -> None:
@@ -68,7 +68,7 @@ class _CapturePhase:
 
 def _run_phase_capturing(
     monkeypatch: Any,
-    identity: SourceIdentity,
+    run: RunRef,
 ) -> PhaseContext:
     """Drive ``run_phase`` with mocks, returning the ctx the phase body saw."""
     _CapturePhase.captured = None
@@ -77,11 +77,11 @@ def _run_phase_capturing(
     monkeypatch.setattr(
         activity_mod,
         "_build_phase_config",
-        lambda source, phase_name, ident: {},
+        lambda source, phase_name, vertical: {},
     )
 
-    # Source-free identity (the production post-import shape, DAT-422/426):
-    # run_phase never resolves a Source row, so no session.get stub is needed.
+    # Source-free run ref (the production shape, DAT-506/426): run_phase resolves no
+    # Source row for a table-scoped phase, so no session.get stub is needed.
     session = MagicMock()
 
     @contextmanager
@@ -96,28 +96,21 @@ def _run_phase_capturing(
     manager.session_scope = _session_scope
     manager.duckdb_cursor = _duckdb_cursor
 
-    result = activity_mod.run_phase(manager, "capture", identity, ["tbl-1"])
+    result = activity_mod.run_phase(manager, "capture", run, ["tbl-1"], "finance")
     assert result.status == PhaseStatus.COMPLETED.value
     assert _CapturePhase.captured is not None
     return _CapturePhase.captured
 
 
-def test_run_phase_threads_run_id_from_identity(monkeypatch: Any) -> None:
-    """A stamped ``SourceIdentity.run_id`` lands on ``PhaseContext.run_id``."""
-    identity = SourceIdentity(
-        workspace_id="ws-1",
-        session_id="sess-1",
-        run_id="run-xyz",
-    )
-    ctx = _run_phase_capturing(monkeypatch, identity)
+def test_run_phase_threads_run_id_from_run_ref(monkeypatch: Any) -> None:
+    """A stamped ``RunRef.run_id`` lands on ``PhaseContext.run_id``."""
+    run = RunRef(workspace_id="ws-1", run_id="run-xyz")
+    ctx = _run_phase_capturing(monkeypatch, run)
     assert ctx.run_id == "run-xyz"
 
 
 def test_run_phase_run_id_defaults_none(monkeypatch: Any) -> None:
-    """An identity with no ``run_id`` (cockpit initial-run shape) stays ``None``."""
-    identity = SourceIdentity(
-        workspace_id="ws-1",
-        session_id="sess-1",
-    )
-    ctx = _run_phase_capturing(monkeypatch, identity)
+    """A run ref with no ``run_id`` (cockpit initial-run shape) stays ``None``."""
+    run = RunRef(workspace_id="ws-1")
+    ctx = _run_phase_capturing(monkeypatch, run)
     assert ctx.run_id is None

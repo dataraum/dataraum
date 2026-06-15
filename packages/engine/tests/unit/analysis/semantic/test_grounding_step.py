@@ -23,7 +23,7 @@ from dataraum.analysis.semantic.models import (
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
@@ -102,7 +102,7 @@ class TestGroundColumns:
             renderer=MagicMock(),
             table_ids=[table.table_id],
             ontology="finance",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         session.flush()
 
@@ -127,7 +127,7 @@ class TestGroundColumns:
             renderer=MagicMock(),
             table_ids=["t1"],
             ontology="finance",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert not result.success
@@ -157,7 +157,7 @@ class TestGroundColumns:
             renderer=MagicMock(),
             table_ids=["t1"],
             ontology="finance",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         assert not result.success
@@ -228,7 +228,7 @@ class TestGroundColumns:
             renderer=MagicMock(),
             table_ids=[table.table_id],
             ontology="framed_co",
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
         session.flush()
 

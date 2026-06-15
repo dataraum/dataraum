@@ -145,8 +145,7 @@ def persist_period_sums(
     time_column: str,
     session: Session,
     *,
-    session_id: str,
-    run_id: str | None = None,
+    run_id: str,
 ) -> Result[int]:
     """Persist per-period sums as :class:`TemporalSliceAnalysis` rows.
 
@@ -160,17 +159,15 @@ def persist_period_sums(
         slice_table_name: Name of the slice table.
         time_column: The temporal column the periods were bucketed by.
         session: Database session.
-        session_id: Investigation session scope.
         run_id: The begin_session run stamped onto the rows.
 
     Returns:
         Result containing number of records upserted.
     """
     try:
-        rows: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+        rows: dict[tuple[str, str, str], dict[str, Any]] = {}
         for p in periods:
             rows[(slice_table_name, p.period_label, run_id)] = {
-                "session_id": session_id,
                 "run_id": run_id,
                 "slice_table_name": slice_table_name,
                 "time_column": time_column,

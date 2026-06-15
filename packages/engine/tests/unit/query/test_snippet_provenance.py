@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session
 
 from dataraum.query.snippet_library import SnippetLibrary
 from dataraum.query.snippet_models import SQLSnippetRecord
-from tests.conftest import baseline_session_id
 
 SOURCE_ID = "test_source"
+WORKSPACE_ID = "test"
 
 
 def _add_snippet(
@@ -22,6 +22,7 @@ def _add_snippet(
     provenance: dict | None = None,
 ) -> SQLSnippetRecord:
     record = SQLSnippetRecord(
+        workspace_id=WORKSPACE_ID,
         snippet_type="extract",
         standard_field=standard_field,
         statement="income_statement",
@@ -47,7 +48,7 @@ class TestSnippetProvenance:
 
     def test_save_snippet_with_provenance(self, session: Session) -> None:
         """Provenance dict roundtrips through save_snippet."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         provenance = {
             "field_resolution": "inferred",
             "was_repaired": False,
@@ -74,7 +75,7 @@ class TestSnippetProvenance:
 
     def test_save_snippet_without_provenance(self, session: Session) -> None:
         """Provenance is None when not provided."""
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         record = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM t",
@@ -91,7 +92,7 @@ class TestSnippetProvenance:
         provenance = {"field_resolution": "direct", "was_repaired": False}
         _add_snippet(session, SOURCE_ID, provenance=provenance)
 
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         match = library.find_by_key(
             snippet_type="extract",
             schema_mapping_id=SOURCE_ID,
@@ -109,7 +110,7 @@ class TestSnippetProvenance:
         record.failure_count = 1
         session.flush()
 
-        library = SnippetLibrary(session, session_id=baseline_session_id())
+        library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
         new_provenance = {"field_resolution": "direct", "was_repaired": True}
         updated = library.save_snippet(
             snippet_type="extract",

@@ -112,6 +112,7 @@ def _file_ctx(
     """
     _seed_source(session, source_id, name, path, source_type)
     config: dict[str, Any] = {
+        "source_id": source_id,
         "source_name": name,
         "source_type": source_type,
         "source_connection_config": {"file_uris": [str(path)]},
@@ -121,7 +122,6 @@ def _file_ctx(
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=source_id,
         config=config,
     )
 
@@ -211,8 +211,7 @@ class TestImportPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={"source_name": "multi", "source_type": "csv"},
+            config={"source_id": source_id, "source_name": "multi", "source_type": "csv"},
         )
 
         result = phase._load_file_source(ctx, source, "multi", [str(customers), str(orders)])
@@ -232,8 +231,7 @@ class TestImportPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=str(uuid4()),
-            config={},
+            config={"source_id": str(uuid4())},
         )
 
         result = phase.run(ctx)
@@ -263,8 +261,7 @@ class TestImportPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={"source_name": "ghost", "source_type": "csv"},
+            config={"source_id": source_id, "source_name": "ghost", "source_type": "csv"},
         )
 
         result = phase._load_file_source(ctx, source, "ghost", [str(ghost_path)])
@@ -310,8 +307,7 @@ class TestImportPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
+            config={"source_id": source_id},
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -341,7 +337,7 @@ class TestImportPhase:
         )
 
         skip_reason = ImportPhase().should_skip(
-            PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+            PhaseContext(session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id})
         )
         assert skip_reason is not None
         assert "recipe unchanged" in skip_reason
@@ -379,7 +375,9 @@ class TestImportPhase:
         source = session.get(Source, source_id)
         assert source is not None
         phase = ImportPhase()
-        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+        ctx = PhaseContext(
+            session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id}
+        )
 
         assert phase.should_skip(ctx) is None  # never a silent skip
 
@@ -404,7 +402,7 @@ class TestImportPhase:
         assert source is not None
 
         result = ImportPhase()._load_database_source(
-            PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={}),
+            PhaseContext(session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id}),
             source,
             "warehouse",
             cc,
@@ -437,7 +435,9 @@ class TestImportPhase:
         source = session.get(Source, source_id)
         assert source is not None
         phase = ImportPhase()
-        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+        ctx = PhaseContext(
+            session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id}
+        )
 
         extracted = BackendExtractionResult(
             tables=[
@@ -503,7 +503,9 @@ class TestImportPhase:
         source = session.get(Source, source_id)
         assert source is not None
         phase = ImportPhase()
-        ctx = PhaseContext(session=session, duckdb_conn=duckdb_conn, source_id=source_id, config={})
+        ctx = PhaseContext(
+            session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id}
+        )
 
         # Simulate the re-select landing mid-import: the row now carries a NEW
         # recipe while the phase still holds the OLD phase-start snapshot (cc).

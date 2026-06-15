@@ -37,22 +37,14 @@ class DerivedColumn(Base):
     __tablename__ = "derived_columns"
 
     derived_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     # Snapshot version axis (DAT-448): the begin_session run that detected this
     # derivation. No unique constraint — several formulas may legitimately share
-    # one derived column. Nullable for pre-existing rows; new writes stamp
-    # ``ctx.run_id``.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
+    # one derived column.
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
 
     # The derived column
-    derived_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
+    derived_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
 
     # Source columns (list of column IDs)
     source_column_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)

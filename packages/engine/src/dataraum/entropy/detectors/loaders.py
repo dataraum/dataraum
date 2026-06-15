@@ -17,47 +17,42 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-# The add_source stages whose promoted heads a detect run pins as its base
-# snapshot (DAT-448): session detects read per-column rows these stages wrote.
-_BASE_RUN_STAGES = ("semantic_per_column", "statistics", "statistical_quality")
 
+def resolve_base_runs(session: Session, table_ids: Sequence[str]) -> dict[str, str]:
+    """Pin the promoted base-run map for a detect run (DAT-448 / DAT-506).
 
-def resolve_base_runs(session: Session, table_ids: Sequence[str]) -> dict[tuple[str, str], str]:
-    """Pin the promoted base-run map for a detect run (DAT-448).
-
-    Resolves the ``(table:{id}, stage)`` ``MetadataSnapshotHead`` ONCE per
-    table × base stage at detect start. The detect orchestrator threads the
-    map onto every ``DetectorContext``, so all loader reads in the run resolve
-    to the same base runs regardless of concurrent promotes — per-call head
-    resolution allowed a mid-run promote to tear reads (column 1 from run A,
-    column 47 from run B). Unpromoted ``(table, stage)`` pairs are simply
-    absent: readers fail closed, never guess a run.
+    Resolves the per-table generation head ``(table:{id}, GENERATION_STAGE)``
+    ONCE per table at detect start. add_source seals a table's whole run (typing
+    → semantic_per_column → detect) under ONE generation head (DAT-506), so a
+    single per-table lookup pins every upstream stage. The detect orchestrator
+    threads the map onto every ``DetectorContext``, so all loader reads in the
+    run resolve to the same base runs regardless of concurrent promotes — per-call
+    head resolution allowed a mid-run promote to tear reads. Unpromoted tables are
+    simply absent: readers fail closed, never guess a run.
     """
-    from dataraum.storage.snapshot_head import head_run_id
+    from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
-    pinned: dict[tuple[str, str], str] = {}
+    pinned: dict[str, str] = {}
     for table_id in table_ids:
-        for stage in _BASE_RUN_STAGES:
-            rid = head_run_id(session, f"table:{table_id}", stage)
-            if rid is not None:
-                pinned[(table_id, stage)] = rid
+        rid = head_run_id(session, f"table:{table_id}", GENERATION_STAGE)
+        if rid is not None:
+            pinned[table_id] = rid
     return pinned
 
 
 def _pinned_base_run(
     session: Session,
     column_id: str,
-    stage: str,
-    base_runs: Mapping[tuple[str, str], str] | None,
+    base_runs: Mapping[str, str] | None,
 ) -> str | None:
-    """The pinned base ``run_id`` for the column's table at ``stage`` (DAT-448).
+    """The pinned base ``run_id`` for the column's table (DAT-448 / DAT-506).
 
     Session-detect reads carry the begin_session run's ``run_id``, but the
     per-column analysis rows (semantic, statistics, …) were written — and
     promoted — by the add_source run that produced the typed table (DAT-405).
-    The fallback consults the run-start pin instead of re-resolving the moving
-    head per call. No pin → ``None`` — the caller keeps its no-data behaviour
-    (fail closed, never guess).
+    The fallback consults the run-start pin (the table's generation head)
+    instead of re-resolving the moving head per call. No pin → ``None`` — the
+    caller keeps its no-data behaviour (fail closed, never guess).
     """
     if not base_runs:
         return None
@@ -66,7 +61,7 @@ def _pinned_base_run(
     col = session.get(Column, column_id)
     if col is None:
         return None
-    return base_runs.get((col.table_id, stage))
+    return base_runs.get(col.table_id)
 
 
 def load_typing(
@@ -206,7 +201,7 @@ def load_statistics(
     session: Session,
     column_id: str,
     run_id: str | None = None,
-    base_runs: Mapping[tuple[str, str], str] | None = None,
+    base_runs: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Load statistical profile and quality metrics for a column.
 
@@ -230,7 +225,7 @@ def load_statistics(
             sp_stmt.where(StatisticalProfile.run_id == run_id)
         ).scalar_one_or_none()
         if sp is None:
-            pinned = _pinned_base_run(session, column_id, "statistics", base_runs)
+            pinned = _pinned_base_run(session, column_id, base_runs)
             if pinned is not None and pinned != run_id:
                 sp = session.execute(
                     sp_stmt.where(StatisticalProfile.run_id == pinned)
@@ -263,7 +258,7 @@ def load_statistics(
             qm_stmt.where(StatisticalQualityMetrics.run_id == run_id)
         ).scalar_one_or_none()
         if qm is None:
-            pinned = _pinned_base_run(session, column_id, "statistical_quality", base_runs)
+            pinned = _pinned_base_run(session, column_id, base_runs)
             if pinned is not None and pinned != run_id:
                 qm = session.execute(
                     qm_stmt.where(StatisticalQualityMetrics.run_id == pinned)
@@ -305,7 +300,7 @@ def load_semantic(
     session: Session,
     column_id: str,
     run_id: str | None = None,
-    base_runs: Mapping[tuple[str, str], str] | None = None,
+    base_runs: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """Load semantic annotation for a column.
 
@@ -331,7 +326,7 @@ def load_semantic(
             sa_stmt.where(SemanticAnnotation.run_id == run_id)
         ).scalar_one_or_none()
         if sa is None:
-            pinned = _pinned_base_run(session, column_id, "semantic_per_column", base_runs)
+            pinned = _pinned_base_run(session, column_id, base_runs)
             if pinned is not None and pinned != run_id:
                 sa = session.execute(
                     sa_stmt.where(SemanticAnnotation.run_id == pinned)
@@ -406,15 +401,14 @@ def load_relationship_for_pair(
     session: Session,
     from_column_id: str,
     to_column_id: str,
-    session_id: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """The representative relationship for one directional column pair (DAT-408).
 
     Several method-rows (candidate / llm / manual / keeper) may share a pair; the
     representative is the highest-precedence one (manual > keeper > llm > candidate)
-    — that is the relationship the readiness measures. ``session_id`` + ``run_id``
-    scope to this run's catalog (rows coexist across runs/sessions).
+    — that is the relationship the readiness measures. ``run_id`` scopes to this
+    run's catalog (rows coexist across runs).
 
     The representative keeps its IDENTITY (method, confidence, confirmation), but
     measured RI evidence (:data:`_RI_EVIDENCE_KEYS`) is backfilled from the
@@ -430,8 +424,6 @@ def load_relationship_for_pair(
         Relationship.from_column_id == from_column_id,
         Relationship.to_column_id == to_column_id,
     )
-    if session_id is not None:
-        stmt = stmt.where(Relationship.session_id == session_id)
     if run_id is not None:
         stmt = stmt.where(Relationship.run_id == run_id)
     rels = list(session.execute(stmt).scalars())
@@ -468,7 +460,6 @@ def load_relationship_rows_for_pair(
     session: Session,
     from_column_id: str,
     to_column_id: str,
-    session_id: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """ALL method-rows for one column pair, keyed by detection method.
@@ -478,7 +469,7 @@ def load_relationship_rows_for_pair(
     ``llm`` confirmation, and the teach-materialized ``manual``/``keeper`` rows
     — so it needs the per-method rows side by side, NOT the single
     highest-precedence representative :func:`load_relationship_for_pair`
-    returns. Same session/run scoping.
+    returns. Same run scoping.
 
     Direction-AGNOSTIC by design (wave-2 cal finding): candidate rows can be
     persisted parent→child while the defined pair is child→parent, and the
@@ -504,8 +495,6 @@ def load_relationship_rows_for_pair(
             ),
         )
     )
-    if session_id is not None:
-        stmt = stmt.where(Relationship.session_id == session_id)
     if run_id is not None:
         stmt = stmt.where(Relationship.run_id == run_id)
     rels = list(session.execute(stmt).scalars())
@@ -533,23 +522,20 @@ def load_relationship_rows_for_pair(
     return out
 
 
-def load_session_relationships(
-    session: Session, session_id: str, run_id: str | None = None
-) -> list[dict[str, Any]]:
-    """This run's **defined** relationships for a session (DAT-408) — the join-path set.
+def load_session_relationships(session: Session, run_id: str | None = None) -> list[dict[str, Any]]:
+    """This run's **defined** relationships (DAT-408) — the join-path set.
 
     "Defined" = ``detection_method != 'candidate'`` (the catalog contract in
     db_models.py / relationships.utils): join-path ambiguity is measured among the
     LLM-selected relationships, not the ephemeral structural candidates — two bare
     candidates between the same two tables are not a real ambiguous join. Scoped to
     ``run_id`` (the current run's catalog) so coexisting prior-run rows don't
-    double-count; ``None`` (tests) reads the session unscoped.
+    double-count; ``None`` (tests) reads unscoped.
     """
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Table
 
     stmt = select(Relationship).where(
-        Relationship.session_id == session_id,
         Relationship.detection_method != "candidate",
     )
     if run_id is not None:

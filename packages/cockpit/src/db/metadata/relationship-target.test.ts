@@ -1,14 +1,14 @@
-// Unit tests for the relationship-target key grammar (DAT-409) — the TS mirror of
-// the engine's relationship_target_key / parse_relationship_target / session_head_target.
-// Pure functions; the contract that matters is round-trip stability + that the
-// `::` separator survives UUIDs containing `-`.
+// Unit tests for the relationship-target key grammar (DAT-409, DAT-506) — the TS
+// mirror of the engine's relationship_target_key / parse_relationship_target /
+// catalog_head_target. Pure functions; the contract that matters is round-trip
+// stability + that the `::` separator survives UUIDs containing `-`.
 
 import { describe, expect, it } from "vitest";
 
 import {
+	catalogHeadTarget,
 	parseRelationshipTarget,
 	relationshipTargetKey,
-	sessionHeadTarget,
 	tableTargetKey,
 } from "./relationship-target";
 
@@ -55,8 +55,8 @@ describe("tableTargetKey (DAT-415)", () => {
 	});
 });
 
-describe("sessionHeadTarget (DAT-409)", () => {
-	it("builds the session:{id} seal key", () => {
-		expect(sessionHeadTarget("sess-1")).toBe("session:sess-1");
+describe("catalogHeadTarget (DAT-506)", () => {
+	it("is the constant workspace catalog head target", () => {
+		expect(catalogHeadTarget()).toBe("catalog");
 	});
 });

@@ -53,10 +53,8 @@ class Relationship(Base):
     __table_args__ = (
         # Run-grain identity (DAT-408): the catalog is versioned by ``run_id`` like
         # all other metadata, so the unique key includes it — two runs' rows for the
-        # same pair+method coexist. ``session_id`` stays in the key (a run belongs to
-        # one session) so two sessions never collide on a shared column pair.
+        # same pair+method coexist.
         UniqueConstraint(
-            "session_id",
             "run_id",
             "from_column_id",
             "to_column_id",
@@ -68,28 +66,16 @@ class Relationship(Base):
     relationship_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
-    )
     # Snapshot version axis (DAT-408): the run that produced/materialized this row.
-    # Nullable for non-workflow/test callers; the workflow path always stamps it.
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # Source side
-    from_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    from_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
+    from_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    from_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
 
     # Target side
-    to_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    to_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
+    to_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
+    to_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
 
     # Classification
     relationship_type: Mapped[str] = mapped_column(

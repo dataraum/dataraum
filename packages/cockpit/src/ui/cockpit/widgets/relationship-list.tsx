@@ -99,7 +99,7 @@ export function RelationshipListWidget({
 			`Explain the readiness for the relationship "${fromLabel}" → "${toLabel}" using the why_relationship tool.`,
 			{
 				refs:
-					`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+					`Internal only — do not quote in prose: ` +
 					`from_column_id=${rel.from_column_id} to_column_id=${rel.to_column_id} ` +
 					`(use as the arguments to the why_relationship tool).`,
 				label: "Explaining the relationship…",

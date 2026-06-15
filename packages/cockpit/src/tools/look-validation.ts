@@ -19,7 +19,6 @@
 // the pure row→shape projection is unit-tested via `projectValidationOverview`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -63,8 +62,7 @@ const ValidationOverview = z.object({
 export type ValidationOverview = z.infer<typeof ValidationOverview>;
 
 const LookValidationResult = z.object({
-	session_id: z.string(),
-	// False when the session has no promoted operating_model run yet — the
+	// False when the workspace has no promoted operating_model run yet — the
 	// widget should say "not run" rather than imply zero declared validations.
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
@@ -121,22 +119,16 @@ export function projectValidationOverview(
 	};
 }
 
-export interface LookValidationInput {
-	session_id: string;
-}
-
-/** Per-validation lifecycle + result for one session's promoted operating_model run. */
-export async function lookValidation(
-	input: LookValidationInput,
-): Promise<LookValidationResult> {
-	// `analyzed` = the session PROMOTED an operating_model run — distinct from
+/** Per-validation lifecycle + result for the workspace's promoted operating_model run. */
+export async function lookValidation(): Promise<LookValidationResult> {
+	// `analyzed` = the workspace PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared validations" (a vertical with none), which must
 	// not read as never-ran. The head pass-through stays on the read surface for
 	// exactly this check; the rows themselves come from the current_* views.
-	const head = await readOperatingModelHead(input.session_id);
+	// Resolved at the workspace catalog head (DAT-506), so it carries no session.
+	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
-			session_id: input.session_id,
 			analyzed: false,
 			pending_teaches: 0,
 			validations: [],
@@ -146,10 +138,8 @@ export async function lookValidation(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. The shared reader scopes to validation artifacts —
 	// the lifecycle substrate is typed and shared with cycles/metrics.
-	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
-		input.session_id,
-		"validation",
-	);
+	const artifacts: LifecycleArtifactRow[] =
+		await readLifecycleArtifactRows("validation");
 
 	const rawResults = await metadataDb
 		.select({
@@ -160,8 +150,7 @@ export async function lookValidation(
 			message: currentValidationResults.message,
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
-		.from(currentValidationResults)
-		.where(eq(currentValidationResults.sessionId, input.session_id));
+		.from(currentValidationResults);
 	const resultByKey = new Map<string, ValidationResultRow>(
 		rawResults.map((r) => [
 			r.validationId ?? "",
@@ -182,7 +171,6 @@ export async function lookValidation(
 	const pending = await getPendingOverlays();
 
 	return {
-		session_id: input.session_id,
 		analyzed: true,
 		pending_teaches: pending.length,
 		validations,
@@ -192,19 +180,13 @@ export async function lookValidation(
 export const lookValidationTool = toolDefinition({
 	name: "look_validation",
 	description:
-		"Show a session's operating-model validation outcomes — every declared " +
+		"Show the workspace's operating-model validation outcomes — every declared " +
 		"validation with its lifecycle state (declared / grounded / executed), " +
 		"the reason it could not run when it stopped short, and the executed " +
 		"result (pass / fail + message). Read-only; reflects the promoted " +
-		"operating_model run for the session (run the operating_model tool " +
-		"first). pending_teaches counts un-applied teaches across the workspace. " +
-		"Use `why_validation` to drill into a specific validation.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe(
-				"The begin_session session whose validations to inspect (its session_id).",
-			),
-	}),
+		"operating_model run (run the operating_model tool first). pending_teaches " +
+		"counts un-applied teaches across the workspace. Use `why_validation` to " +
+		"drill into a specific validation.",
+	inputSchema: z.object({}),
 	outputSchema: LookValidationResult,
-}).server((input) => lookValidation(input));
+}).server(() => lookValidation());

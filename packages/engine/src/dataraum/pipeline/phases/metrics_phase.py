@@ -139,7 +139,6 @@ class MetricsPhase(BasePhase):
                 summary=f"0 declared metrics ({outcome}) — nothing to compose or execute",
             )
 
-        session_id = ctx.require_session_id()
         run_id = ctx.require_run_id()
         # Pinned upstream heads (ADR-0008 in-run mode): resolved ONCE by the
         # workflow's pre-flight ``operating_model_resolve`` activity and threaded
@@ -183,7 +182,7 @@ class MetricsPhase(BasePhase):
 
         renderer = PromptRenderer()
         agent = GraphAgent(config=config, provider=provider, prompt_renderer=renderer)
-        snippet_library = SnippetLibrary(ctx.session, session_id=session_id)
+        snippet_library = SnippetLibrary(ctx.session)
 
         # declare: every declared graph_id becomes a declared artifact for THIS
         # run — supersession across runs; a success-redelivery RESETS the same
@@ -192,7 +191,6 @@ class MetricsPhase(BasePhase):
         for graph_id, defn in declared_defs.items():
             artifacts[graph_id] = declare_artifact(
                 ctx.session,
-                session_id=session_id,
                 artifact_type="metric",
                 artifact_key=graph_id,
                 run_id=run_id,
@@ -249,7 +247,7 @@ class MetricsPhase(BasePhase):
                 agent,
                 schema_mapping_id,
                 table_ids,
-                session_id=session_id,
+                vertical,
                 om_run_id=run_id,
             )
         else:
@@ -258,12 +256,10 @@ class MetricsPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 table_ids=table_ids,
                 schema_mapping_id=schema_mapping_id,
-                session_id=session_id,
                 om_run_id=run_id,
+                vertical=vertical,
             )
-            results = _execute_metrics_serial(
-                prep, ctx.session, exec_ctx, agent, session_id=session_id
-            )
+            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, schema_mapping_id)
 
         # A composed metric that ran cleanly reaches executed; one whose SQL
         # failed stays grounded with the reason (born loud, never silently absent).
@@ -325,8 +321,7 @@ def _execute_metrics_serial(
     session: Session,
     exec_ctx: _ExecutionContext,
     agent: GraphAgent,
-    *,
-    session_id: str,
+    workspace_id: str,
 ) -> list[MetricResult]:
     """Fallback path: shared session + cursor, sequential dispatch.
 
@@ -335,7 +330,7 @@ def _execute_metrics_serial(
     out: list[MetricResult] = []
     for graph_id, graph, hint_sql, inspiration_id in prep:
         result = agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id
+            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=workspace_id
         )
         out.append((graph_id, result, inspiration_id))
     return out
@@ -347,8 +342,8 @@ def _execute_metrics_parallel(
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
+    vertical: str,
     *,
-    session_id: str,
     om_run_id: str,
 ) -> list[MetricResult]:
     """Concurrent path: per-call session + cursor, gathered via asyncio.
@@ -381,7 +376,7 @@ def _execute_metrics_parallel(
                         agent,
                         schema_mapping_id,
                         table_ids,
-                        session_id,
+                        vertical,
                         om_run_id,
                     )
                 except Exception as exc:
@@ -400,7 +395,7 @@ def _execute_isolated(
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
-    session_id: str,
+    vertical: str,
     om_run_id: str,
 ) -> Result[GraphExecution]:
     """Run one metric with an isolated session + cursor pair.
@@ -423,9 +418,9 @@ def _execute_isolated(
             duckdb_conn=cursor,
             table_ids=table_ids,
             schema_mapping_id=schema_mapping_id,
-            session_id=session_id,
             om_run_id=om_run_id,
+            vertical=vertical,
         )
         return agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id
+            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=schema_mapping_id
         )

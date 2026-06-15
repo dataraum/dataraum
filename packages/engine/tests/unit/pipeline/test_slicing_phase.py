@@ -31,7 +31,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_phase import SlicingPhase
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.upsert import upsert
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _seed(
@@ -49,7 +49,8 @@ def _seed(
     ``link_relationship=False``, which leaves the row in place but unreferenced).
     The view's registered Table carries ``invoice_id__date`` / ``invoice_id__status``
     Column rows. No StatisticalProfile rows — absent stats pass ``_pre_filter_columns``.
-    Entities are seeded with ``run_id=None`` to match a None-run PhaseContext.
+    Entities are seeded with ``run_id=None`` (before_flush autofills the baseline
+    run, matching the default ``_ctx`` run scope, DAT-506).
     """
     src = Source(name="s", source_type="csv")
     session.add(src)
@@ -94,7 +95,6 @@ def _seed(
     session.flush()
 
     fact_entity = TableEntity(
-        session_id=baseline_session_id(),
         table_id=fact.table_id,
         run_id=None,
         detected_entity_type="transaction",
@@ -103,7 +103,6 @@ def _seed(
         confidence=0.9,
     )
     dim_entity = TableEntity(
-        session_id=baseline_session_id(),
         table_id=dim.table_id,
         run_id=None,
         detected_entity_type="document",
@@ -114,7 +113,6 @@ def _seed(
     session.add_all([fact_entity, dim_entity])
 
     rel = Relationship(
-        session_id=baseline_session_id(),
         run_id=None,
         from_table_id=fact.table_id,
         from_column_id=fk_col.column_id,
@@ -154,7 +152,6 @@ def _seed(
     )
 
     view = EnrichedView(
-        session_id=baseline_session_id(),
         fact_table_id=fact.table_id,
         view_table_id=view_table.table_id,
         view_name="enriched_csv__invoices",
@@ -176,13 +173,18 @@ def _ctx(
     table_ids: list[str],
     run_id: str | None = None,
 ) -> PhaseContext:
-    """Source-free ctx for the slicing phase, scoped by ``table_ids`` (DAT-401)."""
+    """Source-free ctx for the slicing phase, scoped by ``table_ids`` (DAT-401).
+
+    ``run_id`` defaults to ``baseline_run_id()`` — the before_flush autofill
+    stamps the seeded ``run_id=None`` entities/relationships/views with the same
+    baseline, so the phase's run-scoped reads/writes resolve them (DAT-506).
+    """
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
-        session_id=baseline_session_id(),
-        run_id=run_id,
+        session_id=baseline_run_id(),
+        run_id=run_id if run_id is not None else baseline_run_id(),
     )
 
 
@@ -267,7 +269,6 @@ class TestBuildContextDataTimeAxis:
         fact: Table = seeded["fact"]
         session.add(
             TableEntity(
-                session_id=baseline_session_id(),
                 table_id=fact.table_id,
                 run_id="run-A",
                 detected_entity_type="transaction",
@@ -587,11 +588,9 @@ class TestSliceDefinitionWriterIdempotent:
         mocks are injected by the class-level patches but go unused here.
         """
         seeded = _seed(session)
-        sid = baseline_session_id()
 
         def _row(confidence: float) -> dict[str, Any]:
             return {
-                "session_id": sid,
                 "run_id": "run-A",
                 "table_id": seeded["fact"].table_id,
                 "column_id": seeded["fk_col"].column_id,

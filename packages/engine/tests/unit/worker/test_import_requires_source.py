@@ -15,7 +15,7 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from dataraum.worker.activities import PhaseActivities
-from dataraum.worker.contracts import SourceIdentity
+from dataraum.worker.contracts import SourceIdentity, SourcePhaseInput
 
 
 def test_import_refuses_a_source_free_identity() -> None:
@@ -28,7 +28,7 @@ def test_import_refuses_a_source_free_identity() -> None:
     identity = SourceIdentity(workspace_id="ws-1", session_id="sess-1", run_id="run-A")
 
     with pytest.raises(ApplicationError) as excinfo:
-        activities.run_import(identity)
+        activities.run_import(SourcePhaseInput(identity=identity, vertical="finance"))
 
     assert excinfo.value.type == "PhaseFailed"
     assert excinfo.value.non_retryable

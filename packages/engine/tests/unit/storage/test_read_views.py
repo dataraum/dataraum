@@ -12,6 +12,7 @@ import pytest
 
 from dataraum.storage.base import Base, load_all_models
 from dataraum.storage.read_views import (
+    _ALWAYS_PASSTHROUGH,
     _RUN_GRAIN_EXEMPT,
     READ_TOKEN,
     WS_TOKEN,
@@ -28,8 +29,8 @@ def test_every_run_stamped_table_gets_a_current_view() -> None:
     names = {name for name, _ in read_view_statements()}
 
     for table in Base.metadata.tables.values():
-        if table.name == "metadata_snapshot_head":
-            assert table.name in names  # pointer: pass-through, not current_*
+        if table.name in _ALWAYS_PASSTHROUGH:
+            assert table.name in names  # run_id is the key, not a version axis: pass-through
             continue
         if "run_id" in {c.name for c in table.columns}:
             assert f"current_{table.name}" in names, table.name
@@ -56,19 +57,19 @@ def test_head_join_shape_for_column_grain() -> None:
     """Spot-check the hard join — written once, here, for everyone."""
     sql = dict(read_view_statements())["current_semantic_annotations"]
     assert "'table:' || c.table_id" in sql
-    assert "h.stage = 'semantic_per_column'" in sql
+    assert "h.stage = 'generation'" in sql
     assert "h.run_id = r.run_id" in sql
 
 
 def test_dual_grain_accepts_either_head_and_discriminates() -> None:
     """entropy objects/readiness: add_source seals per table, begin_session per
-    session — and after both, a column has TWO current rows; the ``via_*``
-    discriminators let consumers pin one grain (review finding, 2026-06-07)."""
+    workspace catalog — and after both, a column has TWO current rows; the
+    ``via_*`` discriminators let consumers pin one grain (DAT-506)."""
     sql = dict(read_view_statements())["current_entropy_objects"]
     assert "'table:' || r.table_id" in sql
-    assert "'session:' || r.session_id" in sql
+    assert "h.target = 'catalog'" in sql
     assert "AS via_table_head" in sql
-    assert "AS via_session_head" in sql
+    assert "AS via_catalog_head" in sql
 
 
 def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
@@ -77,9 +78,9 @@ def test_claim_witnesses_is_dual_grain_witness_substrate() -> None:
     discriminators — the witness provenance behind every pooled (C, U)."""
     sql = dict(read_view_statements())["current_claim_witnesses"]
     assert "'table:' || r.table_id" in sql
-    assert "'session:' || r.session_id" in sql
+    assert "h.target = 'catalog'" in sql
     assert "AS via_table_head" in sql
-    assert "AS via_session_head" in sql
+    assert "AS via_catalog_head" in sql
 
 
 def test_unclassified_versioned_table_fails_loud() -> None:

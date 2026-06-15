@@ -61,7 +61,6 @@ def _seed_typed_table(session: Any) -> None:
 
 def _slice_def(run_id: str) -> SliceDefinition:
     return SliceDefinition(
-        session_id="sess-1",
         run_id=run_id,
         table_id="tbl-1",
         column_id="col-1",

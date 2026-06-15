@@ -1,9 +1,11 @@
-"""Unit tests for the operating_model activity helpers (DAT-438).
+"""Unit tests for the operating_model activity helpers (DAT-438/506).
 
-``resolve_operating_model_scope`` — the pre-flight that re-reads the session's
-table set and pins the ADR-0008 base-run map once per run — and
-``promote_operating_model_run`` — the terminal head flip at stage
-``operating_model``. Mirrors the ``test_promote_run`` fake-manager pattern.
+``resolve_operating_model_scope(manager, identity, vertical)`` — the pre-flight
+that reads the workspace catalog head's ``run_tables`` and pins the ADR-0008
+base-run map once per run (it returns NO table set; the phases read the catalog
+head's tables directly, DAT-506) — and ``promote_operating_model_run`` — the
+terminal head flip on the catalog target at stage ``operating_model``. Mirrors
+the ``test_promote_run`` fake-manager pattern.
 """
 
 from __future__ import annotations
@@ -17,8 +19,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from temporalio.exceptions import ApplicationError
 
-from dataraum.investigation.db_models import InvestigationSession, SessionTable
-from dataraum.storage import MetadataSnapshotHead, Table, init_database, session_head_target
+from dataraum.investigation import link_run_tables
+from dataraum.storage import (
+    GENERATION_STAGE,
+    MetadataSnapshotHead,
+    Table,
+    catalog_head_target,
+    init_database,
+)
 from dataraum.worker.activity import (
     promote_operating_model_run,
     resolve_operating_model_scope,
@@ -26,6 +34,8 @@ from dataraum.worker.activity import (
 from dataraum.worker.contracts import SessionIdentity
 
 _IDENTITY = SessionIdentity(workspace_id="ws-1", session_id="sess-om", run_id="run-om-A")
+_VERTICAL = "finance"
+_CATALOG_RUN = "run-bs"
 
 
 @pytest.fixture
@@ -68,81 +78,82 @@ def _manager(session_factory: Any) -> Any:
     return _Manager()
 
 
-def _seed_session(session_factory: Any, table_ids: list[str]) -> None:
-    """Session + linked TYPED tables (tables_for_session joins through Table)."""
+def _seed_catalog(
+    session_factory: Any,
+    table_ids: list[str],
+    *,
+    catalog_run: str | None = _CATALOG_RUN,
+) -> None:
+    """Promoted begin_session catalog run anchoring TYPED tables to ``catalog_run``.
+
+    A promoted ``(catalog, "catalog")`` head names the run; its ``run_tables``
+    anchor the workspace's composed table set (``tables_for_run`` joins through
+    ``Table``). When ``catalog_run`` is ``None`` no catalog head is promoted —
+    the mid-flight/failed-begin_session state.
+    """
     with session_factory() as s:
-        s.add(InvestigationSession(session_id=_IDENTITY.session_id, intent="test"))
         for tid in table_ids:
             s.add(Table(table_id=tid, source_id="src-1", table_name=tid, layer="typed"))
-            s.add(SessionTable(session_id=_IDENTITY.session_id, table_id=tid))
+        if catalog_run is not None:
+            link_run_tables(s, catalog_run, table_ids)
+            s.add(
+                MetadataSnapshotHead(
+                    target=catalog_head_target(), stage="catalog", run_id=catalog_run
+                )
+            )
         s.commit()
 
 
 class TestResolveOperatingModelScope:
     def test_resolves_tables_and_pins_once(self, session_factory):
-        _seed_session(session_factory, ["tbl-1", "tbl-2"])
+        _seed_catalog(session_factory, ["tbl-1", "tbl-2"])
+        # tbl-1 has a promoted per-table generation head; tbl-2 does not.
         with session_factory() as s:
-            s.add_all(
-                [
-                    MetadataSnapshotHead(
-                        target=session_head_target(_IDENTITY.session_id),
-                        stage="detect",
-                        run_id="run-bs",
-                    ),
-                    MetadataSnapshotHead(
-                        target="table:tbl-1", stage="semantic_per_column", run_id="run-sem-1"
-                    ),
-                ]
+            s.add(
+                MetadataSnapshotHead(
+                    target="table:tbl-1", stage=GENERATION_STAGE, run_id="run-sem-1"
+                )
             )
             s.commit()
 
-        scope = resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+        scope = resolve_operating_model_scope(_manager(session_factory), _IDENTITY, _VERTICAL)
 
-        assert sorted(scope.table_ids) == ["tbl-1", "tbl-2"]
-        assert scope.relationship_run_id == "run-bs"
+        # The scope carries NO table set (DAT-506): the phases read the catalog
+        # head's run_tables directly. It pins the base-run map once.
+        assert scope.relationship_run_id == _CATALOG_RUN
         # tbl-2 has no promoted semantic head → absent, never guessed.
         assert scope.semantic_runs == {"tbl-1": "run-sem-1"}
 
-    def test_unpromoted_session_fails_born_loud(self, session_factory):
-        """Linked tables but no promoted begin_session head = mid-flight or
-        failed session (DAT-511) — refuse to ground over a partial workspace
-        instead of pinning None and warning (the 2026-06-11 live-smoke bug).
+    def test_no_promoted_catalog_run_fails_born_loud(self, session_factory):
+        """Tables exist but no promoted begin_session catalog head = mid-flight or
+        failed begin_session (DAT-511) — refuse to ground over a partial workspace.
         Non-retryable: deterministic until begin_session promotes."""
-        _seed_session(session_factory, ["tbl-1"])
+        _seed_catalog(session_factory, ["tbl-1"], catalog_run=None)
 
         with pytest.raises(ApplicationError, match="no promoted begin_session") as exc:
-            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+            resolve_operating_model_scope(_manager(session_factory), _IDENTITY, _VERTICAL)
         assert exc.value.non_retryable is True
         assert exc.value.type == "PhaseFailed"
 
-    def test_no_linked_tables_fails_loud(self, session_factory):
+    def test_promoted_catalog_run_with_no_tables_fails_loud(self, session_factory):
+        """A promoted catalog head naming a run with no run_tables — begin_session
+        must compose the workspace before operating_model runs."""
         with session_factory() as s:
-            s.add(InvestigationSession(session_id=_IDENTITY.session_id, intent="test"))
+            s.add(
+                MetadataSnapshotHead(
+                    target=catalog_head_target(), stage="catalog", run_id=_CATALOG_RUN
+                )
+            )
             s.commit()
 
-        with pytest.raises(ApplicationError, match="no linked tables"):
-            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
-
-    def test_unknown_session_fails_loud(self, session_factory):
-
-        with pytest.raises(ApplicationError, match="not found"):
-            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+        with pytest.raises(ApplicationError, match="no tables"):
+            resolve_operating_model_scope(_manager(session_factory), _IDENTITY, _VERTICAL)
 
     def test_typod_vertical_fails_born_loud(self, session_factory):
         """A typo'd / never-framed vertical raises at run entry (DAT-480) — before
-        any phase turns it into a benign no_declared_*."""
-        with session_factory() as s:
-            s.add(
-                InvestigationSession(
-                    session_id=_IDENTITY.session_id, intent="test", vertical="finanace"
-                )
-            )
-            s.add(Table(table_id="tbl-1", source_id="src-1", table_name="tbl-1", layer="typed"))
-            s.add(SessionTable(session_id=_IDENTITY.session_id, table_id="tbl-1"))
-            s.commit()
-
+        any catalog/table resolution turns it into a benign no_declared_*."""
         with pytest.raises(RuntimeError, match="Unknown vertical 'finanace'"):
-            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+            resolve_operating_model_scope(_manager(session_factory), _IDENTITY, "finanace")
 
     # DAT-505: the per-activity workspace-mismatch guard was removed — the
     # per-workspace task queue + the single boot assertion enforce isolation, so
@@ -157,7 +168,7 @@ class TestPromoteOperatingModelRun:
 
         with session_factory() as s:
             head = s.execute(select(MetadataSnapshotHead)).scalar_one()
-        assert head.target == session_head_target(_IDENTITY.session_id)
+        assert head.target == catalog_head_target()
         assert head.stage == "operating_model"
         assert head.run_id == "run-om-A"
 
@@ -169,13 +180,12 @@ class TestPromoteOperatingModelRun:
         assert head.run_id == "run-om-B"
 
     def test_coexists_with_the_begin_session_head(self, session_factory):
-        """Two stages' heads share the session target without colliding."""
+        """The begin_session (``catalog``) and operating_model heads share the
+        catalog target without colliding."""
         with session_factory() as s:
             s.add(
                 MetadataSnapshotHead(
-                    target=session_head_target(_IDENTITY.session_id),
-                    stage="detect",
-                    run_id="run-bs",
+                    target=catalog_head_target(), stage="catalog", run_id=_CATALOG_RUN
                 )
             )
             s.commit()
@@ -187,8 +197,11 @@ class TestPromoteOperatingModelRun:
                 (h.target, h.stage, h.run_id)
                 for h in s.execute(select(MetadataSnapshotHead)).scalars()
             }
-        target = session_head_target(_IDENTITY.session_id)
-        assert heads == {(target, "detect", "run-bs"), (target, "operating_model", "run-om-A")}
+        target = catalog_head_target()
+        assert heads == {
+            (target, "catalog", _CATALOG_RUN),
+            (target, "operating_model", "run-om-A"),
+        }
 
     def test_requires_run_id(self, session_factory):
         identity = SessionIdentity(workspace_id="ws-1", session_id="sess-om")

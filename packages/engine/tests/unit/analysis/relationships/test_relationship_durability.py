@@ -25,8 +25,7 @@ from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.models import relationship_target_key
 from dataraum.entropy.views.readiness_context import load_relationship_readiness
 from dataraum.storage import Column, ConfigOverlay, Source, Table
-from dataraum.storage.snapshot_head import MetadataSnapshotHead, session_head_target
-from tests.conftest import baseline_session_id
+from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
 
 def _seed_tables_columns(session: Session) -> None:
@@ -41,7 +40,6 @@ def _seed_tables_columns(session: Session) -> None:
 def _rel(session: Session, frm: str, to: str, method: str, run_id: str | None = None) -> None:
     session.add(
         Relationship(
-            session_id=baseline_session_id(),
             run_id=run_id,
             from_table_id="t1",
             from_column_id=frm,
@@ -81,7 +79,7 @@ def test_redrive_upserts_candidates_keeps_llm_and_manual(session: Session) -> No
             )
         ],
     )
-    _store_candidates(session, baseline_session_id(), ["t1", "t2"], [candidate], run_id="run-A")
+    _store_candidates(session, ["t1", "t2"], [candidate], run_id="run-A")
     session.flush()
     session.expire_all()
 
@@ -116,7 +114,7 @@ def test_redrive_skips_a_suppressed_candidate(session: Session) -> None:
             )
         ],
     )
-    _store_candidates(session, baseline_session_id(), ["t1", "t2"], [candidate])
+    _store_candidates(session, ["t1", "t2"], [candidate])
     session.flush()
 
     made = session.query(Relationship).filter_by(detection_method="candidate").all()
@@ -185,7 +183,6 @@ def test_confirmed_pairs_read_from_confirm_overlay(session: Session) -> None:
 def _readiness_row(session: Session, target: str, run_id: str) -> None:
     session.add(
         EntropyReadinessRecord(
-            session_id=baseline_session_id(),
             target=target,
             table_id=None,
             column_id=None,
@@ -197,12 +194,8 @@ def _readiness_row(session: Session, target: str, run_id: str) -> None:
 
 
 def _seal(session: Session, run_id: str) -> None:
-    """Seal the session at ``run_id`` via the per-session head (DAT-408)."""
-    session.add(
-        MetadataSnapshotHead(
-            target=session_head_target(baseline_session_id()), stage="detect", run_id=run_id
-        )
-    )
+    """Seal the workspace at ``run_id`` via the catalog head (DAT-506)."""
+    session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id=run_id))
 
 
 def test_relationship_readiness_promoted_run_only_and_gated(session: Session) -> None:
@@ -218,7 +211,7 @@ def test_relationship_readiness_promoted_run_only_and_gated(session: Session) ->
     _seal(session, "run-B")
     session.flush()
 
-    out = load_relationship_readiness(session, baseline_session_id())
+    out = load_relationship_readiness(session)
     assert {(r.target, r.run_id) for r in out} == {(live_target, "run-B")}
 
 
@@ -237,7 +230,7 @@ def test_relationship_readiness_excludes_suppressed(session: Session) -> None:
     )
     session.flush()
 
-    assert load_relationship_readiness(session, baseline_session_id()) == []
+    assert load_relationship_readiness(session) == []
 
 
 # --- Materialize-from-overlay (DAT-409 C2) ---------------------------------------
@@ -266,9 +259,7 @@ def test_materialize_add_overlay_creates_manual(session: Session) -> None:
     _overlay(session, "add", "ca", "cb")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 1
@@ -287,9 +278,7 @@ def test_materialize_keep_overlay_creates_keeper(session: Session) -> None:
     _overlay(session, "keep", "ca", "cb")
     session.flush()
 
-    materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     rows = _materialized(session)
@@ -309,9 +298,7 @@ def test_materialize_joins_a_pair_already_llm_this_run(session: Session) -> None
     _overlay(session, "keep", "ca", "cb")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 1
@@ -330,9 +317,7 @@ def test_confirm_overlay_materializes_a_manual_row_beside_llm(session: Session) 
     _overlay(session, "confirm", "ca", "cb")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 1
@@ -349,9 +334,7 @@ def test_add_and_confirm_overlays_never_duplicate_the_manual_row(session: Sessio
     _overlay(session, "confirm", "ca", "cb")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 1
@@ -367,9 +350,7 @@ def test_materialize_skips_a_rejected_pair(session: Session) -> None:
     _overlay(session, "reject", "ca", "cb")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 0
@@ -383,9 +364,7 @@ def test_materialize_is_idempotent_per_run(session: Session) -> None:
     session.flush()
 
     for _ in range(2):
-        materialize_relationship_overlays(
-            session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-        )
+        materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
         session.flush()
 
     assert len(_materialized(session)) == 1
@@ -400,9 +379,7 @@ def test_materialize_skips_endpoint_outside_selection(session: Session) -> None:
     _overlay(session, "add", "ca", "cx")
     session.flush()
 
-    count = materialize_relationship_overlays(
-        session, baseline_session_id(), run_id="r1", table_ids=["t1", "t2"]
-    )
+    count = materialize_relationship_overlays(session, run_id="r1", table_ids=["t1", "t2"])
     session.flush()
 
     assert count == 0
@@ -415,11 +392,7 @@ def test_materialize_skips_endpoint_outside_selection(session: Session) -> None:
 def _seed_prior_promoted_run(session: Session, run_id: str) -> None:
     """A prior begin_session run sealed (head points at it) with one llm relationship."""
     _rel(session, "ca", "cb", "llm", run_id=run_id)
-    session.add(
-        MetadataSnapshotHead(
-            target=session_head_target(baseline_session_id()), stage="detect", run_id=run_id
-        )
-    )
+    session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id=run_id))
     session.flush()
 
 
@@ -437,7 +410,7 @@ def test_keeper_lifts_unreproduced_prior_llm(session: Session) -> None:
     _seed_prior_promoted_run(session, "r0")
     # Current run r1 reproduced nothing for this pair.
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 1
@@ -453,7 +426,7 @@ def test_keeper_skips_reproduced_pair(session: Session) -> None:
     _rel(session, "ca", "cb", "llm", run_id="r1")  # reproduced this run
     session.flush()
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 0
@@ -467,7 +440,7 @@ def test_keeper_skips_rejected_pair(session: Session) -> None:
     _overlay(session, "reject", "ca", "cb")
     session.flush()
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 0
@@ -481,7 +454,7 @@ def test_keeper_skips_when_already_kept(session: Session) -> None:
     _overlay(session, "keep", "ca", "cb")
     session.flush()
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 0
@@ -494,7 +467,7 @@ def test_keeper_noop_on_first_run(session: Session) -> None:
     _rel(session, "ca", "cb", "llm", run_id="r1")
     session.flush()
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 0
@@ -506,14 +479,10 @@ def test_keeper_noop_when_head_already_names_current_run(session: Session) -> No
     promote), there is no prior run to compare against — no keepers."""
     _seed_tables_columns(session)
     _rel(session, "ca", "cb", "llm", run_id="r1")
-    session.add(
-        MetadataSnapshotHead(
-            target=session_head_target(baseline_session_id()), stage="detect", run_id="r1"
-        )
-    )
+    session.add(MetadataSnapshotHead(target=catalog_head_target(), stage="catalog", run_id="r1"))
     session.flush()
 
-    count = write_relationship_keepers(session, baseline_session_id(), current_run_id="r1")
+    count = write_relationship_keepers(session, current_run_id="r1")
     session.flush()
 
     assert count == 0

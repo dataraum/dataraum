@@ -62,7 +62,6 @@ def _seed_annotation(
     session.add(
         SemanticAnnotation(
             annotation_id=str(uuid4()),
-            session_id="sess-1",
             column_id=column_id,
             run_id=run_id,
             semantic_role="measure",
@@ -84,7 +83,6 @@ def _seed_object(
     session.add(
         EntropyObjectRecord(
             object_id=str(uuid4()),
-            session_id="sess-1",
             layer="semantic",
             dimension="temporal",
             sub_dimension="temporal_behavior",

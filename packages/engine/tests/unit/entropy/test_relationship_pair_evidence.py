@@ -29,7 +29,6 @@ from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.entropy.detectors.loaders import load_relationship_for_pair
 from dataraum.entropy.engine import run_detector_post_step
-from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.base import init_database
 
@@ -55,7 +54,6 @@ def session() -> Session:
     db.add_all(
         [
             Source(source_id="src-1", name="finance", source_type="csv"),
-            InvestigationSession(session_id="sess-1", intent="calibration"),
             Table(table_id="t-pay", source_id="src-1", table_name="payments", layer="typed"),
             Table(table_id="t-inv", source_id="src-1", table_name="invoices", layer="typed"),
             Column(column_id="c-fk", table_id="t-pay", column_name="invoice_id", column_position=0),
@@ -77,7 +75,6 @@ def _add_relationship(
 ) -> None:
     db.add(
         Relationship(
-            session_id="sess-1",
             run_id="run-1",
             from_table_id="t-pay",
             from_column_id="c-fk",
@@ -99,7 +96,6 @@ def _run_relationship_entropy(db: Session) -> list[EntropyObjectRecord]:
         db,
         "relationship_entropy",
         None,
-        session_id="sess-1",
         table_ids=["t-pay", "t-inv"],
         run_id="run-1",
     )
@@ -179,9 +175,7 @@ class TestLoaderRepresentativeMerge:
             is_confirmed=True,
         )
 
-        rel = load_relationship_for_pair(
-            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
-        )
+        rel = load_relationship_for_pair(session, "c-fk", "c-pk", run_id="run-1")
 
         assert rel is not None
         assert rel["detection_method"] == "manual"
@@ -199,9 +193,7 @@ class TestLoaderRepresentativeMerge:
         llm_evidence = dict(_RI_EVIDENCE, left_referential_integrity=85.0)
         _add_relationship(session, method="llm", evidence=llm_evidence, confidence=0.9)
 
-        rel = load_relationship_for_pair(
-            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
-        )
+        rel = load_relationship_for_pair(session, "c-fk", "c-pk", run_id="run-1")
 
         assert rel is not None
         assert rel["detection_method"] == "llm"
@@ -223,7 +215,6 @@ class TestRowsForPairDirectionAgnostic:
         # Candidate persisted parent→child (reversed); llm in the exact direction.
         session.add(
             Relationship(
-                session_id="sess-1",
                 run_id="run-1",
                 from_table_id="t-inv",
                 from_column_id="c-pk",
@@ -238,9 +229,7 @@ class TestRowsForPairDirectionAgnostic:
         session.commit()
         _add_relationship(session, method="llm", evidence={}, confidence=0.9)
 
-        rows = load_relationship_rows_for_pair(
-            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
-        )
+        rows = load_relationship_rows_for_pair(session, "c-fk", "c-pk", run_id="run-1")
         assert set(rows) == {"candidate", "llm"}
         assert rows["candidate"]["confidence"] == 0.93
 
@@ -250,7 +239,6 @@ class TestRowsForPairDirectionAgnostic:
         _add_relationship(session, method="candidate", evidence={}, confidence=0.59)
         session.add(
             Relationship(
-                session_id="sess-1",
                 run_id="run-1",
                 from_table_id="t-inv",
                 from_column_id="c-pk",
@@ -264,7 +252,5 @@ class TestRowsForPairDirectionAgnostic:
         )
         session.commit()
 
-        rows = load_relationship_rows_for_pair(
-            session, "c-fk", "c-pk", session_id="sess-1", run_id="run-1"
-        )
+        rows = load_relationship_rows_for_pair(session, "c-fk", "c-pk", run_id="run-1")
         assert rows["candidate"]["confidence"] == 0.59  # the requested direction's row

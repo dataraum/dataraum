@@ -90,7 +90,7 @@ class TestComputeCycleHealth:
             MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),  # id→name query
         ]
 
-        report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
+        report = compute_cycle_health(session, vertical="finance", run_id="run-om")
 
         assert len(report.cycle_scores) == 1
         score = report.cycle_scores[0]
@@ -120,7 +120,7 @@ class TestComputeCycleHealth:
             MagicMock(all=MagicMock(return_value=[_make_table("tid-ledger", "ledger")])),
         ]
 
-        report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
+        report = compute_cycle_health(session, vertical="finance", run_id="run-om")
 
         score = report.cycle_scores[0]
         assert score.validation_pass_rate is None
@@ -142,7 +142,7 @@ class TestComputeCycleHealth:
             MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),
         ]
 
-        report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
+        report = compute_cycle_health(session, vertical="finance", run_id="run-om")
 
         score = report.cycle_scores[0]
         assert score.completion_rate is None
@@ -179,7 +179,7 @@ class TestComputeCycleHealth:
             MagicMock(all=MagicMock(return_value=_DEFAULT_TABLES)),
         ]
 
-        report = compute_cycle_health(session, "sess1", vertical="finance", run_id="run-om")
+        report = compute_cycle_health(session, vertical="finance", run_id="run-om")
 
         score = report.cycle_scores[0]
         assert score.validations_run == 1  # only the judged measurement
@@ -195,20 +195,19 @@ class TestComputeCycleHealth:
         """
         session = MagicMock()
 
-        report = compute_cycle_health(session, "sess1", vertical="finance", run_id=None)
+        report = compute_cycle_health(session, vertical="finance", run_id=None)
 
         assert report.cycle_scores == []
         assert report.overall_health is None
         assert session.scalars.call_count == 0  # no query was ever issued
 
     def test_no_cycles_returns_empty(self) -> None:
-        """Session run with no detected cycles → empty report."""
+        """Run with no detected cycles → empty report."""
         session = MagicMock()
         session.scalars.return_value = MagicMock(all=MagicMock(return_value=[]))
 
-        report = compute_cycle_health(session, "sess_empty", vertical="finance", run_id="run-om")
+        report = compute_cycle_health(session, vertical="finance", run_id="run-om")
 
         assert isinstance(report, HealthReport)
-        assert report.session_id == "sess_empty"
         assert report.cycle_scores == []
         assert report.overall_health is None

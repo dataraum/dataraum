@@ -14,7 +14,7 @@ from dataraum.analysis.correlation.within_table import (
     detect_derived_columns,
 )
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 @pytest.fixture
@@ -124,7 +124,7 @@ def test_compute_numeric_correlations(session, test_duckdb, table_numeric):
 def test_detect_derived_columns(session, test_duckdb, table_numeric):
     """Test derived column detection."""
     result = detect_derived_columns(
-        table_numeric, test_duckdb, session, min_match_rate=0.95, session_id=baseline_session_id()
+        table_numeric, test_duckdb, session, min_match_rate=0.95, run_id=baseline_run_id()
     )
 
     assert result.success
@@ -234,7 +234,7 @@ def test_zero_target_not_false_positive(session, test_source):
     session.commit()
 
     result = detect_derived_columns(
-        table, conn, session, min_match_rate=0.80, session_id=baseline_session_id()
+        table, conn, session, min_match_rate=0.80, run_id=baseline_run_id()
     )
     assert result.success
     derived = result.unwrap()

@@ -49,7 +49,6 @@ def session_factory():
 def _decision(column_id: str, run_id: str, decided_type: str) -> dict[str, Any]:
     """A ``TypeDecision`` row dict with the uuid PK omitted (default applies)."""
     return {
-        "session_id": "sess-1",
         "column_id": column_id,
         "run_id": run_id,
         "decided_type": decided_type,

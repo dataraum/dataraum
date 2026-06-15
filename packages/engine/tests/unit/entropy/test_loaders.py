@@ -229,7 +229,6 @@ class TestLoaderRunIdFilter:
         session.add(
             TypeDecision(
                 decision_id=str(uuid4()),
-                session_id="sess-1",
                 column_id=column_id,
                 run_id=run_id,
                 decided_type="DECIMAL",
@@ -286,7 +285,6 @@ class TestLoaderHeadFallback:
         session.add(
             SemanticAnnotation(
                 annotation_id=str(uuid4()),
-                session_id="sess-1",
                 column_id=column_id,
                 run_id=run_id,
                 semantic_role=role,
@@ -294,15 +292,15 @@ class TestLoaderHeadFallback:
         )
         session.flush()
 
-    def _promote(self, session, table_id: str, stage: str, run_id: str) -> None:
+    def _promote(self, session, table_id: str, run_id: str) -> None:
         from datetime import UTC, datetime
 
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 
         session.add(
             MetadataSnapshotHead(
                 target=f"table:{table_id}",
-                stage=stage,
+                stage=GENERATION_STAGE,
                 run_id=run_id,
                 promoted_at=datetime.now(UTC),
             )
@@ -314,11 +312,12 @@ class TestLoaderHeadFallback:
 
         self._seed_column(real_session, "col-h1", "tbl-h1")
         self._seed_annotation(real_session, "col-h1", "run-addsource")
-        self._promote(real_session, "tbl-h1", "semantic_per_column", "run-addsource")
+        self._promote(real_session, "tbl-h1", "run-addsource")
 
-        # The orchestrator pins the promoted heads once at detect start …
+        # The orchestrator pins the promoted generation heads once at detect
+        # start — per-table, DAT-506 collapses every upstream stage onto one head.
         base_runs = resolve_base_runs(real_session, ["tbl-h1"])
-        assert base_runs == {("tbl-h1", "semantic_per_column"): "run-addsource"}
+        assert base_runs == {"tbl-h1": "run-addsource"}
 
         # … and the session run (no annotation of its own) reads the pinned run.
         sem = load_semantic(real_session, "col-h1", run_id="run-session", base_runs=base_runs)
@@ -346,7 +345,6 @@ class TestLoaderHeadFallback:
         real_session.add(
             StatisticalProfile(
                 profile_id=str(uuid4()),
-                session_id="sess-1",
                 column_id="col-h3",
                 run_id="run-addsource",
                 total_count=100,
@@ -357,7 +355,7 @@ class TestLoaderHeadFallback:
             )
         )
         real_session.flush()
-        self._promote(real_session, "tbl-h3", "statistics", "run-addsource")
+        self._promote(real_session, "tbl-h3", "run-addsource")
 
         base_runs = resolve_base_runs(real_session, ["tbl-h3"])
         stats = load_statistics(real_session, "col-h3", run_id="run-session", base_runs=base_runs)
@@ -371,7 +369,7 @@ class TestLoaderHeadFallback:
         self._seed_column(real_session, "col-h4", "tbl-h4")
         self._seed_annotation(real_session, "col-h4", "run-a", role="measure")
         self._seed_annotation(real_session, "col-h4", "run-b", role="identifier")
-        self._promote(real_session, "tbl-h4", "semantic_per_column", "run-a")
+        self._promote(real_session, "tbl-h4", "run-a")
 
         base_runs = resolve_base_runs(real_session, ["tbl-h4"])
 

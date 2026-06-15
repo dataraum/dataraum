@@ -65,7 +65,9 @@ _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
 
 
 @activity.defn(name="import")
-async def _import(_identity: SourceIdentity) -> ImportResult:
+async def _import(_payload: object) -> ImportResult:
+    # ``import`` now takes a ``SourcePhaseInput`` (identity + vertical, DAT-506);
+    # the stub ignores the payload and just yields the fixed raw-table set.
     return ImportResult(raw_table_ids=list(_RAW_IDS))
 
 
@@ -112,7 +114,8 @@ async def _temporal(_scoped: object) -> PhaseOutcome:
 
 
 @activity.defn(name="semantic_per_column")
-async def _semantic_per_column(_identity: SourceIdentity) -> PhaseOutcome:
+async def _semantic_per_column(_payload: object) -> PhaseOutcome:
+    # Now a ``SourcePhaseInput`` (identity + vertical, DAT-506).
     return PhaseOutcome(status="completed")
 
 
@@ -173,7 +176,7 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     async with _worker(temporal_client):
         handle = await temporal_client.start_workflow(
             AddSourceWorkflow.run,
-            AddSourceInput(identity=_IDENTITY, source_ids=["src-dat406"]),
+            AddSourceInput(identity=_IDENTITY, source_ids=["src-dat406"], vertical="finance"),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )

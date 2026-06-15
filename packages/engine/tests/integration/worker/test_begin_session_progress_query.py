@@ -139,7 +139,7 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     async with _worker(temporal_client, stubs):
         handle = await temporal_client.start_workflow(
             BeginSessionWorkflow.run,
-            BeginSessionInput(identity=identity, tables=_TABLE_IDS),
+            BeginSessionInput(identity=identity, tables=_TABLE_IDS, vertical="finance"),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )
@@ -197,7 +197,7 @@ async def test_failure_is_stamped_with_phase_and_replays_clean(
     async with _worker(temporal_client, stubs):
         handle = await temporal_client.start_workflow(
             BeginSessionWorkflow.run,
-            BeginSessionInput(identity=identity, tables=_TABLE_IDS),
+            BeginSessionInput(identity=identity, tables=_TABLE_IDS, vertical="finance"),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )

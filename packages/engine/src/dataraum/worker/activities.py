@@ -445,11 +445,11 @@ class PhaseActivities:
 
     @activity.defn(name="session_promote_to_latest")
     def run_session_promote_to_latest(self, identity: SessionIdentity) -> PhaseOutcome:
-        """Terminal promote for begin_session — flip the relationship-readiness heads.
+        """Terminal promote for begin_session — flip the workspace catalog head.
 
-        Runs last in ``beginSessionWorkflow``, after ``session_detect``: points each
-        ``(relationship:{from}::{to}, "detect")`` head at this ``run_id`` so the
-        readiness reader resolves it as current (DAT-408).
+        Runs last in ``beginSessionWorkflow``, after ``session_detect``: points the
+        single ``(catalog, "catalog")`` head at this ``run_id`` so the readiness
+        readers resolve this run's relationship catalog as current (DAT-506).
         """
         count = promote_session_run(self._manager, identity)
         return PhaseOutcome(

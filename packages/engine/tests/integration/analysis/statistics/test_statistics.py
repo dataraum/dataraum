@@ -17,7 +17,7 @@ from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.models import StagedTable
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.storage import Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _get_typed_table_id(typed_table_name: str, session) -> str | None:
@@ -91,9 +91,7 @@ def profiled_result(simple_csv, duckdb_conn, session):
     raw_table = session.get(Table, staged_table.table_id)
     assert raw_table is not None
 
-    infer_result = infer_type_candidates(
-        raw_table, duckdb_conn, session, session_id=baseline_session_id()
-    )
+    infer_result = infer_type_candidates(raw_table, duckdb_conn, session, run_id=baseline_run_id())
     assert infer_result.success
 
     resolve_result = resolve_types(
@@ -101,7 +99,7 @@ def profiled_result(simple_csv, duckdb_conn, session):
         duckdb_conn,
         session,
         min_confidence=0.85,
-        session_id=baseline_session_id(),
+        run_id=baseline_run_id(),
     )
     assert resolve_result.success
     resolution = resolve_result.unwrap()
@@ -110,7 +108,7 @@ def profiled_result(simple_csv, duckdb_conn, session):
     assert typed_table_id is not None
 
     stats_result = profile_statistics(
-        typed_table_id, duckdb_conn, session, session_id=baseline_session_id()
+        typed_table_id, duckdb_conn, session, run_id=baseline_run_id()
     )
     assert stats_result.success
     return stats_result.unwrap()
@@ -164,7 +162,7 @@ class TestStatisticsProfiler:
         raw_table = _stage_csv(simple_csv, duckdb_conn, session)
 
         stats_result = profile_statistics(
-            raw_table.table_id, duckdb_conn, session, session_id=baseline_session_id()
+            raw_table.table_id, duckdb_conn, session, run_id=baseline_run_id()
         )
 
         assert not stats_result.success

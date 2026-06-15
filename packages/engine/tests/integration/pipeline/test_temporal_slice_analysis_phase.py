@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.temporal_slice_analysis_phase import TemporalSliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -31,7 +31,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -49,7 +49,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)
@@ -88,7 +88,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -149,7 +149,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -237,7 +237,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -424,7 +424,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table_a_id, table_b_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)
@@ -573,7 +573,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         # Mirror the production session — the run-scoped delete only cleans up
@@ -636,7 +636,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             config={},
-            session_id=baseline_session_id(),
+            run_id=baseline_run_id(),
         )
 
         result = phase.run(ctx)

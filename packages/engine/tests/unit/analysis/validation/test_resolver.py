@@ -85,9 +85,7 @@ def two_tables_with_relationship(session):
     from dataraum.analysis.semantic.db_models import (
         SemanticAnnotation as SemanticAnnotationDB,
     )
-    from dataraum.investigation.db_models import InvestigationSession
 
-    session.add(InvestigationSession(session_id="sess-resolver", intent="test"))
     source = Source(name="test_source", source_type="csv")
     session.add(source)
     session.flush()
@@ -150,7 +148,6 @@ def two_tables_with_relationship(session):
     session.add(annotation)
 
     relationship = Relationship(
-        session_id="sess-resolver",
         run_id="run-current",
         from_table_id=txn_table.table_id,
         from_column_id=txn_account_col.column_id,
@@ -220,7 +217,6 @@ def test_relationships_scope_to_pinned_run(session, two_tables_with_relationship
 
     current = session.query(Relationship).one()
     stale = Relationship(
-        session_id="sess-resolver",
         run_id="run-stale",
         from_table_id=current.from_table_id,
         from_column_id=current.from_column_id,

@@ -1,10 +1,10 @@
-"""Unit tests for the DAT-413 ``promote_run`` terminal step (Phase 2).
+"""Unit tests for the DAT-413/506 ``promote_run`` terminal step.
 
-``promote_run`` upserts one :class:`MetadataSnapshotHead` per
-``(table_id, stage)`` for the run's tables: first promote inserts at
-``version=0``; a second promote (same tables) re-points ``run_id`` and bumps
-``version``. Behavior-preserving — nothing reads the head yet, this only pins
-that the write side is a correct upsert.
+``promote_run`` upserts ONE :class:`MetadataSnapshotHead` per table under
+``(table:{id}, GENERATION_STAGE)`` for the run's tables (DAT-506 collapsed the
+per-stage head axis to one generation head per table): first promote inserts the
+head; a second promote (same tables, new run) re-points ``run_id`` in place. The
+run's tables resolve via ``tables_for_run`` (the run-table anchor).
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from dataraum.storage import MetadataSnapshotHead, init_database
+from dataraum.storage import GENERATION_STAGE, MetadataSnapshotHead, init_database
 from dataraum.worker import activity as activity_mod
-from dataraum.worker.activity import _PROMOTE_STAGES, promote_run
+from dataraum.worker.activity import promote_run
 from dataraum.worker.contracts import SourceIdentity
 
 
@@ -68,8 +68,8 @@ def _heads(session_factory: Any) -> list[MetadataSnapshotHead]:
         return list(s.execute(select(MetadataSnapshotHead)).scalars().all())
 
 
-def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_factory):
-    """First promote inserts a v0 head per (table_id, stage); a re-run bumps + re-points."""
+def test_promote_run_upserts_one_generation_head_per_table(monkeypatch, session_factory):
+    """First promote inserts one generation head per table; a re-run re-points it."""
     # Source-free: AddSourceWorkflow threads source_id=None into the terminal
     # promote (DAT-422/426) — the test feeds exactly what production feeds.
     identity = SourceIdentity(
@@ -79,39 +79,39 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
     )
     table_ids = ["tbl-1", "tbl-2"]
 
-    monkeypatch.setattr(activity_mod, "tables_for_session", lambda session, sid: list(table_ids))
+    monkeypatch.setattr(activity_mod, "tables_for_run", lambda session, run_id: list(table_ids))
 
     manager = _manager(session_factory)
 
-    # First promote: one head per (table, stage), all at run-A.
+    # First promote: ONE generation head per table, all at run-A.
     promoted = promote_run(manager, identity)
-    assert promoted == len(table_ids) * len(_PROMOTE_STAGES)
+    assert promoted == len(table_ids)
 
     heads = _heads(session_factory)
-    assert len(heads) == len(table_ids) * len(_PROMOTE_STAGES)
+    assert len(heads) == len(table_ids)
     assert {(h.target, h.stage) for h in heads} == {
-        (f"table:{t}", s) for t in table_ids for s in _PROMOTE_STAGES
+        (f"table:{t}", GENERATION_STAGE) for t in table_ids
     }
     assert all(h.run_id == "run-A" for h in heads)
 
     # Second promote with a new run: no new rows, run_id re-pointed.
     identity_b = identity.model_copy(update={"run_id": "run-B"})
     promoted_again = promote_run(manager, identity_b)
-    assert promoted_again == len(table_ids) * len(_PROMOTE_STAGES)
+    assert promoted_again == len(table_ids)
 
     heads_after = _heads(session_factory)
-    assert len(heads_after) == len(table_ids) * len(_PROMOTE_STAGES)  # upsert, not insert
+    assert len(heads_after) == len(table_ids)  # upsert, not insert
     assert all(h.run_id == "run-B" for h in heads_after)
 
 
 def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
-    """An empty session-table set promotes nothing (logged warning, no rows)."""
+    """An empty run-table set promotes nothing (logged warning, no rows)."""
     identity = SourceIdentity(
         workspace_id="ws-1",
         session_id="sess-1",
         run_id="run-A",
     )
-    monkeypatch.setattr(activity_mod, "tables_for_session", lambda session, sid: [])
+    monkeypatch.setattr(activity_mod, "tables_for_run", lambda session, run_id: [])
 
     assert promote_run(_manager(session_factory), identity) == 0
     assert _heads(session_factory) == []

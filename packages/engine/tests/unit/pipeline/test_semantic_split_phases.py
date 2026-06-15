@@ -7,20 +7,18 @@ here we pin the skip gates that decide whether each phase re-runs.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
-from dataraum.investigation.db_models import InvestigationSession
-from dataraum.investigation.queries import link_session_tables
+from dataraum.investigation.queries import link_run_tables
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _source(session: Session) -> Source:
@@ -39,11 +37,11 @@ def _typed_table(session: Session, source_id: str, name: str, cols: list[str]) -
             Column(table_id=t.table_id, column_name=c, column_position=pos, resolved_type="VARCHAR")
         )
     session.flush()
-    # Mirror the typing phase: a typed table is linked to the run's session
-    # (``session_tables``, DAT-407) in the same transaction. The add_source reduce
-    # now scopes by that session anchor, not by ``source_id`` (DAT-421), so the
-    # fixtures must link too or the phase sees no tables.
-    link_session_tables(session, baseline_session_id(), [t.table_id])
+    # Mirror the typing phase: a typed table is linked to the run's table anchor
+    # (``run_tables``, DAT-506) in the same transaction. The add_source reduce
+    # scopes by that run anchor, not by ``source_id`` (DAT-421), so the fixtures
+    # must link too or the phase sees no tables.
+    link_run_tables(session, baseline_run_id(), [t.table_id])
     session.flush()
     return t
 
@@ -52,7 +50,6 @@ def _annotate(session: Session, table: Table, run_id: str | None = None) -> None
     for col in table.columns:
         session.add(
             SemanticAnnotation(
-                session_id=baseline_session_id(),
                 column_id=col.column_id,
                 run_id=run_id,
                 semantic_role="attribute",
@@ -64,33 +61,29 @@ def _annotate(session: Session, table: Table, run_id: str | None = None) -> None
 
 
 def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
-    # semantic_per_column is session-scoped now (DAT-421): it derives its tables
-    # from the run's ``session_tables``, so the ctx must carry the session id the
-    # typed tables above are linked under (``baseline_session_id()``). Source-FREE
-    # (DAT-422/426): the reduce runs past the add_source boundary, where the
-    # workflow threads source_id=None.
+    # semantic_per_column derives its tables from the run's ``run_tables`` anchor
+    # (DAT-506), so the ctx must carry the run_id the typed tables above are linked
+    # under (``baseline_run_id()``). Source-FREE (DAT-422/426): the reduce runs
+    # past the add_source boundary, where the workflow threads source_id=None.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
         source_id=None,
-        session_id=baseline_session_id(),
+        session_id=baseline_run_id(),
+        run_id=baseline_run_id(),
     )
 
 
 def _session_ctx(
     session: Session, duckdb_conn: duckdb.DuckDBPyConnection, table_ids: list[str]
 ) -> PhaseContext:
-    """Source-free ctx for the begin_session phases — scoped by ``table_ids`` (DAT-401).
-
-    Carries the baseline session id: the begin_session phases are session-scoped
-    (``should_skip`` filters by ``session_id``), so the ctx must supply one,
-    matching the rows seeded under ``baseline_session_id()``.
-    """
+    """Source-free ctx for the begin_session phases — scoped by ``table_ids`` (DAT-401)."""
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
-        session_id=baseline_session_id(),
+        session_id=baseline_run_id(),
+        run_id=baseline_run_id(),
     )
 
 
@@ -189,7 +182,8 @@ class TestPerColumnAdhocFailLoud:
             duckdb_conn=duckdb_conn,
             source_id=None,
             config={"vertical": "_adhoc"},
-            session_id=baseline_session_id(),
+            session_id=baseline_run_id(),
+            run_id=baseline_run_id(),
         )
 
     @patch("dataraum.pipeline.phases.semantic_per_column_phase.OntologyLoader")
@@ -248,7 +242,8 @@ class TestPerColumnAdhocFailLoud:
             duckdb_conn=duckdb_conn,
             source_id=None,
             config={"vertical": "finanace"},
-            session_id=baseline_session_id(),
+            session_id=baseline_run_id(),
+            run_id=baseline_run_id(),
         )
         src = _source(session)
         _typed_table(session, src.source_id, "t1", ["a"])
@@ -294,7 +289,6 @@ class TestPerTableShouldSkip:
         t1 = _typed_table(session, src.source_id, "t1", ["a"])
         session.add(
             TableEntity(
-                session_id=baseline_session_id(),
                 table_id=t1.table_id,
                 detected_entity_type="thing",
                 confidence=0.9,
@@ -327,27 +321,9 @@ class TestPerTableShouldSkip:
             phase.should_skip(_session_ctx(session, duckdb_conn, [a.table_id, b.table_id])) is None
         )
 
-    def test_another_sessions_classification_does_not_skip(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """A different session's entity over a shared table must not skip THIS session."""
-        src = _source(session)
-        t1 = _typed_table(session, src.source_id, "t1", ["a"])
-        other_session = str(uuid4())
-        session.add(InvestigationSession(session_id=other_session, intent="other", status="active"))
-        session.flush()
-        session.add(
-            TableEntity(
-                session_id=other_session,  # classified by a DIFFERENT session
-                table_id=t1.table_id,
-                detected_entity_type="thing",
-                confidence=0.9,
-                detection_source="llm",
-            )
-        )
-        session.flush()
-        # This (baseline) session has not classified t1 → it must still run.
-        assert (
-            SemanticPerTablePhase().should_skip(_session_ctx(session, duckdb_conn, [t1.table_id]))
-            is None
-        )
+    # DELETED: ``test_another_sessions_classification_does_not_skip`` —
+    # cross-session isolation has no analogue after DAT-506. Sessions left the
+    # engine (no ``InvestigationSession``, no ``TableEntity.session_id``); the
+    # per-table phase scopes purely by ``ctx.table_ids`` and ``should_skip``
+    # never filters by session, so a "different session's classification" is not
+    # a representable state.

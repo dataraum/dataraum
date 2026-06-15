@@ -23,7 +23,6 @@ from dataraum.analysis.views.db_models import EnrichedView, SlicingView
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_view_phase import SlicingViewPhase
 from dataraum.storage import Column, Source, Table
-from tests.conftest import baseline_session_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -82,7 +81,6 @@ def _seed_fact_with_enriched_view(session: Session, duckdb_conn: duckdb.DuckDBPy
     session.add(
         EnrichedView(
             view_id=str(uuid4()),
-            session_id=baseline_session_id(),
             fact_table_id=fact.table_id,
             view_name="enriched_csv__orders",
             is_grain_verified=True,
@@ -130,7 +128,6 @@ def _seed_fact_entity(session: Session, fact_id: str, run_id: str) -> None:
     session.add(
         TableEntity(
             entity_id=str(uuid4()),
-            session_id=baseline_session_id(),
             table_id=fact_id,
             run_id=run_id,
             detected_entity_type="fact",
@@ -174,7 +171,6 @@ class TestSlicingViewRecipeVersioning:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id],
-            session_id=baseline_session_id(),
             run_id="run-1",
         )
         result = SlicingViewPhase().run(ctx_a)
@@ -210,7 +206,6 @@ class TestSlicingViewRecipeVersioning:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=[fact_id],
-            session_id=baseline_session_id(),
             run_id="run-2",
         )
         result_b = SlicingViewPhase().run(ctx_b)

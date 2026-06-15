@@ -98,7 +98,6 @@ def test_reinsert_same_run_does_not_duplicate(session_factory: Any) -> None:
             _output("measure"),
             ["tbl-1"],
             annotated_by="model-x",
-            session_id="sess-1",
             run_id="run-A",
         )
         session.commit()
@@ -111,7 +110,6 @@ def test_reinsert_same_run_does_not_duplicate(session_factory: Any) -> None:
             _output("dimension"),
             ["tbl-1"],
             annotated_by="model-x",
-            session_id="sess-1",
             run_id="run-A",
         )
         session.commit()
@@ -136,7 +134,6 @@ def test_second_run_id_coexists(session_factory: Any) -> None:
             _output("measure"),
             ["tbl-1"],
             annotated_by="model-x",
-            session_id="sess-1",
             run_id="run-A",
         )
         persist_column_annotations(
@@ -144,7 +141,6 @@ def test_second_run_id_coexists(session_factory: Any) -> None:
             _output("dimension"),
             ["tbl-1"],
             annotated_by="model-x",
-            session_id="sess-1",
             run_id="run-B",
         )
         session.commit()

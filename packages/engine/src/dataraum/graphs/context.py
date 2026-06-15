@@ -349,17 +349,18 @@ def build_execution_context(
         columns_by_table[col.table_id].append(col)
 
     # Each table's current (promoted) add_source run names the run that wrote its
-    # column metadata — ``promote_run`` flips every ``(table:{id}, stage)`` head to
-    # that one run. The column-metadata reads below drop rows from STALE earlier
-    # runs (a replay/teach leaves >1 run per column, DAT-413); a table with no
-    # promoted run keeps what's there — there is no "current" to scope to. This is
-    # run-STALENESS scoping: column metadata is add_source-derived and shared across
-    # sessions, so it is NOT the cross-session isolation concern the
-    # entities/relationships read (below) fails closed on.
-    from dataraum.storage.snapshot_head import head_run_id
+    # column metadata — ``promote_run`` flips the single ``(table:{id},
+    # GENERATION_STAGE)`` generation head to that one run (DAT-506). The
+    # column-metadata reads below drop rows from STALE earlier runs (a replay/teach
+    # leaves >1 run per column, DAT-413); a table with no promoted run keeps what's
+    # there — there is no "current" to scope to. This is run-STALENESS scoping:
+    # column metadata is add_source-derived and shared across runs, so it is NOT the
+    # cross-run isolation concern the entities/relationships read (below) fails
+    # closed on.
+    from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
     addsource_run_by_table = {
-        tid: head_run_id(session, f"table:{tid}", "detect") for tid in table_ids
+        tid: head_run_id(session, f"table:{tid}", GENERATION_STAGE) for tid in table_ids
     }
     run_by_column = {col.column_id: addsource_run_by_table.get(col.table_id) for col in columns}
 

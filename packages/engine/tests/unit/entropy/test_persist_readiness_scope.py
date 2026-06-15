@@ -13,16 +13,16 @@ from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.readiness import persist_readiness
 from dataraum.storage import Source
 from dataraum.storage.models import Table
-from tests.conftest import baseline_session_id
+from tests.conftest import baseline_run_id
 
 
 def _readiness_row(session: Session, table_id: str) -> None:
     session.add(
         EntropyReadinessRecord(
-            session_id=baseline_session_id(),
             target=f"table:{table_id}",
             table_id=table_id,
             column_id=None,
+            run_id=baseline_run_id(),
             band="ready",
             worst_intent_risk=0.0,
         )
@@ -42,7 +42,7 @@ def test_per_table_replay_clears_only_its_own_rows(session: Session) -> None:
     # A per-table replay scoped to tbl_a only. No entropy objects exist, so the
     # rollup is empty and nothing is re-inserted — but the delete must touch only
     # tbl_a (DAT-410: delete-before-insert by table_id, not source_id).
-    persist_readiness(session, baseline_session_id(), ["tbl_a"])
+    persist_readiness(session, ["tbl_a"], run_id=baseline_run_id())
     session.flush()
 
     remaining = {r.table_id for r in session.query(EntropyReadinessRecord).all()}
@@ -54,7 +54,6 @@ def _relationship_row(session: Session, target: str, run_id: str) -> None:
     no table_id/column_id."""
     session.add(
         EntropyReadinessRecord(
-            session_id=baseline_session_id(),
             target=target,
             table_id=None,
             column_id=None,
@@ -65,13 +64,13 @@ def _relationship_row(session: Session, target: str, run_id: str) -> None:
     )
 
 
-def test_relationship_rows_delete_is_run_scoped_and_session_scoped(session: Session) -> None:
+def test_relationship_rows_delete_is_run_scoped(session: Session) -> None:
     """A re-run clears only its OWN relationship readiness; a prior run survives.
 
     Relationship rows carry no ``table_id``, so the column delete (by table set)
-    can't reach them — they're cleared by the separate ``(session_id, run_id,
-    relationship:%)`` scope (DAT-408). A re-run under a fresh run_id must leave the
-    earlier run's relationship rows intact (non-destructive, mirrors DAT-413).
+    can't reach them — they're cleared by the separate ``(run_id, relationship:%)``
+    scope (DAT-408). A re-run under a fresh run_id must leave the earlier run's
+    relationship rows intact (non-destructive, mirrors DAT-413).
     """
     session.add(Source(source_id="src_z", name="src_z", source_type="csv"))
     session.add(Table(table_id="tbl_z", source_id="src_z", table_name="tbl_z", layer="typed"))
@@ -83,7 +82,7 @@ def test_relationship_rows_delete_is_run_scoped_and_session_scoped(session: Sess
 
     # Re-persist run-A (no entropy objects → re-inserts nothing). Its relationship
     # row is cleared; run-B's survives.
-    persist_readiness(session, baseline_session_id(), ["tbl_z"], run_id="run-A")
+    persist_readiness(session, ["tbl_z"], run_id="run-A")
     session.flush()
 
     surviving = {
@@ -102,7 +101,7 @@ def test_empty_table_set_is_a_noop(session: Session) -> None:
     _readiness_row(session, "tbl_c")
     session.flush()
 
-    assert persist_readiness(session, baseline_session_id(), []) == 0
+    assert persist_readiness(session, []) == 0
     assert session.query(EntropyReadinessRecord).filter_by(table_id="tbl_c").count() == 1
 
 
@@ -111,13 +110,13 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
 
     Proves the P4 round-trip: a ``table:`` entropy object rolls up the network
     (dimension_coverage → query/reporting intents), persists with the table FK and
-    NO column FK, and ``load_table_readiness`` reads it back via the session head.
+    NO column FK, and ``load_table_readiness`` reads it back via the catalog head.
     """
     from datetime import UTC, datetime
 
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.entropy.views.readiness_context import load_table_readiness
-    from dataraum.storage import MetadataSnapshotHead, session_head_target
+    from dataraum.storage import MetadataSnapshotHead, catalog_head_target
 
     session.add(Source(source_id="src_t", name="src_t", source_type="csv"))
     session.add(Table(table_id="fact_t", source_id="src_t", table_name="orders", layer="typed"))
@@ -126,7 +125,6 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     # maps to the dimension_coverage network node → query/reporting intent risk).
     session.add(
         EntropyObjectRecord(
-            session_id=baseline_session_id(),
             layer="semantic",
             dimension="coverage",
             sub_dimension="dimension_coverage",
@@ -140,7 +138,7 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     )
     session.flush()
 
-    written = persist_readiness(session, baseline_session_id(), ["fact_t"], run_id="run-1")
+    written = persist_readiness(session, ["fact_t"], run_id="run-1")
     session.flush()
     assert written >= 1
 
@@ -150,23 +148,21 @@ def test_table_grain_readiness_round_trip(session: Session) -> None:
     assert (row.table_id, row.column_id, row.run_id) == ("fact_t", None, "run-1")
     assert row.band in ("investigate", "blocked"), "a 0.8 coverage gap is not 'ready'"
 
-    # Reader resolves the current run via the session head (begin_session seals there).
+    # Reader resolves the current run via the catalog head (begin_session seals there).
     session.add(
         MetadataSnapshotHead(
-            target=session_head_target(baseline_session_id()),
-            stage="detect",
+            target=catalog_head_target(),
+            stage="catalog",
             run_id="run-1",
             promoted_at=datetime.now(UTC),
         )
     )
     session.flush()
-    assert [r.target for r in load_table_readiness(session, baseline_session_id())] == [
-        "table:orders"
-    ]
+    assert [r.target for r in load_table_readiness(session)] == ["table:orders"]
 
 
 class TestRunResolvedLoad:
-    """Per (target, detector): current run > session head > table heads (review C2).
+    """Per (target, detector): current run > catalog head > table heads (review C2).
 
     temporal_behavior is the first detector on BOTH detect paths; a blind load
     let the stale add_source conflict outlive its session-detect re-adjudication
@@ -179,7 +175,6 @@ class TestRunResolvedLoad:
 
         session.add(
             EntropyObjectRecord(
-                session_id=baseline_session_id(),
                 layer="semantic",
                 dimension="temporal",
                 sub_dimension="temporal_behavior",
@@ -194,22 +189,24 @@ class TestRunResolvedLoad:
 
     def test_current_run_supersedes_table_head(self, session: Session) -> None:
         from dataraum.entropy.core.storage import EntropyRepository
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 
         session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
         session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
         session.flush()
-        # add_source run promoted as the table detect head: stale 2-witness C=0.9
+        # add_source run promoted as the table generation head: stale 2-witness C=0.9
         self._record(session, "addsource-run", 0.9)
         session.add(
-            MetadataSnapshotHead(target="table:fact_t", stage="detect", run_id="addsource-run")
+            MetadataSnapshotHead(
+                target="table:fact_t", stage=GENERATION_STAGE, run_id="addsource-run"
+            )
         )
         # in-flight session detect: 3-witness re-adjudication resolved C=0.1
         self._record(session, "session-run", 0.1)
         session.flush()
 
         objects = EntropyRepository(session).load_for_tables(
-            ["fact_t"], current_run_id="session-run", session_id=baseline_session_id()
+            ["fact_t"], current_run_id="session-run"
         )
         assert [o.score for o in objects] == [0.1]
 
@@ -225,44 +222,45 @@ class TestRunResolvedLoad:
         objects = EntropyRepository(session).load_for_tables(["fact_t"])
         assert len(objects) == 2
 
-    def test_session_head_resolves_without_current_run(self, session: Session) -> None:
-        """Query time: no in-flight run, session_id alone resolves to the session head."""
+    def test_catalog_head_resolves_without_current_run(self, session: Session) -> None:
+        """Query time: no in-flight run, ``resolve_runs`` resolves to the catalog head."""
         from dataraum.entropy.core.storage import EntropyRepository
-        from dataraum.storage import MetadataSnapshotHead, session_head_target
+        from dataraum.storage import MetadataSnapshotHead, catalog_head_target
+        from dataraum.storage.snapshot_head import GENERATION_STAGE
 
         session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
         session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
         session.flush()
-        # add_source run promoted as the table detect head: stale 2-witness C=0.9
+        # add_source run promoted as the table generation head: stale 2-witness C=0.9
         self._record(session, "addsource-run", 0.9)
         session.add(
-            MetadataSnapshotHead(target="table:fact_t", stage="detect", run_id="addsource-run")
+            MetadataSnapshotHead(
+                target="table:fact_t", stage=GENERATION_STAGE, run_id="addsource-run"
+            )
         )
-        # begin_session re-adjudication, promoted as the session detect head
+        # begin_session re-adjudication, promoted as the catalog head
         self._record(session, "session-run", 0.1)
         session.add(
             MetadataSnapshotHead(
-                target=session_head_target(baseline_session_id()),
-                stage="detect",
+                target=catalog_head_target(),
+                stage="catalog",
                 run_id="session-run",
             )
         )
         session.flush()
 
-        objects = EntropyRepository(session).load_for_tables(
-            ["fact_t"], session_id=baseline_session_id()
-        )
+        objects = EntropyRepository(session).load_for_tables(["fact_t"], resolve_runs=True)
         assert [o.score for o in objects] == [0.1]
 
-    def test_legacy_unstamped_rows_rank_behind_session_head(self, session: Session) -> None:
+    def test_legacy_unstamped_rows_rank_behind_catalog_head(self, session: Session) -> None:
         """A legacy row (run_id None) must not match the vacant in-flight slot.
 
         With ``current_run_id=None``, an unguarded ``record.run_id == current_run_id``
         ranks every unstamped legacy row 0 (``None == None``) and it outranks the
-        session head — the inverse of the resolution this exists to provide.
+        catalog head — the inverse of the resolution this exists to provide.
         """
         from dataraum.entropy.core.storage import EntropyRepository
-        from dataraum.storage import MetadataSnapshotHead, session_head_target
+        from dataraum.storage import MetadataSnapshotHead, catalog_head_target
 
         session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
         session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
@@ -271,20 +269,18 @@ class TestRunResolvedLoad:
         self._record(session, "session-run", 0.1)
         session.add(
             MetadataSnapshotHead(
-                target=session_head_target(baseline_session_id()),
-                stage="detect",
+                target=catalog_head_target(),
+                stage="catalog",
                 run_id="session-run",
             )
         )
         session.flush()
 
-        objects = EntropyRepository(session).load_for_tables(
-            ["fact_t"], session_id=baseline_session_id()
-        )
+        objects = EntropyRepository(session).load_for_tables(["fact_t"], resolve_runs=True)
         assert [o.score for o in objects] == [0.1]
 
     def test_build_for_readiness_forwards_resolution(self, session: Session) -> None:
-        """``build_for_readiness`` threads the ids into the load (inert-fix regression).
+        """``build_for_readiness`` threads the current run into the load (inert-fix regression).
 
         The detect-path fix added the kwargs but dropped them at the
         ``_load_entropy_objects`` call — signatures landed, resolution never ran,
@@ -292,49 +288,53 @@ class TestRunResolvedLoad:
         """
         from dataraum.entropy.views.readiness_context import build_for_readiness
         from dataraum.storage import MetadataSnapshotHead
+        from dataraum.storage.snapshot_head import GENERATION_STAGE
 
         session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
         session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
         session.flush()
         self._record(session, "addsource-run", 0.9)
         session.add(
-            MetadataSnapshotHead(target="table:fact_t", stage="detect", run_id="addsource-run")
+            MetadataSnapshotHead(
+                target="table:fact_t", stage=GENERATION_STAGE, run_id="addsource-run"
+            )
         )
         self._record(session, "session-run", 0.1)
         session.flush()
 
-        ctx = build_for_readiness(
-            session, ["fact_t"], current_run_id="session-run", session_id=baseline_session_id()
-        )
+        ctx = build_for_readiness(session, ["fact_t"], current_run_id="session-run")
         scores = [ne.score for col in ctx.columns.values() for ne in col.node_evidence]
         scores += [ds.score for ds in ctx.direct_signals]
         assert scores, "the resolved load must still surface the current run's evidence"
         assert set(scores) == {0.1}, "stale add_source row must not outlive the re-adjudication"
 
-    def test_build_column_evidence_resolves_with_session_id(self, session: Session) -> None:
-        """Query-time evidence resolves to the session head when session_id is passed."""
+    def test_build_column_evidence_resolves_with_resolve_runs(self, session: Session) -> None:
+        """Query-time evidence resolves to the catalog head when ``resolve_runs`` is set."""
         from dataraum.entropy.views.readiness_context import build_column_evidence
-        from dataraum.storage import MetadataSnapshotHead, session_head_target
+        from dataraum.storage import MetadataSnapshotHead, catalog_head_target
+        from dataraum.storage.snapshot_head import GENERATION_STAGE
 
         session.add(Source(source_id="src_x", name="src_x", source_type="csv"))
         session.add(Table(table_id="fact_t", source_id="src_x", table_name="t", layer="typed"))
         session.flush()
         self._record(session, "addsource-run", 0.9)
         session.add(
-            MetadataSnapshotHead(target="table:fact_t", stage="detect", run_id="addsource-run")
+            MetadataSnapshotHead(
+                target="table:fact_t", stage=GENERATION_STAGE, run_id="addsource-run"
+            )
         )
         self._record(session, "session-run", 0.1)
         session.add(
             MetadataSnapshotHead(
-                target=session_head_target(baseline_session_id()),
-                stage="detect",
+                target=catalog_head_target(),
+                stage="catalog",
                 run_id="session-run",
             )
         )
         session.flush()
 
-        ctx = build_column_evidence(session, ["fact_t"], session_id=baseline_session_id())
+        ctx = build_column_evidence(session, ["fact_t"], resolve_runs=True)
         scores = [ne.score for col in ctx.columns.values() for ne in col.node_evidence]
         scores += [ds.score for ds in ctx.direct_signals]
-        assert scores, "the resolved load must still surface the session head's evidence"
+        assert scores, "the resolved load must still surface the catalog head's evidence"
         assert set(scores) == {0.1}, "stale add_source row must not reach query-time consumers"

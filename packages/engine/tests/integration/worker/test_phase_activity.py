@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -29,7 +28,6 @@ from sqlalchemy import select, text
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.entropy.db_models import EntropyObjectRecord, EntropyReadinessRecord
-from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Source, Table
 from dataraum.worker import (
     SourceIdentity,
@@ -108,17 +106,18 @@ def _identity(
     )
 
 
-def _seed_source_and_session(
+def _seed_source(
     manager: ConnectionManager,
     source_id: str,
-    session_id: str,
     name: str,
     paths: Path | list[Path],
 ) -> None:
-    """Seed the Source + InvestigationSession rows the workflow would create.
+    """Seed the Source row the workflow would create before ``import`` runs.
 
-    ``begin_session``/``addSourceWorkflow`` writes these in production; the
-    activity reads the Source for its config and FK-references the session.
+    ``addSourceWorkflow`` writes this in production; the activity reads the Source
+    for its config. Sessions live in cockpit_db now (DAT-506) — the engine no
+    longer seeds an InvestigationSession; a run links its tables via
+    ``run_tables`` (written inside the typing phase) instead.
 
     Post-DAT-378 a file source carries its objects as an explicit ``file_uris``
     list under ``connection_config`` (the cockpit ``select`` stage enumerated the
@@ -137,15 +136,6 @@ def _seed_source_and_session(
                 source_type="csv",
                 connection_config={"file_uris": file_uris},
                 status="configured",
-            )
-        )
-        session.flush()
-        session.add(
-            InvestigationSession(
-                session_id=session_id,
-                intent="e4a de-risk",
-                status="active",
-                started_at=datetime.now(UTC),
             )
         )
 
@@ -186,7 +176,7 @@ def _process_one_table(
     here (DAT-394) — they run once, source-wide, in the terminal ``detect`` step
     after the fan-out. Returns the typed table id. Asserts each step completed.
     """
-    typing = run_phase(manager, "typing", identity, [raw_table_id])
+    typing = run_phase(manager, "typing", identity, [raw_table_id], "finance")
     assert typing.status == "completed", f"typing failed: {typing.error}"
 
     typed_id = typed_table_id_for_raw(manager, raw_table_id)
@@ -194,7 +184,7 @@ def _process_one_table(
     assert typed_id != raw_table_id, "typed id must differ from the raw id"
 
     for phase in _ANALYTICS_PHASES:
-        result = run_phase(manager, phase, identity, [typed_id])
+        result = run_phase(manager, phase, identity, [typed_id], "finance")
         # SKIPPED is a valid per-table outcome (e.g. temporal on a table with no
         # date columns); only FAILED is an error. The activity wrapper likewise
         # only raises on FAILED.
@@ -213,12 +203,17 @@ def test_import_then_typing_share_one_manager(
     )
     source_id = str(uuid4())
     session_id = str(uuid4())
-    _seed_source_and_session(worker_manager, source_id, session_id, "orders", csv)
+    run_id = str(uuid4())
+    _seed_source(worker_manager, source_id, "orders", csv)
 
     # import (no LLM, no prereq) — the one source-bearing activity; raw tables
     # land and the source's raw ids are the fan-out source the parent reads.
     import_result = run_phase(
-        worker_manager, "import", _identity(session_id, source_id=source_id), []
+        worker_manager,
+        "import",
+        _identity(session_id, source_id=source_id, run_id=run_id),
+        [],
+        "finance",
     )
     assert import_result.status == "completed", import_result.error
     raw_ids = raw_table_ids(worker_manager, source_id)
@@ -230,8 +225,12 @@ def test_import_then_typing_share_one_manager(
     duckdb_conn_after_import = worker_manager._duckdb_conn  # noqa: SLF001
 
     # typing scoped to the single raw table (DuckDB-heavy; runs on the SAME
-    # long-lived manager), source-free as the workflow threads it (DAT-422).
-    typing_result = run_phase(worker_manager, "typing", _identity(session_id), [raw_ids[0]])
+    # long-lived manager), source-free as the workflow threads it (DAT-422). typing
+    # links the typed table to the run via ``run_tables`` (DAT-506), so it needs a
+    # stamped run_id — minted up front and threaded in.
+    typing_result = run_phase(
+        worker_manager, "typing", _identity(session_id, run_id=run_id), [raw_ids[0]], "finance"
+    )
     assert typing_result.status == "completed", typing_result.error
     assert _lake_tables(worker_manager, "typed"), "no tables in lake.typed after typing"
     assert typed_table_id_for_raw(worker_manager, raw_ids[0]) is not None
@@ -244,7 +243,7 @@ def test_import_then_typing_share_one_manager(
 
 def test_unknown_phase_returns_failed(worker_manager: ConnectionManager) -> None:
     """A phase name not in the registry fails cleanly rather than raising."""
-    result = run_phase(worker_manager, "does_not_exist", _identity(str(uuid4())), [])
+    result = run_phase(worker_manager, "does_not_exist", _identity(str(uuid4())), [], "finance")
     assert result.status == "failed"
     assert "does_not_exist" in (result.error or "")
 
@@ -282,7 +281,7 @@ def test_failed_phase_rolls_back_partial_writes(
 
     monkeypatch.setattr(activity_mod, "get_phase_class", lambda _name: WriteThenFailPhase)
 
-    run = run_phase(worker_manager, "typing", _identity(str(uuid4())), [])
+    run = run_phase(worker_manager, "typing", _identity(str(uuid4())), [], "finance")
     assert run.status == "failed"
 
     with worker_manager.session_scope() as session:
@@ -324,20 +323,26 @@ def test_addsource_runs_under_nondefault_workspace(
     try:
         source_id = str(uuid4())
         session_id = str(uuid4())
+        run_id = str(uuid4())
         files = _enumerate_fixture_files(small_finance_path)
-        _seed_source_and_session(manager, source_id, session_id, "small_finance", files)
+        _seed_source(manager, source_id, "small_finance", files)
         import_identity = SourceIdentity(
             workspace_id=nondefault_workspace,
             source_id=source_id,
             session_id=session_id,
+            run_id=run_id,
         )
 
-        assert run_phase(manager, "import", import_identity, []).status == "completed"
+        assert run_phase(manager, "import", import_identity, [], "finance").status == "completed"
         raw_ids = raw_table_ids(manager, source_id)
         assert raw_ids, "import produced no raw tables under the non-default workspace"
 
         # Past import the chain runs source-free (DAT-422), as the workflow threads it.
-        child_identity = SourceIdentity(workspace_id=nondefault_workspace, session_id=session_id)
+        # typing links the typed tables to the run (DAT-506), so the child identity
+        # carries the same run_id minted up front.
+        child_identity = SourceIdentity(
+            workspace_id=nondefault_workspace, session_id=session_id, run_id=run_id
+        )
         typed_ids = [_process_one_table(manager, child_identity, raw_id) for raw_id in raw_ids]
         assert len(typed_ids) == len(raw_ids)
         assert _lake_tables(manager, "typed"), "no typed tables after the chain"
@@ -369,12 +374,13 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
     # ONE import activity (source-bearing) over the multi-URI list yields N raw tables.
-    import_identity = _identity(session_id, source_id=source_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
@@ -396,8 +402,9 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
         "per-URI loop changed the raw-table set — dataraum-eval baselines would move"
     )
 
-    # Past import the chain + terminal detect run source-free (DAT-422).
-    identity = _identity(session_id)
+    # Past import the chain + terminal detect run source-free (DAT-422), under the
+    # same run_id the typing phase links the typed tables to (DAT-506).
+    identity = _identity(session_id, run_id=run_id)
     typed_ids = [_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids]
     assert len(typed_ids) == len(raw_ids)
     assert _lake_tables(worker_manager, "typed"), "no typed tables after the chain"
@@ -405,9 +412,7 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     # Single terminal detect step (DAT-394): one source-wide pass after the
     # fan-out. Offline (no LLM), so only the structural detectors persist rows;
     # that is enough to prove the terminal step runs and writes per-table records.
-    assert (
-        run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
-    ), "terminal detect produced no records"
+    assert run_detectors(worker_manager, run_id=run_id) > 0, "terminal detect produced no records"
 
 
 def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
@@ -423,25 +428,25 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
-    import_identity = _identity(session_id, source_id=source_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
-    # Past import: source-free, as the workflow threads it (DAT-422).
-    identity = _identity(session_id)
+    # Past import: source-free, as the workflow threads it (DAT-422); the run_id
+    # threads through typing (which links run_tables) + detect (DAT-506).
+    identity = _identity(session_id, run_id=run_id)
     typed_ids = {_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids}
 
     # Terminal detect: writes entropy_objects AND persists readiness in one pass.
-    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
+    assert run_detectors(worker_manager, run_id=run_id) > 0
 
     with worker_manager.session_scope() as session:
         rows = list(
             session.execute(
-                select(EntropyReadinessRecord).where(
-                    EntropyReadinessRecord.session_id == session_id
-                )
+                select(EntropyReadinessRecord).where(EntropyReadinessRecord.run_id == run_id)
             ).scalars()
         )
 
@@ -463,14 +468,12 @@ def test_terminal_detect_persists_per_column_readiness_and_replay_overwrites(
     # Re-run the terminal detect (the replay path always re-runs it): the
     # delete-before-insert scoped to the session's tables (DAT-410) must
     # overwrite, not duplicate. (Single-source run: session tables = source tables.)
-    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
+    assert run_detectors(worker_manager, run_id=run_id) > 0
     with worker_manager.session_scope() as session:
         second_count = len(
             list(
                 session.execute(
-                    select(EntropyReadinessRecord).where(
-                        EntropyReadinessRecord.session_id == session_id
-                    )
+                    select(EntropyReadinessRecord).where(EntropyReadinessRecord.run_id == run_id)
                 ).scalars()
             )
         )
@@ -507,16 +510,16 @@ def test_persisted_readiness_is_single_source_of_truth(
     # query-time read only resolves once this run is promoted.
     run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
     import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     # Past import: source-free (DAT-422) — the chain, detect AND promote all run
     # under the source-free identity, exactly as AddSourceWorkflow threads it.
     identity = _identity(session_id, run_id=run_id)
     typed_ids = sorted({_process_one_table(worker_manager, identity, raw_id) for raw_id in raw_ids})
-    assert run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
+    assert run_detectors(worker_manager, run_id=run_id) > 0
     # Promote this run so the head names it — the query-time read is head-resolved.
     assert promote_run(worker_manager, identity) > 0
 
@@ -569,19 +572,23 @@ def test_source_free_children_run_the_full_per_table_chain(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
     # import is the one per-source activity — it needs the source.
-    import_identity = _identity(session_id, source_id=source_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert raw_ids, "import produced no raw tables"
 
     # Past import the run is source-free: the children carry source_id=None. Running
     # the full per-table chain under it proves typing + every analytics phase resolve
-    # their table without a source (the blocker DAT-422 introduced + fixed).
-    child_identity = SourceIdentity(workspace_id="test", source_id=None, session_id=session_id)
+    # their table without a source (the blocker DAT-422 introduced + fixed). The
+    # children still carry the run_id so typing can link run_tables (DAT-506).
+    child_identity = SourceIdentity(
+        workspace_id="test", source_id=None, session_id=session_id, run_id=run_id
+    )
     for raw_id in raw_ids:
         assert _process_one_table(worker_manager, child_identity, raw_id)
 
@@ -606,18 +613,20 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
     # ONE import activity (source-bearing) over the multi-URI list yields N raw tables.
-    import_identity = _identity(session_id, source_id=source_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
     raw_ids = raw_table_ids(worker_manager, source_id)
     assert len(raw_ids) > 1, "one import over a multi-URI source must yield >1 raw tables"
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
 
     # Past import: source-free, as the workflow threads it into the children (DAT-422).
-    identity = _identity(session_id)
+    # The run_id threads through typing (which links run_tables) + detect (DAT-506).
+    identity = _identity(session_id, run_id=run_id)
 
     # Fan the per-table analytics chains out across threads — concurrent typing +
     # analytics against the shared lake from independent cursors.
@@ -631,9 +640,7 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     assert len(typed_ids) == len(raw_ids), "each raw table maps to a distinct typed table"
 
     # One terminal source-wide detect pass after the fan-out (DAT-394).
-    assert (
-        run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id) > 0
-    ), "terminal detect produced no records"
+    assert run_detectors(worker_manager, run_id=run_id) > 0, "terminal detect produced no records"
 
     # Every detector record belongs to one of this source's typed tables (no
     # orphan), and each typed table carries the full table-local detector set —
@@ -641,7 +648,7 @@ def test_parallel_tables_do_not_conflict_and_terminal_detect_covers_all(
     with worker_manager.session_scope() as session:
         rows = session.execute(
             select(EntropyObjectRecord.table_id, EntropyObjectRecord.detector_id).where(
-                EntropyObjectRecord.session_id == session_id,
+                EntropyObjectRecord.run_id == run_id,
                 EntropyObjectRecord.detector_id.in_(_TABLE_LOCAL_DETECTORS),
             )
         ).all()
@@ -680,23 +687,30 @@ def test_semantic_per_column_reduce_runs_live(
     """
     source_id = str(uuid4())
     session_id = str(uuid4())
+    run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
-    _seed_source_and_session(worker_manager, source_id, session_id, "small_finance", files)
+    _seed_source(worker_manager, source_id, "small_finance", files)
 
-    import_identity = _identity(session_id, source_id=source_id)
-    assert run_phase(worker_manager, "import", import_identity, []).status == "completed"
-    # Past import: source-free (DAT-422) — typing, statistics AND the reduce.
-    identity = _identity(session_id)
+    import_identity = _identity(session_id, source_id=source_id, run_id=run_id)
+    assert run_phase(worker_manager, "import", import_identity, [], "finance").status == "completed"
+    # Past import: source-free (DAT-422) — typing, statistics AND the reduce. The
+    # run_id threads through typing (which links run_tables) + detect (DAT-506).
+    identity = _identity(session_id, run_id=run_id)
     for raw_id in raw_table_ids(worker_manager, source_id):
-        assert run_phase(worker_manager, "typing", identity, [raw_id]).status == "completed"
+        assert (
+            run_phase(worker_manager, "typing", identity, [raw_id], "finance").status == "completed"
+        )
         typed_id = typed_table_id_for_raw(worker_manager, raw_id)
-        assert run_phase(worker_manager, "statistics", identity, [typed_id]).status == "completed"
+        assert (
+            run_phase(worker_manager, "statistics", identity, [typed_id], "finance").status
+            == "completed"
+        )
 
-    result = run_phase(worker_manager, "semantic_per_column", identity, [])
+    result = run_phase(worker_manager, "semantic_per_column", identity, [], "finance")
     assert result.status == "completed", f"semantic_per_column failed: {result.error}"
 
     # Terminal detect step (DAT-394) runs all wired detectors source-wide after the
     # reduce — including semantic_per_column's (business_meaning, unit_entropy, …).
     # With real annotations present it should persist records.
-    records = run_detectors(worker_manager, session_id=identity.session_id, run_id=identity.run_id)
+    records = run_detectors(worker_manager, run_id=run_id)
     assert records > 0, "terminal detect produced no detector records"

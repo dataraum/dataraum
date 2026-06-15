@@ -77,7 +77,7 @@ def _run_phase_capturing(
     monkeypatch.setattr(
         activity_mod,
         "_build_phase_config",
-        lambda source, phase_name, ident: {},
+        lambda source, phase_name, vertical: {},
     )
 
     # Source-free identity (the production post-import shape, DAT-422/426):
@@ -96,7 +96,7 @@ def _run_phase_capturing(
     manager.session_scope = _session_scope
     manager.duckdb_cursor = _duckdb_cursor
 
-    result = activity_mod.run_phase(manager, "capture", identity, ["tbl-1"])
+    result = activity_mod.run_phase(manager, "capture", identity, ["tbl-1"], "finance")
     assert result.status == PhaseStatus.COMPLETED.value
     assert _CapturePhase.captured is not None
     return _CapturePhase.captured

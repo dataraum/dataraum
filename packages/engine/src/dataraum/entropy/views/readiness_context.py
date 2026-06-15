@@ -27,7 +27,7 @@ from dataraum.entropy.loss import (
 )
 from dataraum.entropy.models import EntropyObject
 from dataraum.storage import Column, Table
-from dataraum.storage.snapshot_head import head_run_id
+from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 
 logger = get_logger(__name__)
 
@@ -514,22 +514,22 @@ def load_persisted_readiness(
     detect in the workflow, so empty here means "no readiness yet" and is
     treated as ready — same as a genuinely clean source.
 
-    Multi-run head-resolution (DAT-413): two add_source runs over the same table
-    leave two readiness snapshots (distinct ``run_id`` under stage ``"detect"``).
-    Per table, the promoted head names the current run, so the query is filtered
-    to ``(table_id, run_id == head)`` — never a blind ``table_id.in_()`` that
-    would mix runs. A table with no promoted detect run yet contributes nothing
-    (graceful ``None`` — treated as "no readiness", i.e. ready).
+    Multi-run head-resolution (DAT-413/506): two add_source runs over the same
+    table leave two readiness snapshots (distinct ``run_id`` under the per-table
+    generation head). Per table, the promoted generation head names the current
+    run, so the query is filtered to ``(table_id, run_id == head)`` — never a
+    blind ``table_id.in_()`` that would mix runs. A table with no promoted run yet
+    contributes nothing (graceful ``None`` — treated as "no readiness", i.e. ready).
     """
     if not table_ids:
         return EntropyForReadiness()
 
-    # Resolve each table's promoted detect run; keep only tables that have one.
-    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-408).
+    # Resolve each table's promoted generation run; keep only tables that have one.
+    # Column readiness is table-grain, so the head key is ``table:{id}`` (DAT-506).
     head_by_table = {
         table_id: run_id
         for table_id in table_ids
-        if (run_id := head_run_id(session, f"table:{table_id}", "detect")) is not None
+        if (run_id := head_run_id(session, f"table:{table_id}", GENERATION_STAGE)) is not None
     }
     if not head_by_table:
         return EntropyForReadiness()

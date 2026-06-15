@@ -19,7 +19,6 @@ from sqlalchemy.pool import StaticPool
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.entropy.engine import run_detector_post_step
-from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.base import init_database
 
@@ -42,7 +41,6 @@ def session() -> Session:
     db.add_all(
         [
             Source(source_id="src-1", name="finance", source_type="csv"),
-            InvestigationSession(session_id="sess-1", intent="calibration"),
             Table(table_id="t-pay", source_id="src-1", table_name="payments", layer="typed"),
             Table(table_id="t-inv", source_id="src-1", table_name="invoices", layer="typed"),
             Column(column_id="c-fk", table_id="t-pay", column_name="invoice_id", column_position=0),
@@ -59,7 +57,6 @@ def _add_relationship(
 ) -> None:
     db.add(
         Relationship(
-            session_id="sess-1",
             run_id="run-1",
             from_table_id="t-pay",
             from_column_id="c-fk",
@@ -81,7 +78,6 @@ def _run(db: Session) -> list[EntropyObjectRecord]:
         db,
         "relationship_discovery",
         None,
-        session_id="sess-1",
         table_ids=["t-pay", "t-inv"],
         run_id="run-1",
     )

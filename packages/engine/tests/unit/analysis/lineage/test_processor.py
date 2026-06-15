@@ -27,7 +27,6 @@ from dataraum.entropy.detectors.loaders import load_structural_reconciliation
 from dataraum.storage import Column, Table, init_database
 
 _RUN = "session-run-1"
-_SESSION = "sess-1"
 _DIM = "account_id__account_type"
 _VALUES = ("assets", "liabilities")
 _PERIODS = [f"2025-{m:02d}" for m in range(1, 13)]
@@ -105,7 +104,6 @@ def _seed(
     for name in sliced_tables:
         session.add(
             SliceDefinition(
-                session_id=_SESSION,
                 run_id=_RUN,
                 table_id=ids[name],
                 column_id=ids[f"{name}.{'balance' if name == 'trial_balance' else 'debit'}"],
@@ -138,7 +136,6 @@ def _seed(
                     continue
                 session.add(
                     TemporalSliceAnalysis(
-                        session_id=_SESSION,
                         run_id=_RUN,
                         slice_table_name=slice_table_name(fact_name, _DIM, value),
                         time_column="x",
@@ -157,7 +154,6 @@ def _discover(session: Session, ids: dict[str, str]) -> int:
     return discover_aggregation_lineage(
         session,
         table_ids=[ids["trial_balance"], ids["journal_lines"]],
-        session_id=_SESSION,
         run_id=_RUN,
         period_grain="monthly",
     )
@@ -222,7 +218,6 @@ class TestDiscoverAggregationLineage:
         ids = _seed(real_session, key_column=True)
         real_session.add(
             Relationship(
-                session_id=_SESSION,
                 run_id=_RUN,
                 from_table_id=ids["trial_balance"],
                 from_column_id=ids["trial_balance.account_key"],

@@ -35,7 +35,7 @@ def _failed(error: str) -> PhaseRun:
 
 
 def _identity() -> SessionIdentity:
-    return SessionIdentity(workspace_id="ws", session_id="sess", run_id="run", vertical="finance")
+    return SessionIdentity(workspace_id="ws", session_id="sess", run_id="run")
 
 
 # --- _provider_app_error: the typed-exception -> Temporal-error translation ---
@@ -88,7 +88,9 @@ def test_transient_provider_error_propagates_as_retryable(monkeypatch: pytest.Mo
 
     monkeypatch.setattr("dataraum.worker.activities.run_session_phase", boom)
     with pytest.raises(ApplicationError) as ei:
-        _acts().run_relationships(SessionScopedInput(identity=_identity(), table_ids=["t1"]))
+        _acts().run_relationships(
+            SessionScopedInput(identity=_identity(), table_ids=["t1"], vertical="finance")
+        )
     assert ei.value.type == "TransientPhaseFailure"
     assert ei.value.non_retryable is False
 
@@ -101,7 +103,9 @@ def test_permanent_provider_error_propagates_as_non_retryable(
 
     monkeypatch.setattr("dataraum.worker.activities.run_session_phase", boom)
     with pytest.raises(ApplicationError) as ei:
-        _acts().run_semantic_per_table(SessionScopedInput(identity=_identity(), table_ids=["t1"]))
+        _acts().run_semantic_per_table(
+            SessionScopedInput(identity=_identity(), table_ids=["t1"], vertical="finance")
+        )
     assert ei.value.type == "PhaseFailed"
     assert ei.value.non_retryable is True
     assert "ANTHROPIC_API_KEY" in str(ei.value)
@@ -125,7 +129,7 @@ def test_simulated_429_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("dataraum.worker.activities.run_session_phase", flaky)
     acts = _acts()
-    payload = SessionScopedInput(identity=_identity(), table_ids=["t1"])
+    payload = SessionScopedInput(identity=_identity(), table_ids=["t1"], vertical="finance")
 
     # Attempt 1: retryable failure.
     with pytest.raises(ApplicationError) as ei:

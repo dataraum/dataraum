@@ -49,7 +49,6 @@ def session_factory():
 def _store(session, *, table_id, layer, run_id, ddl, target_fqn, depends_on=None):  # noqa: ANN001
     store_recipe(
         session,
-        session_id="sess-1",
         table_id=table_id,
         layer=layer,
         run_id=run_id,
@@ -126,7 +125,6 @@ def test_store_recipe_distinct_layers_coexist(session_factory):
 
 def _recipe(target_fqn, depends_on=None):  # noqa: ANN001
     return MaterializationRecipe(
-        session_id="s",
         table_id="t",
         layer="typed",
         run_id="r",

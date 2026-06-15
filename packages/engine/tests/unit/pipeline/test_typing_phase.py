@@ -245,12 +245,9 @@ def _make_column_with_candidate(
     )
     session.add(col)
     session.flush()
-    from tests.conftest import baseline_session_id
-
     session.add(
         TypeCandidate(
             candidate_id=str(uuid4()),
-            session_id=baseline_session_id(),
             column_id=col.column_id,
             data_type="DECIMAL",
             confidence=confidence,
@@ -312,8 +309,6 @@ class TestApplyUnitOverrides:
         arbitrary confidence-tie winner. Regression for the silent no-op the eval caught:
         unscoped, the patch hit the prior run while the detect read the current run → None.
         """
-        from tests.conftest import baseline_session_id
-
         src = _make_source(session)
         table = _make_table(session, src.source_id, "src_zzz__bank_transactions")
         col = Column(
@@ -331,7 +326,6 @@ class TestApplyUnitOverrides:
             session.add(
                 TypeCandidate(
                     candidate_id=str(uuid4()),
-                    session_id=baseline_session_id(),
                     column_id=col.column_id,
                     run_id=run,
                     data_type="DECIMAL",

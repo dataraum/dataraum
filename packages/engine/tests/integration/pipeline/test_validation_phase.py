@@ -22,7 +22,6 @@ from dataraum.analysis.validation.models import (
     ValidationSpec,
     ValidationStatus,
 )
-from dataraum.investigation.db_models import InvestigationSession
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.validation_phase import ValidationPhase
@@ -61,8 +60,7 @@ def _mock_llm():
 
 @pytest.fixture
 def workspace_table(session: Session) -> Table:
-    """A typed table with a column + the journey session the FKs need."""
-    session.add(InvestigationSession(session_id=_SESSION_ID, intent="test"))
+    """A typed table with a column."""
     source = Source(name="test_source", source_type="csv")
     session.add(source)
     session.flush()

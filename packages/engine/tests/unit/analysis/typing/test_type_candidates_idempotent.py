@@ -108,9 +108,7 @@ class TestRawInferenceWriter:
         _seed(session_factory)
 
         with session_factory() as session:
-            res = infer_type_candidates(
-                _load_table(session), duckdb_conn, session, session_id="sess-1", run_id="run-A"
-            )
+            res = infer_type_candidates(_load_table(session), duckdb_conn, session, run_id="run-A")
             assert res.success, res.error
             session.commit()
         baseline = {(r.data_type, r.detected_pattern) for r in _candidate_rows(session_factory)}
@@ -118,9 +116,7 @@ class TestRawInferenceWriter:
 
         # The at-least-once redelivery: same run_id.
         with session_factory() as session:
-            res = infer_type_candidates(
-                _load_table(session), duckdb_conn, session, session_id="sess-1", run_id="run-A"
-            )
+            res = infer_type_candidates(_load_table(session), duckdb_conn, session, run_id="run-A")
             assert res.success, res.error
             session.commit()
 
@@ -137,7 +133,7 @@ class TestRawInferenceWriter:
         for run_id in ("run-A", "run-B"):
             with session_factory() as session:
                 res = infer_type_candidates(
-                    _load_table(session), duckdb_conn, session, session_id="sess-1", run_id=run_id
+                    _load_table(session), duckdb_conn, session, run_id=run_id
                 )
                 assert res.success, res.error
                 session.commit()
@@ -153,24 +149,18 @@ class TestTypedCopiesWriter:
 
     def _infer_and_resolve(self, factory: Any, conn: Any, run_id: str) -> None:
         with factory() as session:
-            res = infer_type_candidates(
-                _load_table(session), conn, session, session_id="sess-1", run_id=run_id
-            )
+            res = infer_type_candidates(_load_table(session), conn, session, run_id=run_id)
             assert res.success, res.error
             session.commit()
         with factory() as session:
-            res = resolve_types(
-                "tbl-1", conn, session, min_confidence=0.5, session_id="sess-1", run_id=run_id
-            )
+            res = resolve_types("tbl-1", conn, session, min_confidence=0.5, run_id=run_id)
             assert res.success, res.error
             session.commit()
 
     def _resolve_again(self, factory: Any, conn: Any, run_id: str) -> None:
         """The redelivered resolution body alone (inference already committed)."""
         with factory() as session:
-            res = resolve_types(
-                "tbl-1", conn, session, min_confidence=0.5, session_id="sess-1", run_id=run_id
-            )
+            res = resolve_types("tbl-1", conn, session, min_confidence=0.5, run_id=run_id)
             assert res.success, res.error
             session.commit()
 

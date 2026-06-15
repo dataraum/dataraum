@@ -30,7 +30,9 @@ import pytest
 
 from dataraum.core.models.base import Result
 from dataraum.pipeline.phases import metrics_phase as gep
-from tests.conftest import baseline_session_id
+
+_WORKSPACE_ID = "test"
+_VERTICAL = "finance"
 
 
 @dataclass
@@ -68,7 +70,7 @@ class TestExecuteMetricsSerial:
         ]
 
         out = gep._execute_metrics_serial(
-            prep, session, exec_ctx, agent, session_id=baseline_session_id()
+            prep, session, exec_ctx, agent, workspace_id=_WORKSPACE_ID
         )
 
         assert [graph_id for graph_id, _, _ in out] == ["g0", "g1", "g2"]
@@ -91,7 +93,7 @@ class TestExecuteMetricsSerial:
             MagicMock(),
             MagicMock(),
             agent,
-            session_id=baseline_session_id(),
+            workspace_id=_WORKSPACE_ID,
         )
         assert out[0][1].success is True
         assert out[1][1].success is False
@@ -120,7 +122,7 @@ class _ConcurrencyTrackingAgent:
         context: Any,
         inspiration_sql: str | None = None,
         *,
-        session_id: str = "",
+        workspace_id: str = "",
     ) -> Result[str]:
         with self._lock:
             self.in_flight += 1
@@ -169,7 +171,7 @@ class TestExecuteMetricsParallel:
             agent,
             "src-1",
             ["t1"],
-            session_id=baseline_session_id(),
+            _VERTICAL,
             om_run_id="run-test",
         )
 
@@ -195,7 +197,7 @@ class TestExecuteMetricsParallel:
             agent,
             "src",
             ["t"],
-            session_id=baseline_session_id(),
+            _VERTICAL,
             om_run_id="run-test",
         )
 
@@ -223,7 +225,7 @@ class TestExecuteMetricsParallel:
             agent,
             "src",
             ["t"],
-            session_id=baseline_session_id(),
+            _VERTICAL,
             om_run_id="run-test",
         )
 
@@ -243,7 +245,7 @@ class TestExecuteMetricsParallel:
             MagicMock(),
             "src",
             [],
-            session_id=baseline_session_id(),
+            _VERTICAL,
             om_run_id="run-test",
         )
         assert out == []
@@ -271,7 +273,7 @@ class TestExecuteMetricsParallel:
                 context: Any,
                 inspiration_sql: str | None = None,
                 *,
-                session_id: str = "",
+                workspace_id: str = "",
             ) -> Result[str]:
                 if graph.graph_id == "bad":
                     raise RuntimeError("simulated infra failure")
@@ -290,7 +292,7 @@ class TestExecuteMetricsParallel:
             _FlakyAgent(),
             "src",
             ["t"],
-            session_id=baseline_session_id(),
+            _VERTICAL,
             om_run_id="run-test",
         )
 
@@ -343,10 +345,10 @@ class TestExecuteIsolated:
 
         # Each call should open a fresh pair
         gep._execute_isolated(
-            _graph("g0"), None, manager, agent, "src", ["t"], baseline_session_id(), "run-test"
+            _graph("g0"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
         )
         gep._execute_isolated(
-            _graph("g1"), None, manager, agent, "src", ["t"], baseline_session_id(), "run-test"
+            _graph("g1"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
         )
 
         assert len(opened_sessions) == 2
@@ -386,6 +388,6 @@ def test_asyncio_run_does_not_deadlock_with_nested_calls(
     prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
 
     out = gep._execute_metrics_parallel(
-        prep, manager, agent, "src", ["t"], session_id=baseline_session_id(), om_run_id="run-test"
+        prep, manager, agent, "src", ["t"], _VERTICAL, om_run_id="run-test"
     )
     assert len(out) == 3

@@ -25,10 +25,36 @@ import { actors, workspaces } from "./schema";
 // plumbing (the retired DAT-365). Real actors/auth are Phase 3 (DAT-357).
 export const DEFAULT_ACTOR_ID = "default";
 
+// The no-vertical placeholder a cold-start workspace is seeded with (DAT-505) —
+// mirrors the engine's `_adhoc` and the schema column default. Vertical is a
+// WORKSPACE property; the per-add_source channel retires in DAT-506.
+const DEFAULT_VERTICAL = "_adhoc";
+
 /** The engine's `ws_<id>` Postgres schema for a workspace id — mirrors the
  * metadata write-surface's derivation (underscores, not dashes). */
 function engineSchemaFor(workspaceId: string): string {
 	return `ws_${workspaceId.replaceAll("-", "_")}`;
+}
+
+/**
+ * The engine's Temporal task queue for a workspace id (DAT-505) — one queue per
+ * workspace, `engine-<workspace_id>`. Mirrors the engine's `task_queue_for`
+ * (server/workspace.py): the worker polls this exact queue and asserts the match
+ * at boot, so the cockpit drivers MUST route `workflow.start` here (not the bare
+ * `config.temporalTaskQueue`) for the run to land on the right worker. The id is
+ * kept verbatim (raw UUID with dashes), matching the workflow-ID convention.
+ */
+export function engineTaskQueueFor(workspaceId: string): string {
+	return `engine-${workspaceId}`;
+}
+
+/** The active workspace as the drivers need it (DAT-505): the id, the engine
+ * task queue to route workflows to, and the frame vertical. Read from the
+ * registry — the source of truth — never re-derived from the env var. */
+export interface ActiveWorkspace {
+	id: string;
+	taskQueue: string;
+	vertical: string;
 }
 
 /** Idempotently seed the default actor + the env-designated workspace row.
@@ -44,23 +70,46 @@ async function ensureRegistry(workspaceId: string): Promise<void> {
 			id: workspaceId,
 			name: `Workspace ${workspaceId}`,
 			engineSchema: engineSchemaFor(workspaceId),
+			vertical: DEFAULT_VERTICAL,
 		})
 		.onConflictDoNothing({ target: workspaces.id });
 }
 
 /**
- * The active workspace id, read from the registry (seeding it on the cold path).
- * Returns the `DATARAUM_WORKSPACE_ID` value in Phase 1 — but proven to exist as
- * a `workspaces` row, so `sessions.workspaceId` FKs resolve.
+ * The active workspace ROW, read from the registry (seeding it on the cold path).
+ * The single seam the drivers use to route a workflow: it carries the per-workspace
+ * task queue (`engine-<id>`) and the frame `vertical` alongside the id, so nothing
+ * re-derives routing from the bare env var. Proven to exist as a `workspaces` row,
+ * so `sessions.workspaceId` FKs resolve.
  */
-export async function resolveActiveWorkspace(): Promise<string> {
+export async function resolveActiveWorkspaceRow(): Promise<ActiveWorkspace> {
 	const workspaceId = config.dataraumWorkspaceId;
 	const [row] = await cockpitDb
-		.select({ id: workspaces.id })
+		.select({ id: workspaces.id, vertical: workspaces.vertical })
 		.from(workspaces)
 		.where(eq(workspaces.id, workspaceId))
 		.limit(1);
-	if (row) return row.id;
+	if (row) {
+		return {
+			id: row.id,
+			taskQueue: engineTaskQueueFor(row.id),
+			vertical: row.vertical,
+		};
+	}
 	await ensureRegistry(workspaceId);
-	return workspaceId;
+	return {
+		id: workspaceId,
+		taskQueue: engineTaskQueueFor(workspaceId),
+		vertical: DEFAULT_VERTICAL,
+	};
+}
+
+/**
+ * The active workspace id, read from the registry (seeding it on the cold path).
+ * Returns the `DATARAUM_WORKSPACE_ID` value in Phase 1 — but proven to exist as
+ * a `workspaces` row, so `sessions.workspaceId` FKs resolve. Thin wrapper over
+ * `resolveActiveWorkspaceRow` for call sites that need only the id.
+ */
+export async function resolveActiveWorkspace(): Promise<string> {
+	return (await resolveActiveWorkspaceRow()).id;
 }

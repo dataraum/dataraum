@@ -35,7 +35,6 @@ from dataraum.investigation.queries import link_session_tables, tables_for_sessi
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
-from dataraum.server.workspace import get_active_workspace_id
 from dataraum.storage import Column, MetadataSnapshotHead, Source, Table, session_head_target
 from dataraum.worker.contracts import OperatingModelScope, SessionIdentity, SourceIdentity
 
@@ -168,23 +167,11 @@ def run_phase(
         table_ids: the phase's table scope. ``[]`` = source-wide (import,
             semantic_per_column); a single typed id for the analytics phases.
     """
-    # Anti-footgun for the deferred multi-workspace isolation (DAT-364): the
-    # worker is bound to exactly one workspace, so a payload addressed to a
-    # different one must never run — it would silently write into this worker's
-    # lake + ws_<id> schema. Fail loud before touching any connection (FAILED →
-    # non-retryable PhaseFailed in the activity wrapper). Today workspace_id is
-    # decorative; this becomes the routing key when isolation lands.
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        return PhaseRun(
-            status=PhaseStatus.FAILED.value,
-            error=(
-                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
-                f"but this worker is bound to '{active_workspace_id}'. Refusing "
-                "to run to avoid a cross-workspace miswrite (DAT-364)."
-            ),
-        )
-
+    # Workspace isolation is enforced by the per-workspace task queue (DAT-505):
+    # this worker polls only ``engine-<workspace_id>``, so a payload addressed to
+    # another workspace never reaches it. The boot-time assertion in
+    # ``bootstrap_workspace`` (env workspace ↔ queue name) is the single guard
+    # that remains — the 8 copy-pasted per-activity mismatch checks are gone.
     phase_cls = get_phase_class(phase_name)
     if phase_cls is None:
         return PhaseRun(
@@ -327,17 +314,6 @@ def check_run_column_limit(
     recomposed into a bigger run). A breach is a deterministic FAILED →
     non-retryable ``PhaseFailed`` in the activity wrapper.
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        return PhaseRun(
-            status=PhaseStatus.FAILED.value,
-            error=(
-                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
-                f"but this worker is bound to '{active_workspace_id}'. Refusing "
-                "to run to avoid a cross-workspace miswrite (DAT-364)."
-            ),
-        )
-
     max_columns = load_pipeline_config().get("limits", {}).get("max_columns", 500)
     with manager.session_scope() as session:
         count = session.execute(
@@ -377,16 +353,6 @@ def begin_session_select(
     mirroring add_source — so its absence is a fail-loud caller error, not a
     create-on-demand path.
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        return PhaseRun(
-            status=PhaseStatus.FAILED.value,
-            error=(
-                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
-                f"but this worker is bound to '{active_workspace_id}'. Refusing "
-                "to run to avoid a cross-workspace miswrite (DAT-364)."
-            ),
-        )
     if not table_ids:
         return PhaseRun(
             status=PhaseStatus.FAILED.value,
@@ -448,17 +414,6 @@ def run_session_phase(
     the operating_model activities thread the resolved ``base_runs`` pin
     (ADR-0008) into ``ctx.config`` through it.
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        return PhaseRun(
-            status=PhaseStatus.FAILED.value,
-            error=(
-                f"Workspace mismatch: payload targets '{identity.workspace_id}' "
-                f"but this worker is bound to '{active_workspace_id}'. Refusing "
-                "to run to avoid a cross-workspace miswrite (DAT-364)."
-            ),
-        )
-
     phase_cls = get_phase_class(phase_name)
     if phase_cls is None:
         return PhaseRun(
@@ -652,19 +607,9 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
     the head yet (every phase still does delete-then-insert), so writing it has no
     effect on downstream output — Phase 3 switches the readers to head-resolution.
 
-    Workspace-mismatch guard mirrors the other run-side helpers (DAT-364).
-
     Returns:
         Number of head rows promoted (``len(tables) * len(_PROMOTE_STAGES)``).
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: promote payload targets "
-            f"'{identity.workspace_id}' but this worker is bound to "
-            f"'{active_workspace_id}'."
-        )
-
     # The head names a run, so promote is meaningless without one. The
     # AddSourceWorkflow always mints + stamps ``run_id`` before any activity, so a
     # missing one here is a caller bug — fail loud rather than write a NULL head.
@@ -727,14 +672,8 @@ def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -
     per-session head ``(session:{id}, "detect")`` at this run. Readers
     (``load_relationship_readiness``, the cockpit) resolve the session's current run
     through it. Per-session (not per-target) because the run is atomic — every run
-    measures the whole catalog. Workspace guard mirrors the other session helpers.
+    measures the whole catalog.
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: session promote targets '{identity.workspace_id}' "
-            f"but this worker is bound to '{active_workspace_id}'."
-        )
     run_id = identity.run_id
     if run_id is None:
         raise RuntimeError(
@@ -763,24 +702,14 @@ def resolve_operating_model_scope(
     resolution downstream.
 
     Raises:
-        ApplicationError: every pre-flight refusal — workspace mismatch,
-            unknown session, no linked tables, or (DAT-511) linked tables but
-            no promoted begin_session head (mid-flight or failed session;
-            grounding must not run over a partial workspace). All deterministic
-            until the world changes, hence non-retryable ``PhaseFailed`` —
-            a plain ``RuntimeError`` would burn the retry policy's 5 attempts
-            on a structurally-impossible state.
+        ApplicationError: every pre-flight refusal — unknown session, no linked
+            tables, or (DAT-511) linked tables but no promoted begin_session head
+            (mid-flight or failed session; grounding must not run over a partial
+            workspace). All deterministic until the world changes, hence
+            non-retryable ``PhaseFailed`` — a plain ``RuntimeError`` would burn
+            the retry policy's 5 attempts on a structurally-impossible state.
     """
     from dataraum.lifecycle import resolve_operating_model_base_runs
-
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise ApplicationError(
-            f"Workspace mismatch: operating_model resolve targets '{identity.workspace_id}' "
-            f"but this worker is bound to '{active_workspace_id}'.",
-            type="PhaseFailed",
-            non_retryable=True,
-        )
 
     with manager.session_scope() as session:
         inv_session = session.get(InvestigationSession, identity.session_id)
@@ -846,12 +775,6 @@ def promote_operating_model_run(manager: ConnectionManager, identity: SessionIde
     begin_session's ``"detect"`` head — the two stages' runs coexist on the
     same session target.
     """
-    active_workspace_id = get_active_workspace_id()
-    if identity.workspace_id != active_workspace_id:
-        raise RuntimeError(
-            f"Workspace mismatch: operating_model promote targets '{identity.workspace_id}' "
-            f"but this worker is bound to '{active_workspace_id}'."
-        )
     run_id = identity.run_id
     if run_id is None:
         raise RuntimeError(

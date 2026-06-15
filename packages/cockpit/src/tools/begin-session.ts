@@ -29,7 +29,7 @@ import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessions, sessionTables } from "../db/metadata/schema";
@@ -107,14 +107,10 @@ export interface BeginSessionToolResult {
 export async function beginSession(
 	input: BeginSessionToolInput,
 ): Promise<BeginSessionToolResult> {
-	if (
-		!config.temporalHost ||
-		!config.temporalNamespace ||
-		!config.temporalTaskQueue
-	) {
+	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
+				"TEMPORAL_NAMESPACE in the cockpit env.",
 		);
 	}
 
@@ -141,10 +137,11 @@ export async function beginSession(
 		})
 		.onConflictDoNothing({ target: investigationSessions.sessionId });
 
-	// The active workspace, from the cockpit_db registry (DAT-461) rather than the
-	// raw env var — same value in Phase 1, but the source of truth for the
-	// sessions.workspaceId FK recorded below.
-	const workspaceId = await resolveActiveWorkspace();
+	// The active workspace ROW, from the cockpit_db registry (DAT-461/505) rather
+	// than the raw env var — the source of truth for the sessions.workspaceId FK
+	// recorded below AND the per-workspace task queue the workflow routes to.
+	const workspace = await resolveActiveWorkspaceRow();
+	const workspaceId = workspace.id;
 
 	const identity: SessionIdentity = {
 		workspace_id: workspaceId,
@@ -163,7 +160,8 @@ export async function beginSession(
 		const handle = await client.workflow.start<
 			(p: BeginSessionInput) => Promise<BeginSessionResult>
 		>("beginSessionWorkflow", {
-			taskQueue: config.temporalTaskQueue,
+			// Route to the workspace's OWN queue (DAT-505).
+			taskQueue: workspace.taskQueue,
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,

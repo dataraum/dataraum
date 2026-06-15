@@ -27,7 +27,11 @@ vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 // select → triggerAddSource imports the cockpit control plane (DAT-461); mock
 // the seam so importing select.ts never loads the live cockpit_db client.
 vi.mock("#/db/cockpit/registry", () => ({
-	resolveActiveWorkspace: async () => "ws-test",
+	resolveActiveWorkspaceRow: async () => ({
+		id: "ws-test",
+		taskQueue: "engine-ws-test",
+		vertical: "_adhoc",
+	}),
 }));
 vi.mock("#/db/cockpit/runs", () => ({ recordRun: async () => {} }));
 
@@ -101,10 +105,11 @@ vi.mock("#/db/metadata/write-surface", () => ({
 import { recipeContentHash } from "../select/mappers";
 import { persistSelection, select } from "./select";
 
-// A staged upload URI is `s3://<bucket>/uploads/<digest>/<file>` — the digest
-// segment is what `select` content-keys the source on.
-const A = "s3://dataraum-lake/uploads/aaa111/orders.csv";
-const B = "s3://dataraum-lake/uploads/bbb222/customers.csv";
+// A staged upload URI is `s3://<bucket>/<ws>/uploads/<digest>/<file>` (DAT-505) —
+// the digest segment is what `select` content-keys the source on.
+const WS_PREFIX = "00000000-0000-0000-0000-000000000001";
+const A = `s3://dataraum-lake/${WS_PREFIX}/uploads/aaa111/orders.csv`;
+const B = `s3://dataraum-lake/${WS_PREFIX}/uploads/bbb222/customers.csv`;
 
 const FILE_SCHEMA: ConnectSchema = {
 	sourceKind: "file",

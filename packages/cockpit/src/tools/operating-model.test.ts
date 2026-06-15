@@ -31,7 +31,12 @@ vi.mock("#/config", () => ({
 // cockpit_db control plane (DAT-461): the active workspace resolves through the
 // registry, and the run is recorded after start. Both mocked at the seam.
 vi.mock("#/db/cockpit/registry", () => ({
-	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+	resolveActiveWorkspaceRow: vi.fn(async () => ({
+		id: h.config.dataraumWorkspaceId,
+		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
+		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
+		vertical: "_adhoc",
+	})),
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: h.recordRun,
@@ -79,7 +84,8 @@ describe("operatingModel (DAT-440)", () => {
 		expect(args[0]).toEqual({
 			identity: { workspace_id: WS, session_id: "sess-1" },
 		});
-		expect(opts.taskQueue).toBe("dataraum-pipeline");
+		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
+		expect(opts.taskQueue).toBe(`engine-${WS}`);
 		expect(result).toEqual({
 			workflow_id: `operatingmodel-${WS}-sess-1`,
 			run_id: "run-xyz",

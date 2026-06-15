@@ -136,6 +136,9 @@ export async function snippetSearch(
 		};
 	}
 
+	// Read-path workspace scoping resolves from the env-designated workspace, not
+	// the cockpit_db registry (DAT-505 boundary): identical in single-active-
+	// workspace. Per-request registry resolution for reads is the DAT-357 switcher.
 	const graphs = await findGraphsByKeys(config.dataraumWorkspaceId, {
 		standardFields: concepts.length > 0 ? concepts : undefined,
 		statements: statements.length > 0 ? statements : undefined,
@@ -220,6 +223,8 @@ export function formatVocabulary(vocab: SearchVocabulary): string {
 
 /** Read + format the search vocabulary for the active workspace (the prompt block). */
 export async function buildVocabularyBlock(): Promise<string> {
+	// Read-path workspace scoping from the env-designated workspace, not the
+	// registry (DAT-505 boundary; per-request registry reads = DAT-357 switcher).
 	const vocab = await getSearchVocabulary(config.dataraumWorkspaceId);
 	return formatVocabulary(vocab);
 }

@@ -1,7 +1,7 @@
-// Unit tests for the upload policy + handle shape (DAT-386). Pure — no I/O.
+// Unit tests for the upload policy + handle shape (DAT-386, DAT-505). Pure — no I/O.
 //
 // The handle shape is a contract DAT-389 reads, so these lock it precisely:
-// `s3://<bucket>/uploads/<uuid>/<filename>`, lake stays at `lake/`.
+// `s3://<bucket>/<ws>/uploads/<digest>/<filename>` (per-workspace prefix, DAT-505).
 
 import { describe, expect, it } from "vitest";
 
@@ -13,7 +13,10 @@ import {
 	isAllowedExtension,
 	sanitizeFilename,
 	UPLOAD_PREFIX,
+	workspaceUploadPrefix,
 } from "./policy";
+
+const WS = "00000000-0000-0000-0000-000000000001";
 
 describe("fileExtension", () => {
 	it("returns the lowercased extension", () => {
@@ -57,23 +60,37 @@ describe("sanitizeFilename", () => {
 	});
 });
 
+describe("workspaceUploadPrefix (DAT-505)", () => {
+	it("scopes the uploads prefix under the workspace id", () => {
+		expect(workspaceUploadPrefix(WS)).toBe(`${WS}/uploads`);
+		expect(UPLOAD_PREFIX).toBe("uploads");
+	});
+	it("sanitizes the workspace segment so it cannot escape its prefix", () => {
+		expect(workspaceUploadPrefix("../../lake")).toBe("lake/uploads");
+	});
+});
+
 describe("buildUploadKey / buildUploadUri (locked contract for DAT-389)", () => {
-	it("lays the key out as uploads/<uuid>/<filename>", () => {
+	it("lays the key out as <ws>/uploads/<digest>/<filename>", () => {
 		expect(
-			buildUploadKey("11111111-2222-3333-4444-555555555555", "sales.csv"),
-		).toBe("uploads/11111111-2222-3333-4444-555555555555/sales.csv");
+			buildUploadKey(WS, "11111111-2222-3333-4444-555555555555", "sales.csv"),
+		).toBe(`${WS}/uploads/11111111-2222-3333-4444-555555555555/sales.csv`);
 		expect(UPLOAD_PREFIX).toBe("uploads");
 	});
 	it("sanitizes the filename inside the key", () => {
-		expect(buildUploadKey("u", "../evil.csv")).toBe("uploads/u/evil.csv");
+		expect(buildUploadKey(WS, "u", "../evil.csv")).toBe(
+			`${WS}/uploads/u/evil.csv`,
+		);
 	});
-	it("sanitizes a non-UUID uuid so it cannot inject `/` or `..`", () => {
-		expect(buildUploadKey("../../lake", "x.csv")).toBe("uploads/lake/x.csv");
+	it("sanitizes a non-UUID digest so it cannot inject `/` or `..`", () => {
+		expect(buildUploadKey(WS, "../../lake", "x.csv")).toBe(
+			`${WS}/uploads/lake/x.csv`,
+		);
 	});
 	it("builds the s3:// handle in the same bucket as the lake", () => {
-		const key = buildUploadKey("u", "x.parquet");
+		const key = buildUploadKey(WS, "u", "x.parquet");
 		expect(buildUploadUri("dataraum-lake", key)).toBe(
-			"s3://dataraum-lake/uploads/u/x.parquet",
+			`s3://dataraum-lake/${WS}/uploads/u/x.parquet`,
 		);
 	});
 });

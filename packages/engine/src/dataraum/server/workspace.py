@@ -39,6 +39,31 @@ _active_workspace_id: str | None = None
 _SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def task_queue_for(workspace_id: str) -> str:
+    """Return the Temporal task queue name for a workspace_id (DAT-505).
+
+    One queue per workspace — ``engine-<workspace_id>`` — so an engine worker
+    polls only its own workspace's work and a payload addressed to another
+    workspace never reaches it. That per-workspace queue IS the isolation
+    boundary that replaced the 8 copy-pasted per-activity mismatch guards: a
+    misrouted payload can't land on the wrong worker because the wrong worker
+    never polls its queue. The id is kept verbatim (raw UUID with dashes, or a
+    sentinel like ``test``): Temporal queue names have no charset restriction,
+    matching the workflow-ID convention.
+
+    The cockpit mirrors this derivation (``engineTaskQueueFor`` in
+    ``db/cockpit/registry.ts``) so its drivers route ``workflow.start`` to the
+    same queue the worker polls.
+
+    Args:
+        workspace_id: The workspace identifier from ``DATARAUM_WORKSPACE_ID``.
+
+    Returns:
+        The task queue name (e.g. ``engine-00000000-0000-0000-0000-000000000001``).
+    """
+    return f"engine-{workspace_id}"
+
+
 def schema_name_for(workspace_id: str) -> str:
     """Return the Postgres schema name for a workspace_id.
 
@@ -112,6 +137,15 @@ def bootstrap_workspace() -> str:
     deployment is a footgun (every pod would think it owns a different
     workspace, or none at all).
 
+    The SINGLE workspace-isolation assertion (DAT-505): the worker's
+    ``TEMPORAL_TASK_QUEUE`` must be exactly ``engine-<workspace_id>``. This one
+    boot-time check replaced the 8 copy-pasted per-activity mismatch guards in
+    ``worker/activity.py`` — with one queue per workspace, a payload for another
+    workspace simply never reaches this worker, so the per-activity defence is
+    redundant. What CAN still go wrong is a misconfigured container (a queue env
+    that doesn't match its workspace env), and that is exactly what this fails
+    loud on, before the worker advertises itself as polling.
+
     Returns:
         The activated workspace_id (also retrievable via
         :func:`get_active_workspace_id`).
@@ -119,12 +153,26 @@ def bootstrap_workspace() -> str:
     Raises:
         pydantic.ValidationError: via ``get_settings()`` if
             ``DATARAUM_WORKSPACE_ID`` is unset.
+        RuntimeError: if ``TEMPORAL_TASK_QUEUE`` is not ``engine-<workspace_id>``
+            — a container wired to poll a queue that does not belong to its
+            workspace.
     """
-    workspace_id = get_settings().dataraum_workspace_id
+    settings = get_settings()
+    workspace_id = settings.dataraum_workspace_id
+
+    expected_queue = task_queue_for(workspace_id)
+    if settings.temporal_task_queue != expected_queue:
+        raise RuntimeError(
+            f"Workspace/queue mismatch: TEMPORAL_TASK_QUEUE is "
+            f"{settings.temporal_task_queue!r} but workspace "
+            f"{workspace_id!r} must poll {expected_queue!r}. Each engine "
+            "container polls exactly its own workspace's queue (DAT-505) — fix "
+            "the container env so the two agree."
+        )
 
     global _active_workspace_id  # noqa: PLW0603
     _active_workspace_id = workspace_id
 
-    logger.info("workspace_bootstrapped", workspace_id=workspace_id)
+    logger.info("workspace_bootstrapped", workspace_id=workspace_id, task_queue=expected_queue)
 
     return workspace_id

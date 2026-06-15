@@ -48,11 +48,19 @@ export const actors = pgTable("actors", {
  * bootstrapped with, e.g. `00000000-…-001`); `engineSchema` is the derived
  * `ws_<id>` Postgres schema the metadata client reads. Phase 1 is single-active-
  * workspace; the switcher + lifecycle are Phase 3 (DAT-357 — hence `archivedAt`).
+ *
+ * `vertical` is the workspace's frame ontology (DAT-505): vertical is a WORKSPACE
+ * property, not a per-add_source pick. The capability lands here (the column + the
+ * boot-read via `resolveActiveWorkspaceRow`); the per-add_source vertical channel
+ * (select.ts / the workflow payload) is retired in DAT-506 (Phase 5), which deletes
+ * the session row that carries it today. Defaults to `_adhoc` (the no-vertical
+ * placeholder) so a freshly-seeded workspace is always valid.
  */
 export const workspaces = pgTable("workspaces", {
 	id: varchar("id").primaryKey(),
 	name: varchar("name").notNull(),
 	engineSchema: varchar("engine_schema").notNull(),
+	vertical: varchar("vertical").notNull().default("_adhoc"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
 	archivedAt: timestamp("archived_at", { mode: "date" }),
 });

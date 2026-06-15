@@ -79,7 +79,6 @@ def test_promote_run_upserts_one_head_per_table_stage(monkeypatch, session_facto
     )
     table_ids = ["tbl-1", "tbl-2"]
 
-    monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
     monkeypatch.setattr(activity_mod, "tables_for_session", lambda session, sid: list(table_ids))
 
     manager = _manager(session_factory)
@@ -112,7 +111,6 @@ def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
         session_id="sess-1",
         run_id="run-A",
     )
-    monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
     monkeypatch.setattr(activity_mod, "tables_for_session", lambda session, sid: [])
 
     assert promote_run(_manager(session_factory), identity) == 0
@@ -122,7 +120,6 @@ def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
 def test_promote_run_requires_run_id(monkeypatch, session_factory):
     """A missing run_id is a caller bug — fail loud rather than write a NULL head."""
     identity = SourceIdentity(workspace_id="ws-1", session_id="sess-1")
-    monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
 
     with pytest.raises(RuntimeError, match="requires a stamped identity.run_id"):
         promote_run(_manager(session_factory), identity)

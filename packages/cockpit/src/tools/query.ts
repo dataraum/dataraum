@@ -406,6 +406,10 @@ export async function persistLearnedSnippets(
 		const source = `query:${randomUUID()}`;
 		for (const c of toSave) {
 			await saveQuerySnippet({
+				// Read-path workspace scoping resolves from the env-designated
+				// workspace, not the cockpit_db registry (DAT-505 boundary): in
+				// single-active-workspace the two are identical. Per-request registry
+				// resolution of the active workspace for reads is the DAT-357 switcher.
 				schemaMappingId: config.dataraumWorkspaceId,
 				standardField: c.name,
 				sessionId,

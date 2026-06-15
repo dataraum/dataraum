@@ -18,8 +18,9 @@ import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
 import { config } from "../config";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { listConfiguredDatabases } from "../duckdb/credentials";
-import { UPLOAD_PREFIX } from "../upload/policy";
+import { workspaceUploadPrefix } from "../upload/policy";
 import { listPrefixObjects } from "../upload/s3-upload";
 
 const AvailableSource = z.object({
@@ -47,12 +48,19 @@ function databaseSources(): AvailableSource[] {
 	}));
 }
 
-/** The staged uploaded files (under the bucket's `uploads/` prefix). */
+/** The staged uploaded files (under this workspace's `<ws>/uploads/` prefix, DAT-505). */
 async function uploadedFileSources(): Promise<AvailableSource[]> {
-	const objects = await listPrefixObjects(config.s3Bucket, `${UPLOAD_PREFIX}/`);
+	// The active workspace from the registry (DAT-505): uploads stage under its
+	// own `<ws>/uploads/` prefix, so list THAT — never the bucket-wide `uploads/`,
+	// which would leak another workspace's files.
+	const { id: workspaceId } = await resolveActiveWorkspaceRow();
+	const objects = await listPrefixObjects(
+		config.s3Bucket,
+		`${workspaceUploadPrefix(workspaceId)}/`,
+	);
 	return objects.map((o) => ({
 		kind: "file" as const,
-		// Key is `uploads/<digest>/<filename>`: the leaf is the original filename.
+		// Key is `<ws>/uploads/<digest>/<filename>`: the leaf is the original filename.
 		name: o.key.split("/").pop() ?? o.key,
 		backend: null,
 		uri: `s3://${config.s3Bucket}/${o.key}`,

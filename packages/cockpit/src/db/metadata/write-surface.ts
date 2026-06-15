@@ -30,6 +30,14 @@ import { config } from "../../config";
 // Unit tests stub `#/config` with an empty object (vitest.config.ts contract),
 // so resolve the id defensively at module load; real boots always carry it
 // (zod-required) and the fallback matches the bootstrap workspace id.
+//
+// Read-path workspace scoping (DAT-505 boundary): WHICH ws_<id> schema to read is
+// resolved from the env-designated workspace here, NOT the cockpit_db registry.
+// In single-active-workspace the env id == the registry row id, so this is
+// correct. It binds the `pgSchema()` table objects at MODULE LOAD, which cannot
+// await a registry lookup — moving read-scoping to per-request registry
+// resolution is the DAT-357 switcher. DAT-505 only routed the WRITE/ROUTING side
+// (queue/container/S3 prefix) through the registry.
 const workspaceId: string =
 	config.dataraumWorkspaceId ?? "00000000-0000-0000-0000-000000000001";
 const rawSchemaName = `ws_${workspaceId.replaceAll("-", "_")}`;

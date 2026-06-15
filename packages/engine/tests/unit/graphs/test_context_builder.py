@@ -119,7 +119,7 @@ class TestBuilderExtractsSemanticFields:
         head is ignored and both builds return the same value, so one assert fails.
         """
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
-        from dataraum.storage.snapshot_head import MetadataSnapshotHead
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 
         _source_id, table_id, column_id = _insert_source_table_column(session)
         for rid, name in (("new", "NEW name"), ("old", "OLD name")):
@@ -134,7 +134,7 @@ class TestBuilderExtractsSemanticFields:
                 )
             )
         head = MetadataSnapshotHead(
-            head_id=_id(), target=f"table:{table_id}", stage="detect", run_id="new"
+            head_id=_id(), target=f"table:{table_id}", stage=GENERATION_STAGE, run_id="new"
         )
         session.add(head)
         session.flush()

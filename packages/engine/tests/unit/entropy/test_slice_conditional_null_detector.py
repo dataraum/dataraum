@@ -136,8 +136,12 @@ def test_concentrated_orders_above_flat(session: Session) -> None:
     _seed_columns(session)
     flat_rows, flat_n = _rows(dict.fromkeys(_CENTERS, 0.2))
     conc_rows, conc_n = _rows({"E": 0.6})
-    flat = SliceConditionalNullDetector().detect(_context(session, _typed_conn(flat_rows), flat_n))[0]
-    conc = SliceConditionalNullDetector().detect(_context(session, _typed_conn(conc_rows), conc_n))[0]
+    flat = SliceConditionalNullDetector().detect(_context(session, _typed_conn(flat_rows), flat_n))[
+        0
+    ]
+    conc = SliceConditionalNullDetector().detect(_context(session, _typed_conn(conc_rows), conc_n))[
+        0
+    ]
     assert conc.score > flat.score
 
 

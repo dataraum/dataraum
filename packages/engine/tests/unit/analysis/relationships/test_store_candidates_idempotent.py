@@ -106,12 +106,12 @@ def test_redelivery_same_run_converges(session_factory: Any) -> None:
     _seed(session_factory)
 
     with session_factory() as session:
-        _store_candidates(session, "sess-1", _TABLE_IDS, _candidates(0.8), run_id="run-A")
+        _store_candidates(session, _TABLE_IDS, _candidates(0.8), run_id="run-A")
         session.commit()
 
     # The at-least-once redelivery: same run_id, freshly recomputed batch.
     with session_factory() as session:
-        _store_candidates(session, "sess-1", _TABLE_IDS, _candidates(0.9), run_id="run-A")
+        _store_candidates(session, _TABLE_IDS, _candidates(0.9), run_id="run-A")
         session.commit()
 
     with session_factory() as session:
@@ -126,10 +126,10 @@ def test_prior_run_untouched_and_coexists(session_factory: Any) -> None:
     _seed(session_factory)
 
     with session_factory() as session:
-        _store_candidates(session, "sess-1", _TABLE_IDS, _candidates(0.8), run_id="run-A")
+        _store_candidates(session, _TABLE_IDS, _candidates(0.8), run_id="run-A")
         session.commit()
     with session_factory() as session:
-        _store_candidates(session, "sess-1", _TABLE_IDS, _candidates(0.7), run_id="run-B")
+        _store_candidates(session, _TABLE_IDS, _candidates(0.7), run_id="run-B")
         session.commit()
 
     with session_factory() as session:
@@ -147,7 +147,7 @@ def test_in_batch_duplicate_key_dedups(session_factory: Any) -> None:
 
     batch = _candidates(0.5) + _candidates(0.6)
     with session_factory() as session:
-        _store_candidates(session, "sess-1", _TABLE_IDS, batch, run_id="run-A")
+        _store_candidates(session, _TABLE_IDS, batch, run_id="run-A")
         session.commit()
 
     with session_factory() as session:

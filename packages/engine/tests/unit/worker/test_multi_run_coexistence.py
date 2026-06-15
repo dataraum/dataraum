@@ -25,7 +25,14 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.entropy.db_models import EntropyReadinessRecord
 from dataraum.entropy.views.readiness_context import load_persisted_readiness
-from dataraum.storage import Column, MetadataSnapshotHead, Table, head_run_id, init_database
+from dataraum.storage import (
+    GENERATION_STAGE,
+    Column,
+    MetadataSnapshotHead,
+    Table,
+    head_run_id,
+    init_database,
+)
 
 
 @pytest.fixture
@@ -214,7 +221,7 @@ def test_load_persisted_readiness_returns_only_promoted_run(session_factory: Any
                     run_id="run-B",
                     band="ready",
                 ),
-                MetadataSnapshotHead(target="table:tbl-1", stage="detect", run_id="run-B"),
+                MetadataSnapshotHead(target="table:tbl-1", stage=GENERATION_STAGE, run_id="run-B"),
             ]
         )
         session.commit()

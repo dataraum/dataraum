@@ -150,8 +150,8 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 		expect(byName.src_aaa111.connectionConfig).not.toHaveProperty("tables");
 
 		// The selection descriptor carries the SET of source ids a run ingests.
-		expect(result.source_ids).toHaveLength(2);
-		expect(new Set(result.source_ids).size).toBe(2);
+		expect(result.sources).toHaveLength(2);
+		expect(new Set(result.sources).size).toBe(2);
 		expect(result.file_uris).toEqual([A, B]);
 		expect(result.recipe_tables).toBeNull();
 		expect(result.backend).toBeNull();
@@ -163,7 +163,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 		expect(insertedRows).toHaveLength(1);
 		expect(insertedRows[0].name).toBe("src_aaa111");
 		expect(insertedRows[0].connectionConfig).toEqual({ file_uris: [A] });
-		expect(result.source_ids).toHaveLength(1);
+		expect(result.sources).toHaveLength(1);
 		// A single-file selection labels the card with the filename.
 		expect(result.name).toBe("orders.csv");
 		expect(result.source_type).toBe("csv");
@@ -183,7 +183,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 			file_uris: [A, A],
 		});
 		expect(insertedRows).toHaveLength(1);
-		expect(result.source_ids).toHaveLength(1);
+		expect(result.sources).toHaveLength(1);
 		expect(result.file_uris).toEqual([A]);
 	});
 
@@ -205,7 +205,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 		);
 		expect(enumerate).toHaveBeenCalledWith("dataraum-lake", "uploads/");
 		expect(insertedRows).toHaveLength(2);
-		expect(result.source_ids).toHaveLength(2);
+		expect(result.sources).toHaveLength(2);
 	});
 
 	it("file_uris takes precedence over prefix when both are passed", async () => {
@@ -226,7 +226,7 @@ describe("select (DAT-422) — file source is content-keyed", () => {
 			source_name: "Not A Valid Name!",
 		});
 		expect(insertedRows[0].name).toBe("src_aaa111");
-		expect(result.source_ids).toHaveLength(1);
+		expect(result.sources).toHaveLength(1);
 	});
 
 	// DAT-506: the vertical is a workspace property (the trigger sources it from
@@ -263,7 +263,7 @@ describe("select (DAT-398) — database source", () => {
 		// tables and file_uris never cross-contaminate.
 		expect(insertedRows[0].connectionConfig).not.toHaveProperty("file_uris");
 
-		expect(result.source_ids).toHaveLength(1);
+		expect(result.sources).toHaveLength(1);
 		expect(result.name).toBe("warehouse");
 		expect(result.source_type).toBe("db_recipe");
 		expect(result.backend).toBe("mssql");
@@ -445,13 +445,13 @@ describe("select — one call (DAT-436)", () => {
 	// back a fixed run identity (the real triggerAddSource seeds the session +
 	// starts addSourceWorkflow — its own unit test covers that).
 	function makeTrigger() {
-		return vi.fn(async (input: { source_ids: string[] }) => {
+		return vi.fn(async (input: { sources: string[] }) => {
 			preflight.calls.push("trigger");
 			return {
 				workflow_id: "addsource-ws-sess",
 				run_id: "run-1",
-				source_ids: input.source_ids,
-				session_id: "sess-1",
+				sources: input.sources,
+				cockpit_session_id: "sess-1",
 			};
 		});
 	}
@@ -468,7 +468,7 @@ describe("select — one call (DAT-436)", () => {
 		// The trigger runs over the persisted SET (no vertical input — the trigger
 		// reads it from the workspace registry).
 		expect(trigger).toHaveBeenCalledWith({
-			source_ids: result.source_ids,
+			sources: result.sources,
 		});
 
 		// The result merges the persisted descriptor with the run identity — the
@@ -519,7 +519,7 @@ describe("select — one call (DAT-436)", () => {
 		expect(insertedRows[1].name).toBe(insertedRows[0].name);
 		expect(onConflictMock).toHaveBeenCalledTimes(2);
 		expect(trigger).toHaveBeenCalledWith({
-			source_ids: result.source_ids,
+			sources: result.sources,
 		});
 		expect(result.workflow_id).toBe("addsource-ws-sess");
 		expect(result.run_id).toBe("run-1");

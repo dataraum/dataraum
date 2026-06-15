@@ -85,40 +85,35 @@ describe("beginSession (DAT-409, DAT-506)", () => {
 		expect(h.calls).toEqual(["record", "start"]);
 	});
 
-	it("hands the workflow the session_id + the table set + workspace vertical, and returns them", async () => {
+	it("hands the workflow a FLAT input — workspace_id + table set + verticals — and returns the cockpit session", async () => {
 		h.vertical = "finance";
 		const result = await beginSession({ table_ids: ["t1", "t2"] });
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [
-			{
-				identity: Record<string, unknown>;
-				tables: string[];
-				vertical: string;
-			},
+			{ workspace_id: string; tables: string[]; verticals: string[] },
 		];
-		expect(args[0].identity.session_id).toBe(result.session_id);
-		expect(args[0].tables).toEqual(["t1", "t2"]);
-		// Vertical rides on the INPUT (DAT-506), not the identity.
-		expect(args[0].vertical).toBe("finance");
-		expect(
-			(args[0].identity as { vertical?: string }).vertical,
-		).toBeUndefined();
+		// FLAT input (DAT-506): no identity envelope, no session id on the wire —
+		// workspace_id + the table selection + verticals (one-element array).
+		expect(args[0]).toEqual({
+			workspace_id: WS,
+			tables: ["t1", "t2"],
+			verticals: ["finance"],
+		});
 		expect(result.table_ids).toEqual(["t1", "t2"]);
+		// The workflow id is keyed by the cockpit session-of-record (cockpit_db).
 		expect(opts.workflowId).toBe(`beginsession-${WS}-${result.session_id}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("reuses a caller-supplied session_id", async () => {
+	it("reuses a caller-supplied cockpit session id for the workflow id", async () => {
 		const result = await beginSession({
 			table_ids: ["t1"],
 			session_id: "sess-reuse",
 		});
 		expect(result.session_id).toBe("sess-reuse");
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ identity: Record<string, unknown> }];
-		expect(args[0].identity.session_id).toBe("sess-reuse");
 		expect(opts.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
 	});
 

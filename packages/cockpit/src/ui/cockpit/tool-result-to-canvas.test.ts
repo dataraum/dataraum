@@ -433,7 +433,7 @@ describe("toolResultToCanvas", () => {
 
 	it("maps select to the add-source-progress canvas (DAT-436: calling select starts the import)", () => {
 		const selection = {
-			source_ids: ["s1"],
+			sources: ["s1"],
 			name: "orders.csv",
 			source_type: "csv",
 			backend: null,

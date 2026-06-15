@@ -144,20 +144,17 @@ describe("replay (DAT-422, DAT-506)", () => {
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [
-			{
-				identity: Record<string, unknown>;
-				source_ids: string[];
-				vertical: string;
-			},
+			{ workspace_id: string; sources: string[]; verticals: string[] },
 		];
-		// The run carries the resolved source SET (DAT-422), not a single source.
-		expect(args[0].source_ids).toEqual(["src-1", "src-2"]);
-		// Source-free identity keyed by the NEW session; vertical on the INPUT.
-		expect(args[0].identity.session_id).toBe(newSessionId);
-		expect(args[0].identity.source_id).toBeUndefined();
-		expect(args[0].vertical).toBe("finance");
-		expect(result.source_ids).toEqual(["src-1", "src-2"]);
-		// Workflow id is keyed by the NEW run's session (DAT-422).
+		// FLAT input (DAT-506): no identity envelope, no session/source id on the
+		// wire — workspace_id + the resolved source SET (DAT-422) + verticals.
+		expect(args[0]).toEqual({
+			workspace_id: WS,
+			sources: ["src-1", "src-2"],
+			verticals: ["finance"],
+		});
+		expect(result.sources).toEqual(["src-1", "src-2"]);
+		// Workflow id is keyed by the NEW run's cockpit session (DAT-422).
 		expect(opts.workflowId).toBe(`addsource-${WS}-${newSessionId}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 		expect(closeMock).toHaveBeenCalledTimes(1);
@@ -178,7 +175,7 @@ describe("replay (DAT-422, DAT-506)", () => {
 		const result = await replay({});
 		expect(h.calls).toContain("resolveSources");
 		expect(h.calls).toContain("start");
-		expect(result.source_ids).toEqual(["src-1"]);
+		expect(result.sources).toEqual(["src-1"]);
 		// It re-ran the current session into a FRESH one (replay is non-destructive).
 		expect(result.session_id).not.toBe("current-sess");
 	});
@@ -217,11 +214,11 @@ describe("replay (DAT-422, DAT-506)", () => {
 		);
 	});
 
-	it("re-runs on the WORKSPACE vertical (from the registry)", async () => {
+	it("re-runs on the WORKSPACE vertical (from the registry) as a one-element array", async () => {
 		h.vertical = "marketing";
 		await replay({ session_id: "old-sess" });
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ vertical: string }];
-		expect(args[0].vertical).toBe("marketing");
+		const args = opts.args as [{ verticals: string[] }];
+		expect(args[0].verticals).toEqual(["marketing"]);
 	});
 });

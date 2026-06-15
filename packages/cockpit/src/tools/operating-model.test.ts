@@ -1,11 +1,12 @@
 // Unit tests for the operating_model tool (DAT-440).
 //
 // Mirrors begin-session.test.ts: mock `#/config` and `@temporalio/client`
-// (record the start call). The contract this guards (DAT-438): the workflow is
-// started with IDENTITY ONLY — no table set rides in (the engine re-reads it
-// from session_tables) — non-blocking, under the session-keyed workflow id
-// with ALLOW_DUPLICATE so re-runs group under one id. Unlike begin_session
-// there is NO seeding: the InvestigationSession row already exists.
+// (record the start call). The contract this guards (DAT-438, DAT-506): the
+// workflow is started with a FLAT input — { workspace_id, verticals } only, no
+// table set + no session id on the wire (the engine re-reads the table set from
+// the catalog head's run_tables) — non-blocking, under the session-keyed workflow
+// id with ALLOW_DUPLICATE so re-runs group under one id. The cockpit_db session row
+// already exists (begin_session recorded it); recordRun appends the run.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -77,7 +78,7 @@ beforeEach(() => {
 });
 
 describe("operatingModel (DAT-440, DAT-506)", () => {
-	it("starts operatingModelWorkflow with IDENTITY + vertical — no table set rides in", async () => {
+	it("starts operatingModelWorkflow with a FLAT input — workspace_id + verticals, no table set, no session id on the wire", async () => {
 		h.vertical = "finance";
 		const result = await operatingModel({ session_id: "sess-1" });
 
@@ -85,12 +86,13 @@ describe("operatingModel (DAT-440, DAT-506)", () => {
 		expect(startMock.mock.calls[0][0]).toBe("operatingModelWorkflow");
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [Record<string, unknown>];
-		// The payload is { identity, vertical } — the engine re-reads the session's
-		// table set from the catalog head's run_tables (DAT-506); a `tables` copy
-		// could diverge. The vertical comes from the workspace registry.
+		// FLAT input (DAT-506): just { workspace_id, verticals } — no identity
+		// envelope, no session id on the wire. The engine re-reads the session's
+		// table set from the catalog head's run_tables; the verticals come from the
+		// workspace registry (one-element array, born-loud on >1).
 		expect(args[0]).toEqual({
-			identity: { workspace_id: WS, session_id: "sess-1" },
-			vertical: "finance",
+			workspace_id: WS,
+			verticals: ["finance"],
 		});
 		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
 		expect(opts.taskQueue).toBe(`engine-${WS}`);

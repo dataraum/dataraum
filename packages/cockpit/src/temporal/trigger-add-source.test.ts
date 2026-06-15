@@ -94,15 +94,15 @@ beforeEach(() => {
 
 describe("triggerAddSource (DAT-352, one-call DAT-436, DAT-506)", () => {
 	it("records the run BEFORE starting the workflow (no orphaned run)", async () => {
-		await triggerAddSource({ source_ids: ["src-1"] });
+		await triggerAddSource({ sources: ["src-1"] });
 		// Order is the whole point (Q4): an unrecorded run is orphaned, so the
 		// cockpit_db record is authoritative and precedes the start.
 		expect(h.calls).toEqual(["record", "start"]);
 	});
 
-	it("starts addSourceWorkflow with the right id / queue / args (non-blocking)", async () => {
-		const result = await triggerAddSource({ source_ids: ["src-1"] });
-		const sessionId = result.session_id;
+	it("starts addSourceWorkflow with the right id / queue / FLAT args (non-blocking)", async () => {
+		const result = await triggerAddSource({ sources: ["src-1"] });
+		const cockpitSessionId = result.cockpit_session_id;
 
 		expect(startMock).toHaveBeenCalledTimes(1);
 		const [name, opts] = startMock.mock.calls[0] as [
@@ -110,67 +110,61 @@ describe("triggerAddSource (DAT-352, one-call DAT-436, DAT-506)", () => {
 			Record<string, unknown>,
 		];
 		expect(name).toBe("addSourceWorkflow");
-		// Workflow id is keyed by the run's session (DAT-422), not a source.
-		expect(opts.workflowId).toBe(`addsource-${WS}-${sessionId}`);
+		// Workflow id is keyed by the cockpit session id (DAT-422), not a source.
+		expect(opts.workflowId).toBe(`addsource-${WS}-${cockpitSessionId}`);
 		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
 		expect(opts.taskQueue).toBe(`engine-${WS}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 
-		// The args carry the source SET (DAT-422), a source-free identity (no
-		// vertical on the identity — DAT-506), and the workspace vertical on the INPUT.
+		// FLAT input (DAT-506): no identity envelope — workspace_id + the source SET
+		// + verticals (one-element array) at the top level, nothing else.
 		const args = opts.args as [
-			{
-				identity: Record<string, unknown>;
-				source_ids: string[];
-				vertical: string;
-			},
+			{ workspace_id: string; sources: string[]; verticals: string[] },
 		];
-		const identity = args[0].identity;
-		expect(identity.workspace_id).toBe(WS);
-		expect(identity.source_id).toBeUndefined();
-		expect(identity.session_id).toBe(sessionId);
-		expect(identity.vertical).toBeUndefined();
-		expect(args[0].source_ids).toEqual(["src-1"]);
-		expect(args[0].vertical).toBe("_adhoc");
+		expect(args[0]).toEqual({
+			workspace_id: WS,
+			sources: ["src-1"],
+			verticals: ["_adhoc"],
+		});
 
 		expect(result).toEqual({
-			workflow_id: `addsource-${WS}-${sessionId}`,
+			workflow_id: `addsource-${WS}-${cockpitSessionId}`,
 			run_id: "run-abc",
-			source_ids: ["src-1"],
-			session_id: sessionId,
+			sources: ["src-1"],
+			cockpit_session_id: cockpitSessionId,
 		});
 		// Connection is always closed.
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("threads the WORKSPACE vertical (from the registry) onto the input", async () => {
+	it("threads the WORKSPACE vertical (from the registry) onto the input as a one-element array", async () => {
 		h.vertical = "financial_reporting";
-		await triggerAddSource({ source_ids: ["src-2"] });
+		await triggerAddSource({ sources: ["src-2"] });
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ vertical: string }];
-		expect(args[0].vertical).toBe("financial_reporting");
+		const args = opts.args as [{ verticals: string[] }];
+		expect(args[0].verticals).toEqual(["financial_reporting"]);
 	});
 
 	it("records the cockpit session + run before start, then attaches the runId", async () => {
-		const result = await triggerAddSource({ source_ids: ["src-1"] });
-		const sessionId = result.session_id;
+		const result = await triggerAddSource({ sources: ["src-1"] });
+		const cockpitSessionId = result.cockpit_session_id;
 		expect(h.recordRun).toHaveBeenCalledTimes(1);
 		expect(h.recordRun).toHaveBeenCalledWith({
 			workspaceId: WS,
-			engineSessionId: sessionId,
+			engineSessionId: cockpitSessionId,
 			kind: "onboarding",
 			stage: "add_source",
-			workflowId: `addsource-${WS}-${sessionId}`,
+			workflowId: `addsource-${WS}-${cockpitSessionId}`,
 		});
 		expect(h.attachRunId).toHaveBeenCalledWith(
-			`addsource-${WS}-${sessionId}`,
+			`addsource-${WS}-${cockpitSessionId}`,
 			"run-abc",
 		);
 	});
 
 	it("throws when Temporal is unconfigured and records nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
-		await expect(triggerAddSource({ source_ids: ["src-1"] })).rejects.toThrow(
+		await expect(triggerAddSource({ sources: ["src-1"] })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		// The guard runs first — no recorded run, no workflow start.

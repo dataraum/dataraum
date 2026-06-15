@@ -27,7 +27,7 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
-from dataraum.investigation.queries import sources_for_run, tables_for_run
+from dataraum.investigation.queries import tables_for_run
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.storage import Source, Table
 from dataraum.worker import (
@@ -127,10 +127,9 @@ def test_select_links_a_cross_source_selection(worker_manager: ConnectionManager
     assert run.status == PhaseStatus.COMPLETED.value, run.error
 
     with worker_manager.session_scope() as session:
-        # The selection is anchored to the run via run_tables (DAT-506).
+        # The selection is anchored to the run via run_tables (DAT-506),
+        # spanning both sources.
         assert set(tables_for_run(session, baseline_run_id())) == {a1, a2, b1}
-        # The run's source is DERIVED from its tables — and spans both.
-        assert sources_for_run(session, baseline_run_id()) == {src_a, src_b}
 
 
 def test_select_rejects_unknown_table_ids(worker_manager: ConnectionManager) -> None:

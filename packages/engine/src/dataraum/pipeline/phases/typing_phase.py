@@ -192,7 +192,7 @@ class TypingPhase(BasePhase):
             td_rows.append(
                 {
                     "column_id": typed_col_id,
-                    "run_id": ctx.run_id,
+                    "run_id": ctx.require_run_id(),
                     "decided_type": resolved,
                     "decision_source": "automatic",
                     "decided_at": decided_at,

@@ -1,10 +1,10 @@
-"""Run ⇿ table anchor model + source derivation (DAT-506).
+"""Run ⇿ table anchor model (DAT-506).
 
 A run carries no ``source_id``; it links typed tables through ``run_tables`` and
-its source(s) are derived by joining to ``Table.source_id``. An ``add_source``
-run links one source's tables; a ``begin_session`` run may link tables spanning
-sources. Sessions live in cockpit_db now (DAT-506) — the engine only records the
-per-run typed-table set.
+reads them back via ``tables_for_run``. An ``add_source`` run links one source's
+tables; a ``begin_session`` run may link tables spanning sources. Sessions live
+in cockpit_db now (DAT-506) — the engine only records the per-run typed-table
+set.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.investigation import (
     link_run_tables,
-    sources_for_run,
     tables_for_run,
 )
 from dataraum.investigation.db_models import RunTable
@@ -46,46 +45,26 @@ def _link(session: Session, run_id: str, table_id: str) -> None:
     session.add(RunTable(run_id=run_id, table_id=table_id))
 
 
-def test_single_source_run_derives_one_source(seeded: Session) -> None:
-    _link(seeded, "run_single", "t_a1")
-    _link(seeded, "run_single", "t_a2")
-    seeded.flush()
-
-    assert sources_for_run(seeded, "run_single") == {"src_a"}
-
-
-def test_multi_source_run_derives_all_sources(seeded: Session) -> None:
-    _link(seeded, "run_multi", "t_a1")
-    _link(seeded, "run_multi", "t_b1")
-    seeded.flush()
-
-    assert sources_for_run(seeded, "run_multi") == {"src_a", "src_b"}
-
-
-def test_run_with_no_tables_derives_empty(seeded: Session) -> None:
-    assert sources_for_run(seeded, "run_empty") == set()
-
-
 def test_table_links_to_multiple_runs(seeded: Session) -> None:
     """A typed table can be composed into more than one run (M:N)."""
     _link(seeded, "run_one", "t_a1")
     _link(seeded, "run_two", "t_a1")
     seeded.flush()
 
-    assert sources_for_run(seeded, "run_one") == {"src_a"}
-    assert sources_for_run(seeded, "run_two") == {"src_a"}
+    assert tables_for_run(seeded, "run_one") == ["t_a1"]
+    assert tables_for_run(seeded, "run_two") == ["t_a1"]
 
 
 # --- link_run_tables (the add_source/begin_session anchor write helper) -----
 
 
-def test_link_run_tables_writes_links_and_derives_source(seeded: Session) -> None:
+def test_link_run_tables_writes_links(seeded: Session) -> None:
     count = link_run_tables(seeded, "run_link", ["t_a1", "t_b1"])
     seeded.flush()
 
     assert count == 2
     assert seeded.query(RunTable).filter_by(run_id="run_link").count() == 2
-    assert sources_for_run(seeded, "run_link") == {"src_a", "src_b"}
+    assert set(tables_for_run(seeded, "run_link")) == {"t_a1", "t_b1"}
 
 
 def test_link_run_tables_is_idempotent(seeded: Session) -> None:

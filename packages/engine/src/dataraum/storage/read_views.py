@@ -70,7 +70,7 @@ _TABLE_GRAIN: tuple[str, ...] = (
 # (DAT-506); operating_model promotes (catalog, "operating_model") for the
 # lifecycle families (validation + cycles, DAT-438/455). Same target, distinct
 # stages — the two stages' runs coexist on one workspace catalog head.
-_SESSION_GRAIN: dict[str, str] = {
+_CATALOG_GRAIN: dict[str, str] = {
     "relationships": "catalog",
     "table_entities": "catalog",
     "enriched_views": "catalog",
@@ -302,8 +302,8 @@ def _current_view_sql(table: str) -> str:
             f"{catalog_grain_precedence}"
             f";"
         )
-    if table in _SESSION_GRAIN:
-        stage = _SESSION_GRAIN[table]
+    if table in _CATALOG_GRAIN:
+        stage = _CATALOG_GRAIN[table]
         return (
             f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
@@ -328,7 +328,7 @@ def read_view_statements() -> list[tuple[str, str]]:
     load_all_models()
     # Failure-contract gate first (DAT-502): writer grain before read surface.
     enforce_run_grain(Base.metadata.tables.values())
-    classified = set(_COLUMN_GRAIN) | set(_TABLE_GRAIN) | set(_SESSION_GRAIN) | set(_DUAL_GRAIN)
+    classified = set(_COLUMN_GRAIN) | set(_TABLE_GRAIN) | set(_CATALOG_GRAIN) | set(_DUAL_GRAIN)
 
     statements: list[tuple[str, str]] = []
     versioned: set[str] = set()

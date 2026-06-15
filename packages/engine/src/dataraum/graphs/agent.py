@@ -92,7 +92,6 @@ class ExecutionContext:
         *,
         slice_column: str | None = None,
         slice_value: str | None = None,
-        session_id: str | None = None,
         vertical: str | None = None,
         om_run_id: str | None = None,
         **kwargs: Any,
@@ -108,8 +107,6 @@ class ExecutionContext:
             table_ids: List of table IDs to include in context
             slice_column: Optional column to slice the context by.
             slice_value: Optional value for the slice column.
-            session_id: Correlation/logging label only (DAT-506) — sessions moved
-                to cockpit_db; no longer scopes any read.
             vertical: Runtime vertical for the cycle-health computation.
             om_run_id: Explicit operating_model run to read cycles/validation/cycle
                 health at — passed by the in-run metrics phase so the graph context
@@ -129,7 +126,6 @@ class ExecutionContext:
             duckdb_conn=duckdb_conn,
             slice_column=slice_column,
             slice_value=slice_value,
-            session_id=session_id,
             vertical=vertical,
             om_run_id=om_run_id,
         )

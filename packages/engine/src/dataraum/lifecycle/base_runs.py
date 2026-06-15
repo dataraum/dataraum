@@ -63,7 +63,7 @@ def resolve_operating_model_base_runs(session: Session, table_ids: list[str]) ->
         DAT-511) — it is not a state downstream code handles.
     """
     # "catalog" is begin_session's promoted stage on the workspace catalog head
-    # (see promote_catalog_run) — distinct from operating_model's own head, which
+    # (see promote_session_run) — distinct from operating_model's own head, which
     # this run WRITES at terminal promote and never reads from.
     relationship_run_id = head_run_id(session, catalog_head_target(), "catalog")
     if relationship_run_id is None:

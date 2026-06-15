@@ -170,5 +170,64 @@ class TestRunGrainGate:
             enforce_run_grain([graduated])
 
 
+def test_entropy_readiness_two_conflicting_bands_latest_promoted_wins() -> None:
+    """The L3 precedence AC: when the SAME target has an ``entropy_readiness`` row
+    promoted under the ``catalog`` head AND another under ``operating_model``,
+    ``current_entropy_readiness`` returns EXACTLY ONE row — the latest-promoted.
+
+    Without the catalog-grain precedence clause both rows surface as 'current'
+    and an unpinned reader picks one nondeterministically (review wave-1 blocker).
+    Executed live against in-memory SQLite (the generated DDL is pure SQL: ``||``,
+    correlated ``EXISTS``, ``MAX`` — all SQLite-supported) by substituting the
+    ``__WS__``/``__READ__`` schema tokens to the default schema.
+    """
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    view_ddl = dict(read_view_statements())["current_entropy_readiness"]
+    # Tokens → default schema; the view then references bare table names.
+    view_ddl = view_ddl.replace(f"{READ_TOKEN}.", "").replace(f"{WS_TOKEN}.", "")
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE entropy_readiness ("
+        "  readiness_id TEXT PRIMARY KEY, target TEXT, table_id TEXT, run_id TEXT, band TEXT"
+        ");"
+        "CREATE TABLE metadata_snapshot_head ("
+        "  head_id TEXT PRIMARY KEY, target TEXT, stage TEXT, run_id TEXT, promoted_at TEXT"
+        ");"
+    )
+
+    # Same target, two runs: an older begin_session catalog run + a newer
+    # operating_model run. Both promote the SAME ``catalog`` target, distinct
+    # stages — the conflict the precedence clause resolves.
+    earlier = datetime(2026, 6, 15, 10, 0, tzinfo=UTC)
+    later = earlier + timedelta(hours=1)
+    conn.executemany(
+        "INSERT INTO entropy_readiness VALUES (?, ?, ?, ?, ?)",
+        [
+            ("rd_catalog", "table:t1", "t1", "run_catalog", "ready"),
+            ("rd_om", "table:t1", "t1", "run_om", "investigate"),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO metadata_snapshot_head VALUES (?, ?, ?, ?, ?)",
+        [
+            ("h_catalog", "catalog", "catalog", "run_catalog", earlier.isoformat()),
+            ("h_om", "catalog", "operating_model", "run_om", later.isoformat()),
+        ],
+    )
+    conn.execute(view_ddl)
+
+    rows = conn.execute(
+        "SELECT run_id, band FROM current_entropy_readiness WHERE target = 'table:t1'"
+    ).fetchall()
+    conn.close()
+
+    # Exactly one current band for the target — the latest-promoted (operating_model).
+    assert len(rows) == 1, rows
+    assert rows[0] == ("run_om", "investigate")
+
+
 def test_read_schema_name() -> None:
     assert read_schema_name_for("ws_abc") == "ws_abc_read"

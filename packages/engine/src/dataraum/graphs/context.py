@@ -281,7 +281,6 @@ def build_execution_context(
     *,
     slice_column: str | None = None,
     slice_value: str | None = None,
-    session_id: str | None = None,
     vertical: str | None = None,
     om_run_id: str | None = None,
 ) -> GraphExecutionContext:
@@ -300,9 +299,6 @@ def build_execution_context(
         duckdb_conn: Optional DuckDB connection for row counts
         slice_column: Optional column to filter by (for slice metrics)
         slice_value: Optional value to filter on (for slice metrics)
-        session_id: Correlation/logging label only (DAT-506) — sessions moved to
-            cockpit_db; this is NO LONGER a DB column or head key. Head resolution,
-            model filtering, and the vertical lookup do not use it.
         vertical: Runtime vertical for the cycle-health computation (passed by the
             caller — the InvestigationSession lookup is gone, DAT-506).
         om_run_id: Explicit operating_model run for the cycle/validation/health
@@ -430,7 +426,6 @@ def build_execution_context(
     if run_id is None:
         logger.warning(
             "catalog_run_unresolved",
-            session_id=session_id,
             detail="no promoted catalog run; entity/relationship context is empty",
         )
 

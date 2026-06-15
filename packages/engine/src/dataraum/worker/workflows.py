@@ -432,7 +432,7 @@ class AddSourceWorkflow:
 # sequential chain over the whole selection. The selection travels as an array
 # of typed table ids in the workflow input and is threaded to each activity
 # (``SessionScopedInput``); ``begin_session_select`` also persists it to
-# ``session_tables`` for provenance + the downstream readiness layer (DAT-408).
+# ``run_tables`` for provenance + the downstream readiness layer (DAT-408/506).
 
 # The begin_session chain, in dependency order: structural relationship
 # detection, then the LLM table-synthesis that confirms a subset of those
@@ -489,8 +489,8 @@ class BeginSessionWorkflow:
     Temporal's determinism sandbox like the add_source workflows (imports only
     the engine-free contracts).
 
-    ``begin_session_select`` pre-flights the selection + links it to the session
-    (``session_tables``), then ``relationships`` (structural candidates) →
+    ``begin_session_select`` pre-flights the selection + links it to the run
+    (``run_tables``), then ``relationships`` (structural candidates) →
     ``semantic_per_table`` (LLM classification + confirms a subset) run over the
     whole selection, then ``session_materialize_overlays`` (fold the user's durable
     add/keep relationship teaches into this run, DAT-409) → ``enriched_views``
@@ -679,14 +679,14 @@ class OperatingModelWorkflow:
     sequential) with one structural difference: the input carries no table set.
     begin_session ESTABLISHES the table set; this stage operates on the set the
     workspace catalog already anchors, so the pre-flight
-    ``operating_model_resolve`` re-reads ``session_tables`` AND pins the
-    ADR-0008 base-run map (begin_session's promoted detect head + per-table
-    semantic heads) once — every downstream read scopes to those pins, no
-    per-phase head resolution.
+    ``operating_model_resolve`` reads the catalog head's ``run_tables`` AND pins
+    the ADR-0008 base-run map (begin_session's promoted detect head + per-table
+    semantic heads) AND the table set once — every downstream read scopes to
+    those pins, no per-phase head resolution.
 
     Spine: resolve → validation → business_cycles → metrics (each declare →
     bind/compose → execute through the typed artifact lifecycle) → promote
-    ``(session:{id}, "operating_model")``. ``business_cycles`` (DAT-455) is the
+    ``(catalog, "operating_model")``. ``business_cycles`` (DAT-455) is the
     second family and ``metrics`` (DAT-456) the third, each running after the
     prior so the later families' graph context can read this run's evidence;
     DAT-432 inserts the terminal detect (cross_table_consistency) before promote.

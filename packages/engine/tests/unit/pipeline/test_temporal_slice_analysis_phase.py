@@ -143,7 +143,6 @@ def _make_ctx(
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         config=config or {},
-        session_id=baseline_run_id(),
         run_id=run_id if run_id is not None else baseline_run_id(),
     )
 

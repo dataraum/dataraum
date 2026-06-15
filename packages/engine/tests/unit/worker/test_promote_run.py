@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from dataraum.storage import GENERATION_STAGE, MetadataSnapshotHead, init_database
 from dataraum.worker import activity as activity_mod
 from dataraum.worker.activity import promote_run
-from dataraum.worker.contracts import SourceIdentity
+from dataraum.worker.contracts import RunRef
 
 
 @pytest.fixture
@@ -70,13 +70,9 @@ def _heads(session_factory: Any) -> list[MetadataSnapshotHead]:
 
 def test_promote_run_upserts_one_generation_head_per_table(monkeypatch, session_factory):
     """First promote inserts one generation head per table; a re-run re-points it."""
-    # Source-free: AddSourceWorkflow threads source_id=None into the terminal
-    # promote (DAT-422/426) — the test feeds exactly what production feeds.
-    identity = SourceIdentity(
-        workspace_id="ws-1",
-        session_id="sess-1",
-        run_id="run-A",
-    )
+    # Source-free, session-free RunRef — the workflow threads exactly this into the
+    # terminal promote (DAT-506/426); the test feeds exactly what production feeds.
+    identity = RunRef(workspace_id="ws-1", run_id="run-A")
     table_ids = ["tbl-1", "tbl-2"]
 
     monkeypatch.setattr(activity_mod, "tables_for_run", lambda session, run_id: list(table_ids))
@@ -106,11 +102,7 @@ def test_promote_run_upserts_one_generation_head_per_table(monkeypatch, session_
 
 def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
     """An empty run-table set promotes nothing (logged warning, no rows)."""
-    identity = SourceIdentity(
-        workspace_id="ws-1",
-        session_id="sess-1",
-        run_id="run-A",
-    )
+    identity = RunRef(workspace_id="ws-1", run_id="run-A")
     monkeypatch.setattr(activity_mod, "tables_for_run", lambda session, run_id: [])
 
     assert promote_run(_manager(session_factory), identity) == 0
@@ -119,7 +111,7 @@ def test_promote_run_no_tables_is_noop(monkeypatch, session_factory):
 
 def test_promote_run_requires_run_id(monkeypatch, session_factory):
     """A missing run_id is a caller bug — fail loud rather than write a NULL head."""
-    identity = SourceIdentity(workspace_id="ws-1", session_id="sess-1")
+    identity = RunRef(workspace_id="ws-1")
 
-    with pytest.raises(RuntimeError, match="requires a stamped identity.run_id"):
+    with pytest.raises(RuntimeError, match="requires a stamped run.run_id"):
         promote_run(_manager(session_factory), identity)

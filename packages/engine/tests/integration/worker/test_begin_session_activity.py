@@ -31,8 +31,7 @@ from dataraum.investigation.queries import sources_for_run, tables_for_run
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.storage import Source, Table
 from dataraum.worker import (
-    SessionIdentity,
-    SourceIdentity,
+    RunRef,
     begin_session_select,
     raw_table_ids,
     run_phase,
@@ -99,16 +98,16 @@ def _seed_typed_table(
     return table_id
 
 
-def _session_identity(session_id: str, run_id: str | None = None) -> SessionIdentity:
-    """A session identity with a stamped run_id (DAT-506).
+def _session_identity(session_id: str, run_id: str | None = None) -> RunRef:
+    """A source-free run ref with a stamped run_id (DAT-506).
 
     ``begin_session_select`` links the selection to ``run_tables`` and raises if
     ``run_id`` is None, so default to ``baseline_run_id()`` — the same run the
-    ``tables_for_run`` assertions resolve by.
+    ``tables_for_run`` assertions resolve by. (``session_id`` is accepted for the
+    test call sites' readability but no longer rides on the wire — sessions live
+    in cockpit_db, DAT-506.)
     """
-    return SessionIdentity(
-        workspace_id="test", session_id=session_id, run_id=run_id or baseline_run_id()
-    )
+    return RunRef(workspace_id="test", run_id=run_id or baseline_run_id())
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +187,6 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
     ``run_id`` so typing can link the typed tables to the run via ``run_tables``.
     """
     source_id = str(uuid4())
-    add_session_id = str(uuid4())
     add_run_id = str(uuid4())
     files = _enumerate_fixture_files(small_finance_path)
     with manager.session_scope() as session:
@@ -201,19 +199,15 @@ def _build_typed_tables(manager: ConnectionManager, small_finance_path: Path) ->
                 status="configured",
             )
         )
-    import_identity = SourceIdentity(
-        workspace_id="test", source_id=source_id, session_id=add_session_id, run_id=add_run_id
+    run = RunRef(workspace_id="test", run_id=add_run_id)
+    assert (
+        run_phase(manager, "import", run, [], "finance", source_id=source_id).status == "completed"
     )
-    assert run_phase(manager, "import", import_identity, [], "finance").status == "completed"
-    # Past import the chain runs source-free (DAT-422), as AddSourceWorkflow threads it.
-    child_identity = SourceIdentity(
-        workspace_id="test", session_id=add_session_id, run_id=add_run_id
-    )
+    # Past import the chain runs source-free (DAT-506/426), as AddSourceWorkflow
+    # threads it — the same run ref carries the run_id typing links run_tables by.
     typed: list[str] = []
     for raw_id in raw_table_ids(manager, source_id):
-        assert (
-            run_phase(manager, "typing", child_identity, [raw_id], "finance").status == "completed"
-        )
+        assert run_phase(manager, "typing", run, [raw_id], "finance").status == "completed"
         typed_id = typed_table_id_for_raw(manager, raw_id)
         assert typed_id is not None
         typed.append(typed_id)
@@ -301,8 +295,8 @@ def _seed_relationship(
         )
 
 
-def _session_identity_run(session_id: str, run_id: str) -> SessionIdentity:
-    return SessionIdentity(workspace_id="test", session_id=session_id, run_id=run_id)
+def _session_identity_run(session_id: str, run_id: str) -> RunRef:
+    return RunRef(workspace_id="test", run_id=run_id)
 
 
 def test_begin_session_detect_promote_read_and_nondestructive_rerun(

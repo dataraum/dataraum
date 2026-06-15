@@ -37,7 +37,6 @@ class TestImportDispatch:
         return PhaseContext(
             session=MagicMock(),
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config=config,
         )
 
@@ -61,8 +60,8 @@ class TestImportDispatch:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config={
+                "source_id": "test-source",
                 "source_name": "missing",
                 "source_type": "csv",
                 "source_connection_config": {"file_uris": ["s3://dataraum-lake/whatever.csv"]},
@@ -70,7 +69,7 @@ class TestImportDispatch:
         )
         result = phase._run(ctx)
         assert result.status == PhaseStatus.FAILED
-        assert "not found in the session DB" in (result.error or "")
+        assert "not found in the workspace DB" in (result.error or "")
 
     def test_run_fails_when_file_uris_missing_from_config(self) -> None:
         """File-source dispatch needs a non-empty file_uris list."""
@@ -80,8 +79,8 @@ class TestImportDispatch:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config={
+                "source_id": "test-source",
                 "source_name": "noplace",
                 "source_type": "csv",
                 "source_connection_config": {},
@@ -99,8 +98,8 @@ class TestImportDispatch:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config={
+                "source_id": "test-source",
                 "source_name": "broken_recipe",
                 "source_type": "db_recipe",
                 "source_connection_config": {"tables": [{"name": "t", "sql": "SELECT 1"}]},
@@ -129,8 +128,8 @@ class TestSuffixDispatch:
         return PhaseContext(
             session=session,
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config={
+                "source_id": "test-source",
                 "source_name": "src",
                 "source_type": "file",
                 "source_connection_config": {"file_uris": [path]},
@@ -250,8 +249,8 @@ class TestMultiUriDispatch:
         return PhaseContext(
             session=session,
             duckdb_conn=MagicMock(),
-            source_id="test-source",
             config={
+                "source_id": "test-source",
                 "source_name": "src",
                 "source_type": "file",
                 "source_connection_config": {"file_uris": file_uris},
@@ -398,8 +397,8 @@ class TestMultiUriDispatch:
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=MagicMock(),
-                source_id="test-source",
                 config={
+                    "source_id": "test-source",
                     "source_name": "src",
                     "source_type": "file",
                     "source_connection_config": {"file_uris": uris},

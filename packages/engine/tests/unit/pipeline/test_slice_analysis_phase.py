@@ -76,7 +76,6 @@ def _ctx(session: Any, run_id: str) -> PhaseContext:
         session=session,
         duckdb_conn=None,
         table_ids=["tbl-1"],
-        session_id="sess-1",
         run_id=run_id,
     )
 

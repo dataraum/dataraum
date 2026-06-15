@@ -63,13 +63,11 @@ def _annotate(session: Session, table: Table, run_id: str | None = None) -> None
 def _ctx(session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
     # semantic_per_column derives its tables from the run's ``run_tables`` anchor
     # (DAT-506), so the ctx must carry the run_id the typed tables above are linked
-    # under (``baseline_run_id()``). Source-FREE (DAT-422/426): the reduce runs
-    # past the add_source boundary, where the workflow threads source_id=None.
+    # under (``baseline_run_id()``). Source-FREE + session-free (DAT-506/426): the
+    # reduce runs past the add_source boundary, scoping by the run alone.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=None,
-        session_id=baseline_run_id(),
         run_id=baseline_run_id(),
     )
 
@@ -82,7 +80,6 @@ def _session_ctx(
         session=session,
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
-        session_id=baseline_run_id(),
         run_id=baseline_run_id(),
     )
 
@@ -180,9 +177,7 @@ class TestPerColumnAdhocFailLoud:
         return PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={"vertical": "_adhoc"},
-            session_id=baseline_run_id(),
             run_id=baseline_run_id(),
         )
 
@@ -240,9 +235,7 @@ class TestPerColumnAdhocFailLoud:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={"vertical": "finanace"},
-            session_id=baseline_run_id(),
             run_id=baseline_run_id(),
         )
         src = _source(session)

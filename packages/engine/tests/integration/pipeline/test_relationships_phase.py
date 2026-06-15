@@ -48,7 +48,6 @@ def _ctx(
         duckdb_conn=duckdb_conn,
         table_ids=table_ids,
         config={},
-        session_id=_TEST_SESSION_ID,
     )
 
 

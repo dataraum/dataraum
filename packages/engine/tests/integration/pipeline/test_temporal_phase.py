@@ -29,7 +29,6 @@ class TestTemporalPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={},
         )
 
@@ -75,7 +74,6 @@ class TestTemporalPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[table.table_id],
             config={},
         )
@@ -99,7 +97,6 @@ class TestTemporalPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             config={},
         )
 
@@ -148,7 +145,6 @@ class TestTemporalPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[table.table_id],
             config={},
         )
@@ -196,7 +192,6 @@ class TestTemporalPhase:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[table.table_id],
             config={},
         )

@@ -31,9 +31,9 @@ from dataraum.worker.activity import (
     promote_operating_model_run,
     resolve_operating_model_scope,
 )
-from dataraum.worker.contracts import SessionIdentity
+from dataraum.worker.contracts import RunRef
 
-_IDENTITY = SessionIdentity(workspace_id="ws-1", session_id="sess-om", run_id="run-om-A")
+_IDENTITY = RunRef(workspace_id="ws-1", run_id="run-om-A")
 _VERTICAL = "finance"
 _CATALOG_RUN = "run-bs"
 
@@ -204,7 +204,7 @@ class TestPromoteOperatingModelRun:
         }
 
     def test_requires_run_id(self, session_factory):
-        identity = SessionIdentity(workspace_id="ws-1", session_id="sess-om")
+        identity = RunRef(workspace_id="ws-1")
 
-        with pytest.raises(RuntimeError, match="requires a stamped identity.run_id"):
+        with pytest.raises(RuntimeError, match="requires a stamped run.run_id"):
             promote_operating_model_run(_manager(session_factory), identity)

@@ -41,14 +41,14 @@ from dataraum.worker.contracts import (
     BeginSessionInput,
     PhaseOutcome,
     ProgressSnapshot,
-    SessionIdentity,
-    begin_session_workflow_id,
 )
 from dataraum.worker.workflows import BeginSessionWorkflow
 from tests.integration.worker.conftest import make_sandboxed_runner
 
 _TASK_QUEUE = "dat435-progress-test"
 _TABLE_IDS = ["typed-a", "typed-b"]
+# Parent workflow ids are cockpit-owned (DAT-506); the test names its own.
+_WORKSPACE_ID = "test"
 
 # The sequential session chain in execution order — must match the workflow
 # body (workflows.py: select, _SESSION_PHASE_ORDER, the overlay/views stages,
@@ -132,14 +132,13 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     terminal state. The query answering at all while a stage is awaited is
     itself part of what's under test.
     """
-    identity = SessionIdentity(workspace_id="test", session_id="sess-dat435-ok")
-    workflow_id = begin_session_workflow_id(identity.workspace_id, identity.session_id)
+    workflow_id = "beginsession-test-dat435-ok"
     stubs = [_phase_stub(name) for name in _PHASE_ORDER]
 
     async with _worker(temporal_client, stubs):
         handle = await temporal_client.start_workflow(
             BeginSessionWorkflow.run,
-            BeginSessionInput(identity=identity, tables=_TABLE_IDS, vertical="finance"),
+            BeginSessionInput(workspace_id=_WORKSPACE_ID, tables=_TABLE_IDS, verticals=["finance"]),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )
@@ -153,7 +152,8 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
 
         result = await handle.result()
 
-    assert result.session_id == identity.session_id
+    # The result carries the workflow-minted run_id (no session_id, DAT-506).
+    assert result.run_id
     assert result.table_ids == _TABLE_IDS
 
     # Terminal snapshot: chain finished, healthy, and the fan-out fields stayed
@@ -185,8 +185,7 @@ async def test_failure_is_stamped_with_phase_and_replays_clean(
     session chain). The failed history must also replay clean: the failure
     stamping in the ``run`` wrapper is a workflow-state mutation like any other.
     """
-    identity = SessionIdentity(workspace_id="test", session_id="sess-dat435-fail")
-    workflow_id = begin_session_workflow_id(identity.workspace_id, identity.session_id)
+    workflow_id = "beginsession-test-dat435-fail"
     stubs = [
         _failing_stub(name, "enriched views exploded")
         if name == "enriched_views"
@@ -197,7 +196,7 @@ async def test_failure_is_stamped_with_phase_and_replays_clean(
     async with _worker(temporal_client, stubs):
         handle = await temporal_client.start_workflow(
             BeginSessionWorkflow.run,
-            BeginSessionInput(identity=identity, tables=_TABLE_IDS, vertical="finance"),
+            BeginSessionInput(workspace_id=_WORKSPACE_ID, tables=_TABLE_IDS, verticals=["finance"]),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )

@@ -5,12 +5,10 @@ statistical_quality, temporal) all resolve their working set through this one
 helper. Under the per-table fan-out, ``ctx.table_ids`` carries the single typed
 table a child workflow is processing, so the helper returns exactly that table.
 
-Source-free (DAT-422): the fan-out children run with ``source_id=None`` (a run
-spans 1–N per-object sources), so the helper keys purely on ``table_ids`` and
-must NOT require a source — the regression these pin is that an analytics phase
-under a source-free child resolves its table instead of raising on a missing
-source. These exercise the resolution directly via a constructed ``PhaseContext``
-— no real profiling.
+Source-free (DAT-506/426): the ctx carries no source at all (a run spans 1–N
+per-object sources), so the helper keys purely on ``table_ids`` and resolves its
+table without any source context. These exercise the resolution directly via a
+constructed ``PhaseContext`` — no real profiling.
 """
 
 from __future__ import annotations
@@ -43,11 +41,10 @@ def _ctx(
     session: Session,
     duck: duckdb.DuckDBPyConnection,
     table_ids: list[str],
-    source_id: str | None = None,
 ):  # noqa: ANN202
-    # source_id defaults to None — the fan-out children are source-free (DAT-422);
-    # the helper must resolve by table_ids alone regardless of source.
-    return PhaseContext(session=session, duckdb_conn=duck, source_id=source_id, table_ids=table_ids)
+    # The ctx is source-free by construction (DAT-506/426); the helper resolves by
+    # table_ids alone regardless of source.
+    return PhaseContext(session=session, duckdb_conn=duck, table_ids=table_ids)
 
 
 def test_filter_scopes_to_the_single_requested_typed_table(
@@ -64,20 +61,15 @@ def test_filter_scopes_to_the_single_requested_typed_table(
     )
 
 
-def test_resolves_with_no_source_id(
-    session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-) -> None:
-    """The DAT-422 regression guard: the fan-out children run source-free
-    (``source_id=None``), so a per-table analytics phase must resolve its typed
-    table by ``table_ids`` alone — NOT raise on a missing source (the bug the
-    ``Table.source_id == require_source_id()`` base scoping introduced).
+def test_resolves_source_free(session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
+    """The DAT-506/426 regression guard: the ctx is source-free, so a per-table
+    analytics phase must resolve its typed table by ``table_ids`` alone — never by
+    a (now-removed) context source id.
     """
     src = _source(session)
     t1 = _table(session, src.source_id, "orders", layer="typed")
 
-    resolved = StatisticsPhase()._typed_tables(
-        _ctx(session, duckdb_conn, [t1.table_id], source_id=None)
-    )
+    resolved = StatisticsPhase()._typed_tables(_ctx(session, duckdb_conn, [t1.table_id]))
 
     assert [t.table_id for t in resolved] == [t1.table_id]
 

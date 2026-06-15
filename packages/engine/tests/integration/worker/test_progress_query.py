@@ -42,16 +42,18 @@ from dataraum.worker.contracts import (
     PhaseOutcome,
     ProcessTableInput,
     ProgressSnapshot,
+    RunRef,
     RunScopedInput,
-    SourceIdentity,
     TypingResult,
-    add_source_workflow_id,
 )
 from dataraum.worker.workflows import AddSourceWorkflow, ProcessTableWorkflow
 from tests.integration.worker.conftest import make_sandboxed_runner
 
 _TASK_QUEUE = "dat406-progress-test"
 _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
+# Parent workflow ids are cockpit-owned (DAT-506); the test names its own.
+_WORKSPACE_ID = "test"
+_WORKFLOW_ID = "addsource-test-dat406"
 
 
 # --- mocked activities -------------------------------------------------------
@@ -66,7 +68,7 @@ _RAW_IDS = ["raw-a", "raw-b", "raw-c"]
 
 @activity.defn(name="import")
 async def _import(_payload: object) -> ImportResult:
-    # ``import`` now takes a ``SourcePhaseInput`` (identity + vertical, DAT-506);
+    # ``import`` takes an ``ImportInput`` (run + source_id + vertical, DAT-506);
     # the stub ignores the payload and just yields the fixed raw-table set.
     return ImportResult(raw_table_ids=list(_RAW_IDS))
 
@@ -115,17 +117,17 @@ async def _temporal(_scoped: object) -> PhaseOutcome:
 
 @activity.defn(name="semantic_per_column")
 async def _semantic_per_column(_payload: object) -> PhaseOutcome:
-    # Now a ``SourcePhaseInput`` (identity + vertical, DAT-506).
+    # A ``RunPhaseInput`` (run + vertical, DAT-506).
     return PhaseOutcome(status="completed")
 
 
 @activity.defn(name="detect")
-async def _detect(_identity: SourceIdentity) -> PhaseOutcome:
+async def _detect(_run: RunRef) -> PhaseOutcome:
     return PhaseOutcome(status="completed")
 
 
 @activity.defn(name="promote_to_latest")
-async def _promote_to_latest(_identity: SourceIdentity) -> PhaseOutcome:
+async def _promote_to_latest(_run: RunRef) -> PhaseOutcome:
     # Terminal head-flip step (DAT-413). A trivial stub here — the parent runs it
     # last, after detect; the orchestration/progress bookkeeping is what's under
     # test, not the snapshot-head write itself (that is exercised in the
@@ -145,8 +147,6 @@ _MOCK_ACTIVITIES = [
     _detect,
     _promote_to_latest,
 ]
-
-_IDENTITY = SourceIdentity(workspace_id="test", session_id="sess-dat406")
 
 
 def _worker(client: Client) -> Worker:
@@ -170,13 +170,15 @@ async def test_get_progress_advances_and_replays_clean(temporal_client: Client) 
     an offline Replayer to prove the ``as_completed`` swap + the progress
     mutations are determinism-safe — both DAT-406 guarantees in one live run.
     """
-    workflow_id = add_source_workflow_id(_IDENTITY.workspace_id, _IDENTITY.session_id)
+    workflow_id = _WORKFLOW_ID
     _check_column_limit_calls.clear()
 
     async with _worker(temporal_client):
         handle = await temporal_client.start_workflow(
             AddSourceWorkflow.run,
-            AddSourceInput(identity=_IDENTITY, source_ids=["src-dat406"], vertical="finance"),
+            AddSourceInput(
+                workspace_id=_WORKSPACE_ID, sources=["src-dat406"], verticals=["finance"]
+            ),
             id=workflow_id,
             task_queue=_TASK_QUEUE,
         )

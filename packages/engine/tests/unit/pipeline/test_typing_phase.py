@@ -78,13 +78,12 @@ def _ctx(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str] | None = None,
 ) -> PhaseContext:
-    # Source-FREE — the production shape (DAT-422/426): typing runs in the
-    # per-table fan-out children, which AddSourceWorkflow threads source_id=None
-    # into. ``source_id`` above is a Table DB column (seeding), never ctx identity.
+    # Source-FREE — the production shape (DAT-506/426): the ctx carries no source
+    # at all. ``source_id`` elsewhere in this file is a Table DB column (seeding),
+    # never a ctx field.
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=None,
         table_ids=table_ids or [],
     )
 

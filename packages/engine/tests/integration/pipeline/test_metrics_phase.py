@@ -96,9 +96,7 @@ def _make_ctx(
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
-        source_id=None,  # source-free: operating_model scope is table_ids
         table_ids=table_ids,
-        session_id=_SESSION_ID,
         run_id=run_id,
         config=config
         if config is not None

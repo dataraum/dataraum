@@ -117,15 +117,13 @@ class PipelineTestHarness:
                     )
                 ]
             # Source-FREE ctx — the production shape for every post-import phase
-            # (DAT-422/426): AddSourceWorkflow threads source_id=None past the
-            # import loop, so the harness must feed exactly that. The harness's
+            # (DAT-506/426): the ctx carries no source at all. The harness's
             # ``source_id`` stays the DB seed/scope key above (a Table column),
-            # never the ctx identity. ``import`` runs through ``run_import``,
-            # which builds the source-bearing ctx import legitimately needs.
+            # never a ctx field. ``import`` runs through ``run_import``, which
+            # injects the one source id ``import`` needs into ``ctx.config``.
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=self.duckdb_conn,
-                source_id=None,
                 table_ids=scoped_table_ids,
                 config=config or {},
                 run_id=baseline_run_id(),
@@ -274,8 +272,7 @@ class PipelineTestHarness:
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=self.duckdb_conn,
-                source_id=self.source_id,
-                config={"junk_columns": junk_columns or []},
+                config={"junk_columns": junk_columns or [], "source_id": self.source_id},
                 run_id=baseline_run_id(),
             )
 

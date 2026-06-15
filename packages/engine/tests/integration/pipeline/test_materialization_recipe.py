@@ -167,7 +167,6 @@ class TestStronglyTypedRecipe:
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=None,
             table_ids=[raw_id],
             run_id="run-strong",
         )

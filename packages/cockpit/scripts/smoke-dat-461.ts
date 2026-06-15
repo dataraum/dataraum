@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { and, eq } from "drizzle-orm";
 import { cockpitDb } from "#/db/cockpit/client";
 import { DEFAULT_ACTOR_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
-import { markRunStatus, recordRun } from "#/db/cockpit/runs";
+import { attachRunId, markRunStatus, recordRun } from "#/db/cockpit/runs";
 import {
 	actors,
 	sessionRuns,
@@ -26,9 +26,12 @@ import {
 } from "#/db/cockpit/schema";
 
 const ENGINE_SESSION = `smoke-461-${crypto.randomUUID()}`;
-const WF = `addsource-smoke-${ENGINE_SESSION}`;
-const RUN_1 = `${ENGINE_SESSION}-run-1`;
-const RUN_2 = `${ENGINE_SESSION}-run-2`;
+// DAT-506: a run is recorded keyed by its deterministic workflowId; runId is the
+// workflowId placeholder until attachRunId. Two runs on one session → two distinct
+// workflowIds (the begin_session run + the operating_model run).
+const WF_1 = `beginsession-smoke-${ENGINE_SESSION}`;
+const WF_2 = `operatingmodel-smoke-${ENGINE_SESSION}`;
+const TEMPORAL_RUN = `${ENGINE_SESSION}-exec-1`;
 
 async function main(): Promise<void> {
 	// 1. Registry seed + resolve.
@@ -58,11 +61,10 @@ async function main(): Promise<void> {
 		engineSessionId: ENGINE_SESSION,
 		kind: "begin_session",
 		stage: "begin_session",
-		workflowId: WF,
-		runId: RUN_1,
+		workflowId: WF_1,
 	} as const;
 	await recordRun(base);
-	await recordRun(base); // re-record same run → UNIQUE no-op
+	await recordRun(base); // re-record same run → UNIQUE no-op (runId=WF_1 placeholder)
 	const sess = await cockpitDb
 		.select({ id: sessions.id, kind: sessions.kind })
 		.from(sessions)
@@ -75,8 +77,19 @@ async function main(): Promise<void> {
 		.where(eq(sessionRuns.sessionId, sess[0].id));
 	assert.equal(runsBefore.length, 1, "one run after idempotent re-record");
 	assert.equal(runsBefore[0].status, "running", "run starts running");
+	// Provisional runId = the workflowId until attachRunId.
+	assert.equal(runsBefore[0].runId, WF_1, "runId is the workflowId placeholder");
 
-	await recordRun({ ...base, stage: "operating_model", runId: RUN_2 });
+	// attachRunId rewrites the provisional runId to the Temporal execution id.
+	await attachRunId(WF_1, TEMPORAL_RUN);
+	const [attached] = await cockpitDb
+		.select({ runId: sessionRuns.runId })
+		.from(sessionRuns)
+		.where(eq(sessionRuns.workflowId, WF_1))
+		.limit(1);
+	assert.equal(attached?.runId, TEMPORAL_RUN, "runId finalized to the exec id");
+
+	await recordRun({ ...base, stage: "operating_model", workflowId: WF_2 });
 	const sessAfter = await cockpitDb
 		.select({ id: sessions.id })
 		.from(sessions)
@@ -88,12 +101,14 @@ async function main(): Promise<void> {
 		.where(eq(sessionRuns.sessionId, sess[0].id));
 	assert.equal(runsAfter.length, 2, "second run appended");
 
-	// 3. markRunStatus: terminal transition.
-	await markRunStatus(WF, RUN_1, "completed");
+	// 3. markRunStatus: terminal transition (keyed by the finalized runId).
+	await markRunStatus(WF_1, TEMPORAL_RUN, "completed");
 	const [r] = await cockpitDb
 		.select({ status: sessionRuns.status })
 		.from(sessionRuns)
-		.where(and(eq(sessionRuns.workflowId, WF), eq(sessionRuns.runId, RUN_1)))
+		.where(
+			and(eq(sessionRuns.workflowId, WF_1), eq(sessionRuns.runId, TEMPORAL_RUN)),
+		)
 		.limit(1);
 	assert.equal(r?.status, "completed", "run marked completed");
 

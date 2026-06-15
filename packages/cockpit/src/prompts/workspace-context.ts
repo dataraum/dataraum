@@ -23,7 +23,12 @@ import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { sessions } from "../db/cockpit/schema";
 import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
-import { metadataSnapshotHead, runTables, sources, tables } from "../db/metadata/schema";
+import {
+	metadataSnapshotHead,
+	runTables,
+	sources,
+	tables,
+} from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
 
 const RECENT_LIMIT = 5;

@@ -39,7 +39,9 @@ import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
 const CONV = `smoke-462-${crypto.randomUUID()}`;
 const ENGINE_SESSION = `smoke-462-${crypto.randomUUID()}`;
 const WF = `wf-${ENGINE_SESSION}`;
-const RUN = `${ENGINE_SESSION}-run-1`;
+// DAT-506: recordRun keys the run by its workflowId; the runId is the workflowId
+// placeholder until attachRunId, so the listed/marked runId is WF here.
+const RUN = WF;
 
 const msg = (id: string, role: "user" | "assistant", text: string): UIMessage =>
 	({ id, role, parts: [{ type: "text", content: text }] }) as UIMessage;
@@ -106,7 +108,6 @@ async function main(): Promise<void> {
 		kind: "begin_session",
 		stage: "begin_session",
 		workflowId: WF,
-		runId: RUN,
 	});
 	const running = await listNonTerminalRuns(wsId, 50);
 	assert.ok(

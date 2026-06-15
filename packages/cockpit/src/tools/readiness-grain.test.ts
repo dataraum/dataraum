@@ -138,9 +138,7 @@ describe("mergeCurrentEvidence", () => {
 describe("stageOfRow", () => {
 	it("labels each head bit, operating_model first", () => {
 		expect(stageOfRow(row("a", { viaTableHead: true }))).toBe("add_source");
-		expect(stageOfRow(row("b", { viaCatalogHead: true }))).toBe(
-			"catalog",
-		);
+		expect(stageOfRow(row("b", { viaCatalogHead: true }))).toBe("catalog");
 		expect(stageOfRow(row("c", { viaOperatingModelHead: true }))).toBe(
 			"operating_model",
 		);

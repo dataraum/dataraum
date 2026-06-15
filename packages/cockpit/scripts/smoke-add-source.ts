@@ -117,14 +117,13 @@ async function runInitial(
 		identity: {
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
 			session_id: sessionId,
-			// `_adhoc` is the empty / start-here vertical (DAT-371): cold-start
-			// induction generates concepts from the data and stores them as
-			// `concept` overlay rows, not as YAML writes. This smoke is the
-			// real DAT-371 acceptance test — a clean run proves induction
-			// works against the read-only mounted config.
-			vertical: "_adhoc",
 		},
 		source_ids: [sourceId],
+		// `_adhoc` is the empty / start-here vertical (DAT-371), on the workflow INPUT
+		// now (DAT-506): cold-start induction generates concepts from the data and
+		// stores them as `concept` overlay rows. This smoke is the real DAT-371
+		// acceptance test — a clean run proves induction works against the mounted config.
+		vertical: "_adhoc",
 	};
 	// `start` (not `execute`) so we can capture the run id — the replay
 	// assertion compares its fresh run_id against the initial one.
@@ -214,16 +213,13 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ---- Replay: re-run the SESSION's sources (DAT-422) --------------
-		// Replay takes the session we just built (the named unit), resolves its
-		// sources, and re-runs add_source over them as a NEW session — the engine
-		// mints a fresh run_id internally. There is no scope/from_phase; a replay is
-		// a full, non-destructive re-run. The new session's tables FK against the row
-		// the replay seeds, so the per-table fan-out can't die at that FK.
-		const replayResult = await replay({
-			session_id: sessionId,
-			vertical: "_adhoc",
-		});
+		// ---- Replay: re-run the workspace's sources (DAT-422, DAT-506) ----
+		// Replay takes the session we just built (the named unit), resolves the
+		// workspace's imported sources (the generation heads), and re-runs add_source
+		// over them as a NEW session — the engine mints a fresh run_id internally. No
+		// scope/from_phase; a full, non-destructive re-run. The vertical is the
+		// workspace property (sourced from the registry, not passed here).
+		const replayResult = await replay({ session_id: sessionId });
 		const replayed = await awaitReplay(
 			client,
 			replayResult.workflow_id,

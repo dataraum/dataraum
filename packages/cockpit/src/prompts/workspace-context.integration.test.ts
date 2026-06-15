@@ -173,15 +173,17 @@ describe.skipIf(!STACK_AVAILABLE)(
 					`DELETE FROM "${SCHEMA}".metadata_snapshot_head WHERE run_id = $1`,
 					[runId],
 				);
-				await sql.unsafe(`DELETE FROM "${SCHEMA}".run_tables WHERE run_id = $1`, [
-					runId,
-				]);
+				await sql.unsafe(
+					`DELETE FROM "${SCHEMA}".run_tables WHERE run_id = $1`,
+					[runId],
+				);
 				await sql.unsafe(`DELETE FROM "${SCHEMA}".tables WHERE table_id = $1`, [
 					tableId,
 				]);
-				await sql.unsafe(`DELETE FROM "${SCHEMA}".sources WHERE source_id = $1`, [
-					sourceId,
-				]);
+				await sql.unsafe(
+					`DELETE FROM "${SCHEMA}".sources WHERE source_id = $1`,
+					[sourceId],
+				);
 				await sql.close();
 			}
 		});

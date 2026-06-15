@@ -26,18 +26,17 @@
 
 import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
+import { cockpitDb } from "#/db/cockpit/client";
+import { recordRun } from "#/db/cockpit/runs";
+import { actors, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
 import {
 	currentLifecycleArtifacts,
 	currentValidationResults,
 } from "#/db/metadata/schema";
-import {
-	investigationSessionsWrite,
-	sourcesWrite,
-} from "#/db/metadata/write-surface";
+import { sourcesWrite } from "#/db/metadata/write-surface";
 import { beginSession } from "#/tools/begin-session";
 import type {
 	AddSourceInput,
@@ -74,6 +73,23 @@ async function ingest(client: Client): Promise<string[]> {
 	const sourceId = randomUUID();
 	const sessionId = randomUUID();
 	const now = new Date();
+
+	// The workspace registry carries the vertical (DAT-506): seed it = finance so
+	// the begin_session / operating_model drivers source the right ontology.
+	await cockpitDb
+		.insert(actors)
+		.values({ id: "default", displayName: "Default user" })
+		.onConflictDoNothing();
+	await cockpitDb
+		.insert(workspaces)
+		.values({
+			id: env.DATARAUM_WORKSPACE_ID,
+			name: `Workspace ${env.DATARAUM_WORKSPACE_ID}`,
+			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
+			vertical: VERTICAL,
+		})
+		.onConflictDoNothing();
+
 	await metadataDb
 		.insert(sourcesWrite)
 		.values({
@@ -86,25 +102,23 @@ async function ingest(client: Client): Promise<string[]> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	await metadataDb
-		.insert(investigationSessionsWrite)
-		.values({
-			sessionId,
-			intent: "smoke operating_model",
-			status: "active",
-			startedAt: now,
-			stepCount: 0,
-			vertical: VERTICAL,
-		})
-		.onConflictDoNothing({ target: investigationSessionsWrite.sessionId });
+
+	// Record the add_source run in cockpit_db (DAT-506 — the session-of-record).
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		engineSessionId: sessionId,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+	});
 
 	const input: AddSourceInput = {
 		identity: {
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
 			session_id: sessionId,
-			vertical: VERTICAL,
 		},
 		source_ids: [sourceId],
+		vertical: VERTICAL,
 	};
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>
@@ -135,18 +149,21 @@ async function main(): Promise<void> {
 		const tableIds = await ingest(client);
 
 		// ---- begin_session: compose the workspace ---------------------------------
-		const begun = await beginSession({ table_ids: tableIds, vertical: VERTICAL });
+		// Vertical is the workspace property (seeded = finance); the driver sources it.
+		const begun = await beginSession({ table_ids: tableIds });
 		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
 		console.log(`✓ begin_session completed: session=${begun.session_id}`);
 
-		// ---- operatingModelWorkflow: identity ONLY (DAT-438) ----------------------
-		// The stage re-reads the session's table set from session_tables and pins
-		// the base-run map in its resolve activity — nothing else travels in.
+		// ---- operatingModelWorkflow: identity + vertical (DAT-438, DAT-506) -------
+		// The stage re-reads the session's table set from the catalog head's
+		// run_tables and pins the base-run map in its resolve activity — only the
+		// identity + the workspace vertical travel in.
 		const input: OperatingModelInput = {
 			identity: {
 				workspace_id: env.DATARAUM_WORKSPACE_ID,
 				session_id: begun.session_id,
 			},
+			vertical: VERTICAL,
 		};
 		const handle = await client.workflow.start<
 			(p: OperatingModelInput) => Promise<OperatingModelResult>
@@ -160,17 +177,15 @@ async function main(): Promise<void> {
 		});
 		const result = (await handle.result()) as OperatingModelResult;
 		console.log(
-			`✓ operating_model completed over ${result.table_ids.length} table(s)` +
+			`✓ operating_model completed` +
 				`\n  validation_summary: ${result.validation_summary}`,
 		);
 
 		// ---- verify THROUGH the promoted-read surface (ADR-0008) ------------------
 		// cockpit_reader can only see current_* views; rows appearing here proves
-		// the run promoted (session:{id}, "operating_model") AND the head join works.
-		const artifacts = await metadataDb
-			.select()
-			.from(currentLifecycleArtifacts)
-			.where(eq(currentLifecycleArtifacts.sessionId, begun.session_id));
+		// the run promoted (catalog, "operating_model") AND the head join works.
+		// The views resolve at the workspace catalog head (DAT-506) — no session filter.
+		const artifacts = await metadataDb.select().from(currentLifecycleArtifacts);
 		console.log(`\ncurrent_lifecycle_artifacts (${artifacts.length}):`);
 		for (const a of artifacts) {
 			console.log(
@@ -203,10 +218,7 @@ async function main(): Promise<void> {
 			);
 		}
 
-		const results = await metadataDb
-			.select()
-			.from(currentValidationResults)
-			.where(eq(currentValidationResults.sessionId, begun.session_id));
+		const results = await metadataDb.select().from(currentValidationResults);
 		console.log(`\ncurrent_validation_results (${results.length}):`);
 		for (const r of results) {
 			console.log(

@@ -34,8 +34,8 @@ import { z } from "zod";
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { attachRunId, recordRun } from "../db/cockpit/runs";
-import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataDb } from "../db/metadata/client";
+import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
 import { currentSessionId } from "../prompts/workspace-context";
 import type {

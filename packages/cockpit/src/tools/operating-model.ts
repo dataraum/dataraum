@@ -1,13 +1,14 @@
 // operating_model tool (DAT-440) — run the journey's third stage over an
 // existing begin_session session: take the vertical's declared validations
 // through the typed lifecycle (declare → ground/bind → execute) and promote the
-// outcome under the session's `operating_model` head.
+// outcome under the workspace `operating_model` catalog head.
 //
-// Identity ONLY (DAT-438): begin_session ESTABLISHES the table set; the
-// workflow's pre-flight resolve activity re-reads it from `session_tables` —
-// the client never re-passes a copy that could diverge. No seeding either: the
-// InvestigationSession row already exists (begin_session created it), and the
-// engine fails loud when the session has no tables.
+// Identity + vertical (DAT-438, DAT-506): begin_session ESTABLISHES the table
+// set; the workflow's pre-flight resolve activity re-reads it from the catalog
+// head's `run_tables` — the client never re-passes a copy that could diverge. The
+// vertical is the workspace property (sourced from the registry). No seeding: the
+// cockpit session row already exists (begin_session recorded it), and the engine
+// fails loud when the catalog has no tables.
 //
 // Non-blocking (`workflow.start`), mirroring begin_session: returns the
 // workflow + run id immediately; the cockpit narrates completion automatically
@@ -36,7 +37,7 @@ import { type AgentError, withAgentError } from "./agent-error";
 
 export interface OperatingModelToolInput {
 	// The begin_session session to run the stage over — its table set anchors
-	// the run; the engine re-reads it from session_tables.
+	// the run; the engine re-reads it from the catalog head's run_tables (DAT-506).
 	session_id: string;
 }
 

@@ -186,7 +186,9 @@ class PhaseActivities:
     @activity.defn(name="statistics")
     def run_statistics(self, payload: TableScopedInput) -> PhaseOutcome:
         """Statistics activity — per-column statistical profiling of one typed table."""
-        return self._run_or_raise("statistics", payload.identity, [payload.table_id], payload.vertical)
+        return self._run_or_raise(
+            "statistics", payload.identity, [payload.table_id], payload.vertical
+        )
 
     @activity.defn(name="column_eligibility")
     def run_column_eligibility(self, payload: TableScopedInput) -> PhaseOutcome:
@@ -205,7 +207,9 @@ class PhaseActivities:
     @activity.defn(name="temporal")
     def run_temporal(self, payload: TableScopedInput) -> PhaseOutcome:
         """Temporal activity — pattern/trend profiling of date/time columns."""
-        return self._run_or_raise("temporal", payload.identity, [payload.table_id], payload.vertical)
+        return self._run_or_raise(
+            "temporal", payload.identity, [payload.table_id], payload.vertical
+        )
 
     @activity.defn(name="semantic_per_column")
     def run_semantic_per_column(self, payload: SourcePhaseInput) -> PhaseOutcome:
@@ -269,7 +273,9 @@ class PhaseActivities:
         uses for add_source. The session row itself is seeded by the caller.
         """
         run = begin_session_select(self._manager, payload.identity, payload.table_ids)
-        return self._outcome_or_raise(run, "begin_session_select")  # vertical unused (no LLM config)
+        return self._outcome_or_raise(
+            run, "begin_session_select"
+        )  # vertical unused (no LLM config)
 
     @activity.defn(name="relationships")
     def run_relationships(self, payload: SessionScopedInput) -> PhaseOutcome:

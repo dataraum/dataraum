@@ -4,7 +4,6 @@
 
 CREATE TABLE config_overlay (
 	overlay_id VARCHAR NOT NULL, 
-	session_id VARCHAR, 
 	type VARCHAR NOT NULL, 
 	payload JSON NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
@@ -14,19 +13,46 @@ CREATE TABLE config_overlay (
 
 CREATE INDEX idx_config_overlay_active ON config_overlay (superseded_at, type);
 
-CREATE TABLE investigation_sessions (
-	session_id VARCHAR NOT NULL, 
-	status VARCHAR NOT NULL, 
-	started_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	ended_at TIMESTAMP WITHOUT TIME ZONE, 
-	duration_seconds FLOAT, 
-	intent VARCHAR NOT NULL, 
-	contract VARCHAR, 
-	vertical VARCHAR, 
-	outcome_summary VARCHAR, 
-	outcome_payload JSON, 
-	step_count INTEGER NOT NULL, 
-	CONSTRAINT pk_investigation_sessions PRIMARY KEY (session_id)
+CREATE TABLE detected_business_cycles (
+	cycle_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	cycle_name VARCHAR NOT NULL, 
+	cycle_type VARCHAR NOT NULL, 
+	canonical_type VARCHAR NOT NULL, 
+	is_known_type BOOLEAN NOT NULL, 
+	description TEXT, 
+	business_value VARCHAR NOT NULL, 
+	confidence FLOAT NOT NULL, 
+	tables_involved JSON NOT NULL, 
+	stages JSON NOT NULL, 
+	entity_flows JSON NOT NULL, 
+	status_table VARCHAR, 
+	status_column VARCHAR, 
+	completion_value VARCHAR, 
+	total_records INTEGER, 
+	completed_cycles INTEGER, 
+	completion_rate FLOAT, 
+	evidence JSON NOT NULL, 
+	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
+	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id)
+);
+
+CREATE TABLE lifecycle_artifacts (
+	artifact_id VARCHAR NOT NULL, 
+	artifact_type VARCHAR NOT NULL, 
+	artifact_key VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	state VARCHAR NOT NULL, 
+	state_reason TEXT, 
+	stage VARCHAR NOT NULL, 
+	strictness FLOAT, 
+	grounded_against JSON, 
+	teaches JSON, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 
+	CONSTRAINT uq_lifecycle_artifact_identity UNIQUE (artifact_type, artifact_key, run_id)
 );
 
 CREATE TABLE metadata_snapshot_head (
@@ -55,107 +81,9 @@ CREATE TABLE sources (
 	CONSTRAINT uq_sources_name UNIQUE (name)
 );
 
-CREATE TABLE detected_business_cycles (
-	cycle_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	cycle_name VARCHAR NOT NULL, 
-	cycle_type VARCHAR NOT NULL, 
-	canonical_type VARCHAR NOT NULL, 
-	is_known_type BOOLEAN NOT NULL, 
-	description TEXT, 
-	business_value VARCHAR NOT NULL, 
-	confidence FLOAT NOT NULL, 
-	tables_involved JSON NOT NULL, 
-	stages JSON NOT NULL, 
-	entity_flows JSON NOT NULL, 
-	status_table VARCHAR, 
-	status_column VARCHAR, 
-	completion_value VARCHAR, 
-	total_records INTEGER, 
-	completed_cycles INTEGER, 
-	completion_rate FLOAT, 
-	evidence JSON NOT NULL, 
-	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
-	CONSTRAINT uq_detected_cycle_run UNIQUE (session_id, canonical_type, run_id), 
-	CONSTRAINT fk_detected_business_cycles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
-);
-
-CREATE INDEX ix_detected_business_cycles_session_id ON detected_business_cycles (session_id);
-
-CREATE TABLE fix_ledger (
-	fix_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	source_id VARCHAR NOT NULL, 
-	action_name VARCHAR NOT NULL, 
-	table_name VARCHAR NOT NULL, 
-	column_name VARCHAR, 
-	user_input VARCHAR NOT NULL, 
-	interpretation VARCHAR NOT NULL, 
-	status VARCHAR NOT NULL, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
-	superseded_by VARCHAR, 
-	CONSTRAINT pk_fix_ledger PRIMARY KEY (fix_id), 
-	CONSTRAINT fk_fix_ledger_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_fix_ledger_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id), 
-	CONSTRAINT fk_fix_ledger_superseded_by_fix_ledger FOREIGN KEY(superseded_by) REFERENCES fix_ledger (fix_id)
-);
-
-CREATE INDEX idx_fix_ledger_scope ON fix_ledger (source_id, action_name, table_name, column_name);
-
-CREATE INDEX idx_fix_ledger_source ON fix_ledger (source_id);
-
-CREATE INDEX ix_fix_ledger_session_id ON fix_ledger (session_id);
-
-CREATE TABLE investigation_steps (
-	step_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	ordinal INTEGER NOT NULL, 
-	tool_name VARCHAR NOT NULL, 
-	arguments JSON NOT NULL, 
-	status VARCHAR NOT NULL, 
-	result_summary VARCHAR, 
-	error VARCHAR, 
-	started_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	duration_seconds FLOAT NOT NULL, 
-	target VARCHAR, 
-	dimension VARCHAR, 
-	CONSTRAINT pk_investigation_steps PRIMARY KEY (step_id), 
-	CONSTRAINT fk_investigation_steps_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_inv_step_target ON investigation_steps (target);
-
-CREATE INDEX idx_inv_step_tool ON investigation_steps (tool_name);
-
-CREATE INDEX ix_investigation_steps_session_id ON investigation_steps (session_id);
-
-CREATE TABLE lifecycle_artifacts (
-	artifact_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	artifact_type VARCHAR NOT NULL, 
-	artifact_key VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	state VARCHAR NOT NULL, 
-	state_reason TEXT, 
-	stage VARCHAR NOT NULL, 
-	strictness FLOAT, 
-	grounded_against JSON, 
-	teaches JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	state_changed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_lifecycle_artifacts PRIMARY KEY (artifact_id), 
-	CONSTRAINT uq_lifecycle_artifact_identity UNIQUE (session_id, artifact_type, artifact_key, run_id), 
-	CONSTRAINT fk_lifecycle_artifacts_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id) ON DELETE CASCADE
-);
-
-CREATE INDEX ix_lifecycle_artifacts_session_id ON lifecycle_artifacts (session_id);
-
 CREATE TABLE sql_snippets (
 	snippet_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
+	workspace_id VARCHAR NOT NULL, 
 	snippet_type VARCHAR NOT NULL, 
 	standard_field VARCHAR, 
 	statement VARCHAR, 
@@ -177,19 +105,98 @@ CREATE TABLE sql_snippets (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_sql_snippets PRIMARY KEY (snippet_id), 
-	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value), 
-	CONSTRAINT fk_sql_snippets_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
+	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value)
 );
 
 CREATE INDEX ix_sql_snippets_normalized_expression ON sql_snippets (normalized_expression);
 
 CREATE INDEX ix_sql_snippets_schema_mapping_id ON sql_snippets (schema_mapping_id);
 
-CREATE INDEX ix_sql_snippets_session_id ON sql_snippets (session_id);
-
 CREATE INDEX ix_sql_snippets_snippet_type ON sql_snippets (snippet_type);
 
 CREATE INDEX ix_sql_snippets_standard_field ON sql_snippets (standard_field);
+
+CREATE INDEX ix_sql_snippets_workspace_id ON sql_snippets (workspace_id);
+
+CREATE TABLE temporal_slice_analyses (
+	id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	slice_table_name VARCHAR(255) NOT NULL, 
+	time_column VARCHAR(255) NOT NULL, 
+	period_label VARCHAR(50) NOT NULL, 
+	period_start DATE NOT NULL, 
+	period_end DATE NOT NULL, 
+	row_count INTEGER, 
+	column_sums JSON, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
+	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id)
+);
+
+CREATE INDEX ix_temporal_slice_analyses_period_label ON temporal_slice_analyses (period_label);
+
+CREATE INDEX ix_temporal_slice_analyses_slice_table_name ON temporal_slice_analyses (slice_table_name);
+
+CREATE TABLE validation_results (
+	result_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	validation_id VARCHAR NOT NULL, 
+	table_ids JSON NOT NULL, 
+	columns_used JSON NOT NULL, 
+	status VARCHAR NOT NULL, 
+	severity VARCHAR NOT NULL, 
+	passed BOOLEAN NOT NULL, 
+	message TEXT, 
+	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	sql_used TEXT, 
+	details JSON, 
+	CONSTRAINT pk_validation_results PRIMARY KEY (result_id), 
+	CONSTRAINT uq_validation_result_run UNIQUE (validation_id, run_id)
+);
+
+CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
+
+CREATE TABLE fix_ledger (
+	fix_id VARCHAR NOT NULL, 
+	source_id VARCHAR NOT NULL, 
+	action_name VARCHAR NOT NULL, 
+	table_name VARCHAR NOT NULL, 
+	column_name VARCHAR, 
+	user_input VARCHAR NOT NULL, 
+	interpretation VARCHAR NOT NULL, 
+	status VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	superseded_by VARCHAR, 
+	CONSTRAINT pk_fix_ledger PRIMARY KEY (fix_id), 
+	CONSTRAINT fk_fix_ledger_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id), 
+	CONSTRAINT fk_fix_ledger_superseded_by_fix_ledger FOREIGN KEY(superseded_by) REFERENCES fix_ledger (fix_id)
+);
+
+CREATE INDEX idx_fix_ledger_scope ON fix_ledger (source_id, action_name, table_name, column_name);
+
+CREATE INDEX idx_fix_ledger_source ON fix_ledger (source_id);
+
+CREATE TABLE snippet_usage (
+	usage_id VARCHAR NOT NULL, 
+	workspace_id VARCHAR NOT NULL, 
+	execution_id VARCHAR NOT NULL, 
+	execution_type VARCHAR NOT NULL, 
+	snippet_id VARCHAR, 
+	usage_type VARCHAR NOT NULL, 
+	match_confidence FLOAT NOT NULL, 
+	sql_match_ratio FLOAT NOT NULL, 
+	step_id VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_snippet_usage PRIMARY KEY (usage_id), 
+	CONSTRAINT fk_snippet_usage_snippet_id_sql_snippets FOREIGN KEY(snippet_id) REFERENCES sql_snippets (snippet_id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_snippet_usage_execution_id ON snippet_usage (execution_id);
+
+CREATE INDEX ix_snippet_usage_snippet_id ON snippet_usage (snippet_id);
+
+CREATE INDEX ix_snippet_usage_workspace_id ON snippet_usage (workspace_id);
 
 CREATE TABLE tables (
 	table_id VARCHAR NOT NULL, 
@@ -207,59 +214,12 @@ CREATE TABLE tables (
 
 CREATE INDEX idx_tables_source ON tables (source_id);
 
-CREATE TABLE temporal_slice_analyses (
-	id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
-	slice_table_name VARCHAR(255) NOT NULL, 
-	time_column VARCHAR(255) NOT NULL, 
-	period_label VARCHAR(50) NOT NULL, 
-	period_start DATE NOT NULL, 
-	period_end DATE NOT NULL, 
-	row_count INTEGER, 
-	column_sums JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
-	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id), 
-	CONSTRAINT fk_temporal_slice_analyses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
-);
-
-CREATE INDEX ix_temporal_slice_analyses_period_label ON temporal_slice_analyses (period_label);
-
-CREATE INDEX ix_temporal_slice_analyses_session_id ON temporal_slice_analyses (session_id);
-
-CREATE INDEX ix_temporal_slice_analyses_slice_table_name ON temporal_slice_analyses (slice_table_name);
-
-CREATE TABLE validation_results (
-	result_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	validation_id VARCHAR NOT NULL, 
-	table_ids JSON NOT NULL, 
-	columns_used JSON NOT NULL, 
-	status VARCHAR NOT NULL, 
-	severity VARCHAR NOT NULL, 
-	passed BOOLEAN NOT NULL, 
-	message TEXT, 
-	executed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	sql_used TEXT, 
-	details JSON, 
-	CONSTRAINT pk_validation_results PRIMARY KEY (result_id), 
-	CONSTRAINT uq_validation_result_run UNIQUE (session_id, validation_id, run_id), 
-	CONSTRAINT fk_validation_results_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
-);
-
-CREATE INDEX ix_validation_results_session_id ON validation_results (session_id);
-
-CREATE INDEX ix_validation_results_validation_id ON validation_results (validation_id);
-
 CREATE TABLE column_eligibility (
 	eligibility_id VARCHAR(36) NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR(36) NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	source_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	column_name VARCHAR NOT NULL, 
 	table_name VARCHAR NOT NULL, 
 	resolved_type VARCHAR, 
@@ -271,9 +231,8 @@ CREATE TABLE column_eligibility (
 	evaluated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_column_eligibility PRIMARY KEY (eligibility_id), 
 	CONSTRAINT uq_column_eligibility_column_run UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_column_eligibility_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_column_eligibility_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_column_eligibility_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id) ON DELETE CASCADE
+	CONSTRAINT fk_column_eligibility_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_column_eligibility_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id)
 );
 
 CREATE INDEX idx_eligibility_column ON column_eligibility (column_id);
@@ -283,8 +242,6 @@ CREATE INDEX idx_eligibility_source ON column_eligibility (source_id);
 CREATE INDEX idx_eligibility_status ON column_eligibility (status);
 
 CREATE INDEX idx_eligibility_table ON column_eligibility (table_id);
-
-CREATE INDEX ix_column_eligibility_session_id ON column_eligibility (session_id);
 
 CREATE TABLE columns (
 	column_id VARCHAR NOT NULL, 
@@ -303,11 +260,10 @@ CREATE INDEX idx_columns_table ON columns (table_id);
 
 CREATE TABLE enriched_views (
 	view_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	fact_table_id VARCHAR NOT NULL, 
 	view_table_id VARCHAR, 
 	view_name VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	relationship_ids JSON, 
 	dimension_table_ids JSON, 
 	dimension_columns JSON, 
@@ -316,92 +272,57 @@ CREATE TABLE enriched_views (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_enriched_views PRIMARY KEY (view_id), 
 	CONSTRAINT uq_enriched_view_fact_table UNIQUE (fact_table_id), 
-	CONSTRAINT fk_enriched_views_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_enriched_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_enriched_views_view_table_id_tables FOREIGN KEY(view_table_id) REFERENCES tables (table_id) ON DELETE SET NULL
+	CONSTRAINT fk_enriched_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_enriched_views_view_table_id_tables FOREIGN KEY(view_table_id) REFERENCES tables (table_id)
 );
 
 CREATE INDEX ix_enriched_views_run_id ON enriched_views (run_id);
 
-CREATE INDEX ix_enriched_views_session_id ON enriched_views (session_id);
-
 CREATE TABLE materialization_recipes (
 	recipe_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	layer VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	target_fqn VARCHAR NOT NULL, 
 	ddl VARCHAR NOT NULL, 
 	depends_on JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_materialization_recipes PRIMARY KEY (recipe_id), 
 	CONSTRAINT uq_materialization_recipe_table_layer_run UNIQUE (table_id, layer, run_id), 
-	CONSTRAINT fk_materialization_recipes_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_materialization_recipes_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+	CONSTRAINT fk_materialization_recipes_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
 
 CREATE INDEX idx_materialization_recipes_table ON materialization_recipes (table_id);
 
-CREATE INDEX ix_materialization_recipes_session_id ON materialization_recipes (session_id);
-
-CREATE TABLE session_tables (
-	session_id VARCHAR NOT NULL, 
+CREATE TABLE run_tables (
+	run_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
-	CONSTRAINT pk_session_tables PRIMARY KEY (session_id, table_id), 
-	CONSTRAINT fk_session_tables_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_session_tables_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+	CONSTRAINT pk_run_tables PRIMARY KEY (run_id, table_id), 
+	CONSTRAINT fk_run_tables_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
 
-CREATE INDEX idx_session_tables_table ON session_tables (table_id);
+CREATE INDEX idx_run_tables_table ON run_tables (table_id);
 
 CREATE TABLE slicing_views (
 	view_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	fact_table_id VARCHAR NOT NULL, 
 	view_name VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	slice_definition_ids JSON, 
 	slice_columns JSON, 
 	is_grain_verified BOOLEAN NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slicing_views PRIMARY KEY (view_id), 
 	CONSTRAINT uq_slicing_view_fact_table UNIQUE (fact_table_id), 
-	CONSTRAINT fk_slicing_views_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_slicing_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+	CONSTRAINT fk_slicing_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id)
 );
 
 CREATE INDEX ix_slicing_views_run_id ON slicing_views (run_id);
 
-CREATE INDEX ix_slicing_views_session_id ON slicing_views (session_id);
-
-CREATE TABLE snippet_usage (
-	usage_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	execution_id VARCHAR NOT NULL, 
-	execution_type VARCHAR NOT NULL, 
-	snippet_id VARCHAR, 
-	usage_type VARCHAR NOT NULL, 
-	match_confidence FLOAT NOT NULL, 
-	sql_match_ratio FLOAT NOT NULL, 
-	step_id VARCHAR, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_snippet_usage PRIMARY KEY (usage_id), 
-	CONSTRAINT fk_snippet_usage_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_snippet_usage_snippet_id_sql_snippets FOREIGN KEY(snippet_id) REFERENCES sql_snippets (snippet_id) ON DELETE CASCADE
-);
-
-CREATE INDEX ix_snippet_usage_execution_id ON snippet_usage (execution_id);
-
-CREATE INDEX ix_snippet_usage_session_id ON snippet_usage (session_id);
-
-CREATE INDEX ix_snippet_usage_snippet_id ON snippet_usage (snippet_id);
-
 CREATE TABLE table_entities (
 	entity_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	detected_entity_type VARCHAR NOT NULL, 
 	description TEXT, 
 	confidence FLOAT, 
@@ -414,18 +335,14 @@ CREATE TABLE table_entities (
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_table_entities PRIMARY KEY (entity_id), 
 	CONSTRAINT uq_table_entity_table_run UNIQUE (table_id, run_id), 
-	CONSTRAINT fk_table_entities_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_table_entities_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+	CONSTRAINT fk_table_entities_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
 );
-
-CREATE INDEX ix_table_entities_session_id ON table_entities (session_id);
 
 CREATE TABLE claim_witnesses (
 	claim_witness_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	table_id VARCHAR, 
 	column_id VARCHAR, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	target VARCHAR NOT NULL, 
 	claim_field VARCHAR NOT NULL, 
 	witness_id VARCHAR NOT NULL, 
@@ -435,9 +352,8 @@ CREATE TABLE claim_witnesses (
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_claim_witnesses PRIMARY KEY (claim_witness_id), 
 	CONSTRAINT uq_claim_witness_target_field_witness_run UNIQUE (target, claim_field, witness_id, run_id), 
-	CONSTRAINT fk_claim_witnesses_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_claim_witnesses_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_claim_witnesses_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_claim_witnesses_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_claim_witnesses_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_claim_witness_column ON claim_witnesses (column_id);
@@ -446,12 +362,9 @@ CREATE INDEX idx_claim_witness_table ON claim_witnesses (table_id);
 
 CREATE INDEX idx_claim_witness_target ON claim_witnesses (target);
 
-CREATE INDEX ix_claim_witnesses_session_id ON claim_witnesses (session_id);
-
 CREATE TABLE derived_columns (
 	derived_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	derived_column_id VARCHAR NOT NULL, 
 	source_column_ids JSON NOT NULL, 
@@ -463,36 +376,33 @@ CREATE TABLE derived_columns (
 	matching_rows INTEGER NOT NULL, 
 	mismatch_examples JSON, 
 	CONSTRAINT pk_derived_columns PRIMARY KEY (derived_id), 
-	CONSTRAINT fk_derived_columns_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_derived_columns_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_derived_columns_derived_column_id_columns FOREIGN KEY(derived_column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_derived_columns_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_derived_columns_derived_column_id_columns FOREIGN KEY(derived_column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_derived_column ON derived_columns (derived_column_id);
 
 CREATE INDEX idx_derived_table ON derived_columns (table_id);
 
-CREATE INDEX ix_derived_columns_session_id ON derived_columns (session_id);
+CREATE INDEX ix_derived_columns_run_id ON derived_columns (run_id);
 
 CREATE TABLE entropy_objects (
 	object_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	layer VARCHAR NOT NULL, 
 	dimension VARCHAR NOT NULL, 
 	sub_dimension VARCHAR NOT NULL, 
 	target VARCHAR NOT NULL, 
 	table_id VARCHAR, 
 	column_id VARCHAR, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	score FLOAT NOT NULL, 
 	evidence JSONB, 
 	detector_id VARCHAR NOT NULL, 
 	source_analysis_ids JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_objects PRIMARY KEY (object_id), 
-	CONSTRAINT fk_entropy_objects_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_entropy_objects_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_entropy_objects_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_entropy_objects_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_entropy_objects_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_entropy_column ON entropy_objects (column_id);
@@ -505,24 +415,20 @@ CREATE INDEX idx_entropy_table ON entropy_objects (table_id);
 
 CREATE INDEX idx_entropy_target ON entropy_objects (target);
 
-CREATE INDEX ix_entropy_objects_session_id ON entropy_objects (session_id);
-
 CREATE TABLE entropy_readiness (
 	readiness_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	target VARCHAR NOT NULL, 
 	table_id VARCHAR, 
 	column_id VARCHAR, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	band VARCHAR NOT NULL, 
 	worst_intent_risk FLOAT NOT NULL, 
 	intents JSONB, 
 	top_drivers JSONB, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_entropy_readiness PRIMARY KEY (readiness_id), 
-	CONSTRAINT fk_entropy_readiness_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_entropy_readiness_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_entropy_readiness_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_entropy_readiness_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_entropy_readiness_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_readiness_column ON entropy_readiness (column_id);
@@ -531,12 +437,9 @@ CREATE INDEX idx_readiness_table ON entropy_readiness (table_id);
 
 CREATE INDEX idx_readiness_target ON entropy_readiness (target);
 
-CREATE INDEX ix_entropy_readiness_session_id ON entropy_readiness (session_id);
-
 CREATE TABLE measure_aggregation_lineage (
 	lineage_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	measure_table_id VARCHAR NOT NULL, 
 	measure_column_id VARCHAR NOT NULL, 
 	event_table_id VARCHAR NOT NULL, 
@@ -552,22 +455,18 @@ CREATE TABLE measure_aggregation_lineage (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_measure_aggregation_lineage PRIMARY KEY (lineage_id), 
 	CONSTRAINT uq_measure_lineage_column_run UNIQUE (measure_column_id, run_id), 
-	CONSTRAINT fk_measure_aggregation_lineage_session_id_investigation_af01 FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_measure_aggregation_lineage_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_measure_aggregation_lineage_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_measure_aggregation_lineage_event_table_id_tables FOREIGN KEY(event_table_id) REFERENCES tables (table_id) ON DELETE CASCADE
+	CONSTRAINT fk_measure_aggregation_lineage_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id), 
+	CONSTRAINT fk_measure_aggregation_lineage_event_table_id_tables FOREIGN KEY(event_table_id) REFERENCES tables (table_id)
 );
 
 CREATE INDEX ix_measure_aggregation_lineage_measure_column_id ON measure_aggregation_lineage (measure_column_id);
 
 CREATE INDEX ix_measure_aggregation_lineage_run_id ON measure_aggregation_lineage (run_id);
 
-CREATE INDEX ix_measure_aggregation_lineage_session_id ON measure_aggregation_lineage (session_id);
-
 CREATE TABLE relationships (
 	relationship_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	from_table_id VARCHAR NOT NULL, 
 	from_column_id VARCHAR NOT NULL, 
 	to_table_id VARCHAR NOT NULL, 
@@ -582,12 +481,11 @@ CREATE TABLE relationships (
 	confirmed_by VARCHAR, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_relationships PRIMARY KEY (relationship_id), 
-	CONSTRAINT uq_relationship_columns_method UNIQUE (session_id, run_id, from_column_id, to_column_id, detection_method), 
-	CONSTRAINT fk_relationships_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_relationships_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_relationships_to_column_id_columns FOREIGN KEY(to_column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT uq_relationship_columns_method UNIQUE (run_id, from_column_id, to_column_id, detection_method), 
+	CONSTRAINT fk_relationships_from_table_id_tables FOREIGN KEY(from_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_relationships_from_column_id_columns FOREIGN KEY(from_column_id) REFERENCES columns (column_id), 
+	CONSTRAINT fk_relationships_to_table_id_tables FOREIGN KEY(to_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_relationships_to_column_id_columns FOREIGN KEY(to_column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_relationships_from ON relationships (from_table_id);
@@ -604,13 +502,10 @@ CREATE INDEX idx_relationships_to_table_column ON relationships (to_table_id, to
 
 CREATE INDEX ix_relationships_run_id ON relationships (run_id);
 
-CREATE INDEX ix_relationships_session_id ON relationships (session_id);
-
 CREATE TABLE semantic_annotations (
 	annotation_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	semantic_role VARCHAR, 
 	entity_type VARCHAR, 
 	business_name VARCHAR, 
@@ -630,16 +525,12 @@ CREATE TABLE semantic_annotations (
 	confidence FLOAT, 
 	CONSTRAINT pk_semantic_annotations PRIMARY KEY (annotation_id), 
 	CONSTRAINT uq_column_semantic_annotation UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_semantic_annotations_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_semantic_annotations_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_semantic_annotations_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
-
-CREATE INDEX ix_semantic_annotations_session_id ON semantic_annotations (session_id);
 
 CREATE TABLE slice_definitions (
 	slice_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	table_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
 	column_name VARCHAR, 
@@ -655,22 +546,18 @@ CREATE TABLE slice_definitions (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
-	CONSTRAINT fk_slice_definitions_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id) ON DELETE CASCADE, 
-	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_slice_definitions_column ON slice_definitions (column_id);
 
 CREATE INDEX idx_slice_definitions_table ON slice_definitions (table_id);
 
-CREATE INDEX ix_slice_definitions_session_id ON slice_definitions (session_id);
-
 CREATE TABLE statistical_profiles (
 	profile_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	profiled_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	layer VARCHAR NOT NULL, 
 	total_count INTEGER NOT NULL, 
@@ -683,19 +570,17 @@ CREATE TABLE statistical_profiles (
 	profile_data JSON NOT NULL, 
 	CONSTRAINT pk_statistical_profiles PRIMARY KEY (profile_id), 
 	CONSTRAINT uq_statistical_profiles_column_run UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_statistical_profiles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_statistical_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_statistical_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_statistical_profiles_column ON statistical_profiles (column_id, profiled_at DESC);
 
-CREATE INDEX ix_statistical_profiles_session_id ON statistical_profiles (session_id);
+CREATE INDEX ix_statistical_profiles_run_id ON statistical_profiles (run_id);
 
 CREATE TABLE statistical_quality_metrics (
 	metric_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	computed_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	benford_compliant INTEGER, 
 	has_outliers INTEGER, 
@@ -704,19 +589,17 @@ CREATE TABLE statistical_quality_metrics (
 	quality_data JSON NOT NULL, 
 	CONSTRAINT pk_statistical_quality_metrics PRIMARY KEY (metric_id), 
 	CONSTRAINT uq_statistical_quality_metrics_column_run UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_statistical_quality_metrics_session_id_investigation_dfcf FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_statistical_quality_metrics_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_statistical_quality_metrics_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_statistical_quality_column ON statistical_quality_metrics (column_id, computed_at DESC);
 
-CREATE INDEX ix_statistical_quality_metrics_session_id ON statistical_quality_metrics (session_id);
+CREATE INDEX ix_statistical_quality_metrics_run_id ON statistical_quality_metrics (run_id);
 
 CREATE TABLE temporal_column_profiles (
 	profile_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	profiled_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	min_timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	max_timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
@@ -728,19 +611,15 @@ CREATE TABLE temporal_column_profiles (
 	profile_data JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 
 	CONSTRAINT uq_temporal_column_profiles_column_run UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_temporal_column_profiles_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_temporal_column_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_temporal_column_profiles_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_temporal_profiles_column ON temporal_column_profiles (column_id);
 
-CREATE INDEX ix_temporal_column_profiles_session_id ON temporal_column_profiles (session_id);
-
 CREATE TABLE type_candidates (
 	candidate_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	detected_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	data_type VARCHAR NOT NULL, 
 	confidence FLOAT NOT NULL, 
@@ -754,19 +633,15 @@ CREATE TABLE type_candidates (
 	quarantine_rate FLOAT, 
 	CONSTRAINT pk_type_candidates PRIMARY KEY (candidate_id), 
 	CONSTRAINT uq_type_candidate_column_type_pattern_run UNIQUE (column_id, data_type, detected_pattern, run_id), 
-	CONSTRAINT fk_type_candidates_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_type_candidates_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_type_candidates_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_type_candidates_column ON type_candidates (column_id);
 
-CREATE INDEX ix_type_candidates_session_id ON type_candidates (session_id);
-
 CREATE TABLE type_decisions (
 	decision_id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
 	column_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
+	run_id VARCHAR NOT NULL, 
 	decided_type VARCHAR NOT NULL, 
 	decision_source VARCHAR NOT NULL, 
 	decided_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
@@ -775,10 +650,7 @@ CREATE TABLE type_decisions (
 	decision_reason VARCHAR, 
 	CONSTRAINT pk_type_decisions PRIMARY KEY (decision_id), 
 	CONSTRAINT uq_column_type_decision UNIQUE (column_id, run_id), 
-	CONSTRAINT fk_type_decisions_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id), 
-	CONSTRAINT fk_type_decisions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id) ON DELETE CASCADE
+	CONSTRAINT fk_type_decisions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
 CREATE INDEX idx_type_decisions_column ON type_decisions (column_id);
-
-CREATE INDEX ix_type_decisions_session_id ON type_decisions (session_id);

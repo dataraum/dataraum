@@ -73,7 +73,6 @@ def _run_phase_capturing(
     """Drive ``run_phase`` with mocks, returning the ctx the phase body saw."""
     _CapturePhase.captured = None
 
-    monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: identity.workspace_id)
     monkeypatch.setattr(activity_mod, "get_phase_class", lambda name: _CapturePhase)
     monkeypatch.setattr(
         activity_mod,

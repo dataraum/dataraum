@@ -96,7 +96,6 @@ def _seed_raw_table(session_factory: Any, n_columns: int) -> str:
 
 
 def _patch_env(monkeypatch, max_columns: int) -> None:
-    monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
     monkeypatch.setattr(
         activity_mod,
         "load_pipeline_config",
@@ -145,12 +144,7 @@ def test_counts_only_the_given_tables(monkeypatch, session_factory):
     assert "4 columns" in run.summary
 
 
-def test_workspace_mismatch_fails(monkeypatch, session_factory):
-    """A payload addressed to another workspace never counts anything (DAT-364)."""
-    _patch_env(monkeypatch, max_columns=5)
-    foreign = IDENTITY.model_copy(update={"workspace_id": "ws-2"})
-
-    run = check_run_column_limit(_manager(session_factory), foreign, [])
-
-    assert run.status == "failed"
-    assert "Workspace mismatch" in (run.error or "")
+# The per-activity workspace-mismatch guard was removed in DAT-505: workspace
+# isolation is now the per-workspace task queue (engine-<workspace_id>) + the
+# single boot-time assertion in bootstrap_workspace, so a payload for another
+# workspace never reaches this worker to be guarded at the activity boundary.

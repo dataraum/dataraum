@@ -249,24 +249,12 @@ def test_unknown_phase_returns_failed(worker_manager: ConnectionManager) -> None
     assert "does_not_exist" in (result.error or "")
 
 
-def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> None:
-    """A payload addressed to another workspace is refused before any work.
-
-    Anti-footgun for the deferred multi-workspace isolation (DAT-364): the worker
-    is bound to one workspace (``"test"`` under the conftest pointer), so a
-    mismatched ``workspace_id`` must fail rather than silently write into this
-    worker's lake/schema. FAILED here becomes a non-retryable PhaseFailed in the
-    activity wrapper.
-    """
-    identity = SourceIdentity(
-        workspace_id="some-other-workspace",
-        source_id=str(uuid4()),
-        session_id=str(uuid4()),
-    )
-    result = run_phase(worker_manager, "import", identity, [])
-    assert result.status == "failed"
-    assert "Workspace mismatch" in (result.error or "")
-    assert "some-other-workspace" in (result.error or "")
+# DAT-505: the per-activity workspace-mismatch guard was removed. Workspace
+# isolation is now the per-workspace task queue (engine-<workspace_id>) plus the
+# single boot-time assertion in bootstrap_workspace — a payload for another
+# workspace never reaches this worker's queue, so there is no activity-level
+# guard to exercise here. (test_addsource_runs_under_nondefault_workspace below
+# still proves the data-side path is workspace-id-clean.)
 
 
 def test_failed_phase_rolls_back_partial_writes(
@@ -318,8 +306,8 @@ def test_addsource_runs_under_nondefault_workspace(
     workspace to a non-default UUID, bootstrap a manager exactly as the worker
     would (which creates ``ws_<uuid>`` + its tables), and run import → the
     per-table chain over the same multi-file fixture the default-workspace chain
-    test uses. The mismatch guard means a stray ``"test"`` left anywhere in the
-    path would fail this loudly.
+    test uses. A stray ``"test"`` left in the path (a hardcoded schema/pointer)
+    would write into the wrong ws_<id> schema and this chain would fail loudly.
     """
     import importlib
 

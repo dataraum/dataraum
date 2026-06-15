@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "vertical" varchar DEFAULT '_adhoc' NOT NULL;

@@ -17,6 +17,16 @@ vi.mock("#/duckdb/credentials", () => ({
 vi.mock("#/upload/s3-upload", () => ({
 	listPrefixObjects: listPrefixObjectsMock,
 }));
+// list_sources resolves the active workspace (DAT-505) to scope the uploads
+// prefix to `<ws>/uploads/`; mock the registry seam so no live cockpit_db loads.
+const WS = "00000000-0000-0000-0000-000000000001";
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspaceRow: vi.fn(async () => ({
+		id: WS,
+		taskQueue: `engine-${WS}`,
+		vertical: "_adhoc",
+	})),
+}));
 
 import { listSources } from "./list-sources";
 
@@ -26,11 +36,16 @@ describe("listSources", () => {
 			{ name: "finance", backend: "postgres" },
 		]);
 		listPrefixObjectsMock.mockResolvedValue([
-			{ key: "uploads/abc123/orders.csv", size: 2048 },
+			{ key: `${WS}/uploads/abc123/orders.csv`, size: 2048 },
 		]);
 
 		const sources = await listSources();
 
+		// Listed under the workspace's own prefix (DAT-505).
+		expect(listPrefixObjectsMock).toHaveBeenCalledWith(
+			"dataraum-lake",
+			`${WS}/uploads/`,
+		);
 		expect(sources).toEqual([
 			{
 				kind: "database",
@@ -43,7 +58,7 @@ describe("listSources", () => {
 				kind: "file",
 				name: "orders.csv",
 				backend: null,
-				uri: "s3://dataraum-lake/uploads/abc123/orders.csv",
+				uri: `s3://dataraum-lake/${WS}/uploads/abc123/orders.csv`,
 				size_bytes: 2048,
 			},
 		]);

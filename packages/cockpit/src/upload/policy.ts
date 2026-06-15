@@ -4,19 +4,31 @@
 // returned `s3://` handle are all derived here so the route stays a thin I/O
 // shell and the contract is unit-testable without SeaweedFS or @aws-lite.
 //
-// The handle shape `s3://<bucket>/uploads/<digest>/<filename>` is a DE-FACTO
+// The handle shape `s3://<bucket>/<ws>/uploads/<digest>/<filename>` is a DE-FACTO
 // CONTRACT that DAT-389 (ingest + cleanup) reads to find the staged file. It is
-// locked, not improvised: the `uploads/` prefix is sibling to the lake's
-// `lake/` prefix in the SAME bucket (the lake stays at `lake/`), the directory
-// segment is the file's CONTENT DIGEST (workspace-scoped, see upload/digest.ts)
-// so identical bytes land at one key — re-uploads dedup instead of accumulating
-// — while distinct files never clobber, and the original filename is preserved
-// as the leaf so the extension drives the DuckDB reader on the connect sniff
-// (read_csv_auto / read_parquet / …).
+// locked, not improvised: everything for a workspace lives under its `<ws>/`
+// prefix (DAT-505: per-workspace isolation on the object store — uploads sit
+// beside that workspace's `<ws>/lake/`), the directory segment is the file's
+// CONTENT DIGEST (workspace-scoped, see upload/digest.ts) so identical bytes land
+// at one key — re-uploads dedup instead of accumulating — while distinct files
+// never clobber, and the original filename is preserved as the leaf so the
+// extension drives the DuckDB reader on the connect sniff (read_csv_auto /
+// read_parquet / …).
 
-// Object-key prefix uploads land under, sibling to the lake's `lake/` prefix in
-// the same bucket. DAT-389 lists this prefix to find staged files.
+// Object-key prefix uploads land under, WITHIN the workspace's `<ws>/` prefix
+// (sibling to that workspace's `<ws>/lake/`). DAT-389 lists this prefix to find
+// staged files.
 export const UPLOAD_PREFIX = "uploads";
+
+/** The per-workspace object-key prefix uploads stage under (DAT-505):
+ * `<workspace_id>/uploads`. Everything for a workspace lives under its own
+ * `<ws>/` prefix on the shared bucket, so two workspaces never collide and a
+ * workspace's whole footprint deletes by dropping one prefix (the deletion
+ * sweep). The workspace segment is sanitized to a single safe segment, same as
+ * the digest/filename, so a stray id can't escape the prefix. */
+export function workspaceUploadPrefix(workspaceId: string): string {
+	return `${sanitizeFilename(workspaceId)}/${UPLOAD_PREFIX}`;
+}
 
 // Max upload size. Sized for an interactive schema-peek staging file, not a bulk
 // load: the sniff only DESCRIBEs + samples the first rows, and the dev SeaweedFS
@@ -109,20 +121,25 @@ export function sanitizeFilename(filename: string): string {
 }
 
 /**
- * The object key a staged upload lands at: `uploads/<digest>/<safe-filename>`.
+ * The object key a staged upload lands at:
+ * `<workspace_id>/uploads/<digest>/<safe-filename>` (DAT-505).
  *
- * `digest` is the file's content digest (upload/digest.ts) — the content-address
- * directory that makes identical bytes dedup; `filename` is sanitized to a
- * single safe leaf. Pure — the route computes the digest and passes it in so
- * this stays deterministic/testable.
+ * `workspaceId` scopes the key to the active workspace's `<ws>/` prefix; `digest`
+ * is the file's content digest (upload/digest.ts) — the content-address directory
+ * that makes identical bytes dedup; `filename` is sanitized to a single safe leaf.
+ * Pure — the route resolves the workspace + computes the digest and passes them in
+ * so this stays deterministic/testable.
  *
- * The `digest` segment is itself sanitized to a single safe segment: a value
- * that somehow carried `/` or `..` must not be able to re-point the key at
- * another upload, the `lake/` prefix, or the bucket root. Same allowlist as the
- * filename leaf.
+ * Every interpolated segment is sanitized to a single safe segment: a value that
+ * somehow carried `/` or `..` must not be able to re-point the key at another
+ * upload, another workspace, the `lake/` prefix, or the bucket root.
  */
-export function buildUploadKey(digest: string, filename: string): string {
-	return `${UPLOAD_PREFIX}/${sanitizeFilename(digest)}/${sanitizeFilename(filename)}`;
+export function buildUploadKey(
+	workspaceId: string,
+	digest: string,
+	filename: string,
+): string {
+	return `${workspaceUploadPrefix(workspaceId)}/${sanitizeFilename(digest)}/${sanitizeFilename(filename)}`;
 }
 
 /**

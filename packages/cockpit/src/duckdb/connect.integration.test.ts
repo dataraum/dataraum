@@ -91,7 +91,12 @@ describe("connect s3:// path against live SeaweedFS (DAT-386)", () => {
 		const { putObject } = await import("../upload/s3-upload");
 		const { buildUploadKey, buildUploadUri } = await import("../upload/policy");
 
-		const key = buildUploadKey(crypto.randomUUID(), "people.csv");
+		// DAT-505: uploads stage under the workspace's `<ws>/uploads/` prefix.
+		const key = buildUploadKey(
+			"00000000-0000-0000-0000-000000000001",
+			crypto.randomUUID(),
+			"people.csv",
+		);
 		await putObject(
 			S3_BUCKET,
 			key,

@@ -19,7 +19,6 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.investigation.db_models import InvestigationSession, SessionTable
 from dataraum.storage import MetadataSnapshotHead, Table, init_database, session_head_target
-from dataraum.worker import activity as activity_mod
 from dataraum.worker.activity import (
     promote_operating_model_run,
     resolve_operating_model_scope,
@@ -80,8 +79,7 @@ def _seed_session(session_factory: Any, table_ids: list[str]) -> None:
 
 
 class TestResolveOperatingModelScope:
-    def test_resolves_tables_and_pins_once(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+    def test_resolves_tables_and_pins_once(self, session_factory):
         _seed_session(session_factory, ["tbl-1", "tbl-2"])
         with session_factory() as s:
             s.add_all(
@@ -105,12 +103,11 @@ class TestResolveOperatingModelScope:
         # tbl-2 has no promoted semantic head → absent, never guessed.
         assert scope.semantic_runs == {"tbl-1": "run-sem-1"}
 
-    def test_unpromoted_session_fails_born_loud(self, monkeypatch, session_factory):
+    def test_unpromoted_session_fails_born_loud(self, session_factory):
         """Linked tables but no promoted begin_session head = mid-flight or
         failed session (DAT-511) — refuse to ground over a partial workspace
         instead of pinning None and warning (the 2026-06-11 live-smoke bug).
         Non-retryable: deterministic until begin_session promotes."""
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
         _seed_session(session_factory, ["tbl-1"])
 
         with pytest.raises(ApplicationError, match="no promoted begin_session") as exc:
@@ -118,8 +115,7 @@ class TestResolveOperatingModelScope:
         assert exc.value.non_retryable is True
         assert exc.value.type == "PhaseFailed"
 
-    def test_no_linked_tables_fails_loud(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+    def test_no_linked_tables_fails_loud(self, session_factory):
         with session_factory() as s:
             s.add(InvestigationSession(session_id=_IDENTITY.session_id, intent="test"))
             s.commit()
@@ -127,16 +123,14 @@ class TestResolveOperatingModelScope:
         with pytest.raises(ApplicationError, match="no linked tables"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
-    def test_unknown_session_fails_loud(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+    def test_unknown_session_fails_loud(self, session_factory):
 
         with pytest.raises(ApplicationError, match="not found"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
-    def test_typod_vertical_fails_born_loud(self, monkeypatch, session_factory):
+    def test_typod_vertical_fails_born_loud(self, session_factory):
         """A typo'd / never-framed vertical raises at run entry (DAT-480) — before
         any phase turns it into a benign no_declared_*."""
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
         with session_factory() as s:
             s.add(
                 InvestigationSession(
@@ -150,16 +144,13 @@ class TestResolveOperatingModelScope:
         with pytest.raises(RuntimeError, match="Unknown vertical 'finanace'"):
             resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
 
-    def test_workspace_mismatch_refused(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-OTHER")
-
-        with pytest.raises(ApplicationError, match="Workspace mismatch"):
-            resolve_operating_model_scope(_manager(session_factory), _IDENTITY)
+    # DAT-505: the per-activity workspace-mismatch guard was removed — the
+    # per-workspace task queue + the single boot assertion enforce isolation, so
+    # a misrouted payload never reaches this activity.
 
 
 class TestPromoteOperatingModelRun:
-    def test_upserts_the_stage_head(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+    def test_upserts_the_stage_head(self, session_factory):
         manager = _manager(session_factory)
 
         assert promote_operating_model_run(manager, _IDENTITY) == 1
@@ -177,9 +168,8 @@ class TestPromoteOperatingModelRun:
             head = s.execute(select(MetadataSnapshotHead)).scalar_one()
         assert head.run_id == "run-om-B"
 
-    def test_coexists_with_the_begin_session_head(self, monkeypatch, session_factory):
+    def test_coexists_with_the_begin_session_head(self, session_factory):
         """Two stages' heads share the session target without colliding."""
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
         with session_factory() as s:
             s.add(
                 MetadataSnapshotHead(
@@ -200,8 +190,7 @@ class TestPromoteOperatingModelRun:
         target = session_head_target(_IDENTITY.session_id)
         assert heads == {(target, "detect", "run-bs"), (target, "operating_model", "run-om-A")}
 
-    def test_requires_run_id(self, monkeypatch, session_factory):
-        monkeypatch.setattr(activity_mod, "get_active_workspace_id", lambda: "ws-1")
+    def test_requires_run_id(self, session_factory):
         identity = SessionIdentity(workspace_id="ws-1", session_id="sess-om")
 
         with pytest.raises(RuntimeError, match="requires a stamped identity.run_id"):

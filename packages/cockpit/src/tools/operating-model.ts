@@ -24,7 +24,7 @@ import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { z } from "zod";
 
 import { config } from "../config";
-import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { hasRunningRun, recordRun } from "../db/cockpit/runs";
 import type {
 	OperatingModelInput,
@@ -54,14 +54,10 @@ export interface OperatingModelToolResult {
 export async function operatingModel(
 	input: OperatingModelToolInput,
 ): Promise<OperatingModelToolResult | AgentError> {
-	if (
-		!config.temporalHost ||
-		!config.temporalNamespace ||
-		!config.temporalTaskQueue
-	) {
+	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
+				"TEMPORAL_NAMESPACE in the cockpit env.",
 		);
 	}
 
@@ -79,7 +75,8 @@ export async function operatingModel(
 		};
 	}
 
-	const workspaceId = await resolveActiveWorkspace();
+	const workspace = await resolveActiveWorkspaceRow();
+	const workspaceId = workspace.id;
 
 	const identity: SessionIdentity = {
 		workspace_id: workspaceId,
@@ -98,7 +95,8 @@ export async function operatingModel(
 		const handle = await client.workflow.start<
 			(p: OperatingModelInput) => Promise<OperatingModelResult>
 		>("operatingModelWorkflow", {
-			taskQueue: config.temporalTaskQueue,
+			// Route to the workspace's OWN queue (DAT-505).
+			taskQueue: workspace.taskQueue,
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,

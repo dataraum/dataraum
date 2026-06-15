@@ -33,7 +33,12 @@ vi.mock("#/config", () => ({
 // cockpit_db control plane (DAT-461): workspace via the registry, run recorded
 // after start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
-	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+	resolveActiveWorkspaceRow: vi.fn(async () => ({
+		id: h.config.dataraumWorkspaceId,
+		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
+		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
+		vertical: "_adhoc",
+	})),
 }));
 vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 

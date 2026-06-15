@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
 		dataraumWorkspaceId: "00000000-0000-0000-0000-000000000001",
 	} as Record<string, unknown>,
 	// Rows the workspace SELECT returns (empty = cold path → seed).
-	workspaceRows: [] as Array<{ id: string }>,
+	workspaceRows: [] as Array<{ id: string; vertical: string }>,
 	// Every onConflictDoNothing insert, tagged by table.
 	inserts: [] as Array<{ table: string; row: Record<string, unknown> }>,
 }));
@@ -28,7 +28,7 @@ vi.mock("#/config", () => ({
 
 vi.mock("#/db/cockpit/schema", () => ({
 	actors: { _t: "actors", id: "id" },
-	workspaces: { _t: "workspaces", id: "id" },
+	workspaces: { _t: "workspaces", id: "id", vertical: "vertical" },
 }));
 
 vi.mock("drizzle-orm", () => ({ eq: (...a: unknown[]) => a }));
@@ -49,7 +49,12 @@ vi.mock("#/db/cockpit/client", () => ({
 	},
 }));
 
-import { DEFAULT_ACTOR_ID, resolveActiveWorkspace } from "./registry";
+import {
+	DEFAULT_ACTOR_ID,
+	engineTaskQueueFor,
+	resolveActiveWorkspace,
+	resolveActiveWorkspaceRow,
+} from "./registry";
 
 beforeEach(() => {
 	h.config = { dataraumWorkspaceId: WS };
@@ -58,9 +63,15 @@ beforeEach(() => {
 	limitMock.mockClear();
 });
 
+describe("engineTaskQueueFor (DAT-505)", () => {
+	it("derives the per-workspace queue engine-<id>, id verbatim", () => {
+		expect(engineTaskQueueFor(WS)).toBe(`engine-${WS}`);
+	});
+});
+
 describe("resolveActiveWorkspace (DAT-461)", () => {
 	it("returns the existing workspace WITHOUT seeding (warm path)", async () => {
-		h.workspaceRows = [{ id: WS }];
+		h.workspaceRows = [{ id: WS, vertical: "_adhoc" }];
 		const id = await resolveActiveWorkspace();
 		expect(id).toBe(WS);
 		expect(h.inserts).toEqual([]); // no seed when the row already exists
@@ -79,5 +90,30 @@ describe("resolveActiveWorkspace (DAT-461)", () => {
 		// engine schema derives from the id (underscores, not dashes) — matches the
 		// metadata write-surface.
 		expect(ws?.row.engineSchema).toBe(`ws_${WS.replaceAll("-", "_")}`);
+		// Cold-start seeds the no-vertical placeholder (DAT-505).
+		expect(ws?.row.vertical).toBe("_adhoc");
+	});
+});
+
+describe("resolveActiveWorkspaceRow (DAT-505)", () => {
+	it("returns the row's id, per-workspace queue, and vertical (warm path)", async () => {
+		h.workspaceRows = [{ id: WS, vertical: "finance" }];
+		const row = await resolveActiveWorkspaceRow();
+		expect(row).toEqual({
+			id: WS,
+			taskQueue: `engine-${WS}`,
+			vertical: "finance",
+		});
+		expect(h.inserts).toEqual([]);
+	});
+
+	it("seeds then returns the placeholder vertical + queue (cold path)", async () => {
+		h.workspaceRows = [];
+		const row = await resolveActiveWorkspaceRow();
+		expect(row).toEqual({
+			id: WS,
+			taskQueue: `engine-${WS}`,
+			vertical: "_adhoc",
+		});
 	});
 });

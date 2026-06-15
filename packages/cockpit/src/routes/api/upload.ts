@@ -18,13 +18,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { config } from "../../config";
+import { resolveActiveWorkspaceRow } from "../../db/cockpit/registry";
 import { digestBytes } from "../../upload/digest";
 import {
 	buildUploadKey,
 	buildUploadUri,
 	isAllowedExtension,
 	MAX_UPLOAD_BYTES,
-	UPLOAD_PREFIX,
+	workspaceUploadPrefix,
 } from "../../upload/policy";
 import { listPrefixKeys, putObject } from "../../upload/s3-upload";
 
@@ -37,19 +38,22 @@ function jsonError(message: string, status: number): Response {
 
 /**
  * Core upload handler: parse the multipart body, gate on extension + size,
- * content-digest the bytes, and stage to `uploads/<digest>/<name>` — UNLESS that
- * content is already staged (this workspace), in which case the existing handle
- * is returned and the PUT skipped (dedup). Returns the locked s3:// handle plus
- * a `deduped` flag.
+ * content-digest the bytes, and stage to `<ws>/uploads/<digest>/<name>` — UNLESS
+ * that content is already staged (this workspace), in which case the existing
+ * handle is returned and the PUT skipped (dedup). Returns the locked s3:// handle
+ * plus a `deduped` flag.
  *
- * `bucket`, `put`, `digest`, and `listPrefix` are injected so the unit test can
- * assert the flow without a live SeaweedFS; the route passes the real config
- * bucket, @aws-lite putObject/listPrefixKeys, and a workspace-salted digest.
+ * `bucket`, `workspaceId`, `put`, `digest`, and `listPrefix` are injected so the
+ * unit test can assert the flow without a live SeaweedFS; the route passes the
+ * real config bucket, the registry-resolved workspace id (DAT-505 — uploads stage
+ * under the workspace's `<ws>/` prefix and the digest is salted with it), and
+ * @aws-lite putObject/listPrefixKeys.
  */
 export async function handleUpload(
 	request: Request,
 	deps: {
 		bucket: string;
+		workspaceId: string;
 		put: (
 			bucket: string,
 			key: string,
@@ -95,7 +99,7 @@ export async function handleUpload(
 	const digest = await deps.digest(body);
 	const existing = await deps.listPrefix(
 		deps.bucket,
-		`${UPLOAD_PREFIX}/${digest}/`,
+		`${workspaceUploadPrefix(deps.workspaceId)}/${digest}/`,
 	);
 	if (existing.length > 0) {
 		return new Response(
@@ -107,7 +111,7 @@ export async function handleUpload(
 		);
 	}
 
-	const key = buildUploadKey(digest, file.name);
+	const key = buildUploadKey(deps.workspaceId, digest, file.name);
 	try {
 		await deps.put(deps.bucket, key, body, file.type || undefined);
 	} catch (err) {
@@ -127,15 +131,21 @@ export async function handleUpload(
 export const Route = createFileRoute("/api/upload")({
 	server: {
 		handlers: {
-			POST: ({ request }) =>
-				handleUpload(request, {
+			POST: async ({ request }) => {
+				// The active workspace id from the cockpit_db registry (DAT-505), NOT
+				// the bare env var — uploads stage under this workspace's `<ws>/`
+				// prefix and the digest is salted with it.
+				const { id: workspaceId } = await resolveActiveWorkspaceRow();
+				return handleUpload(request, {
 					bucket: config.s3Bucket,
+					workspaceId,
 					put: putObject,
 					// Workspace-scoped content digest (salt = workspace id) so the same
 					// bytes dedup within a workspace, not across.
-					digest: (bytes) => digestBytes(bytes, config.dataraumWorkspaceId),
+					digest: (bytes) => digestBytes(bytes, workspaceId),
 					listPrefix: listPrefixKeys,
-				}),
+				});
+			},
 		},
 	},
 });

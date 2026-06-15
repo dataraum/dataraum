@@ -81,21 +81,21 @@ export { sourceTypeForUri } from "../upload/policy";
 
 // Each uploaded FILE is its own source, keyed by its content digest (the model:
 // one file = one content-keyed source, DD/30900226 v2). A staged upload's object
-// key is the locked `uploads/<digest>/<filename>` shape (upload/policy.ts
-// buildUploadKey) whose directory segment IS the file's content digest, so the
-// source name is `src_<digest>`: identical bytes (same digest → same key → same
-// name) UPSERT one row (re-upload dedup), and two distinct files never collide on
-// a source — even when their basenames match — because the digests differ. The
-// name is engine-valid by construction (a 40-char sha-1 hex digest → `src_` + 40
-// = 44 chars, lowercase, letter-led).
+// key is the locked `<ws>/uploads/<digest>/<filename>` shape (upload/policy.ts
+// buildUploadKey, DAT-505) whose digest segment IS the file's content digest, so
+// the source name is `src_<digest>`: identical bytes (same digest → same key →
+// same name) UPSERT one row (re-upload dedup), and two distinct files never
+// collide on a source — even when their basenames match — because the digests
+// differ. The name is engine-valid by construction (a 40-char sha-1 hex digest →
+// `src_` + 40 = 44 chars, lowercase, letter-led).
 const CONTENT_SOURCE_PREFIX = "src_";
 
 /**
  * The content-keyed source NAME (`src_<digest>`) for a staged upload URI.
  *
- * Parses the content digest from the locked `s3://<bucket>/uploads/<digest>/
- * <filename>` upload shape (upload/policy.ts). A URI that is NOT upload-shaped —
- * a bare bucket key, or a prefix-enumerated object that was never
+ * Parses the content digest from the locked `s3://<bucket>/<ws>/uploads/<digest>/
+ * <filename>` upload shape (upload/policy.ts, DAT-505). A URI that is NOT
+ * upload-shaped — a bare bucket key, or a prefix-enumerated object that was never
  * content-addressed — cannot be content-keyed and is a loud failure here: content
  * identity requires the upload digest, and the bucket/prefix connector is a
  * separate future concern (DAT-390), not a silently path-keyed source. The
@@ -105,22 +105,22 @@ const CONTENT_SOURCE_PREFIX = "src_";
 export function contentKeyedSourceName(uri: string): string {
 	const path = uri.replace(/^s3:\/\/[^/]+\//, "");
 	const segments = path.split("/").filter(Boolean);
-	// Exactly `uploads/<digest>/<filename>` — no shallower, no nested key.
-	if (
-		segments.length !== 3 ||
-		segments[0] !== UPLOAD_PREFIX ||
-		!segments[1] ||
-		!segments[2]
-	) {
+	// Exactly `<ws>/uploads/<digest>/<filename>` — the workspace prefix, then the
+	// locked upload triple. Locate the `uploads` marker rather than hard-coding an
+	// index so the workspace segment (which can itself be a dashed UUID) is robust.
+	const uploadsAt = segments.indexOf(UPLOAD_PREFIX);
+	const digest = uploadsAt >= 0 ? segments[uploadsAt + 1] : undefined;
+	const filename = uploadsAt >= 0 ? segments[uploadsAt + 2] : undefined;
+	if (uploadsAt !== 1 || segments.length !== 4 || !digest || !filename) {
 		throw new Error(
 			`Cannot content-key '${uri}' — a file source must be a staged upload ` +
-				`(s3://<bucket>/${UPLOAD_PREFIX}/<digest>/<filename>). A bucket/prefix ` +
+				`(s3://<bucket>/<ws>/${UPLOAD_PREFIX}/<digest>/<filename>). A bucket/prefix ` +
 				"source is not content-addressed (a future connector).",
 		);
 	}
 	// SHA-1 hex (what digestBytes produces) is already lowercase; toLowerCase() is
 	// defensive so a non-canonical digest segment still yields an engine-valid name.
-	const name = `${CONTENT_SOURCE_PREFIX}${segments[1].toLowerCase()}`;
+	const name = `${CONTENT_SOURCE_PREFIX}${digest.toLowerCase()}`;
 	if (!SOURCE_NAME_PATTERN.test(name)) {
 		throw new Error(
 			`Content key '${name}' for '${uri}' is not a valid source name ` +

@@ -33,7 +33,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import {
@@ -118,14 +118,10 @@ export interface ReplayResult {
  * is its own session, so it is a distinct workflow id (no accidental reuse).
  */
 export async function replay(input: ReplayInput): Promise<ReplayResult> {
-	if (
-		!config.temporalHost ||
-		!config.temporalNamespace ||
-		!config.temporalTaskQueue
-	) {
+	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
+				"TEMPORAL_NAMESPACE in the cockpit env.",
 		);
 	}
 
@@ -166,7 +162,8 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		vertical,
 	});
 
-	const workspaceId = await resolveActiveWorkspace();
+	const workspace = await resolveActiveWorkspaceRow();
+	const workspaceId = workspace.id;
 
 	// Source-free identity (DAT-422): the sources ride in `source_ids`; the engine
 	// scopes each `import` to one and the run-level reduce/detect are session-scoped.
@@ -188,7 +185,8 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		const handle = await client.workflow.start<
 			(p: AddSourceInput) => Promise<AddSourceResult>
 		>("addSourceWorkflow", {
-			taskQueue: config.temporalTaskQueue,
+			// Route to the workspace's OWN queue (DAT-505).
+			taskQueue: workspace.taskQueue,
 			workflowId,
 			args: [payload],
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,

@@ -25,7 +25,7 @@ _REQUIRED_ENV = {
     "S3_SECRET_ACCESS_KEY": "test-secret-key",
     "TEMPORAL_HOST": "localhost:7233",
     "TEMPORAL_NAMESPACE": "default",
-    "TEMPORAL_TASK_QUEUE": "dataraum-pipeline",
+    "TEMPORAL_TASK_QUEUE": "engine-test",
 }
 
 _OPTIONAL_ENV = [
@@ -93,7 +93,7 @@ def test_temporal_vars_required(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.temporal_host == "localhost:7233"
     assert settings.temporal_namespace == "default"
-    assert settings.temporal_task_queue == "dataraum-pipeline"
+    assert settings.temporal_task_queue == "engine-test"
 
 
 @pytest.mark.usefixtures("clean_env")

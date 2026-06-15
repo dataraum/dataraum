@@ -42,7 +42,12 @@ vi.mock("#/config", () => ({
 // cockpit_db control plane (DAT-461): workspace via the registry, run recorded
 // after start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
-	resolveActiveWorkspace: vi.fn(async () => h.config.dataraumWorkspaceId),
+	resolveActiveWorkspaceRow: vi.fn(async () => ({
+		id: h.config.dataraumWorkspaceId,
+		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
+		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
+		vertical: "_adhoc",
+	})),
 }));
 vi.mock("#/db/cockpit/runs", () => ({ recordRun: h.recordRun }));
 
@@ -123,7 +128,8 @@ describe("triggerAddSource (DAT-352, one-call DAT-436)", () => {
 		expect(name).toBe("addSourceWorkflow");
 		// Workflow id is keyed by the run's session (DAT-422), not a source.
 		expect(opts.workflowId).toBe(`addsource-${WS}-${sessionId}`);
-		expect(opts.taskQueue).toBe("dataraum-pipeline");
+		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
+		expect(opts.taskQueue).toBe(`engine-${WS}`);
 		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
 
 		// The args carry the source SET (DAT-422) + a source-free identity with the

@@ -31,7 +31,7 @@ import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
 
 import { config } from "../config";
-import { resolveActiveWorkspace } from "../db/cockpit/registry";
+import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { investigationSessionsWrite } from "../db/metadata/write-surface";
@@ -85,26 +85,23 @@ export interface TriggerAddSourceResult {
 
 /** The Temporal-unconfigured guard, identical to replay.ts: Temporal config is
  * OPTIONAL in config.ts, so the trigger fails loud (not silently) when it isn't
- * wired. Narrows the three optionals to non-undefined for the start call. */
+ * wired. Narrows host + namespace to non-undefined for the start call. The TASK
+ * QUEUE is NOT read from config anymore (DAT-505): a workflow routes to the
+ * workspace's own queue (`engine-<id>`), resolved from the registry row at the
+ * call site — not the bare `TEMPORAL_TASK_QUEUE` env. */
 function requireTemporalConfig(): {
 	host: string;
 	namespace: string;
-	taskQueue: string;
 } {
-	if (
-		!config.temporalHost ||
-		!config.temporalNamespace ||
-		!config.temporalTaskQueue
-	) {
+	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
-				"TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE in the cockpit env.",
+				"TEMPORAL_NAMESPACE in the cockpit env.",
 		);
 	}
 	return {
 		host: config.temporalHost,
 		namespace: config.temporalNamespace,
-		taskQueue: config.temporalTaskQueue,
 	};
 }
 
@@ -121,7 +118,7 @@ function requireTemporalConfig(): {
 export async function triggerAddSource(
 	input: TriggerAddSourceInput,
 ): Promise<TriggerAddSourceResult> {
-	const { host, namespace, taskQueue } = requireTemporalConfig();
+	const { host, namespace } = requireTemporalConfig();
 
 	const sessionId = randomUUID();
 	const vertical = input.vertical ?? "_adhoc";
@@ -157,9 +154,11 @@ export async function triggerAddSource(
 			"if no run follows, this row is an orphan from a failed select",
 	);
 
-	// The active workspace, from the cockpit_db registry (DAT-461) rather than the
-	// raw env var — same value in Phase 1, source of truth for the recorded run.
-	const workspaceId = await resolveActiveWorkspace();
+	// The active workspace ROW, from the cockpit_db registry (DAT-461/505) rather
+	// than the raw env var — the source of truth for the recorded run AND the
+	// per-workspace task queue the workflow routes to.
+	const workspace = await resolveActiveWorkspaceRow();
+	const workspaceId = workspace.id;
 
 	// Source-free identity (DAT-422): the per-source ids ride in `source_ids`; the
 	// engine scopes each `import` to one of them and the run-level reduce/detect are
@@ -179,7 +178,10 @@ export async function triggerAddSource(
 		const handle = await client.workflow.start<
 			(p: AddSourceInput) => Promise<AddSourceResult>
 		>("addSourceWorkflow", {
-			taskQueue,
+			// Route to the workspace's OWN queue (DAT-505) — the engine worker for
+			// this workspace polls `engine-<id>` and a payload for another workspace
+			// never reaches it.
+			taskQueue: workspace.taskQueue,
 			workflowId,
 			args: [payload],
 			// Reused per run (keyed by session) across replays so Temporal UI groups

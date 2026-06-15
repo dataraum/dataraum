@@ -24,20 +24,24 @@ import {
 // A real 40-char sha-1 hex digest (the digest of the empty string) — the shape
 // upload/digest.ts produces; `src_` + 40 = 44 chars, a valid source name.
 const DIGEST = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+// DAT-505: staged uploads live under the workspace's `<ws>/uploads/` prefix.
+const WS = "00000000-0000-0000-0000-000000000001";
 
 describe("contentKeyedSourceName", () => {
 	it("derives src_<digest> from a staged upload URI", () => {
 		expect(
-			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`),
+			contentKeyedSourceName(
+				`s3://dataraum-lake/${WS}/uploads/${DIGEST}/orders.csv`,
+			),
 		).toBe(`src_${DIGEST}`);
 	});
 
 	it("keys on the digest only — the filename and extension don't change it", () => {
 		const a = contentKeyedSourceName(
-			`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`,
+			`s3://dataraum-lake/${WS}/uploads/${DIGEST}/orders.csv`,
 		);
 		const b = contentKeyedSourceName(
-			`s3://dataraum-lake/uploads/${DIGEST}/orders.parquet`,
+			`s3://dataraum-lake/${WS}/uploads/${DIGEST}/orders.parquet`,
 		);
 		// Same digest → same source name (the upload dedup already collapses
 		// identical bytes to one key, so this is the re-select idempotency path).
@@ -46,7 +50,7 @@ describe("contentKeyedSourceName", () => {
 
 	it("produces an engine-valid source name (lowercase, letter-led, ≤49)", () => {
 		const name = contentKeyedSourceName(
-			`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`,
+			`s3://dataraum-lake/${WS}/uploads/${DIGEST}/orders.csv`,
 		);
 		expect(name).toMatch(/^[a-z][a-z0-9_]{1,48}$/);
 		expect(name.length).toBeLessThanOrEqual(49);
@@ -58,12 +62,20 @@ describe("contentKeyedSourceName", () => {
 		).toThrow(/must be a staged upload/);
 	});
 
-	it("fails loud on a nested or shallow key (not exactly uploads/<digest>/<file>)", () => {
+	it("fails loud on a key missing the workspace prefix (bare uploads/<digest>/<file>)", () => {
 		expect(() =>
-			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}/a/b.csv`),
+			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}/orders.csv`),
+		).toThrow(/must be a staged upload/);
+	});
+
+	it("fails loud on a nested or shallow key (not exactly <ws>/uploads/<digest>/<file>)", () => {
+		expect(() =>
+			contentKeyedSourceName(
+				`s3://dataraum-lake/${WS}/uploads/${DIGEST}/a/b.csv`,
+			),
 		).toThrow(/must be a staged upload/);
 		expect(() =>
-			contentKeyedSourceName(`s3://dataraum-lake/uploads/${DIGEST}`),
+			contentKeyedSourceName(`s3://dataraum-lake/${WS}/uploads/${DIGEST}`),
 		).toThrow(/must be a staged upload/);
 	});
 });

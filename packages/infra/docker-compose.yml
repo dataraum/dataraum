@@ -23,6 +23,56 @@
 # stack deliberately bundles NO egress proxy or network topology: deployers
 # bring their own network policy.
 
+# ── Per-workspace engine-worker template (DAT-505) ─────────────────────────
+# A workspace = one engine container + one task queue + one catalog DB + one
+# s3://<ws>/ prefix. These anchors hold everything COMMON to every workspace's
+# worker; each per-workspace service (engine-worker, engine-worker-2, …) merges
+# them and overrides only the four routing knobs (workspace id, queue, catalog
+# DB, lake prefix). Adding a workspace in dev = a registry insert + one more
+# service that merges these anchors.
+x-engine-worker-base: &engine-worker-base
+  build:
+    context: ../engine
+    dockerfile: docker/worker.Dockerfile
+  depends_on:
+    postgres:
+      condition: service_healthy
+    temporal:
+      condition: service_healthy
+    temporal-create-namespace:
+      condition: service_completed_successfully
+    seaweedfs-init:
+      condition: service_completed_successfully
+  volumes:
+    # No lake volume and no sources bind-mount — both the lake and the file
+    # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
+    # engine reads source files straight from their s3:// URI over httpfs; the
+    # only mount left is the read-only config tree.
+    - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
+
+# Env COMMON to every workspace's worker — the per-workspace service appends the
+# four routing overrides (workspace id, TEMPORAL_TASK_QUEUE, DUCKLAKE_CATALOG_URL,
+# DUCKLAKE_DATA_PATH). S3 creds are plain env (single source is .env).
+x-engine-worker-env: &engine-worker-env
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  S3_ENDPOINT: ${S3_ENDPOINT}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_USE_SSL: ${S3_USE_SSL:-false}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+  # The lake bucket the engine's source-URI validator allows (DAT-389): a
+  # registered source URI must be s3://${S3_BUCKET}/<key> — never a local path
+  # or a foreign bucket. The per-workspace DUCKLAKE_DATA_PATH is built from it.
+  S3_BUCKET: ${S3_BUCKET}
+  DATARAUM_CONFIG_PATH: /opt/dataraum/config
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+  TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+  # Password for the cockpit_reader role the bootstrap provisions with SELECT on
+  # ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's METADATA_DATABASE_URL
+  # connects with it.
+  METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
+
 services:
   postgres:
     image: postgres:18
@@ -38,9 +88,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      # Per-workspace DuckLake catalog databases (DAT-505): each workspace's
+      # worker ATTACHes its OWN catalog DB — never a shared one. init-databases.sh
+      # creates the base name + a `_<n>` per additional dev workspace. Workspace 1
+      # uses ${DUCKLAKE_CATALOG_DB}; the multi-workspace profile's workspace 2 uses
+      # ${DUCKLAKE_CATALOG_DB}_2.
       DUCKLAKE_CATALOG_DB: ${DUCKLAKE_CATALOG_DB}
       # COCKPIT_DB is created at postgres first-boot by init-databases.sh
-      # alongside DUCKLAKE_CATALOG_DB. Holds the cockpit's own state
+      # alongside the catalog DBs. Holds the cockpit's own state
       # (workspaces registry, chat history, ui_state) — separate database
       # so the cockpit can `drizzle-kit push` without ever touching the
       # engine's metadata schema.
@@ -199,57 +254,46 @@ services:
     ports:
       - "8080:8080"
 
-  # Engine Temporal activity worker (DAT-344). The engine is a pure activity
-  # worker now — no Starlette shell, no HTTP port. It bootstraps one workspace
-  # ConnectionManager + the DuckLake anchor (also materializing the ws_<id>
-  # schema), then serves the bundled addSourceWorkflow + the import/typing
-  # activities on the task queue. Health = the worker heartbeat the Temporal
-  # server records (checked via `temporal worker list`), not a container probe.
+  # Engine Temporal activity worker (DAT-344, parameterized per workspace by
+  # DAT-505). The engine is a pure activity worker — no HTTP port. ONE container
+  # per workspace: it bootstraps that workspace's ConnectionManager + DuckLake
+  # anchor (materializing ws_<id> + its OWN catalog DB on its OWN s3://<ws>/lake
+  # prefix) and polls EXACTLY its own queue `engine-<workspace_id>`. The shared
+  # base (anchor below) carries everything common; each per-workspace service
+  # overrides the four routing knobs: workspace id, queue, catalog DB, lake
+  # prefix. "Create a workspace" in dev = a registry insert + adding such a
+  # service. Health = the worker heartbeat (`temporal worker list`), not a probe.
   engine-worker:
-    build:
-      context: ../engine
-      dockerfile: docker/worker.Dockerfile
-    depends_on:
-      postgres:
-        condition: service_healthy
-      temporal:
-        condition: service_healthy
-      temporal-create-namespace:
-        condition: service_completed_successfully
-      seaweedfs-init:
-        condition: service_completed_successfully
+    <<: *engine-worker-base
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
-      # Lake parquet lives on the object store now (DAT-388). s3:// URI — must
-      # match the cockpit's DATARAUM_LAKE_PATH byte-for-byte. S3 creds are plain
-      # env (the single source is .env), same posture as DATABASE_URL above.
-      DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/lake
-      S3_ENDPOINT: ${S3_ENDPOINT}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
-      # The lake bucket the engine's source-URI validator allows (DAT-389): a
-      # registered source URI must be s3://${S3_BUCKET}/<key> — never a local
-      # path or a foreign bucket. Same value the DATA_PATH above is built from.
-      S3_BUCKET: ${S3_BUCKET}
-      DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      <<: *engine-worker-env
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
-      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dataraum-pipeline}
-      # Password for the cockpit_reader role the bootstrap provisions with
-      # SELECT on ws_<id>_read ONLY (ADR-0008/DAT-453); the cockpit's
-      # METADATA_DATABASE_URL below connects with it.
-      METADATA_READER_PASSWORD: ${METADATA_READER_PASSWORD:-cockpit-reader-dev}
-    volumes:
-      # No lake volume and no sources bind-mount — both the lake and the file
-      # sources live on the object store now (DAT-388 lake, DAT-389 ingest). The
-      # engine reads source files straight from their s3:// URI over httpfs; the
-      # only mount left is the read-only config tree.
-      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
+      # Per-workspace queue (DAT-505) — engine-<workspace_id>. The worker asserts
+      # this matches DATARAUM_WORKSPACE_ID at boot (server/workspace.py), and the
+      # cockpit drivers route here from the registry row.
+      TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
+      # Per-workspace DuckLake catalog DB + S3 lake prefix (DAT-505) — never a
+      # shared catalog. Catalog DB is created at postgres first-boot by
+      # init-databases.sh; the lake parquet lives under this workspace's own
+      # s3://<bucket>/<ws>/lake prefix.
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}/lake
+
+  # Second workspace worker (DAT-505) — behind the `multi-workspace` profile so a
+  # default `up` stays single-workspace. Bring it up for the AC1 two-workspace
+  # side-by-side smoke (`--profile multi-workspace`): a SECOND container, a second
+  # queue (engine-<ws2>), a second ws_<id> schema, a second catalog DB
+  # (${DUCKLAKE_CATALOG_DB}_2, created by init-databases.sh), and a second
+  # s3://<bucket>/<ws2>/lake prefix — fully isolated from workspace 1.
+  engine-worker-2:
+    <<: *engine-worker-base
+    profiles: ["multi-workspace"]
+    environment:
+      <<: *engine-worker-env
+      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
+      TEMPORAL_TASK_QUEUE: engine-${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}_2
+      DUCKLAKE_DATA_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID_2:-00000000-0000-0000-0000-000000000002}/lake
 
   # One-shot: apply the cockpit_db migrations (DAT-461) before the cockpit
   # serves. Uses the cockpit image's `build` stage — it carries drizzle-kit + the
@@ -303,12 +347,14 @@ services:
       # client's search_path resolution. Must match what the engine
       # was bootstrapped with or drizzle pulls from the wrong schema.
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
-      # Lake DATA_PATH on the object store (DAT-388). s3:// URI — must match the
-      # engine-worker's DUCKLAKE_DATA_PATH byte-for-byte (the cockpit ATTACHes
-      # the same lake READ_ONLY). Uploads write to the same bucket via @aws-lite
-      # (DAT-386); there is no shared filesystem. S3 creds are plain env (single
-      # source is .env), same posture as the URLs below.
-      DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/lake
+      # Lake DATA_PATH on the object store (DAT-388/505). s3:// URI — must match
+      # engine-worker 1's DUCKLAKE_DATA_PATH byte-for-byte (the cockpit ATTACHes
+      # the same lake READ_ONLY). Per-workspace prefix now: s3://<bucket>/<ws>/lake.
+      # The cockpit reads ONE workspace's lake (the env-designated active one);
+      # the per-request switcher across workspaces is DAT-357. Uploads write to
+      # the same bucket via @aws-lite (DAT-386, now under <ws>/uploads/); there is
+      # no shared filesystem. S3 creds are plain env (single source is .env).
+      DATARAUM_LAKE_PATH: s3://${S3_BUCKET}/${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}/lake
       S3_ENDPOINT: ${S3_ENDPOINT}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_USE_SSL: ${S3_USE_SSL:-false}
@@ -319,12 +365,11 @@ services:
       # The cockpit needs it explicitly to address PutObject (it can't infer the
       # bucket from the lake path, which carries the lake/ suffix).
       S3_BUCKET: ${S3_BUCKET}
-      # DuckLake catalog (DAT-367) — the cockpit ATTACHes the same DuckLake
-      # catalog the engine-worker owns, READ_ONLY, for the interactive read
-      # verbs (run_sql). Same value as the engine-worker's DUCKLAKE_CATALOG_URL
-      # (bare postgresql:// libpq form — DuckDB's postgres extension wants it,
-      # not the +psycopg SQLAlchemy scheme) and the same DATARAUM_LAKE_PATH
-      # data path above.
+      # DuckLake catalog (DAT-367/505) — the cockpit ATTACHes the same per-workspace
+      # DuckLake catalog engine-worker 1 owns, READ_ONLY, for the interactive read
+      # verbs (run_sql). Same value as that worker's DUCKLAKE_CATALOG_URL (bare
+      # postgresql:// libpq form — DuckDB's postgres extension wants it, not the
+      # +psycopg SQLAlchemy scheme) and the same DATARAUM_LAKE_PATH above.
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       # Config (DAT-361) — read-only access to vertical YAMLs for future UX
       # hints ("which concept did the agent bind to?"). No consumers yet; the

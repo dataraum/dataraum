@@ -30,7 +30,10 @@ os.environ["DUCKLAKE_DATA_PATH"] = "/tmp/dataraum-test-lake"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
 os.environ["TEMPORAL_HOST"] = "localhost:7233"
 os.environ["TEMPORAL_NAMESPACE"] = "default"
-os.environ["TEMPORAL_TASK_QUEUE"] = "dataraum-pipeline"
+# Per-workspace task queue (DAT-505): the worker polls ``engine-<workspace_id>``,
+# and ``bootstrap_workspace`` asserts the two agree at boot. Keep it consistent
+# with DATARAUM_WORKSPACE_ID="test" above so any boot path in the suite passes.
+os.environ["TEMPORAL_TASK_QUEUE"] = "engine-test"
 # DAT-388: object-store creds are required Settings now (the lake lives on the
 # object store in production). Tests bootstrap DuckLake against a local tmp
 # DATA_PATH and stub apply_s3_secret (see _stub_s3_secret), so these never reach

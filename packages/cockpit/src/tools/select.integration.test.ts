@@ -36,6 +36,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { recipeContentHash } from "../select/mappers";
+import { workspaceUploadPrefix } from "../upload/policy";
 
 const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
 
@@ -74,6 +75,14 @@ if (STACK_AVAILABLE) {
 // empty-string fallback is never read.
 const SCHEMA = STACK_AVAILABLE
 	? `ws_${(process.env.DATARAUM_WORKSPACE_ID as string).replaceAll("-", "_")}`
+	: "";
+
+// Staged uploads are workspace-prefixed now (DAT-505): the locked content-key
+// shape is `s3://<bucket>/<ws>/uploads/<digest>/<filename>`, so the fixtures must
+// carry the <ws> segment or contentKeyedSourceName rejects them. Build the prefix
+// with the SAME production helper (incl. its ws-id sanitization) the mapper parses.
+const UPLOADS = STACK_AVAILABLE
+	? workspaceUploadPrefix(process.env.DATARAUM_WORKSPACE_ID as string)
 	: "";
 
 describe.skipIf(!STACK_AVAILABLE)(
@@ -134,7 +143,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 		it("writes a file source with file_uris + a suffix-derived source_type (not 'file')", async () => {
 			// DAT-422: a file source is content-keyed — `select` ignores any passed
 			// source_name and names the row `src_<digest>`, parsed from the locked
-			// `uploads/<digest>/<file>` staged-upload URI (select/mappers.ts
+			// `<ws>/uploads/<digest>/<file>` staged-upload URI (select/mappers.ts
 			// contentKeyedSourceName); a non-upload-shaped URI is rejected loud, so
 			// the fixture MUST be that shape. A fresh per-test sha-1 digest keeps the
 			// row unique in the shared workspace (the old `Date.now()` role).
@@ -143,7 +152,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 				.digest("hex");
 			const name = `src_${digest}`;
 			writtenNames.push(name);
-			const uri = `s3://${process.env.S3_BUCKET}/uploads/${digest}/orders.csv`;
+			const uri = `s3://${process.env.S3_BUCKET}/${UPLOADS}/${digest}/orders.csv`;
 
 			const result = await persistSelection({
 				schema: { sourceKind: "file", source: uri, tables: [] },
@@ -211,7 +220,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 				.digest("hex");
 			const name = `src_${digest}`;
 			writtenNames.push(name);
-			const base = `s3://${process.env.S3_BUCKET}/uploads/${digest}`;
+			const base = `s3://${process.env.S3_BUCKET}/${UPLOADS}/${digest}`;
 			const csv = `${base}/data.csv`;
 			const parquet = `${base}/data.parquet`;
 

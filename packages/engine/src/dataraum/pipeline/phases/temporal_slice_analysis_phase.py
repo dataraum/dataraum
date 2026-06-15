@@ -145,9 +145,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         # Pre-load slice tables once (shared across all slice definitions). Slice
         # tables are derived artifacts carrying their fact table's source_id;
-        # scope by the session's source set (DAT-403), not ``ctx.source_id``
-        # (None past add_source). The per-slice_def name-prefix match below
-        # narrows this set to each definition's own slices.
+        # scope by the session's source set derived relationally from the selected
+        # tables (DAT-403/426). The per-slice_def name-prefix match below narrows
+        # this set to each definition's own slices.
         source_ids = {t.source_id for t in typed_tables}
         slice_tables_stmt = select(Table).where(
             Table.layer == "slice",

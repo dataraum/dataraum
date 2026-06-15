@@ -50,17 +50,16 @@ from dataraum.worker.activity import (
     write_session_keepers,
 )
 from dataraum.worker.contracts import (
+    ImportInput,
     ImportResult,
-    OperatingModelInput,
     OperatingModelScope,
     OperatingModelScopedInput,
     PhaseOutcome,
     ProcessTableInput,
+    RunPhaseInput,
+    RunRef,
     RunScopedInput,
-    SessionIdentity,
     SessionScopedInput,
-    SourceIdentity,
-    SourcePhaseInput,
     TableScopedInput,
     TypingResult,
 )
@@ -135,26 +134,30 @@ class PhaseActivities:
         self._manager = manager
 
     @activity.defn(name="import")
-    def run_import(self, payload: SourcePhaseInput) -> ImportResult:
+    def run_import(self, payload: ImportInput) -> ImportResult:
         """Import activity — loads ONE source into ``lake.raw.*``, returns its raw ids.
 
-        ``import`` is the one per-source activity (DAT-422): the parent runs it once
-        per source in the run's set, each call scoped to a single ``source_id``. So a
-        ``None`` source_id is a caller bug — fail loud rather than load nothing. The
-        discovered raw ids are the parent workflow's fan-out source, read
-        authoritatively from the substrate after the phase — correct even when import
-        is skipped because the source was already imported.
+        ``import`` is the one per-source activity (DAT-422/426): the parent runs it
+        once per source in the run's set, each call carrying that source's explicit
+        ``source_id`` — the ONLY source id on the wire (import runs before any
+        ``Table`` row exists, so it can't resolve relationally). The discovered raw
+        ids are the parent workflow's fan-out source, read authoritatively from the
+        substrate after the phase — correct even when import is skipped because the
+        source was already imported.
         """
-        identity = payload.identity
-        if identity.source_id is None:
-            raise ApplicationError(
-                "import requires identity.source_id — the workflow scopes each import "
-                "to one source (DAT-422).",
-                type="PhaseFailed",
-                non_retryable=True,
+        try:
+            run = run_phase(
+                self._manager,
+                "import",
+                payload.run,
+                [],
+                payload.vertical,
+                source_id=payload.source_id,
             )
-        self._run_or_raise("import", identity, [], payload.vertical)
-        return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
+        except ProviderError as exc:
+            raise _provider_app_error(exc) from exc
+        self._outcome_or_raise(run, "import")
+        return ImportResult(raw_table_ids=raw_table_ids(self._manager, payload.source_id))
 
     @activity.defn(name="check_column_limit")
     def run_check_column_limit(self, payload: RunScopedInput) -> PhaseOutcome:
@@ -167,13 +170,13 @@ class PhaseActivities:
         this unconditionally, it also gates runs whose imports all skipped. A
         breach raises the non-retryable ``PhaseFailed``.
         """
-        run = check_run_column_limit(self._manager, payload.identity, payload.table_ids)
+        run = check_run_column_limit(self._manager, payload.run, payload.table_ids)
         return self._outcome_or_raise(run, "check_column_limit")
 
     @activity.defn(name="typing")
     def run_typing(self, payload: ProcessTableInput) -> TypingResult:
         """Typing activity — type-resolves one raw table, returns its typed id."""
-        self._run_or_raise("typing", payload.identity, [payload.raw_table_id], payload.vertical)
+        self._run_or_raise("typing", payload.run, [payload.raw_table_id], payload.vertical)
         typed_id = typed_table_id_for_raw(self._manager, payload.raw_table_id)
         if typed_id is None:
             raise ApplicationError(
@@ -186,33 +189,29 @@ class PhaseActivities:
     @activity.defn(name="statistics")
     def run_statistics(self, payload: TableScopedInput) -> PhaseOutcome:
         """Statistics activity — per-column statistical profiling of one typed table."""
-        return self._run_or_raise(
-            "statistics", payload.identity, [payload.table_id], payload.vertical
-        )
+        return self._run_or_raise("statistics", payload.run, [payload.table_id], payload.vertical)
 
     @activity.defn(name="column_eligibility")
     def run_column_eligibility(self, payload: TableScopedInput) -> PhaseOutcome:
         """Column-eligibility activity — marks which columns downstream phases analyze."""
         return self._run_or_raise(
-            "column_eligibility", payload.identity, [payload.table_id], payload.vertical
+            "column_eligibility", payload.run, [payload.table_id], payload.vertical
         )
 
     @activity.defn(name="statistical_quality")
     def run_statistical_quality(self, payload: TableScopedInput) -> PhaseOutcome:
         """Statistical-quality activity — Benford + outlier detection on numeric columns."""
         return self._run_or_raise(
-            "statistical_quality", payload.identity, [payload.table_id], payload.vertical
+            "statistical_quality", payload.run, [payload.table_id], payload.vertical
         )
 
     @activity.defn(name="temporal")
     def run_temporal(self, payload: TableScopedInput) -> PhaseOutcome:
         """Temporal activity — pattern/trend profiling of date/time columns."""
-        return self._run_or_raise(
-            "temporal", payload.identity, [payload.table_id], payload.vertical
-        )
+        return self._run_or_raise("temporal", payload.run, [payload.table_id], payload.vertical)
 
     @activity.defn(name="semantic_per_column")
-    def run_semantic_per_column(self, payload: SourcePhaseInput) -> PhaseOutcome:
+    def run_semantic_per_column(self, payload: RunPhaseInput) -> PhaseOutcome:
         """Semantic-per-column activity — the run-scoped LLM reduce (roles, concepts, terms).
 
         Runs once after the per-table fan-out over the run's tables
@@ -222,32 +221,32 @@ class PhaseActivities:
         ``ANTHROPIC_API_KEY`` + the provider/prompt config resolvable from
         ``dataraum.core.config``; unlike the analytics phases it makes real LLM calls.
         """
-        return self._run_or_raise("semantic_per_column", payload.identity, [], payload.vertical)
+        return self._run_or_raise("semantic_per_column", payload.run, [], payload.vertical)
 
     @activity.defn(name="detect")
-    def run_detect(self, identity: SourceIdentity) -> PhaseOutcome:
-        """Terminal detector pass — every wired detector once, source-wide (DAT-394).
+    def run_detect(self, run: RunRef) -> PhaseOutcome:
+        """Terminal detector pass — every wired detector once, run-wide (DAT-394).
 
         The single stage-level detect step: after the per-table fan-out and the
         ``semantic_per_column`` reduce, run the union of all chain-declared detectors
-        over the whole source. Replaces the old per-table ``detect_table`` + parent
+        over the run's tables. Replaces the old per-table ``detect_table`` + parent
         ``detect_source`` split — nothing consumes entropy mid-run, so one terminal
         pass is correct and simpler. (DAT-394 phase 2 persists readiness here too.)
         """
-        if identity.run_id is None:
+        if run.run_id is None:
             raise ApplicationError(
-                "detect requires a stamped identity.run_id.",
+                "detect requires a stamped run.run_id.",
                 type="PhaseFailed",
                 non_retryable=True,
             )
-        count = run_detectors(self._manager, run_id=identity.run_id)
+        count = run_detectors(self._manager, run_id=run.run_id)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} detector records for run {identity.run_id}",
+            summary=f"{count} detector records for run {run.run_id}",
         )
 
     @activity.defn(name="promote_to_latest")
-    def run_promote_to_latest(self, identity: SourceIdentity) -> PhaseOutcome:
+    def run_promote_to_latest(self, run: RunRef) -> PhaseOutcome:
         """Terminal promote step — flip the snapshot head to this run (DAT-413).
 
         Runs last in ``addSourceWorkflow``, after ``detect``: upserts
@@ -256,10 +255,10 @@ class PhaseActivities:
         in Phase 2 — nothing reads the head yet (one run at a time), so promoting
         it cannot change downstream output; Phase 3 switches readers to it.
         """
-        count = promote_run(self._manager, identity)
+        count = promote_run(self._manager, run)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"promoted {count} snapshot head(s) for session {identity.session_id}",
+            summary=f"promoted {count} snapshot head(s) for run {run.run_id}",
         )
 
     # --- begin_session activities (DAT-401) — source-free, session-scoped ----
@@ -272,7 +271,7 @@ class PhaseActivities:
         and writes the ``session_tables`` links via the idempotent merge ``typing``
         uses for add_source. The session row itself is seeded by the caller.
         """
-        run = begin_session_select(self._manager, payload.identity, payload.table_ids)
+        run = begin_session_select(self._manager, payload.run, payload.table_ids)
         return self._outcome_or_raise(
             run, "begin_session_select"
         )  # vertical unused (no LLM config)
@@ -285,7 +284,7 @@ class PhaseActivities:
         span sources), persisting ``detection_method='candidate'`` rows.
         """
         return self._run_session_or_raise(
-            "relationships", payload.identity, payload.table_ids, payload.vertical
+            "relationships", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="semantic_per_table")
@@ -298,7 +297,7 @@ class PhaseActivities:
         ``vertical``.
         """
         return self._run_session_or_raise(
-            "semantic_per_table", payload.identity, payload.table_ids, payload.vertical
+            "semantic_per_table", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="aggregation_lineage")
@@ -312,7 +311,7 @@ class PhaseActivities:
         terminal ``session_detect``.
         """
         return self._run_session_or_raise(
-            "aggregation_lineage", payload.identity, payload.table_ids, payload.vertical
+            "aggregation_lineage", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="enriched_views")
@@ -327,7 +326,7 @@ class PhaseActivities:
         calls (the enrichment agent); needs ``ANTHROPIC_API_KEY``.
         """
         return self._run_session_or_raise(
-            "enriched_views", payload.identity, payload.table_ids, payload.vertical
+            "enriched_views", payload.run, payload.table_ids, payload.vertical
         )
 
     # --- value layer (DAT-403) — source-free, session-scoped, after enriched_views ---
@@ -341,7 +340,7 @@ class PhaseActivities:
         Makes real Anthropic calls (the slicing agent); needs ``ANTHROPIC_API_KEY``.
         """
         return self._run_session_or_raise(
-            "slicing", payload.identity, payload.table_ids, payload.vertical
+            "slicing", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="slicing_view")
@@ -353,7 +352,7 @@ class PhaseActivities:
         table. No LLM call.
         """
         return self._run_session_or_raise(
-            "slicing_view", payload.identity, payload.table_ids, payload.vertical
+            "slicing_view", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="slice_analysis")
@@ -364,7 +363,7 @@ class PhaseActivities:
         registers them, and runs statistics + quality on each. No LLM call.
         """
         return self._run_session_or_raise(
-            "slice_analysis", payload.identity, payload.table_ids, payload.vertical
+            "slice_analysis", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="temporal_slice_analysis")
@@ -376,7 +375,7 @@ class PhaseActivities:
         the DAT-442 reset; dimensional_entropy reads typed values directly via NMI.)
         """
         return self._run_session_or_raise(
-            "temporal_slice_analysis", payload.identity, payload.table_ids, payload.vertical
+            "temporal_slice_analysis", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="correlations")
@@ -387,78 +386,78 @@ class PhaseActivities:
         persisting ``DerivedColumn`` formula metadata. No view, no LLM call.
         """
         return self._run_session_or_raise(
-            "correlations", payload.identity, payload.table_ids, payload.vertical
+            "correlations", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="session_materialize_overlays")
-    def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:
+    def run_session_materialize_overlays(self, run: RunRef) -> PhaseOutcome:
         """Materialize durable relationship overlays into this run (DAT-409).
 
         Between ``semantic_per_table`` and ``session_detect``: writes the user's
         ``add``/``keep`` relationship teaches as run-stamped ``manual``/``keeper``
         rows so the durable catalog survives every run, then detect measures it.
         """
-        count = materialize_session_overlays(self._manager, identity)
+        count = materialize_session_overlays(self._manager, run)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"materialized {count} durable relationship(s) for session {identity.session_id}",
+            summary=f"materialized {count} durable relationship(s) for run {run.run_id}",
         )
 
     @activity.defn(name="session_detect")
-    def run_session_detect(self, identity: SessionIdentity) -> PhaseOutcome:
+    def run_session_detect(self, run: RunRef) -> PhaseOutcome:
         """Terminal relationship-detector pass for begin_session (DAT-408).
 
         Source-free analogue of ``detect``: runs the relationship detectors
-        (``SESSION_DETECTOR_PHASES``) over the session's tables, persisting
+        (``SESSION_DETECTOR_PHASES``) over the run's tables, persisting
         relationship-granularity entropy objects + readiness rows stamped with the
         run's ``run_id``.
         """
-        if identity.run_id is None:
+        if run.run_id is None:
             raise ApplicationError(
-                "session_detect requires a stamped identity.run_id.",
+                "session_detect requires a stamped run.run_id.",
                 type="PhaseFailed",
                 non_retryable=True,
             )
         count = run_detectors(
             self._manager,
-            run_id=identity.run_id,
+            run_id=run.run_id,
             detector_phases=SESSION_DETECTOR_PHASES,
         )
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} relationship detector records for session {identity.session_id}",
+            summary=f"{count} relationship detector records for run {run.run_id}",
         )
 
     @activity.defn(name="session_write_keepers")
-    def run_session_write_keepers(self, identity: SessionIdentity) -> PhaseOutcome:
+    def run_session_write_keepers(self, run: RunRef) -> PhaseOutcome:
         """Silent-accept writer (DAT-409 C3) — runs after detect, before promote.
 
         While the head still names the prior run, lift each promoted ``llm`` the
         current run didn't reproduce (and the user didn't reject) into a ``keep``
         overlay, so it re-materializes as ``keeper`` next run.
         """
-        count = write_session_keepers(self._manager, identity)
+        count = write_session_keepers(self._manager, run)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"wrote {count} silent-accept keeper(s) for session {identity.session_id}",
+            summary=f"wrote {count} silent-accept keeper(s) for run {run.run_id}",
         )
 
     @activity.defn(name="session_promote_to_latest")
-    def run_session_promote_to_latest(self, identity: SessionIdentity) -> PhaseOutcome:
+    def run_session_promote_to_latest(self, run: RunRef) -> PhaseOutcome:
         """Terminal promote for begin_session — flip the workspace catalog head.
 
         Runs last in ``beginSessionWorkflow``, after ``session_detect``: points the
         single ``(catalog, "catalog")`` head at this ``run_id`` so the readiness
         readers resolve this run's relationship catalog as current (DAT-506).
         """
-        count = promote_session_run(self._manager, identity)
+        count = promote_session_run(self._manager, run)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"promoted {count} relationship head(s) for session {identity.session_id}",
+            summary=f"promoted {count} relationship head(s) for run {run.run_id}",
         )
 
     @activity.defn(name="operating_model_resolve")
-    def run_operating_model_resolve(self, payload: OperatingModelInput) -> OperatingModelScope:
+    def run_operating_model_resolve(self, payload: RunPhaseInput) -> OperatingModelScope:
         """Pre-flight for operating_model (DAT-438/506) — pinned base runs.
 
         Validates the workspace ``vertical`` born-loud and resolves the ADR-0008
@@ -468,7 +467,7 @@ class PhaseActivities:
         Fails loud (ApplicationError) when the vertical is unknown or no
         begin_session catalog run is promoted.
         """
-        return resolve_operating_model_scope(self._manager, payload.identity, payload.vertical)
+        return resolve_operating_model_scope(self._manager, payload.run, payload.vertical)
 
     @activity.defn(name="validation")
     def run_validation(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
@@ -480,7 +479,7 @@ class PhaseActivities:
         """
         return self._run_session_or_raise(
             "validation",
-            payload.identity,
+            payload.run,
             catalog_table_ids(self._manager),
             payload.vertical,
             extra_config={
@@ -503,7 +502,7 @@ class PhaseActivities:
         """
         return self._run_session_or_raise(
             "business_cycles",
-            payload.identity,
+            payload.run,
             catalog_table_ids(self._manager),
             payload.vertical,
             extra_config={
@@ -538,7 +537,7 @@ class PhaseActivities:
         with _heartbeat_pulse():
             return self._run_session_or_raise(
                 "metrics",
-                payload.identity,
+                payload.run,
                 catalog_table_ids(self._manager),
                 payload.vertical,
                 extra_config={
@@ -546,12 +545,12 @@ class PhaseActivities:
                         "relationship_run_id": payload.scope.relationship_run_id,
                         "semantic_runs": payload.scope.semantic_runs,
                     },
-                    "workspace_id": payload.identity.workspace_id,
+                    "workspace_id": payload.run.workspace_id,
                 },
             )
 
     @activity.defn(name="operating_model_detect")
-    def run_operating_model_detect(self, identity: SessionIdentity) -> PhaseOutcome:
+    def run_operating_model_detect(self, run: RunRef) -> PhaseOutcome:
         """Terminal detector pass for operating_model (DAT-432/L7).
 
         Scores this run's executed validation results — cross_table_consistency,
@@ -564,40 +563,40 @@ class PhaseActivities:
         ``operating_model`` head (failed runs never surface; review wave-1
         corrected an overclaim here).
         """
-        if identity.run_id is None:
+        if run.run_id is None:
             raise ApplicationError(
-                "operating_model_detect requires a stamped identity.run_id.",
+                "operating_model_detect requires a stamped run.run_id.",
                 type="PhaseFailed",
                 non_retryable=True,
             )
         count = run_detectors(
             self._manager,
-            run_id=identity.run_id,
+            run_id=run.run_id,
             detector_phases=OPERATING_MODEL_DETECTOR_PHASES,
         )
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"{count} validation detector records for session {identity.session_id}",
+            summary=f"{count} validation detector records for run {run.run_id}",
         )
 
     @activity.defn(name="operating_model_promote")
-    def run_operating_model_promote(self, identity: SessionIdentity) -> PhaseOutcome:
-        """Terminal promote for operating_model — flip the session's stage head.
+    def run_operating_model_promote(self, run: RunRef) -> PhaseOutcome:
+        """Terminal promote for operating_model — flip the catalog's stage head.
 
-        Points ``(session:{id}, "operating_model")`` at this ``run_id`` so the
-        query tier (cockpit validation surfaces, graphs context) resolves this
-        run's lifecycle artifacts + validation results as current.
+        Points ``(catalog, "operating_model")`` at this ``run_id`` so the query
+        tier (cockpit validation surfaces, graphs context) resolves this run's
+        lifecycle artifacts + validation results as current.
         """
-        count = promote_operating_model_run(self._manager, identity)
+        count = promote_operating_model_run(self._manager, run)
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,
-            summary=f"promoted {count} operating_model head(s) for session {identity.session_id}",
+            summary=f"promoted {count} operating_model head(s) for run {run.run_id}",
         )
 
     def _run_or_raise(
         self,
         phase_name: str,
-        identity: SourceIdentity,
+        run_ref: RunRef,
         table_ids: list[str],
         vertical: str,
     ) -> PhaseOutcome:
@@ -613,7 +612,7 @@ class PhaseActivities:
         exceptions and stay retryable by default.
         """
         try:
-            run = run_phase(self._manager, phase_name, identity, table_ids, vertical)
+            run = run_phase(self._manager, phase_name, run_ref, table_ids, vertical)
         except ProviderError as exc:
             raise _provider_app_error(exc) from exc
         return self._outcome_or_raise(run, phase_name)
@@ -621,7 +620,7 @@ class PhaseActivities:
     def _run_session_or_raise(
         self,
         phase_name: str,
-        identity: SessionIdentity,
+        run_ref: RunRef,
         table_ids: list[str],
         vertical: str,
         extra_config: dict[str, Any] | None = None,
@@ -635,7 +634,7 @@ class PhaseActivities:
         """
         try:
             run = run_session_phase(
-                self._manager, phase_name, identity, table_ids, vertical, extra_config=extra_config
+                self._manager, phase_name, run_ref, table_ids, vertical, extra_config=extra_config
             )
         except ProviderError as exc:
             raise _provider_app_error(exc) from exc

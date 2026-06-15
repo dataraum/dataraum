@@ -472,6 +472,7 @@ class EnrichedViewsPhase(BasePhase):
                     db_profile = StatisticalProfile(
                         profile_id=str(uuid4()),
                         column_id=col.column_id,
+                        run_id=ctx.require_run_id(),
                         profiled_at=profiled_at,
                         layer="enriched",
                         total_count=profile.total_count,

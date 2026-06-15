@@ -110,12 +110,13 @@ class ImportPhase(BasePhase):
         path fails loud before touching the backend — never a silent skip over
         stale raw tables, never a silent re-materialization either.
         """
-        stmt = select(Table).where(Table.source_id == ctx.source_id, Table.layer == "raw")
+        source_id = ctx.config.get("source_id")
+        stmt = select(Table).where(Table.source_id == source_id, Table.layer == "raw")
         existing_tables = ctx.session.execute(stmt).scalars().all()
         if not existing_tables:
             return None
 
-        source = ctx.session.get(Source, ctx.source_id)
+        source = ctx.session.get(Source, source_id)
         if source is not None and source.source_type == "db_recipe":
             config = source.connection_config or {}
             stored = config.get("recipe_hash")
@@ -152,12 +153,13 @@ class ImportPhase(BasePhase):
                 "setup_pipeline must populate them from the registered Source row."
             )
 
-        source = ctx.session.get(Source, ctx.source_id)
+        source_id = config.get("source_id")
+        source = ctx.session.get(Source, source_id)
         if source is None:
             return PhaseResult.failed(
-                f"Source row {ctx.source_id} ('{source_name}') not found in the "
-                "session DB. begin_session or setup_pipeline was expected to "
-                "create it before import runs."
+                f"Source row {source_id} ('{source_name}') not found in the "
+                "workspace DB. The workflow caller (cockpit) must create it "
+                "before import runs."
             )
 
         # Dispatch by source_type.

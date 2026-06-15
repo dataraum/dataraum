@@ -59,9 +59,9 @@ class SemanticPerColumnPhase(BasePhase):
         run's tables are the ones ``typing`` linked to ``run_id`` via
         ``run_tables``, and the reduce/readiness layer already keys on that anchor
         (``detect`` + readiness, DAT-410). This phase was the last in the
-        add_source spine still filtering ``Table.source_id == ctx.source_id``; it
-        now uses the same ``tables_for_run`` key. Source-agnostic for a run whose
-        tables span multiple per-object sources.
+        add_source spine still filtering by a context source id; it now uses the
+        same ``tables_for_run`` key. Source-agnostic for a run whose tables span
+        multiple per-object sources.
 
         Re-run safety: ``typing``'s ``reconcile_typed_table`` reuses the stable
         typed ``Table.table_id`` (no new row on re-type), so the run-tables link is

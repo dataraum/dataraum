@@ -53,7 +53,7 @@ def bootstrap_worker_substrate() -> ConnectionManager:
         manager = ConnectionManager(ConnectionConfig.for_workspace())
         manager.initialize()
         # Workspace-level DuckDB: one connection for the worker's whole life. No
-        # session binding — activities carry their own session_id as data.
+        # session binding — activities carry their own run ref as data.
         manager.open_lake()
         # DAT-343: layered config reads via Postgres-backed overlay resolver.
         # Must come after the manager + workspace pointer are up — the resolver

@@ -2,11 +2,11 @@
 
 One place wires connections to a phase. :func:`run_phase` leases a *scoped*
 SQLAlchemy session + DuckDB cursor from the worker's single
-:class:`~dataraum.core.connections.ConnectionManager`, builds the
-``PhaseContext`` (source identity from the ``Source`` row + the phase's static
-config, scoped to ``table_ids``), and runs the sync phase — without a scheduler
-or ``PipelineRun``/``PhaseLog`` monitoring rows (Temporal's event history is the
-execution log).
+:class:`~dataraum.core.connections.ConnectionManager`, builds the source-free
+``PhaseContext`` (the phase's static config, scoped to ``table_ids``; the one
+per-source ``import`` injects its ``source_id`` into the config), and runs the
+sync phase — without a scheduler or ``PipelineRun``/``PhaseLog`` monitoring rows
+(Temporal's event history is the execution log).
 
 Detectors are **not** run here per phase. Per DAT-394 they run once per workflow
 in a single terminal step: :func:`run_detectors` runs every wired detector over
@@ -43,7 +43,7 @@ from dataraum.storage import (
     catalog_head_target,
     head_run_id,
 )
-from dataraum.worker.contracts import OperatingModelScope, SessionIdentity, SourceIdentity
+from dataraum.worker.contracts import OperatingModelScope, RunRef
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -146,9 +146,11 @@ class PhaseRun:
 def run_phase(
     manager: ConnectionManager,
     phase_name: str,
-    identity: SourceIdentity,
+    run: RunRef,
     table_ids: list[str],
     vertical: str,
+    *,
+    source_id: str | None = None,
 ) -> PhaseRun:
     """Run one pipeline phase scoped to ``table_ids``, leasing connections from ``manager``.
 
@@ -156,12 +158,18 @@ def run_phase(
         manager: the worker's single workspace-level ConnectionManager
             (Postgres + workspace DuckDB already open via ``open_lake``).
         phase_name: a key in pipeline.yaml / the phase registry (e.g. "import").
-        identity: the source-identity header carried by the workflow.
-        table_ids: the phase's table scope. ``[]`` = source-wide (import,
-            semantic_per_column); a single typed id for the analytics phases.
+        run: the source-free run reference carried by the workflow (workspace +
+            run_id).
+        table_ids: the phase's table scope. ``[]`` = run-wide (semantic_per_column);
+            a single typed id for the analytics phases.
         vertical: the workspace vertical by name (DAT-506), threaded from the
             workflow input into the phase config (the LLM phases read it; the
             structural phases ignore it).
+        source_id: set ONLY by the per-source ``import`` activity (DAT-426) — the
+            one phase that runs before any ``Table`` row exists and so cannot
+            resolve its source relationally. It is injected into ``ctx.config``
+            (``import`` reads it there), never onto the source-free ``PhaseContext``.
+            Every other phase resolves source provenance via ``tables.source_id``.
     """
     # Workspace isolation is enforced by the per-workspace task queue (DAT-505):
     # this worker polls only ``engine-<workspace_id>``, so a payload addressed to
@@ -180,21 +188,21 @@ def run_phase(
     # commits on clean exit (so the phase's writes are visible to later
     # activities); duckdb_cursor closes the derived cursor on exit.
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        # Only ``import`` ingests from a ``Source`` (it reads connection_config +
-        # backend to load files); past it the run is source-free (DAT-422), so a
-        # ``None`` source_id means "no Source to resolve" — the config is built from
-        # the phase's static config + the run's vertical. A source_id that IS set
-        # but doesn't resolve is still a fail-loud caller bug (the import caller
-        # must write the Source row before the phase runs).
+        # Only ``import`` carries a ``source_id`` (it reads connection_config +
+        # backend to load files before any Table row exists); past it the run is
+        # source-free (DAT-422/426), so ``source_id`` is ``None`` and the config is
+        # built from the phase's static config + the run's vertical. A source_id
+        # that IS set but doesn't resolve is still a fail-loud caller bug (the
+        # import caller must write the Source row before the phase runs).
         source = None
-        if identity.source_id is not None:
-            source = session.get(Source, identity.source_id)
+        if source_id is not None:
+            source = session.get(Source, source_id)
             if source is None:
                 return PhaseRun(
                     status=PhaseStatus.FAILED.value,
                     error=(
-                        f"Source '{identity.source_id}' not found in workspace "
-                        f"'{identity.workspace_id}'. The workflow caller must write the "
+                        f"Source '{source_id}' not found in workspace "
+                        f"'{run.workspace_id}'. The workflow caller must write the "
                         "Source row before the phase runs."
                     ),
                 )
@@ -202,13 +210,11 @@ def run_phase(
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
-            source_id=identity.source_id,
             table_ids=list(table_ids),
             config=config,
             session_factory=manager.session_scope,
             manager=manager,
-            session_id=identity.session_id,
-            run_id=identity.run_id,
+            run_id=run.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -296,7 +302,7 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
 
 def check_run_column_limit(
     manager: ConnectionManager,
-    identity: SourceIdentity,
+    run: RunRef,
     table_ids: list[str],
 ) -> PhaseRun:
     """Gate the RUN's total raw column count before the per-table fan-out (DAT-430).
@@ -336,7 +342,7 @@ def check_run_column_limit(
 
 def begin_session_select(
     manager: ConnectionManager,
-    identity: SessionIdentity,
+    run: RunRef,
     table_ids: list[str],
 ) -> PhaseRun:
     """Pre-flight the selected tables + anchor them to the run (DAT-401/506).
@@ -353,9 +359,9 @@ def begin_session_select(
             status=PhaseStatus.FAILED.value,
             error="begin_session requires at least one table id.",
         )
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
-        raise RuntimeError("begin_session_select requires a stamped identity.run_id.")
+        raise RuntimeError("begin_session_select requires a stamped run.run_id.")
 
     with manager.session_scope() as session:
         found = set(
@@ -373,7 +379,6 @@ def begin_session_select(
 
     logger.info(
         "activity.begin_session_select",
-        session_id=identity.session_id,
         run_id=run_id,
         table_count=len(table_ids),
     )
@@ -386,7 +391,7 @@ def begin_session_select(
 def run_session_phase(
     manager: ConnectionManager,
     phase_name: str,
-    identity: SessionIdentity,
+    run: RunRef,
     table_ids: list[str],
     vertical: str,
     extra_config: dict[str, Any] | None = None,
@@ -420,13 +425,11 @@ def run_session_phase(
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
-            source_id=None,
             table_ids=list(table_ids),
             config=config,
             session_factory=manager.session_scope,
             manager=manager,
-            session_id=identity.session_id,
-            run_id=identity.run_id,
+            run_id=run.run_id,
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -529,7 +532,7 @@ def run_detectors(
     return total
 
 
-def materialize_session_overlays(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def materialize_session_overlays(manager: ConnectionManager, run: RunRef) -> int:
     """Materialize the session's durable relationship overlays into this run (DAT-409).
 
     Runs between ``semantic_per_table`` and ``session_detect``: writes the user's
@@ -540,20 +543,20 @@ def materialize_session_overlays(manager: ConnectionManager, identity: SessionId
     """
     from dataraum.analysis.relationships.materialize import materialize_relationship_overlays
 
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
-        raise RuntimeError("materialize_session_overlays requires a stamped identity.run_id.")
+        raise RuntimeError("materialize_session_overlays requires a stamped run.run_id.")
     with manager.session_scope() as session:
         table_ids = tables_for_run(session, run_id)
         if not table_ids:
             logger.warning("materialize_no_run_tables", run_id=run_id)
             return 0
         count = materialize_relationship_overlays(session, run_id=run_id, table_ids=table_ids)
-    logger.info("session_materialize_done", session_id=identity.session_id, count=count)
+    logger.info("session_materialize_done", run_id=run_id, count=count)
     return count
 
 
-def write_session_keepers(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def write_session_keepers(manager: ConnectionManager, run: RunRef) -> int:
     """Lift silently-accepted relationships into keep overlays (DAT-409 C3).
 
     Pre-promote step: while the per-session head still points at the prior run,
@@ -563,16 +566,16 @@ def write_session_keepers(manager: ConnectionManager, identity: SessionIdentity)
     """
     from dataraum.analysis.relationships.materialize import write_relationship_keepers
 
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
-        raise RuntimeError("write_session_keepers requires a stamped identity.run_id.")
+        raise RuntimeError("write_session_keepers requires a stamped run.run_id.")
     with manager.session_scope() as session:
         count = write_relationship_keepers(session, current_run_id=run_id)
-    logger.info("session_keepers_done", session_id=identity.session_id, count=count)
+    logger.info("session_keepers_done", run_id=run_id, count=count)
     return count
 
 
-def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
+def promote_run(manager: ConnectionManager, run: RunRef) -> int:
     """Flip the per-table generation head to this run — terminal step (DAT-413/506).
 
     The single terminal ``promote_to_latest`` step: after ``detect``, record this
@@ -589,10 +592,10 @@ def promote_run(manager: ConnectionManager, identity: SourceIdentity) -> int:
     # The head names a run, so promote is meaningless without one. The
     # AddSourceWorkflow always mints + stamps ``run_id`` before any activity, so a
     # missing one here is a caller bug — fail loud rather than write a NULL head.
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_run requires a stamped identity.run_id — the workflow mints "
+            "promote_run requires a stamped run.run_id — the workflow mints "
             "it via workflow.uuid4() before the first activity (DAT-413)."
         )
 
@@ -649,7 +652,7 @@ def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: da
         head.promoted_at = now
 
 
-def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def promote_session_run(manager: ConnectionManager, run: RunRef) -> int:
     """Seal this begin_session run as the workspace catalog's current run (DAT-408/506).
 
     begin_session's terminal promote: after ``session_detect`` writes this run's
@@ -659,22 +662,22 @@ def promote_session_run(manager: ConnectionManager, identity: SessionIdentity) -
     catalog run through it. Workspace-grain (not per-target) because the run is
     atomic — every run measures the whole catalog.
     """
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_session_run requires a stamped identity.run_id — "
+            "promote_session_run requires a stamped run.run_id — "
             "BeginSessionWorkflow mints it before the first activity (DAT-408)."
         )
 
     with manager.session_scope() as session:
         _upsert_head(session, catalog_head_target(), "catalog", run_id, datetime.now(UTC))
 
-    logger.info("session_promote_done", session_id=identity.session_id, run_id=run_id)
+    logger.info("session_promote_done", run_id=run_id)
     return 1
 
 
 def resolve_operating_model_scope(
-    manager: ConnectionManager, identity: SessionIdentity, vertical: str
+    manager: ConnectionManager, run: RunRef, vertical: str
 ) -> OperatingModelScope:
     """Pre-flight for ``operatingModelWorkflow`` — pinned base runs (DAT-438/506).
 
@@ -736,7 +739,7 @@ def resolve_operating_model_scope(
 
     logger.info(
         "operating_model_scope_resolved",
-        session_id=identity.session_id,
+        run_id=run.run_id,
         tables=len(table_ids),
         relationship_run=base_runs.relationship_run_id,
         semantic_runs=len(base_runs.semantic_runs),
@@ -747,7 +750,7 @@ def resolve_operating_model_scope(
     )
 
 
-def promote_operating_model_run(manager: ConnectionManager, identity: SessionIdentity) -> int:
+def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
     """Seal this operating_model run as the session's current run (DAT-438).
 
     Terminal promote: point the workspace catalog head ``(catalog,
@@ -757,10 +760,10 @@ def promote_operating_model_run(manager: ConnectionManager, identity: SessionIde
     begin_session's ``"catalog"`` head — the two stages' runs coexist on the
     same catalog target.
     """
-    run_id = identity.run_id
+    run_id = run.run_id
     if run_id is None:
         raise RuntimeError(
-            "promote_operating_model_run requires a stamped identity.run_id — "
+            "promote_operating_model_run requires a stamped run.run_id — "
             "OperatingModelWorkflow mints it before the first activity (DAT-408)."
         )
 
@@ -773,7 +776,7 @@ def promote_operating_model_run(manager: ConnectionManager, identity: SessionIde
             datetime.now(UTC),
         )
 
-    logger.info("operating_model_promote_done", session_id=identity.session_id, run_id=run_id)
+    logger.info("operating_model_promote_done", run_id=run_id)
     return 1
 
 

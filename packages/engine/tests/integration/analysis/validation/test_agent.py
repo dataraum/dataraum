@@ -12,6 +12,7 @@ from dataraum.analysis.validation.models import (
 )
 from dataraum.core.models.base import Result
 from dataraum.lifecycle import BaseRunMap
+from dataraum.llm.providers.base import TransientProviderError
 
 
 @pytest.fixture
@@ -386,8 +387,13 @@ class TestValidationAgentGenerateSQL:
         assert generated.is_valid is False
         assert "Missing required columns" in generated.validation_error
 
-    def test_generate_sql_llm_error(self, validation_agent, mock_provider):
-        """Test handling of LLM errors."""
+    def test_generate_sql_llm_error_propagates(self, validation_agent, mock_provider):
+        """A provider API failure raises a typed ProviderError (DAT-503).
+
+        converse no longer folds the error into a Result.fail; the agent lets
+        the typed exception propagate so retryability rides it to the worker's
+        durable boundary, not a substring of a Result the agent would re-wrap.
+        """
         spec = ValidationSpec(
             validation_id="test",
             name="Test",
@@ -398,12 +404,10 @@ class TestValidationAgentGenerateSQL:
 
         schema = {"table_name": "test", "duckdb_path": "test", "columns": []}
 
-        mock_provider.converse.return_value = Result.fail("API error")
+        mock_provider.converse.side_effect = TransientProviderError("API error")
 
-        result = validation_agent._generate_sql(spec, schema)
-
-        assert not result.success
-        assert "API error" in result.error
+        with pytest.raises(TransientProviderError, match="API error"):
+            validation_agent._generate_sql(spec, schema)
 
     def test_generate_sql_disabled_feature(self, validation_agent):
         """Test when validation feature is disabled."""

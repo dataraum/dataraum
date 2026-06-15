@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from dataraum.core.models.base import Result
 from dataraum.documentation.agent import BatchActionPlan, BatchPlanAgent
-from dataraum.llm.providers.base import ConversationResponse, ToolCall
+from dataraum.llm.providers.base import (
+    ConversationResponse,
+    PermanentProviderError,
+    ToolCall,
+)
 
 
 def _make_agent() -> tuple[BatchPlanAgent, MagicMock]:
@@ -70,13 +76,14 @@ class TestGenerateBatchPlan:
         assert len(plan.items) == 1
         assert plan.items[0].recommended_action == "concept_property"
 
-    def test_llm_failure(self) -> None:
+    def test_llm_failure_propagates(self) -> None:
+        # converse raises a typed ProviderError on an API failure (DAT-503); the
+        # agent lets it propagate rather than re-wrapping it as a Result.fail.
         agent, provider = _make_agent()
-        provider.converse.return_value = Result.fail("API error")
+        provider.converse.side_effect = PermanentProviderError("API error")
 
-        result = agent.generate_batch_plan(SAMPLE_CONTEXT)
-        assert not result.success
-        assert "API error" in (result.error or "")
+        with pytest.raises(PermanentProviderError, match="API error"):
+            agent.generate_batch_plan(SAMPLE_CONTEXT)
 
     def test_no_tool_call(self) -> None:
         agent, provider = _make_agent()

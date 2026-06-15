@@ -60,10 +60,32 @@ with workflow.unsafe.imports_passed_through():
     )
 
 # A deterministic phase failure is raised by the activity as a non-retryable
-# ApplicationError of this type; transient failures (e.g. a DuckLake
-# optimistic-commit conflict) raise normally and stay retryable.
+# ApplicationError of type ``PhaseFailed``; a transient provider failure raises
+# ``TransientPhaseFailure`` (absent here) and stays retryable, as do
+# infrastructure failures (e.g. a DuckLake optimistic-commit conflict).
 _RETRY = RetryPolicy(maximum_attempts=5, non_retryable_error_types=["PhaseFailed"])
+
+# LLM-calling activities (DAT-503): a transient provider failure (429 / 5xx /
+# timeout) is exactly the case Temporal's durable retry exists for. The
+# defaults' 100ms initial / 100s cap retries a rate limit far too fast and
+# gives up after 5 tries; this policy backs off to a >=60s ceiling and allows
+# more attempts so a real upstream outage is ridden out across the LLM's own
+# Retry-After windows. ``PhaseFailed`` stays non-retryable (a permanent auth /
+# bad-request error must not burn the budget).
+_LLM_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=1),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=60),
+    maximum_attempts=8,
+    non_retryable_error_types=["PhaseFailed"],
+)
 _TIMEOUT = timedelta(minutes=10)
+
+# The ``metrics`` activity heartbeats (DAT-503): a missed pulse within this
+# window means the worker died, failing the run over to a retry far sooner than
+# the 10-minute ``start_to_close_timeout`` would. Comfortably above the
+# activity's 15s pulse cadence so a slow LLM wave never trips it.
+_HEARTBEAT_TIMEOUT = timedelta(seconds=60)
 
 # The table-local analytics phases, in dependency order. ``typing`` precedes
 # them (it mints the typed id). Detectors no longer run at the child's tail; the
@@ -346,7 +368,7 @@ class AddSourceWorkflow:
             identity,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+            retry_policy=_LLM_RETRY,
         )
         # Single terminal detector pass (DAT-394): runs every wired detector
         # source-wide after the reduce, then persists readiness. Replaces the old
@@ -395,6 +417,29 @@ class AddSourceWorkflow:
 # (aggregation_lineage lives in the VALUE order below — its dependency is the
 # slice substrate, not this spine.)
 _SESSION_PHASE_ORDER = ("relationships", "semantic_per_table")
+
+# The phase activities that make real Anthropic calls (DAT-503) — they get the
+# LLM-shaped ``_LLM_RETRY`` so a transient provider failure is ridden out with
+# >=60s backoff instead of the default fast-give-up. Everything else (structural
+# detection, deterministic slice arithmetic, promotes) keeps ``_RETRY``. Kept
+# beside the chain orders so a new LLM phase can't silently inherit ``_RETRY``.
+_LLM_PHASES = frozenset(
+    {
+        "semantic_per_column",
+        "semantic_per_table",
+        "slicing",
+        "enriched_views",
+        "validation",
+        "business_cycles",
+        "metrics",
+    }
+)
+
+
+def _retry_for(phase: str) -> RetryPolicy:
+    """Pick the LLM-shaped retry for an LLM-calling phase, else the default."""
+    return _LLM_RETRY if phase in _LLM_PHASES else _RETRY
+
 
 # The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:
 # slice the fact tables (LLM), narrow each to a slicing view, materialize + profile
@@ -518,7 +563,7 @@ class BeginSessionWorkflow:
                 scoped,
                 result_type=PhaseOutcome,
                 start_to_close_timeout=_TIMEOUT,
-                retry_policy=_RETRY,
+                retry_policy=_retry_for(phase),
             )
 
         # Materialize durable relationship teaches (DAT-409): after the llm pass, fold
@@ -545,7 +590,7 @@ class BeginSessionWorkflow:
             scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+            retry_policy=_LLM_RETRY,
         )
 
         # Value layer (DAT-403): slicing → slicing_view → slice_analysis →
@@ -560,7 +605,7 @@ class BeginSessionWorkflow:
                 scoped,
                 result_type=PhaseOutcome,
                 start_to_close_timeout=_TIMEOUT,
-                retry_policy=_RETRY,
+                retry_policy=_retry_for(phase),
             )
 
         # Terminal relationship detect (DAT-408): runs the relationship detectors
@@ -689,7 +734,7 @@ class OperatingModelWorkflow:
             scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+            retry_policy=_LLM_RETRY,
         )
 
         # Terminal-for-evidence detect (DAT-432/L7): score this run's executed
@@ -717,7 +762,7 @@ class OperatingModelWorkflow:
             scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+            retry_policy=_LLM_RETRY,
         )
 
         # Third lifecycle family (DAT-456): the declared metric graphs (vertical
@@ -732,7 +777,8 @@ class OperatingModelWorkflow:
             scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+            heartbeat_timeout=_HEARTBEAT_TIMEOUT,
+            retry_policy=_LLM_RETRY,
         )
 
         # Terminal promote: flip (session:{id}, "operating_model") to this run.

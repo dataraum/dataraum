@@ -122,11 +122,10 @@ class BatchPlanAgent:
             model=self.model,
         )
 
-        response_result = self.provider.converse(request)
-        if not response_result.success or not response_result.value:
-            return Result.fail(response_result.error or "LLM call failed")
-
-        response = response_result.value
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception, so we don't re-wrap it. A returned
+        # Result is always a success.
+        response = self.provider.converse(request).unwrap()
         if not response.tool_calls:
             return Result.fail("LLM did not use the tool")
 

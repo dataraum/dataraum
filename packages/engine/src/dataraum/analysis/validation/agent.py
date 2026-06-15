@@ -357,11 +357,10 @@ class ValidationAgent(LLMFeature):
             model=model,
         )
 
-        result = self.provider.converse(request)
-        if not result.success or not result.value:
-            return Result.fail(result.error or "LLM call failed")
-
-        response = result.value
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception to the worker's durable boundary, so
+        # we don't re-wrap it. A returned Result is always a success.
+        response = self.provider.converse(request).unwrap()
 
         # No tool call = degraded generation. There is no rescue: under the
         # lifecycle this is a bind ERROR — the artifact stays ``declared``

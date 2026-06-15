@@ -141,12 +141,10 @@ class BusinessCycleAgent(LLMFeature):
             model=model,
         )
 
-        result = self.provider.converse(request)
-
-        if not result.success or not result.value:
-            return Result.fail(f"LLM call failed: {result.error}")
-
-        response = result.unwrap()
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception to the worker's durable boundary, so
+        # we don't re-wrap it. A returned Result is always a success.
+        response = self.provider.converse(request).unwrap()
 
         # 4. Parse structured output. No tool call = degraded generation — a
         # hard failure for the synthesis (DAT-439 standard: no silent rescue).

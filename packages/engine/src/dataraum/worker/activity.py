@@ -57,7 +57,6 @@ __all__ = [
     "SESSION_DETECTOR_PHASES",
     "PhaseRun",
     "begin_session_select",
-    "catalog_table_ids",
     "check_run_column_limit",
     "declared_detector_ids",
     "materialize_session_overlays",
@@ -620,21 +619,6 @@ def promote_run(manager: ConnectionManager, run: RunRef) -> int:
     return promoted
 
 
-def catalog_table_ids(manager: ConnectionManager) -> list[str]:
-    """The typed tables of the workspace's promoted catalog run (DAT-506).
-
-    operating_model takes NO table set on the wire: its phases read the workspace
-    catalog head's ``run_tables`` here. ``[]`` when no begin_session run is
-    promoted (the pre-flight ``operating_model_resolve`` already refuses that
-    state, so a phase reaching this with an empty set is a caller bug).
-    """
-    with manager.session_scope() as session:
-        catalog_run_id = head_run_id(session, catalog_head_target(), "catalog")
-        if catalog_run_id is None:
-            return []
-        return tables_for_run(session, catalog_run_id)
-
-
 def _upsert_head(session: Session, target: str, stage: str, run_id: str, now: datetime) -> None:
     """Point the ``(target, stage)`` snapshot head at ``run_id`` (insert or re-point)."""
     head = session.execute(
@@ -697,7 +681,6 @@ def resolve_operating_model_scope(
             structurally-impossible state.
     """
     from dataraum.lifecycle import resolve_operating_model_base_runs
-    from dataraum.storage import head_run_id
 
     with manager.session_scope() as session:
         # Born-loud on a typo'd / never-framed vertical (DAT-480): an unknown
@@ -747,6 +730,11 @@ def resolve_operating_model_scope(
     return OperatingModelScope(
         relationship_run_id=base_runs.relationship_run_id,
         semantic_runs=base_runs.semantic_runs,
+        # ADR-0008 pin: the catalog head's table set is resolved ONCE here and
+        # travels on the scope so all three OM phases share one pinned set — a
+        # concurrent begin_session promoting a new head mid-run cannot make them
+        # diverge (the TOCTOU each phase re-reading the catalog head exhibits).
+        table_ids=table_ids,
     )
 
 

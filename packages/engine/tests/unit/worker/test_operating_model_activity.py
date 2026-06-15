@@ -2,10 +2,12 @@
 
 ``resolve_operating_model_scope(manager, identity, vertical)`` — the pre-flight
 that reads the workspace catalog head's ``run_tables`` and pins the ADR-0008
-base-run map once per run (it returns NO table set; the phases read the catalog
-head's tables directly, DAT-506) — and ``promote_operating_model_run`` — the
-terminal head flip on the catalog target at stage ``operating_model``. Mirrors
-the ``test_promote_run`` fake-manager pattern.
+base-run map AND the table set once per run (the three phases read
+``scope.table_ids`` rather than each re-reading the catalog head, closing the
+TOCTOU a concurrent begin_session promote would open) — and
+``promote_operating_model_run`` — the terminal head flip on the catalog target
+at stage ``operating_model``. Mirrors the ``test_promote_run`` fake-manager
+pattern.
 """
 
 from __future__ import annotations
@@ -118,8 +120,10 @@ class TestResolveOperatingModelScope:
 
         scope = resolve_operating_model_scope(_manager(session_factory), _IDENTITY, _VERTICAL)
 
-        # The scope carries NO table set (DAT-506): the phases read the catalog
-        # head's run_tables directly. It pins the base-run map once.
+        # The scope pins the catalog head's table set ONCE (ADR-0008): the three
+        # phases read scope.table_ids, never re-reading the head per phase.
+        assert set(scope.table_ids) == {"tbl-1", "tbl-2"}
+        # It also pins the base-run map once.
         assert scope.relationship_run_id == _CATALOG_RUN
         # tbl-2 has no promoted semantic head → absent, never guessed.
         assert scope.semantic_runs == {"tbl-1": "run-sem-1"}

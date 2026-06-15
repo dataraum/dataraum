@@ -35,7 +35,6 @@ from dataraum.worker.activity import (
     SESSION_DETECTOR_PHASES,
     PhaseRun,
     begin_session_select,
-    catalog_table_ids,
     check_run_column_limit,
     materialize_session_overlays,
     promote_operating_model_run,
@@ -265,10 +264,10 @@ class PhaseActivities:
 
     @activity.defn(name="begin_session_select")
     def run_begin_session_select(self, payload: SessionScopedInput) -> PhaseOutcome:
-        """Pre-flight the selection + link it to the session (the spine's first step).
+        """Pre-flight the selection + link it to the run (the spine's first step).
 
         Validates every id is a known typed table (reject unknown → non-retryable)
-        and writes the ``session_tables`` links via the idempotent merge ``typing``
+        and writes the ``run_tables`` links via the idempotent merge ``typing``
         uses for add_source. The session row itself is seeded by the caller.
         """
         run = begin_session_select(self._manager, payload.run, payload.table_ids)
@@ -480,7 +479,7 @@ class PhaseActivities:
         return self._run_session_or_raise(
             "validation",
             payload.run,
-            catalog_table_ids(self._manager),
+            payload.scope.table_ids,
             payload.vertical,
             extra_config={
                 "base_runs": {
@@ -503,7 +502,7 @@ class PhaseActivities:
         return self._run_session_or_raise(
             "business_cycles",
             payload.run,
-            catalog_table_ids(self._manager),
+            payload.scope.table_ids,
             payload.vertical,
             extra_config={
                 "base_runs": {
@@ -538,7 +537,7 @@ class PhaseActivities:
             return self._run_session_or_raise(
                 "metrics",
                 payload.run,
-                catalog_table_ids(self._manager),
+                payload.scope.table_ids,
                 payload.vertical,
                 extra_config={
                     "base_runs": {

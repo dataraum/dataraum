@@ -326,19 +326,26 @@ class OperatingModelInput(BaseModel):
 
 
 class OperatingModelScope(BaseModel):
-    """``operating_model_resolve``'s output — the pinned base-run map.
+    """``operating_model_resolve``'s output — the pinned base-run map + table set.
 
     The ADR-0008 in-run pin, resolved ONCE at run start: ``relationship_run_id``
     is begin_session's promoted ``(catalog, catalog)`` head; ``semantic_runs``
     the per-table promoted ``(table:{id}, semantic_per_column)`` heads. Wire
     mirror of :class:`dataraum.lifecycle.BaseRunMap` (contracts stay
     engine-free for the workflow sandbox — same hand-mirror discipline as the
-    cockpit's ``types.ts``). operating_model takes NO table set: the phases read
-    the catalog head's ``run_tables`` directly (DAT-506).
+    cockpit's ``types.ts``).
+
+    ``table_ids`` is the catalog head's ``run_tables`` PINNED here at resolve
+    (ADR-0008): all three OM phase activities read ``payload.scope.table_ids``
+    rather than each re-reading the catalog head, so a concurrent begin_session
+    promoting a new head mid-run cannot make the three phases see different
+    table sets. This is the engine-internal RESOLVE OUTPUT, NOT a wire input —
+    :class:`OperatingModelInput` takes no table set; the cockpit never sends one.
     """
 
     relationship_run_id: str | None = None
     semantic_runs: dict[str, str] = Field(default_factory=dict)
+    table_ids: list[str] = Field(default_factory=list)
 
 
 class OperatingModelScopedInput(BaseModel):

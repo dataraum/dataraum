@@ -183,6 +183,22 @@ describe("ChatRail (DAT-353)", () => {
 		// …and the canvas stops spinning rather than showing a generic error widget.
 		expect(screen.getByTestId("canvas-kind").textContent).toBe("empty");
 	});
+
+	it("classifies an actionable provider error into a cause + next step (DAT-512)", () => {
+		h.error = new Error(
+			'400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+		);
+		renderRail();
+		const alert = screen.getByTestId("chat-error");
+		// The cause is the headline, not a blanket "Something went wrong"…
+		expect(alert.textContent).toContain("Out of API credits");
+		expect(alert.textContent).toContain("Plans & Billing");
+		// …and the body says what to DO (top up) instead of the blind
+		// "please try again" prompt the generic fallback would show.
+		expect(alert.textContent).not.toContain("please try again");
+		// The raw provider string stays available for debugging.
+		expect(alert.textContent).toContain("credit balance is too low");
+	});
 });
 
 describe("ChatRail tool-result chips (DAT-354)", () => {

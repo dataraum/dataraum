@@ -31,6 +31,7 @@ import {
 } from "#/db/cockpit/conversations";
 import {
 	claimRunNarration,
+	listRunningStages,
 	listWatchableRuns,
 	markRunStatus,
 	type WatchableRun,
@@ -168,13 +169,17 @@ async function watchLoop(
 			);
 			// The atomic claim is the once-only guard across tabs.
 			if (await claimRunNarration(run.workflowId, run.runId)) {
-				await narrateCompletion(conversationId, run, progress, signal).catch(
-					(err) => {
-						console.warn(
-							`[completion-watcher] narrate failed for run ${run.runId}: ${err}`,
-						);
-					},
-				);
+				await narrateCompletion(
+					conversationId,
+					workspaceId,
+					run,
+					progress,
+					signal,
+				).catch((err) => {
+					console.warn(
+						`[completion-watcher] narrate failed for run ${run.runId}: ${err}`,
+					);
+				});
 			}
 		}
 	}
@@ -184,14 +189,25 @@ async function watchLoop(
  * published over the bus. Aborts with the stream (the linked controller). */
 async function narrateCompletion(
 	conversationId: string,
+	workspaceId: string,
 	run: WatchableRun,
 	progress: WorkflowProgress,
 	signal: AbortSignal,
 ): Promise<void> {
-	const note = completionNote(run.stage, {
-		failed: terminalRunStatus(progress) === "failed",
-		failureMessage: progress.failure?.message ?? null,
-	});
+	// The OTHER stages still running for this workspace — the agent must narrate
+	// only THIS run and not claim these finished (DAT-510). The just-finished run
+	// is already marked terminal upstream, so it's excluded from this set. On a DB
+	// hiccup, degrade to `[]` (the solo-run boundary): safe direction — the note
+	// still pins to this run, it just can't name the others.
+	const inFlight = await listRunningStages(workspaceId).catch(() => []);
+	const note = completionNote(
+		run.stage,
+		{
+			failed: terminalRunStatus(progress) === "failed",
+			failureMessage: progress.failure?.message ?? null,
+		},
+		inFlight,
+	);
 	await appendMessages(conversationId, [{ message: note, modelOnly: true }]);
 	const modelMessages = buildModelMessages(
 		await loadModelTranscript(conversationId),

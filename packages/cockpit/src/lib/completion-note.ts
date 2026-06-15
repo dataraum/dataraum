@@ -22,6 +22,13 @@ export interface RunOutcome {
 	failureMessage: string | null;
 }
 
+/** Join labels into a readable "a", "a and b", "a, b and c" phrase. Called only
+ * with a non-empty list (the caller guards on `stillRunning.length`). */
+function joinLabels(labels: string[]): string {
+	if (labels.length <= 1) return labels.join("");
+	return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+}
+
 /**
  * Build the model-only completion note. role "user" so the transcript ends on a
  * user turn (a no-prefill model requires that) and the converter keeps it;
@@ -32,10 +39,18 @@ export interface RunOutcome {
  * protection the retired `workflow_status` projection applied (DAT-433): a
  * content-keyed `src_<digest>` or a staged-upload s3 URI must never reach the
  * model. The agent is told NOT to echo run/workflow ids either.
+ *
+ * `inFlight` is the set of OTHER stages still running for this workspace at
+ * narration time. The note runs against the full transcript, which carries the
+ * user's whole-journey intent, so without an explicit boundary the agent
+ * narrates one stage ahead — announcing a stage that's only just started, or
+ * still running, as finished (DAT-510). We anchor it to THIS run and name the
+ * still-running stages as off-limits.
  */
 export function completionNote(
 	stage: RunStage,
 	outcome: RunOutcome,
+	inFlight: RunStage[] = [],
 ): UIMessage {
 	const label = STAGE_LABEL[stage];
 	const result = outcome.failed
@@ -45,8 +60,19 @@ export function completionNote(
 					: ""
 			}`
 		: "finished successfully";
+	// Dedup + drop this run's own stage; map to user-facing labels.
+	const stillRunning = [...new Set(inFlight)]
+		.filter((s) => s !== stage)
+		.map((s) => STAGE_LABEL[s]);
+	const boundary = stillRunning.length
+		? ` Note: the ${joinLabels(stillRunning)} ${
+				stillRunning.length > 1 ? "are" : "is"
+			} still running — narrate ONLY the ${label}, and do NOT say or imply ${
+				stillRunning.length > 1 ? "they have" : "it has"
+			} finished.`
+		: ` Narrate ONLY the ${label} — do not state or imply any other run finished.`;
 	const body =
-		`[system event] The ${label} just ${result}. ` +
+		`[system event] The ${label} just ${result}.${boundary} ` +
 		"Tell the user it's done in one or two sentences and suggest the next step " +
 		"in the onboarding journey. Inspect the workspace with your tools if you " +
 		"need specifics; don't mention this note or any run/workflow ids.";

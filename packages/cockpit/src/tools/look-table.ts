@@ -380,19 +380,19 @@ export async function lookTable(
 	}
 
 	// Four independent reads once the table is known: the per-column grid (its own
-	// add_source `table:{id}` head, now carrying the light semantic join), the
-	// table descriptive header (DAT-476 — `current_table_entities`, a
-	// `session:{id}`-detect-head view so scoped to the passed session_id when
-	// given, else the latest detected entity), the table-grain band (the
-	// begin_session `session:{id}` head), and the workspace teach count. Fan them
-	// out — they share no input, so sequential awaits only add latency.
-	// table_readiness stays null without a session_id (add_source view); entity
-	// stays null until a detect run promotes (for the chosen session/latest scope).
+	// add_source `table:{id}` generation head, now carrying the light semantic
+	// join), the table descriptive header (DAT-476 — `current_table_entities`,
+	// resolved at the workspace catalog head), the table-grain band (the
+	// begin_session catalog head), and the workspace teach count. Fan them out —
+	// they share no input, so sequential awaits only add latency. entity +
+	// table_readiness stay null until a begin_session catalog run promotes; both
+	// resolve at the workspace catalog head now (DAT-506), independent of any
+	// session id.
 	const tableName = table.tableName ?? "";
 	const [cols, entity, tableReadiness, pending] = await Promise.all([
 		loadColumnGrid(input.table_id),
-		loadTableEntity(input.table_id, input.session_id),
-		input.session_id ? loadTableBand(input.session_id, tableName) : null,
+		loadTableEntity(input.table_id),
+		loadTableBand(tableName),
 		getPendingOverlays(),
 	]);
 
@@ -445,7 +445,7 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 			topDrivers: currentEntropyReadiness.topDrivers,
 			computedAt: currentEntropyReadiness.computedAt,
 			viaTableHead: currentEntropyReadiness.viaTableHead,
-			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
 		})
 		.from(currentEntropyReadiness)
@@ -483,34 +483,21 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 	});
 }
 
-/** The `current_table_entities` filter for one table (DAT-476). The view is
- * `session:{id}`-detect-head-scoped — ONE row per (table_id, session), NOT
- * table-grain — so filtering on table_id alone picks an arbitrary session's row
- * in a multi-session workspace. When a session_id is passed we scope to it
- * (mirror loadTableBand); otherwise we filter on table_id alone and let the
- * `detected_at desc` order at the call site pick the latest deterministically.
- * Pure (no DB) so the scoping decision is unit-testable. */
-export function tableEntityWhere(tableId: string, sessionId?: string) {
-	return sessionId
-		? and(
-				eq(currentTableEntities.tableId, tableId),
-				eq(currentTableEntities.sessionId, sessionId),
-			)
-		: eq(currentTableEntities.tableId, tableId);
+/** The `current_table_entities` filter for one table (DAT-476, DAT-506). The
+ * view resolves at the workspace catalog head — ONE row per table_id, no session
+ * axis — so filtering on table_id alone is exact. The `detected_at desc` order at
+ * the call site is the defensive tiebreak. Pure (no DB) so it stays unit-testable. */
+export function tableEntityWhere(tableId: string) {
+	return eq(currentTableEntities.tableId, tableId);
 }
 
 /** Resolve a table's descriptive header (DAT-476) — entity type / fact-dimension
- * / grain / time column / description from `current_table_entities`. The view is
- * `session:{id}`-detect-head-scoped (one row per (table_id, session), NOT
- * table-grain), so the {@link tableEntityWhere} filter scopes to the passed
- * session_id when given; the `detected_at desc` order then picks the latest
- * detected entity deterministically (vs an arbitrary session's row). Null when no
- * detect run has promoted for the chosen scope (pre-session). */
-async function loadTableEntity(
-	tableId: string,
-	sessionId?: string,
-): Promise<TableEntity | null> {
-	const where = tableEntityWhere(tableId, sessionId);
+ * / grain / time column / description from `current_table_entities`. The view
+ * resolves at the workspace catalog head (DAT-506), one row per table_id, so the
+ * {@link tableEntityWhere} filter is exact; the `detected_at desc` order is the
+ * defensive tiebreak. Null when no begin_session catalog run has promoted yet. */
+async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
+	const where = tableEntityWhere(tableId);
 	const [row] = await metadataDb
 		.select({
 			detectedEntityType: currentTableEntities.detectedEntityType,
@@ -527,12 +514,11 @@ async function loadTableEntity(
 	return row ? projectTableEntity(row) : null;
 }
 
-/** Resolve a session's table-grain readiness band for one table (DAT-415).
- * begin_session seals table readiness at the `session:{id}` detect head; read that
- * promoted run's `table:{name}` row. Null when the session never sealed or this
- * table carries no table-grain row in it. */
+/** Resolve the workspace table-grain readiness band for one table (DAT-415,
+ * DAT-506). begin_session seals table readiness at the workspace catalog head;
+ * read that promoted run's `table:{name}` row. Null when no catalog run has
+ * sealed yet or this table carries no table-grain row in it. */
 async function loadTableBand(
-	sessionId: string,
 	tableName: string,
 ): Promise<TableReadiness | null> {
 	const [row] = await metadataDb
@@ -543,16 +529,10 @@ async function loadTableBand(
 			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, sessionId),
-				eq(currentEntropyReadiness.target, tableTargetKey(tableName)),
-			),
-		)
+		.where(eq(currentEntropyReadiness.target, tableTargetKey(tableName)))
 		// Safe without a grain pick: `table:{name}` targets are written only by
-		// session-grain runs (add_source persists column targets only), and the
-		// view's latest-promoted-wins dedup leaves ≤1 session-grain row per
-		// (session_id, target).
+		// catalog-grain runs (add_source persists column targets only), and the
+		// view's latest-promoted-wins dedup leaves ≤1 catalog-grain row per target.
 		.limit(1);
 	return row ? projectTableBand(row) : null;
 }

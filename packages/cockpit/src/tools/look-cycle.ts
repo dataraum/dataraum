@@ -18,7 +18,6 @@
 // the pure row→shape projection is unit-tested via `projectCycleOverview`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -120,7 +119,7 @@ export async function lookCycle(
 	// `analyzed` = the session PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared cycles" (a vertical with none), which must not
 	// read as never-ran.
-	const head = await readOperatingModelHead(input.session_id);
+	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
 			session_id: input.session_id,
@@ -133,10 +132,8 @@ export async function lookCycle(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. The shared reader scopes to cycle artifacts — the
 	// authoritative declared set.
-	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
-		input.session_id,
-		"cycle",
-	);
+	const artifacts: LifecycleArtifactRow[] =
+		await readLifecycleArtifactRows("cycle");
 
 	const rawDetected = await metadataDb
 		.select({
@@ -149,8 +146,7 @@ export async function lookCycle(
 			completedCycles: currentDetectedBusinessCycles.completedCycles,
 			totalRecords: currentDetectedBusinessCycles.totalRecords,
 		})
-		.from(currentDetectedBusinessCycles)
-		.where(eq(currentDetectedBusinessCycles.sessionId, input.session_id));
+		.from(currentDetectedBusinessCycles);
 	const detectedByType = new Map<string, CycleDetectionRow>(
 		rawDetected.map((d) => [
 			d.canonicalType ?? "",

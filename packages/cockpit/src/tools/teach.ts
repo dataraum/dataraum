@@ -53,11 +53,10 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
 
 	// Workspace identity is implicit in the ws_<id> schema this insert
 	// targets — the metadata client's connection already scopes to it via
-	// pgSchema. No explicit workspace_id column post-DAT-343 (multi-workspace
-	// shared-schema is DAT-357; bring the column back then).
+	// pgSchema. config_overlay carries no session_id post-DAT-506 (the overlay
+	// vocabulary is workspace-scoped).
 	await metadataDb.insert(configOverlayWrite).values({
 		overlayId,
-		sessionId: input.session_id ?? null,
 		type: input.type,
 		payload,
 		createdAt: new Date(),
@@ -107,7 +106,6 @@ export const teachTool = toolDefinition({
 				"The kind of grounding-layer correction to record; it determines which payload fields are required (see payload).",
 			),
 		payload: TeachPayloadSchema,
-		session_id: z.string().nullish(),
 	}),
 	// Success OR a structured validation error: the per-type `validateTeach`
 	// rejects a malformed payload by throwing `TeachValidationError`. Surfacing

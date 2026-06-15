@@ -103,7 +103,7 @@ export async function lookMetric(
 	// `analyzed` = the session PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared metrics" (a vertical with none), which must not
 	// read as never-ran.
-	const head = await readOperatingModelHead(input.session_id);
+	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
 			session_id: input.session_id,
@@ -115,10 +115,8 @@ export async function lookMetric(
 
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453). The shared
 	// reader scopes to metric artifacts — the authoritative declared set.
-	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
-		input.session_id,
-		"metric",
-	);
+	const artifacts: LifecycleArtifactRow[] =
+		await readLifecycleArtifactRows("metric");
 
 	// One round-trip for all the metrics' snippets (workspace-durable, keyed by
 	// `source='graph:<graph_id>'`, NOT run-versioned — the cross-run reuse base),

@@ -16,7 +16,7 @@
 // integration-smoke-covered (scripts/smoke-operating-model.ts).
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -135,7 +135,6 @@ export async function whyValidation(
 	// 'validation' (the key is unique only WITHIN a type — cycles/metrics share
 	// this view).
 	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
 		"validation",
 		input.validation_id,
 	);
@@ -152,12 +151,7 @@ export async function whyValidation(
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
 		.from(currentValidationResults)
-		.where(
-			and(
-				eq(currentValidationResults.sessionId, input.session_id),
-				eq(currentValidationResults.validationId, input.validation_id),
-			),
-		)
+		.where(eq(currentValidationResults.validationId, input.validation_id))
 		.limit(1);
 
 	const pending = await getPendingOverlays();

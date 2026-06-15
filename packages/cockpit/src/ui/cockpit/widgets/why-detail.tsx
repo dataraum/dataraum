@@ -172,7 +172,7 @@ export interface VerdictHistoryRow {
 
 const STAGE_LABEL: Record<string, string> = {
 	add_source: "import",
-	session_detect: "session analysis",
+	catalog: "session analysis",
 	operating_model: "operating model",
 };
 

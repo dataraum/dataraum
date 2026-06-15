@@ -1,37 +1,80 @@
-// Per-turn WORKSPACE CONTEXT for the agent — session-awareness.
+// Per-turn WORKSPACE CONTEXT for the agent — session-awareness (DAT-506).
 //
 // The agent learns state ONLY from what reaches its message context (tool
 // results + the structured handoff parts), and the chat messages are
-// in-memory, so a reload wipes them. (Historically the "Add source" button
-// also bypassed the agent entirely — DAT-436 folded that trigger into the
-// approved `select`, whose result now reaches the agent — but a reload still
-// loses it.) Result: replay / teach / look_relationships / why_relationship
-// had no way to know which session the user is in, and asked for an id.
+// in-memory, so a reload wipes them. Result: replay / teach / look_relationships
+// / why_relationship had no way to know which session the user is in, and asked
+// for an id.
 //
-// Fix: each turn, read the workspace's sessions from `investigation_sessions` and
-// hand the agent the CURRENT session (most recent — the honest proxy until the
-// active-session state machine lands) plus the recent ones. A session is ambient
-// state, like the workspace: the user is always in exactly one, and
-// add_source / begin_session are the transitions into a new one.
+// Fix: each turn, read the workspace's sessions from cockpit_db (`sessions` —
+// the session-of-record post-DAT-506; the engine no longer has an
+// `investigation_sessions` table) and hand the agent the CURRENT session (most
+// recent — the honest proxy until the active-session state machine lands) plus
+// the recent ones. The tables each session spans are resolved through its runs:
+// cockpit `session_runs.run_id` → the engine `run_tables` view → `tables` →
+// `sources`. A session is ambient state, like the workspace: the user is always
+// in exactly one, and add_source / begin_session are the transitions into a new one.
 
 import { desc, eq, inArray } from "drizzle-orm";
-import { metadataDb } from "../db/metadata/client";
+import { cockpitDb } from "../db/cockpit/client";
 import {
-	investigationSessions,
-	sessionTables,
-	sources,
-	tables,
-} from "../db/metadata/schema";
+	resolveActiveWorkspace,
+	resolveActiveWorkspaceRow,
+} from "../db/cockpit/registry";
+import { sessionRuns, sessions } from "../db/cockpit/schema";
+import { metadataDb } from "../db/metadata/client";
+import { runTables, sources, tables } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
 
 const RECENT_LIMIT = 5;
 
-/** A session as the agent should see it: its id, framed vertical, and the
- * human-named tables it spans (de-prefixed filenames). */
+/** A session as the agent should see it: its (engine) id, framed vertical, and
+ * the human-named tables it spans (de-prefixed filenames). */
 export interface SessionSummary {
 	sessionId: string;
 	vertical: string | null;
 	tableNames: string[];
+}
+
+/** The engine session ids of a workspace's sessions, most recent first, with the
+ * union of run ids each spans. cockpit_db is the session-of-record (DAT-506);
+ * the engine session id is the value the tools + workflow ids key on. */
+async function recentSessionsWithRuns(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<{ engineSessionId: string; runIds: string[] }>> {
+	const rows = await cockpitDb
+		.select({
+			engineSessionId: sessions.engineSessionId,
+			createdAt: sessions.createdAt,
+			runId: sessionRuns.runId,
+		})
+		.from(sessions)
+		.leftJoin(sessionRuns, eq(sessionRuns.sessionId, sessions.id))
+		.where(eq(sessions.workspaceId, workspaceId))
+		.orderBy(desc(sessions.createdAt));
+
+	// Fold runs under their session, preserving most-recent-first session order.
+	const order: string[] = [];
+	const runsBySession = new Map<string, Set<string>>();
+	for (const r of rows) {
+		const set = runsBySession.get(r.engineSessionId);
+		if (set === undefined) {
+			order.push(r.engineSessionId);
+			runsBySession.set(
+				r.engineSessionId,
+				new Set(r.runId ? [r.runId] : []),
+			);
+		} else if (r.runId) {
+			set.add(r.runId);
+		}
+	}
+	return order
+		.slice(0, limit)
+		.map((engineSessionId) => ({
+			engineSessionId,
+			runIds: [...(runsBySession.get(engineSessionId) ?? [])],
+		}));
 }
 
 /**
@@ -39,35 +82,29 @@ export interface SessionSummary {
  * the user is in, until the app-state active-session machine replaces this proxy.
  * Null when the workspace has no usable session yet.
  *
- * Why "with linked tables", not just "most recent": add_source / begin_session /
- * replay all SEED the `investigation_sessions` row BEFORE the engine's async
- * typing phase links its tables. So a freshly-started session has no tables for a
- * window — and treating it as "current" would (a) make a bare "replay" right
- * after replaying throw "no sources", and (b) let an in-flight run hijack
- * "current" mid-conversation. Filtering to sessions-with-tables keeps "current"
- * on the last USABLE session — and means "replay" re-runs the one you taught (the
- * original, which has tables), not the in-flight replay seed. (Tiebreak by id so
- * two sessions sharing a `started_at` millisecond resolve deterministically.)
+ * Why "with linked tables", not just "most recent": a freshly-recorded session has
+ * no `run_tables` rows for a window (the engine links them mid-typing). So treating
+ * it as "current" would (a) make a bare "replay" right after replaying throw "no
+ * sources", and (b) let an in-flight run hijack "current" mid-conversation.
+ * Filtering to sessions-with-tables keeps "current" on the last USABLE session —
+ * and means "replay" re-runs the one you taught (the original, which has tables),
+ * not the in-flight replay seed.
  *
  * `replay` defaults to this so "replay" re-runs the taught session without an id.
  */
 export async function currentSessionId(): Promise<string | null> {
-	const [row] = await metadataDb
-		.selectDistinct({
-			sessionId: investigationSessions.sessionId,
-			startedAt: investigationSessions.startedAt,
-		})
-		.from(investigationSessions)
-		.innerJoin(
-			sessionTables,
-			eq(sessionTables.sessionId, investigationSessions.sessionId),
-		)
-		.orderBy(
-			desc(investigationSessions.startedAt),
-			desc(investigationSessions.sessionId),
-		)
-		.limit(1);
-	return row?.sessionId ?? null;
+	const workspaceId = await resolveActiveWorkspace();
+	const recent = await recentSessionsWithRuns(workspaceId, RECENT_LIMIT);
+	for (const s of recent) {
+		if (s.runIds.length === 0) continue;
+		const [row] = await metadataDb
+			.select({ tableId: runTables.tableId })
+			.from(runTables)
+			.where(inArray(runTables.runId, s.runIds))
+			.limit(1);
+		if (row) return s.engineSessionId;
+	}
+	return null;
 }
 
 /**
@@ -98,54 +135,62 @@ export function formatWorkspaceContext(
 }
 
 /** Read the recent sessions + the tables each spans, most-recent first. Only
- * sessions WITH linked tables (see `currentSessionId` — a freshly-seeded, still
- * in-flight session has none yet and isn't something the agent can act on). */
+ * sessions WITH linked tables (see `currentSessionId` — a freshly-recorded,
+ * still in-flight session has none yet and isn't something the agent can act on).
+ * The vertical is the WORKSPACE's (DAT-506: it's a workspace property, not a
+ * per-session pick). */
 export async function buildWorkspaceContext(): Promise<string | null> {
-	const recent = await metadataDb
-		.selectDistinct({
-			sessionId: investigationSessions.sessionId,
-			vertical: investigationSessions.vertical,
-			startedAt: investigationSessions.startedAt,
-		})
-		.from(investigationSessions)
-		.innerJoin(
-			sessionTables,
-			eq(sessionTables.sessionId, investigationSessions.sessionId),
-		)
-		.orderBy(
-			desc(investigationSessions.startedAt),
-			desc(investigationSessions.sessionId),
-		)
-		.limit(RECENT_LIMIT);
+	const workspace = await resolveActiveWorkspaceRow();
+	const recent = await recentSessionsWithRuns(workspace.id, RECENT_LIMIT);
 	if (recent.length === 0) return null;
 
-	const ids = recent.flatMap((s) => (s.sessionId ? [s.sessionId] : []));
-	const links = await metadataDb
-		.select({
-			sessionId: sessionTables.sessionId,
-			tableName: tables.tableName,
-			sourceName: sources.name,
-		})
-		.from(sessionTables)
-		.innerJoin(tables, eq(tables.tableId, sessionTables.tableId))
-		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
-		.where(inArray(sessionTables.sessionId, ids));
+	// All run ids across the recent sessions, mapped back to their session so the
+	// table names group correctly.
+	const sessionByRun = new Map<string, string>();
+	for (const s of recent) {
+		for (const runId of s.runIds) sessionByRun.set(runId, s.engineSessionId);
+	}
+	const runIds = [...sessionByRun.keys()];
+
+	const links =
+		runIds.length === 0
+			? []
+			: await metadataDb
+					.select({
+						runId: runTables.runId,
+						tableName: tables.tableName,
+						sourceName: sources.name,
+					})
+					.from(runTables)
+					.innerJoin(tables, eq(tables.tableId, runTables.tableId))
+					.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
+					.where(inArray(runTables.runId, runIds));
 
 	// View columns type as nullable (Postgres views carry no NOT NULL) —
 	// coalesce the identity fields the underlying tables guarantee.
 	const namesBySession = new Map<string, Set<string>>();
 	for (const l of links) {
-		const sessionId = l.sessionId ?? "";
+		const sessionId = sessionByRun.get(l.runId ?? "") ?? "";
 		const set = namesBySession.get(sessionId) ?? new Set<string>();
 		set.add(displayTableName(l.tableName ?? "", l.sourceName ?? ""));
 		namesBySession.set(sessionId, set);
 	}
 
+	// Only sessions that resolved at least one table (the usable ones).
+	const usable = recent.filter(
+		(s) => (namesBySession.get(s.engineSessionId)?.size ?? 0) > 0,
+	);
+	if (usable.length === 0) return null;
+
 	return formatWorkspaceContext(
-		recent.map((s) => ({
-			sessionId: s.sessionId ?? "",
-			vertical: s.vertical,
-			tableNames: [...(namesBySession.get(s.sessionId ?? "") ?? [])].sort(),
+		usable.map((s) => ({
+			sessionId: s.engineSessionId,
+			// Vertical is a workspace property now (DAT-506) — the same value on
+			// every session of this workspace.
+			vertical: workspace.vertical,
+			tableNames: [
+				...(namesBySession.get(s.engineSessionId) ?? []),
+			].sort(),
 		})),
 	);
 }

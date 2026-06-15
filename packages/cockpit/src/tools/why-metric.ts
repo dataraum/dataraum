@@ -160,11 +160,7 @@ export async function whyMetric(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution. No promoted run → empty views →
 	// not found. The shared reader pins artifact_type = 'metric'.
-	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
-		"metric",
-		input.graph_id,
-	);
+	const artifactRow = await readLifecycleArtifact("metric", input.graph_id);
 
 	// The metric's persisted SQL fragments — workspace-durable, keyed by
 	// `source='graph:<graph_id>'` (NOT run-versioned; the cross-run reuse base).

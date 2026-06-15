@@ -48,7 +48,6 @@ import {
 	QUERY_SUBAGENT_MAX_ITERATIONS,
 } from "../llm";
 import { getQueryInstructions } from "../prompts";
-import { currentSessionId } from "../prompts/workspace-context";
 import { asAgentError, withAgentError } from "./agent-error";
 import { listTables } from "./list-tables";
 import { buildSchemaBlock } from "./query-context";
@@ -391,8 +390,9 @@ export function componentsToSave(components: Component[]): Component[] {
  * Best-effort: a learning side-effect must NEVER fail the answer (the product),
  * so every error — including `permission denied` before the engine re-bootstraps
  * with the sql_snippets grant (read_views.py) — is logged and swallowed. Skipped
- * when there's no current session to anchor the NOT-NULL FK (the answer ran
- * outside any session) and when nothing fresh/adapted was composed.
+ * when nothing fresh/adapted was composed. Snippets are workspace-scoped now
+ * (DAT-506: the `workspace_id` column replaced the session FK), so there is no
+ * session gate.
  */
 export async function persistLearnedSnippets(
 	validated: ValidatedRun | null,
@@ -401,18 +401,18 @@ export async function persistLearnedSnippets(
 	const toSave = componentsToSave(validated.components);
 	if (toSave.length === 0) return;
 	try {
-		const sessionId = await currentSessionId();
-		if (!sessionId) return;
+		// Read-path workspace scoping resolves from the env-designated workspace,
+		// not the cockpit_db registry (DAT-505 boundary): in single-active-workspace
+		// the two are identical. It is BOTH the snippet's `workspace_id` and the
+		// `schema_mapping_id` key value. Per-request registry resolution of the
+		// active workspace for reads is the DAT-357 switcher.
+		const workspaceId = config.dataraumWorkspaceId;
 		const source = `query:${randomUUID()}`;
 		for (const c of toSave) {
 			await saveQuerySnippet({
-				// Read-path workspace scoping resolves from the env-designated
-				// workspace, not the cockpit_db registry (DAT-505 boundary): in
-				// single-active-workspace the two are identical. Per-request registry
-				// resolution of the active workspace for reads is the DAT-357 switcher.
-				schemaMappingId: config.dataraumWorkspaceId,
+				schemaMappingId: workspaceId,
 				standardField: c.name,
-				sessionId,
+				workspaceId,
 				sql: c.sql,
 				description: `Learned from a query: ${c.name}`,
 				source,

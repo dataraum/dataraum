@@ -5,11 +5,11 @@
 // `dataraum` / `dataraum_lake_catalog` databases and from the engine-owned
 // `ws_<id>` analytical schema (which the cockpit reads through ../metadata/).
 //
-// Control plane vs data plane (DD/32538626): the engine owns analytical data +
-// its `investigation_sessions` run anchor; cockpit_db owns *who / which-workspace
-// / which-session / which-runs*. These tables are PURELY ADDITIVE — `sessions`
-// references the engine's session id (`engineSessionId`), it does not replace it;
-// the driver tools keep seeding `investigation_sessions` unchanged.
+// Control plane vs data plane (DD/32538626): the engine owns analytical data;
+// cockpit_db owns *who / which-workspace / which-session / which-runs*. Sessions
+// live HERE now (DAT-506) — the engine dropped `investigation_sessions`; the run's
+// table set is anchored engine-side by `run_tables` (keyed by `run_id`). `sessions`
+// is the session-of-record, keyed to a run-correlation id (`engineSessionId`).
 //
 // Source of truth: this file. Migrations land in ../../../drizzle/cockpit/ via
 // `bun run db:generate:cockpit`, applied by `bun run db:migrate:cockpit` (the
@@ -66,13 +66,13 @@ export const workspaces = pgTable("workspaces", {
 });
 
 /**
- * A control-plane session — the cockpit's own record of an analytical session,
- * keyed to the engine's session by `engineSessionId` (UNIQUE, the join into the
- * engine's `investigation_sessions`). Additive: begin_session/add_source/replay
- * each create one; operating_model REUSES begin_session's (looked up by
- * `engineSessionId`). `kind` mirrors the engine seed intent
- * (onboarding | begin_session | replay); `status` carries the lifecycle
- * (active | ended | archived) that DAT-404 will drive.
+ * A control-plane session — the cockpit's record of an analytical session, the
+ * session-of-record (DAT-506: the engine no longer has `investigation_sessions`).
+ * `engineSessionId` (UNIQUE) is the run-correlation id the workflow ids + the
+ * engine identity header key on. begin_session/add_source/replay each create one;
+ * operating_model REUSES begin_session's (looked up by `engineSessionId`). `kind`
+ * is the run origin (onboarding | begin_session | replay); `status` carries the
+ * lifecycle (active | ended | archived) that DAT-404 will drive.
  */
 export const sessions = pgTable(
 	"sessions",

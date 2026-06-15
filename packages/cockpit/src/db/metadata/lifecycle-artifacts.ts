@@ -20,7 +20,7 @@
 import { and, asc, eq } from "drizzle-orm";
 
 import { metadataDb } from "./client";
-import { sessionHeadTarget } from "./relationship-target";
+import { catalogHeadTarget } from "./relationship-target";
 import { currentLifecycleArtifacts, metadataSnapshotHead } from "./schema";
 
 /** One current_lifecycle_artifacts row at LIST grain — what look_* needs per
@@ -43,20 +43,19 @@ export interface LifecycleArtifactDetail {
 }
 
 /**
- * The promoted operating_model run id for a session, or null when none is
- * promoted. The "analyzed" signal: the current_* views can't tell "promoted,
- * zero declared artifacts" from "never ran" (both yield empty rows), so the
- * head pass-through stays for exactly this check.
+ * The promoted operating_model run id for the workspace, or null when none is
+ * promoted (DAT-506: the workspace catalog head, no session axis). The
+ * "analyzed" signal: the current_* views can't tell "promoted, zero declared
+ * artifacts" from "never ran" (both yield empty rows), so the head pass-through
+ * stays for exactly this check.
  */
-export async function readOperatingModelHead(
-	sessionId: string,
-): Promise<string | null> {
+export async function readOperatingModelHead(): Promise<string | null> {
 	const [head] = await metadataDb
 		.select({ runId: metadataSnapshotHead.runId })
 		.from(metadataSnapshotHead)
 		.where(
 			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(sessionId)),
+				eq(metadataSnapshotHead.target, catalogHeadTarget()),
 				eq(metadataSnapshotHead.stage, "operating_model"),
 			),
 		)
@@ -71,7 +70,6 @@ export async function readOperatingModelHead(
  * metrics.
  */
 export async function readLifecycleArtifactRows(
-	sessionId: string,
 	artifactType: string,
 ): Promise<LifecycleArtifactRow[]> {
 	const rows = await metadataDb
@@ -81,12 +79,7 @@ export async function readLifecycleArtifactRows(
 			stateReason: currentLifecycleArtifacts.stateReason,
 		})
 		.from(currentLifecycleArtifacts)
-		.where(
-			and(
-				eq(currentLifecycleArtifacts.sessionId, sessionId),
-				eq(currentLifecycleArtifacts.artifactType, artifactType),
-			),
-		)
+		.where(eq(currentLifecycleArtifacts.artifactType, artifactType))
 		.orderBy(asc(currentLifecycleArtifacts.artifactKey));
 	// View columns type as nullable (a Postgres view carries no NOT NULL) —
 	// coalesce the identity field the underlying table guarantees.
@@ -103,7 +96,6 @@ export async function readLifecycleArtifactRows(
  * a cycle and a validation could share a key.
  */
 export async function readLifecycleArtifact(
-	sessionId: string,
 	artifactType: string,
 	artifactKey: string,
 ): Promise<LifecycleArtifactDetail | null> {
@@ -117,7 +109,6 @@ export async function readLifecycleArtifact(
 		.from(currentLifecycleArtifacts)
 		.where(
 			and(
-				eq(currentLifecycleArtifacts.sessionId, sessionId),
 				eq(currentLifecycleArtifacts.artifactType, artifactType),
 				eq(currentLifecycleArtifacts.artifactKey, artifactKey),
 			),

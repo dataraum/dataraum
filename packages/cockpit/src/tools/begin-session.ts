@@ -9,11 +9,12 @@
 // Anthropic calls, so this is a compute kick — it runs on the user's explicit
 // instruction (no approval gate).
 //
-// HARD PRECONDITION (DAT-407 FK), same as triggerAddSource / replay: the workflow's
-// `begin_session_select` writes `session_tables` rows with a NOT-NULL FK to
-// `investigation_sessions.session_id`, and fails loud if the session row is missing.
-// So this seeds the InvestigationSession row (with the vertical the phases read off
-// it) BEFORE starting the workflow, with the SAME session_id it hands the workflow.
+// No engine seed (DAT-506): sessions live in cockpit_db, and the run's table set
+// is anchored by `run_tables` (keyed by `run_id`), not `session_tables`. The run
+// is recorded in cockpit_db AUTHORITATIVELY (`recordRun` throws) BEFORE the
+// workflow starts. The `vertical` is the workspace property, sourced from the
+// registry (DAT-506 retired the per-session vertical pick — vertical is chosen
+// once per workspace, not per begin_session).
 //
 // Non-blocking (`workflow.start`): returns the workflow + run id immediately; the
 // cockpit narrates completion automatically (a server-side watcher) — the caller
@@ -25,15 +26,11 @@ import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
-import { recordRun } from "../db/cockpit/runs";
-import { metadataDb } from "../db/metadata/client";
-import { investigationSessions, sessionTables } from "../db/metadata/schema";
-import { investigationSessionsWrite } from "../db/metadata/write-surface";
+import { attachRunId, recordRun } from "../db/cockpit/runs";
 import type {
 	BeginSessionInput,
 	BeginSessionResult,
@@ -41,54 +38,12 @@ import type {
 } from "../temporal/types";
 import { beginSessionWorkflowId } from "../temporal/workflow-id";
 
-/**
- * Resolve the vertical the selected tables were framed on — begin_session must
- * run against the SAME ontology its tables were grounded under, never silently
- * fall back to `_adhoc` (which grounds the semantic pass against an empty
- * ontology). The vertical lives on the InvestigationSession that linked the
- * tables (DAT-407: it isn't on `tables`/`sources`), so walk
- * tables → session_tables → investigation_sessions and take the most-recent
- * NON-`_adhoc` vertical. Returns null when none of the tables has a framed
- * session yet (the caller then falls back to `_adhoc`).
- *
- * If the selection spans tables framed under DIFFERENT verticals, the
- * most-recently-framed one wins (deterministic, not random) — "one frame per
- * session" is the slice-2 invariant, so a mixed selection is unusual; the caller
- * passes an explicit `vertical` to choose. The tool description says as much.
- */
-async function resolveSelectionVertical(
-	tableIds: string[],
-): Promise<string | null> {
-	if (tableIds.length === 0) return null;
-	const [row] = await metadataDb
-		.select({ vertical: investigationSessions.vertical })
-		.from(investigationSessions)
-		.innerJoin(
-			sessionTables,
-			eq(sessionTables.sessionId, investigationSessions.sessionId),
-		)
-		.where(
-			and(
-				inArray(sessionTables.tableId, tableIds),
-				isNotNull(investigationSessions.vertical),
-				ne(investigationSessions.vertical, "_adhoc"),
-			),
-		)
-		.orderBy(desc(investigationSessions.startedAt))
-		.limit(1);
-	return row?.vertical ?? null;
-}
-
 export interface BeginSessionToolInput {
 	table_ids: string[];
-	// Per-session id — the engine uses it as the FK on the session's rows. Optional:
-	// omit to start a fresh session; pass an existing one to re-run that session
-	// (teach → re-run), reusing the seeded row conflict-safely.
+	// Per-session id — the cockpit's run-correlation key. Optional: omit to start a
+	// fresh session; pass an existing one to re-run that session (teach → re-run),
+	// reusing the recorded row conflict-safely.
 	session_id?: string;
-	// Vertical to ground the session against. Optional: when omitted, resolved from
-	// the selected tables' framed session (resolveSelectionVertical), falling back
-	// to "_adhoc" only if none was framed. Pass an explicit vertical to override.
-	vertical?: string;
 }
 
 export interface BeginSessionToolResult {
@@ -99,10 +54,10 @@ export interface BeginSessionToolResult {
 }
 
 /**
- * Seed the InvestigationSession parent row, then start `beginSessionWorkflow`
- * NON-blocking. Returns the workflow + run id (and the session id) immediately;
- * the cockpit narrates completion automatically (a server-side watcher) — the
- * caller does NOT poll.
+ * Record the cockpit session + run AUTHORITATIVELY (throws on failure), then start
+ * `beginSessionWorkflow` NON-blocking. Returns the workflow + run id (and the
+ * session id) immediately; the cockpit narrates completion automatically (a
+ * server-side watcher) — the caller does NOT poll.
  */
 export async function beginSession(
 	input: BeginSessionToolInput,
@@ -115,41 +70,37 @@ export async function beginSession(
 	}
 
 	const sessionId = input.session_id ?? randomUUID();
-	// Explicit input wins; else the selection's framed vertical; else cold-start
-	// `_adhoc`. Omitting it must NOT silently run against `_adhoc`.
-	const vertical =
-		input.vertical ??
-		(await resolveSelectionVertical(input.table_ids)) ??
-		"_adhoc";
 
-	// Seed the session BEFORE starting the workflow (the FK precondition above).
-	// onConflictDoNothing: re-running an existing session (caller-supplied id) is a
-	// no-op; a fresh id is seeded. Mirrors triggerAddSource / replay.
-	await metadataDb
-		.insert(investigationSessionsWrite)
-		.values({
-			sessionId,
-			intent: "begin_session",
-			status: "active",
-			startedAt: new Date(),
-			stepCount: 0,
-			vertical,
-		})
-		.onConflictDoNothing({ target: investigationSessions.sessionId });
-
-	// The active workspace ROW, from the cockpit_db registry (DAT-461/505) rather
-	// than the raw env var — the source of truth for the sessions.workspaceId FK
-	// recorded below AND the per-workspace task queue the workflow routes to.
+	// The active workspace ROW, from the cockpit_db registry (DAT-461/505/506):
+	// the source of truth for the recorded run, the per-workspace task queue, AND
+	// the frame `vertical` (a workspace property chosen once — DAT-506 retired the
+	// per-session pick).
 	const workspace = await resolveActiveWorkspaceRow();
 	const workspaceId = workspace.id;
+	const vertical = workspace.vertical;
+
+	const workflowId = beginSessionWorkflowId(workspaceId, sessionId);
+
+	// Record the cockpit session + run BEFORE starting (Q4): an unrecorded run is
+	// orphaned, so recordRun is AUTHORITATIVE — it throws on failure. Idempotent
+	// upserts keep a re-run (caller-supplied session_id) safe.
+	await recordRun({
+		workspaceId,
+		engineSessionId: sessionId,
+		kind: "begin_session",
+		stage: "begin_session",
+		workflowId,
+	});
 
 	const identity: SessionIdentity = {
 		workspace_id: workspaceId,
 		session_id: sessionId,
 	};
-	const payload: BeginSessionInput = { identity, tables: input.table_ids };
-
-	const workflowId = beginSessionWorkflowId(workspaceId, sessionId);
+	const payload: BeginSessionInput = {
+		identity,
+		tables: input.table_ids,
+		vertical,
+	};
 
 	const connection = await Connection.connect({ address: config.temporalHost });
 	try {
@@ -167,16 +118,8 @@ export async function beginSession(
 			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
 		});
 
-		// Record the cockpit-side session + run (DAT-461) — best-effort, never
-		// fails the started workflow.
-		await recordRun({
-			workspaceId,
-			engineSessionId: sessionId,
-			kind: "begin_session",
-			stage: "begin_session",
-			workflowId,
-			runId: handle.firstExecutionRunId,
-		});
+		// Finalize the provisional runId on the pre-recorded run (best-effort).
+		await attachRunId(workflowId, handle.firstExecutionRunId);
 
 		return {
 			workflow_id: workflowId,
@@ -204,7 +147,8 @@ export const beginSessionTool = toolDefinition({
 		"processing + LLM calls. Returns the workflow_id + run_id; the run proceeds " +
 		"in the background and its progress shows live in the canvas — you'll be " +
 		"told automatically when it finishes, so don't poll for status. Pass an " +
-		"existing session_id to re-run a session after teaching.",
+		"existing session_id to re-run a session after teaching. Runs on the " +
+		"WORKSPACE's vertical (set once for the workspace — not chosen per session).",
 	inputSchema: z.object({
 		table_ids: z
 			.array(z.string())
@@ -216,13 +160,7 @@ export const beginSessionTool = toolDefinition({
 			.string()
 			.optional()
 			.describe(
-				"Optional session id; omit to start a fresh session, pass one to re-run it after teaching. NOTE: re-running keeps the session's original vertical — a different `vertical` here is ignored for an existing session.",
-			),
-		vertical: z
-			.string()
-			.optional()
-			.describe(
-				"Optional. Omit to run on the vertical the selected tables were framed on (resolved automatically; if they span multiple verticals the most-recent wins, so pass one explicitly for a mixed selection). Pass one to override.",
+				"Optional session id; omit to start a fresh session, pass one to re-run it after teaching.",
 			),
 	}),
 	outputSchema: z.object({

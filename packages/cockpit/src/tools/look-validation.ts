@@ -19,7 +19,6 @@
 // the pure row→shape projection is unit-tested via `projectValidationOverview`.
 
 import { toolDefinition } from "@tanstack/ai";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -129,11 +128,12 @@ export interface LookValidationInput {
 export async function lookValidation(
 	input: LookValidationInput,
 ): Promise<LookValidationResult> {
-	// `analyzed` = the session PROMOTED an operating_model run — distinct from
+	// `analyzed` = the workspace PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared validations" (a vertical with none), which must
 	// not read as never-ran. The head pass-through stays on the read surface for
 	// exactly this check; the rows themselves come from the current_* views.
-	const head = await readOperatingModelHead(input.session_id);
+	// Resolved at the workspace catalog head (DAT-506), so it carries no session.
+	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
 			session_id: input.session_id,
@@ -146,10 +146,8 @@ export async function lookValidation(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. The shared reader scopes to validation artifacts —
 	// the lifecycle substrate is typed and shared with cycles/metrics.
-	const artifacts: LifecycleArtifactRow[] = await readLifecycleArtifactRows(
-		input.session_id,
-		"validation",
-	);
+	const artifacts: LifecycleArtifactRow[] =
+		await readLifecycleArtifactRows("validation");
 
 	const rawResults = await metadataDb
 		.select({
@@ -160,8 +158,7 @@ export async function lookValidation(
 			message: currentValidationResults.message,
 			columnsUsed: currentValidationResults.columnsUsed,
 		})
-		.from(currentValidationResults)
-		.where(eq(currentValidationResults.sessionId, input.session_id));
+		.from(currentValidationResults);
 	const resultByKey = new Map<string, ValidationResultRow>(
 		rawResults.map((r) => [
 			r.validationId ?? "",

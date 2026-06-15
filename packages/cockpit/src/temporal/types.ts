@@ -12,26 +12,33 @@ export interface SourceIdentity {
 	// OPTIONAL (DAT-422): a run ingests a SET of objects from 1–N sources, not one
 	// source — the per-source ids ride in `AddSourceInput.source_ids`. Left unset by
 	// the trigger; the engine scopes each `import` to a source from that set and the
-	// run-level reduce/detect are session-scoped.
+	// run-level reduce/detect are run-scoped.
 	source_id?: string | null;
-	// Per-run FK for session-scoped rows + the run's table-set anchor.
+	// The cockpit's run-correlation key (the workflow id segment + the value echoed
+	// back in results); sessions live in cockpit_db, not the engine (DAT-506), so it
+	// is no longer a DB scope key — the run's table set is anchored by `run_id`.
 	session_id: string;
-	vertical?: string | null;
+	// Snapshot version axis (DAT-413): the cockpit leaves it unset; the workflow
+	// mints it before the first activity. The `vertical` rides on the workflow
+	// INPUT now (DAT-506), not the identity.
+	run_id?: string | null;
 }
 
 export interface AddSourceInput {
 	identity: SourceIdentity;
 	// The sources this run imports, in order (DAT-422) — at least one. `import` runs
-	// once per source; the per-table fan-out + the session-scoped reduce/detect run
+	// once per source; the per-table fan-out + the run-scoped reduce/detect run
 	// over the union.
 	source_ids: string[];
+	// The workspace's frame ontology (by name, DAT-506) — drives per-column semantic
+	// grounding. Sourced by the driver from `workspaces.vertical` (cockpit-owned).
+	vertical: string;
 }
 
 // begin_session (DAT-409) — the analytical pass over a SELECTED set of typed
 // tables (cross-source by nature). Mirrors `worker.contracts.{SessionIdentity,
-// BeginSessionInput,BeginSessionResult}`. NB unlike SourceIdentity there is no
-// `vertical` here — begin_session is source-free and reads the vertical off the
-// InvestigationSession row (the cockpit seeds it there before starting).
+// BeginSessionInput,BeginSessionResult}`. The `vertical` rides on the workflow
+// INPUT (DAT-506), sourced by the driver from `workspaces.vertical` (cockpit-owned).
 export interface SessionIdentity {
 	workspace_id: string;
 	session_id: string;
@@ -43,6 +50,9 @@ export interface BeginSessionInput {
 	identity: SessionIdentity;
 	// The user's explicit selection — an array of typed table ids.
 	tables: string[];
+	// The workspace's frame ontology (by name, DAT-506) — drives the LLM table
+	// synthesis / relationship reasoning. Sourced from `workspaces.vertical`.
+	vertical: string;
 }
 
 export interface BeginSessionResult {
@@ -52,20 +62,24 @@ export interface BeginSessionResult {
 
 // operating_model (DAT-438) — the journey's third stage: validations (and later
 // cycles/metrics) through the typed artifact lifecycle. Mirrors
-// `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Identity ONLY:
-// begin_session ESTABLISHES the table set; this stage re-reads it from
-// `session_tables` via its pre-flight resolve activity — the client never
-// re-passes a copy that could diverge. The activity-level messages
-// (OperatingModelScope/ScopedInput) are engine-internal, not mirrored.
+// `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Identity +
+// vertical: begin_session ESTABLISHES the table set; this stage re-reads it from
+// the workspace catalog head's `run_tables` via its pre-flight resolve activity
+// (DAT-506) — the client never re-passes a copy that could diverge. The
+// activity-level messages (OperatingModelScope/ScopedInput) are engine-internal.
 export interface OperatingModelInput {
 	identity: SessionIdentity;
+	// The workspace's frame ontology (by name, DAT-506) — drives the declared
+	// validations/cycles/metrics. Sourced from `workspaces.vertical`.
+	vertical: string;
 }
 
 export interface OperatingModelResult {
 	session_id: string;
-	table_ids: string[];
 	// The validation phase's explicit outcome verbatim — including the loud
-	// "no declared validations" case — render it, don't re-derive it.
+	// "no declared validations" case — render it, don't re-derive it. No
+	// table_ids (DAT-506): operating_model carries no table set — the cockpit
+	// reads the catalog views.
 	validation_summary: string;
 }
 

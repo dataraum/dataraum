@@ -2,12 +2,12 @@
 // `entropy/models.py` (`relationship_target_key` / `parse_relationship_target`),
 // the `table:{name}` target the table-scoped detectors write (`engine.py` /
 // `readiness.py`, DAT-415), and `storage/snapshot_head.py`
-// (`session_head_target`). begin_session writes relationship readiness/evidence
+// (`catalog_head_target`). begin_session writes relationship readiness/evidence
 // under a `relationship:{from_col}::{to_col}` target (DAT-408) and table-grain
-// readiness under a `table:{table_name}` target (DAT-415), and seals the run
-// under a `session:{session_id}` head; the readers here must build/parse those
-// exact strings, so they live in one place the same way the engine keeps one
-// function per string.
+// readiness under a `table:{table_name}` target (DAT-415), and seals the whole
+// run under the single workspace `catalog` head (DAT-506); the readers here must
+// build/parse those exact strings, so they live in one place the same way the
+// engine keeps one function per string.
 
 const REL_PREFIX = "relationship:";
 // `::` separates the two column UUIDs — a single `-` would be ambiguous inside a
@@ -42,9 +42,13 @@ export function tableTargetKey(tableName: string): string {
 	return `${TABLE_PREFIX}${tableName}`;
 }
 
-/** The snapshot-head key sealing a begin_session run (`session:{id}`). Relationship
- * and table-grain readiness are sealed at session grain (one head per session run),
- * NOT per-table like column readiness — so their readers resolve the head by this key. */
-export function sessionHeadTarget(sessionId: string): string {
-	return `session:${sessionId}`;
+/** The snapshot-head target sealing a begin_session / operating_model run — the
+ * constant workspace `catalog` head (DAT-506). The workspace IS the schema, so
+ * there is ONE catalog head per stage (no session axis); relationship, table-grain
+ * and lifecycle readiness all resolve through it. Mirrors the engine's
+ * `catalog_head_target()` (`storage/snapshot_head.py`). */
+export const CATALOG_HEAD_TARGET = "catalog";
+
+export function catalogHeadTarget(): string {
+	return CATALOG_HEAD_TARGET;
 }

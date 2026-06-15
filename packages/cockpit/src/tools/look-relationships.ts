@@ -15,10 +15,10 @@
 // relationship *catalog* (`current_relationships`) says WHAT each one is
 // (type/cardinality/confidence/detection-method/confirmed). This joins the
 // catalog facts onto the band rows by the directional column-pair so the agent
-// gets what + how-ready in ONE call, at the same session/detect grain. The
-// catalog view is already sealed to the promoted run by its own `session:{id}`
-// head EXISTS clause, so a plain sessionId filter reads the same run. The union
-// is full-outer by column-pair key: a catalog relationship with no readiness row
+// gets what + how-ready in ONE call, at the same workspace catalog grain. The
+// catalog view is already sealed to the promoted run by its own workspace
+// `catalog` head EXISTS clause (DAT-506), so both reads see the same run. The
+// union is full-outer by column-pair key: a catalog relationship with no readiness row
 // surfaces catalog-only (bands null), and a readiness row with no catalog match
 // surfaces bands-only (catalog facts null) — neither side is dropped.
 //
@@ -36,9 +36,9 @@ import {
 	ReadinessDriver,
 } from "../db/metadata/readiness-schemas";
 import {
+	catalogHeadTarget,
 	parseRelationshipTarget,
 	relationshipTargetKey,
-	sessionHeadTarget,
 } from "../db/metadata/relationship-target";
 import {
 	columns,
@@ -358,17 +358,18 @@ export interface LookRelationshipsInput {
 export async function lookRelationships(
 	input: LookRelationshipsInput,
 ): Promise<LookRelationshipsResult> {
-	// `analyzed` = the session SEALED a detect run — distinct from "sealed but
-	// zero relationships" (single-table session), which must not read as
+	// `analyzed` = a begin_session catalog run SEALED — distinct from "sealed but
+	// zero relationships" (single-table workspace), which must not read as
 	// never-ran. The head pass-through stays on the read surface for exactly
-	// this check; the rows themselves come from the current_* view.
+	// this check; the rows themselves come from the current_* view. Resolved at
+	// the workspace `catalog` head (DAT-506), so it carries no session.
 	const [head] = await metadataDb
 		.select({ runId: metadataSnapshotHead.runId })
 		.from(metadataSnapshotHead)
 		.where(
 			and(
-				eq(metadataSnapshotHead.target, sessionHeadTarget(input.session_id)),
-				eq(metadataSnapshotHead.stage, "detect"),
+				eq(metadataSnapshotHead.target, catalogHeadTarget()),
+				eq(metadataSnapshotHead.stage, "catalog"),
 			),
 		)
 		.limit(1);
@@ -397,18 +398,13 @@ export async function lookRelationships(
 			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, input.session_id),
-				like(currentEntropyReadiness.target, "relationship:%"),
-			),
-		)
+		.where(like(currentEntropyReadiness.target, "relationship:%"))
 		.orderBy(asc(currentEntropyReadiness.target));
 
-	// The relationship catalog for this session (DAT-478) — WHAT each relationship
-	// is. The view is already sealed to the promoted detect run by its own
-	// `session:{id}` head EXISTS clause, so a sessionId filter reads the same run as
-	// the readiness rows above. Joined onto the bands by the directional column pair.
+	// The relationship catalog (DAT-478) — WHAT each relationship is. The view is
+	// already sealed to the promoted begin_session run by its own workspace
+	// `catalog` head EXISTS clause (DAT-506), so it reads the same run as the
+	// readiness rows above. Joined onto the bands by the directional column pair.
 	const catalogQuery = metadataDb
 		.select({
 			fromColumnId: currentRelationships.fromColumnId,
@@ -420,7 +416,6 @@ export async function lookRelationships(
 			isConfirmed: currentRelationships.isConfirmed,
 		})
 		.from(currentRelationships)
-		.where(eq(currentRelationships.sessionId, input.session_id))
 		// The in-memory fold owns winner selection — `unionRelationships` /
 		// `catalogRowBeats` pick the per-pair representative by the engine's method
 		// precedence (`manual > keeper > llm > candidate`), confidence only as the

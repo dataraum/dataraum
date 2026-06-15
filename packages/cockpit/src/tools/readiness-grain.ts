@@ -1,51 +1,48 @@
-// Grain precedence for the multi-head current_* entropy views (DAT-509).
+// Grain precedence for the multi-head current_* entropy views (DAT-509, DAT-506).
 //
-// `current_entropy_objects` / `current_entropy_readiness` are multi-grain
-// (ADR-0008 + DAT-442): one target can carry a row sealed by the add_source
-// TABLE head and, once begin_session / operating_model run, a second row
-// sealed by a SESSION-grain head. The view dedupes only between the two
-// session-grain heads (detect vs operating_model, latest-promoted-wins) — the
-// table-head row coexists, and `entropy_readiness.session_id` is NOT NULL even
-// on add_source rows, so a session-scoped WHERE does not exclude it either.
-// An unpinned `.limit(1)` therefore picks an arbitrary grain, and a
-// `via_table_head` pin shows the stale add_source verdict forever (missing
-// re-adjudications like temporal_behavior's session pass and the
-// operating_model cross_table_consistency fan-out).
+// `current_entropy_objects` / `current_entropy_readiness` / `current_claim_witnesses`
+// are multi-grain (ADR-0008 + DAT-442): one target can carry a row sealed by the
+// add_source per-table GENERATION head and, once begin_session / operating_model
+// run, a second row sealed by the workspace CATALOG head. For READINESS the engine
+// view itself now resolves ONE row per target (catalog-grain precedence between the
+// `catalog` and `operating_model` heads lives in SQL — DAT-506), so the cockpit
+// reads readiness directly with no pick. The OBJECT / WITNESS union views still
+// carry coexisting per-detector rows, so `mergeCurrentEvidence` keeps the
+// catalog-over-table pick per detector at the read edge.
 //
-// The engine ranks session-grain over table-grain at every run-resolved read
-// (entropy/core/storage.py `load_for_tables`); these helpers mirror that rank
-// at the cockpit's read edge. SQL stays grain-unpinned; the pick is explicit,
-// pure, and unit-tested (the DAT-474 deterministic-pick rule).
+// These helpers mirror the engine's rank (catalog-grain over table-grain, latest
+// within a grain). The verdict-history projection (DAT-513) labels every coexisting
+// row so a picked verdict is always disclosable.
 
 import { z } from "zod";
 
 /** The head discriminators + recency every multi-grain view row carries. */
 export interface GrainRow {
 	viaTableHead: boolean | null;
-	viaSessionHead: boolean | null;
+	viaCatalogHead: boolean | null;
 	viaOperatingModelHead: boolean | null;
 	computedAt: Date | null;
 }
 
-/** Session-grain = sealed by a begin_session detect or operating_model head. */
-function isSessionGrain(row: GrainRow): boolean {
-	return row.viaSessionHead === true || row.viaOperatingModelHead === true;
+/** Catalog-grain = sealed by a begin_session catalog or operating_model head. */
+function isCatalogGrain(row: GrainRow): boolean {
+	return row.viaCatalogHead === true || row.viaOperatingModelHead === true;
 }
 
 /** The pipeline stage a snapshot row was sealed by (DAT-513). The pick is only
  * evaluable if the caller can SEE it — every surface that shows a picked
  * verdict labels it with this stage. `operating_model` outranks
- * `session_detect` in the label when both bits are set (they never are today:
+ * `catalog` in the label when both bits are set (they never are today:
  * a row is sealed by exactly one head; the order is defensive). */
 export type GrainStage =
 	| "add_source"
-	| "session_detect"
+	| "catalog"
 	| "operating_model"
 	| "unknown";
 
 export function stageOfRow(row: GrainRow): GrainStage {
 	if (row.viaOperatingModelHead === true) return "operating_model";
-	if (row.viaSessionHead === true) return "session_detect";
+	if (row.viaCatalogHead === true) return "catalog";
 	if (row.viaTableHead === true) return "add_source";
 	return "unknown";
 }
@@ -68,25 +65,28 @@ function latest<T extends GrainRow>(rows: readonly T[]): T | undefined {
 }
 
 /**
- * Pick THE current row for one target: the latest session-grain row when any
- * exists (a session's re-roll supersedes the add_source verdict — it was built
- * over the run-resolved merge of both grains), else the table-head row, else —
- * for rows that predate the discriminators or carry none — the latest row.
+ * Pick THE current row for one target: the latest catalog-grain row when any
+ * exists (a begin_session / operating_model run supersedes the add_source
+ * verdict — it was built over the run-resolved merge of both grains), else the
+ * table-head row, else — for rows that predate the discriminators or carry
+ * none — the latest row. Used by `mergeCurrentEvidence` for the per-detector
+ * object/witness union; readiness picks NOTHING here (the engine view resolves
+ * one row per target, DAT-506).
  */
 export function pickCurrentRow<T extends GrainRow>(
 	rows: readonly T[],
 ): T | undefined {
-	const session = rows.filter(isSessionGrain);
-	if (session.length > 0) return latest(session);
+	const catalog = rows.filter(isCatalogGrain);
+	if (catalog.length > 0) return latest(catalog);
 	const table = rows.filter((r) => r.viaTableHead === true);
 	if (table.length > 0) return latest(table);
 	return latest(rows);
 }
 
 /**
- * Merge a multi-grain evidence row set: one row per detector, session-grain
+ * Merge a multi-grain evidence row set: one row per detector, catalog-grain
  * winning over table-grain per detector (add_source-only detectors keep their
- * table-head row; re-adjudicated detectors show the session verdict). Output
+ * table-head row; re-adjudicated detectors show the catalog verdict). Output
  * preserves the input's first-occurrence detector order, so callers' ORDER BY
  * survives the merge.
  */
@@ -134,7 +134,7 @@ export interface VerdictHistoryEntry {
 /** Pipeline order for cumulative evidence attribution; unknown is excluded. */
 const STAGE_ORDER: Record<GrainStage, number> = {
 	add_source: 0,
-	session_detect: 1,
+	catalog: 1,
 	operating_model: 2,
 	unknown: -1,
 };
@@ -148,7 +148,6 @@ export function projectVerdictHistory(
 	readinessRows: readonly (GrainRow & {
 		band: string | null;
 		worstIntentRisk: number | null;
-		sessionId: string | null;
 		runId: string | null;
 	})[],
 	evidenceRows: readonly (GrainRow & { detectorId: string | null })[] = [],
@@ -174,7 +173,10 @@ export function projectVerdictHistory(
 					band: r.band ?? "",
 					worst_intent_risk: r.worstIntentRisk ?? null,
 					computed_at: r.computedAt?.toISOString() ?? null,
-					session_id: r.sessionId ?? null,
+					// session_id is gone from the catalog-grain views (DAT-506); the
+					// run_id remains the per-snapshot discriminator. Field kept for the
+					// DAT-513 history API shape (now always null).
+					session_id: null,
 					run_id: r.runId ?? null,
 					signals: signalsAtOrBelow(stage),
 				};

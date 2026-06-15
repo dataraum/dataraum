@@ -15,7 +15,7 @@
 
 import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
-import { and, asc, eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
@@ -245,29 +245,22 @@ export async function whyTable(
 
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head
 	// join lives in the database, so no head resolution and no runId plumbing
-	// here. No promoted run → the views are empty for the session → unanalyzed.
-	// `entropy_readiness.session_id` is NOT NULL even on add_source rows, so the
-	// session scope alone does not exclude the table-head grain — pick explicitly
-	// (session re-roll supersedes the add_source verdict).
+	// here. No promoted run → the views are empty → unanalyzed. The catalog
+	// readiness view resolves ONE row per target (DAT-506), so `pickCurrentRow`
+	// is a defensive no-op here; the merge below still picks per detector.
 	const allReadinessRows = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			computedAt: currentEntropyReadiness.computedAt,
-			sessionId: currentEntropyReadiness.sessionId,
 			runId: currentEntropyReadiness.runId,
 			viaTableHead: currentEntropyReadiness.viaTableHead,
-			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
 		})
 		.from(currentEntropyReadiness)
-		.where(
-			and(
-				eq(currentEntropyReadiness.sessionId, input.session_id),
-				eq(currentEntropyReadiness.target, target),
-			),
-		);
+		.where(eq(currentEntropyReadiness.target, target));
 	const readinessRow = pickCurrentRow(allReadinessRows);
 
 	// Evidence is keyed by the table target (table-grain rows have no column_id);
@@ -285,16 +278,11 @@ export async function whyTable(
 			computedAt: currentEntropyObjects.computedAt,
 			runId: currentEntropyObjects.runId,
 			viaTableHead: currentEntropyObjects.viaTableHead,
-			viaSessionHead: currentEntropyObjects.viaSessionHead,
+			viaCatalogHead: currentEntropyObjects.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
 		})
 		.from(currentEntropyObjects)
-		.where(
-			and(
-				eq(currentEntropyObjects.sessionId, input.session_id),
-				eq(currentEntropyObjects.target, target),
-			),
-		)
+		.where(eq(currentEntropyObjects.target, target))
 		.orderBy(asc(currentEntropyObjects.dimension));
 	const rawEvidence = mergeCurrentEvidence(unmergedEvidence);
 	// View columns type as nullable (Postgres views carry no NOT NULL); the

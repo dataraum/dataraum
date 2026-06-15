@@ -268,18 +268,18 @@ export async function whyColumn(
 	// The current_* views ARE the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database — no head resolution, no runId plumbing. No promoted
 	// run → empty views → unanalyzed (null band). The view is multi-grain
-	// (add_source table head + session-grain heads coexist) — fetch all grains
-	// and pick explicitly: session re-roll supersedes the add_source verdict.
+	// (add_source table head + catalog heads coexist) — fetch all grains
+	// and pick explicitly: a begin_session / operating_model run supersedes the
+	// add_source verdict per detector.
 	const allReadinessRows = await metadataDb
 		.select({
 			band: currentEntropyReadiness.band,
 			worstIntentRisk: currentEntropyReadiness.worstIntentRisk,
 			intents: currentEntropyReadiness.intents,
 			computedAt: currentEntropyReadiness.computedAt,
-			sessionId: currentEntropyReadiness.sessionId,
 			runId: currentEntropyReadiness.runId,
 			viaTableHead: currentEntropyReadiness.viaTableHead,
-			viaSessionHead: currentEntropyReadiness.viaSessionHead,
+			viaCatalogHead: currentEntropyReadiness.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyReadiness.viaOperatingModelHead,
 		})
 		.from(currentEntropyReadiness)
@@ -315,7 +315,7 @@ export async function whyColumn(
 			computedAt: currentEntropyObjects.computedAt,
 			runId: currentEntropyObjects.runId,
 			viaTableHead: currentEntropyObjects.viaTableHead,
-			viaSessionHead: currentEntropyObjects.viaSessionHead,
+			viaCatalogHead: currentEntropyObjects.viaCatalogHead,
 			viaOperatingModelHead: currentEntropyObjects.viaOperatingModelHead,
 		})
 		.from(currentEntropyObjects)

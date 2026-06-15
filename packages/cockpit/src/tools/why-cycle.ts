@@ -13,7 +13,7 @@
 // (scripts/smoke-operating-model.ts).
 
 import { toolDefinition } from "@tanstack/ai";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
@@ -164,7 +164,6 @@ export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
 	// 'cycle' (the key is unique only WITHIN a type — validations/metrics share
 	// this view).
 	const artifactRow = await readLifecycleArtifact(
-		input.session_id,
 		"cycle",
 		input.canonical_type,
 	);
@@ -189,10 +188,7 @@ export async function whyCycle(input: WhyCycleInput): Promise<WhyCycleResult> {
 		})
 		.from(currentDetectedBusinessCycles)
 		.where(
-			and(
-				eq(currentDetectedBusinessCycles.sessionId, input.session_id),
-				eq(currentDetectedBusinessCycles.canonicalType, input.canonical_type),
-			),
+			eq(currentDetectedBusinessCycles.canonicalType, input.canonical_type),
 		)
 		.limit(1);
 

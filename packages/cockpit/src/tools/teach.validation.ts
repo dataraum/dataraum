@@ -269,10 +269,6 @@ export const TeachPayloadSchema = z
 export interface TeachInput {
 	type: TeachType;
 	payload: unknown;
-	// Per-session teaches (slice 2+: metric / validation / cycle die with the
-	// session). null/undefined = workspace-scoped (the three round-tripped
-	// types + the deferred shapes today).
-	session_id?: string | null;
 }
 
 export class TeachValidationError extends Error {

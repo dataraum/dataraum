@@ -35,8 +35,9 @@ export interface QuerySnippetKey {
 }
 
 export interface SaveQuerySnippetInput extends QuerySnippetKey {
-	/** A valid `investigation_sessions` id (NOT-NULL FK). */
-	sessionId: string;
+	/** The dashed-UUID workspace_id VALUE (the NOT-NULL `workspace_id` column,
+	 * DAT-506 — snippets are workspace-scoped, no session FK). */
+	workspaceId: string;
 	sql: string;
 	description: string;
 	/** Provenance, e.g. `query:<runId>`. */
@@ -111,7 +112,7 @@ export async function saveQuerySnippet(
 	const now = new Date();
 	await metadataDb.insert(sqlSnippetsWrite).values({
 		snippetId,
-		sessionId: input.sessionId,
+		workspaceId: input.workspaceId,
 		snippetType: "query",
 		standardField: input.standardField,
 		statement: null,

@@ -121,6 +121,12 @@ describe.skipIf(!STACK_AVAILABLE)(
 				.insert(actors)
 				.values({ id: "default", displayName: "Default user" })
 				.onConflictDoNothing();
+			// UPSERT the vertical (not onConflictDoNothing): the cockpit registry
+			// self-seeds this same workspace row with the `_adhoc` cold-start default
+			// on first resolve (registry.ensureRegistry), and against the shared live
+			// stack that seed runs at container boot — before this suite. This test
+			// owns the `vertical finance` assertion, so it must SET the vertical, not
+			// silently no-op on the pre-existing `_adhoc` row.
 			await cockpitDb
 				.insert(workspaces)
 				.values({
@@ -129,7 +135,10 @@ describe.skipIf(!STACK_AVAILABLE)(
 					engineSchema: SCHEMA,
 					vertical: "finance",
 				})
-				.onConflictDoNothing();
+				.onConflictDoUpdate({
+					target: workspaces.id,
+					set: { vertical: "finance" },
+				});
 			await cockpitDb
 				.insert(sessions)
 				.values({

@@ -1,38 +1,30 @@
 """Slice analysis phase implementation.
 
-Executes slice SQL templates and runs analysis on the resulting slice tables:
+Materializes slice tables for downstream per-(slice, period) sums (DAT-491):
 - Creates slice tables in DuckDB from SliceDefinitions
 - Registers slice tables in metadata database
-- Runs statistics and quality analysis on each slice
-- Copies semantic annotations from parent tables
+
+The per-slice statistical profiling / quality pass was cut (DAT-518): its
+``ColumnStatistics``/quality rows (keyed by slice column_ids) had no reader.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from sqlalchemy import select
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.slice_runner import (
-    register_slice_tables,
-    run_analysis_on_slices,
-)
+from dataraum.analysis.slicing.slice_runner import register_slice_tables
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 
-if TYPE_CHECKING:
-    pass
-
 
 @analysis_phase
 class SliceAnalysisPhase(BasePhase):
-    """Execute slice SQL and analyze resulting slice tables.
+    """Materialize + register slice tables for downstream period sums.
 
-    Creates slice tables in DuckDB based on SliceDefinition SQL templates,
-    registers them in the metadata database, and runs statistical
-    analysis on each slice.
+    Creates slice tables in DuckDB from SliceDefinition SQL templates and
+    registers them in the metadata database.
 
     Requires: slicing phase.
     """
@@ -101,7 +93,7 @@ class SliceAnalysisPhase(BasePhase):
         if not slice_defs:
             return PhaseResult.success(
                 outputs={
-                    "slice_profiles": 0,
+                    "slices_registered": 0,
                     "message": "No slice definitions found",
                 },
                 records_processed=0,
@@ -140,7 +132,7 @@ class SliceAnalysisPhase(BasePhase):
         if not slice_infos:
             return PhaseResult.success(
                 outputs={
-                    "slice_profiles": 0,
+                    "slices_registered": 0,
                     "slices_created": slices_created,
                     "message": "No slice tables found in DuckDB",
                 },
@@ -148,31 +140,13 @@ class SliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Run analysis on slice tables. ``run_id`` stamps the slice-table
-        # profiles/quality rows (DAT-448) — unstamped rows never ON CONFLICT
-        # (NULLs are distinct), so re-runs duplicated them and the slice-profile
-        # consumer (dimensional_entropy) read the pile unscoped.
-        analysis_result = run_analysis_on_slices(
-            session=ctx.session,
-            duckdb_conn=ctx.duckdb_conn,
-            slice_infos=slice_infos,
-            run_statistics=True,
-            run_quality=True,
-            session_id=ctx.require_session_id(),
-            run_id=ctx.run_id,
-        )
-
-        errors.extend(analysis_result.errors)
-
         return PhaseResult.success(
             outputs={
-                "slice_profiles": analysis_result.statistics_computed,
-                "slices_registered": analysis_result.slices_registered,
-                "slices_analyzed": analysis_result.slices_analyzed,
-                "quality_assessed": analysis_result.quality_assessed,
+                "slices_registered": len(slice_infos),
+                "slices_created": slices_created,
                 "errors": errors if errors else None,
             },
             records_processed=len(slice_defs),
-            records_created=analysis_result.slices_registered,
-            summary=f"{analysis_result.slices_registered} slices registered, {analysis_result.statistics_computed} profiled",
+            records_created=len(slice_infos),
+            summary=f"{len(slice_infos)} slices registered",
         )

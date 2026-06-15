@@ -159,8 +159,7 @@ def _store_candidates(
     suppressed = load_suppressed_relationship_pairs(session)
 
     # In-batch dedup on the unique key (the same column pair can surface from
-    # two table-pair contexts in one batch); last write wins, mirroring
-    # ``persist_drift_results``.
+    # two table-pair contexts in one batch); last write wins.
     rows: dict[tuple[str, str | None, str, str, str], dict[str, Any]] = {}
 
     for candidate in candidates:

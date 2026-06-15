@@ -1,12 +1,11 @@
 """Slice analysis runner.
 
-Functions to register slice tables in metadata and run analysis phases on slices.
+Functions to materialize slice tables in DuckDB and register them in metadata.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -15,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.naming import slice_table_name, slicing_view_name
-from dataraum.analysis.statistics import assess_statistical_quality, profile_statistics
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
@@ -34,17 +32,6 @@ class SliceTableInfo:
     slice_column_name: str
     slice_value: str
     row_count: int
-
-
-@dataclass
-class SliceAnalysisResult:
-    """Result from analyzing slices."""
-
-    slices_registered: int
-    slices_analyzed: int
-    statistics_computed: int
-    quality_assessed: int
-    errors: list[str]
 
 
 def register_slice_tables(
@@ -221,8 +208,7 @@ def register_slice_tables(
                             )
                         )
 
-                # Flush so the next iteration's existing_stmt sees this slice
-                # (and run_statistics_on_slice can resolve it by PK on identity map).
+                # Flush so the next iteration's existing_stmt sees this slice.
                 session.flush()
 
                 registered.append(
@@ -244,143 +230,7 @@ def register_slice_tables(
         return Result.fail(f"Failed to register slice tables: {e}")
 
 
-def run_statistics_on_slice(
-    slice_info: SliceTableInfo,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    session: Session,
-    *,
-    session_id: str,
-    run_id: str | None = None,
-) -> Result[Any]:
-    """Run statistical profiling on a slice table.
-
-    Args:
-        slice_info: Information about the slice table
-        duckdb_conn: DuckDB connection
-        session: Database session
-
-    Returns:
-        Result containing profile result
-    """
-    # The profile_statistics function expects layer='typed', but we need to
-    # temporarily work with slice layer. We'll directly call it with the table_id.
-    # Since we registered with layer='slice', we need to handle this.
-
-    table = session.get(Table, slice_info.slice_table_id)
-    if not table:
-        return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
-
-    # Temporarily set layer to 'typed' so profile_statistics accepts it.
-    # Use no_autoflush to prevent the fake layer from being written to the DB.
-    original_layer = table.layer
-    table.layer = "typed"
-
-    try:
-        with session.no_autoflush:
-            result = profile_statistics(
-                table_id=slice_info.slice_table_id,
-                duckdb_conn=duckdb_conn,
-                session=session,
-                session_id=session_id,
-                run_id=run_id,
-            )
-        return result
-    finally:
-        table.layer = original_layer
-
-
-def run_quality_on_slice(
-    slice_info: SliceTableInfo,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    session: Session,
-    *,
-    session_id: str,
-    run_id: str | None = None,
-) -> Result[Any]:
-    """Run statistical quality assessment on a slice table.
-
-    Args:
-        slice_info: Information about the slice table
-        duckdb_conn: DuckDB connection
-        session: Database session
-
-    Returns:
-        Result containing quality result
-    """
-    result = assess_statistical_quality(
-        table_id=slice_info.slice_table_id,
-        duckdb_conn=duckdb_conn,
-        session=session,
-        session_id=session_id,
-        run_id=run_id,
-    )
-    return result
-
-
-def run_analysis_on_slices(
-    session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    slice_infos: list[SliceTableInfo],
-    run_statistics: bool = True,
-    run_quality: bool = True,
-    *,
-    session_id: str,
-    run_id: str | None = None,
-) -> SliceAnalysisResult:
-    """Run analysis phases on slice tables.
-
-    Runs statistics and quality analysis on each slice table.
-
-    Args:
-        session: Database session
-        duckdb_conn: DuckDB connection
-        slice_infos: List of slice table infos to analyze
-        run_statistics: Whether to run statistical profiling
-        run_quality: Whether to run quality assessment
-
-    Returns:
-        SliceAnalysisResult with counts and errors
-    """
-    errors: list[str] = []
-    stats_count = 0
-    quality_count = 0
-
-    # Run statistics on each slice
-    if run_statistics:
-        for slice_info in slice_infos:
-            result = run_statistics_on_slice(
-                slice_info, duckdb_conn, session, session_id=session_id, run_id=run_id
-            )
-            if result.success:
-                stats_count += 1
-            else:
-                errors.append(f"Stats {slice_info.slice_table_name}: {result.error}")
-
-    # Run quality on each slice
-    if run_quality:
-        for slice_info in slice_infos:
-            result = run_quality_on_slice(
-                slice_info, duckdb_conn, session, session_id=session_id, run_id=run_id
-            )
-            if result.success:
-                quality_count += 1
-            else:
-                errors.append(f"Quality {slice_info.slice_table_name}: {result.error}")
-
-    return SliceAnalysisResult(
-        slices_registered=len(slice_infos),
-        slices_analyzed=len(slice_infos),
-        statistics_computed=stats_count,
-        quality_assessed=quality_count,
-        errors=errors,
-    )
-
-
 __all__ = [
     "SliceTableInfo",
-    "SliceAnalysisResult",
     "register_slice_tables",
-    "run_analysis_on_slices",
-    "run_statistics_on_slice",
-    "run_quality_on_slice",
 ]

@@ -1,47 +1,29 @@
 """Temporal slicing analysis module.
 
-Provides drift detection and period-level completeness/anomaly analysis
-for slice data using Jensen-Shannon divergence and z-score methods.
+Per-(slice table, period) row counts and numeric-column sums — the
+aggregation-lineage reconciliation substrate (DAT-491). One ``GROUP BY`` over a
+slice table's time column; periods come from the data.
 """
 
 from dataraum.analysis.temporal_slicing.analyzer import (
-    analyze_column_drift,
-    analyze_period_metrics,
-    persist_drift_results,
-    persist_period_results,
+    compute_period_sums,
+    persist_period_sums,
 )
 from dataraum.analysis.temporal_slicing.db_models import (
-    ColumnDriftSummary,
     TemporalSliceAnalysis,
 )
 from dataraum.analysis.temporal_slicing.models import (
-    ColumnDriftResult,
-    CompletenessResult,
-    DriftEvidence,
-    PeriodAnalysisResult,
-    PeriodMetrics,
-    TemporalSliceConfig,
+    PeriodSums,
     TimeGrain,
-    VolumeAnomalyResult,
 )
 
 __all__ = [
     # Entry points
-    "analyze_column_drift",
-    "analyze_period_metrics",
-    "persist_drift_results",
-    "persist_period_results",
-    # Config
-    "TemporalSliceConfig",
+    "compute_period_sums",
+    "persist_period_sums",
+    # Models
     "TimeGrain",
-    # Result models
-    "ColumnDriftResult",
-    "DriftEvidence",
-    "PeriodMetrics",
-    "CompletenessResult",
-    "VolumeAnomalyResult",
-    "PeriodAnalysisResult",
+    "PeriodSums",
     # DB Models
-    "ColumnDriftSummary",
     "TemporalSliceAnalysis",
 ]

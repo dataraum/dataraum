@@ -160,10 +160,10 @@ describe("replay (DAT-422, DAT-506)", () => {
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("rejects a session with no sources (nothing to replay) — no record, no start", async () => {
+	it("rejects when the workspace has no imported sources (nothing to replay) — no record, no start", async () => {
 		h.sourceRows = [];
 		await expect(replay({ session_id: "empty-sess" })).rejects.toThrow(
-			/has no sources to replay/,
+			/no imported sources/,
 		);
 		expect(h.recordRun).not.toHaveBeenCalled();
 		expect(startMock).not.toHaveBeenCalled();

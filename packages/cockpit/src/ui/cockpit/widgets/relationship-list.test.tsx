@@ -53,7 +53,6 @@ const REL = {
 };
 
 const analyzed: LookRelationshipsResult = {
-	session_id: "sess-1",
 	analyzed: true,
 	pending_teaches: 0,
 	relationships: [REL],
@@ -195,7 +194,7 @@ describe("RelationshipListWidget (DAT-434)", () => {
 		expect(bubble).not.toContain("c_orders_customer");
 		expect(bubble).not.toContain("sess-1");
 		// The refs ride via forwardedProps (opts.refs), key=value imperative form.
-		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).not.toContain("session_id");
 		expect(opts.refs).toContain("from_column_id=c_orders_customer");
 		expect(opts.refs).toContain("to_column_id=c_customers_id");
 		expect(opts.refs).toContain("Internal only");

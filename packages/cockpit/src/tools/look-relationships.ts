@@ -93,10 +93,9 @@ const RelationshipReadiness = z.object({
 export type RelationshipReadiness = z.infer<typeof RelationshipReadiness>;
 
 const LookRelationshipsResult = z.object({
-	session_id: z.string(),
-	// False when the session has no promoted relationship-readiness run yet (no
+	// False when the workspace has no promoted relationship-readiness run yet (no
 	// begin_session detect sealed) — the grid should say "not analyzed" rather
-	// than imply the session has no relationships.
+	// than imply the workspace has no relationships.
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
 	relationships: z.array(RelationshipReadiness),
@@ -350,14 +349,8 @@ export function unionRelationships(
 	return out;
 }
 
-export interface LookRelationshipsInput {
-	session_id: string;
-}
-
-/** Per-relationship readiness for one session's promoted detect run. */
-export async function lookRelationships(
-	input: LookRelationshipsInput,
-): Promise<LookRelationshipsResult> {
+/** Per-relationship readiness for the workspace's promoted detect run. */
+export async function lookRelationships(): Promise<LookRelationshipsResult> {
 	// `analyzed` = a begin_session catalog run SEALED — distinct from "sealed but
 	// zero relationships" (single-table workspace), which must not read as
 	// never-ran. The head pass-through stays on the read surface for exactly
@@ -375,7 +368,6 @@ export async function lookRelationships(
 		.limit(1);
 	if (!head?.runId) {
 		return {
-			session_id: input.session_id,
 			analyzed: false,
 			pending_teaches: 0,
 			relationships: [],
@@ -384,7 +376,7 @@ export async function lookRelationships(
 
 	// Two independent reads off the same promoted run — the relationship-readiness
 	// bands and the relationship catalog. Fire them in parallel: neither depends on
-	// the other (both key off sessionId; the union joins them in memory afterward).
+	// the other (both read the catalog head; the union joins them in memory afterward).
 	//
 	// The current_* view IS the promoted run (ADR-0008/DAT-453): the head join
 	// lives in the database. `target` carries the identity (relationship rows
@@ -452,7 +444,6 @@ export async function lookRelationships(
 	const pending = await getPendingOverlays();
 
 	return {
-		session_id: input.session_id,
 		analyzed: true,
 		pending_teaches: pending.length,
 		relationships,
@@ -504,19 +495,15 @@ async function loadColumnNames(
 export const lookRelationshipsTool = toolDefinition({
 	name: "look_relationships",
 	description:
-		"Show a begin_session session's per-relationship readiness — ready/investigate/" +
+		"Show the workspace's per-relationship readiness — ready/investigate/" +
 		"blocked across the query, aggregation, and reporting intents — with the top " +
 		"quality drivers per relationship, identified by its directional column pair " +
 		"(from_column_id → to_column_id). Each relationship also carries its catalog " +
 		"facts (relationship_type, cardinality, confidence, detection_method, " +
 		"is_confirmed) — WHAT it is alongside HOW READY it is. Read-only; reflects the " +
-		"promoted detect run for the session. pending_teaches counts un-applied teaches " +
+		"promoted begin_session detect run. pending_teaches counts un-applied teaches " +
 		"across the workspace; if > 0, suggest a `replay` before trusting the bands. Use " +
 		"`why_relationship` to explain a specific relationship's band.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session to inspect (its session_id)."),
-	}),
+	inputSchema: z.object({}),
 	outputSchema: LookRelationshipsResult,
-}).server((input) => lookRelationships(input));
+}).server(() => lookRelationships());

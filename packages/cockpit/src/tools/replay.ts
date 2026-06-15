@@ -2,14 +2,16 @@
 // teaches as a full add_source re-run under a fresh run_id.
 //
 // The agent thinks in SESSIONS (the only named analytical unit), not sources —
-// so replay takes a `session_id`, resolves the sources that session was built
-// from (its linked tables → their `source_id`s), and re-runs add_source over
-// that source set. A replay generates a NEW session: a fresh analytical pass over
-// the same data (transparent — the agent replays the session it knows and gets a
-// new one back). The engine mints a fresh `run_id` internally (versioned
-// metadata, append-only snapshots); there is no scope or from_phase to choose —
-// a replay is always a full, non-destructive re-run that re-reads the durable
-// teach overlays.
+// so replay takes a `session_id` (the user's replay intent), and re-runs
+// add_source over the workspace's CURRENT imported source set as a NEW session.
+// In single-active-workspace (Phase 1) that set IS the named session's sources;
+// resolving a per-session source set (an older session, not the current one) is
+// DAT-357 — see workspaceSources. A replay generates a NEW session: a fresh
+// analytical pass over the same data (transparent — the agent replays the session
+// it knows and gets a new one back). The engine mints a fresh `run_id` internally
+// (versioned metadata, append-only snapshots); there is no scope or from_phase to
+// choose — a replay is always a full, non-destructive re-run that re-reads the
+// durable teach overlays.
 //
 // Pure compute kick: starts a fresh `addSourceWorkflow` keyed by the NEW session
 // (`addsource-<workspace_id>-<session_id>`; see workflow-id.ts, DAT-422 — a run
@@ -59,11 +61,12 @@ import {
  * join is impossible at the cockpit edge. The live generation heads ARE the
  * workspace's current typed-table set (one head per table → its run_id → run_tables
  * → tables → source), which in single-active-workspace (Phase 1) is exactly the
- * session's sources. The `session_id` argument is kept for the contract/log; the
- * resolution is workspace-current (the multi-workspace switcher is DAT-357).
+ * replayed session's sources. True per-session scoping (replaying an OLDER session's
+ * source set, not the workspace's current one) waits on the multi-workspace switcher
+ * (DAT-357); until then the resolution is workspace-current.
  * Empty when nothing is imported yet (the caller rejects that — nothing to replay).
  */
-async function sourcesForSession(_engineSessionId: string): Promise<string[]> {
+async function workspaceSources(): Promise<string[]> {
 	const rows = await metadataDb
 		.selectDistinct({ sourceId: tables.sourceId })
 		.from(metadataSnapshotHead)
@@ -118,12 +121,15 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
-	// Resolve what to replay FROM the session — the sources it was built on.
-	const replaySources = await sourcesForSession(sessionId);
+	// Resolve what to replay — the workspace's current source set (DAT-506: no
+	// per-session join exists at the cockpit edge; true per-session scoping is
+	// DAT-357). `sessionId` gates the user's intent + names the run; it does not
+	// scope the resolution.
+	const replaySources = await workspaceSources();
 	if (replaySources.length === 0) {
 		throw new AgentActionableError(
-			`Session '${sessionId}' has no sources to replay — it has no ` +
-				"linked tables yet (nothing was added to it).",
+			"Nothing to replay — the workspace has no imported sources yet. " +
+				"Add a source first.",
 		);
 	}
 

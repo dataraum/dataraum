@@ -149,7 +149,6 @@ export function projectWhyMetric(
 }
 
 export interface WhyMetricInput {
-	session_id: string;
 	graph_id: string;
 }
 
@@ -208,12 +207,8 @@ export const whyMetricTool = toolDefinition({
 		"per-step SQL fragments the engine saved for the metric's DAG (extract / " +
 		"formula steps). Read-only. The metric's numeric VALUE is not shown — it " +
 		"is re-computed on demand by running the metric, not stored. Use after " +
-		"look_metric to drill into a specific metric; identify it by its graph_id " +
-		"and the session_id.",
+		"look_metric to drill into a specific metric; identify it by its graph_id.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the metric belongs to."),
 		graph_id: z
 			.string()
 			.describe("The metric to explain (a graph_id from look_metric)."),

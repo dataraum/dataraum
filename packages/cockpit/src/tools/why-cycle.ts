@@ -152,7 +152,6 @@ export function projectWhyCycle(
 }
 
 export interface WhyCycleInput {
-	session_id: string;
 	canonical_type: string;
 }
 
@@ -211,11 +210,8 @@ export const whyCycleTool = toolDefinition({
 		"completion (rate + counts), the status column it was measured on, and the " +
 		"detected stages, entity flows, and evidence. Read-only. Use after " +
 		"look_cycle to drill into a specific cycle; identify it by its " +
-		"canonical_type and the session_id.",
+		"canonical_type.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the cycle belongs to."),
 		canonical_type: z
 			.string()
 			.describe("The cycle to explain (a canonical_type from look_cycle)."),

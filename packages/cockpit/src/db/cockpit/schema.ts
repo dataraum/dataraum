@@ -68,8 +68,9 @@ export const workspaces = pgTable("workspaces", {
 /**
  * A control-plane session — the cockpit's record of an analytical session, the
  * session-of-record (DAT-506: the engine no longer has `investigation_sessions`).
- * `engineSessionId` (UNIQUE) is the run-correlation id the workflow ids + the
- * engine identity header key on. begin_session/add_source/replay each create one;
+ * `engineSessionId` (UNIQUE) is the run-correlation id the cockpit mints and keys
+ * its workflow ids on (DAT-506 dropped the on-wire identity envelope — it is not
+ * sent to the engine). begin_session/add_source/replay each create one;
  * operating_model REUSES begin_session's (looked up by `engineSessionId`). `kind`
  * is the run origin (onboarding | begin_session | replay); `status` carries the
  * lifecycle (active | ended | archived) that DAT-404 will drive.

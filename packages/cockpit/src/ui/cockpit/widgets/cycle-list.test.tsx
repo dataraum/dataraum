@@ -57,7 +57,6 @@ const NOT_DETECTED = {
 };
 
 const analyzed: LookCycleResult = {
-	session_id: "sess-1",
 	analyzed: true,
 	pending_teaches: 0,
 	cycles: [EXECUTED, NOT_DETECTED],
@@ -135,7 +134,7 @@ describe("CycleListWidget (DAT-465)", () => {
 		expect(bubble).not.toContain("order_to_cash");
 		expect(bubble).not.toContain("sess-1");
 		// The refs ride via forwardedProps (opts.refs), key=value imperative form.
-		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).not.toContain("session_id");
 		expect(opts.refs).toContain("canonical_type=order_to_cash");
 		expect(opts.refs).toContain("Internal only");
 	});

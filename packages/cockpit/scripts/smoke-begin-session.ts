@@ -8,8 +8,8 @@
 //   2. begin_session over those typed tables via the begin_session tool → the
 //      relationships → semantic_per_table → materialize → detect → keepers →
 //      promote chain (real LLM in semantic_per_table).
-//   3. look_relationships(session_id) — asserts the session sealed and reads back
-//      the per-relationship readiness bands.
+//   3. look_relationships — asserts the session sealed and reads back the
+//      per-relationship readiness bands at the workspace catalog head.
 //   4. why_relationship on the first relationship — the grounded drill-down.
 //
 // Run against the published compose ports, e.g.:
@@ -148,7 +148,7 @@ async function main(): Promise<void> {
 		console.log("✓ begin_session workflow completed (sealed + promoted)");
 
 		// ---- look_relationships --------------------------------------------------
-		const look = await lookRelationships({ session_id: begun.session_id });
+		const look = await lookRelationships();
 		console.log(
 			`\nlook_relationships → analyzed=${look.analyzed} pending_teaches=${look.pending_teaches} ` +
 				`relationships=${look.relationships.length}`,
@@ -170,7 +170,6 @@ async function main(): Promise<void> {
 		// ---- why_relationship on the first relationship --------------------------
 		const first = look.relationships[0];
 		const why = await whyRelationship({
-			session_id: begun.session_id,
 			from_column_id: first.from_column_id,
 			to_column_id: first.to_column_id,
 		});
@@ -182,14 +181,14 @@ async function main(): Promise<void> {
 				`\n  analysis: ${why.analysis.slice(0, 400)}${why.analysis.length > 400 ? "…" : ""}`,
 		);
 
-		// ---- look_table (session-head table-grain band) + why_table (DAT-415) -----
+		// ---- look_table (table-grain band) + why_table (DAT-415) -----------------
 		// Each typed table gets a begin_session whole-table readiness band (the
-		// dimension_coverage rollup), sealed at the session head; look_table surfaces
-		// it when passed the session_id, why_table explains it.
+		// dimension_coverage rollup), sealed at the workspace catalog head (DAT-506);
+		// look_table surfaces it as table_readiness, why_table explains it.
 		console.log("\nlook_table(table_readiness) per typed table:");
 		let analyzedTableId: string | null = null;
 		for (const tableId of tableIds) {
-			const lt = await lookTable({ table_id: tableId, session_id: begun.session_id });
+			const lt = await lookTable({ table_id: tableId });
 			const band = lt.table_readiness?.band ?? "—";
 			console.log(`  ${lt.table_name}: table_readiness.band=${band}`);
 			if (lt.table_readiness && analyzedTableId === null) analyzedTableId = tableId;
@@ -202,7 +201,6 @@ async function main(): Promise<void> {
 		}
 
 		const wt = await whyTable({
-			session_id: begun.session_id,
 			table_id: analyzedTableId,
 		});
 		console.log(

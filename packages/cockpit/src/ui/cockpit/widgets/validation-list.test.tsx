@@ -54,7 +54,6 @@ const BLOCKED = {
 };
 
 const analyzed: LookValidationResult = {
-	session_id: "sess-1",
 	analyzed: true,
 	pending_teaches: 0,
 	validations: [EXECUTED, BLOCKED],
@@ -140,7 +139,7 @@ describe("ValidationListWidget (DAT-440)", () => {
 		expect(bubble).not.toContain("gl_invoice_match");
 		expect(bubble).not.toContain("sess-1");
 		// The refs ride via forwardedProps (opts.refs), key=value imperative form.
-		expect(opts.refs).toContain("session_id=sess-1");
+		expect(opts.refs).not.toContain("session_id");
 		expect(opts.refs).toContain("validation_id=gl_invoice_match");
 		expect(opts.refs).toContain("Internal only");
 	});

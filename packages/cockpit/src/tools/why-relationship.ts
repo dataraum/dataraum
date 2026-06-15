@@ -237,7 +237,6 @@ export async function synthesizeAnalysis(
 }
 
 export interface WhyRelationshipInput {
-	session_id: string;
 	from_column_id: string;
 	to_column_id: string;
 }
@@ -372,13 +371,10 @@ export const whyRelationshipTool = toolDefinition({
 		"drivers (ranked by how much fixing each would help) and the underlying " +
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
 		"after look_relationships to drill into a specific relationship; identify it " +
-		"by its directional column pair (from_column_id → to_column_id) and the " +
-		"session_id. signal_count shows how many detector signals back the " +
-		"explanation — a low count means the picture is partial.",
+		"by its directional column pair (from_column_id → to_column_id). signal_count " +
+		"shows how many detector signals back the explanation — a low count means the " +
+		"picture is partial.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe("The begin_session session the relationship belongs to."),
 		from_column_id: z
 			.string()
 			.describe(

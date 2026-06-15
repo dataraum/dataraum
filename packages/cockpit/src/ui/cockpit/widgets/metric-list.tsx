@@ -35,9 +35,9 @@ export function MetricListWidget({
 		const label = humanizeIdentifier(m.graph_id) || m.graph_id;
 		sendMessage(`Explain the "${label}" metric using the why_metric tool.`, {
 			refs:
-				`Internal only — do not quote in prose: session_id=${look.session_id} ` +
+				`Internal only — do not quote in prose: ` +
 				`graph_id=${m.graph_id} ` +
-				`(use as the arguments to the why_metric tool).`,
+				`(use as the argument to the why_metric tool).`,
 			label: "Explaining the metric…",
 		});
 	};

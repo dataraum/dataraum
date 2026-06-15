@@ -214,7 +214,6 @@ export async function synthesizeAnalysis(
 }
 
 export interface WhyTableInput {
-	session_id: string;
 	table_id: string;
 }
 
@@ -325,16 +324,10 @@ export const whyTableTool = toolDefinition({
 		"query, aggregation, and reporting intents — grounded in the persisted " +
 		"drivers (ranked by how much fixing each would help) and the underlying " +
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
-		"after look_table (with a session_id) to drill into the table-grain band; " +
-		"identify it by its table_id and the begin_session session_id. signal_count " +
-		"shows how many detector signals back the explanation — a low count means the " +
-		"picture is partial.",
+		"after look_table to drill into the table-grain band; identify it by its " +
+		"table_id. signal_count shows how many detector signals back the explanation " +
+		"— a low count means the picture is partial.",
 	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe(
-				"The begin_session session the table-grain readiness belongs to.",
-			),
 		table_id: z
 			.string()
 			.describe(

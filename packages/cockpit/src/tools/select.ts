@@ -150,7 +150,6 @@ export interface SelectInput {
 	// Database backend, persisted as the `backend` COLUMN (required for db sources;
 	// the engine import fails loud without it). For a file source it is ignored.
 	backend?: string | null;
-	session_id?: string | null;
 }
 
 /** Build the file-source URI list for a connect schema. Precedence: an explicit
@@ -480,7 +479,6 @@ export const selectTool = toolDefinition({
 			.describe(
 				"Database source only: the backend (required for a db source).",
 			),
-		session_id: z.string().nullish(),
 	}),
 	// Success OR `{ error }`: the actionable failures (bad source_name / reserved
 	// prefix / unsupported backend / no matching tables) come back as data so the

@@ -135,18 +135,17 @@ const LookTableResult = z.object({
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
 	columns: z.array(ColumnReadiness),
-	// The table-grain band for the begin_session `session_id` passed in (DAT-415);
-	// null when no session_id was given or the session has no table-grain readiness
-	// for this table (never begun / table not in the session). The per-column grid
-	// above is add_source-grain; this is the begin_session whole-table rollup.
+	// The table's whole-table readiness band (DAT-415); null when no begin_session
+	// catalog run has sealed a table-grain row for it. The per-column grid above is
+	// add_source-grain; this is the begin_session whole-table rollup, resolved at the
+	// workspace catalog head (DAT-506).
 	table_readiness: TableReadiness.nullable(),
 	// The table descriptive header (DAT-476) — entity type / fact-dimension / grain
-	// / time column / description from `current_table_entities`. Session/detect grain
-	// → null pre-session (no promoted detect run). The view is one row per
-	// (table_id, session), so it's scoped to the passed session_id when given, else
-	// the latest detected entity (a deterministic pick, not an arbitrary session's).
-	// Optional so the type stays back-compat for hand-built fixtures; the
-	// projection ALWAYS sets it (null or block), so it's present at runtime.
+	// / time column / description from `current_table_entities`, resolved at the
+	// workspace catalog head (DAT-506: one row per table_id). Null pre-session (no
+	// promoted detect run). Optional so the type stays back-compat for hand-built
+	// fixtures; the projection ALWAYS sets it (null or block), so it's present at
+	// runtime.
 	entity: TableEntity.nullable().optional(),
 });
 export type LookTableResult = z.infer<typeof LookTableResult>;
@@ -328,10 +327,6 @@ export function projectTableEntity(row: TableEntityRow): TableEntity {
 
 export interface LookTableInput {
 	table_id: string;
-	// Optional: when this table is being inspected inside a begin_session, the
-	// session whose table-grain readiness to also surface (DAT-415). Omitted for a
-	// plain add_source column overview.
-	session_id?: string;
 }
 
 /**
@@ -545,12 +540,11 @@ export const lookTableTool = toolDefinition({
 		"per column. Read-only; reflects the latest analysis (the calibrated, " +
 		"persisted band). table_name is the display name for prose; physical_name " +
 		"is the DuckDB name — use it ONLY to address the table in run_sql as " +
-		"`lake.<layer>.<physical_name>`. Pass a begin_session session_id to also " +
-		"get the table's whole-table readiness band (table_readiness) from that " +
-		"session; use `why_table` to explain it. Also returns the table's " +
+		"`lake.<layer>.<physical_name>`. Also returns the table's whole-table " +
+		"readiness band (table_readiness; use `why_table` to explain it), its " +
 		"descriptive header (entity: type, fact/dimension, grain, time column, " +
 		"description) and light per-column semantics (columns[].semantic: business " +
-		"concept, semantic role, business name) — both from begin_session analysis, " +
+		"concept, semantic role, business name) — all from begin_session analysis, " +
 		"so null/empty before a session has run. pending_teaches counts un-applied " +
 		"teaches across the workspace (not scoped to this table); if > 0, suggest " +
 		"a `replay` before trusting the bands. Use `why_column` to explain a " +
@@ -559,13 +553,6 @@ export const lookTableTool = toolDefinition({
 		table_id: z
 			.string()
 			.describe("The table to inspect (a table_id from list_tables)."),
-		session_id: z
-			.string()
-			.optional()
-			.describe(
-				"Optional begin_session session_id — when set, also returns the " +
-					"table-grain readiness band sealed in that session.",
-			),
 	}),
 	outputSchema: LookTableResult,
 }).server((input) => lookTable(input));

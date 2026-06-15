@@ -61,8 +61,7 @@ const MetricOverview = z.object({
 export type MetricOverview = z.infer<typeof MetricOverview>;
 
 const LookMetricResult = z.object({
-	session_id: z.string(),
-	// False when the session has no promoted operating_model run yet — the widget
+	// False when the workspace has no promoted operating_model run yet — the widget
 	// should say "not run" rather than imply zero declared metrics.
 	analyzed: z.boolean(),
 	pending_teaches: z.number(),
@@ -92,21 +91,14 @@ export function projectMetricOverview(
 	};
 }
 
-export interface LookMetricInput {
-	session_id: string;
-}
-
-/** Per-metric lifecycle + snippet-count for one session's promoted operating_model run. */
-export async function lookMetric(
-	input: LookMetricInput,
-): Promise<LookMetricResult> {
-	// `analyzed` = the session PROMOTED an operating_model run — distinct from
+/** Per-metric lifecycle + snippet-count for the workspace's promoted operating_model run. */
+export async function lookMetric(): Promise<LookMetricResult> {
+	// `analyzed` = the workspace PROMOTED an operating_model run — distinct from
 	// "promoted but zero declared metrics" (a vertical with none), which must not
 	// read as never-ran.
 	const head = await readOperatingModelHead();
 	if (!head) {
 		return {
-			session_id: input.session_id,
 			analyzed: false,
 			pending_teaches: 0,
 			metrics: [],
@@ -144,7 +136,6 @@ export async function lookMetric(
 	const pending = await getPendingOverlays();
 
 	return {
-		session_id: input.session_id,
 		analyzed: true,
 		pending_teaches: pending.length,
 		metrics,
@@ -154,21 +145,15 @@ export async function lookMetric(
 export const lookMetricTool = toolDefinition({
 	name: "look_metric",
 	description:
-		"Show a session's operating-model metrics — every declared metric graph " +
+		"Show the workspace's operating-model metrics — every declared metric graph " +
 		"with its lifecycle state (declared / grounded / executed) and the reason " +
 		"it could not ground when it stopped short (e.g. required field mappings " +
 		"missing). snippet_count is how many SQL steps back the metric (0 when " +
-		"ungroundable). Read-only; reflects the promoted operating_model run for " +
-		"the session (run the operating_model tool first). NB the metric's numeric " +
-		"VALUE is not shown — it is re-computed on demand by running the metric, " +
-		"not stored. pending_teaches counts un-applied teaches across the " +
-		"workspace. Use `why_metric` to drill into a specific metric's composition.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.describe(
-				"The begin_session session whose metrics to inspect (its session_id).",
-			),
-	}),
+		"ungroundable). Read-only; reflects the promoted operating_model run (run " +
+		"the operating_model tool first). NB the metric's numeric VALUE is not " +
+		"shown — it is re-computed on demand by running the metric, not stored. " +
+		"pending_teaches counts un-applied teaches across the workspace. Use " +
+		"`why_metric` to drill into a specific metric's composition.",
+	inputSchema: z.object({}),
 	outputSchema: LookMetricResult,
-}).server((input) => lookMetric(input));
+}).server(() => lookMetric());

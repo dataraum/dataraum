@@ -1,39 +1,27 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/sandbox-bootstrap.sh",
-            "timeout": 180
-          }
+    "hooks": {
+        "PostToolUse": [
+            {
+                "matcher": "Edit|Write|MultiEdit",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "ruff format \"$CLAUDE_PROJECT_DIR\" --quiet 2>/dev/null || true"
+                    }
+                ]
+            }
+        ],
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/end-of-turn-check.sh",
+                        "timeout": 120
+                    }
+                ]
+            }
         ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "ruff format \"$CLAUDE_PROJECT_DIR\" --quiet 2>/dev/null || true"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/end-of-turn-check.sh",
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
+    }
 }

@@ -49,9 +49,8 @@ _ACTION_METHOD = {"add": "manual", "confirm": "manual", "keep": "keeper"}
 
 def materialize_relationship_overlays(
     session: Session,
-    session_id: str,
     *,
-    run_id: str | None,
+    run_id: str,
     table_ids: list[str],
 ) -> int:
     """Write this run's durable (`manual`/`keeper`) relationships from overlays.
@@ -63,7 +62,6 @@ def materialize_relationship_overlays(
     # own steps and untouched.
     session.execute(
         delete(Relationship).where(
-            Relationship.session_id == session_id,
             Relationship.run_id == run_id,
             Relationship.detection_method.in_(tuple(_ACTION_METHOD.values())),
         )
@@ -80,11 +78,9 @@ def materialize_relationship_overlays(
         Relationship.to_column_id,
         Relationship.detection_method,
     ).where(
-        Relationship.session_id == session_id,
+        Relationship.run_id == run_id,
         Relationship.detection_method != "candidate",
     )
-    if run_id is not None:
-        defined_stmt = defined_stmt.where(Relationship.run_id == run_id)
     written: set[tuple[str, str, str]] = {
         (f, t, str(m)) for f, t, m in session.execute(defined_stmt).tuples()
     }
@@ -108,7 +104,6 @@ def materialize_relationship_overlays(
             session.add(
                 Relationship(
                     relationship_id=str(uuid4()),
-                    session_id=session_id,
                     run_id=run_id,
                     from_table_id=from_table,
                     from_column_id=from_col,
@@ -127,7 +122,6 @@ def materialize_relationship_overlays(
 
     logger.info(
         "relationship_overlays_materialized",
-        session_id=session_id,
         run_id=run_id,
         count=count,
     )
@@ -146,9 +140,8 @@ def _column_table_map(session: Session, table_ids: list[str]) -> dict[str, str]:
 
 def write_relationship_keepers(
     session: Session,
-    session_id: str,
     *,
-    current_run_id: str | None,
+    current_run_id: str,
 ) -> int:
     """Lift silently-accepted relationships into ``keep`` overlays (DAT-409 C3).
 
@@ -158,24 +151,24 @@ def write_relationship_keepers(
     ``ConfigOverlay(action='keep', …)`` so the next run materializes it as a durable
     ``keeper`` (the invisible "silence = acceptance" becomes an auditable record).
 
-    Runs as a pre-promote step: the per-session head still points at the *prior*
-    promoted run (``session_promote_to_latest`` flips it after this), which is the
-    "promoted prior run" the rule compares against. Returns the number of keep
-    overlays written. First run (no promoted prior) → no-op.
+    Runs as a pre-promote step: the workspace catalog head still points at the
+    *prior* promoted run (``session_promote_to_latest`` flips it after this), which
+    is the "promoted prior run" the rule compares against. Returns the number of
+    keep overlays written. First run (no promoted prior) → no-op.
 
     The lifted relationship is absent from the run that detected its absence; the
     ``keep`` overlay materializes it as ``keeper`` from the NEXT run onward (the
     accepted one-run gap, by spec).
     """
     from dataraum.storage import ConfigOverlay
-    from dataraum.storage.snapshot_head import head_run_id, session_head_target
+    from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
 
-    prior_run = head_run_id(session, session_head_target(session_id), "detect")
+    prior_run = head_run_id(session, catalog_head_target(), "catalog")
     if prior_run is None or prior_run == current_run_id:
         return 0
 
-    prior_llm = _run_pairs(session, session_id, prior_run, method="llm")
-    reproduced = _run_pairs(session, session_id, current_run_id)
+    prior_llm = _run_pairs(session, prior_run, method="llm")
+    reproduced = _run_pairs(session, current_run_id)
     rejected = load_suppressed_relationship_pairs(session)
     already_kept = set(relationship_overlay_pairs(session, "keep"))
 
@@ -198,7 +191,6 @@ def write_relationship_keepers(
 
     logger.info(
         "relationship_keepers_written",
-        session_id=session_id,
         prior_run=prior_run,
         current_run=current_run_id,
         count=count,
@@ -208,8 +200,7 @@ def write_relationship_keepers(
 
 def _run_pairs(
     session: Session,
-    session_id: str,
-    run_id: str | None,
+    run_id: str,
     *,
     method: str | None = None,
 ) -> set[tuple[str, str]]:
@@ -219,7 +210,6 @@ def _run_pairs(
     (``!= candidate``) — i.e. what the run actually reproduced.
     """
     stmt = select(Relationship.from_column_id, Relationship.to_column_id).where(
-        Relationship.session_id == session_id,
         Relationship.run_id == run_id,
     )
     stmt = stmt.where(

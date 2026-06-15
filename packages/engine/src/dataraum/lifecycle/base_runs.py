@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from dataraum.core.logging import get_logger
-from dataraum.storage.snapshot_head import catalog_head_target, head_run_id
+from dataraum.storage.snapshot_head import GENERATION_STAGE, catalog_head_target, head_run_id
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -39,9 +39,9 @@ class BaseRunMap(BaseModel):
             head — scopes defined-relationship reads. ``None`` when the
             workspace has no promoted begin_session run yet: relationship context
             stays EMPTY (fail-closed, DAT-429), never a cross-run read.
-        semantic_runs: per-table promoted ``(table:{id}, semantic_per_column)``
-            heads — scope the per-column semantic-annotation reads. A table
-            with no promoted head is absent: its annotations stay empty.
+        semantic_runs: per-table promoted generation heads (``table:{id}``) —
+            scope the per-column semantic-annotation reads. A table with no
+            promoted head is absent: its annotations stay empty.
     """
 
     relationship_run_id: str | None = None
@@ -76,12 +76,12 @@ def resolve_operating_model_base_runs(session: Session, table_ids: list[str]) ->
 
     semantic_runs: dict[str, str] = {}
     for table_id in table_ids:
-        run = head_run_id(session, f"table:{table_id}", "semantic_per_column")
+        run = head_run_id(session, f"table:{table_id}", GENERATION_STAGE)
         if run is None:
             logger.warning(
                 "base_run_unresolved",
                 target=f"table:{table_id}",
-                stage="semantic_per_column",
+                stage=GENERATION_STAGE,
                 detail="no promoted semantic run; this table's annotations will be empty",
             )
             continue

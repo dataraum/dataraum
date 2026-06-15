@@ -134,18 +134,15 @@ _REL_METHOD_PRECEDENCE = {"manual": 4, "keeper": 3, "llm": 2, "candidate": 1}
 def _resolve_relationship_target(
     session: Session,
     target: str,
-    session_id: str | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a ``relationship:{from_col}::{to_col}`` target to context fields.
 
     Readiness is per directional column pair; several method-rows (candidate / llm
     / manual / keeper) may share the pair, so the representative is the
-    highest-precedence one. ``session_id`` + ``run_id`` scope the lookup to this
-    run's catalog (DAT-408) — rows coexist across runs and sessions, so without
-    both the picked row could come from another run/session. Returns the focal
-    endpoints + ``session_id`` (a relationship detector may need the run's full
-    relationship set), or ``None`` if no row matches.
+    highest-precedence one. ``run_id`` scopes the lookup to this run's catalog
+    (DAT-408) — rows coexist across runs, so without it the picked row could come
+    from another run. Returns the focal endpoints, or ``None`` if no row matches.
     """
     parsed = parse_relationship_target(target)
     if parsed is None:
@@ -159,8 +156,6 @@ def _resolve_relationship_target(
         Relationship.from_column_id == from_column_id,
         Relationship.to_column_id == to_column_id,
     )
-    if session_id is not None:
-        stmt = stmt.where(Relationship.session_id == session_id)
     if run_id is not None:
         stmt = stmt.where(Relationship.run_id == run_id)
     rels = list(session.execute(stmt).scalars())
@@ -179,7 +174,6 @@ def _resolve_relationship_target(
     )
     return {
         "relationship_id": rel.relationship_id,
-        "session_id": rel.session_id,
         "from_table_id": rel.from_table_id,
         "from_table_name": names.get(rel.from_table_id, ""),
         "from_column_id": rel.from_column_id,
@@ -216,7 +210,6 @@ def _run_detectors(
             column_name=context.column_name,
             view_name=context.view_name,
             # Relationship-scoped fields (DAT-408) — copied so they reach detect().
-            session_id=context.session_id,
             relationship_id=context.relationship_id,
             from_table_id=context.from_table_id,
             from_table_name=context.from_table_name,
@@ -263,8 +256,7 @@ def take_snapshot(
     duckdb_conn: Any,
     dimensions: Sequence[str] | None = None,
     run_id: str | None = None,
-    session_id: str | None = None,
-    base_runs: dict[tuple[str, str], str] | None = None,
+    base_runs: dict[str, str] | None = None,
 ) -> Snapshot:
     """Run detectors on a target and return canonical scores.
 
@@ -284,11 +276,9 @@ def take_snapshot(
         run_id: Snapshot version axis (DAT-413). Threaded onto the DetectorContext
             so each detector's ``load_data`` reads THIS run's upstream metadata.
             ``None`` (non-detect callers) → loaders add no run_id filter.
-        session_id: scopes a ``relationship:`` resolution to one session (DAT-408) —
-            relationships are session-grain, so two sessions sharing a column pair
-            must not cross-resolve. Ignored for other target kinds.
-        base_runs: pinned ``(table_id, stage) → run_id`` map (DAT-448), resolved
-            once at detect start; loaders consult it when this run has no row.
+        base_runs: pinned ``table_id → run_id`` generation-head map (DAT-448/506),
+            resolved once at detect start; loaders consult it when this run has no
+            row.
 
     Returns:
         Snapshot with scores from all applicable detectors
@@ -300,7 +290,7 @@ def take_snapshot(
     is_relationship_target = target.startswith("relationship:")
 
     if is_relationship_target:
-        resolved_rel = _resolve_relationship_target(session, target, session_id, run_id)
+        resolved_rel = _resolve_relationship_target(session, target, run_id)
         if resolved_rel is None:
             logger.warning(f"Cannot resolve relationship target for snapshot: {target}")
             return Snapshot(scores={}, detectors_run=[])

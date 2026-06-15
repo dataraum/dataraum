@@ -124,23 +124,28 @@ class ProgressSnapshot:
 class SourceIdentity(BaseModel):
     """The run-identity header the workflows carry into every activity.
 
-    Pure data. ``session_id`` is the per-run FK for session-scoped rows AND the
-    run's table-set anchor (``session_tables``) — the relational scope key the
-    analysis phases use (DAT-421). ``workspace_id`` is the (future, DAT-364)
-    routing key the runner checks against the worker's bound workspace.
+    Pure data. ``session_id`` is the cockpit's run-correlation key (the workflow
+    id segment + the value echoed back in results); sessions live in cockpit_db,
+    not the engine (DAT-506), so it is no longer a DB column or scope key — the
+    run's table set is anchored by ``run_id`` (``run_tables``). ``workspace_id``
+    is the routing key the runner checks against the worker's bound workspace.
 
     ``source_id`` is OPTIONAL (DAT-422): a run is over a SET of objects from 1–N
     sources, not one source — the per-source ids ride in
     ``AddSourceInput.source_ids`` and ``import`` resolves each. It stays here only
     for the per-source ``import``/per-table activities that the workflow scopes to
-    one source at a time (the runner sets it per call); the run-level reduce/detect
-    phases are session-scoped and leave it ``None``.
+    one source at a time (the runner sets it per call); the run-level
+    reduce/detect phases are run-scoped and leave it ``None``.
+
+    The workspace's ``vertical`` (frame ontology, by name) rides on the workflow
+    INPUT contracts (DAT-506), not here — the driver sources it from
+    ``workspaces.vertical`` (cockpit-owned) and the per-call activities read it
+    off their phase config, not the identity header.
     """
 
     workspace_id: str
     source_id: str | None = None
     session_id: str
-    vertical: str | None = None
     # Snapshot version axis (DAT-413): minted once by ``AddSourceWorkflow.run``
     # (``workflow.uuid4``) and threaded into every activity so a run's metadata
     # rows share one ``run_id``. The cockpit's initial-run call leaves it None;
@@ -152,13 +157,14 @@ class SessionIdentity(BaseModel):
     """The identity header ``beginSessionWorkflow`` carries into every activity.
 
     Source-free by construction (see feedback-source-dies-at-addsource-boundary):
-    a session past the add_source boundary composes typed tables that may span
+    a run past the add_source boundary composes typed tables that may span
     sources, so "source" is meaningless here. The identity stays small —
-    ``workspace_id`` (the DAT-364 routing key the runner checks against the
-    worker's bound workspace) + ``session_id`` (the per-run FK + the key that
-    resolves the selected table set via ``session_tables``). The session's
-    ``vertical`` (frame ontology) is read off the ``InvestigationSession`` row,
-    not threaded here — it is session state, not part of the identity.
+    ``workspace_id`` (the routing key the runner checks against the worker's
+    bound workspace) + ``session_id`` (the cockpit's run-correlation key: the
+    workflow id segment + the value echoed back in results; sessions live in
+    cockpit_db, not the engine — DAT-506). The run's table set is anchored by
+    ``run_id`` (``run_tables``); the workspace ``vertical`` (frame ontology, by
+    name) rides on the workflow INPUT, not the identity.
     """
 
     workspace_id: str
@@ -185,6 +191,20 @@ class PhaseOutcome(BaseModel):
     summary: str = ""
 
 
+class SourcePhaseInput(BaseModel):
+    """Input to an add_source run-level phase activity — identity + the vertical.
+
+    The bare-``SourceIdentity`` add_source activities that build a phase config
+    (``import``, ``semantic_per_column``) carry the workspace ``vertical`` (by
+    name, DAT-506) alongside the identity so the config is built off the workflow
+    input rather than a deleted identity field. ``detect``/``promote_to_latest``
+    take the bare identity (they build no LLM config).
+    """
+
+    identity: SourceIdentity
+    vertical: str
+
+
 class ImportResult(BaseModel):
     """``import`` activity result — the discovered raw table ids (the fan-out source).
 
@@ -200,11 +220,13 @@ class ProcessTableInput(BaseModel):
     """Input to ``ProcessTableWorkflow`` (and its ``typing`` activity).
 
     One raw table is the unit of work; the child workflow runs the table-local
-    chain over it.
+    chain over it. ``vertical`` (by name, DAT-506) rides along so the table-local
+    phases build their config off the workflow input, not a deleted identity field.
     """
 
     identity: SourceIdentity
     raw_table_id: str
+    vertical: str
 
 
 class TypingResult(BaseModel):
@@ -223,11 +245,13 @@ class TableScopedInput(BaseModel):
     """Input to the per-table analytics activities — one typed table.
 
     ``table_id`` is the *typed* table id from :class:`TypingResult`; the phase
-    scopes its work to exactly this table.
+    scopes its work to exactly this table. ``vertical`` (by name, DAT-506) rides
+    along so the phase config is built off the workflow input.
     """
 
     identity: SourceIdentity
     table_id: str
+    vertical: str
 
 
 class ProcessTableResult(BaseModel):
@@ -262,24 +286,29 @@ class SessionScopedInput(BaseModel):
     table), so the activity carries the whole selection as an array of typed
     table ids. The array is the execution scope, threaded from the workflow
     input (``begin_session(tables=[…])``) — the same set ``begin_session_select``
-    persists to ``session_tables`` for provenance.
+    anchors to ``run_tables`` for provenance. ``vertical`` (by name, DAT-506)
+    rides along so the LLM phases build their config off the workflow input.
     """
 
     identity: SessionIdentity
     table_ids: list[str]
+    vertical: str
 
 
 class BeginSessionInput(BaseModel):
-    """Input to ``beginSessionWorkflow`` — session identity + the selected tables.
+    """Input to ``beginSessionWorkflow`` — session identity + tables + the vertical.
 
     Unlike ``add_source`` (whose table set is discovered by ``import``), the
     begin_session table set is the user's explicit selection of already-typed
     tables, so it travels in the input as ``tables`` (an array of typed table
-    ids, possibly spanning sources).
+    ids, possibly spanning sources). The workspace ``vertical`` (by name,
+    DAT-506) drives the LLM table synthesis / relationship reasoning and is
+    sourced by the driver from ``workspaces.vertical`` (cockpit-owned).
     """
 
     identity: SessionIdentity
     tables: list[str]
+    vertical: str
 
 
 class BeginSessionResult(BaseModel):
@@ -290,38 +319,46 @@ class BeginSessionResult(BaseModel):
 
 
 class OperatingModelInput(BaseModel):
-    """Input to ``operatingModelWorkflow`` — session identity ONLY (DAT-438).
+    """Input to ``operatingModelWorkflow`` — session identity + the vertical (DAT-438).
 
     Unlike begin_session (which ESTABLISHES the table set), operating_model
-    operates on the set the session already anchors: the pre-flight
-    ``operating_model_resolve`` activity re-reads ``session_tables`` instead
-    of trusting a re-passed copy that could diverge.
+    operates on the set the workspace catalog already anchors: the pre-flight
+    ``operating_model_resolve`` activity reads the catalog head's ``run_tables``
+    instead of trusting a re-passed copy that could diverge. The workspace
+    ``vertical`` (by name, DAT-506) drives the declared validations/cycles/metrics
+    and is validated born-loud at resolve.
     """
 
     identity: SessionIdentity
+    vertical: str
 
 
 class OperatingModelScope(BaseModel):
-    """``operating_model_resolve``'s output — table set + pinned base-run map.
+    """``operating_model_resolve``'s output — the pinned base-run map.
 
     The ADR-0008 in-run pin, resolved ONCE at run start: ``relationship_run_id``
-    is begin_session's promoted ``(session:{id}, detect)`` head; ``semantic_runs``
+    is begin_session's promoted ``(catalog, catalog)`` head; ``semantic_runs``
     the per-table promoted ``(table:{id}, semantic_per_column)`` heads. Wire
     mirror of :class:`dataraum.lifecycle.BaseRunMap` (contracts stay
     engine-free for the workflow sandbox — same hand-mirror discipline as the
-    cockpit's ``types.ts``).
+    cockpit's ``types.ts``). operating_model takes NO table set: the phases read
+    the catalog head's ``run_tables`` directly (DAT-506).
     """
 
-    table_ids: list[str]
     relationship_run_id: str | None = None
     semantic_runs: dict[str, str] = Field(default_factory=dict)
 
 
 class OperatingModelScopedInput(BaseModel):
-    """Input to an operating_model phase activity — identity + resolved scope."""
+    """Input to an operating_model phase activity — identity + scope + vertical.
+
+    ``vertical`` (by name, DAT-506) drives the declared validations/cycles/metrics
+    the lifecycle families read off their phase config.
+    """
 
     identity: SessionIdentity
     scope: OperatingModelScope
+    vertical: str
 
 
 class OperatingModelResult(BaseModel):
@@ -329,11 +366,12 @@ class OperatingModelResult(BaseModel):
 
     ``validation_summary`` carries the phase's explicit outcome verbatim —
     including the loud ``no_declared_validations`` case — so the cockpit
-    renders what happened without re-deriving it.
+    renders what happened without re-deriving it. No ``table_ids`` (DAT-506):
+    operating_model carries no table set — the phases read the catalog head's
+    ``run_tables`` and the cockpit reads the catalog views.
     """
 
     session_id: str
-    table_ids: list[str]
     validation_summary: str = ""
 
 
@@ -346,13 +384,16 @@ class AddSourceInput(BaseModel):
     tables are discovered at run), and the per-table fan-out + the session-scoped
     reduce/detect run over the union. The ``identity`` is source-free — its
     ``source_id`` is set per-``import`` by the workflow from this set, never
-    carried in by the caller.
+    carried in by the caller. The workspace ``vertical`` (by name, DAT-506)
+    drives the per-column semantic grounding and is sourced by the driver from
+    ``workspaces.vertical`` (cockpit-owned).
     """
 
     identity: SourceIdentity
     # The sources this run imports, in order — at least one. The cockpit Client
     # enforces a non-empty set (Zod ``min(1)``).
     source_ids: list[str]
+    vertical: str
 
 
 class AddSourceResult(BaseModel):

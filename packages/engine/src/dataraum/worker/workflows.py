@@ -53,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
         ProgressSnapshot,
         RunScopedInput,
         SessionScopedInput,
+        SourcePhaseInput,
         TableProgress,
         TableScopedInput,
         TypingResult,
@@ -144,7 +145,9 @@ class ProcessTableWorkflow:
         )
         typed_table_id = typing.typed_table_id
 
-        scoped = TableScopedInput(identity=payload.identity, table_id=typed_table_id)
+        scoped = TableScopedInput(
+            identity=payload.identity, table_id=typed_table_id, vertical=payload.vertical
+        )
 
         for phase in _ANALYTICS_PHASES:
             await workflow.execute_activity(
@@ -267,7 +270,10 @@ class AddSourceWorkflow:
         for source_id in payload.source_ids:
             imported = await workflow.execute_activity(
                 "import",
-                base.model_copy(update={"source_id": source_id}),
+                SourcePhaseInput(
+                    identity=base.model_copy(update={"source_id": source_id}),
+                    vertical=payload.vertical,
+                ),
                 result_type=ImportResult,
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
@@ -328,6 +334,7 @@ class AddSourceWorkflow:
                     ProcessTableInput(
                         identity=identity,
                         raw_table_id=raw_id,
+                        vertical=payload.vertical,
                     ),
                     id=process_table_workflow_id(
                         identity.workspace_id,
@@ -365,7 +372,7 @@ class AddSourceWorkflow:
         self._progress.phase = "semantic_per_column"
         await workflow.execute_activity(
             "semantic_per_column",
-            identity,
+            SourcePhaseInput(identity=identity, vertical=payload.vertical),
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_LLM_RETRY,
@@ -541,7 +548,9 @@ class BeginSessionWorkflow:
         identity = payload.identity.model_copy(update={"run_id": run_id})
         # The selection is the execution scope, threaded to every activity. It is
         # also what ``begin_session_select`` persists to ``session_tables``.
-        scoped = SessionScopedInput(identity=identity, table_ids=payload.tables)
+        scoped = SessionScopedInput(
+            identity=identity, table_ids=payload.tables, vertical=payload.vertical
+        )
 
         # Scope setup: pre-flight the selection (reject unknown/non-typed ids) and
         # link it to the session. Idempotent, and the phases below read the
@@ -714,11 +723,12 @@ class OperatingModelWorkflow:
         run_id = str(workflow.uuid4())
         identity = payload.identity.model_copy(update={"run_id": run_id})
 
-        # Pre-flight: the session's table set + the run's pinned base heads.
-        # Fails loud (no linked tables / unknown session) — nothing to model.
+        # Pre-flight: validate the vertical + pin the run's base heads off the
+        # workspace catalog run. Fails loud (unknown vertical / no promoted
+        # begin_session catalog run) — nothing to model.
         scope = await workflow.execute_activity(
             "operating_model_resolve",
-            identity,
+            payload,
             result_type=OperatingModelScope,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
@@ -726,8 +736,11 @@ class OperatingModelWorkflow:
 
         # First lifecycle family (DAT-438): every declared validation (vertical
         # ⊕ teach rows) is declared for this run, bound (SQL vs workspace),
-        # executed. Ungroundable specs surface as declared-with-reason.
-        scoped = OperatingModelScopedInput(identity=identity, scope=scope)
+        # executed. Ungroundable specs surface as declared-with-reason. The
+        # phases read the catalog head's run_tables (no table set on the wire).
+        scoped = OperatingModelScopedInput(
+            identity=identity, scope=scope, vertical=payload.vertical
+        )
         self._progress.phase = "validation"
         outcome = await workflow.execute_activity(
             "validation",
@@ -794,6 +807,5 @@ class OperatingModelWorkflow:
         self._progress.phase = "done"
         return OperatingModelResult(
             session_id=identity.session_id,
-            table_ids=scope.table_ids,
             validation_summary=outcome.summary,
         )

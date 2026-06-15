@@ -129,7 +129,6 @@ def authorize(artifact_type: str, operation: str, stage: str) -> None:
 def declare_artifact(
     session: Session,
     *,
-    session_id: str,
     artifact_type: str,
     artifact_key: str,
     run_id: str,
@@ -140,7 +139,7 @@ def declare_artifact(
     """Declare-or-reuse: this run's ``declared`` artifact row (DAT-502).
 
     Temporal activities are at-least-once: a success-redelivery (committed
-    rows, ack lost) re-declares the same ``(session, type, key, run)``
+    rows, ack lost) re-declares the same ``(type, key, run)``
     identity. Instead of violating the identity UNIQUE, the existing row is
     RESET to ``declared`` — ``state_reason``/``grounded_against`` cleared,
     ``teaches``/``strictness`` refreshed — because :func:`transition` requires
@@ -161,7 +160,6 @@ def declare_artifact(
 
     existing = session.execute(
         select(LifecycleArtifact).where(
-            LifecycleArtifact.session_id == session_id,
             LifecycleArtifact.artifact_type == artifact_type,
             LifecycleArtifact.artifact_key == artifact_key,
             LifecycleArtifact.run_id == run_id,
@@ -183,7 +181,6 @@ def declare_artifact(
         return existing
 
     artifact = LifecycleArtifact(
-        session_id=session_id,
         artifact_type=artifact_type,
         artifact_key=artifact_key,
         run_id=run_id,

@@ -35,13 +35,13 @@ class JoinPathDeterminismDetector(EntropyDetector):
     description = "Measures ambiguity in join paths (not just connectivity)"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load the whole session's relationships (ambiguity needs the full set)."""
-        if context.session is None or context.session_id is None:
+        """Load the whole catalog's relationships (ambiguity needs the full set)."""
+        if context.session is None:
             return
         from dataraum.entropy.detectors.loaders import load_session_relationships
 
         context.analysis_results["relationships"] = load_session_relationships(
-            context.session, context.session_id, run_id=context.run_id
+            context.session, run_id=context.run_id
         )
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:

@@ -56,6 +56,14 @@ class MetadataSnapshotHead(Base):
 
 _CATALOG_TARGET = "catalog"
 
+# The single stage every per-table head is keyed under (DAT-506). add_source
+# promotes ONE generation head per table — ``(table:{id}, GENERATION_STAGE)`` —
+# instead of one head per producing phase. A table's whole add_source run
+# (typing → semantic_per_column → detect) is sealed atomically, so every
+# per-table reader (base-run pins, entropy table heads, the column/table-grain
+# read views) resolves the same head; there is no per-phase head axis anymore.
+GENERATION_STAGE = "generation"
+
 
 def catalog_head_target() -> str:
     """The snapshot-head key for the workspace catalog (DAT-506).

@@ -56,7 +56,6 @@ class RelationshipDiscoveryDetector(EntropyDetector):
             context.session,
             context.from_column_id,
             context.to_column_id,
-            session_id=context.session_id,
             run_id=context.run_id,
         )
         if rows:

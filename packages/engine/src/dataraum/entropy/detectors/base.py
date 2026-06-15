@@ -39,9 +39,7 @@ class DetectorContext:
     view_name: str = ""
 
     # Relationship-scoped targets (DAT-408): the focal directional column pair +
-    # its endpoints. ``session_id`` lets a relationship detector load the whole
-    # session's relationships (e.g. join-path ambiguity needs the full set).
-    session_id: str | None = None
+    # its endpoints.
     relationship_id: str | None = None
     from_table_id: str | None = None
     from_table_name: str = ""
@@ -55,12 +53,12 @@ class DetectorContext:
     # workflow (test/legacy callers) → loaders add no run_id filter.
     run_id: str | None = None
 
-    # Pinned base-run map (DAT-448): ``(table_id, stage) → run_id`` resolved
-    # ONCE at detect start (loaders.resolve_base_runs). Session detects read
-    # per-column rows the add_source run wrote; the pin replaces per-call head
-    # resolution so a concurrent promote cannot tear reads mid-run. Empty for
-    # non-detect callers.
-    base_runs: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Pinned base-run map (DAT-448/506): ``table_id → run_id`` (the per-table
+    # generation head) resolved ONCE at detect start (loaders.resolve_base_runs).
+    # Session detects read per-column rows the add_source run wrote; the pin
+    # replaces per-call head resolution so a concurrent promote cannot tear reads
+    # mid-run. Empty for non-detect callers.
+    base_runs: dict[str, str] = field(default_factory=dict)
 
     # SQLAlchemy session for detector-driven data loading
     session: Session | None = None

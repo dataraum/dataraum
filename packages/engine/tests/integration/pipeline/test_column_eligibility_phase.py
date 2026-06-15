@@ -27,7 +27,6 @@ from dataraum.analysis.eligibility.evaluator import quarantine_and_drop_columns
 from dataraum.analysis.typing.db_models import MaterializationRecipe
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.storage import Column, Table
-
 from tests.conftest import baseline_run_id
 
 

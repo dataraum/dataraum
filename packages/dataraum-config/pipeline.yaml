@@ -20,7 +20,11 @@ phases:
 
   statistics:
     description: Statistical profiling of typed tables
-    detectors: [null_ratio]
+    # slice_conditional_null (DAT-473): conditions the column's null mask on each sibling
+    # low-cardinality categorical (Cramér's V), reading concentration the flat null_ratio
+    # is blind to. Declared here — distinct_count is available post-profiling — and runs
+    # at the terminal source detect with the typed table in scope.
+    detectors: [null_ratio, slice_conditional_null]
 
   column_eligibility:
     description: Column eligibility evaluation

@@ -4,6 +4,61 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-15: slicing agent grounds recommendations — no empty-FK crash (fix)
+
+The slicing agent built a `SliceRecommendation` with `column_id=''` whenever the
+LLM's recommended column could not be resolved in this run's context (a
+hallucination, or a cross-run enriched-view shape change — a fact's dimension
+join drops to a passthrough view on a re-run, so its `fk__dim` columns vanish).
+That empty id is a guaranteed FK violation on `slice_definitions` →
+`PhaseFailed` → the whole begin_session crashes. Surfaced on a DAT-473 teach
+re-run: `account_id__account_type` recommended for a now-passthrough
+journal_lines view. Fix (`analysis/slicing/agent.py::_convert_output_to_result`):
+drop — with a `slice_recommendation_ungrounded` warning — any recommendation
+that does not ground to a real `table_id` + `column_id`, mirroring the existing
+time-axis validation (the propagation path already guarded empty FK ids). Eval
+impact: begin_session re-runs (every teach-and-rerun closure) no longer crash on
+an ungroundable slice recommendation. NOTE (separate, not fixed here): the
+*reason* journal_lines lost its account dimension join across runs is
+enriched-view / relationship-discovery nondeterminism — a deeper determinism
+question; this fix makes slicing robust to it rather than papering it over.
+
+## 2026-06-15: slice_conditional_null detector — nulls concentrated in a slice (DAT-473)
+
+New value-layer, column-scoped detector `slice_conditional_null` (declared in
+`pipeline.yaml` under the `statistics` phase, so it runs at the terminal
+add_source detect with the typed table in scope). The dataset-level
+`null_ratio` is a single fraction; this reads whether those nulls *concentrate*
+in particular slices of a sibling categorical (a 60%-null cost center hiding
+behind a 5% overall rate, silently biasing that slice's aggregates).
+
+- **Statistic:** `stats.cramers_v` — bias-corrected Cramér's V (Bergsma) on the
+  2×K `(value IS NULL) × slice` contingency under the **Cochran validity rule**
+  (any expected cell < 5 → abstain, returns `None`). Grounded in the DAT-473
+  kill gate; the pure function is pinned both here (`test_stats.py::TestCramersV`)
+  and in eval (`test_slice_null_gate.py`) — one statistic, two guards.
+- **Slice dimensions:** each sibling low-cardinality categorical (identifiers
+  excluded by name / near-unique cardinality; the *actual scanned* distinct
+  count on slice-labelled rows is the authoritative 2..50 gate, so a missing
+  profile never silently drops a column). Score = MAX V over valid slices; 0.0
+  when the column has no nulls, missingness is MCAR, or no slice yields a valid
+  table. Per-column VALUE/NULLS → rolls into the column's band beside null_ratio.
+- **Teach (closure):** reuses the EXISTING `expected_dependency` overlay (the
+  `document_business_rule` archetype `dimensional_entropy` already reads via
+  `load_documented_dependencies`). Documenting `{target_column, slice_column}`
+  marks the conditional missingness expected → that pair is excluded → the
+  score drops. Closure pinned by
+  `test_slice_conditional_null_detector::test_document_business_rule_teach_closes_the_score`.
+- **Loss:** `loss.yaml` row `slice_conditional_null` (query 0.4 / aggregation
+  0.7 / reporting 0.6 — PLACEHOLDER, calibrated:false; recall is separation
+  from clean, not a tuned point). Replaces the DAT-473 deferral note left on the
+  cut `slice_variance` block.
+
+Eval implications: a new strategy injection family (slice-conditional nulls)
+drives recall (injected > clean + margin), and the teach closes it via an
+`expected_dependency` overlay on the (column, slice) pair. BUILTIN_DETECTORS is
+now 16 (value layer 4); the no-orphan / registry guards are updated.
+
 ## 2026-06-11: derived_value teach routing — declaration rides the validation teach (DAT-447, Option B)
 
 The derived_value band now hands the user an executable action. Two halves:

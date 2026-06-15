@@ -19,6 +19,7 @@ from dataraum.analysis.slicing.models import (
     SlicingAnalysisResult,
 )
 from dataraum.analysis.slicing.naming import slice_table_name
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import DecisionSource, Result
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import (
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
+
+logger = get_logger(__name__)
 
 
 class SlicingAgent(LLMFeature):
@@ -186,6 +189,24 @@ class SlicingAgent(LLMFeature):
             table_info = table_map.get(table_name, {})
             col_key = (table_name, column_name)
             col_info = column_map.get(col_key, {})
+
+            # Ground every recommendation against the REAL column universe before
+            # building it — the same discipline the time-axis already applies
+            # (slicing_phase validates the time column against the universe). A
+            # recommendation the LLM emits for a column that is not in this run's
+            # context (a hallucination, or a cross-run enriched-view shape change —
+            # e.g. a fact's dimension join drops to a passthrough view on a re-run,
+            # so its ``fk__dim`` columns vanish) has no resolvable column_id. Stored,
+            # that empty id is a guaranteed FK violation on ``slice_definitions`` that
+            # crashes the whole begin_session. Drop it (loudly) instead.
+            if not col_info or not col_info.get("column_id") or not table_info.get("table_id"):
+                logger.warning(
+                    "slice_recommendation_ungrounded",
+                    table=table_name,
+                    column=column_name,
+                    reason="column not in this run's context (hallucinated or cross-run drift)",
+                )
+                continue
 
             # Get distinct values from output or column dict top_values
             distinct_values = rec.distinct_values

@@ -112,3 +112,48 @@ class TestNmi:
 
     def test_empty_is_zero(self) -> None:
         assert stats.nmi([], []) == 0.0
+
+
+class TestCramersV:
+    """Bias-corrected Cramér's V of is-null × slice (DAT-473). The pinned reference lives
+    in dataraum-eval test_slice_null_gate.py; these guard the engine's copy of the math."""
+
+    def _two_balanced_slices(self, n_each: int) -> list[str]:
+        return ["A"] * n_each + ["B"] * n_each
+
+    def test_independent_missingness_is_low(self) -> None:
+        # MCAR: same null rate in both slices → association ≈ 0.
+        slices = self._two_balanced_slices(100)
+        is_null = ([True] * 20 + [False] * 80) + ([True] * 20 + [False] * 80)
+        v = stats.cramers_v(is_null, slices)
+        assert v is not None and v < 0.1
+
+    def test_concentrated_missingness_is_high(self) -> None:
+        # All nulls land in slice B → strong association.
+        slices = self._two_balanced_slices(100)
+        is_null = ([False] * 100) + ([True] * 50 + [False] * 50)
+        v = stats.cramers_v(is_null, slices)
+        assert v is not None and v > 0.4
+
+    def test_concentration_orders_above_mcar(self) -> None:
+        slices = self._two_balanced_slices(100)
+        mcar = stats.cramers_v(([True] * 20 + [False] * 80) * 2, slices)
+        conc = stats.cramers_v([False] * 100 + [True] * 40 + [False] * 60, slices)
+        assert mcar is not None and conc is not None and conc > mcar
+
+    def test_cochran_abstains_on_small_expected_cell(self) -> None:
+        # A tiny slice (n=3) makes an expected null-cell < 5 → abstain, not an inflated V.
+        slices = ["A"] * 200 + ["B"] * 3
+        is_null = [i % 10 == 0 for i in range(200)] + [True, False, False]
+        assert stats.cramers_v(is_null, slices) is None
+
+    def test_abstains_on_single_slice(self) -> None:
+        assert stats.cramers_v([True, False] * 50, ["only"] * 100) is None
+
+    def test_abstains_on_no_null_and_all_null(self) -> None:
+        slices = self._two_balanced_slices(100)
+        assert stats.cramers_v([False] * 200, slices) is None
+        assert stats.cramers_v([True] * 200, slices) is None
+
+    def test_empty_abstains(self) -> None:
+        assert stats.cramers_v([], []) is None

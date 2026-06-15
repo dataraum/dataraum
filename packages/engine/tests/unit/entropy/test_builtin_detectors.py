@@ -16,6 +16,7 @@ from dataraum.entropy.detectors import (
     NullSemanticsDetector,
     RelationshipDiscoveryDetector,
     RelationshipEntropyDetector,
+    SliceConditionalNullDetector,
     TemporalBehaviorDetector,
     TemporalEntropyDetector,
     TypeFidelityDetector,
@@ -39,6 +40,7 @@ class TestBuiltinDetectors:
             # Value
             NullRatioDetector,
             NullSemanticsDetector,
+            SliceConditionalNullDetector,
             BenfordDetector,
             # Semantic (column-scoped)
             BusinessMeaningDetector,
@@ -131,11 +133,13 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         value_detectors = [d for d in registry.get_all_detectors() if d.layer.value == "value"]
-        # temporal_drift, slice_variance, and outlier_rate cut (DAT-442 reset).
-        assert len(value_detectors) == 3
+        # temporal_drift, slice_variance, and outlier_rate cut (DAT-442 reset);
+        # slice_conditional_null added (DAT-473).
+        assert len(value_detectors) == 4
         detector_ids = [d.detector_id for d in value_detectors]
         assert "null_ratio" in detector_ids
         assert "null_semantics" in detector_ids
+        assert "slice_conditional_null" in detector_ids
         assert "benford" in detector_ids
 
     def test_semantic_detectors(self):

@@ -3,6 +3,7 @@
 Detectors for value-level uncertainty:
 - Null ratio
 - Null-token adjudication (null_semantics — pooled witnesses)
+- Slice-conditional null (DAT-473 — nulls concentrated in a slice, bias-corrected Cramér's V)
 - Benford's Law compliance
 
 (temporal_drift, slice_variance, and outlier_rate were cut — DAT-442 reset.
@@ -23,9 +24,11 @@ dimensional_entropy, which reads them directly.)
 from dataraum.entropy.detectors.value.benford import BenfordDetector
 from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
 from dataraum.entropy.detectors.value.null_token_adjudication import NullSemanticsDetector
+from dataraum.entropy.detectors.value.slice_conditional_null import SliceConditionalNullDetector
 
 __all__ = [
     "BenfordDetector",
     "NullRatioDetector",
     "NullSemanticsDetector",
+    "SliceConditionalNullDetector",
 ]

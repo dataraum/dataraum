@@ -174,6 +174,27 @@ export async function listNonTerminalRuns(
 		.limit(limit);
 }
 
+/**
+ * The DISTINCT stages of the workspace's still-`running` runs — the in-flight set
+ * the completion narration must NOT claim finished (DAT-510). Cheap and unbounded
+ * (≤3 possible stages); newest-first ordering is irrelevant since we dedup.
+ */
+export async function listRunningStages(
+	workspaceId: string,
+): Promise<Array<RunStage>> {
+	const rows = await cockpitDb
+		.selectDistinct({ stage: sessionRuns.stage })
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(
+			and(
+				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.status, "running"),
+			),
+		);
+	return rows.map((r) => r.stage as RunStage);
+}
+
 /** A run the completion-watcher should poll: in-flight (`running`) and not yet
  * narrated. Carries `stage` so the narration can name what finished ("the import"
  * vs "the session"). */

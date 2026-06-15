@@ -14,6 +14,7 @@
 
 import { Alert, Box, Card, Group, Loader, Stack, Text } from "@mantine/core";
 import { useEffect, useRef } from "react";
+import { classifyChatError } from "#/lib/chat-error";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
@@ -152,6 +153,9 @@ function ToolCallCard({
 
 export function ChatRail() {
 	const { messages, isLoading, error, pinCanvas } = useCockpit();
+	// Turn the raw provider/transport error into a cause + next step (DAT-512).
+	// Derived during render — no effect, no mirrored state (React-idiom rule 1).
+	const classifiedError = error ? classifyChatError(error.message) : null;
 
 	// A completed canvas-tool chip click pins the canvas to that call's result.
 	// The provider re-derives the canvas from the call id (canvasFromCallId), so
@@ -264,12 +268,13 @@ export function ChatRail() {
 						<Alert
 							color="red"
 							variant="light"
-							title="Something went wrong"
+							title={classifiedError?.title ?? "Something went wrong"}
 							data-testid="chat-error"
 						>
 							<Stack gap="xs">
 								<Text size="sm">
-									The assistant couldn't finish that — please try again.
+									{classifiedError?.body ??
+										"The assistant couldn't finish that — please try again."}
 								</Text>
 								{/* Raw provider/transport error tucked away — never dump JSON
 								    (401 x-api-key, request_id, …) at the user; keep it for debugging. */}

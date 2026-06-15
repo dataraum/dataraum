@@ -398,6 +398,11 @@ class SlicingViewPhase(BasePhase):
                 slice_dim_columns=len(slice_dim_cols),
             )
 
+        # Atomic-publish visibility (DAT-506): force the DuckLake snapshot after
+        # this run's COMPLETE set of slicing-view DDL is materialized, so the
+        # cockpit's READ_ONLY ATTACH sees the whole batch at once.
+        ctx.duckdb_conn.execute("CHECKPOINT")
+
         return PhaseResult.success(
             outputs={"slicing_views": views_created},
             records_processed=len(fact_table_ids),

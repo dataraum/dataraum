@@ -353,6 +353,13 @@ class EnrichedViewsPhase(BasePhase):
                 dimension_columns=len(dim_columns),
             )
 
+        # Atomic-publish visibility (DAT-506): DuckLake buffers writes in memory
+        # until a CHECKPOINT, and the cockpit's READ_ONLY ATTACH sees only the last
+        # CHECKPOINTed snapshot. After this run's COMPLETE set of enriched-view DDL
+        # is materialized, force the snapshot so the readers see the whole batch at
+        # once (not a torn mid-materialize view set).
+        ctx.duckdb_conn.execute("CHECKPOINT")
+
         return PhaseResult.success(
             outputs={
                 "enriched_views": views_created,

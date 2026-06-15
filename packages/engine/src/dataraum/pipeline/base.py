@@ -54,27 +54,17 @@ class PhaseContext:
     # Connection manager for vector DB access (optional)
     manager: ConnectionManager | None = None
 
-    # InvestigationSession id for per-session row FK population.
-    # Populated by the scheduler from manager.session_id; tests pass directly.
+    # Cockpit run-correlation label (DAT-506): sessions live in cockpit_db now, so
+    # this is no longer a DB FK or scope key — it rides along for logging only.
+    # Threaded from the workflow identity; tests may pass directly or omit it.
     session_id: str | None = None
 
     # Snapshot version axis (DAT-413). Minted once per workflow execution
     # (AddSourceWorkflow, via workflow.uuid4) and threaded on the identity into
     # every activity, so all of a run's metadata rows share one run_id and a later
-    # promote step can flip the per-(table, stage) head. Distinct from session_id
-    # (the analytical-session FK). None for begin_session phases in Slice A.
+    # promote step can flip the per-table generation head. This is the scope key
+    # for run-versioned rows (DAT-506 retired session_id as a scope axis).
     run_id: str | None = None
-
-    def require_session_id(self) -> str:
-        """Return ``session_id`` or raise — phases that persist must call this."""
-        if self.session_id:
-            return self.session_id
-        if self.manager and self.manager.session_id:
-            return self.manager.session_id
-        raise RuntimeError(
-            "PhaseContext.session_id is unset — phases persisting per-session rows "
-            "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
-        )
 
     def require_run_id(self) -> str:
         """Return ``run_id`` or raise — for phases that stamp run-versioned rows.

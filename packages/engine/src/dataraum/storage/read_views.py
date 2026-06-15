@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import UniqueConstraint, text
 
 from dataraum.storage.base import Base, load_all_models
+from dataraum.storage.snapshot_head import GENERATION_STAGE
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -45,56 +46,62 @@ WS_TOKEN = "__WS__"
 READ_TOKEN = "__READ__"
 READER_ROLE = "cockpit_reader"
 
-# Run-stamped tables sealed per (table:{id}, stage) where the row reaches its
-# table THROUGH the columns table (the row carries column_id only).
-_COLUMN_GRAIN: dict[str, str] = {
-    "type_decisions": "typing",
-    "type_candidates": "typing",
-    "statistical_profiles": "statistics",
-    "statistical_quality_metrics": "statistical_quality",
-    "temporal_column_profiles": "temporal",
-    "semantic_annotations": "semantic_per_column",
-}
+# Run-stamped tables sealed under the per-table generation head where the row
+# reaches its table THROUGH the columns table (the row carries column_id only).
+# add_source seals a table's whole run under ONE generation head (DAT-506), so
+# every column-grain table resolves the same head — the per-stage axis is gone.
+_COLUMN_GRAIN: tuple[str, ...] = (
+    "type_decisions",
+    "type_candidates",
+    "statistical_profiles",
+    "statistical_quality_metrics",
+    "temporal_column_profiles",
+    "semantic_annotations",
+)
 
-# Run-stamped tables sealed per (table:{id}, stage) with a direct table_id.
-_TABLE_GRAIN: dict[str, str] = {
-    "column_eligibility": "column_eligibility",
-    "materialization_recipes": "typing",
-}
+# Run-stamped tables sealed under the per-table generation head, direct table_id.
+_TABLE_GRAIN: tuple[str, ...] = (
+    "column_eligibility",
+    "materialization_recipes",
+)
 
-# Run-stamped tables sealed at SESSION grain, mapped to their promoting stage:
-# begin_session promotes one (session:{id}, "detect") head for its atomic run
-# (DAT-408/448); operating_model promotes (session:{id}, "operating_model")
-# for the lifecycle families (validation + cycles, DAT-438/455). Same target,
-# distinct stages — the two stages' runs coexist on one session.
+# Run-stamped tables sealed at WORKSPACE-CATALOG grain, mapped to their promoting
+# stage: begin_session promotes one (catalog, "catalog") head for its atomic run
+# (DAT-506); operating_model promotes (catalog, "operating_model") for the
+# lifecycle families (validation + cycles, DAT-438/455). Same target, distinct
+# stages — the two stages' runs coexist on one workspace catalog head.
 _SESSION_GRAIN: dict[str, str] = {
-    "relationships": "detect",
-    "table_entities": "detect",
-    "enriched_views": "detect",
-    "slicing_views": "detect",
-    "slice_definitions": "detect",
-    "temporal_slice_analyses": "detect",
-    "derived_columns": "detect",
-    "measure_aggregation_lineage": "detect",  # begin_session aggregation_lineage (DAT-491)
+    "relationships": "catalog",
+    "table_entities": "catalog",
+    "enriched_views": "catalog",
+    "slicing_views": "catalog",
+    "slice_definitions": "catalog",
+    "temporal_slice_analyses": "catalog",
+    "derived_columns": "catalog",
+    "measure_aggregation_lineage": "catalog",  # begin_session aggregation_lineage (DAT-491)
     "lifecycle_artifacts": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
 }
 
-# Written by THREE detect paths: add_source seals per (table:{id}, "detect"),
-# begin_session per (session:{id}, "detect"), and operating_model's terminal
-# detect per (session:{id}, "operating_model") — a row is current when its
-# run is promoted under ANY of those heads (DAT-432/L7: without the third,
+# Written by THREE detect paths: add_source seals per (table:{id}, GENERATION),
+# begin_session per the workspace (catalog, "catalog") head, and operating_model's
+# terminal detect per (catalog, "operating_model") — a row is current when its run
+# is promoted under ANY of those heads (DAT-432/L7: without the third,
 # cross_table_consistency's OM-run rows were written but invisible to every
 # head-resolved reader).
 _DUAL_GRAIN: dict[str, str] = {
-    "entropy_objects": "detect",
-    "entropy_readiness": "detect",
-    "claim_witnesses": "detect",
+    "entropy_objects": "catalog",
+    "entropy_readiness": "catalog",
+    "claim_witnesses": "catalog",
 }
 
-# The head pointer itself is exposed read-only (it IS the promoted state).
-_ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head",)
+# The head pointer + the run-table anchor are exposed read-only and carry
+# ``run_id`` as PART OF THEIR KEY, not as a version axis over rows of some other
+# grain — so they pass through whole (DAT-506). ``run_tables`` is keyed
+# ``(run_id, table_id)`` (its PK is the grain); ``metadata_snapshot_head`` IS the
+# promoted state.
+_ALWAYS_PASSTHROUGH: tuple[str, ...] = ("metadata_snapshot_head", "run_tables")
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
 # failure contract's exempt list (DAT-502 / ADR-0010). The contract: Postgres
@@ -120,12 +127,16 @@ _RUN_GRAIN_EXEMPT: dict[str, str] = {
         "(entropy/engine.py run-scoped clear)"
     ),
     "enriched_views": (
-        "mutate-in-place writer — view rows update in place; the re-grain is "
-        "owed to the DAT-501 session-demotion phase (DAT-506)"
+        "latest-only, name-keyed (DAT-506): a materialized view is name-unique in "
+        "the workspace (UNIQUE(fact_table_id)), its content per-run; DuckLake native "
+        "snapshots version the artifact, not a Postgres run_id row axis — so no "
+        "(key, run_id) UNIQUE on the metadata row"
     ),
     "slicing_views": (
-        "mutate-in-place writer — view rows update in place; the re-grain is "
-        "owed to the DAT-501 session-demotion phase (DAT-506)"
+        "latest-only, name-keyed (DAT-506): a materialized view is name-unique in "
+        "the workspace (UNIQUE(fact_table_id)), its content per-run; DuckLake native "
+        "snapshots version the artifact, not a Postgres run_id row axis — so no "
+        "(key, run_id) UNIQUE on the metadata row"
     ),
     "derived_columns": (
         "skip-guarded: CorrelationsPhase.should_skip is the run-scoped "
@@ -185,9 +196,14 @@ def enforce_run_grain(tables: Iterable[SATable]) -> None:
 
 
 def _current_view_sql(table: str) -> str:
-    """The head-joined ``current_<table>`` body for one run-stamped table."""
+    """The head-joined ``current_<table>`` body for one run-stamped table.
+
+    Head resolution (DAT-506): per-table rows resolve the single generation head
+    ``(table:{id}, GENERATION_STAGE)``; workspace-catalog rows resolve the single
+    ``(catalog, <stage>)`` head — the workspace IS the schema, so the catalog
+    target is the constant ``'catalog'`` and no row carries a ``session_id``.
+    """
     if table in _COLUMN_GRAIN:
-        stage = _COLUMN_GRAIN[table]
         return (
             f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
@@ -196,58 +212,56 @@ def _current_view_sql(table: str) -> str:
             f"  JOIN {WS_TOKEN}.metadata_snapshot_head h\n"
             f"    ON h.target = 'table:' || c.table_id\n"
             f"  WHERE c.column_id = r.column_id\n"
-            f"    AND h.stage = '{stage}'\n"
+            f"    AND h.stage = '{GENERATION_STAGE}'\n"
             f"    AND h.run_id = r.run_id\n"
             f");"
         )
     if table in _TABLE_GRAIN:
-        stage = _TABLE_GRAIN[table]
         return (
             f"CREATE VIEW {READ_TOKEN}.current_{table} AS\n"
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"  WHERE h.target = 'table:' || r.table_id\n"
-            f"    AND h.stage = '{stage}'\n"
+            f"    AND h.stage = '{GENERATION_STAGE}'\n"
             f"    AND h.run_id = r.run_id\n"
             f");"
         )
     if table in _DUAL_GRAIN:
         stage = _DUAL_GRAIN[table]
         # entropy_readiness is the ONE-TRUTH-PER-TARGET rollup: between the two
-        # SESSION-grain heads (detect vs operating_model) the latest-promoted
-        # run wins — without this, an OM run + a session detect both being
-        # promoted returned TWO conflicting 'current' bands per target and an
-        # unpinned reader picked one nondeterministically (review wave-1
-        # blocker). Table-grain rows keep the original dual-grain union (the
-        # via_table_head pinning contract). Objects/claim_witnesses stay union:
-        # per-detector rows, resolved by the run-aware loaders.
-        session_grain_precedence = ""
+        # CATALOG-grain heads (catalog vs operating_model) the latest-promoted run
+        # wins — without this, an OM run + a begin_session run both being promoted
+        # returned TWO conflicting 'current' bands per target and an unpinned reader
+        # picked one nondeterministically (review wave-1 blocker). Table-grain rows
+        # keep the original dual-grain union (the via_table_head pinning contract).
+        # Objects/claim_witnesses stay union: per-detector rows, resolved by the
+        # run-aware loaders.
+        catalog_grain_precedence = ""
         if table == "entropy_readiness":
-            session_heads = f"('{stage}', 'operating_model')"
-            session_grain_precedence = (
+            catalog_heads = f"('{stage}', 'operating_model')"
+            catalog_grain_precedence = (
                 f"  AND (\n"
                 f"    NOT EXISTS (\n"
                 f"      SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h3\n"
                 f"      WHERE h3.run_id = r.run_id\n"
-                f"        AND h3.target = 'session:' || r.session_id\n"
-                f"        AND h3.stage IN {session_heads}\n"
+                f"        AND h3.target = 'catalog'\n"
+                f"        AND h3.stage IN {catalog_heads}\n"
                 f"    )\n"
                 f"    OR NOT EXISTS (\n"
                 f"      SELECT 1 FROM {WS_TOKEN}.{table} r2\n"
                 f"      JOIN {WS_TOKEN}.metadata_snapshot_head h2\n"
                 f"        ON h2.run_id = r2.run_id\n"
-                f"       AND h2.target = 'session:' || r2.session_id\n"
-                f"       AND h2.stage IN {session_heads}\n"
-                f"      WHERE r2.session_id = r.session_id\n"
-                f"        AND r2.target = r.target\n"
+                f"       AND h2.target = 'catalog'\n"
+                f"       AND h2.stage IN {catalog_heads}\n"
+                f"      WHERE r2.target = r.target\n"
                 f"        AND r2.run_id <> r.run_id\n"
                 f"        AND h2.promoted_at > (\n"
                 f"          SELECT MAX(h3.promoted_at)\n"
                 f"          FROM {WS_TOKEN}.metadata_snapshot_head h3\n"
                 f"          WHERE h3.run_id = r.run_id\n"
-                f"            AND h3.target = 'session:' || r.session_id\n"
-                f"            AND h3.stage IN {session_heads}\n"
+                f"            AND h3.target = 'catalog'\n"
+                f"            AND h3.stage IN {catalog_heads}\n"
                 f"        )\n"
                 f"    )\n"
                 f"  )\n"
@@ -263,30 +277,29 @@ def _current_view_sql(table: str) -> str:
             f"SELECT r.*,\n"
             f"  EXISTS (\n"
             f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
-            f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
+            f"    WHERE h.stage = '{GENERATION_STAGE}' AND h.run_id = r.run_id\n"
             f"      AND h.target = 'table:' || r.table_id\n"
             f"  ) AS via_table_head,\n"
             f"  EXISTS (\n"
             f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"    WHERE h.stage = '{stage}' AND h.run_id = r.run_id\n"
-            f"      AND h.target = 'session:' || r.session_id\n"
-            f"  ) AS via_session_head,\n"
+            f"      AND h.target = 'catalog'\n"
+            f"  ) AS via_catalog_head,\n"
             f"  EXISTS (\n"
             f"    SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"    WHERE h.stage = 'operating_model' AND h.run_id = r.run_id\n"
-            f"      AND h.target = 'session:' || r.session_id\n"
+            f"      AND h.target = 'catalog'\n"
             f"  ) AS via_operating_model_head\n"
             f"FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
             f"  WHERE h.run_id = r.run_id\n"
-            f"    AND ((h.stage = '{stage}'\n"
-            f"      AND (h.target = 'table:' || r.table_id\n"
-            f"        OR h.target = 'session:' || r.session_id))\n"
-            f"     OR (h.stage = 'operating_model'\n"
-            f"      AND h.target = 'session:' || r.session_id))\n"
+            f"    AND ((h.stage = '{GENERATION_STAGE}'\n"
+            f"      AND h.target = 'table:' || r.table_id)\n"
+            f"     OR (h.stage = '{stage}' AND h.target = 'catalog')\n"
+            f"     OR (h.stage = 'operating_model' AND h.target = 'catalog'))\n"
             f")\n"
-            f"{session_grain_precedence}"
+            f"{catalog_grain_precedence}"
             f";"
         )
     if table in _SESSION_GRAIN:
@@ -296,7 +309,7 @@ def _current_view_sql(table: str) -> str:
             f"SELECT r.* FROM {WS_TOKEN}.{table} r\n"
             f"WHERE EXISTS (\n"
             f"  SELECT 1 FROM {WS_TOKEN}.metadata_snapshot_head h\n"
-            f"  WHERE h.target = 'session:' || r.session_id\n"
+            f"  WHERE h.target = 'catalog'\n"
             f"    AND h.stage = '{stage}'\n"
             f"    AND h.run_id = r.run_id\n"
             f");"
@@ -423,7 +436,6 @@ _CONTROL_WRITE_GRANTS: dict[str, str] = {
         "SELECT, INSERT, "
         "UPDATE (source_type, connection_config, status, stage, backend, updated_at)"
     ),
-    "investigation_sessions": "SELECT, INSERT",
     "config_overlay": "SELECT, INSERT, UPDATE",
     # save-on-clean (DAT-486): the cockpit query tool saves learned `query:`
     # snippets. SELECT for the IS-NULL-aware key lookup (the unique key has

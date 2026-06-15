@@ -247,6 +247,7 @@ class MetricsPhase(BasePhase):
                 agent,
                 schema_mapping_id,
                 table_ids,
+                vertical,
                 om_run_id=run_id,
             )
         else:
@@ -256,8 +257,9 @@ class MetricsPhase(BasePhase):
                 table_ids=table_ids,
                 schema_mapping_id=schema_mapping_id,
                 om_run_id=run_id,
+                vertical=vertical,
             )
-            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent)
+            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, schema_mapping_id)
 
         # A composed metric that ran cleanly reaches executed; one whose SQL
         # failed stays grounded with the reason (born loud, never silently absent).
@@ -319,6 +321,7 @@ def _execute_metrics_serial(
     session: Session,
     exec_ctx: _ExecutionContext,
     agent: GraphAgent,
+    workspace_id: str,
 ) -> list[MetricResult]:
     """Fallback path: shared session + cursor, sequential dispatch.
 
@@ -326,7 +329,9 @@ def _execute_metrics_serial(
     """
     out: list[MetricResult] = []
     for graph_id, graph, hint_sql, inspiration_id in prep:
-        result = agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)
+        result = agent.execute(
+            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=workspace_id
+        )
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -337,6 +342,7 @@ def _execute_metrics_parallel(
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
+    vertical: str,
     *,
     om_run_id: str,
 ) -> list[MetricResult]:
@@ -370,6 +376,7 @@ def _execute_metrics_parallel(
                         agent,
                         schema_mapping_id,
                         table_ids,
+                        vertical,
                         om_run_id,
                     )
                 except Exception as exc:
@@ -388,6 +395,7 @@ def _execute_isolated(
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
+    vertical: str,
     om_run_id: str,
 ) -> Result[GraphExecution]:
     """Run one metric with an isolated session + cursor pair.
@@ -411,5 +419,8 @@ def _execute_isolated(
             table_ids=table_ids,
             schema_mapping_id=schema_mapping_id,
             om_run_id=om_run_id,
+            vertical=vertical,
         )
-        return agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)
+        return agent.execute(
+            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=schema_mapping_id
+        )

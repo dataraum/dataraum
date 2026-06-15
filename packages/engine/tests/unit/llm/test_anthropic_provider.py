@@ -1,8 +1,10 @@
-"""Tests for AnthropicProvider error classification.
+"""Tests for AnthropicProvider error classification (DAT-503 typed channel).
 
-Hard-fail policy: callers should be able to distinguish transient
-(retry might help) from permanent (user must fix) errors purely from
-the Result.fail message.
+Hard-fail policy: ``converse`` RAISES a typed provider exception on an API
+failure — :class:`TransientProviderError` (retry may help) vs
+:class:`PermanentProviderError` (user must fix) — so retryability rides the
+exception *type* to the worker's durable boundary instead of a substring of a
+Result.error every intermediate layer would have to forward faithfully.
 """
 
 from __future__ import annotations
@@ -19,12 +21,10 @@ from dataraum.llm.providers.anthropic import (
     _classify_anthropic_error,
 )
 from dataraum.llm.providers.base import (
-    PERMANENT_ERROR_KIND,
-    TRANSIENT_ERROR_KIND,
     ConversationRequest,
     Message,
-    format_api_error,
-    is_transient_error,
+    PermanentProviderError,
+    TransientProviderError,
 )
 
 
@@ -54,42 +54,38 @@ def _status_error(status_code: int) -> anthropic.APIStatusError:
 
 
 class TestErrorClassification:
-    """_classify_anthropic_error sorts SDK exceptions into transient/permanent."""
+    """_classify_anthropic_error sorts SDK exceptions into typed provider errors."""
 
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
     def test_permanent_status_codes(self, status: int) -> None:
-        kind, _ = _classify_anthropic_error(_status_error(status))
-        assert kind == "permanent"
+        assert isinstance(_classify_anthropic_error(_status_error(status)), PermanentProviderError)
 
     @pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 529])
     def test_transient_status_codes(self, status: int) -> None:
-        kind, _ = _classify_anthropic_error(_status_error(status))
-        assert kind == "transient"
+        assert isinstance(_classify_anthropic_error(_status_error(status)), TransientProviderError)
 
     def test_timeout_is_transient(self) -> None:
         exc = anthropic.APITimeoutError(request=MagicMock(spec=httpx.Request))
-        kind, _ = _classify_anthropic_error(exc)
-        assert kind == "transient"
+        assert isinstance(_classify_anthropic_error(exc), TransientProviderError)
 
     def test_connection_error_is_transient(self) -> None:
         exc = anthropic.APIConnectionError(request=MagicMock(spec=httpx.Request))
-        kind, _ = _classify_anthropic_error(exc)
-        assert kind == "transient"
+        assert isinstance(_classify_anthropic_error(exc), TransientProviderError)
 
     @pytest.mark.parametrize("status", [401, 403])
     def test_auth_errors_hint_at_api_key(self, status: int) -> None:
         """401/403 errors must mention ANTHROPIC_API_KEY so the practitioner
         knows what to fix."""
-        kind, message = _classify_anthropic_error(_status_error(status))
-        assert kind == "permanent"
-        assert "ANTHROPIC_API_KEY" in message
+        err = _classify_anthropic_error(_status_error(status))
+        assert isinstance(err, PermanentProviderError)
+        assert "ANTHROPIC_API_KEY" in str(err)
 
 
-class TestConverseSurfacesClassification:
-    """Result.fail messages encode the error kind so callers don't need to
-    inspect the original exception."""
+class TestConverseRaisesTypedError:
+    """converse raises the typed exception so callers don't inspect the SDK
+    exception — and so a transient failure stays retryable end-to-end."""
 
-    def test_permanent_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_permanent_error_raises_permanent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
 
         def boom(**_: object) -> object:
@@ -97,11 +93,11 @@ class TestConverseSurfacesClassification:
 
         monkeypatch.setattr(provider.client.messages, "create", boom)
 
-        result = provider.converse(_request())
-        assert not result.success
-        assert "permanent" in (result.error or "")
+        with pytest.raises(PermanentProviderError) as ei:
+            provider.converse(_request())
+        assert "ANTHROPIC_API_KEY" in str(ei.value)
 
-    def test_transient_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_transient_error_raises_transient(self, monkeypatch: pytest.MonkeyPatch) -> None:
         provider = _provider()
 
         def boom(**_: object) -> object:
@@ -109,34 +105,34 @@ class TestConverseSurfacesClassification:
 
         monkeypatch.setattr(provider.client.messages, "create", boom)
 
-        result = provider.converse(_request())
-        assert not result.success
-        assert "transient" in (result.error or "")
-        # The consumer's predicate (worker retry choke point) agrees end-to-end.
-        assert is_transient_error(result.error)
+        with pytest.raises(TransientProviderError):
+            provider.converse(_request())
 
+    def test_unexpected_error_is_permanent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A non-API failure (a bug in request shaping) is non-retryable — retrying
+        # the identical call cannot clear it.
+        provider = _provider()
 
-class TestTransientErrorPredicate:
-    """``format_api_error`` (producer) and ``is_transient_error`` (the worker's
-    retry choke point) are the one shared classification contract."""
+        def boom(**_: object) -> object:
+            raise ValueError("malformed kwargs")
 
-    def test_transient_round_trips(self) -> None:
-        msg = format_api_error("Anthropic", TRANSIENT_ERROR_KIND, "429 rate limit")
-        assert is_transient_error(msg) is True
+        monkeypatch.setattr(provider.client.messages, "create", boom)
 
-    def test_permanent_is_not_transient(self) -> None:
-        msg = format_api_error("Anthropic", PERMANENT_ERROR_KIND, "401 unauthorized")
-        assert is_transient_error(msg) is False
+        with pytest.raises(PermanentProviderError) as ei:
+            provider.converse(_request())
+        assert "malformed kwargs" in str(ei.value)
 
-    def test_none_and_unrelated_are_not_transient(self) -> None:
-        assert is_transient_error(None) is False
-        assert is_transient_error("No typed tables found. Run typing phase first.") is False
+    def test_transient_chains_the_sdk_cause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The original SDK exception is preserved as __cause__ so the workflow's
+        # _failure_message __cause__ walk can surface the innermost message.
+        provider = _provider()
+        original = _status_error(529)
 
-    def test_tag_survives_real_error_wrapping(self) -> None:
-        # The classification must survive the concatenation the phase/agent layers
-        # apply before the string reaches ``_outcome_or_raise`` — else a transient
-        # failure silently reads as permanent and is never retried.
-        inner = format_api_error("Anthropic", TRANSIENT_ERROR_KIND, "429 rate limit")
-        assert is_transient_error(f"LLM call failed: {inner}")  # agent wrap
-        assert is_transient_error(f"RuntimeError: {inner}")  # BasePhase.run wrap
-        assert is_transient_error(f"Cycle grounding failed: {inner}")  # phase wrap
+        def boom(**_: object) -> object:
+            raise original
+
+        monkeypatch.setattr(provider.client.messages, "create", boom)
+
+        with pytest.raises(TransientProviderError) as ei:
+            provider.converse(_request())
+        assert ei.value.__cause__ is original

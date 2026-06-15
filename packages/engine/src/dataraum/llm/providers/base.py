@@ -12,35 +12,47 @@ from pydantic import BaseModel, Field
 
 from dataraum.core.models.base import Result
 
-# === API-failure classification ===
+# === API-failure classification (DAT-503) ===
 #
-# A provider tags its ``Result.error`` as transient or permanent so the durable
-# layer (the worker's ``_outcome_or_raise``) can decide retryability without a
-# provider-specific import or a brittle bare-string match. ``format_api_error``
-# (producer) and ``is_transient_error`` (consumer) are the one shared definition
-# of that tag — a round-trip test keeps them in lockstep.
-TRANSIENT_ERROR_KIND = "transient"
-PERMANENT_ERROR_KIND = "permanent"
+# A provider RAISES one of these typed exceptions on an API failure instead of
+# folding the error into ``Result.fail``. Retryability is then carried by the
+# exception *type*, not by a substring of the error string, so it survives the
+# ``converse`` -> phase-agent -> ``BasePhase.run`` -> ``run_phase`` chain
+# without any fragile re-parse. The durable boundary (the worker's
+# ``_outcome_or_raise``) classifies by ``isinstance`` and chooses the Temporal
+# retry policy accordingly.
+#
+# This deliberately crosses the "Result, not exceptions, for expected failures"
+# convention for the provider transient/permanent path specifically: a
+# transient API failure is exactly the case where retryability must live at the
+# durable/exception boundary, not as data threaded through a Result chain every
+# intermediate layer would have to forward faithfully (the substring tag this
+# replaces silently read as permanent the moment a layer reworded the message).
 
-_TRANSIENT_TAG = f"API error ({TRANSIENT_ERROR_KIND})"
 
+class ProviderError(Exception):
+    """Base for provider API failures raised out of :meth:`LLMProvider.converse`.
 
-def format_api_error(provider: str, kind: str, message: str) -> str:
-    """Render a provider API failure, embedding its transient/permanent ``kind``.
-
-    The ``({kind})`` tag is the single classification carrier read back by
-    :func:`is_transient_error` at the retry choke point.
+    Carries the human-readable provider message; the subclass *type* carries the
+    retryability the durable boundary reads.
     """
-    return f"{provider} API error ({kind}): {message}"
 
 
-def is_transient_error(error: str | None) -> bool:
-    """True if ``error`` was tagged transient by :func:`format_api_error`.
+class TransientProviderError(ProviderError):
+    """A retryable provider failure — rate limit, 5xx, timeout, connection error.
 
-    Transient failures (rate limits, 5xx, timeouts, connection errors) should be
-    retried by Temporal; permanent ones (auth, bad request) should not.
+    Retrying may succeed, so the worker raises a *retryable* Temporal error and
+    lets the workflow's LLM retry policy re-run the whole activity with backoff.
     """
-    return error is not None and _TRANSIENT_TAG in error
+
+
+class PermanentProviderError(ProviderError):
+    """A non-retryable provider failure — auth, bad request, schema, payload.
+
+    Retrying the identical request cannot help; the user must fix credentials,
+    the input, or configuration. The worker surfaces it as a non-retryable
+    Temporal error.
+    """
 
 
 # === Tool Use Models ===
@@ -112,7 +124,13 @@ class LLMProvider(ABC):
             request: Conversation request with messages, tools, etc.
 
         Returns:
-            Result containing ConversationResponse or error message
+            Result containing the ConversationResponse on success.
+
+        Raises:
+            TransientProviderError: A retryable API failure (rate limit, 5xx,
+                timeout, connection error).
+            PermanentProviderError: A non-retryable API failure (auth, bad
+                request, schema, payload, or any unexpected error).
         """
         pass
 

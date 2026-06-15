@@ -440,11 +440,10 @@ class GraphAgent(LLMFeature):
             model=model,
         )
 
-        result = self.provider.converse(request)
-        if not result.success or not result.value:
-            return Result.fail(result.error or "LLM call failed")
-
-        response = result.value
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception to the worker's durable boundary, so
+        # we don't re-wrap it. A returned Result is always a success.
+        response = self.provider.converse(request).unwrap()
 
         # Extract tool call result. No tool call is a bind ERROR — never guess by
         # parsing free text as JSON (DAT-439's born-loud cut): a metric that can't
@@ -782,11 +781,10 @@ class GraphAgent(LLMFeature):
             model=self.provider.get_model_for_tier(model_tier),
         )
 
-        result = self.provider.converse(request)
-        if not result.success or not result.value:
-            return Result.fail(result.error or "LLM repair call failed")
-
-        response = result.value
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception to the worker's durable boundary, so
+        # we don't re-wrap it. A returned Result is always a success.
+        response = self.provider.converse(request).unwrap()
         if not response.content:
             return Result.fail("LLM returned empty response")
 

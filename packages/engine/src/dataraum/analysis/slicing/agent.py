@@ -124,11 +124,10 @@ class SlicingAgent(LLMFeature):
             temperature=temperature,
         )
 
-        result = self.provider.converse(request)
-        if not result.success or not result.value:
-            return Result.fail(result.error or "LLM call failed")
-
-        response = result.value
+        # converse raises a typed ProviderError on an API failure (DAT-503) —
+        # retryability rides the exception to the worker's durable boundary, so
+        # we don't re-wrap it. A returned Result is always a success.
+        response = self.provider.converse(request).unwrap()
 
         # Extract tool call result
         if not response.tool_calls:

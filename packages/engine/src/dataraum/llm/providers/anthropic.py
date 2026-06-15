@@ -11,15 +11,15 @@ from pydantic import BaseModel
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.providers.base import (
-    PERMANENT_ERROR_KIND,
-    TRANSIENT_ERROR_KIND,
     ConversationRequest,
     ConversationResponse,
     LLMProvider,
     Message,
+    PermanentProviderError,
+    ProviderError,
     ToolCall,
     ToolResult,
-    format_api_error,
+    TransientProviderError,
 )
 
 
@@ -41,14 +41,14 @@ _PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 413, 422})
 _AUTH_STATUS_CODES = frozenset({401, 403})
 
 
-def _classify_anthropic_error(exc: anthropic.APIError) -> tuple[str, str]:
-    """Categorize an Anthropic exception so the caller can act on it.
+def _classify_anthropic_error(exc: anthropic.APIError) -> ProviderError:
+    """Build the typed :class:`ProviderError` to raise for an Anthropic exception.
 
-    Returns:
-        (kind, message): ``kind`` is "permanent" (user must fix) or
-        "transient" (retry may help). ``message`` is the human-readable
-        body of the error, with an actionable hint appended for auth
-        failures so practitioners know exactly what to fix.
+    Returns the exception *instance* whose type carries retryability — a
+    :class:`TransientProviderError` (retry may help) or
+    :class:`PermanentProviderError` (user must fix) — with the human-readable
+    body as its message, plus an actionable hint for auth failures so
+    practitioners know exactly what to fix.
 
     Classification:
         permanent — auth / forbidden / bad request / not found / payload
@@ -65,20 +65,20 @@ def _classify_anthropic_error(exc: anthropic.APIError) -> tuple[str, str]:
         if exc.status_code in _AUTH_STATUS_CODES:
             message = f"{message}. Check your ANTHROPIC_API_KEY."
         if exc.status_code in _PERMANENT_STATUS_CODES:
-            return PERMANENT_ERROR_KIND, message
-        return TRANSIENT_ERROR_KIND, message
+            return PermanentProviderError(message)
+        return TransientProviderError(message)
     # Connection / timeout errors don't have a status code; they're
     # always transient by definition.
     if isinstance(exc, anthropic.APIConnectionError):
-        return TRANSIENT_ERROR_KIND, str(exc)
+        return TransientProviderError(str(exc))
     # APIResponseValidationError: the server returned something the SDK
     # couldn't parse. Treat as permanent — retrying the same request
     # likely produces the same malformed response.
     if isinstance(exc, anthropic.APIResponseValidationError):
-        return PERMANENT_ERROR_KIND, str(exc)
+        return PermanentProviderError(str(exc))
     # Anything else under APIError — default to transient (retry is
     # the safer default than surfacing as a user error).
-    return TRANSIENT_ERROR_KIND, str(exc)
+    return TransientProviderError(str(exc))
 
 
 class AnthropicProvider(LLMProvider):
@@ -204,12 +204,22 @@ class AnthropicProvider(LLMProvider):
             )
 
         except anthropic.APIError as e:
-            kind, message = _classify_anthropic_error(e)
-            logger.error("anthropic_api_error", error=str(e), model=model, kind=kind)
-            return Result.fail(format_api_error("Anthropic", kind, message))
+            provider_error = _classify_anthropic_error(e)
+            logger.error(
+                "anthropic_api_error",
+                error=str(e),
+                model=model,
+                kind=type(provider_error).__name__,
+            )
+            # Raise the typed exception (DAT-503): retryability rides the type
+            # through the phase chain to the worker's durable boundary, not a
+            # substring of a Result.error every layer could reword.
+            raise provider_error from e
         except Exception as e:
             logger.error("anthropic_unexpected_error", error=str(e), model=model)
-            return Result.fail(f"Unexpected error calling Anthropic: {e}")
+            # Unexpected (non-API) failures are non-retryable — retrying the
+            # identical call is unlikely to clear a bug in our request shaping.
+            raise PermanentProviderError(f"Unexpected error calling Anthropic: {e}") from e
 
     def _convert_messages(self, messages: list[Message]) -> list[MessageParam]:
         """Convert our Message format to Anthropic's MessageParam format.

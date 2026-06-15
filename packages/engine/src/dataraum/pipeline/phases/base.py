@@ -15,6 +15,7 @@ from types import ModuleType
 from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
+from dataraum.llm.providers.base import ProviderError
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.storage import Table
 
@@ -70,10 +71,21 @@ class BasePhase(ABC):
         """Execute the phase.
 
         Wraps _run with wall-clock timing and error handling.
+
+        A :class:`~dataraum.llm.providers.base.ProviderError` is NOT flattened
+        into a FAILED ``PhaseResult`` (DAT-503): retryability rides the
+        exception *type* to the worker's durable boundary, so it must propagate
+        unchanged. Flattening it would lose the transient/permanent distinction
+        and make every LLM 429 a non-retryable phase failure. The enclosing
+        ``session_scope`` rolls the phase's partial writes back on the raise.
         """
         start = time.monotonic()
         try:
             result = self._run(ctx)
+        except ProviderError:
+            # Let the typed provider failure propagate to _outcome_or_raise,
+            # which classifies it for Temporal retry. session_scope rolls back.
+            raise
         except Exception as e:
             elapsed = time.monotonic() - start
             tb = traceback.format_exc()

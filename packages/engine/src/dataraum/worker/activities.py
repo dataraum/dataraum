@@ -20,12 +20,15 @@ the rare commit conflict raises and is absorbed by Temporal's activity retry.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from dataraum.llm.providers.base import is_transient_error
+from dataraum.llm.providers.base import ProviderError, TransientProviderError
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     OPERATING_MODEL_DETECTOR_PHASES,
@@ -61,6 +64,60 @@ from dataraum.worker.contracts import (
 
 if TYPE_CHECKING:
     from dataraum.core.connections import ConnectionManager
+
+
+# Heartbeat cadence for the long-running ``metrics`` activity (DAT-503). Well
+# under the call's ``heartbeat_timeout`` (60s in workflows.py) so a missed pulse
+# is unambiguous worker death, not a slow LLM wave.
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+
+@contextmanager
+def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[None]:
+    """Pulse ``activity.heartbeat()`` from a daemon thread while a sync body runs.
+
+    The phase body is a single blocking call (no per-wave hook), so the pulse
+    can't ride the work itself — a background thread emits a heartbeat every
+    ``interval`` seconds until the body returns or raises, then stops. Lets the
+    activity declare a short ``heartbeat_timeout`` for fast worker-death
+    detection without the phase having to thread a progress callback. The pulse
+    is a no-op outside an activity context (unit tests), so it stays test-safe.
+    """
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            try:
+                activity.heartbeat()
+            except RuntimeError:
+                # Not inside an activity execution context (e.g. a unit test) —
+                # nothing to heartbeat against; stop quietly.
+                return
+
+    thread = threading.Thread(target=_beat, name="metrics-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=interval)
+
+
+def _provider_app_error(exc: ProviderError) -> ApplicationError:
+    """Translate a typed provider failure into the right Temporal error (DAT-503).
+
+    A :class:`TransientProviderError` (rate limit, 5xx, timeout, connection)
+    becomes the retryable ``TransientPhaseFailure`` — absent from the LLM retry
+    policy's ``non_retryable_error_types``, so Temporal re-runs the whole
+    activity with backoff. Any other provider failure (auth, bad request,
+    schema, unexpected) is permanent → the non-retryable ``PhaseFailed``. The
+    message is the provider's own — preserved verbatim for the cockpit's
+    failure surface.
+    """
+    message = str(exc)
+    if isinstance(exc, TransientProviderError):
+        return ApplicationError(message, type="TransientPhaseFailure")
+    return ApplicationError(message, type="PhaseFailed", non_retryable=True)
 
 
 class PhaseActivities:
@@ -207,8 +264,7 @@ class PhaseActivities:
         Source-free: scopes to the session's selected typed tables (which may
         span sources), persisting ``detection_method='candidate'`` rows.
         """
-        run = run_session_phase(self._manager, "relationships", payload.identity, payload.table_ids)
-        return self._outcome_or_raise(run, "relationships")
+        return self._run_session_or_raise("relationships", payload.identity, payload.table_ids)
 
     @activity.defn(name="semantic_per_table")
     def run_semantic_per_table(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -219,10 +275,7 @@ class PhaseActivities:
         real Anthropic calls; needs a working ``ANTHROPIC_API_KEY`` + the session's
         ``vertical``.
         """
-        run = run_session_phase(
-            self._manager, "semantic_per_table", payload.identity, payload.table_ids
-        )
-        return self._outcome_or_raise(run, "semantic_per_table")
+        return self._run_session_or_raise("semantic_per_table", payload.identity, payload.table_ids)
 
     @activity.defn(name="aggregation_lineage")
     def run_aggregation_lineage(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -234,10 +287,9 @@ class PhaseActivities:
         run-versioned, feeding the ``structural_reconciliation`` witness at the
         terminal ``session_detect``.
         """
-        run = run_session_phase(
-            self._manager, "aggregation_lineage", payload.identity, payload.table_ids
+        return self._run_session_or_raise(
+            "aggregation_lineage", payload.identity, payload.table_ids
         )
-        return self._outcome_or_raise(run, "aggregation_lineage")
 
     @activity.defn(name="enriched_views")
     def run_enriched_views(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -250,10 +302,7 @@ class PhaseActivities:
         the user's durable relationship teaches are folded in. Makes real Anthropic
         calls (the enrichment agent); needs ``ANTHROPIC_API_KEY``.
         """
-        run = run_session_phase(
-            self._manager, "enriched_views", payload.identity, payload.table_ids
-        )
-        return self._outcome_or_raise(run, "enriched_views")
+        return self._run_session_or_raise("enriched_views", payload.identity, payload.table_ids)
 
     # --- value layer (DAT-403) — source-free, session-scoped, after enriched_views ---
 
@@ -265,8 +314,7 @@ class PhaseActivities:
         ``SliceDefinition`` rows for the fact tables that carry an enriched view.
         Makes real Anthropic calls (the slicing agent); needs ``ANTHROPIC_API_KEY``.
         """
-        run = run_session_phase(self._manager, "slicing", payload.identity, payload.table_ids)
-        return self._outcome_or_raise(run, "slicing")
+        return self._run_session_or_raise("slicing", payload.identity, payload.table_ids)
 
     @activity.defn(name="slicing_view")
     def run_slicing_view(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -276,8 +324,7 @@ class PhaseActivities:
         dimension columns, registering a ``slicing_view`` lake artifact per fact
         table. No LLM call.
         """
-        run = run_session_phase(self._manager, "slicing_view", payload.identity, payload.table_ids)
-        return self._outcome_or_raise(run, "slicing_view")
+        return self._run_session_or_raise("slicing_view", payload.identity, payload.table_ids)
 
     @activity.defn(name="slice_analysis")
     def run_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -286,10 +333,7 @@ class PhaseActivities:
         Executes each slice definition's SQL to create the per-value slice tables,
         registers them, and runs statistics + quality on each. No LLM call.
         """
-        run = run_session_phase(
-            self._manager, "slice_analysis", payload.identity, payload.table_ids
-        )
-        return self._outcome_or_raise(run, "slice_analysis")
+        return self._run_session_or_raise("slice_analysis", payload.identity, payload.table_ids)
 
     @activity.defn(name="temporal_slice_analysis")
     def run_temporal_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -299,10 +343,9 @@ class PhaseActivities:
         per slice. No LLM call. (Per-column ColumnSliceProfile production was cut in
         the DAT-442 reset; dimensional_entropy reads typed values directly via NMI.)
         """
-        run = run_session_phase(
-            self._manager, "temporal_slice_analysis", payload.identity, payload.table_ids
+        return self._run_session_or_raise(
+            "temporal_slice_analysis", payload.identity, payload.table_ids
         )
-        return self._outcome_or_raise(run, "temporal_slice_analysis")
 
     @activity.defn(name="correlations")
     def run_correlations(self, payload: SessionScopedInput) -> PhaseOutcome:
@@ -311,8 +354,7 @@ class PhaseActivities:
         Finds same-table and cross-table derived columns (sums, ratios, …),
         persisting ``DerivedColumn`` formula metadata. No view, no LLM call.
         """
-        run = run_session_phase(self._manager, "correlations", payload.identity, payload.table_ids)
-        return self._outcome_or_raise(run, "correlations")
+        return self._run_session_or_raise("correlations", payload.identity, payload.table_ids)
 
     @activity.defn(name="session_materialize_overlays")
     def run_session_materialize_overlays(self, identity: SessionIdentity) -> PhaseOutcome:
@@ -396,8 +438,7 @@ class PhaseActivities:
         (``ctx.config["base_runs"]``); the phase performs NO head resolution
         itself. Makes real Anthropic calls (SQL generation per declared spec).
         """
-        run = run_session_phase(
-            self._manager,
+        return self._run_session_or_raise(
             "validation",
             payload.identity,
             payload.scope.table_ids,
@@ -408,7 +449,6 @@ class PhaseActivities:
                 }
             },
         )
-        return self._outcome_or_raise(run, "validation")
 
     @activity.defn(name="business_cycles")
     def run_business_cycles(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
@@ -420,8 +460,7 @@ class PhaseActivities:
         synthesis call over the declared vocabulary). Runs after ``validation``
         so cycle health can read this run's validation results (DAT-455).
         """
-        run = run_session_phase(
-            self._manager,
+        return self._run_session_or_raise(
             "business_cycles",
             payload.identity,
             payload.scope.table_ids,
@@ -432,7 +471,6 @@ class PhaseActivities:
                 }
             },
         )
-        return self._outcome_or_raise(run, "business_cycles")
 
     @activity.defn(name="metrics")
     def run_metrics(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
@@ -449,24 +487,25 @@ class PhaseActivities:
 
         This is the longest-running activity on the spine — up to
         ``_MAX_CONCURRENT_METRICS`` concurrent compositions, ``ceil(N/10)`` LLM
-        waves for ``N`` declared metrics. Like the other phase activities it does
-        NOT heartbeat; a worker crash mid-run is recovered by the workflow's retry
-        policy once the shared ``start_to_close_timeout`` fires.
+        waves for ``N`` declared metrics. It HEARTBEATS (DAT-503): a background
+        pulser emits ``activity.heartbeat()`` while the synchronous phase runs,
+        so a worker that dies mid-run is detected at the call's
+        ``heartbeat_timeout`` (seconds) instead of only at the much longer
+        ``start_to_close_timeout`` — the run fails over to a retry far sooner.
         """
-        run = run_session_phase(
-            self._manager,
-            "metrics",
-            payload.identity,
-            payload.scope.table_ids,
-            extra_config={
-                "base_runs": {
-                    "relationship_run_id": payload.scope.relationship_run_id,
-                    "semantic_runs": payload.scope.semantic_runs,
+        with _heartbeat_pulse():
+            return self._run_session_or_raise(
+                "metrics",
+                payload.identity,
+                payload.scope.table_ids,
+                extra_config={
+                    "base_runs": {
+                        "relationship_run_id": payload.scope.relationship_run_id,
+                        "semantic_runs": payload.scope.semantic_runs,
+                    },
+                    "workspace_id": payload.identity.workspace_id,
                 },
-                "workspace_id": payload.identity.workspace_id,
-            },
-        )
-        return self._outcome_or_raise(run, "metrics")
+            )
 
     @activity.defn(name="operating_model_detect")
     def run_operating_model_detect(self, identity: SessionIdentity) -> PhaseOutcome:
@@ -513,15 +552,43 @@ class PhaseActivities:
         identity: SourceIdentity,
         table_ids: list[str],
     ) -> PhaseOutcome:
-        """Run a phase; turn a deterministic phase failure into a non-retryable error.
+        """Run an add_source phase; classify its failure for Temporal retry.
 
         A FAILED ``PhaseRun`` means the phase itself decided it cannot proceed
-        (bad path, missing config) — permanent, so we raise a non-retryable
-        ``ApplicationError`` rather than burning Temporal retries. Transient
-        failures (e.g. a DuckLake optimistic-commit conflict) raise out of
-        ``run_phase`` as ordinary exceptions and stay retryable by default.
+        (bad path, missing config) — deterministic, so we raise a non-retryable
+        ``PhaseFailed`` rather than burning Temporal retries. A transient
+        provider failure (an LLM 429 / 5xx / connection error) raises a typed
+        :class:`ProviderError` out of the phase body; we translate it to the
+        retryable ``TransientPhaseFailure`` here (DAT-503). Infrastructure
+        failures (e.g. a DuckLake optimistic-commit conflict) raise ordinary
+        exceptions and stay retryable by default.
         """
-        run = run_phase(self._manager, phase_name, identity, table_ids)
+        try:
+            run = run_phase(self._manager, phase_name, identity, table_ids)
+        except ProviderError as exc:
+            raise _provider_app_error(exc) from exc
+        return self._outcome_or_raise(run, phase_name)
+
+    def _run_session_or_raise(
+        self,
+        phase_name: str,
+        identity: SessionIdentity,
+        table_ids: list[str],
+        extra_config: dict[str, Any] | None = None,
+    ) -> PhaseOutcome:
+        """Run a begin_session / operating_model phase; classify failure for retry.
+
+        Session-scoped sibling of :meth:`_run_or_raise`: a transient
+        :class:`ProviderError` raised out of the phase body becomes the
+        retryable ``TransientPhaseFailure``; a deterministic FAILED ``PhaseRun``
+        becomes the non-retryable ``PhaseFailed`` (DAT-503).
+        """
+        try:
+            run = run_session_phase(
+                self._manager, phase_name, identity, table_ids, extra_config=extra_config
+            )
+        except ProviderError as exc:
+            raise _provider_app_error(exc) from exc
         return self._outcome_or_raise(run, phase_name)
 
     def _outcome_or_raise(self, run: PhaseRun, phase_name: str) -> PhaseOutcome:
@@ -529,19 +596,13 @@ class PhaseActivities:
 
         Shared by the add_source (``run_phase``) and begin_session
         (``run_session_phase`` / ``begin_session_select``) activity paths.
-        A FAILED run is normally a deterministic, permanent phase failure →
-        non-retryable ``PhaseFailed``. The exception is a *transient* provider
-        failure (an LLM 429 / 5xx / connection error the provider tagged via
-        ``format_api_error``): that is not deterministic, so raise a retryable
-        error and let Temporal re-run the whole activity with backoff (the
-        ``RetryPolicy``'s durable safety net the SDK's in-process retries can't
-        replace). Anything else (completed / skipped) is a normal outcome.
+        A FAILED run is a deterministic, permanent phase failure →
+        non-retryable ``PhaseFailed`` (a transient provider failure never
+        reaches here — it raises a typed :class:`ProviderError` out of the
+        phase body, which :meth:`_run_or_raise` / :meth:`_run_session_or_raise`
+        translate). Anything else (completed / skipped) is a normal outcome.
         """
         if run.status == PhaseStatus.FAILED.value:
             message = run.error or f"Phase '{phase_name}' failed"
-            if is_transient_error(run.error):
-                # Retryable: ``TransientPhaseFailure`` is absent from the
-                # workflow ``RetryPolicy``'s ``non_retryable_error_types``.
-                raise ApplicationError(message, type="TransientPhaseFailure")
             raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
         return PhaseOutcome(status=run.status, summary=run.summary)

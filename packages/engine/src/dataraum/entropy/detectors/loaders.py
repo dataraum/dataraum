@@ -672,10 +672,6 @@ def load_hypothesis_match_rate(
     return {"match_rate": matches / total, "matches": matches, "total": total}
 
 
-# load_drift_summaries removed with the temporal_drift detector (DAT-442 reset).
-# dimensional_entropy reads ColumnDriftSummary directly; real drift moves to DAT-445.
-
-
 def load_documented_dependencies(session: Session) -> set[frozenset[str]]:
     """Undirected column pairs a ``document_business_rule`` teach marked EXPECTED.
 

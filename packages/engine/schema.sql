@@ -55,31 +55,6 @@ CREATE TABLE sources (
 	CONSTRAINT uq_sources_name UNIQUE (name)
 );
 
-CREATE TABLE column_drift_summaries (
-	id VARCHAR NOT NULL, 
-	session_id VARCHAR NOT NULL, 
-	run_id VARCHAR, 
-	slice_table_name VARCHAR(255) NOT NULL, 
-	column_name VARCHAR(255) NOT NULL, 
-	time_column VARCHAR(255) NOT NULL, 
-	max_js_divergence FLOAT NOT NULL, 
-	mean_js_divergence FLOAT NOT NULL, 
-	drift_divergence FLOAT, 
-	periods_analyzed INTEGER NOT NULL, 
-	periods_with_drift INTEGER NOT NULL, 
-	drift_evidence_json JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_column_drift_summaries PRIMARY KEY (id), 
-	CONSTRAINT uq_drift_slice_column_run UNIQUE (slice_table_name, column_name, run_id), 
-	CONSTRAINT fk_column_drift_summaries_session_id_investigation_sessions FOREIGN KEY(session_id) REFERENCES investigation_sessions (session_id)
-);
-
-CREATE INDEX ix_column_drift_summaries_column_name ON column_drift_summaries (column_name);
-
-CREATE INDEX ix_column_drift_summaries_session_id ON column_drift_summaries (session_id);
-
-CREATE INDEX ix_column_drift_summaries_slice_table_name ON column_drift_summaries (slice_table_name);
-
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	session_id VARCHAR NOT NULL, 
@@ -242,21 +217,7 @@ CREATE TABLE temporal_slice_analyses (
 	period_start DATE NOT NULL, 
 	period_end DATE NOT NULL, 
 	row_count INTEGER, 
-	expected_days INTEGER, 
-	observed_days INTEGER, 
-	coverage_ratio FLOAT, 
-	is_complete INTEGER, 
-	has_early_cutoff INTEGER, 
-	days_missing_at_end INTEGER, 
-	last_day_ratio FLOAT, 
 	column_sums JSON, 
-	z_score FLOAT, 
-	rolling_avg FLOAT, 
-	rolling_std FLOAT, 
-	is_volume_anomaly INTEGER, 
-	anomaly_type VARCHAR(20), 
-	period_over_period_change FLOAT, 
-	issues_json JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
 	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id), 

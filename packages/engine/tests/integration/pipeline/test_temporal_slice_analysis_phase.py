@@ -443,22 +443,20 @@ class TestTemporalSliceAnalysisPhase:
         )
         assert result.outputs["time_columns"] == ["date"]
 
-    def test_duplicate_slice_definitions_persist_drift_once(
+    def test_duplicate_slice_definitions_persist_periods_once(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Two slice defs for the same fact+dimension persist drift exactly once.
+        """Two slice defs for the same fact+dimension persist periods exactly once.
 
-        Regression (prod ``uq_drift_slice_column_run`` UniqueViolation): the
+        Regression (prod ``uq_tsa_slice_period_run`` UniqueViolation): the
         slicing agent (+ enriched-dimension propagation) can emit two
         ``SliceDefinition`` rows for the same fact table and dimension in one
         run — there is no per-run uniqueness guard. Both resolve to the same
         source-qualified prefix and so match the same physical slice table, so
-        the phase used to persist that table's drift twice. Under the
-        production session's ``autoflush=False`` the run-scoped delete in
-        ``persist_drift_results`` does not flush the prior batch, so the second
-        write appended duplicate ``(slice_table_name, column_name, run_id)``
-        rows and the commit blew up. The phase now drift-analyses each physical
-        slice table once per run.
+        the phase used to sum that table twice. Under the production session's
+        ``autoflush=False`` the second write would append duplicate
+        ``(slice_table_name, period_label, run_id)`` rows and the commit blew
+        up. The phase now sums each physical slice table once per run.
         """
         from datetime import UTC, datetime
 
@@ -467,7 +465,6 @@ class TestTemporalSliceAnalysisPhase:
         from dataraum.analysis.semantic.db_models import TableEntity
         from dataraum.analysis.slicing.db_models import SliceDefinition
         from dataraum.analysis.temporal import TemporalColumnProfile
-        from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 
         phase = TemporalSliceAnalysisPhase()
         source_id = str(uuid4())
@@ -588,21 +585,11 @@ class TestTemporalSliceAnalysisPhase:
         assert result.status == PhaseStatus.COMPLETED, (
             f"Phase failed: {result.error}, outputs: {result.outputs}"
         )
-        rows = (
-            session.execute(
-                select(ColumnDriftSummary).where(
-                    ColumnDriftSummary.slice_table_name == slice_name,
-                    ColumnDriftSummary.column_name == "region",
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1, f"expected one drift row per (slice, column), got {len(rows)}"
 
-        # Period rows share the same dedup guard. ``TemporalSliceAnalysis`` has no
-        # DB UNIQUE, so a double-visit would silently duplicate period labels
-        # rather than raise — assert each label persists once.
+        # The ``processed_slice_tables`` guard sums the physical slice table
+        # once even though two definitions route to it. ``uq_tsa_slice_period_run``
+        # would raise on a double-visit under autoflush=False — assert one row
+        # per period label (4 distinct months in the view).
         from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
 
         period_labels = (
@@ -614,8 +601,8 @@ class TestTemporalSliceAnalysisPhase:
             .scalars()
             .all()
         )
-        assert len(period_labels) == len(set(period_labels)), (
-            f"period rows duplicated for the slice table: {period_labels}"
+        assert sorted(period_labels) == ["2024-01", "2024-02", "2024-03", "2024-04"], (
+            f"period rows duplicated or missing for the slice table: {period_labels}"
         )
 
     def test_success_no_slice_definitions(
@@ -655,5 +642,5 @@ class TestTemporalSliceAnalysisPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs["drift_summaries"] == 0
+        assert result.outputs["period_analyses"] == 0
         assert "No slice definitions" in result.outputs.get("message", "")

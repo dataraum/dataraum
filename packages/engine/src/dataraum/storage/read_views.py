@@ -73,7 +73,6 @@ _SESSION_GRAIN: dict[str, str] = {
     "enriched_views": "detect",
     "slicing_views": "detect",
     "slice_definitions": "detect",
-    "column_drift_summaries": "detect",
     "temporal_slice_analyses": "detect",
     "derived_columns": "detect",
     "measure_aggregation_lineage": "detect",  # begin_session aggregation_lineage (DAT-491)

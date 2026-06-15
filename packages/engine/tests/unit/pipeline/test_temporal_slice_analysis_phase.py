@@ -1,19 +1,14 @@
 """Unit tests for the temporal slice analysis phase's time-axis machinery.
 
-Covers two legs of ``temporal_slice_analysis_phase``:
-
-- ``_resolve_time_columns_per_table`` — per-table time-axis resolution:
-  config > semantic priority, temporal-type filtering, the profile-less
-  enriched ``fk__col`` axis (DAT-491), run scoping, and the
-  ``no_time_column_resolved`` warning.
-- ``_view_time_bounds`` — MIN/MAX over the slicing view in the lake catalog
-  (every failure swallows to ``None``, so the happy path asserts exact dates)
-  plus the ``should_skip`` pass-through for a profile-less enriched axis.
+Covers ``_resolve_time_columns_per_table`` — per-table time-axis resolution:
+config > semantic priority, temporal-type filtering, the profile-less enriched
+``fk__col`` axis (DAT-491), run scoping, and the ``no_time_column_resolved``
+warning — plus the ``should_skip`` pass-through for a profile-less enriched axis.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -24,10 +19,7 @@ from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.temporal import TemporalColumnProfile
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases.temporal_slice_analysis_phase import (
-    TemporalSliceAnalysisPhase,
-    _view_time_bounds,
-)
+from dataraum.pipeline.phases.temporal_slice_analysis_phase import TemporalSliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_session_id
 
@@ -149,12 +141,6 @@ def _make_ctx(
         session_id=baseline_session_id(),
         run_id=run_id,
     )
-
-
-def _attach_lake(conn: duckdb.DuckDBPyConnection) -> None:
-    """Fake the DuckLake catalog: in-memory ATTACH as ``lake`` + typed schema."""
-    conn.execute("ATTACH ':memory:' AS lake")
-    conn.execute("CREATE SCHEMA lake.typed")
 
 
 class TestResolveTimeColumnsPerTable:
@@ -290,70 +276,6 @@ class TestResolveTimeColumnsPerTable:
         assert warnings[0]["candidate_columns"] == ["created_at"]
 
 
-class TestViewTimeBounds:
-    """Tests for the module-level _view_time_bounds over a faked lake catalog.
-
-    The function swallows every exception to ``None``, so the happy path must
-    assert exact dates — a name typo would silently land in the None branch.
-    """
-
-    def test_happy_path_exact_bounds(self, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
-        """DATE column over the slicing view yields exact (min, max) dates.
-
-        The literal view name pins the lockstep with ``slicing_view_name``:
-        ``csv__invoices`` sanitizes with the underscore run collapsed.
-        """
-        _attach_lake(duckdb_conn)
-        duckdb_conn.execute(
-            'CREATE TABLE lake.typed."slicing_csv_invoices" ("invoice_id__date" DATE)'
-        )
-        duckdb_conn.execute(
-            'INSERT INTO lake.typed."slicing_csv_invoices" VALUES '
-            "(DATE '2024-01-15'), (DATE '2024-02-10'), (DATE '2024-03-02')"
-        )
-
-        bounds = _view_time_bounds(duckdb_conn, "csv__invoices", "invoice_id__date")
-
-        assert bounds == (date(2024, 1, 15), date(2024, 3, 2))
-
-    def test_varchar_iso_strings_cast_to_dates(
-        self, duckdb_conn: duckdb.DuckDBPyConnection
-    ) -> None:
-        """VARCHAR ISO date strings cast cleanly to exact date bounds."""
-        _attach_lake(duckdb_conn)
-        duckdb_conn.execute(
-            'CREATE TABLE lake.typed."slicing_csv_invoices" ("invoice_id__date" VARCHAR)'
-        )
-        duckdb_conn.execute(
-            'INSERT INTO lake.typed."slicing_csv_invoices" VALUES '
-            "('2024-03-02'), ('2024-01-15'), ('2024-02-10')"
-        )
-
-        bounds = _view_time_bounds(duckdb_conn, "csv__invoices", "invoice_id__date")
-
-        assert bounds == (date(2024, 1, 15), date(2024, 3, 2))
-
-    def test_all_null_column_returns_none(self, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
-        """An all-NULL time column hits the null-row branch (not the exception branch)."""
-        _attach_lake(duckdb_conn)
-        duckdb_conn.execute(
-            'CREATE TABLE lake.typed."slicing_csv_invoices" ("invoice_id__date" DATE)'
-        )
-        duckdb_conn.execute('INSERT INTO lake.typed."slicing_csv_invoices" VALUES (NULL), (NULL)')
-
-        assert _view_time_bounds(duckdb_conn, "csv__invoices", "invoice_id__date") is None
-
-    def test_missing_view_returns_none(self, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
-        """A lake catalog without the slicing view swallows to None."""
-        _attach_lake(duckdb_conn)
-
-        assert _view_time_bounds(duckdb_conn, "csv__invoices", "invoice_id__date") is None
-
-    def test_no_lake_catalog_returns_none(self, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
-        """A plain connection with no lake catalog at all swallows to None."""
-        assert _view_time_bounds(duckdb_conn, "csv__invoices", "invoice_id__date") is None
-
-
 class TestShouldSkipEnrichedAxis:
     """should_skip pass-through for a profile-less enriched time axis (DAT-491)."""
 
@@ -403,23 +325,21 @@ class TestShouldSkipEnrichedAxis:
         assert reason is not None
         assert "No temporal profiles" in reason
 
-    def test_run_completes_when_bounds_unresolvable(
+    def test_run_completes_with_no_slice_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ) -> None:
-        """The _run caller path warns and completes when the slicing view is missing.
+        """With a resolved axis but no materialized slice tables, the phase completes clean.
 
-        An enriched axis with no profile derives bounds via ``_view_time_bounds``;
-        a plain connection (no lake catalog) yields None, so the table is skipped
-        with a ``time_bounds_unresolvable`` warning instead of failing the phase.
+        Periods are now derived from each slice table's data (no view bounds);
+        with zero ``layer="slice"`` tables to scan, the phase resolves the axis
+        and produces zero period analyses rather than failing.
         """
         table = self._seed_base(session)
         _seed_entity(session, table.table_id, "invoice_id__date")
 
         ctx = _make_ctx(session, duckdb_conn, [table.table_id])
-        with capture_logs() as logs:
-            result = self.phase.run(ctx)
+        result = self.phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
-        assert any(e["event"] == "time_bounds_unresolvable" for e in logs)
-        assert result.outputs["drift_summaries"] == 0
+        assert result.outputs["period_analyses"] == 0
         assert result.outputs["time_columns"] == ["invoice_id__date"]

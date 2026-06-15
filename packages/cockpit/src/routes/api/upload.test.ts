@@ -1,8 +1,11 @@
 // Unit tests for the upload route handler (DAT-386).
 //
 // Importing the route transitively boots config.ts and @aws-lite (via
-// upload/s3-upload). We MOCK both — `#/config` for the bucket and the s3 PUT —
-// so the test asserts the gates + the locked handle shape with no SeaweedFS and
+// upload/s3-upload), plus the cockpit_db registry (DAT-505) which pulls in the
+// bun-only client (`import { SQL } from "bun"`). We MOCK all three — `#/config`
+// for the bucket, the s3 PUT, and `#/db/cockpit/registry` to break the
+// transitive bun import under node (mirrors trigger-add-source.test.ts) — so the
+// test asserts the gates + the locked handle shape with no SeaweedFS, no DB, and
 // no real client. Mocks use the `#/` alias (a relative mock does not intercept).
 
 import { describe, expect, it, vi } from "vitest";
@@ -10,6 +13,17 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 const { putMock } = vi.hoisted(() => ({ putMock: vi.fn() }));
 vi.mock("#/upload/s3-upload", () => ({ putObject: putMock }));
+// The route resolves the active workspace via the registry, which transitively
+// imports the bun-only cockpit_db client; mock it so the units project (node)
+// can load the import graph. handleUpload takes an injected workspaceId, so the
+// return value is irrelevant to these tests — only breaking the import matters.
+vi.mock("#/db/cockpit/registry", () => ({
+	resolveActiveWorkspaceRow: vi.fn(async () => ({
+		id: "00000000-0000-0000-0000-000000000001",
+		taskQueue: "dataraum-pipeline",
+		vertical: "_adhoc",
+	})),
+}));
 
 import { handleUpload } from "./upload";
 

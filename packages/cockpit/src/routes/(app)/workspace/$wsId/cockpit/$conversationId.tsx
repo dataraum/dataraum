@@ -78,13 +78,10 @@ export const Route = createFileRoute(
 	component: CockpitChat,
 });
 
-// The cockpit is a FIXED-HEIGHT app surface (not a document): it fills the
-// AppShell.Main area exactly so its inner panes (the chat stream, the canvas)
-// scroll INTERNALLY — otherwise a growing message list pushes the composer off
-// the viewport. Pinned against the viewport minus the shell chrome via Mantine's
-// AppShell CSS vars (header offset + the md padding top & bottom).
-const COCKPIT_HEIGHT =
-	"calc(100dvh - var(--app-shell-header-offset, 0rem) - (2 * var(--app-shell-padding, 0rem)))";
+// The cockpit is a FIXED-HEIGHT app surface (not a document) so its inner panes
+// (the chat stream, the canvas) scroll INTERNALLY. The height is now pinned by
+// the cockpit LAYOUT (route.tsx, below the switcher strip); this chat just fills
+// the Outlet content box with h:100%.
 
 function CockpitChat() {
 	// `kind` + `title` are hydrated by the loader and ready in loader data; nothing
@@ -101,7 +98,7 @@ function CockpitChat() {
 				void persistPin({ data: { conversationId, pinnedCallId } })
 			}
 		>
-			<Box h={COCKPIT_HEIGHT} style={{ overflow: "hidden" }}>
+			<Box h="100%" style={{ overflow: "hidden" }}>
 				<CockpitView />
 			</Box>
 		</CockpitProvider>

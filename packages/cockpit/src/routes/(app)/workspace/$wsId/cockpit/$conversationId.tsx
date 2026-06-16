@@ -109,7 +109,13 @@ function CockpitChat() {
 	// open (switcher / reload after the first turn). Loosely shaped, so narrowed here.
 	const seedMessage = (useLocation().state as { seed?: string }).seed;
 	return (
+		// key on conversationId so switching chats (same $conversationId route, new
+		// param — no natural remount) REMOUNTS the provider: useChat seeds `messages`
+		// from initialMessages only on mount, so without this the transcript of the
+		// previous chat lingers while the URL/loader already point at the new one
+		// (React convention 5 — reset child state with a remount key, not an effect).
 		<CockpitProvider
+			key={conversationId}
 			conversationId={conversationId}
 			initialMessages={initialMessages}
 			initialUiState={uiState}

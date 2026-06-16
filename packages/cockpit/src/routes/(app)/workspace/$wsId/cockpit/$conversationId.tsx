@@ -1,18 +1,42 @@
 import { Box, Stack } from "@mantine/core";
-import { createFileRoute, notFound, useLocation } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	notFound,
+	useLocation,
+	useMatch,
+	useNavigate,
+} from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
+	type ConversationKind,
+	createConversation,
 	getConversation,
 	loadDisplayMessages,
 } from "#/db/cockpit/conversations";
+import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { listRunningStages } from "#/db/cockpit/runs";
 import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
 import { hasImportedTables } from "#/db/metadata/workspace-state";
 import { chatReadiness } from "#/lib/chat-readiness";
 import { reconcileActiveRuns } from "#/temporal/reconcile";
 import { ChatReadinessBanner } from "#/ui/cockpit/chat-readiness-banner";
+import type { ChatTypeNav } from "#/ui/cockpit/chat-switcher";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
 import { CockpitView } from "#/ui/cockpit/cockpit-view";
+
+// The cockpit layout route, whose loader carries the switcher data (availability
+// + latest-by-kind). Read here via useMatch so the composer's type drop-up can
+// resume-or-create without re-querying.
+const COCKPIT_LAYOUT_ROUTE = "/(app)/workspace/$wsId/cockpit";
+
+// Mint a fresh typed conversation (server-side workspace read never reaches the
+// client bundle; the plugin strips this handler from the client).
+const createTypedConversation = createServerFn({ method: "POST" })
+	.inputValidator((kind: ConversationKind) => kind)
+	.handler(async ({ data }) => {
+		const workspaceId = await resolveActiveWorkspace();
+		return createConversation(workspaceId, data);
+	});
 
 // A specific chat (DAT-528), hydrated by its id from the URL. The conversation's
 // transcript + restored UI state seed `useChat`/the canvas on reload (DAT-462);
@@ -93,21 +117,65 @@ export const Route = createFileRoute(
 });
 
 // The cockpit is a FIXED-HEIGHT app surface (not a document) so its inner panes
-// (the chat stream, the canvas) scroll INTERNALLY. The height is now pinned by
-// the cockpit LAYOUT (route.tsx, below the switcher strip); this chat just fills
-// the Outlet content box with h:100%.
+// (the chat stream, the canvas) scroll INTERNALLY. The height is pinned by the
+// cockpit LAYOUT (route.tsx); this chat just fills the Outlet content box with
+// h:100%.
 
 function CockpitChat() {
-	// `kind` selects the toolstack + prompt SERVER-SIDE (DAT-532, in /api/chat) and
-	// drives the readiness banner (DAT-534); `title` is the history label. The
-	// readiness banner is advisory + non-blocking — shown only when the chat's kind
-	// can't act yet (no data / a run in progress).
-	const { conversationId, initialMessages, uiState, readiness } =
+	// `kind` selects the toolstack + prompt SERVER-SIDE (DAT-532, in /api/chat),
+	// drives the readiness banner (DAT-534), and is the composer drop-up's active
+	// type. The readiness banner is advisory + non-blocking — shown only when the
+	// chat's kind can't act yet (no data / a run in progress).
+	const { conversationId, kind, initialMessages, uiState, readiness } =
 		Route.useLoaderData();
+	const { wsId } = Route.useParams();
+	const navigate = useNavigate();
+	// The layout loader carries availability + latest-by-kind for the drop-up; read
+	// it via useMatch (this chat route is a child of the layout route). shouldThrow
+	// false so a not-yet-resolved loader degrades to "no drop-up" rather than throwing.
+	const layout = useMatch({ from: COCKPIT_LAYOUT_ROUTE, shouldThrow: false });
+
 	// The landing nav-agent's opening message (DAT-534), carried in router state —
 	// CockpitProvider sends it once on mount into the empty chat. Absent on a normal
-	// open (switcher / reload after the first turn). Loosely shaped, so narrowed here.
+	// open (drop-up / reload after the first turn). Loosely shaped, so narrowed here.
 	const seedMessage = (useLocation().state as { seed?: string }).seed;
+
+	// The chat-type drop-up wiring (was the header switcher; now in the composer).
+	// Only when the layout loader has resolved its switcher data — otherwise the
+	// composer simply omits the drop-up. The route owns navigation + the create
+	// server-fn; ChatSwitcher stays presentational.
+	const switcher = layout?.loaderData;
+	const goTo = (id: string) =>
+		navigate({
+			to: "/workspace/$wsId/cockpit/$conversationId",
+			params: { wsId, conversationId: id },
+		});
+	const typeNav: ChatTypeNav | undefined = switcher
+		? {
+				availability: switcher.availability,
+				activeKind: kind,
+				// A type click resumes that kind's latest chat, or creates one if none.
+				onOpen: async (k) => {
+					try {
+						goTo(
+							switcher.latestByKind[k] ??
+								(await createTypedConversation({ data: k })),
+						);
+					} catch (err) {
+						console.error("[cockpit] open typed chat failed:", err);
+					}
+				},
+				// "New chat" forces a fresh chat of the kind (vs resume).
+				onNew: async (k) => {
+					try {
+						goTo(await createTypedConversation({ data: k }));
+					} catch (err) {
+						console.error("[cockpit] create typed chat failed:", err);
+					}
+				},
+			}
+		: undefined;
+
 	return (
 		// key on conversationId so switching chats (same $conversationId route, new
 		// param — no natural remount) REMOUNTS the provider: useChat seeds `messages`
@@ -120,6 +188,7 @@ function CockpitChat() {
 			initialMessages={initialMessages}
 			initialUiState={uiState}
 			seedMessage={seedMessage}
+			typeNav={typeNav}
 			onPersistPin={(pinnedCallId) =>
 				void persistPin({ data: { conversationId, pinnedCallId } })
 			}

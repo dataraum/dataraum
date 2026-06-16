@@ -1,19 +1,34 @@
-// The 3-icon chat-type switcher (DAT-533) — Connect · Stage · Analyse, in the
-// cockpit top strip. The active chat's kind is highlighted (the where-am-I hint);
-// clicking a type opens it (resume-latest-or-create — the layout decides which);
-// an unavailable type dims IN PLACE with a tooltip reason (not removed, so the
-// switcher's shape is stable). A "+" beside them forces a FRESH chat of the
-// active kind (vs the resume that a type-icon click does) — shown only inside a
-// chat, since the history landing already has type chips to create from.
+// The chat-type switcher (DAT-533; reshaped for the composer drop-up). It folds
+// the three types — Connect · Stage · Analyse — into ONE quiet control that sits
+// in the composer's bottom row (like a model selector), NOT as header chrome: a
+// flat target showing the current kind, that drops UP into a menu of the types +
+// "New chat". Language is the primary nav (the composer + the landing nav-agent);
+// this is the light indicator / manual switch.
 //
-// Pure + presentational: it takes the availability + active kind + two callbacks,
-// so it unit-tests without a router or cockpit_db. The layout (cockpit/route.tsx)
-// wires the callbacks to the resume/create server-fns + navigation.
+//   - the target shows the ACTIVE chat's kind (the where-am-I hint) + a chevron;
+//   - a type item opens that kind (resume-latest-or-create — the route decides);
+//   - an unavailable type is disabled IN PLACE with its reason (not removed, so
+//     the menu's shape is stable);
+//   - "New chat" forces a FRESH chat of the active kind (vs the resume an item does).
+//
+// Pure + presentational: it takes availability + active kind + two callbacks, so
+// it unit-tests without a router or cockpit_db. The route (cockpit/$conversationId)
+// wires the callbacks to the resume/create server-fns + navigation and hands this
+// down through the provider as `typeNav`.
 
-import { ActionIcon, Group, Tooltip } from "@mantine/core";
-import { Cable, Layers, LineChart, type LucideIcon, Plus } from "lucide-react";
+import { Menu, Text, UnstyledButton } from "@mantine/core";
+import {
+	Cable,
+	Check,
+	ChevronUp,
+	Layers,
+	LineChart,
+	type LucideIcon,
+	Plus,
+} from "lucide-react";
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { ChatTypeAvailability } from "#/lib/chat-availability";
+import { tokens } from "#/ui/theme";
 
 const ICON: Record<ConversationKind, LucideIcon> = {
 	connect: Cable,
@@ -26,76 +41,96 @@ const LABEL: Record<ConversationKind, string> = {
 	analyse: "Analyse",
 };
 
+/** The nav wiring the route resolves (router-bound) and threads to the composer
+ * through the provider. Presentational here — no router, no cockpit_db. */
+export interface ChatTypeNav {
+	availability: ReadonlyArray<ChatTypeAvailability>;
+	/** The current chat's kind (the target label + the checked item), or null. */
+	activeKind: ConversationKind | null;
+	/** Open a type: resume its latest chat or create one if none. */
+	onOpen: (kind: ConversationKind) => void;
+	/** Force a fresh chat of the given kind ("New chat"). */
+	onNew: (kind: ConversationKind) => void;
+}
+
 export function ChatSwitcher({
 	availability,
 	activeKind,
 	onOpen,
 	onNew,
-}: {
-	availability: ReadonlyArray<ChatTypeAvailability>;
-	/** The current chat's kind (highlighted), or null on the history landing. */
-	activeKind: ConversationKind | null;
-	/** Open a type: resume its latest chat or create one if none. */
-	onOpen: (kind: ConversationKind) => void;
-	/** Force a fresh chat of the given kind (the "+"). */
-	onNew: (kind: ConversationKind) => void;
-}) {
+}: ChatTypeNav) {
+	const ActiveIcon = activeKind ? ICON[activeKind] : Cable;
+
 	return (
-		<Group gap="xs" data-testid="chat-switcher">
-			{availability.map(({ kind, available, reason }) => {
-				const Icon = ICON[kind];
-				const isActive = kind === activeKind;
-				// The ACTIVE chat's type is always enabled — you're in it, so it can't
-				// be "unavailable" (no highlighted-yet-dimmed contradiction). Dimming
-				// applies only to NON-active types that aren't startable yet.
-				const enabled = available || isActive;
-				return (
-					<Tooltip
-						key={kind}
-						label={enabled ? LABEL[kind] : reason}
-						position="bottom"
-						withArrow
-					>
-						{/* Unavailable (non-active): dimmed + non-navigating, but still
-						    hoverable so the tooltip reason shows (so NOT the `disabled`
-						    prop, which kills pointer events). The click is guarded. */}
-						<ActionIcon
+		<Menu position="top-start" withArrow shadow="md" width={220}>
+			<Menu.Target>
+				<UnstyledButton
+					data-testid="chat-switcher"
+					aria-label="Chat type"
+					style={{
+						display: "inline-flex",
+						alignItems: "center",
+						gap: 6,
+						padding: `2px ${tokens.spacing.xs}`,
+						borderRadius: tokens.radii.sm,
+						color: tokens.colors.textMuted,
+					}}
+				>
+					<ActiveIcon size={16} aria-hidden />
+					<Text size="xs" fw={500}>
+						{activeKind ? LABEL[activeKind] : "Chat type"}
+					</Text>
+					<ChevronUp size={14} aria-hidden />
+				</UnstyledButton>
+			</Menu.Target>
+
+			<Menu.Dropdown>
+				{availability.map(({ kind, available, reason }) => {
+					const Icon = ICON[kind];
+					const isActive = kind === activeKind;
+					// The ACTIVE chat's type is always enabled — you're in it, so it can't
+					// be "unavailable" (no checked-yet-disabled contradiction). Disabling
+					// applies only to NON-active types that aren't startable yet.
+					const enabled = available || isActive;
+					return (
+						<Menu.Item
+							key={kind}
 							data-testid={`switch-${kind}`}
 							data-active={isActive ? "true" : undefined}
 							data-available={enabled ? "true" : "false"}
-							aria-label={LABEL[kind]}
 							aria-disabled={!enabled}
-							variant={isActive ? "filled" : "subtle"}
-							size="lg"
-							style={
-								enabled ? undefined : { opacity: 0.4, cursor: "not-allowed" }
+							disabled={!enabled}
+							leftSection={<Icon size={16} aria-hidden />}
+							rightSection={
+								isActive ? <Check size={14} aria-hidden /> : undefined
 							}
 							onClick={() => {
 								if (enabled) onOpen(kind);
 							}}
 						>
-							<Icon size={18} aria-hidden />
-						</ActionIcon>
-					</Tooltip>
-				);
-			})}
-			{activeKind !== null && (
-				<Tooltip
-					label={`New ${LABEL[activeKind]} chat`}
-					position="bottom"
-					withArrow
-				>
-					<ActionIcon
-						data-testid="switch-new"
-						aria-label={`New ${LABEL[activeKind]} chat`}
-						variant="subtle"
-						size="lg"
-						onClick={() => onNew(activeKind)}
-					>
-						<Plus size={18} aria-hidden />
-					</ActionIcon>
-				</Tooltip>
-			)}
-		</Group>
+							<Text size="sm">{LABEL[kind]}</Text>
+							{!enabled && reason && (
+								<Text size="xs" c="dimmed">
+									{reason}
+								</Text>
+							)}
+						</Menu.Item>
+					);
+				})}
+
+				{activeKind !== null && (
+					<>
+						<Menu.Divider />
+						<Menu.Item
+							data-testid="switch-new"
+							leftSection={<Plus size={16} aria-hidden />}
+							onClick={() => onNew(activeKind)}
+						>
+							New {LABEL[activeKind]} chat
+						</Menu.Item>
+					</>
+				)}
+			</Menu.Dropdown>
+		</Menu>
 	);
 }

@@ -17,7 +17,6 @@ import {
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { Link, useParams } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { CockpitHeaderNav } from "#/ui/cockpit/cockpit-header-nav";
 import { CommandPalette } from "#/ui/command-palette";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
@@ -99,9 +98,9 @@ export function CockpitShell({
 				padding="md"
 			>
 				<AppShell.Header>
-					{/* Wordmark left; the cockpit chat-type switcher right (DAT-542 —
-					    renders only on cockpit routes, nothing elsewhere). The ⌘K trigger
-					    moved to the lower-left rail corner. */}
+					{/* Wordmark left; the ⌘K command-palette trigger top-right. The
+					    chat-type nav now lives in the composer drop-up (cockpit-only), so
+					    the header is plain global chrome again. */}
 					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
 						<UnstyledButton data-testid="workspace-switcher">
 							{/* Brand wordmark — never the raw workspace UUID. A real workspace
@@ -110,20 +109,7 @@ export function CockpitShell({
 								DataRaum
 							</Text>
 						</UnstyledButton>
-						<CockpitHeaderNav />
-					</Group>
-				</AppShell.Header>
-
-				<AppShell.Navbar p="xs">
-					{/* The section icons sit at the top; the ⌘K command-palette trigger
-					    anchors to the lower-left corner (DAT-542). */}
-					<Stack h="100%" gap="xs" align="center" justify="space-between">
-						<Stack gap="xs" align="center" data-testid="section-rail">
-							{sections.map((section) => (
-								<RailItem key={section.id} section={section} wsId={wsId} />
-							))}
-						</Stack>
-						<Tooltip label="Command palette" position="right" withArrow>
+						<Tooltip label="Command palette" position="bottom" withArrow>
 							<ActionIcon
 								variant="default"
 								onClick={palette.open}
@@ -135,6 +121,15 @@ export function CockpitShell({
 								</Text>
 							</ActionIcon>
 						</Tooltip>
+					</Group>
+				</AppShell.Header>
+
+				<AppShell.Navbar p="xs">
+					{/* The six section icons. */}
+					<Stack gap="xs" align="center" data-testid="section-rail">
+						{sections.map((section) => (
+							<RailItem key={section.id} section={section} wsId={wsId} />
+						))}
 					</Stack>
 				</AppShell.Navbar>
 

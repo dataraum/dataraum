@@ -12,17 +12,16 @@ import {
 	chatTypesFromState,
 } from "#/lib/chat-availability";
 
-// Cockpit layout (DAT-528 route split; DAT-533 nav; DAT-542 chrome). A
-// FIXED-HEIGHT shell around the history/landing index and a specific chat. The
-// 3-icon chat-type switcher now lives in the GLOBAL header (CockpitHeaderNav
-// reads THIS route's loader via useMatch) — so the layout just pins the height
-// and renders the Outlet, no top strip.
+// Cockpit layout (DAT-528 route split; DAT-533 nav). A FIXED-HEIGHT shell around
+// the history/landing index and a specific chat. The chat-type drop-up now lives
+// in the COMPOSER (the chat route reads THIS loader via useMatch and threads it to
+// the composer as `typeNav`) — so the layout just pins the height and renders the
+// Outlet, no top strip, no header switcher.
 
 // Switcher data (DAT-533): per-kind availability (drives the dimming) + the most
-// recent conversation id per kind (drives resume-or-create). Consumed by
-// CockpitHeaderNav in the header. Both reads degrade soft — a failure dims the
-// data-dependent types / falls back to create — switcher chrome never blocks a
-// route.
+// recent conversation id per kind (drives resume-or-create). Consumed by the chat
+// route's composer drop-up. Both reads degrade soft — a failure dims the
+// data-dependent types / falls back to create — the drop-up never blocks a route.
 const loadSwitcher = createServerFn({ method: "GET" }).handler(async () => {
 	const workspaceId = await resolveActiveWorkspace();
 	const [hasTables, conversations] = await Promise.all([

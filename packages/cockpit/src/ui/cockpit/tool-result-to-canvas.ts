@@ -325,6 +325,24 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
 	Object.keys(PROJECTORS),
 );
 
+/**
+ * Tools whose result deliberately renders ONLY as a chat-rail chip — no canvas
+ * member (write/declare tools + reads with no widget). EXPLICIT, not merely
+ * "absent from PROJECTORS", so the routing-completeness contract test
+ * (`registry.test.ts`) can assert every registered tool is CONSCIOUSLY routed: a
+ * new tool must land in `PROJECTORS` OR here, never silently un-routed — the
+ * guardrail for the DAT-526 P1 registry split. Disjoint from `CANVAS_TOOLS`.
+ */
+export const CHIP_ONLY: ReadonlySet<string> = new Set([
+	"list_verticals", // catalogue → chip summary, no widget
+	"use_vertical", // adopt = control-plane write, no renderable surface (DAT-523)
+	"probe", // quick data check, summarized in the chip
+	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
+	"teach_validation",
+	"teach_cycle",
+	// NB teach_metric is NOT here — an override projects the metric-shadow canvas.
+]);
+
 /** A tool whose result maps to a canvas member → its chip is clickable. */
 export function isCanvasTool(toolName: string): boolean {
 	return toolName in PROJECTORS;

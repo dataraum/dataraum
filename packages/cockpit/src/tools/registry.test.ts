@@ -30,6 +30,7 @@ vi.mock("#/db/cockpit/runs", () => ({
 	hasRunningRun: async () => false,
 }));
 
+import { CANVAS_TOOLS, CHIP_ONLY } from "#/ui/cockpit/tool-result-to-canvas";
 import { tools } from "./registry";
 
 describe("tool registry (DAT-353)", () => {
@@ -70,6 +71,31 @@ describe("tool registry (DAT-353)", () => {
 				"upload",
 			]),
 		);
+	});
+
+	it("routes every registered tool to exactly one surface — canvas XOR chip-only (DAT-527)", () => {
+		// The guardrail for the DAT-526 P1 registry split: a tool must be consciously
+		// routed — projected to the canvas (PROJECTORS/CANVAS_TOOLS) OR explicitly
+		// chip-only — never silently un-routed. XOR catches BOTH gaps: in neither
+		// (forgotten) and in both (contradiction).
+		for (const tool of tools) {
+			const inCanvas = CANVAS_TOOLS.has(tool.name);
+			const inChip = CHIP_ONLY.has(tool.name);
+			expect(
+				inCanvas !== inChip,
+				`${tool.name} must be in exactly one of PROJECTORS / CHIP_ONLY (canvas=${inCanvas}, chip=${inChip})`,
+			).toBe(true);
+		}
+	});
+
+	it("has no stale CHIP_ONLY entries — every name is a registered tool (DAT-527)", () => {
+		const names = new Set<string>(tools.map((t) => t.name));
+		for (const name of CHIP_ONLY) {
+			expect(
+				names.has(name),
+				`CHIP_ONLY '${name}' is not a registered tool`,
+			).toBe(true);
+		}
 	});
 
 	it("declares NO approval gate on any tool — every tool runs directly", () => {

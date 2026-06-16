@@ -190,7 +190,7 @@ export function ChatRail() {
 		const el = streamRef.current;
 		const content = contentRef.current;
 		if (!el || !content) return;
-		const stick = () => {
+		const stick: ResizeObserverCallback = (_entries, _observer) => {
 			if (followRef.current) el.scrollTop = el.scrollHeight;
 		};
 		// Fires on observe (initial pin) and on every content-height change — a new

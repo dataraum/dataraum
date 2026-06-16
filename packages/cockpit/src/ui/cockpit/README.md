@@ -7,13 +7,14 @@ routing, and ⌘K belong to C0 (`src/ui/{app-shell,sections,theme}.ts[x]`).
 ## Layout
 
 ```
-CockpitView                  cold start → CockpitLanding; once a conversation
-│                            exists → the working split (one transition, then holds)
-├── CockpitLanding           centered welcome + hero Composer + starter prompts
-└── working split
-    ├── ChatRail             messages + collapsible tool-call cards (left)
-    │   └── Composer         shared input (also the landing's hero composer)
-    └── FocusCanvas          renders the active CanvasState via the widget registry
+CockpitHome                  the /cockpit index route (DAT-528): "tell or click"
+                             landing — composer + type chips + recent history
+CockpitView                  a specific chat (/cockpit/$conversationId): the
+│                            working split (mounts only inside a real conversation)
+├── ChatRail                 messages + collapsible tool-call cards (left)
+│   └── Composer             input bubble; bottom row = the ChatSwitcher type
+│                            drop-up (fed via provider typeNav) + send-on-text/stop
+└── FocusCanvas              renders the active CanvasState via the widget registry
 ```
 
 State lives in `cockpit-state.tsx`, which also OWNS the agent chat (`useChat`).

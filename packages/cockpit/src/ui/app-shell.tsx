@@ -98,10 +98,10 @@ export function CockpitShell({
 				padding="md"
 			>
 				<AppShell.Header>
-					{/* pr tighter than pl: the ⌘K hugs the corner (matching the divider's
-					    full-bleed right edge) instead of floating a gap short of it, while
-					    the wordmark keeps breathing room on the left. */}
-					<Group h="100%" pl="md" pr="xs" justify="space-between" wrap="nowrap">
+					{/* Wordmark left; the ⌘K command-palette trigger top-right. The
+					    chat-type nav now lives in the composer drop-up (cockpit-only), so
+					    the header is plain global chrome again. */}
+					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
 						<UnstyledButton data-testid="workspace-switcher">
 							{/* Brand wordmark — never the raw workspace UUID. A real workspace
 							    name lands with the workspaces registry (DAT-339 slice 1). */}
@@ -109,7 +109,7 @@ export function CockpitShell({
 								DataRaum
 							</Text>
 						</UnstyledButton>
-						<Tooltip label="Command palette">
+						<Tooltip label="Command palette" position="bottom" withArrow>
 							<ActionIcon
 								variant="default"
 								onClick={palette.open}
@@ -125,6 +125,7 @@ export function CockpitShell({
 				</AppShell.Header>
 
 				<AppShell.Navbar p="xs">
+					{/* The six section icons. */}
 					<Stack gap="xs" align="center" data-testid="section-rail">
 						{sections.map((section) => (
 							<RailItem key={section.id} section={section} wsId={wsId} />

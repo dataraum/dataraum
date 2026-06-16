@@ -68,15 +68,26 @@ export function CockpitHome({
 	onOpen: (conversationId: string) => void;
 	/** Mint a new typed chat and open it (the "click" path). */
 	onCreate: (kind: ConversationKind) => void;
-	/** Route a free-text opening message through the nav-agent (the "tell" path). */
-	onTell: (message: string) => void;
+	/** Route a free-text opening message through the nav-agent (the "tell" path).
+	 * Async (Haiku classify → create → navigate), so the composer can show a
+	 * "finding the right chat" busy state until it resolves / navigates away. */
+	onTell: (message: string) => void | Promise<void>;
 }) {
 	const [draft, setDraft] = useState("");
-	const tell = () => {
+	// The nav-agent routing is a server round-trip with no other UI signal until it
+	// navigates — so track it and put the Send button into a loading state. On
+	// success we navigate away (unmount); on failure routing clears and the draft
+	// is preserved for a retry.
+	const [routing, setRouting] = useState(false);
+	const tell = async () => {
 		const text = draft.trim();
-		if (!text) return;
-		setDraft("");
-		onTell(text);
+		if (!text || routing) return;
+		setRouting(true);
+		try {
+			await onTell(text);
+		} finally {
+			setRouting(false);
+		}
 	};
 
 	return (
@@ -120,9 +131,10 @@ export function CockpitHome({
 					<Button
 						data-testid="landing-send"
 						onClick={tell}
+						loading={routing}
 						disabled={draft.trim().length === 0}
 					>
-						Send
+						{routing ? "Finding the right chat…" : "Send"}
 					</Button>
 				</Group>
 			</Stack>

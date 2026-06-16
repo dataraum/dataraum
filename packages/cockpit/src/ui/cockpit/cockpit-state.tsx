@@ -41,6 +41,7 @@ import {
 } from "#/lib/workflow-progress-event";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { createChatConnection } from "#/ui/cockpit/chat-connection";
+import type { ChatTypeNav } from "#/ui/cockpit/chat-switcher";
 import {
 	canvasFromCallId,
 	canvasFromMessages,
@@ -99,6 +100,11 @@ interface CockpitActions {
 	pinCanvas: (callId: string) => void;
 	/** Clear the pin → the canvas snaps back to the live latest. */
 	returnToLive: () => void;
+	/** The chat-type drop-up wiring (availability + active kind + open/new),
+	 * resolved by the route and rendered in the composer. Absent off-route (the
+	 * unit tests, the degraded path) → the composer omits the drop-up. Stable per
+	 * conversation (the provider is keyed by id), so it rides the actions context. */
+	typeNav?: ChatTypeNav;
 }
 
 const CockpitStateContext = createContext<CockpitState | null>(null);
@@ -128,6 +134,7 @@ export function CockpitProvider({
 	initialUiState,
 	onPersistPin,
 	seedMessage,
+	typeNav,
 }: {
 	children: ReactNode;
 	// Server-owned conversation hydration (DAT-462): the persisted thread id +
@@ -143,6 +150,8 @@ export function CockpitProvider({
 	 * a freshly-created, empty chat (the "tell" entry). Carried via router state,
 	 * so it's absent on reload (the message is persisted by then). */
 	seedMessage?: string;
+	/** Chat-type drop-up wiring from the route — see CockpitActions.typeNav. */
+	typeNav?: ChatTypeNav;
 }) {
 	// The subscribe transport (Phase 2A) keys BOTH the long-lived subscribe channel
 	// (/api/chat-stream) and the send body off ONE conversation id, which MUST
@@ -275,17 +284,20 @@ export function CockpitProvider({
 		[messages, isLoading, error, canvas, pinnedCallId],
 	);
 
-	// Stable actions — every dep is a stable callback (useChat's are useCallback'd
-	// over a memoized client; ours are useCallback([])), so this value is created
-	// ONCE. Action-only consumers reading it never re-render from context.
+	// Mostly-stable actions — sendTurn/stop/pinCanvas/returnToLive are useCallback'd
+	// over a memoized client, so they're created once. `typeNav` is the exception:
+	// the route rebuilds it when the layout loader revalidates (on navigation), so
+	// action-only consumers get ONE extra render per navigation — infrequent, never
+	// per streaming token (which is the re-render the context split exists to avoid).
 	const actions = useMemo<CockpitActions>(
 		() => ({
 			sendMessage: sendTurn,
 			stop,
 			pinCanvas,
 			returnToLive,
+			typeNav,
 		}),
-		[sendTurn, stop, pinCanvas, returnToLive],
+		[sendTurn, stop, pinCanvas, returnToLive, typeNav],
 	);
 
 	return (

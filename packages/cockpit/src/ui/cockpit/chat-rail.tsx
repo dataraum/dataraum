@@ -321,7 +321,7 @@ export function ChatRail() {
 					)}
 				</Stack>
 			</Box>
-			<Composer variant="rail" />
+			<Composer />
 		</Stack>
 	);
 }

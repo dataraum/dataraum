@@ -45,29 +45,33 @@ export function ChatSwitcher({
 			{availability.map(({ kind, available, reason }) => {
 				const Icon = ICON[kind];
 				const isActive = kind === activeKind;
+				// The ACTIVE chat's type is always enabled — you're in it, so it can't
+				// be "unavailable" (no highlighted-yet-dimmed contradiction). Dimming
+				// applies only to NON-active types that aren't startable yet.
+				const enabled = available || isActive;
 				return (
 					<Tooltip
 						key={kind}
-						label={available ? LABEL[kind] : reason}
+						label={enabled ? LABEL[kind] : reason}
 						position="bottom"
 						withArrow
 					>
-						{/* Unavailable: dimmed + non-navigating, but still hoverable so the
-						    tooltip reason shows (so NOT the `disabled` prop, which kills
-						    pointer events). The click is guarded instead. */}
+						{/* Unavailable (non-active): dimmed + non-navigating, but still
+						    hoverable so the tooltip reason shows (so NOT the `disabled`
+						    prop, which kills pointer events). The click is guarded. */}
 						<ActionIcon
 							data-testid={`switch-${kind}`}
 							data-active={isActive ? "true" : undefined}
-							data-available={available ? "true" : "false"}
+							data-available={enabled ? "true" : "false"}
 							aria-label={LABEL[kind]}
-							aria-disabled={!available}
+							aria-disabled={!enabled}
 							variant={isActive ? "filled" : "subtle"}
 							size="lg"
 							style={
-								available ? undefined : { opacity: 0.4, cursor: "not-allowed" }
+								enabled ? undefined : { opacity: 0.4, cursor: "not-allowed" }
 							}
 							onClick={() => {
-								if (available) onOpen(kind);
+								if (enabled) onOpen(kind);
 							}}
 						>
 							<Icon size={18} aria-hidden />

@@ -17,6 +17,7 @@ import {
 import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { Link, useParams } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { CockpitHeaderNav } from "#/ui/cockpit/cockpit-header-nav";
 import { CommandPalette } from "#/ui/command-palette";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
@@ -98,10 +99,10 @@ export function CockpitShell({
 				padding="md"
 			>
 				<AppShell.Header>
-					{/* pr tighter than pl: the ⌘K hugs the corner (matching the divider's
-					    full-bleed right edge) instead of floating a gap short of it, while
-					    the wordmark keeps breathing room on the left. */}
-					<Group h="100%" pl="md" pr="xs" justify="space-between" wrap="nowrap">
+					{/* Wordmark left; the cockpit chat-type switcher right (DAT-542 —
+					    renders only on cockpit routes, nothing elsewhere). The ⌘K trigger
+					    moved to the lower-left rail corner. */}
+					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
 						<UnstyledButton data-testid="workspace-switcher">
 							{/* Brand wordmark — never the raw workspace UUID. A real workspace
 							    name lands with the workspaces registry (DAT-339 slice 1). */}
@@ -109,7 +110,20 @@ export function CockpitShell({
 								DataRaum
 							</Text>
 						</UnstyledButton>
-						<Tooltip label="Command palette">
+						<CockpitHeaderNav />
+					</Group>
+				</AppShell.Header>
+
+				<AppShell.Navbar p="xs">
+					{/* The section icons sit at the top; the ⌘K command-palette trigger
+					    anchors to the lower-left corner (DAT-542). */}
+					<Stack h="100%" gap="xs" align="center" justify="space-between">
+						<Stack gap="xs" align="center" data-testid="section-rail">
+							{sections.map((section) => (
+								<RailItem key={section.id} section={section} wsId={wsId} />
+							))}
+						</Stack>
+						<Tooltip label="Command palette" position="right" withArrow>
 							<ActionIcon
 								variant="default"
 								onClick={palette.open}
@@ -121,14 +135,6 @@ export function CockpitShell({
 								</Text>
 							</ActionIcon>
 						</Tooltip>
-					</Group>
-				</AppShell.Header>
-
-				<AppShell.Navbar p="xs">
-					<Stack gap="xs" align="center" data-testid="section-rail">
-						{sections.map((section) => (
-							<RailItem key={section.id} section={section} wsId={wsId} />
-						))}
 					</Stack>
 				</AppShell.Navbar>
 

@@ -15,7 +15,16 @@ import {
 	RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The header now renders CockpitHeaderNav, which transitively imports the
+// cockpit_db client (bun:sql) + typed env via its create-conversation server fn.
+// Mock those seams so this shell test loads under the node/jsdom env without
+// `bun` (the tanstackStart plugin that strips them client-side isn't in the lean
+// vitest config). The switcher itself no-ops here (no cockpit route matched).
+vi.mock("#/db/cockpit/client", () => ({ cockpitDb: {} }));
+vi.mock("#/config", () => ({ config: {} }));
+
 import { CockpitShell } from "#/ui/app-shell";
 import { sections } from "#/ui/sections";
 import { theme } from "#/ui/theme";

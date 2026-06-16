@@ -75,6 +75,18 @@ describe("ChatSwitcher (DAT-533)", () => {
 		expect(onOpen).not.toHaveBeenCalled();
 	});
 
+	it("never dims the ACTIVE type even when it's 'unavailable' (no highlighted-yet-dimmed)", () => {
+		// You're IN an analyse chat while analyse is gated (no data) — the active
+		// icon must read enabled + highlighted, not the disabled contradiction.
+		renderSwitcher({ availability: NO_DATA, activeKind: "analyse" });
+		const analyse = screen.getByTestId("switch-analyse");
+		expect(analyse.dataset.active).toBe("true");
+		expect(analyse.dataset.available).toBe("true");
+		expect(analyse.getAttribute("aria-disabled")).toBe("false");
+		// A non-active gated type (stage) still dims.
+		expect(screen.getByTestId("switch-stage").dataset.available).toBe("false");
+	});
+
 	it("shows the '+' only inside a chat, and it forces a fresh chat of the active kind", () => {
 		const { onNew } = renderSwitcher({ activeKind: "connect" });
 		const plus = screen.getByTestId("switch-new");

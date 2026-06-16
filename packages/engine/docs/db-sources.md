@@ -2,176 +2,45 @@
 
 DataRaum can analyze data sitting in a relational database via DuckDB's database extensions. Today: **Microsoft SQL Server** (other backends arrive in a follow-up release).
 
-You declare *what* to extract in a yaml **recipe**. The recipe is per-user state — it lives under `/var/lib/dataraum/sources/` (volume-mounted in the container), not in a project repo. Credentials live in `.env` (or in the container env), never in the yaml. At session time, DataRaum reads the recipe, runs the SELECTs against your database, and materializes the results as raw tables — the rest of the pipeline doesn't know or care that the source was a database.
+You pick *what* to extract in the cockpit — connect to the database, choose the tables/columns you want, and DataRaum synthesizes a **recipe** (a set of named `SELECT` queries) attached to the source. Credentials never go into the recipe; they live in the engine's environment (`.env` / container env) and are resolved at extraction time. When the session runs, DataRaum reads the recipe, runs the SELECTs against your database, and materializes the results as raw tables — the rest of the pipeline doesn't know or care that the source was a database.
 
 ## How it works
 
 ```
-/var/lib/dataraum/sources/erp.yaml   .env / container env
-┌─────────────────────────┐          ┌─────────────────────────┐
-│ backend: mssql          │          │ DATARAUM_ERP_URL=mssql..│
-│ tables:                 │          └─────────────────────────┘
-│   invoices:             │                      │
-│     sql: ...            │                      ▼
-│   customers:            │   ┌─────────────────────────────────┐
-│     sql: ...            ├──▶│  add_source(path="erp",         │
-└─────────────────────────┘   │              name="erp")        │
-                              │                                 │
-                              │  → reads DATARAUM_ERP_URL       │
-                              │  → ATTACH READ_ONLY             │
-                              │  → CREATE TABLE raw_invoices AS │
-                              │       <your SQL>                │
-                              │  → DETACH                       │
-                              └─────────────────────────────────┘
+  cockpit (browser)                    engine-worker container env
+┌──────────────────────────┐         ┌─────────────────────────────┐
+│ connect → pick tables     │         │ DATARAUM_ERP_URL=mssql://…   │
+│  → select tool synthesizes│         └─────────────────────────────┘
+│    a db_recipe source:    │                      │
+│      backend: mssql       │                      ▼
+│      tables: {invoices…}  │   ┌──────────────────────────────────┐
+│      recipe_hash          ├──▶│  addSourceWorkflow → import phase  │
+└──────────────────────────┘   │                                    │
+                               │  → resolve DATARAUM_ERP_URL        │
+                               │  → INSTALL/LOAD mssql extension    │
+                               │  → ATTACH READ_ONLY                │
+                               │  → CREATE TABLE lake.raw.raw_… AS  │
+                               │       <your SELECT>                │
+                               │  → DETACH                          │
+                               └──────────────────────────────────┘
 ```
 
-The recipe name (`erp`) does triple duty: source identity, credential lookup key (`DATARAUM_ERP_URL`), and the prefix for raw tables (`erp__invoices`, `erp__customers`).
+The source **name** does double duty: source identity and the credential-lookup key (`DATARAUM_{NAME}_URL`). The recipe lives on the source row in the cockpit DB (`source_type='db_recipe'`, a `backend` column, and `connection_config.tables`) — there is no recipe file on disk and no sources bind-mount (file sources moved to the object store, DAT-388/389).
 
-## Where recipes live
+## Registering a database source (cockpit)
 
-Recipes live under `/var/lib/dataraum/sources/` inside the container — bind-mounted from the host directory you pick via `HOST_SOURCES_DIR` in `.env` (default `./sources`). DataRaum resolves the `path` argument in this order:
+The recipe is produced entirely through the cockpit — there is no MCP tool and no yaml file (both retired: MCP in DAT-487, the yaml recipe parser in DAT-430).
 
-| You pass | DataRaum looks for | Notes |
-|---|---|---|
-| `/abs/path/erp.yaml` | The absolute path | Full flexibility — any location |
-| `./local/erp.yaml` | The relative path from cwd | If it exists, used directly |
-| `erp.yaml` | First `./erp.yaml`, then `/var/lib/dataraum/sources/erp.yaml` | Filename — `SOURCES_DIR` is the fallback |
-| `erp` | `/var/lib/dataraum/sources/erp.yaml`, then `…/erp.yml` | Bare name — `.yaml` and `.yml` tried in order |
+1. **Connect.** Point the cockpit at the database (read-only probe — it inspects the catalog, creates nothing).
+2. **Pick the tables/columns** you want to bring in.
+3. The **`select`** tool synthesizes the recipe and persists one `db_recipe` source: the `backend` (`mssql`), the named `SELECT`s in `connection_config.tables`, and a `recipe_hash` (sha256 over the canonical `{backend, tables}`) so the engine can tell a re-pointed recipe from an unchanged one.
+4. **Run the session** — `addSourceWorkflow` → the import phase resolves the credential URL, ATTACHes the database READ_ONLY, and materializes each recipe table into `lake.raw`.
 
-Only recipe-shaped names (`.yaml`/`.yml` or no extension) get the `SOURCES_DIR` fallback. File paths like `data.csv` are taken at face value — DataRaum doesn't hunt for them under `/var/lib/dataraum/sources/`.
+### Recipe SQL rules
 
-## Recipe yaml
-
-```yaml
-# /var/lib/dataraum/sources/erp.yaml
-backend: mssql              # mssql (today); postgres/mysql/sqlite follow
-tables:
-  invoices:
-    sql: |
-      SELECT invoice_id, customer_id, invoice_date,
-             total_amount, currency, status
-      FROM dbo.Invoices
-      WHERE invoice_date >= '2024-01-01'
-  customers:
-    sql: |
-      SELECT customer_id, name, region, segment
-      FROM dbo.Customers
-```
-
-Rules:
-
-- **No credentials in the yaml.** `connection:`, `credentials:`, `auth:`, `password:`, `secret:` at the top level are rejected at parse time. The recipe stays a safe artifact even if it accidentally leaks (the credential lookup happens entirely through env vars at runtime).
-- **At least one entry under `tables:`**, each with a non-empty `sql:` field.
-- **Table names unique** (case-insensitive).
-- **Recipe SQL is parsed by DuckDB first**, then forwarded to your database. Use portable SQL where possible: `LIMIT 10` not `TOP 10`, `||` not `+` for string concat. Standard `SELECT ... FROM schema.Table WHERE x = 1 GROUP BY ...` works.
-
-## Credentials
-
-DataRaum resolves a connection URL from the environment via the
-`CredentialChain` — `DATARAUM_{NAME}_URL` environment variable (set in
-`.env`, the container's env, or the host shell).
-
-`{NAME}` is the source name passed to `add_source` — uppercased. So
-`add_source(name="erp", ...)` → `DATARAUM_ERP_URL`. Credentials are
-**never** persisted in workspace.db, never appear in MCP responses, and
-never go into the recipe yaml.
-
-## Setting up MS SQL Server
-
-### 1. Container
-
-Microsoft ships an image at `mcr.microsoft.com/mssql/server:2025-latest`. With Apple's `container` CLI:
-
-```bash
-container run \
-  -e ACCEPT_EULA=Y \
-  -e MSSQL_SA_PASSWORD=Test1234 \
-  -e MSSQL_PID=Evaluation \
-  -p 1433:1433 \
-  --name sql2025 \
-  --memory 3g \
-  --platform linux/amd64 \
-  -d mcr.microsoft.com/mssql/server:2025-latest
-```
-
-With Docker Desktop, the equivalent `docker run` works — replace `container` with `docker`.
-
-### 2. Restore a sample DB + read-only user
-
-The repo ships a single idempotent script that downloads Microsoft's [AdventureWorksLT2025](https://github.com/Microsoft/sql-server-samples/tree/master/samples/databases/adventure-works) (~1.8 MB), restores it into your container, and creates a `dataraum_reader` login with `db_datareader` rights:
-
-```bash
-tests/integration/sources/mssql_setup.sh
-```
-
-Output ends with the `DATARAUM_MSSQL_TEST_URL` to export for the integration test. Cold run: <5 s. Re-runs are no-ops.
-
-If you'd rather use your own database, the script's body shows the two SQL statements involved:
-
-```sql
-USE master;
-CREATE LOGIN dataraum_reader
-  WITH PASSWORD = 'ReadOnly!2026', CHECK_POLICY = OFF;
-GO
-
-USE YourDatabase;
-CREATE USER dataraum_reader FOR LOGIN dataraum_reader;
-ALTER ROLE db_datareader ADD MEMBER dataraum_reader;
-GO
-```
-
-DataRaum already ATTACHes with `READ_ONLY` — writes are blocked at the extension layer — but `db_datareader` makes the no-write guarantee belt-and-braces.
-
-### 3. Connection URL
-
-```
-DATARAUM_ERP_URL=mssql://dataraum_reader:ReadOnly!2026@host:1433/AdventureWorksLT?TrustServerCertificate=yes
-```
-
-Three things to know:
-
-- **`TrustServerCertificate=yes` is required for typical installs.** SQL Server 2022+ enables TLS by default with a self-signed cert. Without this flag, the handshake fails silently as "Failed to connect." Only set it when you've verified the host out-of-band (or for dev/test containers).
-- **The URL form above is one of three accepted shapes.** Equivalent: `Server=host;Database=AdventureWorksLT;UID=dataraum_reader;PWD=...;TrustServerCertificate=yes;` and the ODBC-style `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;...`. Use whichever your team prefers — they all resolve to the same TDS connection underneath.
-- **The DuckDB community `mssql` extension is auto-installed on first use.** No manual setup. It pins to your installed DuckDB version.
-
-### 4. Register the source
-
-Save a recipe pointing at the tables you want. A starter against AdventureWorksLT — drop it at `./sources/aw.yaml` on the host (which is bind-mounted at `/var/lib/dataraum/sources/aw.yaml` in the container):
-
-```yaml
-# ./sources/aw.yaml  →  /var/lib/dataraum/sources/aw.yaml (in container)
-backend: mssql
-tables:
-  customers:
-    sql: |
-      SELECT CustomerID, FirstName, LastName, CompanyName
-      FROM SalesLT.Customer
-  products:
-    sql: |
-      SELECT ProductID, Name, ListPrice, SellStartDate
-      FROM SalesLT.Product
-```
-
-Then:
-
-```python
-# Via MCP tool from Claude — bare name resolves against SOURCES_DIR
-add_source(path="aw", name="aw")
-begin_session(source="aw", intent="...")  # session is bound to this one source
-measure  # runs the pipeline — extracts via the recipe and analyzes
-```
-
-Or pass an absolute container path if you keep the recipe outside the bind-mount:
-
-```python
-add_source(path="/some/other/container/path/aw.yaml", name="aw")
-```
-
-> **Identifier quoting.** Recipe SQL is parsed by DuckDB before forwarding to MSSQL. If a column or table has a space in its name (e.g. AdventureWorksLT's `dbo.BuildVersion."Database Version"`), quote it with **double quotes**, not square brackets.
-
-## How recipe SQL is executed
-
-After ATTACH, DataRaum issues `USE attached_alias.<default_schema>` so your SQL can reference tables by schema-qualified name (`FROM dbo.Invoices`) without an alias prefix. Per backend:
+- **Recipe SQL is parsed by DuckDB first**, then forwarded to your database. Use portable SQL: `LIMIT 10` not `TOP 10`, `||` not `+` for string concat. Standard `SELECT … FROM schema.Table WHERE x = 1 GROUP BY …` works.
+- **Schema-qualify** table references (`FROM dbo.Invoices`, or `FROM sales.Orders` for a non-default schema). After ATTACH the engine issues `USE src.<default_schema>` so a qualified name resolves without an alias prefix.
+- **Identifier quoting:** if a column or table has a space in its name (e.g. AdventureWorksLT's `dbo.BuildVersion."Database Version"`), quote it with **double quotes**, not square brackets — DuckDB parses it first.
 
 | Backend | Default schema |
 |---|---|
@@ -180,21 +49,94 @@ After ATTACH, DataRaum issues `USE attached_alias.<default_schema>` so your SQL 
 | mysql | `main` |
 | sqlite | `main` |
 
-If your database puts tables in a non-default schema (e.g., `sales.Orders`), qualify with that schema in the recipe — `FROM sales.Orders`. DuckDB resolves it correctly.
+## Credentials
+
+DataRaum resolves a connection URL from the environment via the `CredentialChain` (`core/credentials.py`) — the **`DATARAUM_{NAME}_URL`** environment variable, where `{NAME}` is the source name uppercased. So a source named `erp` → `DATARAUM_ERP_URL`.
+
+Credentials are **never** persisted to the cockpit DB or the workspace DB, never appear in tool responses, and never go into the recipe. If the var is missing the import phase fails loud (`No credentials found for database source 'erp'. Set DATARAUM_ERP_URL …`).
+
+### Connection URL
+
+```
+DATARAUM_ERP_URL=mssql://dataraum_reader:ReadOnly!2026@host:1433/AdventureWorksLT?TrustServerCertificate=yes
+```
+
+Three things to know:
+
+- **`TrustServerCertificate=yes` is required for typical installs.** SQL Server 2022+ enables TLS by default with a self-signed cert. Without this flag, the handshake fails as a generic "Failed to connect." Only set it when you've verified the host out-of-band (or for dev/test).
+- **The URL above is one of three accepted shapes.** Equivalent: `Server=host;Database=AdventureWorksLT;UID=dataraum_reader;PWD=…;TrustServerCertificate=yes;` and the ODBC-style `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;…`. They all resolve to the same TDS connection underneath.
+- **The DuckDB community `mssql` extension is auto-installed on first use** (from the community repo). No manual setup; it pins to the engine's DuckDB version. (See the air-gapped note under deployment if your host blocks egress.)
+
+A read-only login is recommended. DataRaum already ATTACHes with `READ_ONLY` (writes are blocked at the extension layer), but a `db_datareader` user makes the no-write guarantee belt-and-braces:
+
+```sql
+USE master;
+CREATE LOGIN dataraum_reader WITH PASSWORD = 'ReadOnly!2026', CHECK_POLICY = OFF;
+GO
+USE YourDatabase;
+CREATE USER dataraum_reader FOR LOGIN dataraum_reader;
+ALTER ROLE db_datareader ADD MEMBER dataraum_reader;
+GO
+```
+
+## Deploying with docker-compose (client test machine)
+
+A typical client trial: DataRaum runs from `packages/infra/docker-compose.yml` on a test box, pointed at the client's existing SQL Server. Three things to get right — credential injection, network reachability, and (sometimes) extension egress.
+
+### 1. Inject the credential into the engine worker
+
+The engine worker only sees env vars that compose passes into it. Add the source's URL to the shared worker-env anchor (`x-engine-worker-env`) so every workspace worker resolves it, sourcing the value from `.env`:
+
+```yaml
+# packages/infra/docker-compose.yml  →  x-engine-worker-env: &engine-worker-env
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  DATARAUM_ERP_URL: ${DATARAUM_ERP_URL:-}        # ← add: one line per db source
+```
+
+```bash
+# packages/infra/.env  (gitignored — the single source of secrets)
+DATARAUM_ERP_URL=mssql://dataraum_reader:ReadOnly!2026@sql.client.internal:1433/Sales?TrustServerCertificate=yes
+```
+
+The `${DATARAUM_ERP_URL:-}` interpolation reads `.env`; the var name's `ERP` must match the uppercased source name you register in the cockpit. Add one line per database source. (This mirrors how `ANTHROPIC_API_KEY` and the S3 creds are already passed — explicit `environment:` entries, never the host shell.)
+
+### 2. Make the SQL Server reachable from the container
+
+`host` in the URL is resolved **from inside the engine-worker container**, not from the host shell:
+
+- **SQL Server on another machine / the client LAN** — use its hostname or IP as the client network sees it (`sql.client.internal`, `10.0.0.12`). The Docker bridge network forwards outbound, so a routable address just works.
+- **SQL Server on the same machine as compose** — use `host.docker.internal:1433` (Docker Desktop, and Linux with `extra_hosts: ["host.docker.internal:host-gateway"]`), not `localhost` — `localhost` inside the container is the container itself.
+- **SQL Server in a sibling compose service** — use the service name on the shared compose network.
+
+Quick reachability check from the worker:
+
+```bash
+docker compose -f packages/infra/docker-compose.yml exec engine-worker \
+  python -c "import socket; socket.create_connection(('sql.client.internal', 1433), 5); print('reachable')"
+```
+
+### 3. Egress-locked hosts: pre-bake the extension
+
+The community `mssql` extension installs from `extensions.duckdb.org` on first use. On an air-gapped or egress-filtered client box, set `DUCKLAKE_SKIP_INSTALL=true` and `DUCKDB_EXTENSION_DIRECTORY=/path/to/baked` so `LOAD` resolves a pre-baked copy instead of reaching the network (the worker image already bakes the core extensions; `mssql` needs to be added to that bake for fully-offline installs). Otherwise the import phase fails loud at `DuckDB extension 'mssql' failed to install/load`.
+
+After editing the env, recreate the worker so it picks up the new variable:
+
+```bash
+docker compose -f packages/infra/docker-compose.yml up -d --force-recreate engine-worker
+```
 
 ## Loud failure on every step
 
-Anything that can fail is surfaced verbatim through DataRaum's `phases_failed` structure on `measure`:
+Anything that can fail is surfaced verbatim through the run's `phases_failed` structure:
 
 | Failure | Phase | Example message |
 |---|---|---|
-| Recipe yaml malformed | `import` | `Recipe sources/erp.yaml invalid: Table 'invoices' has empty or missing 'sql:' field.` |
-| Credentials missing | `import` | `No credentials found for database source 'erp'. Set DATARAUM_ERP_URL in the environment (via .env or the docker-compose environment).` |
+| Credentials missing | `import` | `No credentials found for database source 'erp'. Set DATARAUM_ERP_URL in the environment.` |
 | Extension install/load fails | `import` | `DuckDB extension 'mssql' failed to install/load: <verbatim>` |
-| Connection / TLS fails | `import` | `ATTACH failed for mssql source: Connection failed to host:1433: ...` |
+| Connection / TLS fails | `import` | `ATTACH failed for mssql source: Connection failed to host:1433: …` |
 | SELECT errors | `import` | `Recipe table 'invoices' SELECT failed: Invalid column 'invoice_dat'` |
 | Zero rows | `look` warning | (Surfaced as a warning on the source, not a pipeline failure.) |
 
 ## Other backends
 
-`backend: postgres`, `backend: mysql`, `backend: sqlite` are accepted by the parser but not yet wired through the pipeline. They'll be enabled in a follow-up release.
+`backend: postgres`, `backend: mysql`, `backend: sqlite` are recognized by the extraction layer (`sources/backends.py`) but not yet wired through the cockpit connect flow. They'll be enabled in a follow-up release.

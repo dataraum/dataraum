@@ -255,12 +255,25 @@ class TestPerColumnAssembly:
     def test_table_target_rolls_up(self):
         """A ``table:`` target rolls up like a column (DAT-415)."""
         objects = [
-            make_entropy_object(detector_id="dimensional_entropy", score=0.8, target="table:sales"),
+            make_entropy_object(detector_id="dimension_coverage", score=0.8, target="table:sales"),
         ]
         result = assemble_readiness_context(objects)
         assert result.total_columns == 1
         assert "table:sales" in result.columns
         assert all(ds.target != "table:sales" for ds in result.direct_signals)
+
+    def test_dimensional_entropy_is_a_direct_signal_not_a_band_driver(self):
+        """Demoted (2026-06-16): dimensional_entropy is informative — excluded from the
+        loss rollup, surfaced as a DirectSignal, never banding a table (benford lane)."""
+        objects = [
+            make_entropy_object(detector_id="dimensional_entropy", score=1.0, target="table:sales"),
+        ]
+        result = assemble_readiness_context(objects)
+        assert "table:sales" not in result.columns  # no loss row → nothing to band
+        assert any(
+            ds.target == "table:sales" and ds.detector_id == "dimensional_entropy"
+            for ds in result.direct_signals
+        )
 
     def test_node_evidence_carries_raw_data(self):
         """ColumnNodeEvidence carries score, evidence, detector_id from the object."""

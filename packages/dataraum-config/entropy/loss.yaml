@@ -160,10 +160,15 @@ measurements:
     # Cross-table reconciliation breaks: worst for aggregation + reporting.
     aggregation_intent: { score: 0.8 }
     reporting_intent: { score: 0.7 }
-  dimensional_entropy:
-    # Undocumented cross-column dependency (NMI). Context for query + aggregation.
-    query_intent: { score: 0.3 }
-    aggregation_intent: { score: 0.4 }
+  # dimensional_entropy is NOT in the loss table (DEMOTED 2026-06-16): an INFORMATIVE
+  # SIGNAL, not tunable entropy. Its NMI is anti-predictive on the loss path — a Tier-1
+  # eval falsification (eval scripts/probes/dimensional-entropy) showed the band runs the
+  # WRONG way vs wrong-answer risk: HIGHEST on clean intrinsic structure (mutex/alias/FD,
+  # no wrong answer), and BLIND to the dependency VIOLATION that causes a bad join/rollup
+  # (a 5%-broken FD barely moves NMI: 0.862 -> 0.799; the violation rate is owned by
+  # derived_value / relationship_entropy). The NMI score + expected_dependency teach still
+  # compute as a DirectSignal (context), but no longer drive intent readiness. Same lane as
+  # benford / outliers / drift / variance. (eval catalog: entropy_eval_architecture.md)
   dimension_coverage:
     # Fact-table dimension gaps affect query slicing + reporting completeness. (deferred)
     query_intent: { score: 0.5 }

@@ -31,8 +31,10 @@ import { z } from "zod";
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { attachRunId, recordRun } from "../db/cockpit/runs";
+import { hasImportedTables } from "../db/metadata/workspace-state";
 import type { BeginSessionInput, BeginSessionResult } from "../temporal/types";
 import { beginSessionWorkflowId } from "../temporal/workflow-id";
+import { type AgentError, withAgentError } from "./agent-error";
 
 export interface BeginSessionToolInput {
 	table_ids: string[];
@@ -57,12 +59,26 @@ export interface BeginSessionToolResult {
  */
 export async function beginSession(
 	input: BeginSessionToolInput,
-): Promise<BeginSessionToolResult> {
+): Promise<BeginSessionToolResult | AgentError> {
 	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
 				"TEMPORAL_NAMESPACE in the cockpit env.",
 		);
+	}
+
+	// Born-loud pre-check (DAT-534, mirrors DAT-511's hasRunningRun guard): a
+	// session needs ≥1 typed table to stage. Without imported data the engine
+	// errors LATE, mid-run; refuse BEFORE recording/starting a run so the agent
+	// gets a clean {error} and points the user at a Connect chat. `table_ids`
+	// already requires .min(1); this catches the workspace having no tables at all
+	// (stale/invented ids).
+	if (!(await hasImportedTables())) {
+		return {
+			error:
+				"No imported tables to stage yet — import data in a Connect chat " +
+				"first, then start a session.",
+		};
 	}
 
 	const sessionId = input.session_id ?? randomUUID();
@@ -158,10 +174,12 @@ export const beginSessionTool = toolDefinition({
 				"Optional session id; omit to start a fresh session, pass one to re-run it after teaching.",
 			),
 	}),
-	outputSchema: z.object({
-		workflow_id: z.string(),
-		run_id: z.string(),
-		session_id: z.string(),
-		table_ids: z.array(z.string()),
-	}),
+	outputSchema: withAgentError(
+		z.object({
+			workflow_id: z.string(),
+			run_id: z.string(),
+			session_id: z.string(),
+			table_ids: z.array(z.string()),
+		}),
+	),
 }).server((input) => beginSession(input));

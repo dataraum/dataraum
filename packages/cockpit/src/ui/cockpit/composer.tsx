@@ -56,7 +56,10 @@ export function Composer() {
 						maxRows={6}
 						size="sm"
 						data-testid="chat-input"
-						disabled={isLoading}
+						// Not disabled while a turn streams — disabling greys the input
+						// (Mantine), and we want it to stay white + composable. The submit
+						// guard (isLoading) blocks Enter, and Send is replaced by Stop, so
+						// a turn can't be double-sent.
 						onKeyDown={(e) => {
 							// Enter sends; Shift+Enter is a newline.
 							if (e.key === "Enter" && !e.shiftKey) {

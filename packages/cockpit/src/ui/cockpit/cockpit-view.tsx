@@ -58,15 +58,15 @@ export function CockpitView() {
 				ref={chatRef}
 				data-testid="region-chat"
 				style={{
-					// The chat is a STABLE column: it tracks the window proportionally but
-					// is clamped 20–26rem so it never sprawls on a wide monitor nor
-					// collapses below readable on a small one. The canvas (flex:1) absorbs
-					// all the slack, so resizing the window grows the canvas, not the chat.
-					// No divider border here — the raised canvas card edge is the only,
-					// quiet separation between the two areas.
+					// The chat is a RELATIVE column: it holds 28% of the work area so it
+					// scales WITH the window (chat and canvas grow together), with a 22rem
+					// floor so it never collapses below readable on a laptop. No upper
+					// clamp — on a wide monitor the chat keeps its proportion instead of
+					// capping while the canvas hogs the slack (DAT-527, from real usage:
+					// the chat content earns the proportional room). No divider border —
+					// the raised canvas card edge is the only, quiet separation.
 					width: "28%",
-					minWidth: "20rem",
-					maxWidth: "26rem",
+					minWidth: "22rem",
 					flexShrink: 0,
 					overflow: "hidden",
 				}}
@@ -75,7 +75,11 @@ export function CockpitView() {
 			</Box>
 			<Stack
 				gap="md"
-				style={{ flex: 1, overflow: "hidden" }}
+				// The canvas takes the slack (flex:1) but holds a 28rem floor so the chat's
+				// 22rem floor + flexShrink:0 can't squeeze it toward zero on a narrow
+				// window (DAT-527 review): below ~50rem the nowrap row overflows to a
+				// horizontal scroll rather than collapsing the canvas.
+				style={{ flex: 1, minWidth: "28rem", overflow: "hidden" }}
 				data-testid="region-work"
 			>
 				{/* Rehydration banner (DAT-354): shown only while the canvas is pinned

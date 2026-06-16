@@ -13,11 +13,12 @@
 // Streaming is driven ONLY by user submit (never on mount → SSR-safe).
 
 import { Alert, Box, Card, Group, Loader, Stack, Text } from "@mantine/core";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { classifyChatError } from "#/lib/chat-error";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { Composer } from "#/ui/cockpit/composer";
 import { MarkdownMessage } from "#/ui/cockpit/markdown";
+import { isNearBottom } from "#/ui/cockpit/scroll-stick";
 import {
 	lastUserMessageIndex,
 	type ToolCallPartLike,
@@ -163,15 +164,41 @@ export function ChatRail() {
 	// so a non-canvas pin can't happen here.
 	const onRehydrate = (callId: string) => pinCanvas(callId);
 
-	// Keep the conversation pinned to the latest as it streams: the composer sits
+	// Keep the conversation pinned to the latest as it streams — the composer sits
 	// at the foot of a height-bounded rail and the stream scrolls INTERNALLY (see
-	// the cockpit route's fixed height + the messages box's `minHeight: 0`), so on
-	// every message/token tick we snap the scroll to the bottom.
+	// the cockpit route's fixed height + the messages box's `minHeight: 0`). Two
+	// rules the old unconditional `scrollTop = scrollHeight` on every messages tick
+	// got wrong (DAT-527):
+	//   1. Stick to the bottom ONLY when the user is already there. `followRef`
+	//      tracks it from the scroll handler, so scrolling UP to read history
+	//      during a streaming turn is never yanked back down.
+	//   2. Re-pin AFTER layout settles. A tall tool-card / widget grows its height
+	//      asynchronously, so a one-shot snap read scrollHeight too early and landed
+	//      short of the true bottom (worse the longer the chat). A ResizeObserver on
+	//      the content re-snaps whenever its height changes while the user follows.
+	// External-system effect with cleanup (conventions rule 2).
 	const streamRef = useRef<HTMLDivElement>(null);
+	const contentRef = useRef<HTMLDivElement>(null);
+	const followRef = useRef(true);
+
+	const onScroll = useCallback(() => {
+		const el = streamRef.current;
+		if (el) followRef.current = isNearBottom(el);
+	}, []);
+
 	useEffect(() => {
 		const el = streamRef.current;
-		if (el && messages.length > 0) el.scrollTop = el.scrollHeight;
-	}, [messages]);
+		const content = contentRef.current;
+		if (!el || !content) return;
+		const stick: ResizeObserverCallback = (_entries, _observer) => {
+			if (followRef.current) el.scrollTop = el.scrollHeight;
+		};
+		// Fires on observe (initial pin) and on every content-height change — a new
+		// message, a streaming token, or a widget finishing its async layout.
+		const observer = new ResizeObserver(stick);
+		observer.observe(content);
+		return () => observer.disconnect();
+	}, []);
 
 	// A tool-call part can recur across messages (e.g. the persisted assistant
 	// tool-call plus its completion in a later teed turn — same part id, two
@@ -201,10 +228,11 @@ export function ChatRail() {
 		<Stack gap="sm" h="100%" data-testid="chat-rail">
 			<Box
 				ref={streamRef}
+				onScroll={onScroll}
 				style={{ flex: 1, minHeight: 0, overflowY: "auto" }}
 				data-testid="chat-messages"
 			>
-				<Stack gap="xs" p="xs">
+				<Stack ref={contentRef} gap="xs" p="xs">
 					{messages.map((m, mi) =>
 						m.parts.map((part, i) => {
 							if (part.type === "text") {

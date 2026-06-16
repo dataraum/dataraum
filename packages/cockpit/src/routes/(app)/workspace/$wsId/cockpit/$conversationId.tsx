@@ -87,6 +87,10 @@ const COCKPIT_HEIGHT =
 	"calc(100dvh - var(--app-shell-header-offset, 0rem) - (2 * var(--app-shell-padding, 0rem)))";
 
 function CockpitChat() {
+	// `kind` + `title` are hydrated by the loader and ready in loader data; nothing
+	// consumes them yet (S1 stores + routes by kind, it does not fence behaviour).
+	// S2 (DAT-532) threads `kind` into CockpitProvider to select the toolstack —
+	// the seam is here, not a dead prop now.
 	const { conversationId, initialMessages, uiState } = Route.useLoaderData();
 	return (
 		<CockpitProvider

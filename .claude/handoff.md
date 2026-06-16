@@ -4,6 +4,24 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-16: fix — operating_model_detect scored nothing (DAT-506 re-grain miss; surfaced by DAT-508)
+
+`operating_model_detect` was the lone OM phase wired with a bare `RunRef` instead
+of `OperatingModelScopedInput` (validation/cycles/metrics all take the scoped
+input). So it called `run_detectors(run_id=om_run)` → `tables_for_run(om_run)` →
+**empty** (the OM run never anchors `run_tables`; begin_session owns them) →
+`detect_no_run_tables` warning → `cross_table_consistency` wrote **zero** entropy
+objects. The DAT-508 eval run caught it: 4 `cross_table_consistency` recall
+failures ("produced no score"), zero rows in `ws_<id>.entropy_objects`.
+
+Fix (`worker/`): `run_detectors` takes an optional explicit `table_ids`;
+`operating_model_detect` now takes `OperatingModelScopedInput` and passes
+`payload.scope.table_ids` (the set PINNED at `operating_model_resolve`, ADR-0008,
+exactly what validation/cycles/metrics read); the workflow passes `scoped`, not
+`run`. add_source / begin_session detect are unchanged (`table_ids=None` →
+`tables_for_run` as before). Eval impact: `cross_table_consistency` recall scores
+again once the engine pointer includes this fix.
+
 ## 2026-06-15: DAT-506 — sessions leave the engine; manifest entry shape; head re-grain (BREAKS the eval driver → DAT-508)
 
 The engine no longer models investigation sessions. The eval driver must be re-pointed (tracked as **DAT-508**). What changed for eval:

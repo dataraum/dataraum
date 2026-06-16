@@ -46,7 +46,7 @@ describe("reconcileActiveRuns", () => {
 			run_id === "r-1" ? prog(true, "COMPLETED") : prog(false, "RUNNING"),
 		);
 
-		await reconcileActiveRuns("ws-1");
+		await reconcileActiveRuns("conv-1");
 
 		expect(mark).toHaveBeenCalledTimes(1);
 		expect(mark).toHaveBeenCalledWith("wf-1", "r-1", "completed");
@@ -56,7 +56,7 @@ describe("reconcileActiveRuns", () => {
 		list.mockResolvedValue([{ workflowId: "wf-9", runId: "r-9" }]);
 		progress.mockResolvedValue(prog(true, "FAILED"));
 
-		await reconcileActiveRuns("ws-1");
+		await reconcileActiveRuns("conv-1");
 
 		expect(mark).toHaveBeenCalledWith("wf-9", "r-9", "failed");
 	});
@@ -71,14 +71,14 @@ describe("reconcileActiveRuns", () => {
 			return prog(true, "COMPLETED");
 		});
 
-		await expect(reconcileActiveRuns("ws-1")).resolves.toBeUndefined();
+		await expect(reconcileActiveRuns("conv-1")).resolves.toBeUndefined();
 		expect(mark).toHaveBeenCalledTimes(1);
 		expect(mark).toHaveBeenCalledWith("wf-2", "r-2", "completed");
 	});
 
 	it("swallows a listing failure (no marks, no throw)", async () => {
 		list.mockRejectedValue(new Error("db down"));
-		await expect(reconcileActiveRuns("ws-1")).resolves.toBeUndefined();
+		await expect(reconcileActiveRuns("conv-1")).resolves.toBeUndefined();
 		expect(mark).not.toHaveBeenCalled();
 		expect(progress).not.toHaveBeenCalled();
 	});

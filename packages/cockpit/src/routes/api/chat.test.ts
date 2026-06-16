@@ -34,9 +34,9 @@ vi.mock("#/db/cockpit/runs", () => ({
 // The server-owned chat loop (DAT-462) persists via the conversations seam —
 // mock it so the route import never loads the cockpit_db (bun:sql) client.
 vi.mock("#/db/cockpit/conversations", () => ({
-	ensureConversation: async () => {},
 	appendMessages: async () => {},
 	loadModelTranscript: async () => [],
+	setConversationTitle: async () => {},
 }));
 
 import { buildChatOptions } from "../../lib/agent-turn";

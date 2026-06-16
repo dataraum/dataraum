@@ -59,6 +59,7 @@ vi.mock("#/db/cockpit/client", () => ({
 	},
 }));
 
+import { runWithConversation } from "#/lib/run-context";
 import { attachRunId, markRunStatus, recordRun } from "./runs";
 
 const BASE = {
@@ -98,6 +99,15 @@ describe("recordRun (DAT-461, DAT-506)", () => {
 		// Provisional runId = the deterministic workflowId until attachRunId.
 		expect(run?.row.runId).toBe("wf-1");
 		expect(run?.row.status).toBe("running");
+		// No originating chat outside a runWithConversation scope → null (the run
+		// simply won't narrate). DAT-528.
+		expect(run?.row.conversationId).toBeNull();
+	});
+
+	it("stamps the originating conversationId from the ALS context (DAT-528)", async () => {
+		await runWithConversation("conv-9", () => recordRun(BASE));
+		const run = h.inserts.find((i) => i.table === "session_runs");
+		expect(run?.row.conversationId).toBe("conv-9");
 	});
 
 	it("is AUTHORITATIVE: a db error THROWS (an unrecorded run is orphaned)", async () => {

@@ -26,7 +26,6 @@ import type { StreamChunk } from "@tanstack/ai";
 
 import {
 	appendMessages,
-	getConversationWorkspaceId,
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
 import {
@@ -41,6 +40,7 @@ import { streamAgentTurnToBus } from "#/lib/agent-turn";
 import { hasSubscribers, publish } from "#/lib/chat-bus";
 import { completionNote } from "#/lib/completion-note";
 import { buildModelMessages } from "#/lib/model-messages";
+import { runWithConversation } from "#/lib/run-context";
 import { WORKFLOW_PROGRESS_EVENT } from "#/lib/workflow-progress-event";
 import { buildWorkspaceContext } from "#/prompts/workspace-context";
 import {
@@ -119,68 +119,73 @@ async function watchLoop(
 	while (!signal.aborted) {
 		await sleep(POLL_MS, signal);
 		if (signal.aborted) return;
-		// Nothing to narrate to if no client is listening (defensive — the watcher
-		// rides an open stream, but the connection can close between ticks).
-		if (!hasSubscribers(conversationId)) continue;
+		await pollOnce(conversationId, tracked, signal);
+	}
+}
 
-		const workspaceId = await getConversationWorkspaceId(conversationId).catch(
-			() => null,
-		);
-		if (!workspaceId) continue;
+/**
+ * One poll tick — capture this CONVERSATION's newly in-flight runs, poll each
+ * against Temporal, and narrate on the done edge. Extracted from the loop so the
+ * run-routing contract is unit-tested without the timer (conventions rule 10): a
+ * watcher narrates ONLY runs started in ITS conversation, because the runs it
+ * tracks come from `listWatchableRuns(conversationId)` (DAT-528). `tracked`
+ * persists across ticks (a run seen `running` on earlier ticks still narrates when
+ * it lands). Exported for the proof test.
+ */
+export async function pollOnce(
+	conversationId: string,
+	tracked: Map<string, WatchableRun>,
+	signal: AbortSignal,
+): Promise<void> {
+	// Nothing to narrate to if no client is listening (defensive — the watcher
+	// rides an open stream, but the connection can close between ticks).
+	if (!hasSubscribers(conversationId)) return;
 
-		// (1) Capture newly in-flight, un-narrated runs.
-		const candidates = await listWatchableRuns(workspaceId, WATCH_LIMIT).catch(
-			() => [] as WatchableRun[],
-		);
-		for (const run of candidates) tracked.set(runKey(run), run);
+	// (1) Capture newly in-flight, un-narrated runs FOR THIS CONVERSATION — the
+	// run-routing filter: another chat's runs never enter this watcher's `tracked`.
+	const candidates = await listWatchableRuns(conversationId, WATCH_LIMIT).catch(
+		() => [] as WatchableRun[],
+	);
+	for (const run of candidates) tracked.set(runKey(run), run);
 
-		// (2) Poll each tracked run against Temporal; narrate on the done edge.
-		for (const [key, run] of [...tracked]) {
-			let progress: WorkflowProgress;
-			try {
-				progress = await getWorkflowProgress({
-					workflow_id: run.workflowId,
-					run_id: run.runId,
-				});
-			} catch {
-				continue; // transient Temporal hiccup — retry next tick.
-			}
+	// (2) Poll each tracked run against Temporal; narrate on the done edge.
+	for (const [key, run] of [...tracked]) {
+		let progress: WorkflowProgress;
+		try {
+			progress = await getWorkflowProgress({
+				workflow_id: run.workflowId,
+				run_id: run.runId,
+			});
+		} catch {
+			continue; // transient Temporal hiccup — retry next tick.
+		}
 
-			// Push this snapshot to the widget (Phase 2A.3) — every tick AND the
-			// done tick, so the progress widget renders live and its terminal state
-			// WITHOUT polling. The provider's onChunk writes it to the query cache.
-			publish(conversationId, {
-				type: "CUSTOM",
-				name: WORKFLOW_PROGRESS_EVENT,
-				value: {
-					workflow_id: run.workflowId,
-					run_id: run.runId,
-					progress,
-				},
-			} as unknown as StreamChunk);
+		// Push this snapshot to the widget (Phase 2A.3) — every tick AND the
+		// done tick, so the progress widget renders live and its terminal state
+		// WITHOUT polling. The provider's onChunk writes it to the query cache.
+		publish(conversationId, {
+			type: "CUSTOM",
+			name: WORKFLOW_PROGRESS_EVENT,
+			value: {
+				workflow_id: run.workflowId,
+				run_id: run.runId,
+				progress,
+			},
+		} as unknown as StreamChunk);
 
-			if (!progress.done) continue;
+		if (!progress.done) continue;
 
-			tracked.delete(key);
-			await markRunStatus(
-				run.workflowId,
-				run.runId,
-				terminalRunStatus(progress),
-			);
-			// The atomic claim is the once-only guard across tabs.
-			if (await claimRunNarration(run.workflowId, run.runId)) {
-				await narrateCompletion(
-					conversationId,
-					workspaceId,
-					run,
-					progress,
-					signal,
-				).catch((err) => {
+		tracked.delete(key);
+		await markRunStatus(run.workflowId, run.runId, terminalRunStatus(progress));
+		// The atomic claim is the once-only guard across a chat's tabs.
+		if (await claimRunNarration(run.workflowId, run.runId)) {
+			await narrateCompletion(conversationId, run, progress, signal).catch(
+				(err) => {
 					console.warn(
 						`[completion-watcher] narrate failed for run ${run.runId}: ${err}`,
 					);
-				});
-			}
+				},
+			);
 		}
 	}
 }
@@ -189,17 +194,16 @@ async function watchLoop(
  * published over the bus. Aborts with the stream (the linked controller). */
 async function narrateCompletion(
 	conversationId: string,
-	workspaceId: string,
 	run: WatchableRun,
 	progress: WorkflowProgress,
 	signal: AbortSignal,
 ): Promise<void> {
-	// The OTHER stages still running for this workspace — the agent must narrate
-	// only THIS run and not claim these finished (DAT-510). The just-finished run
+	// The OTHER stages still running for THIS conversation — the agent must narrate
+	// only this run and not claim these finished (DAT-510). The just-finished run
 	// is already marked terminal upstream, so it's excluded from this set. On a DB
 	// hiccup, degrade to `[]` (the solo-run boundary): safe direction — the note
 	// still pins to this run, it just can't name the others.
-	const inFlight = await listRunningStages(workspaceId).catch(() => []);
+	const inFlight = await listRunningStages(conversationId).catch(() => []);
 	const note = completionNote(
 		run.stage,
 		{
@@ -214,10 +218,14 @@ async function narrateCompletion(
 	);
 	const workspaceContext = await buildWorkspaceContext().catch(() => null);
 	const abortController = linkedAbortController(signal);
-	await streamAgentTurnToBus(conversationId, modelMessages, {
-		workspaceContext,
-		abortController,
-	});
+	// Bind the conversationId (DAT-528): if this narration turn starts a follow-up
+	// run, it routes back to THIS chat — same contract as the send path (chat.ts).
+	await runWithConversation(conversationId, () =>
+		streamAgentTurnToBus(conversationId, modelMessages, {
+			workspaceContext,
+			abortController,
+		}),
+	);
 }
 
 /** Resolve after `ms`, or early when `signal` aborts (so the loop exits promptly

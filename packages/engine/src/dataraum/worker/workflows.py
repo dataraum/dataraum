@@ -754,8 +754,10 @@ class OperatingModelWorkflow:
 
         # First lifecycle family (DAT-438): every declared validation (vertical
         # ⊕ teach rows) is declared for this run, bound (SQL vs workspace),
-        # executed. Ungroundable specs surface as declared-with-reason. The
-        # phases read the catalog head's run_tables (no table set on the wire).
+        # executed. Ungroundable specs surface as declared-with-reason. Every OM
+        # phase — validation, detect, cycles, metrics — reads the table set PINNED
+        # at resolve (``scope.table_ids``, ADR-0008), not the live catalog head, so
+        # a concurrent begin_session promote cannot shift the set mid-run.
         scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
         self._progress.phase = "validation"
         outcome = await workflow.execute_activity(
@@ -775,7 +777,7 @@ class OperatingModelWorkflow:
         self._progress.phase = "operating_model_detect"
         await workflow.execute_activity(
             "operating_model_detect",
-            run,
+            scoped,
             result_type=PhaseOutcome,
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,

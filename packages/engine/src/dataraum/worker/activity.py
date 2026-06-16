@@ -464,6 +464,7 @@ def run_detectors(
     *,
     run_id: str,
     detector_phases: tuple[str, ...] = _DETECTOR_PHASES,
+    table_ids: list[str] | None = None,
 ) -> int:
     """Run every wired detector once over the run's tables — the terminal ``detect`` step.
 
@@ -489,7 +490,12 @@ def run_detectors(
 
     total = 0
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        table_ids = tables_for_run(session, run_id)
+        # ``table_ids`` is supplied explicitly by operating_model_detect — its run
+        # never anchors ``run_tables`` (those belong to begin_session), so it passes
+        # the scope PINNED at operating_model_resolve (ADR-0008). add_source /
+        # begin_session leave it None and resolve their own ``run_tables`` here.
+        if table_ids is None:
+            table_ids = tables_for_run(session, run_id)
         if not table_ids:
             # add_source links its typed tables in ``typing`` (same transaction as
             # the Table row), so an empty set here means the run has no tables —

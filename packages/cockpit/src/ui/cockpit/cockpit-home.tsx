@@ -12,12 +12,15 @@
 
 import {
 	Badge,
+	Button,
 	Group,
 	Stack,
 	Text,
+	Textarea,
 	Title,
 	UnstyledButton,
 } from "@mantine/core";
+import { useState } from "react";
 import type {
 	ConversationKind,
 	ConversationSummary,
@@ -58,13 +61,24 @@ export function CockpitHome({
 	conversations,
 	onOpen,
 	onCreate,
+	onTell,
 }: {
 	conversations: ReadonlyArray<ConversationSummary>;
 	/** Open an existing chat by id. */
 	onOpen: (conversationId: string) => void;
-	/** Mint a new typed chat and open it. */
+	/** Mint a new typed chat and open it (the "click" path). */
 	onCreate: (kind: ConversationKind) => void;
+	/** Route a free-text opening message through the nav-agent (the "tell" path). */
+	onTell: (message: string) => void;
 }) {
+	const [draft, setDraft] = useState("");
+	const tell = () => {
+		const text = draft.trim();
+		if (!text) return;
+		setDraft("");
+		onTell(text);
+	};
+
 	return (
 		<Stack
 			align="center"
@@ -79,10 +93,43 @@ export function CockpitHome({
 					Start a chat
 				</Title>
 				<Text c="dimmed" ta="center" size="lg">
-					Pick what you want to do. Each chat is one focused thread — connect
-					data, stage a session, or analyse what's ready.
+					Tell me what you want to do and I'll open the right kind of chat — or
+					pick a type yourself below.
 				</Text>
 			</Stack>
+
+			{/* The "tell" entry — routed by the nav-agent (DAT-534). Enter sends; the
+			    chips below are the deterministic alternative. */}
+			<Stack w="100%" maw={680} gap="xs">
+				<Textarea
+					data-testid="landing-composer"
+					placeholder="e.g. import my orders CSV, or what's total revenue?"
+					value={draft}
+					onChange={(e) => setDraft(e.currentTarget.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" && !e.shiftKey) {
+							e.preventDefault();
+							tell();
+						}
+					}}
+					autosize
+					minRows={1}
+					maxRows={4}
+				/>
+				<Group justify="flex-end">
+					<Button
+						data-testid="landing-send"
+						onClick={tell}
+						disabled={draft.trim().length === 0}
+					>
+						Send
+					</Button>
+				</Group>
+			</Stack>
+
+			<Text c="dimmed" size="sm">
+				or pick a type
+			</Text>
 
 			{/* Type chips — each mints a typed chat and navigates into it. */}
 			<Group gap="md" justify="center" wrap="wrap" maw={760}>

@@ -27,7 +27,9 @@ import {
 	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 // Type-only: erased at build, so the cockpit_db (bun:sql) client never enters
@@ -125,6 +127,7 @@ export function CockpitProvider({
 	initialMessages,
 	initialUiState,
 	onPersistPin,
+	seedMessage,
 }: {
 	children: ReactNode;
 	// Server-owned conversation hydration (DAT-462): the persisted thread id +
@@ -136,6 +139,10 @@ export function CockpitProvider({
 	initialUiState?: UiState | null;
 	/** Persist a canvas-pin change (server fn from the route); fire-and-forget. */
 	onPersistPin?: (pinnedCallId: string | null) => void;
+	/** The landing nav-agent's opening message (DAT-534) — sent ONCE on mount into
+	 * a freshly-created, empty chat (the "tell" entry). Carried via router state,
+	 * so it's absent on reload (the message is persisted by then). */
+	seedMessage?: string;
 }) {
 	// The subscribe transport (Phase 2A) keys BOTH the long-lived subscribe channel
 	// (/api/chat-stream) and the send body off ONE conversation id, which MUST
@@ -216,6 +223,21 @@ export function CockpitProvider({
 		},
 		[sendMessage, refsHolder],
 	);
+
+	// Seed auto-send (DAT-534): the landing nav-agent classified the opening
+	// message + created this chat, then navigated here with the text in router
+	// state. Send it ONCE, on mount, into the still-empty transcript — that runs
+	// it through the normal /api/chat flow (persist + the agent's reply). Effect
+	// (convention 2: an external action, like the scroll-pin + NDJSON-fold) because
+	// it bridges router state → the chat send. Double-guarded against re-fire/reload:
+	// a ref makes it once-only, and `messages.length === 0` means a reload (seed
+	// gone from state, transcript already persisted) never re-sends.
+	const seededRef = useRef(false);
+	useEffect(() => {
+		if (seededRef.current || !seedMessage || messages.length > 0) return;
+		seededRef.current = true;
+		sendTurn(seedMessage);
+	}, [seedMessage, messages.length, sendTurn]);
 
 	// Pin/unpin also persists the canvas focus (DAT-462) so a reload returns to
 	// the same view. Fire-and-forget through the route's server fn — a failed

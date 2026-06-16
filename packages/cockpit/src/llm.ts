@@ -17,6 +17,12 @@
 
 export const MODEL = "claude-sonnet-4-6";
 
+// The landing nav-agent's model (DAT-534) — a cheap Haiku one-shot that classifies
+// the opening message into a chat kind. Undated alias, mirroring MODEL's
+// `claude-sonnet-4-6` (auto-resolves to the latest 4.5 snapshot); fall back to the
+// dated `claude-haiku-4-5-20251001` only if the alias ever fails to resolve.
+export const NAV_MODEL = "claude-haiku-4-5";
+
 export const MAX_OUTPUT_TOKENS = 24576;
 
 // The agent-loop iteration ceiling for /api/chat. chat() defaults to

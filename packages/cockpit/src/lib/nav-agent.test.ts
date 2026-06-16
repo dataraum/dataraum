@@ -53,6 +53,11 @@ describe("classifyOpeningMessage (DAT-534)", () => {
 		).toBe("connect");
 		expect(warn).toHaveBeenCalled();
 		warn.mockRestore();
+		// NB: the SAME catch handles an async chat() rejection. Asserting that via
+		// `h.chat.mockRejectedValue(...)` is not feasible here — a rejecting
+		// `@tanstack/ai` module-mock surfaces as an "unhandled rejection" in this
+		// vitest setup even though the SUT catches it (a harness quirk). The sync
+		// adapter throw above drives the identical catch → fallback path.
 	});
 
 	it("honors a custom fallback", async () => {

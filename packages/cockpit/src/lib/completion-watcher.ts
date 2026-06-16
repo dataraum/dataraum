@@ -26,7 +26,6 @@ import type { StreamChunk } from "@tanstack/ai";
 
 import {
 	appendMessages,
-	getConversationWorkspaceId,
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
 import {
@@ -141,14 +140,6 @@ export async function pollOnce(
 	// Nothing to narrate to if no client is listening (defensive — the watcher
 	// rides an open stream, but the connection can close between ticks).
 	if (!hasSubscribers(conversationId)) return;
-
-	// Existence probe: a stale threadId (a subscribe for a conversation with no
-	// row) shouldn't keep polling. The value is unused — runs are scoped by
-	// conversationId now, not workspace.
-	const exists =
-		(await getConversationWorkspaceId(conversationId).catch(() => null)) !==
-		null;
-	if (!exists) return;
 
 	// (1) Capture newly in-flight, un-narrated runs FOR THIS CONVERSATION — the
 	// run-routing filter: another chat's runs never enter this watcher's `tracked`.

@@ -23,8 +23,6 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("#/db/cockpit/conversations", () => ({
-	// Existence probe passes for any conversation in this test.
-	getConversationWorkspaceId: vi.fn(async () => "ws-1"),
 	appendMessages: vi.fn(async () => {}),
 	loadModelTranscript: vi.fn(async () => []),
 }));

@@ -138,20 +138,6 @@ export async function setConversationTitle(
 	}
 }
 
-/** The workspace a conversation belongs to (Phase 2A) — the completion-watcher
- * resolves it to find the conversation's in-flight runs. Null if the conversation
- * row is gone (a stale threadId). */
-export async function getConversationWorkspaceId(
-	conversationId: string,
-): Promise<string | null> {
-	const [row] = await cockpitDb
-		.select({ workspaceId: conversations.workspaceId })
-		.from(conversations)
-		.where(eq(conversations.id, conversationId))
-		.limit(1);
-	return row?.workspaceId ?? null;
-}
-
 /** The display transcript (modelOnly rows excluded), in order — reload hydration
  * + the canvas source. */
 export async function loadDisplayMessages(

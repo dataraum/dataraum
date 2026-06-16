@@ -4,6 +4,28 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-16: refactor — dimensional_entropy DEMOTED off the loss path (informative DirectSignal)
+
+`dimensional_entropy` (cross-column NMI) was removed from `loss.yaml` (it had
+`query_intent: {score: 0.3}`, `aggregation_intent: {score: 0.4}`). It now falls
+through `_build_column_result` to a **DirectSignal** — the benford lane: the NMI
+score + `expected_dependency` teach still compute as context, but no longer drive
+intent readiness bands. The detector still runs (`temporal_slice_analysis` phase,
+in slice) and still emits its `table:` EntropyObject; only its loss row is gone.
+
+**Why** (eval Tier-1 falsification, `dataraum-eval` scripts/probes/dimensional-entropy):
+on the loss path the NMI band is *anti-predictive* of wrong answers — highest on
+CLEAN intrinsic structure (mutex/alias/FD, no wrong answer) and BLIND to the
+dependency violation that causes a bad join/rollup (a 5%-broken FD barely moves
+NMI, 0.862→0.799; the violation rate is owned by `derived_value` /
+`relationship_entropy`). Recorded: eval `entropy_eval_architecture.md`.
+
+### dataraum-eval
+- **Changed**: `loss.yaml` (row removed + rationale comment), `tests/unit/entropy/views/test_readiness_context.py` (`test_table_target_rolls_up` now uses `dimension_coverage`; added `test_dimensional_entropy_is_a_direct_signal_not_a_band_driver`).
+- **Affects**: any column×intent band that was driven *only* by dimensional_entropy now drops one band (it contributed query 0.3·NMI, agg 0.4·NMI). A `table:` whose only object is dimensional_entropy is no longer in `readiness.columns` — it's a `direct_signal`. Cockpit/readers that surface DirectSignals are unaffected; readers that assumed it banded need none, by design.
+- **Calibrate**: eval-side `detector_coverage.yaml` disposition flips `scalar → informative` (mirrors benford); no recall/precision change (the NMI statistic is unchanged).
+- **Status**: pending
+
 ## 2026-06-16: fix — operating_model_detect scored nothing (DAT-506 re-grain miss; surfaced by DAT-508)
 
 `operating_model_detect` was the lone OM phase wired with a bare `RunRef` instead

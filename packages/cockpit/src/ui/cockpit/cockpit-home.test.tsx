@@ -14,20 +14,23 @@ function renderHome(
 	handlers?: {
 		onOpen?: (id: string) => void;
 		onCreate?: (kind: string) => void;
+		onTell?: (message: string) => void;
 	},
 ) {
 	const onOpen = vi.fn(handlers?.onOpen);
 	const onCreate = vi.fn(handlers?.onCreate);
+	const onTell = vi.fn(handlers?.onTell);
 	render(
 		<MantineProvider env="test">
 			<CockpitHome
 				conversations={conversations}
 				onOpen={onOpen}
 				onCreate={onCreate}
+				onTell={onTell}
 			/>
 		</MantineProvider>,
 	);
-	return { onOpen, onCreate };
+	return { onOpen, onCreate, onTell };
 }
 
 const conv = (
@@ -70,5 +73,25 @@ describe("CockpitHome", () => {
 		).toEqual(["Connect", "Analyse"]);
 		fireEvent.click(items[0]);
 		expect(onOpen).toHaveBeenCalledWith("c1");
+	});
+
+	it("routes a typed opening message through onTell (the 'tell' entry)", () => {
+		const { onTell } = renderHome([]);
+		const composer = screen.getByTestId("landing-composer");
+		fireEvent.change(composer, { target: { value: "import my orders csv" } });
+		fireEvent.click(screen.getByTestId("landing-send"));
+		expect(onTell).toHaveBeenCalledWith("import my orders csv");
+	});
+
+	it("Enter (without shift) sends the opening message; blank input does not", () => {
+		const { onTell } = renderHome([]);
+		const composer = screen.getByTestId("landing-composer");
+		// Blank → Send is disabled, no call.
+		fireEvent.click(screen.getByTestId("landing-send"));
+		expect(onTell).not.toHaveBeenCalled();
+		// Enter on non-blank sends (trimmed).
+		fireEvent.change(composer, { target: { value: "  what is revenue?  " } });
+		fireEvent.keyDown(composer, { key: "Enter" });
+		expect(onTell).toHaveBeenCalledWith("what is revenue?");
 	});
 });

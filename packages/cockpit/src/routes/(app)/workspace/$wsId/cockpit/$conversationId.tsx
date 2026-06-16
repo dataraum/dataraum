@@ -1,5 +1,5 @@
 import { Box, Stack } from "@mantine/core";
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { createFileRoute, notFound, useLocation } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	getConversation,
@@ -104,11 +104,16 @@ function CockpitChat() {
 	// can't act yet (no data / a run in progress).
 	const { conversationId, initialMessages, uiState, readiness } =
 		Route.useLoaderData();
+	// The landing nav-agent's opening message (DAT-534), carried in router state —
+	// CockpitProvider sends it once on mount into the empty chat. Absent on a normal
+	// open (switcher / reload after the first turn). Loosely shaped, so narrowed here.
+	const seedMessage = (useLocation().state as { seed?: string }).seed;
 	return (
 		<CockpitProvider
 			conversationId={conversationId}
 			initialMessages={initialMessages}
 			initialUiState={uiState}
+			seedMessage={seedMessage}
 			onPersistPin={(pinnedCallId) =>
 				void persistPin({ data: { conversationId, pinnedCallId } })
 			}

@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "@tanstack/ai-react";
-import { and, desc, eq, max } from "drizzle-orm";
+import { and, desc, eq, isNull, max } from "drizzle-orm";
 import { foldModelOnlyRefs } from "#/lib/model-messages";
 import { cockpitDb } from "./client";
 import { conversationMessages, conversations } from "./schema";
@@ -28,47 +28,114 @@ export interface MessageEntry {
 	modelOnly?: boolean;
 }
 
-/**
- * The active conversation id for a workspace — the boot/loader path. One thread
- * per workspace today: returns the existing one, else creates it. The returned
- * id is handed to `useChat` as `threadId`, so within a session resolution
- * happens ONCE here and the server reuses the echoed id (no re-resolve race). A
- * cold-start double-create (two tabs, no row yet) is possible but benign for
- * single-user — the newest wins on the next resolve; a uniqueness guard would
- * foreclose multi-conversation history, so it's deliberately omitted.
- */
-export async function resolveActiveConversation(
-	workspaceId: string,
-): Promise<string> {
-	const [row] = await cockpitDb
-		.select({ id: conversations.id })
-		.from(conversations)
-		.where(eq(conversations.workspaceId, workspaceId))
-		.orderBy(desc(conversations.createdAt))
-		.limit(1);
-	if (row) return row.id;
-	const id = randomUUID();
-	await cockpitDb
-		.insert(conversations)
-		.values({ id, workspaceId })
-		.onConflictDoNothing({ target: conversations.id });
-	return id;
+/** The chat type (DAT-528) — set at create, immutable. Binds the toolstack +
+ * system prompt ("skill"); the binding lands in S2, S1 stores + routes by it. */
+export type ConversationKind = "connect" | "stage" | "analyse";
+
+/** How many recent conversations the history list shows. Bounded (DD/36667393:
+ * "open-ended history is unrealistic") — matches the run-sweep bounds elsewhere. */
+export const HISTORY_LIMIT = 20;
+
+/** A conversation as the history list renders it. */
+export interface ConversationSummary {
+	id: string;
+	kind: ConversationKind;
+	title: string | null;
+	lastActiveAt: Date;
+}
+
+/** A conversation as the chat route hydrates it (kind drives the toolstack in
+ * S2; workspaceId anchors the FK reads). */
+export interface ConversationRow {
+	id: string;
+	workspaceId: string;
+	kind: ConversationKind;
+	title: string | null;
 }
 
 /**
- * Ensure a conversation row exists for a client-supplied `threadId` — the server
- * path. The loader normally creates it first, but the client owns the threadId
- * on the wire, so the append's FK could otherwise miss; this makes the server
- * self-sufficient and idempotent.
+ * The workspace's recent conversations, newest-active first, BOUNDED — the
+ * landing/history list (DAT-528). Ordered by `lastActiveAt` (bumped on every
+ * append) so a resumed chat floats to the top. Many chats per type are allowed
+ * within the bound.
  */
-export async function ensureConversation(
-	conversationId: string,
+export async function listConversations(
 	workspaceId: string,
+	limit: number = HISTORY_LIMIT,
+): Promise<Array<ConversationSummary>> {
+	const rows = await cockpitDb
+		.select({
+			id: conversations.id,
+			kind: conversations.kind,
+			title: conversations.title,
+			lastActiveAt: conversations.lastActiveAt,
+		})
+		.from(conversations)
+		.where(eq(conversations.workspaceId, workspaceId))
+		.orderBy(desc(conversations.lastActiveAt))
+		.limit(limit);
+	return rows.map((r) => ({ ...r, kind: r.kind as ConversationKind }));
+}
+
+/**
+ * Create a typed conversation and return its id — the only way a conversation is
+ * born (DAT-528). `kind` is required + immutable: there is no create-without-type
+ * path, which is what makes "every chat has a kind" true by construction (the
+ * NOT NULL column is the backstop). The id becomes the `useChat` threadId and the
+ * `/cockpit/$conversationId` route param.
+ */
+export async function createConversation(
+	workspaceId: string,
+	kind: ConversationKind,
+): Promise<string> {
+	const id = randomUUID();
+	await cockpitDb.insert(conversations).values({ id, workspaceId, kind });
+	return id;
+}
+
+/** Hydrate a conversation by id (the chat route loader) — kind + title +
+ * owning workspace. Null if the id is unknown (a stale deep link → the route
+ * 404s rather than mounting an orphan chat). */
+export async function getConversation(
+	conversationId: string,
+): Promise<ConversationRow | null> {
+	const [row] = await cockpitDb
+		.select({
+			id: conversations.id,
+			workspaceId: conversations.workspaceId,
+			kind: conversations.kind,
+			title: conversations.title,
+		})
+		.from(conversations)
+		.where(eq(conversations.id, conversationId))
+		.limit(1);
+	if (!row) return null;
+	return { ...row, kind: row.kind as ConversationKind };
+}
+
+/**
+ * Set a conversation's history label ONCE, from the first user message (DAT-528).
+ * The `title IS NULL` guard makes it first-write-wins + idempotent — a later turn
+ * never overwrites it, and a Haiku summary (S4) can replace this slice. Bumped
+ * via a conditional UPDATE so no read-modify-write race. Best-effort: title is
+ * cosmetic, so a failure is swallowed (never fail a turn over a label).
+ */
+export async function setConversationTitle(
+	conversationId: string,
+	title: string,
 ): Promise<void> {
-	await cockpitDb
-		.insert(conversations)
-		.values({ id: conversationId, workspaceId })
-		.onConflictDoNothing({ target: conversations.id });
+	try {
+		await cockpitDb
+			.update(conversations)
+			.set({ title })
+			.where(
+				and(eq(conversations.id, conversationId), isNull(conversations.title)),
+			);
+	} catch (err) {
+		console.warn(
+			`[cockpit] setConversationTitle failed for ${conversationId}: ${err}`,
+		);
+	}
 }
 
 /** The workspace a conversation belongs to (Phase 2A) — the completion-watcher
@@ -154,8 +221,9 @@ export async function appendMessages(
 		.insert(conversationMessages)
 		.values(rows)
 		.onConflictDoNothing({ target: conversationMessages.id });
+	const now = new Date();
 	await cockpitDb
 		.update(conversations)
-		.set({ updatedAt: new Date() })
+		.set({ updatedAt: now, lastActiveAt: now })
 		.where(eq(conversations.id, conversationId));
 }

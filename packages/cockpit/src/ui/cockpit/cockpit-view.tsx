@@ -1,30 +1,29 @@
-// Cockpit view (DAT-347, C1; reshaped in the redesign).
+// Cockpit view (DAT-347, C1; reshaped in the redesign, then DAT-528).
 //
-// Cold start → the calm centered landing. Once a conversation exists → the
-// working split: the chat rail (left) beside the focus canvas (right), each
-// scrolling independently. The swap happens exactly ONCE (first turn), then the
-// layout holds — no per-turn reflow (the explicit "not nervous" requirement).
-// Cockpit-scoped hotkeys focus the chat input (mod+/) and the canvas (mod+.).
-// All sizes/colors read from theme tokens — no hardcoded px/hex.
+// A specific chat's working surface: the chat rail (left) beside the focus canvas
+// (right), each scrolling independently. The cold-start landing is no longer here
+// — it's the /cockpit index route (history + type chips, DAT-528); this view only
+// ever renders inside a real conversation, so it always shows the split (an empty
+// one before the first turn). Cockpit-scoped hotkeys focus the chat input (mod+/)
+// and the canvas (mod+.). All sizes/colors read from theme tokens — no hardcoded
+// px/hex.
 
 import { Box, Button, Group, Stack, Text } from "@mantine/core";
 import { useHotkeys } from "@mantine/hooks";
 import { useRef } from "react";
 import { ChatRail } from "#/ui/cockpit/chat-rail";
-import { CockpitLanding } from "#/ui/cockpit/cockpit-landing";
 import { useCockpit } from "#/ui/cockpit/cockpit-state";
 import { FocusCanvas } from "#/ui/cockpit/focus-canvas";
 import { tokens } from "#/ui/theme";
 
 export function CockpitView() {
-	const { canvas, pinnedCallId, returnToLive, messages } = useCockpit();
+	const { canvas, pinnedCallId, returnToLive } = useCockpit();
 	const chatRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLDivElement>(null);
 
 	// Cockpit-scoped focus hotkeys. mod+slash → chat input; mod+period → canvas.
 	// Registered while mounted so they don't leak into other sections; ⌘K stays
-	// the shell's command palette. The chat input shares its data-testid across
-	// the landing + rail composers, so mod+/ works in both modes.
+	// the shell's command palette.
 	useHotkeys([
 		[
 			"mod+/",
@@ -35,16 +34,6 @@ export function CockpitView() {
 		],
 		["mod+.", () => canvasRef.current?.focus()],
 	]);
-
-	// Cold start: no conversation yet → the centered landing instead of an empty
-	// split. mod+/ still finds the (hero) composer inside it.
-	if (messages.length === 0) {
-		return (
-			<Box ref={chatRef} h="100%" data-testid="cockpit-view">
-				<CockpitLanding />
-			</Box>
-		);
-	}
 
 	return (
 		<Group

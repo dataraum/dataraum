@@ -20,7 +20,10 @@ vi.mock("#/db/cockpit/schema", () => ({
 		_t: "conversations",
 		id: "id",
 		workspaceId: "workspace_id",
+		kind: "kind",
+		title: "title",
 		createdAt: "created_at",
+		lastActiveAt: "last_active_at",
 	},
 	conversationMessages: {
 		_t: "conversation_messages",
@@ -34,6 +37,7 @@ vi.mock("drizzle-orm", () => ({
 	eq: (...a: unknown[]) => ["eq", ...a],
 	and: (...a: unknown[]) => ["and", ...a],
 	desc: (x: unknown) => ["desc", x],
+	isNull: (x: unknown) => ["isNull", x],
 	max: (x: unknown) => ["max", x],
 }));
 vi.mock("node:crypto", () => ({ randomUUID: () => "generated-uuid" }));
@@ -79,10 +83,12 @@ vi.mock("#/db/cockpit/client", () => ({
 
 import {
 	appendMessages,
-	ensureConversation,
+	createConversation,
+	getConversation,
+	listConversations,
 	loadDisplayMessages,
 	loadModelTranscript,
-	resolveActiveConversation,
+	setConversationTitle,
 } from "./conversations";
 
 function msg(id: string, role = "user") {
@@ -98,32 +104,55 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("resolveActiveConversation", () => {
-	it("returns the existing conversation id when one exists for the workspace", async () => {
-		h.selectResult = [{ id: "conv-existing" }];
-		const id = await resolveActiveConversation("ws-1");
-		expect(id).toBe("conv-existing");
-		expect(h.inserts).toEqual([]);
-	});
-
-	it("creates + returns a new conversation when none exists", async () => {
-		h.selectResult = [];
-		const id = await resolveActiveConversation("ws-1");
+describe("createConversation", () => {
+	it("mints a typed conversation and returns its id", async () => {
+		const id = await createConversation("ws-1", "stage");
 		expect(id).toBe("generated-uuid");
 		const ins = h.inserts.find((i) => i.table === "conversations");
 		expect(ins?.rows).toMatchObject({
 			id: "generated-uuid",
 			workspaceId: "ws-1",
+			kind: "stage",
 		});
 	});
 });
 
-describe("ensureConversation", () => {
-	it("inserts the supplied id idempotently", async () => {
-		await ensureConversation("conv-x", "ws-1");
-		const ins = h.inserts.find((i) => i.table === "conversations");
-		expect(ins?.rows).toMatchObject({ id: "conv-x", workspaceId: "ws-1" });
-		expect(h.conflicts).toHaveLength(1);
+describe("listConversations", () => {
+	it("returns the workspace's recent conversations, kind narrowed", async () => {
+		h.selectResult = [
+			{ id: "c1", kind: "connect", title: "t1", lastActiveAt: new Date(0) },
+			{ id: "c2", kind: "analyse", title: null, lastActiveAt: new Date(1) },
+		];
+		const rows = await listConversations("ws-1");
+		expect(rows.map((r) => r.id)).toEqual(["c1", "c2"]);
+		expect(rows[0].kind).toBe("connect");
+		// Scoped to the workspace and ordered by recency (lastActiveAt).
+		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
+	});
+});
+
+describe("getConversation", () => {
+	it("hydrates id + kind + title + workspace, or null for an unknown id", async () => {
+		h.selectResult = [
+			{ id: "c1", workspaceId: "ws-1", kind: "connect", title: "t1" },
+		];
+		expect(await getConversation("c1")).toEqual({
+			id: "c1",
+			workspaceId: "ws-1",
+			kind: "connect",
+			title: "t1",
+		});
+
+		h.selectResult = [];
+		expect(await getConversation("missing")).toBeNull();
+	});
+});
+
+describe("setConversationTitle", () => {
+	it("updates the title (first-write-wins via a title IS NULL guard)", async () => {
+		await setConversationTitle("c1", "Add the orders CSV");
+		const upd = h.updates.find((u) => u.table === "conversations");
+		expect(upd?.set).toEqual({ title: "Add the orders CSV" });
 	});
 });
 

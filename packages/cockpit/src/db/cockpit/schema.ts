@@ -123,6 +123,16 @@ export const sessionRuns = pgTable(
 		stage: varchar("stage").notNull(),
 		workflowId: varchar("workflow_id").notNull(),
 		runId: varchar("run_id").notNull(),
+		// The conversation that STARTED this run (DAT-528) — the run-routing key.
+		// The completion-watcher + reconcile filter on it so a run narrates into the
+		// chat that triggered it, not whichever workspace watcher claims it first
+		// (the old order-dependent bug). NULLABLE by design: a legacy run (pre-528)
+		// or a future auto-orchestrated run (P3 JourneyWorkflow) has no originating
+		// chat — it simply doesn't narrate. Stamped in `recordRun` from the
+		// request-scoped ALS context (lib/run-context).
+		conversationId: varchar("conversation_id").references(
+			() => conversations.id,
+		),
 		status: varchar("status").notNull().default("running"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
 		// The atomic claim for the run-completion narration (Phase 2A): the server
@@ -137,6 +147,8 @@ export const sessionRuns = pgTable(
 	(t) => [
 		uniqueIndex("session_runs_workflow_run_uq").on(t.workflowId, t.runId),
 		index("session_runs_session_idx").on(t.sessionId),
+		// The run-routing filter (DAT-528): the watcher/reconcile scope by it.
+		index("session_runs_conversation_idx").on(t.conversationId),
 	],
 );
 
@@ -146,8 +158,13 @@ export const sessionRuns = pgTable(
  * chat, trigger add_source → session 1, chat more, trigger begin_session →
  * session 2, all in one transcript). Its `id` is the AG-UI `threadId` the client
  * hydrates on reload. cockpit_db is the source of truth; the client is a view
- * seeded via `initialMessages` and updated by the stream. One active conversation
- * per workspace for now (multi-conversation history is a later concern).
+ * seeded via `initialMessages` and updated by the stream.
+ *
+ * Typed, resumable chat-sessions (DAT-528): a workspace has MANY conversations,
+ * each with an immutable `kind` (connect | stage | analyse) that binds its
+ * toolstack + system prompt ("skill" — the binding itself is S2). They are listed
+ * (bounded recent) + resumable by id; `lastActiveAt` is the recency axis the
+ * history list orders on.
  */
 export const conversations = pgTable(
 	"conversations",
@@ -156,8 +173,22 @@ export const conversations = pgTable(
 		workspaceId: varchar("workspace_id")
 			.notNull()
 			.references(() => workspaces.id),
+		// The immutable chat type (DAT-528). NOT NULL + never updated after create —
+		// a chat cannot change type, and the user cannot jump types within one chat.
+		// S1 stores + displays it and routes runs by conversation; S2 fences the
+		// toolstack on it.
+		kind: varchar("kind").notNull(),
+		// A short human label for the history list — the first user message, sliced
+		// (a Haiku summary is deferred, S4). Null until the first turn names it.
+		title: varchar("title"),
 		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
 		updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
+		// Last chat ACTIVITY — the recency axis the bounded history list orders on,
+		// bumped on each message append. Distinct in MEANING from `updatedAt` (any
+		// row mutation, e.g. a future title edit), though the two coincide today.
+		lastActiveAt: timestamp("last_active_at", { mode: "date" })
+			.notNull()
+			.defaultNow(),
 	},
 	(t) => [index("conversations_workspace_idx").on(t.workspaceId)],
 );

@@ -41,13 +41,13 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import {
 	appendMessages,
-	ensureConversation,
 	loadModelTranscript,
+	setConversationTitle,
 } from "../../db/cockpit/conversations";
-import { resolveActiveWorkspace } from "../../db/cockpit/registry";
 import { type ChatMessages, streamAgentTurnToBus } from "../../lib/agent-turn";
 import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
 import { buildModelMessages } from "../../lib/model-messages";
+import { runWithConversation } from "../../lib/run-context";
 import { buildWorkspaceContext } from "../../prompts/workspace-context";
 
 /** The new user turn to persist — the last incoming message, when it's a
@@ -68,6 +68,23 @@ function newUserTurn(messages: ChatMessages): UIMessage | null {
 function extractRefs(forwardedProps: Record<string, unknown>): string | null {
 	const refs = forwardedProps.refs;
 	return typeof refs === "string" && refs.length > 0 ? refs : null;
+}
+
+/** A short history label from the user's first message (DAT-528) — the text
+ * parts, joined and clipped. Parts are `unknown`-shaped at this boundary, so the
+ * content is narrowed explicitly (convention 11) before use. */
+function titleFromTurn(turn: UIMessage): string {
+	const text = turn.parts
+		.map((p) => {
+			const content = (p as { type?: unknown; content?: unknown }).content;
+			return (p as { type?: unknown }).type === "text" &&
+				typeof content === "string"
+				? content
+				: "";
+		})
+		.join(" ")
+		.trim();
+	return text.slice(0, 80) || "New chat";
 }
 
 /** A model-only row carrying the refs body. role "user" so the converter keeps
@@ -102,8 +119,10 @@ export const Route = createFileRoute("/api/chat")({
 				let modelMessages: ChatMessages = messages;
 				let persistTo: string | null = null;
 				try {
-					const workspaceId = await resolveActiveWorkspace();
-					await ensureConversation(threadId, workspaceId);
+					// The conversation row already exists — it is created intentionally
+					// with a `kind` by the cockpit route before the first send (DAT-528);
+					// chat() only APPENDS to it. A stale/absent threadId FK-fails here and
+					// falls through to the degraded (unpersisted) path below.
 					const entries: Array<{ message: UIMessage; modelOnly?: boolean }> =
 						[];
 					const turn = newUserTurn(messages);
@@ -116,6 +135,10 @@ export const Route = createFileRoute("/api/chat")({
 						entries.push({ message: refsRow(refs), modelOnly: true });
 					}
 					if (entries.length > 0) await appendMessages(threadId, entries);
+					// Name the chat from its first user message for the history list
+					// (DAT-528). First-write-wins + idempotent at the DB (title IS NULL),
+					// so calling it each user turn is a cheap no-op once set.
+					if (turn) await setConversationTitle(threadId, titleFromTurn(turn));
 					// Feed the model the BOUNDED server-owned transcript (DAT-462). Every
 					// POST now ends on a user turn (the gate that produced trailing
 					// assistant-tool-call continuations is gone), so the reload always
@@ -166,11 +189,18 @@ export const Route = createFileRoute("/api/chat")({
 				// bus still routes in-memory). Awaiting it holds this request open for
 				// the whole turn (bun idle-timeout disabled above); we then close with an
 				// empty body so the client's send() knows the turn dispatched.
-				await streamAgentTurnToBus(threadId, modelMessages, {
-					workspaceContext,
-					abortController,
-					persist: persistTo !== null,
-				});
+				// Bind the conversationId for the whole turn (DAT-528): a tool that starts
+				// a Temporal run calls `recordRun` two driver hops deep, where there is no
+				// per-request channel — `recordRun` reads this ambient id (lib/run-context)
+				// and stamps it on the run so the completion-watcher narrates into THIS
+				// chat, not whichever workspace watcher claims it first.
+				await runWithConversation(threadId, () =>
+					streamAgentTurnToBus(threadId, modelMessages, {
+						workspaceContext,
+						abortController,
+						persist: persistTo !== null,
+					}),
+				);
 				return new Response("", {
 					headers: { "Content-Type": "text/event-stream" },
 				});

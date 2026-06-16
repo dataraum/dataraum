@@ -63,4 +63,16 @@ describe("useVertical (DAT-523)", () => {
 		// The typo never pins a non-resolving vertical (DAT-479 conflation guard).
 		expect(setVerticalMock).not.toHaveBeenCalled();
 	});
+
+	it("is born-loud on a zero-concept vertical — no workspace write", async () => {
+		const hollow = async () => [
+			{ ...vertical("hollow", "framed"), concept_count: 0 },
+		];
+		await expect(useVertical("hollow", hollow)).rejects.toThrow(
+			/no concepts to ground against/,
+		);
+		// A vertical that would ground against nothing is rejected at adopt time,
+		// not deep in the engine's semantic phase.
+		expect(setVerticalMock).not.toHaveBeenCalled();
+	});
 });

@@ -56,6 +56,17 @@ export async function useVertical(
 				"one if none fits.",
 		);
 	}
+	// Born-loud at the adopt boundary (DAT-479): a vertical with no concepts would
+	// ground against nothing — add_source's semantic phase fails deep instead of
+	// here. `concept_count` is an UPPER BOUND (overlay overrides double-count), so
+	// `=== 0` can only be a true zero — safe to reject on.
+	if (match.concept_count === 0) {
+		throw new AgentActionableError(
+			`Vertical '${name}' has no concepts to ground against — adopting it would ` +
+				"fail the import. Frame concepts for it first, or pick a vertical that " +
+				"ships them (e.g. a builtin like finance).",
+		);
+	}
 	await setActiveWorkspaceVertical(name);
 	return { vertical: name, kind: match.kind };
 }

@@ -34,6 +34,7 @@ import type { TeachResult } from "#/tools/teach";
 import type { TeachCycleResult } from "#/tools/teach-cycle";
 import type { TeachMetricResult } from "#/tools/teach-metric";
 import type { TeachValidationResult } from "#/tools/teach-validation";
+import type { UseVerticalResult } from "#/tools/use-vertical";
 import type { WhyColumnResult } from "#/tools/why-column";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
@@ -62,6 +63,7 @@ function truncate(s: string, max = 60): string {
 const TOOL_LABELS: Record<string, string> = {
 	list_sources: "Available data",
 	list_verticals: "Domains",
+	use_vertical: "Adopting vertical",
 	list_tables: "Workspace tables",
 	look_table: "Table readiness",
 	look_profile: "Column profile",
@@ -92,6 +94,7 @@ const TOOL_LABELS: Record<string, string> = {
 // nouns ("Workspace tables", "Query") that read fine in both states.
 const TOOL_LABELS_DONE: Record<string, string> = {
 	connect: "Source schema",
+	use_vertical: "Vertical adopted",
 	select: "Registered source",
 	begin_session: "Session started",
 	teach: "Taught",
@@ -304,6 +307,11 @@ export function toolChipSummary(
 				parts.push(plural(f.cycles.length, "cycle"));
 			}
 			return `${f.vertical} — ${parts.join(", ")}`;
+		}
+		case "use_vertical": {
+			const v = output as UseVerticalResult | undefined;
+			if (!v) return "adopting vertical…";
+			return `${v.vertical} (${v.kind})`;
 		}
 		case "select": {
 			const s = output as SelectResult | undefined;

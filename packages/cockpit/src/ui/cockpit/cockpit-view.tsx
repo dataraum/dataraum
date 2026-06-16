@@ -75,7 +75,11 @@ export function CockpitView() {
 			</Box>
 			<Stack
 				gap="md"
-				style={{ flex: 1, overflow: "hidden" }}
+				// The canvas takes the slack (flex:1) but holds a 28rem floor so the chat's
+				// 22rem floor + flexShrink:0 can't squeeze it toward zero on a narrow
+				// window (DAT-527 review): below ~50rem the nowrap row overflows to a
+				// horizontal scroll rather than collapsing the canvas.
+				style={{ flex: 1, minWidth: "28rem", overflow: "hidden" }}
 				data-testid="region-work"
 			>
 				{/* Rehydration banner (DAT-354): shown only while the canvas is pinned

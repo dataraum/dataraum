@@ -81,6 +81,9 @@ describe("CockpitView — landing vs working split", () => {
 		expect(chat.style.width).toBe("28%");
 		expect(chat.style.minWidth).toBe("22rem");
 		expect(chat.style.maxWidth).toBe("");
+		// The canvas holds a floor so the chat's 22rem + flexShrink:0 can't squeeze
+		// it to zero on a narrow window (DAT-527 review).
+		expect(screen.getByTestId("region-work").style.minWidth).toBe("28rem");
 	});
 
 	it("mod+slash focuses the chat input (landing)", () => {

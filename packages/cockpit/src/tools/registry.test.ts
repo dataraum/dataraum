@@ -31,11 +31,23 @@ vi.mock("#/db/cockpit/runs", () => ({
 }));
 
 import { CANVAS_TOOLS, CHIP_ONLY } from "#/ui/cockpit/tool-result-to-canvas";
-import { tools } from "./registry";
+import { toolsByKind } from "./registry";
+
+/** The reachable tool surface = the union of the per-kind buckets, deduped by
+ * name (a tool may sit in several kinds). Derived — never a hand-maintained
+ * const — so it cannot drift from what a chat can actually call (DAT-532). */
+const allTools = [
+	...new Map(
+		Object.values(toolsByKind)
+			.flat()
+			.map((t) => [t.name, t] as const),
+	).values(),
+];
+const namesOf = (ts: ReadonlyArray<{ name: string }>) => ts.map((t) => t.name);
 
 describe("tool registry (DAT-353)", () => {
 	it("registers the toolset with unique names", () => {
-		const names = tools.map((t) => t.name);
+		const names = namesOf(allTools);
 		expect(names).toHaveLength(new Set(names).size); // no dupes
 		expect(new Set(names)).toEqual(
 			new Set([
@@ -78,7 +90,7 @@ describe("tool registry (DAT-353)", () => {
 		// routed — projected to the canvas (PROJECTORS/CANVAS_TOOLS) OR explicitly
 		// chip-only — never silently un-routed. XOR catches BOTH gaps: in neither
 		// (forgotten) and in both (contradiction).
-		for (const tool of tools) {
+		for (const tool of allTools) {
 			const inCanvas = CANVAS_TOOLS.has(tool.name);
 			const inChip = CHIP_ONLY.has(tool.name);
 			expect(
@@ -89,7 +101,7 @@ describe("tool registry (DAT-353)", () => {
 	});
 
 	it("has no stale CHIP_ONLY entries — every name is a registered tool (DAT-527)", () => {
-		const names = new Set<string>(tools.map((t) => t.name));
+		const names = new Set<string>(namesOf(allTools));
 		for (const name of CHIP_ONLY) {
 			expect(
 				names.has(name),
@@ -98,14 +110,46 @@ describe("tool registry (DAT-353)", () => {
 		}
 	});
 
+	it("places kind-discriminating tools in exactly the right bucket (DAT-532)", () => {
+		const connect = new Set(namesOf(toolsByKind.connect));
+		const stage = new Set(namesOf(toolsByKind.stage));
+		const analyse = new Set(namesOf(toolsByKind.analyse));
+
+		// begin_session is a Stage-only tool — absent from a Connect chat (the AC).
+		expect(stage.has("begin_session")).toBe(true);
+		expect(connect.has("begin_session")).toBe(false);
+		expect(analyse.has("begin_session")).toBe(false);
+
+		// answer is the Analyse surface; raw run_sql is Stage-only (answer replaces
+		// it for analysis — run_sql overflows context). probe is Connect-only.
+		expect(analyse.has("answer")).toBe(true);
+		expect(stage.has("answer")).toBe(false);
+		expect(connect.has("answer")).toBe(false);
+		expect(stage.has("run_sql")).toBe(true);
+		expect(analyse.has("run_sql")).toBe(false);
+		expect(connect.has("probe")).toBe(true);
+		expect(analyse.has("probe")).toBe(false);
+
+		// select/frame/use_vertical are Connect's acquisition tools.
+		for (const t of ["select", "frame", "use_vertical", "upload"]) {
+			expect(connect.has(t)).toBe(true);
+			expect(stage.has(t)).toBe(false);
+		}
+
+		// The read+explain set overlaps Stage and Analyse (overlap is by design).
+		for (const t of ["look_table", "why_column", "look_metric"]) {
+			expect(stage.has(t) && analyse.has(t)).toBe(true);
+		}
+	});
+
 	it("declares NO approval gate on any tool — every tool runs directly", () => {
 		// The approval gate is gone: every tool (reads AND write/compute alike) runs
 		// on the user's natural-language instruction, so none may declare approval.
 		// A regression guard — a re-introduced `needsApproval: true` on any tool
 		// fails here.
-		for (const tool of tools) {
+		for (const tool of allTools) {
 			expect(
-				tool.needsApproval ?? false,
+				(tool as { needsApproval?: boolean }).needsApproval ?? false,
 				`${tool.name} must not declare an approval gate`,
 			).toBe(false);
 		}

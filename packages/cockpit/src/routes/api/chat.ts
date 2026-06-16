@@ -35,20 +35,42 @@
 // the client-sent messages (unpersisted), never a dead chat.
 
 import { randomUUID } from "node:crypto";
-import { chatParamsFromRequest } from "@tanstack/ai";
+import { chatParamsFromRequest, type StreamChunk } from "@tanstack/ai";
 import type { UIMessage } from "@tanstack/ai-react";
 import { createFileRoute } from "@tanstack/react-router";
 
 import {
 	appendMessages,
+	type ConversationKind,
+	getConversation,
 	loadModelTranscript,
 	setConversationTitle,
 } from "../../db/cockpit/conversations";
 import { type ChatMessages, streamAgentTurnToBus } from "../../lib/agent-turn";
 import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
+import { publish } from "../../lib/chat-bus";
 import { buildModelMessages } from "../../lib/model-messages";
 import { runWithConversation } from "../../lib/run-context";
 import { buildWorkspaceContext } from "../../prompts/workspace-context";
+
+/** The empty `text/event-stream` body the POST always returns — the turn's chunks
+ * (or a born-loud error) reach the client over /api/chat-stream, not here. */
+function emptyTurnResponse(): Response {
+	return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+}
+
+/** Surface a server-side precondition failure as a RUN_ERROR over the bus, so it
+ * renders inline in the chat (the same path chat()'s own errors take). The
+ * StreamProcessor tolerates a lone RUN_ERROR with no preceding RUN_STARTED — it
+ * synthesizes the assistant turn and fires onError → the rail's error Alert.
+ * `RunErrorEvent` isn't re-exported from `@tanstack/ai`'s index, so cast (same as
+ * the CUSTOM publish in completion-watcher). */
+function publishRunError(conversationId: string, message: string): void {
+	publish(conversationId, {
+		type: "RUN_ERROR",
+		message,
+	} as unknown as StreamChunk);
+}
 
 /** The new user turn to persist — the last incoming message, when it's a
  * UIMessage authored by the user. The client uploads its whole list, but only
@@ -68,6 +90,42 @@ function newUserTurn(messages: ChatMessages): UIMessage | null {
 function extractRefs(forwardedProps: Record<string, unknown>): string | null {
 	const refs = forwardedProps.refs;
 	return typeof refs === "string" && refs.length > 0 ? refs : null;
+}
+
+/**
+ * Resolve the chat's kind server-side (DAT-532) — BORN-LOUD. The toolstack +
+ * system prompt are selected by kind, so a turn cannot run without it. A
+ * conversation is always created with a NOT NULL kind, so a miss here is a real
+ * error (a stale/unknown threadId, or cockpit_db down) — it publishes a RUN_ERROR
+ * over the bus (rendered inline in the chat) and returns `null` so the caller
+ * aborts the turn, NEVER a silent generic-tool turn. Resolved from the
+ * conversation ROW, never the client/forwardedProps (which must not be able to
+ * pick another chat's toolstack). Exported for the born-loud unit test.
+ */
+export async function resolveTurnKind(
+	threadId: string,
+): Promise<ConversationKind | null> {
+	try {
+		const conversation = await getConversation(threadId);
+		if (!conversation) {
+			publishRunError(
+				threadId,
+				"This chat couldn't be found — reload and start a new one.",
+			);
+			return null;
+		}
+		return conversation.kind;
+	} catch (err) {
+		console.error(
+			"[chat] kind resolution failed — refusing an untyped turn:",
+			err,
+		);
+		publishRunError(
+			threadId,
+			"The workspace is temporarily unavailable. Try again in a moment.",
+		);
+		return null;
+	}
 }
 
 /** A short history label from the user's first message (DAT-528) — the text
@@ -111,6 +169,11 @@ export const Route = createFileRoute("/api/chat")({
 				disableBunIdleTimeout(request);
 				const { messages, threadId, forwardedProps } =
 					await chatParamsFromRequest(request);
+
+				// Born-loud kind resolution (DAT-532): null → a RUN_ERROR was already
+				// published over the bus; abort the turn rather than run it untyped.
+				const kind = await resolveTurnKind(threadId);
+				if (kind === null) return emptyTurnResponse();
 
 				// Reconstruct the model's view from cockpit_db (server-owned): persist
 				// the new user turn (+ any model-only refs), reload the full transcript,
@@ -196,14 +259,13 @@ export const Route = createFileRoute("/api/chat")({
 				// chat, not whichever workspace watcher claims it first.
 				await runWithConversation(threadId, () =>
 					streamAgentTurnToBus(threadId, modelMessages, {
+						kind,
 						workspaceContext,
 						abortController,
 						persist: persistTo !== null,
 					}),
 				);
-				return new Response("", {
-					headers: { "Content-Type": "text/event-stream" },
-				});
+				return emptyTurnResponse();
 			},
 		},
 	},

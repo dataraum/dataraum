@@ -549,7 +549,7 @@ class PhaseActivities:
             )
 
     @activity.defn(name="operating_model_detect")
-    def run_operating_model_detect(self, run: RunRef) -> PhaseOutcome:
+    def run_operating_model_detect(self, payload: OperatingModelScopedInput) -> PhaseOutcome:
         """Terminal detector pass for operating_model (DAT-432/L7).
 
         Scores this run's executed validation results — cross_table_consistency,
@@ -562,16 +562,24 @@ class PhaseActivities:
         ``operating_model`` head (failed runs never surface; review wave-1
         corrected an overclaim here).
         """
+        run = payload.run
         if run.run_id is None:
             raise ApplicationError(
                 "operating_model_detect requires a stamped run.run_id.",
                 type="PhaseFailed",
                 non_retryable=True,
             )
+        # The OM run never anchors ``run_tables`` (begin_session owns them), so
+        # detect must score over the table set PINNED at operating_model_resolve
+        # (ADR-0008: payload.scope.table_ids) — the same pin validation / cycles /
+        # metrics read. Without it, ``tables_for_run(om_run)`` is empty and the
+        # whole pass no-ops (``detect_no_run_tables``), so cross_table_consistency
+        # silently scores nothing.
         count = run_detectors(
             self._manager,
             run_id=run.run_id,
             detector_phases=OPERATING_MODEL_DETECTOR_PHASES,
+            table_ids=payload.scope.table_ids,
         )
         return PhaseOutcome(
             status=PhaseStatus.COMPLETED.value,

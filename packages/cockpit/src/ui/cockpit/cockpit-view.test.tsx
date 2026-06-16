@@ -56,15 +56,19 @@ describe("CockpitView — landing vs working split", () => {
 	});
 	afterEach(() => cleanup());
 
-	it("shows the centered landing on a cold start (no conversation)", () => {
+	it("renders the working split even before the first turn (empty conversation)", () => {
 		renderView();
-		expect(screen.getByTestId("cockpit-landing")).toBeTruthy();
-		// No split yet → no canvas region; the composer (mod+/ target) is present.
-		expect(screen.queryByTestId("region-canvas")).toBeNull();
+		// The landing moved to the /cockpit index route (DAT-528); CockpitView only
+		// ever mounts inside a real conversation, so it shows the split immediately
+		// — an empty one — with the rail composer present (the mod+/ target). No
+		// cold-start landing branch here anymore.
+		expect(screen.queryByTestId("cockpit-landing")).toBeNull();
+		expect(screen.getByTestId("region-chat")).toBeTruthy();
+		expect(screen.getByTestId("region-canvas")).toBeTruthy();
 		expect(screen.getByTestId("chat-input")).toBeTruthy();
 	});
 
-	it("swaps to the working split once a conversation exists", () => {
+	it("renders the relative width split (DAT-527)", () => {
 		h.messages = [aMessage];
 		renderView();
 		expect(screen.queryByTestId("cockpit-landing")).toBeNull();
@@ -86,7 +90,7 @@ describe("CockpitView — landing vs working split", () => {
 		expect(screen.getByTestId("region-work").style.minWidth).toBe("28rem");
 	});
 
-	it("mod+slash focuses the chat input (landing)", () => {
+	it("mod+slash focuses the chat input (rail composer)", () => {
 		renderView();
 		const input = screen.getByTestId("chat-input");
 		expect(document.activeElement).not.toBe(input);

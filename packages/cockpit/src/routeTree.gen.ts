@@ -23,7 +23,9 @@ import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/wo
 import { Route as appWorkspaceWsIdMetadataRouteImport } from './routes/(app)/workspace/$wsId/metadata'
 import { Route as appWorkspaceWsIdLibraryRouteImport } from './routes/(app)/workspace/$wsId/library'
 import { Route as appWorkspaceWsIdGovernanceRouteImport } from './routes/(app)/workspace/$wsId/governance'
-import { Route as appWorkspaceWsIdCockpitRouteImport } from './routes/(app)/workspace/$wsId/cockpit'
+import { Route as appWorkspaceWsIdCockpitRouteRouteImport } from './routes/(app)/workspace/$wsId/cockpit/route'
+import { Route as appWorkspaceWsIdCockpitIndexRouteImport } from './routes/(app)/workspace/$wsId/cockpit/index'
+import { Route as appWorkspaceWsIdCockpitConversationIdRouteImport } from './routes/(app)/workspace/$wsId/cockpit/$conversationId'
 
 const appRouteRoute = appRouteRouteImport.update({
   id: '/(app)',
@@ -97,11 +99,24 @@ const appWorkspaceWsIdGovernanceRoute =
     path: '/governance',
     getParentRoute: () => appWorkspaceWsIdRouteRoute,
   } as any)
-const appWorkspaceWsIdCockpitRoute = appWorkspaceWsIdCockpitRouteImport.update({
-  id: '/cockpit',
-  path: '/cockpit',
-  getParentRoute: () => appWorkspaceWsIdRouteRoute,
-} as any)
+const appWorkspaceWsIdCockpitRouteRoute =
+  appWorkspaceWsIdCockpitRouteRouteImport.update({
+    id: '/cockpit',
+    path: '/cockpit',
+    getParentRoute: () => appWorkspaceWsIdRouteRoute,
+  } as any)
+const appWorkspaceWsIdCockpitIndexRoute =
+  appWorkspaceWsIdCockpitIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => appWorkspaceWsIdCockpitRouteRoute,
+  } as any)
+const appWorkspaceWsIdCockpitConversationIdRoute =
+  appWorkspaceWsIdCockpitConversationIdRouteImport.update({
+    id: '/$conversationId',
+    path: '/$conversationId',
+    getParentRoute: () => appWorkspaceWsIdCockpitRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -113,11 +128,13 @@ export interface FileRoutesByFullPath {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
-  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
+  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
   '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
+  '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
+  '/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -129,11 +146,12 @@ export interface FileRoutesByTo {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
-  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
   '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
+  '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
+  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -147,11 +165,13 @@ export interface FileRoutesById {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
-  '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
+  '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/(app)/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/(app)/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
   '/(app)/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
+  '/(app)/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
+  '/(app)/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -170,6 +190,8 @@ export interface FileRouteTypes {
     | '/workspace/$wsId/library'
     | '/workspace/$wsId/metadata'
     | '/workspace/$wsId/workflows'
+    | '/workspace/$wsId/cockpit/$conversationId'
+    | '/workspace/$wsId/cockpit/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -181,11 +203,12 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
-    | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
     | '/workspace/$wsId/metadata'
     | '/workspace/$wsId/workflows'
+    | '/workspace/$wsId/cockpit/$conversationId'
+    | '/workspace/$wsId/cockpit'
   id:
     | '__root__'
     | '/'
@@ -203,6 +226,8 @@ export interface FileRouteTypes {
     | '/(app)/workspace/$wsId/library'
     | '/(app)/workspace/$wsId/metadata'
     | '/(app)/workspace/$wsId/workflows'
+    | '/(app)/workspace/$wsId/cockpit/$conversationId'
+    | '/(app)/workspace/$wsId/cockpit/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -320,14 +345,45 @@ declare module '@tanstack/react-router' {
       id: '/(app)/workspace/$wsId/cockpit'
       path: '/cockpit'
       fullPath: '/workspace/$wsId/cockpit'
-      preLoaderRoute: typeof appWorkspaceWsIdCockpitRouteImport
+      preLoaderRoute: typeof appWorkspaceWsIdCockpitRouteRouteImport
       parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
+    '/(app)/workspace/$wsId/cockpit/': {
+      id: '/(app)/workspace/$wsId/cockpit/'
+      path: '/'
+      fullPath: '/workspace/$wsId/cockpit/'
+      preLoaderRoute: typeof appWorkspaceWsIdCockpitIndexRouteImport
+      parentRoute: typeof appWorkspaceWsIdCockpitRouteRoute
+    }
+    '/(app)/workspace/$wsId/cockpit/$conversationId': {
+      id: '/(app)/workspace/$wsId/cockpit/$conversationId'
+      path: '/$conversationId'
+      fullPath: '/workspace/$wsId/cockpit/$conversationId'
+      preLoaderRoute: typeof appWorkspaceWsIdCockpitConversationIdRouteImport
+      parentRoute: typeof appWorkspaceWsIdCockpitRouteRoute
     }
   }
 }
 
+interface appWorkspaceWsIdCockpitRouteRouteChildren {
+  appWorkspaceWsIdCockpitConversationIdRoute: typeof appWorkspaceWsIdCockpitConversationIdRoute
+  appWorkspaceWsIdCockpitIndexRoute: typeof appWorkspaceWsIdCockpitIndexRoute
+}
+
+const appWorkspaceWsIdCockpitRouteRouteChildren: appWorkspaceWsIdCockpitRouteRouteChildren =
+  {
+    appWorkspaceWsIdCockpitConversationIdRoute:
+      appWorkspaceWsIdCockpitConversationIdRoute,
+    appWorkspaceWsIdCockpitIndexRoute: appWorkspaceWsIdCockpitIndexRoute,
+  }
+
+const appWorkspaceWsIdCockpitRouteRouteWithChildren =
+  appWorkspaceWsIdCockpitRouteRoute._addFileChildren(
+    appWorkspaceWsIdCockpitRouteRouteChildren,
+  )
+
 interface appWorkspaceWsIdRouteRouteChildren {
-  appWorkspaceWsIdCockpitRoute: typeof appWorkspaceWsIdCockpitRoute
+  appWorkspaceWsIdCockpitRouteRoute: typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   appWorkspaceWsIdGovernanceRoute: typeof appWorkspaceWsIdGovernanceRoute
   appWorkspaceWsIdLibraryRoute: typeof appWorkspaceWsIdLibraryRoute
   appWorkspaceWsIdMetadataRoute: typeof appWorkspaceWsIdMetadataRoute
@@ -335,7 +391,8 @@ interface appWorkspaceWsIdRouteRouteChildren {
 }
 
 const appWorkspaceWsIdRouteRouteChildren: appWorkspaceWsIdRouteRouteChildren = {
-  appWorkspaceWsIdCockpitRoute: appWorkspaceWsIdCockpitRoute,
+  appWorkspaceWsIdCockpitRouteRoute:
+    appWorkspaceWsIdCockpitRouteRouteWithChildren,
   appWorkspaceWsIdGovernanceRoute: appWorkspaceWsIdGovernanceRoute,
   appWorkspaceWsIdLibraryRoute: appWorkspaceWsIdLibraryRoute,
   appWorkspaceWsIdMetadataRoute: appWorkspaceWsIdMetadataRoute,
@@ -374,12 +431,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

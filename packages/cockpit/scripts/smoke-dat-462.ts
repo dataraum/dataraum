@@ -21,7 +21,7 @@ import { eq } from "drizzle-orm";
 import { cockpitDb } from "#/db/cockpit/client";
 import {
 	appendMessages,
-	ensureConversation,
+	createConversation,
 	loadDisplayMessages,
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
@@ -36,7 +36,6 @@ import {
 } from "#/db/cockpit/schema";
 import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
 
-const CONV = `smoke-462-${crypto.randomUUID()}`;
 const ENGINE_SESSION = `smoke-462-${crypto.randomUUID()}`;
 const WF = `wf-${ENGINE_SESSION}`;
 // DAT-506: recordRun keys the run by its workflowId; the runId is the workflowId
@@ -49,9 +48,9 @@ const msg = (id: string, role: "user" | "assistant", text: string): UIMessage =>
 async function main(): Promise<void> {
 	const wsId = await resolveActiveWorkspace();
 
-	// 1. A dedicated conversation (isolated from the active one), then persist a
-	//    turn + a MODEL-ONLY refs row + an assistant turn.
-	await ensureConversation(CONV, wsId);
+	// 1. A dedicated typed conversation (isolated from the active one), then
+	//    persist a turn + a MODEL-ONLY refs row + an assistant turn.
+	const CONV = await createConversation(wsId, "analyse");
 	await appendMessages(CONV, [
 		{ message: msg(`${CONV}-u1`, "user", "what is column amount?") },
 		{ message: msg(`${CONV}-r1`, "user", "refs: column_id=abc"), modelOnly: true },

@@ -96,6 +96,9 @@ describe("isCanvasTool", () => {
 			"teach",
 			"teach_validation",
 			"teach_cycle",
+			// use_vertical (DAT-523) sets the workspace's vertical — a control-plane
+			// write with no renderable surface, so its chip is display-only.
+			"use_vertical",
 			"unknown",
 		]) {
 			expect(isCanvasTool(name)).toBe(false);
@@ -408,6 +411,19 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		expect(
 			toolChipSummary("select", {}, { name: "orders", source_type: "file" }),
 		).toBe("orders (file)");
+	});
+
+	it("use_vertical names the adopted vertical + kind (DAT-523)", () => {
+		expect(
+			toolChipSummary(
+				"use_vertical",
+				{},
+				{ vertical: "finance", kind: "builtin" },
+			),
+		).toBe("finance (builtin)");
+		expect(toolChipSummary("use_vertical", {}, undefined)).toBe(
+			"adopting vertical…",
+		);
 	});
 
 	it("begin_session counts the selection and never leaks run/session ids (DAT-435)", () => {

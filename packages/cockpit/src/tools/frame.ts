@@ -27,6 +27,7 @@
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
+import { setActiveWorkspaceVertical } from "#/db/cockpit/registry";
 import { ConnectSchema } from "../duckdb/connect";
 import {
 	getFrameCyclesInstructions,
@@ -405,6 +406,21 @@ export async function frame(
 		);
 	}
 
+	// Acquire the workspace's vertical (DAT-523) as soon as the concepts are
+	// confirmed — BEFORE the optional validation/cycle/metric families — so the
+	// workspace is on its real vertical even if a later family write fails. Order
+	// matters: writing the vertical LAST would, on a failure, leave a fully-framed
+	// model under the named vertical while the workspace still reads `_adhoc`, so
+	// the next `select` would silently route `verticals: ["_adhoc"]` and discard
+	// it. Writing it here means a partial frame still points the workspace at the
+	// right vertical (which now has concepts), and a re-frame is idempotent (overlay
+	// + this upsert both upsert). Guarded to a real name: `_adhoc` (the no-frame
+	// default) must never overwrite a previously-framed workspace. Authoritative —
+	// throws on failure rather than silently desyncing the workspace.
+	if (vertical !== DEFAULT_VERTICAL) {
+		await setActiveWorkspaceVertical(vertical);
+	}
+
 	// Validations are framed over the just-resolved concepts and written as
 	// `validation` overlay rows through the SAME teach seam (the engine's
 	// _apply_validation upsert-replaces by validation_id, filtered by vertical).
@@ -477,9 +493,8 @@ export const frameTool = toolDefinition({
 		"cycles, and metrics induce over the framed concepts. Metric leaves are CONCEPTS " +
 		"(grounded to columns later, in the semantic phase), not column names. If " +
 		"`list_verticals` shows a builtin that already fits (e.g. finance), DON'T frame " +
-		"— `select` that vertical directly. It writes to the " +
-		"workspace. Run after `connect` and before `add_source`; pass the SAME " +
-		"`vertical_name` to `select`.",
+		"— adopt it with `use_vertical` instead. frame writes the declared model to " +
+		"the workspace; run it after `connect` and before `select`.",
 	inputSchema: z.object({
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		vertical_name: z

@@ -113,3 +113,29 @@ export async function resolveActiveWorkspaceRow(): Promise<ActiveWorkspace> {
 export async function resolveActiveWorkspace(): Promise<string> {
 	return (await resolveActiveWorkspaceRow()).id;
 }
+
+/**
+ * Persist the active workspace's declared vertical (DAT-523). The `frame` stage
+ * calls this once it resolves a real, named vertical, so the Temporal drivers
+ * read it onto the next workflow's `verticals[]` manifest — no hand-seeded
+ * registry row. Upserts the workspace row (seeding it if frame somehow precedes
+ * the first resolve), so the write is AUTHORITATIVE: the workspace IS this
+ * vertical afterwards. Throws on DB failure by design — a framed-but-unpersisted
+ * vertical would silently leave the workspace `_adhoc` and fail add_source later
+ * with a misleading "run frame first". Never called with `_adhoc` (frame guards
+ * the no-vertical default so it can't overwrite a previously-framed workspace).
+ */
+export async function setActiveWorkspaceVertical(
+	vertical: string,
+): Promise<void> {
+	const workspaceId = config.dataraumWorkspaceId;
+	await cockpitDb
+		.insert(workspaces)
+		.values({
+			id: workspaceId,
+			name: `Workspace ${workspaceId}`,
+			engineSchema: engineSchemaFor(workspaceId),
+			vertical,
+		})
+		.onConflictDoUpdate({ target: workspaces.id, set: { vertical } });
+}

@@ -29,6 +29,7 @@ import { teachCycleTool } from "./teach-cycle";
 import { teachMetricTool } from "./teach-metric";
 import { teachValidationTool } from "./teach-validation";
 import { uploadTool } from "./upload";
+import { useVerticalTool } from "./use-vertical";
 import { whyColumnTool } from "./why-column";
 import { whyCycleTool } from "./why-cycle";
 import { whyMetricTool } from "./why-metric";
@@ -40,6 +41,7 @@ export const tools = [
 	listSourcesTool,
 	listTablesTool,
 	listVerticalsTool,
+	useVerticalTool,
 	uploadTool,
 	lookTableTool,
 	lookProfileTool,

@@ -23,6 +23,14 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("#/db/cockpit/conversations", () => ({
+	// narrateCompletion resolves the chat's kind (DAT-532) before narrating; a
+	// non-null row lets the narration proceed (kind drives its toolstack).
+	getConversation: vi.fn(async (id: string) => ({
+		id,
+		workspaceId: "ws-1",
+		kind: "stage",
+		title: null,
+	})),
 	appendMessages: vi.fn(async () => {}),
 	loadModelTranscript: vi.fn(async () => []),
 }));

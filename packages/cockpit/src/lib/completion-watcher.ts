@@ -26,6 +26,7 @@ import type { StreamChunk } from "@tanstack/ai";
 
 import {
 	appendMessages,
+	getConversation,
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
 import {
@@ -198,6 +199,11 @@ async function narrateCompletion(
 	progress: WorkflowProgress,
 	signal: AbortSignal,
 ): Promise<void> {
+	// The chat's kind (DAT-532) selects the narration turn's toolstack + prompt —
+	// same born-loud contract as the send path. If the conversation vanished, there
+	// is nothing to narrate into, so skip (before the append, whose FK would fail).
+	const conversation = await getConversation(conversationId).catch(() => null);
+	if (!conversation) return;
 	// The OTHER stages still running for THIS conversation — the agent must narrate
 	// only this run and not claim these finished (DAT-510). The just-finished run
 	// is already marked terminal upstream, so it's excluded from this set. On a DB
@@ -222,6 +228,7 @@ async function narrateCompletion(
 	// run, it routes back to THIS chat — same contract as the send path (chat.ts).
 	await runWithConversation(conversationId, () =>
 		streamAgentTurnToBus(conversationId, modelMessages, {
+			kind: conversation.kind,
 			workspaceContext,
 			abortController,
 		}),

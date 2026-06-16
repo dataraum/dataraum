@@ -15,11 +15,14 @@ import {
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 
 import { config } from "#/config";
-import { appendMessages } from "#/db/cockpit/conversations";
+import {
+	appendMessages,
+	type ConversationKind,
+} from "#/db/cockpit/conversations";
 import { publish } from "#/lib/chat-bus";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
-import { getOrchestratorInstructions } from "#/prompts";
-import { tools } from "#/tools/registry";
+import { getInstructions } from "#/prompts";
+import { toolsByKind } from "#/tools/registry";
 
 export type ChatMessages = Awaited<
 	ReturnType<typeof chatParamsFromRequest>
@@ -42,13 +45,15 @@ type ChatStream = ReturnType<
 >;
 
 /**
- * Assemble the chat() options for a turn. Pure + side-effect-free (no network,
- * no model call) so the wiring — cached system prompt + the tool registry — is
- * unit-testable without hitting the LLM.
+ * Assemble the chat() options for a turn of the given chat `kind` (DAT-532). Pure
+ * + side-effect-free (no network, no model call) so the wiring — the kind's cached
+ * system prompt + its fenced toolstack — is unit-testable without hitting the LLM.
  *
- * The orchestrator instructions are the CACHED system block: byte-stable across
- * turns, so `cache_control: ephemeral` makes them a prompt-cache hit. It must
- * stay stateless — that's what is cached.
+ * `kind` selects BOTH the toolstack (`toolsByKind[kind]`) and the system prompt
+ * (`getInstructions(kind)`) — the "skill". The instructions are the CACHED system
+ * block: byte-stable per kind, so `cache_control: ephemeral` makes them a
+ * prompt-cache hit for the chat's life (a chat's kind is immutable). It must stay
+ * stateless — that's what is cached.
  *
  * `workspaceContext` (the current sessions — session-awareness for replay / teach
  * / look) is a SECOND system block placed AFTER the orchestrator. The cache
@@ -64,6 +69,7 @@ type ChatStream = ReturnType<
  * to completion.
  */
 export function buildChatOptions(
+	kind: ConversationKind,
 	messages: ChatMessages,
 	abortController?: AbortController,
 	workspaceContext?: string | null,
@@ -73,7 +79,7 @@ export function buildChatOptions(
 		metadata?: { cache_control: { type: "ephemeral" } };
 	}> = [
 		{
-			content: getOrchestratorInstructions(),
+			content: getInstructions(kind),
 			metadata: { cache_control: { type: "ephemeral" } },
 		},
 	];
@@ -94,7 +100,7 @@ export function buildChatOptions(
 		agentLoopStrategy: maxIterations(AGENT_LOOP_MAX_ITERATIONS),
 		systemPrompts,
 		messages,
-		tools: [...tools],
+		tools: [...toolsByKind[kind]],
 		abortController,
 	};
 }
@@ -141,14 +147,17 @@ export async function streamAgentTurnToBus(
 	conversationId: string,
 	modelMessages: ChatMessages,
 	opts: {
+		// The chat's kind (DAT-532) — selects the toolstack + prompt for this turn.
+		// Required: both producers resolve it from the conversation row.
+		kind: ConversationKind;
 		workspaceContext?: string | null;
 		abortController?: AbortController;
 		persist?: boolean;
-	} = {},
+	},
 ): Promise<void> {
-	const { workspaceContext, abortController, persist = true } = opts;
+	const { kind, workspaceContext, abortController, persist = true } = opts;
 	const stream = chat(
-		buildChatOptions(modelMessages, abortController, workspaceContext),
+		buildChatOptions(kind, modelMessages, abortController, workspaceContext),
 	);
 	const source = persist ? teeAndPersist(stream, conversationId) : stream;
 	try {

@@ -17,7 +17,7 @@ You pick *what* to extract in the cockpit — connect to the database, choose th
 │      recipe_hash          ├──▶│  addSourceWorkflow → import phase  │
 └──────────────────────────┘   │                                    │
                                │  → resolve DATARAUM_ERP_URL        │
-                               │  → INSTALL/LOAD mssql extension    │
+                               │  → LOAD mssql (pre-baked in image) │
                                │  → ATTACH READ_ONLY                │
                                │  → CREATE TABLE lake.raw.raw_… AS  │
                                │       <your SELECT>                │
@@ -65,7 +65,7 @@ Three things to know:
 
 - **`TrustServerCertificate=yes` is required for typical installs.** SQL Server 2022+ enables TLS by default with a self-signed cert. Without this flag, the handshake fails as a generic "Failed to connect." Only set it when you've verified the host out-of-band (or for dev/test).
 - **The URL above is one of three accepted shapes.** Equivalent: `Server=host;Database=AdventureWorksLT;UID=dataraum_reader;PWD=…;TrustServerCertificate=yes;` and the ODBC-style `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;…`. They all resolve to the same TDS connection underneath.
-- **The DuckDB community `mssql` extension is auto-installed on first use** (from the community repo). No manual setup; it pins to the engine's DuckDB version. (See the air-gapped note under deployment if your host blocks egress.)
+- **The DuckDB community `mssql` extension is pre-baked into the worker image** (`docker/worker.Dockerfile`), alongside `ducklake`/`httpfs`/`postgres`/`mysql`/`sqlite` and the `libgssapi-krb5-2` runtime lib it needs. The image ships with `DUCKDB_EXTENSION_DIRECTORY` and `DUCKLAKE_SKIP_INSTALL=1` set, so at runtime the worker **loads the baked copy and never reaches the network** — no manual setup, works air-gapped out of the box.
 
 A read-only login is recommended. DataRaum already ATTACHes with `READ_ONLY` (writes are blocked at the extension layer), but a `db_datareader` user makes the no-write guarantee belt-and-braces:
 
@@ -81,7 +81,7 @@ GO
 
 ## Deploying with docker-compose (client test machine)
 
-A typical client trial: DataRaum runs from `packages/infra/docker-compose.yml` on a test box, pointed at the client's existing SQL Server. Three things to get right — credential injection, network reachability, and (sometimes) extension egress.
+A typical client trial: DataRaum runs from `packages/infra/docker-compose.yml` on a test box, pointed at the client's existing SQL Server. Two things to get right — credential injection and network reachability. (The `mssql` extension is already baked into the worker image, so there's nothing to install at runtime, even on an air-gapped box.)
 
 ### 1. Inject the credential into the engine worker
 
@@ -115,15 +115,13 @@ docker compose -f packages/infra/docker-compose.yml exec engine-worker \
   python -c "import socket; socket.create_connection(('sql.client.internal', 1433), 5); print('reachable')"
 ```
 
-### 3. Egress-locked hosts: pre-bake the extension
-
-The community `mssql` extension installs from `extensions.duckdb.org` on first use. On an air-gapped or egress-filtered client box, set `DUCKLAKE_SKIP_INSTALL=true` and `DUCKDB_EXTENSION_DIRECTORY=/path/to/baked` so `LOAD` resolves a pre-baked copy instead of reaching the network (the worker image already bakes the core extensions; `mssql` needs to be added to that bake for fully-offline installs). Otherwise the import phase fails loud at `DuckDB extension 'mssql' failed to install/load`.
-
 After editing the env, recreate the worker so it picks up the new variable:
 
 ```bash
 docker compose -f packages/infra/docker-compose.yml up -d --force-recreate engine-worker
 ```
+
+> **Air-gapped boxes need no extra config.** The worker image bakes `mssql` (and `ducklake`/`httpfs`/`postgres`/`mysql`/`sqlite`) at build time into `/opt/dataraum/duckdb-extensions`, and ships with `DUCKLAKE_SKIP_INSTALL=1` + `DUCKDB_EXTENSION_DIRECTORY` set — so the worker loads extensions from the baked cache and never calls out to `extensions.duckdb.org`. The only place egress matters is the **image build** itself (`INSTALL mssql FROM community` runs during `docker build`); build the image where there's network, then ship the image to the locked-down host.
 
 ## Loud failure on every step
 

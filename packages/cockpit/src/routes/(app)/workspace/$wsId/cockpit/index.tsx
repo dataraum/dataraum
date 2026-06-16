@@ -44,10 +44,14 @@ function CockpitIndex() {
 		});
 
 	// Mint a typed chat, then open it. A user event (chip click), so the mutation
-	// lives in the handler, not an effect (React convention 4).
+	// lives in the handler, not an effect (React convention 4). try/catch so a
+	// create failure surfaces rather than dropping the handler's rejection.
 	const create = async (kind: ConversationKind) => {
-		const conversationId = await startConversation({ data: kind });
-		open(conversationId);
+		try {
+			open(await startConversation({ data: kind }));
+		} catch (err) {
+			console.error("[cockpit] create typed chat failed:", err);
+		}
 	};
 
 	return (

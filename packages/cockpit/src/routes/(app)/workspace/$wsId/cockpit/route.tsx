@@ -86,13 +86,26 @@ function CockpitLayout() {
 		});
 
 	// A type-icon click resumes that kind's latest chat, or creates one if none.
+	// try/catch so a create failure surfaces (not a silent dropped rejection — the
+	// handler is fire-and-forget from the icon's onClick); a notification replaces
+	// the console log when that stack lands.
 	const open = async (kind: ConversationKind) => {
-		const existing = latestByKind[kind];
-		goTo(existing ?? (await createTypedConversation({ data: kind })));
+		try {
+			goTo(
+				latestByKind[kind] ?? (await createTypedConversation({ data: kind })),
+			);
+		} catch (err) {
+			console.error("[cockpit] open typed chat failed:", err);
+		}
 	};
 	// The "+" forces a fresh chat of the active kind (vs resume).
-	const create = async (kind: ConversationKind) =>
-		goTo(await createTypedConversation({ data: kind }));
+	const create = async (kind: ConversationKind) => {
+		try {
+			goTo(await createTypedConversation({ data: kind }));
+		} catch (err) {
+			console.error("[cockpit] create typed chat failed:", err);
+		}
+	};
 
 	return (
 		<Stack gap={0} h={COCKPIT_HEIGHT} style={{ overflow: "hidden" }}>

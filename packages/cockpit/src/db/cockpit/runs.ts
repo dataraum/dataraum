@@ -26,6 +26,7 @@
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
+import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
 import { sessionRuns, sessions } from "./schema";
@@ -92,6 +93,12 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 			// until after start. Keyed by the deterministic workflowId so the row is
 			// addressable now and the (workflowId, runId) UNIQUE upsert is idempotent.
 			runId: input.workflowId,
+			// The originating chat (DAT-528), read from the request-scoped ALS context
+			// the chat handler binds (lib/run-context) — recordRun fires two driver
+			// hops deep where there is no per-request channel. Null when started
+			// outside a chat turn (a future auto-orchestrated run); such a run simply
+			// doesn't narrate (the watcher filters on a matching conversationId).
+			conversationId: currentConversationId(),
 			status: "running",
 		})
 		.onConflictDoNothing({
@@ -195,13 +202,15 @@ export interface ActiveRun {
 }
 
 /**
- * The workspace's non-terminal (`running`) runs, newest first, BOUNDED by
+ * The CONVERSATION's non-terminal (`running`) runs, newest first, BOUNDED by
  * `limit` — the reload reconcile (DAT-462) sweeps these against Temporal so a run
- * that finished while the tab was closed doesn't linger as in-flight. Bounded so
- * a stale backlog can't turn reconcile-on-load into an unbounded fan-out.
+ * that finished while the tab was closed doesn't linger as in-flight. Scoped to
+ * the conversation (DAT-528): a chat reconciles its OWN runs on load, so a run in
+ * another chat isn't swept here (it reconciles when that chat opens). Bounded so a
+ * stale backlog can't turn reconcile-on-load into an unbounded fan-out.
  */
 export async function listNonTerminalRuns(
-	workspaceId: string,
+	conversationId: string,
 	limit: number,
 ): Promise<Array<ActiveRun>> {
 	return cockpitDb
@@ -210,10 +219,9 @@ export async function listNonTerminalRuns(
 			runId: sessionRuns.runId,
 		})
 		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
 		.where(
 			and(
-				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.conversationId, conversationId),
 				eq(sessionRuns.status, "running"),
 			),
 		)
@@ -222,20 +230,21 @@ export async function listNonTerminalRuns(
 }
 
 /**
- * The DISTINCT stages of the workspace's still-`running` runs — the in-flight set
- * the completion narration must NOT claim finished (DAT-510). Cheap and unbounded
- * (≤3 possible stages); newest-first ordering is irrelevant since we dedup.
+ * The DISTINCT stages of the conversation's still-`running` runs — the in-flight
+ * set the completion narration must NOT claim finished (DAT-510). Scoped to the
+ * conversation (DAT-528): "what ELSE is in flight in THIS chat". Cheap and
+ * unbounded (≤3 possible stages); newest-first ordering is irrelevant since we
+ * dedup.
  */
 export async function listRunningStages(
-	workspaceId: string,
+	conversationId: string,
 ): Promise<Array<RunStage>> {
 	const rows = await cockpitDb
 		.selectDistinct({ stage: sessionRuns.stage })
 		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
 		.where(
 			and(
-				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.conversationId, conversationId),
 				eq(sessionRuns.status, "running"),
 			),
 		);
@@ -252,15 +261,19 @@ export interface WatchableRun {
 }
 
 /**
- * The workspace's runs the completion-watcher should track — in-flight AND not
- * yet narrated, newest first, bounded. The watcher captures these while they're
- * `running`, then polls each against Temporal directly (the source of truth for
- * completion), so a run that the progress poll separately marks terminal is still
- * narrated. The `completion_narrated_at IS NULL` filter keeps already-narrated
- * runs out; the per-run claim (`claimRunNarration`) is the actual once-only guard.
+ * The CONVERSATION's runs the completion-watcher should track — in-flight AND not
+ * yet narrated, newest first, bounded. THIS is the run-routing filter (DAT-528):
+ * scoping by `conversationId` is what makes a run narrate into the chat that
+ * STARTED it, not whichever workspace watcher claims it first (the old
+ * order-dependent bug). The watcher captures these while `running`, then polls
+ * each against Temporal directly (the source of truth for completion), so a run
+ * the progress poll separately marks terminal is still narrated. The
+ * `completion_narrated_at IS NULL` filter keeps already-narrated runs out; the
+ * per-run claim (`claimRunNarration`) is the once-only guard across a chat's
+ * tabs.
  */
 export async function listWatchableRuns(
-	workspaceId: string,
+	conversationId: string,
 	limit: number,
 ): Promise<Array<WatchableRun>> {
 	const rows = await cockpitDb
@@ -270,10 +283,9 @@ export async function listWatchableRuns(
 			stage: sessionRuns.stage,
 		})
 		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
 		.where(
 			and(
-				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.conversationId, conversationId),
 				eq(sessionRuns.status, "running"),
 				isNull(sessionRuns.completionNarratedAt),
 			),

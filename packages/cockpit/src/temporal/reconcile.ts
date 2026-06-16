@@ -1,10 +1,11 @@
 // Reload reconcile (DAT-462) — bridge cockpit_db's in-flight runs to Temporal.
 //
 // On cockpit load, a run may have FINISHED while the tab was closed: its
-// `session_runs` row still reads "running" but the workflow is long done. The
-// progress widget's own re-poll terminates runs whose conversation IS reloaded;
-// this sweep catches the rest (orphans whose conversation isn't on screen) so
-// they don't linger as in-flight forever.
+// `session_runs` row still reads "running" but the workflow is long done. This
+// chat's loader fires the sweep for ITS conversation (DAT-528: conversation-scoped
+// — a chat reconciles its own runs); a run in another chat is swept when that chat
+// opens. The progress widget's own re-poll also terminates runs whose conversation
+// is reloaded; this catches ones that finished while the tab was closed.
 //
 // Bounded + best-effort by design: it sweeps at most RECONCILE_LIMIT runs, fans
 // the Temporal queries out in parallel, and swallows every error (a Temporal or
@@ -21,10 +22,12 @@ import { getWorkflowProgress, terminalRunStatus } from "#/temporal/progress";
 /** Cap the per-load sweep so a stale backlog can't fan out unboundedly. */
 export const RECONCILE_LIMIT = 20;
 
-export async function reconcileActiveRuns(workspaceId: string): Promise<void> {
+export async function reconcileActiveRuns(
+	conversationId: string,
+): Promise<void> {
 	let runs: Array<ActiveRun>;
 	try {
-		runs = await listNonTerminalRuns(workspaceId, RECONCILE_LIMIT);
+		runs = await listNonTerminalRuns(conversationId, RECONCILE_LIMIT);
 	} catch (err) {
 		console.warn(`[cockpit] reconcile: listing in-flight runs failed: ${err}`);
 		return;

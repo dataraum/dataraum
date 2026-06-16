@@ -27,6 +27,7 @@ import {
 } from "#/db/cockpit/conversations";
 import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { listNonTerminalRuns, markRunStatus, recordRun } from "#/db/cockpit/runs";
+import { runWithConversation } from "#/lib/run-context";
 import {
 	conversationMessages,
 	conversations,
@@ -100,21 +101,33 @@ async function main(): Promise<void> {
 		"ui_state pin cleared (upsert)",
 	);
 
-	// 6. listNonTerminalRuns: a recorded run shows up; once terminal it drops.
-	await recordRun({
-		workspaceId: wsId,
-		engineSessionId: ENGINE_SESSION,
-		kind: "begin_session",
-		stage: "begin_session",
-		workflowId: WF,
-	});
-	const running = await listNonTerminalRuns(wsId, 50);
+	// 6. Run-routing (DAT-528): a run recorded UNDER a conversation's ALS scope is
+	//    stamped with its conversationId and is reconcile-listed BY that
+	//    conversation; once terminal it drops.
+	await runWithConversation(CONV, () =>
+		recordRun({
+			workspaceId: wsId,
+			engineSessionId: ENGINE_SESSION,
+			kind: "begin_session",
+			stage: "begin_session",
+			workflowId: WF,
+		}),
+	);
+	const running = await listNonTerminalRuns(CONV, 50);
 	assert.ok(
 		running.some((r) => r.runId === RUN),
-		"in-flight run listed for reconcile",
+		"in-flight run listed for THIS conversation's reconcile",
 	);
+	// A different conversation must NOT see it (the run-routing scope).
+	const otherConv = await createConversation(wsId, "analyse");
+	const otherRunning = await listNonTerminalRuns(otherConv, 50);
+	assert.ok(
+		!otherRunning.some((r) => r.runId === RUN),
+		"another conversation does not see this run",
+	);
+	await cockpitDb.delete(conversations).where(eq(conversations.id, otherConv));
 	await markRunStatus(WF, RUN, "completed");
-	const afterTerminal = await listNonTerminalRuns(wsId, 50);
+	const afterTerminal = await listNonTerminalRuns(CONV, 50);
 	assert.ok(
 		!afterTerminal.some((r) => r.runId === RUN),
 		"terminal run no longer listed",

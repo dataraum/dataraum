@@ -10,9 +10,21 @@
 // process.env, which would leak across files in a reused worker and un-skip the
 // gated integration tests.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Born-loud kind-resolution (DAT-532) seams: a controllable getConversation + a
+// spy on the bus publish, so resolveTurnKind's two error paths are deterministic.
+const h = vi.hoisted(() => ({
+	getConversation: vi.fn(),
+	publish: vi.fn(),
+}));
 
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
+vi.mock("#/lib/chat-bus", () => ({
+	publish: h.publish,
+	subscribe: () => () => {},
+	hasSubscribers: () => false,
+}));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 // The driver tools (via the registry) + workspace-context import the cockpit
 // control plane (DAT-461/506); mock the seams so the route import never loads the
@@ -37,10 +49,12 @@ vi.mock("#/db/cockpit/conversations", () => ({
 	appendMessages: async () => {},
 	loadModelTranscript: async () => [],
 	setConversationTitle: async () => {},
+	getConversation: h.getConversation,
 }));
 
 import { buildChatOptions } from "../../lib/agent-turn";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS } from "../../llm";
+import { resolveTurnKind } from "./chat";
 
 /** Narrow the SDK's `SystemPrompt` union (string | {content, metadata?}) to the
  * object form buildChatOptions always emits — the return type is pinned to
@@ -52,9 +66,13 @@ function systemPromptObjects(opts: ReturnType<typeof buildChatOptions>) {
 	);
 }
 
-describe("chat route wiring (DAT-353)", () => {
-	it("sends the orchestrator instructions as a cached system block", () => {
-		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
+const MSG = [{ role: "user" as const, content: "hi" }];
+const toolNames = (opts: ReturnType<typeof buildChatOptions>) =>
+	(opts.tools ?? []).map((t: { name: string }) => t.name);
+
+describe("chat route wiring (DAT-353, DAT-532)", () => {
+	it("sends the kind's instructions as a cached system block", () => {
+		const opts = buildChatOptions("connect", MSG);
 		const prompts = systemPromptObjects(opts);
 		expect(prompts).toHaveLength(1);
 		const sys = prompts[0];
@@ -64,14 +82,10 @@ describe("chat route wiring (DAT-353)", () => {
 
 	it("appends the workspace context as a SECOND, uncached system block (session-awareness)", () => {
 		const ctx = "WORKSPACE CONTEXT — session abc";
-		const opts = buildChatOptions(
-			[{ role: "user", content: "hi" }],
-			undefined,
-			ctx,
-		);
+		const opts = buildChatOptions("connect", MSG, undefined, ctx);
 		const prompts = systemPromptObjects(opts);
 		expect(prompts).toHaveLength(2);
-		// The orchestrator stays the cached FIRST block (the cache breakpoint)…
+		// The instructions stay the cached FIRST block (the cache breakpoint)…
 		expect(prompts[0]?.metadata?.cache_control).toEqual({
 			type: "ephemeral",
 		});
@@ -83,8 +97,7 @@ describe("chat route wiring (DAT-353)", () => {
 
 	it("omits the second block when there is no current session", () => {
 		expect(
-			buildChatOptions([{ role: "user", content: "hi" }], undefined, null)
-				.systemPrompts,
+			buildChatOptions("connect", MSG, undefined, null).systemPrompts,
 		).toHaveLength(1);
 	});
 
@@ -94,7 +107,7 @@ describe("chat route wiring (DAT-353)", () => {
 		// return while the anthropic adapter falls back to
 		// `modelOptions?.max_tokens ?? 1024`, truncating every real turn
 		// mid-tool-call (the severed-drain trigger behind the eternal spinners).
-		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
+		const opts = buildChatOptions("connect", MSG);
 		expect(opts.modelOptions).toEqual({ max_tokens: MAX_OUTPUT_TOKENS });
 		expect(opts).not.toHaveProperty("maxTokens");
 	});
@@ -104,9 +117,7 @@ describe("chat route wiring (DAT-353)", () => {
 		// agentLoopStrategy to maxIterations(5) when omitted, silently stopping a
 		// multi-tool turn at iteration 5 with no error. The strategy is a pure
 		// predicate over the loop state, so pin the exact budget behaviorally.
-		const strategy = buildChatOptions([
-			{ role: "user", content: "hi" },
-		]).agentLoopStrategy;
+		const strategy = buildChatOptions("connect", MSG).agentLoopStrategy;
 		expect(strategy).toBeDefined();
 		const continues = (iterationCount: number) =>
 			strategy?.({ iterationCount, messages: [], finishReason: null });
@@ -116,58 +127,84 @@ describe("chat route wiring (DAT-353)", () => {
 		expect(AGENT_LOOP_MAX_ITERATIONS).toBeGreaterThan(5);
 	});
 
-	it("attaches the full tool registry to the loop", () => {
-		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
-		const names = (opts.tools ?? []).map((t: { name: string }) => t.name);
-		expect(new Set(names)).toEqual(
-			new Set([
-				"list_sources",
-				"list_tables",
-				"list_verticals",
-				"use_vertical",
-				"look_table",
-				"look_profile",
-				"why_column",
-				"why_table",
-				"look_relationships",
-				"why_relationship",
-				"run_sql",
-				"answer",
-				"probe",
-				"connect",
-				"frame",
-				"select",
-				"teach",
-				"teach_validation",
-				"teach_cycle",
-				"teach_metric",
-				"begin_session",
-				"operating_model",
-				"look_validation",
-				"why_validation",
-				"look_cycle",
-				"why_cycle",
-				"look_metric",
-				"why_metric",
-				"replay",
-				"upload",
-			]),
-		);
+	it("fences the loop's toolstack to the chat's kind (DAT-532)", () => {
+		// A Connect chat's options expose ONLY Connect's registry — a Stage-only
+		// tool (begin_session) is absent; Analyse's answer is absent. Per kind.
+		const connect = new Set(toolNames(buildChatOptions("connect", MSG)));
+		expect(connect.has("select")).toBe(true);
+		expect(connect.has("probe")).toBe(true);
+		expect(connect.has("begin_session")).toBe(false);
+		expect(connect.has("answer")).toBe(false);
+		expect(connect.has("run_sql")).toBe(false);
+
+		const stage = new Set(toolNames(buildChatOptions("stage", MSG)));
+		expect(stage.has("begin_session")).toBe(true);
+		expect(stage.has("run_sql")).toBe(true);
+		expect(stage.has("answer")).toBe(false);
+		expect(stage.has("select")).toBe(false);
+
+		const analyse = new Set(toolNames(buildChatOptions("analyse", MSG)));
+		expect(analyse.has("answer")).toBe(true);
+		expect(analyse.has("look_table")).toBe(true);
+		expect(analyse.has("run_sql")).toBe(false);
+		expect(analyse.has("begin_session")).toBe(false);
+	});
+
+	it("gives each kind its own instructions (the toolstack + prompt move together)", () => {
+		const connect = systemPromptObjects(buildChatOptions("connect", MSG))[0]
+			?.content;
+		const analyse = systemPromptObjects(buildChatOptions("analyse", MSG))[0]
+			?.content;
+		expect(connect).not.toBe(analyse);
 	});
 
 	it("passes the conversation messages through unchanged", () => {
-		const messages = [{ role: "user" as const, content: "hi" }];
-		expect(buildChatOptions(messages).messages).toBe(messages);
+		expect(buildChatOptions("connect", MSG).messages).toBe(MSG);
 	});
 
 	it("threads the abort controller into the loop so a cancelled stream stops it", () => {
 		const ac = new AbortController();
-		expect(
-			buildChatOptions([{ role: "user", content: "hi" }], ac).abortController,
-		).toBe(ac);
+		expect(buildChatOptions("connect", MSG, ac).abortController).toBe(ac);
 		// Optional: omitting it is still valid (the param is optional).
-		expect(
-			buildChatOptions([{ role: "user", content: "hi" }]).abortController,
-		).toBeUndefined();
+		expect(buildChatOptions("connect", MSG).abortController).toBeUndefined();
+	});
+});
+
+describe("resolveTurnKind — born-loud kind resolution (DAT-532)", () => {
+	beforeEach(() => {
+		h.getConversation.mockReset();
+		h.publish.mockReset();
+	});
+
+	it("returns the conversation's kind when it resolves", async () => {
+		h.getConversation.mockResolvedValue({
+			id: "c1",
+			workspaceId: "ws-test",
+			kind: "stage",
+			title: null,
+		});
+		expect(await resolveTurnKind("c1")).toBe("stage");
+		// Happy path publishes nothing — the turn proceeds.
+		expect(h.publish).not.toHaveBeenCalled();
+	});
+
+	it("surfaces a RUN_ERROR and returns null for an unknown conversation", async () => {
+		h.getConversation.mockResolvedValue(null);
+		expect(await resolveTurnKind("ghost")).toBeNull();
+		expect(h.publish).toHaveBeenCalledTimes(1);
+		const [conversationId, chunk] = h.publish.mock.calls[0];
+		expect(conversationId).toBe("ghost");
+		expect((chunk as { type: string }).type).toBe("RUN_ERROR");
+	});
+
+	it("surfaces a RUN_ERROR and returns null when the read throws (db down)", async () => {
+		h.getConversation.mockRejectedValue(new Error("db down"));
+		const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(await resolveTurnKind("c1")).toBeNull();
+		expect(h.publish).toHaveBeenCalledTimes(1);
+		expect((h.publish.mock.calls[0][1] as { type: string }).type).toBe(
+			"RUN_ERROR",
+		);
+		warn.mockRestore();
 	});
 });

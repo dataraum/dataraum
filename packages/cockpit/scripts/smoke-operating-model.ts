@@ -149,6 +149,9 @@ async function main(): Promise<void> {
 		// ---- begin_session: compose the workspace ---------------------------------
 		// Vertical is the workspace property (seeded = finance); the driver sources it.
 		const begun = await beginSession({ table_ids: tableIds });
+		// beginSession now returns a born-loud {error} when the workspace has no
+		// typed tables (DAT-534); the smoke ingested above, so it must have started.
+		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
 		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
 		console.log(`✓ begin_session completed: session=${begun.session_id}`);
 

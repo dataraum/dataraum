@@ -140,6 +140,9 @@ async function main(): Promise<void> {
 		// The vertical is the WORKSPACE property (seeded = finance in ingest); the
 		// driver sources it from the registry (DAT-506), so no vertical arg here.
 		const begun = await beginSession({ table_ids: tableIds });
+		// beginSession returns a born-loud {error} when the workspace has no typed
+		// tables (DAT-534); the smoke ingested above, so it must have started.
+		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
 		console.log(
 			`✓ begin_session started: workflow=${begun.workflow_id} session=${begun.session_id}`,
 		);

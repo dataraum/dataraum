@@ -1,41 +1,81 @@
 import { describe, expect, it } from "vitest";
+import type { ConversationKind } from "#/db/cockpit/conversations";
 import { JOURNEY_STAGES } from "#/journey/stages";
-import { getOrchestratorInstructions } from "#/prompts/orchestrator";
+import { getInstructions } from "#/prompts/orchestrator";
 
-describe("orchestrator system prompt", () => {
-	it("is byte-stable across calls (the prompt-cache invariant)", () => {
-		// cache_control:ephemeral only hits if the system block is identical every
-		// turn — so the builder must be a pure constant, no per-call interpolation.
-		expect(getOrchestratorInstructions()).toBe(getOrchestratorInstructions());
-	});
+const KINDS: ReadonlyArray<ConversationKind> = ["connect", "stage", "analyse"];
 
-	it("names every journey stage so the agent can guide the journey", () => {
-		const prompt = getOrchestratorInstructions();
-		for (const stage of JOURNEY_STAGES) {
-			expect(prompt).toContain(stage.id);
+describe("per-type instructions (DAT-532)", () => {
+	it("is byte-stable per kind (the prompt-cache invariant)", () => {
+		for (const kind of KINDS) {
+			expect(getInstructions(kind)).toBe(getInstructions(kind));
 		}
 	});
 
-	// Lockstep with the list_tables/look_table/run_sql projections (DAT-433):
-	// table_name is display-only prose, physical_name is the run_sql address, and
-	// the content-keyed src_<digest> shape is named as never-echo internal.
-	it("teaches the table_name/physical_name split and the src_<digest> rule", () => {
-		const prompt = getOrchestratorInstructions();
-		expect(prompt).toContain("physical_name");
-		expect(prompt).toContain("lake.<layer>.<physical_name>");
-		expect(prompt).toContain('"src_" followed by 40 hex characters');
-		expect(prompt).toContain("name the FILE");
+	it("shares mission/workspace_model/canvas/naming/voice byte-for-byte across kinds", () => {
+		// Only <journey> + <tools> differ; the shared sections must be identical, so
+		// the cached prefix is the same shape per kind and the naming rules can't
+		// drift between types.
+		const section = (s: string, tag: string) =>
+			s.slice(s.indexOf(`<${tag}>`), s.indexOf(`</${tag}>`) + tag.length + 3);
+		for (const tag of [
+			"mission",
+			"workspace_model",
+			"canvas",
+			"naming",
+			"voice",
+		]) {
+			const connect = section(getInstructions("connect"), tag);
+			expect(connect.length).toBeGreaterThan(0);
+			for (const kind of KINDS) {
+				expect(section(getInstructions(kind), tag)).toBe(connect);
+			}
+		}
 	});
 
-	// Lockstep with the one-step select: calling select IS the import start (no
-	// approval gate, no separate trigger) — the prompt must say so, and must no
-	// longer steer the user toward the retired "Add source" button.
-	it("teaches that calling select starts the import — no button hop", () => {
-		const prompt = getOrchestratorInstructions();
-		expect(prompt).toContain("Calling select STARTS the import");
-		expect(prompt).not.toContain("Add source button");
-		expect(prompt).not.toContain('"Add source"');
-		// No approval gate: the prompt must not promise a confirmation step.
-		expect(prompt).not.toContain("wait for confirmation");
+	it("names every journey stage across the kinds; each kind names its own arc", () => {
+		const union = KINDS.map(getInstructions).join("\n");
+		for (const stage of JOURNEY_STAGES) {
+			expect(union).toContain(stage.id);
+		}
+		// Each kind owns its stages and not the others' acting stages.
+		expect(getInstructions("connect")).toContain("add_source");
+		expect(getInstructions("stage")).toContain("operating_model");
+		expect(getInstructions("analyse")).toContain("answer");
+	});
+
+	it("fences the toolstack per kind in the prompt (journey/tools differ)", () => {
+		// Connect drives select/import but not the session; Analyse is answer-only,
+		// no raw run_sql; Stage owns begin_session + run_sql, not answer/select.
+		const connect = getInstructions("connect");
+		const stage = getInstructions("stage");
+		const analyse = getInstructions("analyse");
+
+		expect(connect).toContain("Calling select STARTS the import");
+		expect(connect).not.toContain("begin_session");
+		// One-step select: no retired "Add source" button, no approval/confirm step.
+		expect(connect).not.toContain("Add source button");
+		expect(connect).not.toContain('"Add source"');
+		expect(connect).not.toContain("wait for confirmation");
+
+		expect(stage).toContain("begin_session");
+		expect(stage).toContain("run_sql");
+		expect(stage).not.toContain("answer —");
+
+		expect(analyse).toContain("answer —");
+		// answer is the analytical surface — analyse has no raw run_sql.
+		expect(analyse).toContain("you do NOT have raw run_sql");
+		expect(analyse).not.toContain("select STARTS");
+		expect(analyse).not.toContain("begin_session");
+	});
+
+	it("keeps the naming rules (physical_name / src_ guard) in every kind", () => {
+		for (const kind of KINDS) {
+			const prompt = getInstructions(kind);
+			expect(prompt).toContain("physical_name");
+			expect(prompt).toContain("lake.<layer>.<physical_name>");
+			expect(prompt).toContain('"src_" followed by 40 hex characters');
+			expect(prompt).toContain("name the FILE");
+		}
 	});
 });

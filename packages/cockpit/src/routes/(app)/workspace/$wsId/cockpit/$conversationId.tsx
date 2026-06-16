@@ -1,12 +1,16 @@
-import { Box } from "@mantine/core";
-import { createFileRoute, notFound } from "@tanstack/react-router";
+import { Box, Stack } from "@mantine/core";
+import { createFileRoute, notFound, useLocation } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	getConversation,
 	loadDisplayMessages,
 } from "#/db/cockpit/conversations";
+import { listRunningStages } from "#/db/cockpit/runs";
 import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
+import { hasImportedTables } from "#/db/metadata/workspace-state";
+import { chatReadiness } from "#/lib/chat-readiness";
 import { reconcileActiveRuns } from "#/temporal/reconcile";
+import { ChatReadinessBanner } from "#/ui/cockpit/chat-readiness-banner";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
 import { CockpitView } from "#/ui/cockpit/cockpit-view";
 
@@ -28,10 +32,15 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 		try {
 			const conversation = await getConversation(conversationId);
 			if (!conversation) return { notFound: true as const };
-			const [initialMessages, uiState] = await Promise.all([
-				loadDisplayMessages(conversationId),
-				loadUiState(conversationId),
-			]);
+			// Readiness inputs (DAT-534) alongside hydration — both soft (a read blip
+			// just drops the advisory banner, never the chat).
+			const [initialMessages, uiState, hasTables, runningStages] =
+				await Promise.all([
+					loadDisplayMessages(conversationId),
+					loadUiState(conversationId),
+					hasImportedTables().catch(() => false),
+					listRunningStages(conversationId).catch(() => []),
+				]);
 			void reconcileActiveRuns(conversationId);
 			return {
 				notFound: false as const,
@@ -40,6 +49,10 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 				title: conversation.title,
 				initialMessages,
 				uiState,
+				readiness: chatReadiness(conversation.kind, {
+					hasTables,
+					hasActiveRun: runningStages.length > 0,
+				}),
 			};
 		} catch (err) {
 			console.error(
@@ -53,6 +66,7 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 				title: null,
 				initialMessages: undefined,
 				uiState: null,
+				readiness: null,
 			};
 		}
 	});
@@ -78,32 +92,38 @@ export const Route = createFileRoute(
 	component: CockpitChat,
 });
 
-// The cockpit is a FIXED-HEIGHT app surface (not a document): it fills the
-// AppShell.Main area exactly so its inner panes (the chat stream, the canvas)
-// scroll INTERNALLY — otherwise a growing message list pushes the composer off
-// the viewport. Pinned against the viewport minus the shell chrome via Mantine's
-// AppShell CSS vars (header offset + the md padding top & bottom).
-const COCKPIT_HEIGHT =
-	"calc(100dvh - var(--app-shell-header-offset, 0rem) - (2 * var(--app-shell-padding, 0rem)))";
+// The cockpit is a FIXED-HEIGHT app surface (not a document) so its inner panes
+// (the chat stream, the canvas) scroll INTERNALLY. The height is now pinned by
+// the cockpit LAYOUT (route.tsx, below the switcher strip); this chat just fills
+// the Outlet content box with h:100%.
 
 function CockpitChat() {
-	// `kind` + `title` are hydrated by the loader and ready in loader data; nothing
-	// consumes them yet (S1 stores + routes by kind, it does not fence behaviour).
-	// S2 (DAT-532) threads `kind` into CockpitProvider to select the toolstack —
-	// the seam is here, not a dead prop now.
-	const { conversationId, initialMessages, uiState } = Route.useLoaderData();
+	// `kind` selects the toolstack + prompt SERVER-SIDE (DAT-532, in /api/chat) and
+	// drives the readiness banner (DAT-534); `title` is the history label. The
+	// readiness banner is advisory + non-blocking — shown only when the chat's kind
+	// can't act yet (no data / a run in progress).
+	const { conversationId, initialMessages, uiState, readiness } =
+		Route.useLoaderData();
+	// The landing nav-agent's opening message (DAT-534), carried in router state —
+	// CockpitProvider sends it once on mount into the empty chat. Absent on a normal
+	// open (switcher / reload after the first turn). Loosely shaped, so narrowed here.
+	const seedMessage = (useLocation().state as { seed?: string }).seed;
 	return (
 		<CockpitProvider
 			conversationId={conversationId}
 			initialMessages={initialMessages}
 			initialUiState={uiState}
+			seedMessage={seedMessage}
 			onPersistPin={(pinnedCallId) =>
 				void persistPin({ data: { conversationId, pinnedCallId } })
 			}
 		>
-			<Box h={COCKPIT_HEIGHT} style={{ overflow: "hidden" }}>
-				<CockpitView />
-			</Box>
+			<Stack gap="xs" h="100%" style={{ overflow: "hidden" }}>
+				{readiness && <ChatReadinessBanner readiness={readiness} />}
+				<Box style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+					<CockpitView />
+				</Box>
+			</Stack>
 		</CockpitProvider>
 	);
 }

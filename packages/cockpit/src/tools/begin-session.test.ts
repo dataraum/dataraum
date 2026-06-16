@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
 		h.calls.push("record");
 	}),
 	attachRunId: vi.fn(async () => {}),
+	hasImportedTables: vi.fn(async () => true),
 }));
 
 vi.mock("#/config", () => ({
@@ -45,6 +46,11 @@ vi.mock("#/db/cockpit/registry", () => ({
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: h.recordRun,
 	attachRunId: h.attachRunId,
+}));
+// The DAT-534 born-loud pre-check reads workspace state; mock it (default: data
+// present, so the existing record/start tests are unaffected).
+vi.mock("#/db/metadata/workspace-state", () => ({
+	hasImportedTables: h.hasImportedTables,
 }));
 
 const startMock = vi.fn(async (_name: string, _opts: unknown) => {
@@ -77,6 +83,8 @@ beforeEach(() => {
 	closeMock.mockClear();
 	h.recordRun.mockClear();
 	h.attachRunId.mockClear();
+	h.hasImportedTables.mockClear();
+	h.hasImportedTables.mockResolvedValue(true);
 });
 
 describe("beginSession (DAT-409, DAT-506)", () => {
@@ -88,6 +96,7 @@ describe("beginSession (DAT-409, DAT-506)", () => {
 	it("hands the workflow a FLAT input — workspace_id + table set + verticals — and returns the cockpit session", async () => {
 		h.vertical = "finance";
 		const result = await beginSession({ table_ids: ["t1", "t2"] });
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		const args = opts.args as [
@@ -112,6 +121,7 @@ describe("beginSession (DAT-409, DAT-506)", () => {
 			table_ids: ["t1"],
 			session_id: "sess-reuse",
 		});
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 		expect(result.session_id).toBe("sess-reuse");
 		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
 		expect(opts.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
@@ -126,8 +136,21 @@ describe("beginSession (DAT-409, DAT-506)", () => {
 		expect(h.recordRun).not.toHaveBeenCalled();
 	});
 
+	it("refuses with { error } before start when the workspace has no typed tables (DAT-534)", async () => {
+		// The engine errors late on an empty table set; the cockpit pre-flight turns
+		// that into an agent-actionable sentence — and must NOT record or start a run.
+		h.hasImportedTables.mockResolvedValue(false);
+		const result = await beginSession({ table_ids: ["t1"] });
+		expect(result).toMatchObject({
+			error: expect.stringContaining("import data in a Connect chat"),
+		});
+		expect(h.recordRun).not.toHaveBeenCalled();
+		expect(startMock).not.toHaveBeenCalled();
+	});
+
 	it("records the cockpit session + run before start, then attaches the runId", async () => {
 		const result = await beginSession({ table_ids: ["t1", "t2"] });
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 		expect(h.recordRun).toHaveBeenCalledTimes(1);
 		expect(h.recordedRun).toEqual({
 			workspaceId: WS,

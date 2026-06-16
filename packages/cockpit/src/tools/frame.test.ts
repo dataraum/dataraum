@@ -49,6 +49,15 @@ vi.mock("#/db/metadata/client", () => ({
 	metadataDb: { insert: vi.fn(() => ({ values: valuesMock })) },
 }));
 
+// The workspace-vertical write (DAT-523) — frame persists the framed name to
+// cockpit_db so the manifest's verticals[] resolves it. Mocked at the registry
+// boundary (no cockpit_db); we assert it fires with the framed name, and NOT for
+// the `_adhoc` no-frame default.
+const setVerticalMock = vi.fn();
+vi.mock("#/db/cockpit/registry", () => ({
+	setActiveWorkspaceVertical: (...args: unknown[]) => setVerticalMock(...args),
+}));
+
 import { getFrameMetricsInstructions } from "../prompts";
 import {
 	frame,
@@ -137,6 +146,7 @@ beforeEach(() => {
 	insertedRows.length = 0;
 	chatMock.mockReset();
 	valuesMock.mockClear();
+	setVerticalMock.mockClear();
 });
 
 describe("frame (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
@@ -228,6 +238,10 @@ describe("frame (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
 		expect(result.metrics).toHaveLength(1);
 		expect(result.metrics[0].graph_id).toBe("gross_margin");
 		expect(result.metrics[0].overlay_id).toEqual(expect.any(String));
+
+		// The unnamed default frames under `_adhoc` — the workspace vertical is NOT
+		// written back (DAT-523: `_adhoc` must never overwrite a framed workspace).
+		expect(setVerticalMock).not.toHaveBeenCalled();
 	});
 
 	it("declares an edited concept + validation + cycle + metric model verbatim, skipping all induction", async () => {
@@ -262,6 +276,10 @@ describe("frame (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
 		expect(result.validations[0].validation_id).toBe("non_negative_amounts");
 		expect(result.cycles[0].name).toBe("order_to_cash");
 		expect(result.metrics[0].graph_id).toBe("gross_margin");
+
+		// The framed vertical is acquired by the workspace (DAT-523): the name is
+		// persisted to cockpit_db so the next workflow's verticals[] resolves it.
+		expect(setVerticalMock).toHaveBeenCalledWith("sales");
 	});
 
 	it("declares edited concepts but INDUCES validations + cycles + metrics over them (mixed path)", async () => {
@@ -327,6 +345,8 @@ describe("frame (DAT-382, DAT-469, DAT-470, DAT-471)", () => {
 			metrics: [],
 		});
 		expect(result.vertical).toBe("_adhoc");
+		// Explicit `_adhoc` is still the no-frame default — no workspace write.
+		expect(setVerticalMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects an induction that returns no concepts (before inducing validations)", async () => {

@@ -27,6 +27,7 @@
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
+import { setActiveWorkspaceVertical } from "#/db/cockpit/registry";
 import { ConnectSchema } from "../duckdb/connect";
 import {
 	getFrameCyclesInstructions,
@@ -445,6 +446,19 @@ export async function frame(
 		signal,
 	});
 
+	// Acquire the workspace's vertical (DAT-523): persist the framed name to
+	// cockpit_db so the Temporal drivers read it onto the next workflow's
+	// `verticals[]` manifest — no hand-seeded registry row. Only a real, named
+	// vertical is written back; `_adhoc` stays the explicit no-frame default and
+	// must never overwrite a previously-framed workspace. Authoritative (throws on
+	// failure): the overlays above already landed under this vertical, so a silent
+	// miss here would desync the workspace and fail add_source later with a
+	// misleading "run frame first". A retry of frame is idempotent (overlay upserts
+	// by name + this upsert), so failing loud is recoverable.
+	if (vertical !== DEFAULT_VERTICAL) {
+		await setActiveWorkspaceVertical(vertical);
+	}
+
 	return {
 		vertical,
 		concepts: concepts.written,
@@ -477,9 +491,8 @@ export const frameTool = toolDefinition({
 		"cycles, and metrics induce over the framed concepts. Metric leaves are CONCEPTS " +
 		"(grounded to columns later, in the semantic phase), not column names. If " +
 		"`list_verticals` shows a builtin that already fits (e.g. finance), DON'T frame " +
-		"— `select` that vertical directly. It writes to the " +
-		"workspace. Run after `connect` and before `add_source`; pass the SAME " +
-		"`vertical_name` to `select`.",
+		"— adopt it with `use_vertical`. It writes to the " +
+		"workspace. Run after `connect` and before `select`.",
 	inputSchema: z.object({
 		schema: ConnectSchema.describe("The `connect` tool result for the source."),
 		vertical_name: z

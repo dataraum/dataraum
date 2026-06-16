@@ -18,6 +18,12 @@ const h = vi.hoisted(() => ({
 	workspaceRows: [] as Array<{ id: string; vertical: string }>,
 	// Every onConflictDoNothing insert, tagged by table.
 	inserts: [] as Array<{ table: string; row: Record<string, unknown> }>,
+	// Every onConflictDoUpdate upsert, tagged by table (DAT-523 vertical write).
+	upserts: [] as Array<{
+		table: string;
+		row: Record<string, unknown>;
+		set: Record<string, unknown>;
+	}>,
 }));
 
 vi.mock("#/config", () => ({
@@ -41,6 +47,9 @@ vi.mock("#/db/cockpit/client", () => ({
 				onConflictDoNothing: async () => {
 					h.inserts.push({ table: table._t, row });
 				},
+				onConflictDoUpdate: async (cfg: { set: Record<string, unknown> }) => {
+					h.upserts.push({ table: table._t, row, set: cfg.set });
+				},
 			}),
 		}),
 		select: () => ({
@@ -54,12 +63,14 @@ import {
 	engineTaskQueueFor,
 	resolveActiveWorkspace,
 	resolveActiveWorkspaceRow,
+	setActiveWorkspaceVertical,
 } from "./registry";
 
 beforeEach(() => {
 	h.config = { dataraumWorkspaceId: WS };
 	h.workspaceRows = [];
 	h.inserts = [];
+	h.upserts = [];
 	limitMock.mockClear();
 });
 
@@ -115,5 +126,20 @@ describe("resolveActiveWorkspaceRow (DAT-505)", () => {
 			taskQueue: `engine-${WS}`,
 			vertical: "_adhoc",
 		});
+	});
+});
+
+describe("setActiveWorkspaceVertical (DAT-523)", () => {
+	it("upserts the active workspace's framed vertical (seed-or-update)", async () => {
+		await setActiveWorkspaceVertical("finance");
+		const up = h.upserts.find((u) => u.table === "workspaces");
+		// Upsert seeds the row if missing, with the real vertical not _adhoc...
+		expect(up?.row.id).toBe(WS);
+		expect(up?.row.vertical).toBe("finance");
+		expect(up?.row.engineSchema).toBe(`ws_${WS.replaceAll("-", "_")}`);
+		// ...and overwrites the vertical on conflict (the framed-twice / re-frame path).
+		expect(up?.set).toEqual({ vertical: "finance" });
+		// Authoritative write only — no DoNothing seed path involved.
+		expect(h.inserts).toEqual([]);
 	});
 });

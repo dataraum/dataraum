@@ -61,7 +61,10 @@ function emptyTurnResponse(): Response {
 
 /** Surface a server-side precondition failure as a RUN_ERROR over the bus, so it
  * renders inline in the chat (the same path chat()'s own errors take). The
- * processor tolerates a lone RUN_ERROR (no preceding RUN_STARTED). */
+ * StreamProcessor tolerates a lone RUN_ERROR with no preceding RUN_STARTED — it
+ * synthesizes the assistant turn and fires onError → the rail's error Alert.
+ * `RunErrorEvent` isn't re-exported from `@tanstack/ai`'s index, so cast (same as
+ * the CUSTOM publish in completion-watcher). */
 function publishRunError(conversationId: string, message: string): void {
 	publish(conversationId, {
 		type: "RUN_ERROR",
@@ -87,6 +90,42 @@ function newUserTurn(messages: ChatMessages): UIMessage | null {
 function extractRefs(forwardedProps: Record<string, unknown>): string | null {
 	const refs = forwardedProps.refs;
 	return typeof refs === "string" && refs.length > 0 ? refs : null;
+}
+
+/**
+ * Resolve the chat's kind server-side (DAT-532) — BORN-LOUD. The toolstack +
+ * system prompt are selected by kind, so a turn cannot run without it. A
+ * conversation is always created with a NOT NULL kind, so a miss here is a real
+ * error (a stale/unknown threadId, or cockpit_db down) — it publishes a RUN_ERROR
+ * over the bus (rendered inline in the chat) and returns `null` so the caller
+ * aborts the turn, NEVER a silent generic-tool turn. Resolved from the
+ * conversation ROW, never the client/forwardedProps (which must not be able to
+ * pick another chat's toolstack). Exported for the born-loud unit test.
+ */
+export async function resolveTurnKind(
+	threadId: string,
+): Promise<ConversationKind | null> {
+	try {
+		const conversation = await getConversation(threadId);
+		if (!conversation) {
+			publishRunError(
+				threadId,
+				"This chat couldn't be found — reload and start a new one.",
+			);
+			return null;
+		}
+		return conversation.kind;
+	} catch (err) {
+		console.error(
+			"[chat] kind resolution failed — refusing an untyped turn:",
+			err,
+		);
+		publishRunError(
+			threadId,
+			"The workspace is temporarily unavailable. Try again in a moment.",
+		);
+		return null;
+	}
 }
 
 /** A short history label from the user's first message (DAT-528) — the text
@@ -131,36 +170,10 @@ export const Route = createFileRoute("/api/chat")({
 				const { messages, threadId, forwardedProps } =
 					await chatParamsFromRequest(request);
 
-				// Resolve the chat's kind server-side (DAT-532) — BORN-LOUD. The
-				// toolstack + system prompt are selected by kind, so a turn cannot run
-				// without it. A conversation is always created with a NOT NULL kind, so a
-				// miss here is a real error (a stale/unknown threadId, or cockpit_db
-				// down) — surfaced as a RUN_ERROR in the chat, NEVER a silent
-				// generic-tool turn. Resolved from the conversation ROW, never the
-				// client/forwardedProps (which must not be able to pick another chat's
-				// toolstack).
-				let kind: ConversationKind;
-				try {
-					const conversation = await getConversation(threadId);
-					if (!conversation) {
-						publishRunError(
-							threadId,
-							"This chat couldn't be found — reload and start a new one.",
-						);
-						return emptyTurnResponse();
-					}
-					kind = conversation.kind;
-				} catch (err) {
-					console.error(
-						"[chat] kind resolution failed — refusing an untyped turn:",
-						err,
-					);
-					publishRunError(
-						threadId,
-						"The workspace is temporarily unavailable. Try again in a moment.",
-					);
-					return emptyTurnResponse();
-				}
+				// Born-loud kind resolution (DAT-532): null → a RUN_ERROR was already
+				// published over the bus; abort the turn rather than run it untyped.
+				const kind = await resolveTurnKind(threadId);
+				if (kind === null) return emptyTurnResponse();
 
 				// Reconstruct the model's view from cockpit_db (server-owned): persist
 				// the new user turn (+ any model-only refs), reload the full transcript,

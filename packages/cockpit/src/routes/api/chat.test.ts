@@ -10,9 +10,21 @@
 // process.env, which would leak across files in a reused worker and un-skip the
 // gated integration tests.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Born-loud kind-resolution (DAT-532) seams: a controllable getConversation + a
+// spy on the bus publish, so resolveTurnKind's two error paths are deterministic.
+const h = vi.hoisted(() => ({
+	getConversation: vi.fn(),
+	publish: vi.fn(),
+}));
 
 vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
+vi.mock("#/lib/chat-bus", () => ({
+	publish: h.publish,
+	subscribe: () => () => {},
+	hasSubscribers: () => false,
+}));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 // The driver tools (via the registry) + workspace-context import the cockpit
 // control plane (DAT-461/506); mock the seams so the route import never loads the
@@ -37,10 +49,12 @@ vi.mock("#/db/cockpit/conversations", () => ({
 	appendMessages: async () => {},
 	loadModelTranscript: async () => [],
 	setConversationTitle: async () => {},
+	getConversation: h.getConversation,
 }));
 
 import { buildChatOptions } from "../../lib/agent-turn";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS } from "../../llm";
+import { resolveTurnKind } from "./chat";
 
 /** Narrow the SDK's `SystemPrompt` union (string | {content, metadata?}) to the
  * object form buildChatOptions always emits — the return type is pinned to
@@ -153,5 +167,44 @@ describe("chat route wiring (DAT-353, DAT-532)", () => {
 		expect(buildChatOptions("connect", MSG, ac).abortController).toBe(ac);
 		// Optional: omitting it is still valid (the param is optional).
 		expect(buildChatOptions("connect", MSG).abortController).toBeUndefined();
+	});
+});
+
+describe("resolveTurnKind — born-loud kind resolution (DAT-532)", () => {
+	beforeEach(() => {
+		h.getConversation.mockReset();
+		h.publish.mockReset();
+	});
+
+	it("returns the conversation's kind when it resolves", async () => {
+		h.getConversation.mockResolvedValue({
+			id: "c1",
+			workspaceId: "ws-test",
+			kind: "stage",
+			title: null,
+		});
+		expect(await resolveTurnKind("c1")).toBe("stage");
+		// Happy path publishes nothing — the turn proceeds.
+		expect(h.publish).not.toHaveBeenCalled();
+	});
+
+	it("surfaces a RUN_ERROR and returns null for an unknown conversation", async () => {
+		h.getConversation.mockResolvedValue(null);
+		expect(await resolveTurnKind("ghost")).toBeNull();
+		expect(h.publish).toHaveBeenCalledTimes(1);
+		const [conversationId, chunk] = h.publish.mock.calls[0];
+		expect(conversationId).toBe("ghost");
+		expect((chunk as { type: string }).type).toBe("RUN_ERROR");
+	});
+
+	it("surfaces a RUN_ERROR and returns null when the read throws (db down)", async () => {
+		h.getConversation.mockRejectedValue(new Error("db down"));
+		const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(await resolveTurnKind("c1")).toBeNull();
+		expect(h.publish).toHaveBeenCalledTimes(1);
+		expect((h.publish.mock.calls[0][1] as { type: string }).type).toBe(
+			"RUN_ERROR",
+		);
+		warn.mockRestore();
 	});
 });

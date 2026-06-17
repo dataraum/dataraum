@@ -75,6 +75,15 @@ const ConfigSchema = z.object({
 	// Temporal Web UI, embedded by the /workflows section. Defaults to the
 	// docker-compose dev address (CORS already allows :3000).
 	temporalUiUrl: z.string().min(1).default("http://localhost:8080"),
+	// The task queue the co-located ORCHESTRATION worker polls (DAT-529). This is
+	// the cockpit's OWN queue for the TS `JourneyWorkflow` — distinct from the
+	// engine's per-workspace `engine-<id>` analysis queues (which the journey's
+	// activities target as a client). One fixed queue: the worker is a singleton
+	// and the journey is keyed per-workspace by workflow-id, not by queue.
+	cockpitOrchestrationTaskQueue: z
+		.string()
+		.min(1)
+		.default("cockpit-orchestration"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -104,6 +113,7 @@ function loadConfig(): Config {
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
 		temporalUiUrl: process.env.TEMPORAL_UI_URL,
+		cockpitOrchestrationTaskQueue: process.env.COCKPIT_ORCHESTRATION_TASK_QUEUE,
 	});
 
 	if (!parsed.success) {

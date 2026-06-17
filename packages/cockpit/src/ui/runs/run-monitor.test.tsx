@@ -65,6 +65,20 @@ describe("RunMonitor (DAT-550)", () => {
 		);
 	});
 
+	it("shows 'Needs input' from the note even if status was re-marked completed (race-proof, DAT-551)", () => {
+		// The completion-watcher can re-mark a run `completed`; awaitingNote is the
+		// durable signal, so the surface drives off it, not the status badge alone.
+		renderMonitor({
+			runs: [
+				run({
+					status: "completed",
+					awaitingNote: "needs a relationship teach",
+				}),
+			],
+		});
+		expect(screen.getByTestId("run-status").textContent).toBe("Needs input");
+	});
+
 	it("shows an empty state with no runs", () => {
 		renderMonitor({ runs: [] });
 		expect(screen.getByTestId("run-monitor-empty")).toBeTruthy();

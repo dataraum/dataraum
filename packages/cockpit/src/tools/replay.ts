@@ -96,13 +96,13 @@ export interface ReplayResult {
 }
 
 /**
- * Start an `addSourceWorkflow` execution to re-apply pending teaches as a full
- * re-run of a session's sources. Returns immediately with the workflow + run id
- * (and the new session id); the caller polls Temporal for progress.
+ * Signal the journey to run a fresh `addSourceWorkflow` that re-applies pending
+ * teaches as a full re-run of a session's sources (DAT-551). Returns immediately
+ * with the workflow + session id; the journey records the run + starts the child,
+ * and progress resolves the latest execution by workflow id (run_id mirrors it).
  *
  * The new run is keyed by the fresh session (`addsource-<workspace_id>-<session_id>`,
- * DAT-422). `ALLOW_DUPLICATE` is kept for parity with triggerAddSource; each replay
- * is its own session, so it is a distinct workflow id (no accidental reuse).
+ * DAT-422) — each replay is its own session, so it is a distinct workflow id.
  */
 export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	if (!config.temporalHost || !config.temporalNamespace) {

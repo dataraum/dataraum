@@ -1,27 +1,30 @@
-// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436)
-// — starts the engine's addSourceWorkflow for the source set `select` just
-// persisted, and records the cockpit-side run in cockpit_db (DAT-506).
+// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436; routed
+// through the JourneyWorkflow in DAT-551 slice 1) — SIGNALS the per-workspace
+// journey to run the engine's addSourceWorkflow for the source set `select` just
+// persisted.
 //
 // Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): calling
 // the `select` tool registers the source(s) AND starts the import in one step —
 // there is no separate "Add source" button or `/api/add-source` route, and no
 // approval hop.
 //
-// Sessions live in cockpit_db (DAT-506) — the engine no longer has an
-// `investigation_sessions` table or a write grant for one, and `run_tables`
-// (anchored by `run_id`) replaces `session_tables`. So this trigger does NOT
-// seed any engine row: it records the run in cockpit_db (`recordRun`, authoritative
-// — an unrecorded run is orphaned, so it THROWS) then starts the workflow.
+// DAT-551: this trigger no longer starts the workflow directly. It SIGNALS the
+// per-workspace JourneyWorkflow (`runAddSource`); the journey records the run in
+// cockpit_db (authoritative, before start — an unrecorded run is orphaned) and
+// starts `addSourceWorkflow` as a cross-language CHILD on the workspace's
+// `engine-<id>` queue. So the journey is the single owner of all stage execution
+// (begin_session/operating_model already route this way). The journey advances
+// tab-independently; the tool captures the current conversationId and threads it
+// through so the run still narrates into THIS chat (the journey has no request
+// ALS — DAT-528).
 //
-// The start is NON-blocking (`workflow.start`, not `.execute`): it returns the
-// workflow + run id immediately so the cockpit polls progress via the
-// `get_progress` query (see `progress.ts`). A run ingests a SET of objects from
-// 1–N sources (DAT-422), so the workflow id is keyed by the cockpit session id
-// (addsource-<workspace_id>-<cockpitSessionId>), mirroring begin_session, and reused
-// under ALLOW_DUPLICATE so replays group under one id — callers MUST target the
-// precise `run_id` when querying. The `verticals` ride on the FLAT workflow INPUT,
-// sourced from the workspace registry (DAT-506), NOT picked per add_source — there
-// is no identity envelope and no session/source id on the wire.
+// The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
+// progress by workflow id — the latest execution; the real Temporal run id is owned
+// by the journey). A run ingests a SET of objects from 1–N sources (DAT-422), so the
+// workflow id is keyed by the cockpit session id (addsource-<workspace_id>-
+// <cockpitSessionId>), mirroring begin_session. The `verticals` ride on the FLAT
+// workflow INPUT, sourced from the workspace registry (DAT-506), NOT picked per
+// add_source — no identity envelope, no session/source id on the wire.
 
 import { randomUUID } from "node:crypto";
 

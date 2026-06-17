@@ -13,7 +13,7 @@ export function stageLabel(stage: string): string {
 }
 
 /** Mantine color for a run status badge. */
-export type RunStatusTone = "blue" | "green" | "red" | "gray";
+export type RunStatusTone = "blue" | "green" | "red" | "gray" | "yellow";
 export function statusTone(status: string): RunStatusTone {
 	switch (status) {
 		case "running":
@@ -22,9 +22,18 @@ export function statusTone(status: string): RunStatusTone {
 			return "green";
 		case "failed":
 			return "red";
+		// The grounding-teach loop parked it for a human judgement teach (DAT-551).
+		case "awaiting_input":
+			return "yellow";
 		default:
 			return "gray";
 	}
+}
+
+/** Human label for a run status — most are shown verbatim; awaiting_input reads as
+ * a call to action ("Needs input") rather than the raw enum. */
+export function statusLabel(status: string): string {
+	return status === "awaiting_input" ? "Needs input" : status;
 }
 
 /**

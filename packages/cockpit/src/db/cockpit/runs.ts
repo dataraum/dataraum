@@ -375,6 +375,9 @@ export interface WorkspaceRun {
 	status: string;
 	startedAt: Date;
 	kind: SessionKind;
+	/** When status is `awaiting_input`, why the grounding loop parked it (DAT-551) —
+	 * the monitor shows it as the "needs you" detail. Null otherwise. */
+	awaitingNote: string | null;
 }
 
 /**
@@ -396,6 +399,7 @@ export async function listRunsByWorkspace(
 			status: sessionRuns.status,
 			startedAt: sessionRuns.startedAt,
 			kind: sessions.kind,
+			awaitingNote: sessionRuns.awaitingNote,
 		})
 		.from(sessionRuns)
 		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))

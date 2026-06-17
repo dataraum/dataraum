@@ -6,7 +6,12 @@
 
 import { Anchor, Badge, Group, Stack, Table, Text, Title } from "@mantine/core";
 import type { WorkspaceRun } from "#/db/cockpit/runs";
-import { formatStartedAt, stageLabel, statusTone } from "#/ui/runs/run-row";
+import {
+	formatStartedAt,
+	stageLabel,
+	statusLabel,
+	statusTone,
+} from "#/ui/runs/run-row";
 
 export interface RunMonitorProps {
 	runs: ReadonlyArray<WorkspaceRun>;
@@ -61,8 +66,18 @@ export function RunMonitor({ runs, limit, temporalUiUrl }: RunMonitorProps) {
 											color={statusTone(run.status)}
 											data-testid="run-status"
 										>
-											{run.status}
+											{statusLabel(run.status)}
 										</Badge>
+										{run.awaitingNote && (
+											<Text
+												size="xs"
+												c="dimmed"
+												mt={4}
+												data-testid="run-awaiting-note"
+											>
+												{run.awaitingNote}
+											</Text>
+										)}
 									</Table.Td>
 									<Table.Td>
 										<Text size="sm" c="dimmed">

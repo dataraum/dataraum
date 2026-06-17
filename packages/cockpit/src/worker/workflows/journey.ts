@@ -321,8 +321,15 @@ async function runGroundingLoop(
 
 		// action === "replay": re-run add_source for the SAME session to apply the
 		// teaches + re-measure. A failed replay stops the loop (the run is marked).
+		// conversationId=null: these are INTERNAL autonomous re-runs — they must NOT
+		// each fire the completion-watcher's "import finished" narration (the user
+		// already heard the import landed; the loop's outcome surfaces via the run
+		// monitor / awaiting_input, not N chat messages).
 		attemptsRemaining -= 1;
-		const { ok, result } = await runAddSourceStage(workspaceId, req);
+		const { ok, result } = await runAddSourceStage(workspaceId, {
+			...req,
+			conversationId: null,
+		});
 		replays += 1;
 		if (!ok) return replays;
 		tableIds = typedTableIds(result);

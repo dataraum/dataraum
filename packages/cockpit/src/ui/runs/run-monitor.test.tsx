@@ -14,6 +14,7 @@ function run(over: Partial<WorkspaceRun> = {}): WorkspaceRun {
 		status: "completed",
 		startedAt: new Date("2026-06-17T06:58:27.925Z"),
 		kind: "onboarding",
+		awaitingNote: null,
 		...over,
 	};
 }
@@ -47,6 +48,21 @@ describe("RunMonitor (DAT-550)", () => {
 			.getAllByTestId("run-status")
 			.map((b) => b.textContent);
 		expect(statuses).toEqual(["completed", "running"]);
+	});
+
+	it("shows an awaiting_input run as 'Needs input' with its note (DAT-551)", () => {
+		renderMonitor({
+			runs: [
+				run({
+					status: "awaiting_input",
+					awaitingNote: "payments.method needs a concept mapping",
+				}),
+			],
+		});
+		expect(screen.getByTestId("run-status").textContent).toBe("Needs input");
+		expect(screen.getByTestId("run-awaiting-note").textContent).toContain(
+			"payments.method needs a concept",
+		);
 	});
 
 	it("shows an empty state with no runs", () => {

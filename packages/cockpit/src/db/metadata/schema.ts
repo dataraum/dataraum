@@ -129,6 +129,24 @@ export const currentDetectedBusinessCycles = metadataSchema
 		sql`SELECT cycle_id, run_id, cycle_name, cycle_type, canonical_type, is_known_type, description, business_value, confidence, tables_involved, stages, entity_flows, status_table, status_column, completion_value, total_records, completed_cycles, completion_rate, evidence, detected_at FROM ws_00000000_0000_0000_0000_000000000001.detected_business_cycles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentDimensionHierarchies = metadataSchema
+	.view("current_dimension_hierarchies", {
+		hierarchyId: varchar("hierarchy_id"),
+		runId: varchar("run_id"),
+		tableId: varchar("table_id"),
+		kind: varchar(),
+		members: json(),
+		canonicalLabel: varchar("canonical_label"),
+		signature: varchar(),
+		score: doublePrecision(),
+		detectionSource: varchar("detection_source"),
+		needsConfirmation: boolean("needs_confirmation"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	})
+	.as(
+		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, score, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentEnrichedViews = metadataSchema
 	.view("current_enriched_views", {
 		viewId: varchar("view_id"),

@@ -4,6 +4,34 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-17: DAT-537 — new `dimension_hierarchies` begin_session phase (g3 FD / drill-down / alias)
+
+A new **deterministic** value-layer phase, `dimension_hierarchies`, runs in the
+begin_session chain between `slicing` and `aggregation_lineage`
+(`slicing → dimension_hierarchies → aggregation_lineage → correlations`). It
+computes the g3 approximate-functional-dependency measure
+(`g3(A→B) = 1 − COUNT(DISTINCT A)/COUNT(DISTINCT(A,B))`) over each fact's
+grain-verified enriched view across the catalog's grain-safe `SliceDefinition`
+dimensions (DAT-536), and writes drill-down hierarchies (`zip → city → state`) +
+1:1 alias groups. **No LLM, no detectors** — it declares none in `pipeline.yaml`,
+so it does not feed `session_detect` and changes no entropy/readiness measurement.
+
+New run-versioned table **`dimension_hierarchies`** (form-a: `(signature, run_id)`
+UNIQUE + upsert), sealed under the begin_session `(catalog,"catalog")` head; read
+view `current_dimension_hierarchies` added (on `read_views._CATALOG_GRAIN`).
+Net-new **`hierarchy` teach** type (`config_overlay` type='hierarchy', actions
+add/reject/alias) — deterministic, so NO keeper-lift-up / witness pool (unlike
+relationship teaches). Exposed on `GraphExecutionContext.dimension_hierarchies`;
+the GraphAgent prompt does NOT yet consume it (that is **DAT-538**).
+
+### dataraum-eval
+- **Affects engine phases/tables**: new `dimension_hierarchies` phase + activity; new `dimension_hierarchies` table + `current_dimension_hierarchies` read view. Engine `schema.sql` + `schema_read.sql` regenerated; cockpit drizzle mirror regenerated. A begin_session run now persists hierarchy/alias rows for any fact whose grain-safe catalog has ≥2 related dimensions.
+- **No measurement/threshold change**: the phase declares no detectors and touches no entropy/readiness/witness path, so existing calibration verdicts are unchanged. New surface to calibrate is **hierarchy/alias correctness** (geo `zip→city→state`, product→category chains; bidirectional-g3 aliases; the guards: constant dropped, ≤2-distinct/near-key rejected as determinant, low-support flagged `needs_confirmation`).
+- **New teach surface**: `teach({type:"hierarchy", payload:{action, table_id, members}})` (cockpit `AGENT_TEACH_TYPES`).
+
+### dataraum-testdata
+- A fixture carrying a clean FD chain (`zip→city→state` or `product→subcategory→category`) plus a 1:1 alias pair (e.g. `state` ↔ `state_name`) and a violated/near-FD would exercise the discovery + guards directly.
+
 ## 2026-06-17: DAT-536 — slice materialization removed; witness substrate re-pointed inline; dimensional_entropy no longer runs
 
 The slice sprawl is gone (ADR-0013 one-view model). The

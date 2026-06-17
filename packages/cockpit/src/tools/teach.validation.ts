@@ -206,12 +206,48 @@ const RelationshipPayload = z
 	})
 	.passthrough();
 
+// `hierarchy` overlays are durable drill-down / alias teaches over a fact's
+// enriched view (DAT-537). The engine keys on {action, table_id, members}: `add`
+// asserts a drill-down chain g3 missed (materialized as a `manual` drilldown),
+// `alias` asserts that two columns are 1:1 redundant axes (a `manual` alias), and
+// `reject` suppresses a g3-discovered structure this run (matched by member-set).
+// `members` are the enriched-view column NAMES surfaced from the look tools —
+// ordered finest → coarsest for a drill-down add. g3 discovery is deterministic, so
+// there is no `confirm`/silent-accept here (unlike relationship teaches).
+const HIERARCHY_ACTIONS = ["add", "reject", "alias"] as const;
+const HierarchyPayload = z
+	.object({
+		action: z
+			.enum(HIERARCHY_ACTIONS)
+			.describe(
+				"add = assert a drill-down chain the g3 pass missed (finest→coarsest members); " +
+					"alias = assert two+ columns are 1:1 redundant axes; " +
+					"reject = drop a discovered hierarchy/alias (matched by its member set).",
+			),
+		table_id: z
+			.string()
+			.min(1)
+			.describe(
+				"The fact table whose enriched view the hierarchy is on (from look_table).",
+			),
+		members: z
+			.array(z.string().min(1))
+			.min(1)
+			.describe(
+				"Enriched-view column names: ordered finest→coarsest for a drill-down add " +
+					"(e.g. ['zip','city','state']), the equivalent group for an alias, or the " +
+					"target structure's members for a reject.",
+			),
+	})
+	.passthrough();
+
 const TYPE_SCHEMAS = {
 	type_pattern: TypePatternPayload,
 	null_value: NullValuePayload,
 	concept: ConceptPayload,
 	concept_property: ConceptPropertyPayload,
 	relationship: RelationshipPayload,
+	hierarchy: HierarchyPayload,
 	// validation/cycle/metric are NOT advertised to the agent (see
 	// AGENT_TEACH_TYPES). The typed teach_validation/teach_cycle/teach_metric
 	// tools own that surface — they validate the rich spec at the SDK boundary,
@@ -239,6 +275,7 @@ export const AGENT_TEACH_TYPES = [
 	"concept",
 	"concept_property",
 	"relationship",
+	"hierarchy",
 ] as const satisfies readonly TeachType[];
 
 // The payload shape surfaced in the teach TOOL's input schema — a union of ONLY
@@ -255,6 +292,7 @@ export const TeachPayloadSchema = z
 		ConceptPayload,
 		ConceptPropertyPayload,
 		RelationshipPayload,
+		HierarchyPayload,
 	])
 	.describe(
 		"The teach payload; required fields depend on `type` — " +
@@ -263,7 +301,8 @@ export const TeachPayloadSchema = z
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
-			"(keep is engine-internal, not a user action).",
+			"(keep is engine-internal, not a user action); " +
+			"hierarchy: {action: add|reject|alias, table_id, members}.",
 	);
 
 export interface TeachInput {

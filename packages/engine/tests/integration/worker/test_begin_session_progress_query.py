@@ -61,6 +61,7 @@ _PHASE_ORDER = [
     "session_materialize_overlays",
     "enriched_views",
     "slicing",
+    "dimension_hierarchies",
     "aggregation_lineage",
     "correlations",
     "session_detect",

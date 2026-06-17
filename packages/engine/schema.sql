@@ -239,6 +239,27 @@ CREATE TABLE columns (
 
 CREATE INDEX idx_columns_table ON columns (table_id);
 
+CREATE TABLE dimension_hierarchies (
+	hierarchy_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	table_id VARCHAR NOT NULL, 
+	kind VARCHAR NOT NULL, 
+	members JSON NOT NULL, 
+	canonical_label VARCHAR NOT NULL, 
+	signature VARCHAR NOT NULL, 
+	score FLOAT NOT NULL, 
+	detection_source VARCHAR NOT NULL, 
+	needs_confirmation BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_dimension_hierarchies PRIMARY KEY (hierarchy_id), 
+	CONSTRAINT uq_dimension_hierarchy_signature_run UNIQUE (signature, run_id), 
+	CONSTRAINT fk_dimension_hierarchies_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
+);
+
+CREATE INDEX idx_dimension_hierarchies_run ON dimension_hierarchies (run_id);
+
+CREATE INDEX idx_dimension_hierarchies_table ON dimension_hierarchies (table_id);
+
 CREATE TABLE enriched_views (
 	view_id VARCHAR NOT NULL, 
 	fact_table_id VARCHAR NOT NULL, 

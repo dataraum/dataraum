@@ -26,3 +26,18 @@ export async function hasImportedTables(): Promise<boolean> {
 		.limit(1);
 	return row !== undefined;
 }
+
+/**
+ * The workspace's current typed table ids from non-archived sources (DAT-531) —
+ * the table set a begin_session re-run stages over (post-DAT-506 the set is
+ * workspace-current, not per-session). Same source-archival filter as
+ * `hasImportedTables` / the list_tables inventory.
+ */
+export async function currentTypedTableIds(): Promise<string[]> {
+	const rows = await metadataDb
+		.select({ tableId: tables.tableId })
+		.from(tables)
+		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
+		.where(isNull(sources.archivedAt));
+	return rows.flatMap((r) => (r.tableId ? [r.tableId] : []));
+}

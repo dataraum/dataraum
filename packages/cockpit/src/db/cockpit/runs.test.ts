@@ -22,14 +22,19 @@ vi.mock("#/db/cockpit/schema", () => ({
 	sessions: { _t: "sessions", id: "id", engineSessionId: "engine_session_id" },
 	sessionRuns: {
 		_t: "session_runs",
+		id: "id",
 		sessionId: "session_id",
 		workflowId: "workflow_id",
 		runId: "run_id",
+		status: "status",
+		awaitingNote: "awaiting_note",
+		startedAt: "started_at",
 	},
 }));
 vi.mock("drizzle-orm", () => ({
 	eq: (...a: unknown[]) => a,
 	and: (...a: unknown[]) => a,
+	desc: (x: unknown) => x,
 }));
 
 const limitMock = vi.fn(async () => h.sessionRows);
@@ -47,7 +52,12 @@ vi.mock("#/db/cockpit/client", () => ({
 			},
 		}),
 		select: () => ({
-			from: () => ({ where: () => ({ limit: limitMock }) }),
+			from: () => ({
+				where: () => ({
+					limit: limitMock,
+					orderBy: () => ({ limit: limitMock }),
+				}),
+			}),
 		}),
 		update: (table: { _t: string }) => ({
 			set: (s: Record<string, unknown>) => ({
@@ -60,7 +70,12 @@ vi.mock("#/db/cockpit/client", () => ({
 }));
 
 import { runWithConversation } from "#/lib/run-context";
-import { attachRunId, markRunStatus, recordRun } from "./runs";
+import {
+	attachRunId,
+	markRunAwaitingInput,
+	markRunStatus,
+	recordRun,
+} from "./runs";
 
 const BASE = {
 	workspaceId: "ws-1",
@@ -176,6 +191,45 @@ describe("markRunStatus (DAT-461)", () => {
 		await expect(
 			markRunStatus("wf-1", "run-1", "failed"),
 		).resolves.toBeUndefined();
+		expect(warn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("markRunAwaitingInput (DAT-551)", () => {
+	it("parks the LATEST run for the workflow in awaiting_input with the note", async () => {
+		h.sessionRows = [{ id: "run-row-latest" }];
+		await markRunAwaitingInput("wf-1", "payments.method needs a concept");
+		expect(limitMock).toHaveBeenCalled(); // resolved the latest run first
+		expect(h.updates).toHaveLength(1);
+		expect(h.updates[0].table).toBe("session_runs");
+		expect(h.updates[0].set).toEqual({
+			status: "awaiting_input",
+			awaitingNote: "payments.method needs a concept",
+		});
+	});
+
+	it("no-ops when the workflow has no recorded run (nothing to park)", async () => {
+		h.sessionRows = [];
+		await markRunAwaitingInput("wf-unknown", "x");
+		expect(h.updates).toHaveLength(0);
+	});
+
+	it("accepts a null note", async () => {
+		h.sessionRows = [{ id: "run-row-latest" }];
+		await markRunAwaitingInput("wf-1", null);
+		expect(h.updates[0].set).toEqual({
+			status: "awaiting_input",
+			awaitingNote: null,
+		});
+	});
+
+	it("is best-effort: swallows a db error", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const boom = await import("./client");
+		vi.spyOn(boom.cockpitDb, "select").mockImplementation(() => {
+			throw new Error("db down");
+		});
+		await expect(markRunAwaitingInput("wf-1", "x")).resolves.toBeUndefined();
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
 });

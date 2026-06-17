@@ -172,6 +172,38 @@ export async function markRunStatus(
 }
 
 /**
+ * Park the LATEST run for a workflow in `awaiting_input` with a human-facing note
+ * (DAT-551 P3c). The grounding-teach loop calls this when it has applied every
+ * mechanical teach it can and a judgement gap remains (or it hit its attempt
+ * limit): the run isn't failed — it's waiting for a human teach. Targets the most
+ * recent execution for the workflow id (the current state), since a session's
+ * add_source has one run row per replay execution. Best-effort (mirrors
+ * markRunStatus): a write error is logged, not thrown — the journey must not crash.
+ */
+export async function markRunAwaitingInput(
+	workflowId: string,
+	note: string | null,
+): Promise<void> {
+	try {
+		const [latest] = await cockpitDb
+			.select({ id: sessionRuns.id })
+			.from(sessionRuns)
+			.where(eq(sessionRuns.workflowId, workflowId))
+			.orderBy(desc(sessionRuns.startedAt))
+			.limit(1);
+		if (!latest) return;
+		await cockpitDb
+			.update(sessionRuns)
+			.set({ status: "awaiting_input", awaitingNote: note })
+			.where(eq(sessionRuns.id, latest.id));
+	} catch (err) {
+		console.warn(
+			`[cockpit] markRunAwaitingInput failed for ${workflowId}: ${err}`,
+		);
+	}
+}
+
+/**
  * Atomically claim a run's completion narration (Phase 2A). The conditional
  * UPDATE sets `completion_narrated_at` only when it's still NULL and RETURNs the
  * row — so the FIRST caller wins (returns true) and every later one (another

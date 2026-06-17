@@ -51,6 +51,10 @@ export interface RunAddSource {
 	kind: "onboarding" | "replay";
 	/** The originating chat (DAT-528) for narration routing. Null = none. */
 	conversationId: string | null;
+	/** How many grounding-teach replay attempts the autonomous loop may make after
+	 * this import (DAT-551 P3c). Optional — the journey defaults it; a future UI can
+	 * carry a user-chosen bound on the trigger. */
+	numberOfAttempts?: number;
 }
 
 /** The INTENTIONAL begin_session trigger (DAT-530): the user chose a table set,

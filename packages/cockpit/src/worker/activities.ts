@@ -19,5 +19,11 @@
 // non-deterministic half of the post-add_source grounding loop; the journey's
 // deterministic loop drives the replays around it.
 
-export { attachRunId, markRunStatus, recordRun } from "#/db/cockpit/runs";
+export {
+	attachRunId,
+	markRunAwaitingInput,
+	markRunStatus,
+	recordRun,
+} from "#/db/cockpit/runs";
+export type { AssessAndGroundResult } from "#/worker/grounding-agent";
 export { assessAndGround } from "#/worker/grounding-agent";

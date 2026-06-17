@@ -150,9 +150,16 @@ def discover_drivers(
 ) -> DriverRanking:
     """Rank the catalog's dimensions as drivers of ``measure`` over the enriched view.
 
-    Pure + deterministic for a given ``seed`` (so a future cache keyed by
-    ``(measure, run)`` is stable). Returns an empty ranking — never an error — when
-    the fact has no grain-verified enriched view or fewer than two candidate dims.
+    Pure + deterministic for a given ``(seed, candidate-dim set)`` — the permutation
+    draw sequence depends on the dims, so a future cache (DAT-546) must key on the
+    candidate set too, not just ``(measure, run, seed)``. Returns an empty ranking —
+    never an error — when the fact has no grain-verified enriched view, fewer than
+    two candidate dims survive in the view, or the measure columns are absent
+    (a catalog/view skew is logged, not fatal).
+
+    NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
+    in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
+    a row-count gate before calling on very large views.
     """
     empty = DriverRanking(measure=measure.label, target_type=measure.target_type, n_rows=0)
 
@@ -168,16 +175,19 @@ def discover_drivers(
     def quote(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
 
-    select_cols = dims + _measure_columns(measure)
+    # Probe the view's columns first (LIMIT 0 — no scan) so a catalog/view skew is a
+    # logged empty result, not a DuckDB BinderException, AND we still read only the
+    # columns we need (no SELECT *). The measure columns must exist; dims intersect.
+    view_cols = set(duckdb_conn.execute(f"SELECT * FROM {quote(view)} LIMIT 0").df().columns)  # noqa: S608
+    present_dims = [d for d in dims if d in view_cols]
+    measure_cols = _measure_columns(measure)
+    if len(present_dims) < 2 or any(c not in view_cols for c in measure_cols):
+        logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
+        return empty
+
+    select_cols = present_dims + measure_cols
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
-
-    # Only dims actually present in the view participate (a catalog/view skew is
-    # logged, not fatal).
-    present_dims = [d for d in dims if d in frame.columns]
-    if len(present_dims) < 2:
-        logger.info("driver_dims_absent_from_view", view=view, present=present_dims)
-        return empty
     values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
 
     return discover_tree(

@@ -117,6 +117,15 @@ class TestResolveTargetType:
         _seed(real_session, duck, temporal_behavior="")
         assert resolve_target_type(real_session, column_id="nope", run_id=RUN) == "flow"
 
+    def test_unrecognised_behavior_defaults_to_flow(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # An annotation present but with a value outside {additive, point_in_time}
+        # falls back to flow (logged), not an error.
+        tid = _seed(real_session, duck, temporal_behavior="periodic")
+        col = real_session.query(Column).filter_by(table_id=tid, column_name="measure").one()
+        assert resolve_target_type(real_session, column_id=col.column_id, run_id=RUN) == "flow"
+
 
 class TestDiscoverDrivers:
     def test_alias_collapsed_from_candidates(
@@ -126,6 +135,19 @@ class TestDiscoverDrivers:
         dims = _candidate_dims(real_session, tid, RUN)
         assert "D_e25" in dims  # canonical kept
         assert ALIAS not in dims  # redundant axis collapsed out (DAT-537)
+
+    def test_non_grain_safe_dims_excluded(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # A dimension flagged grain_safe=False is not a candidate (AC: grain-safety).
+        tid = _seed(real_session, duck)
+        real_session.execute(
+            SliceDefinition.__table__.update()
+            .where(SliceDefinition.column_name == "N_lowcard")
+            .values(grain_safe=False)
+        )
+        real_session.flush()
+        assert "N_lowcard" not in _candidate_dims(real_session, tid, RUN)
 
     def test_end_to_end_ranks_drivers(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

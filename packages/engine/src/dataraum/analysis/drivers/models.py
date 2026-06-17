@@ -45,11 +45,17 @@ class Measure:
 
 @dataclass(frozen=True)
 class DriverSlice:
-    """A filter slice where the measure deviates sharply from the node baseline."""
+    """A filter slice where the measure deviates sharply from the node baseline.
+
+    ``effect`` is the signed relative deviation of the slice's value from the node
+    baseline (``group / baseline − 1``); the baseline is the node's dim-present mean
+    (flow/stock) or pooled ratio (ratio). ``support`` is the slice's row count (it
+    cleared ``min_support``).
+    """
 
     dimension: str
     value: str
-    effect: float  # group_mean / node_baseline − 1  (signed relative deviation)
+    effect: float
     support: int
 
 
@@ -64,6 +70,8 @@ class DriverNode:
     dimension: str
     gain: float
     p_value: float
+    # Dim-present rows at this node (codes ≥ 0) — INCLUDES rows in sub-min_support
+    # groups that the gain itself excluded, so ``support`` ≥ Σ(slice.support).
     support: int
     slices: tuple[DriverSlice, ...]
     children: tuple[tuple[str, DriverNode], ...] = ()

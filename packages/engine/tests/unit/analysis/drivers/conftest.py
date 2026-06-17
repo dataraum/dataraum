@@ -9,16 +9,58 @@ that calibration. The real-fixture transfer check lives in dataraum-eval (handof
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+import duckdb
 import numpy as np
 import pandas as pd
+import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from dataraum.storage import init_database
 
 N_ROWS = 20_000
+
+
+@pytest.fixture
+def real_session() -> Iterator[Session]:
+    """In-memory SQLite catalog (FKs off, the resolve-test pattern)."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _pragma(dbapi_conn, _record):  # noqa: ANN001, ANN202
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=OFF")
+        cur.close()
+
+    init_database(engine)
+    factory = sessionmaker(bind=engine)
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def duck() -> Iterator[duckdb.DuckDBPyConnection]:
+    conn = duckdb.connect(":memory:")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
 
 # Planted drivers: name → multiplicative effect size on the measure.
 EFFECTS = {"D_e60": 0.60, "D_e25": 0.25, "D_e15": 0.15, "D_e08": 0.08, "D_e04": 0.04}
 DRIVERS = list(EFFECTS)
-# The drivers a recall test requires to surface AND outrank every independent null.
-REQUIRED_DRIVERS = ["D_e60", "D_e25"]
 # Independent nulls — must stay gated (the FDR metric).
 INDEPENDENT_NULLS = ["N_lowcard", "N_midcard", "N_highcard", "N_mnar", "N_measure_missing"]
 # Confounded proxy: 80% a copy of the strongest driver → expected to surface (a real

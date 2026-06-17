@@ -9,9 +9,9 @@ Discovery aggregates **inline** (DAT-536, one-view model): for each fact × shar
 dimension, a single ``GROUP BY dim, period`` over the fact's enriched view —
 keyed to the catalog's declared values, summing the fact's own numeric columns —
 yields the per-(slice value, period) row counts + sums the reconciliation needs.
-(This replaced the slice→``TemporalSliceAnalysis`` substrate; the equivalence is
-verdict-preserving — proven byte-identical per cell in
-``test_inline_aggregation_equivalence``.) It then pairs the series by (slice
+(This replaced the slice→``TemporalSliceAnalysis`` substrate; the re-point is
+verdict-preserving — ``tests/unit/analysis/lineage/test_processor.py`` seeds a
+DuckDB fixture and asserts the same reconciliation verdicts.) It then pairs the series by (slice
 value, period_label), enumerates the signed conventions (each numeric column,
 and ordered pair differences like ``debit − credit`` — sums are linear, so
 conventions distribute over them), and lets the deterministic reconciliation
@@ -102,7 +102,7 @@ def _slice_series(
     One ``GROUP BY dim, period`` over the fact's enriched view (DAT-536), keyed
     to the catalog's declared values and summing the fact's own numeric columns
     — the path-independent replacement for the slice→``TemporalSliceAnalysis``
-    substrate (equivalence proven in ``test_inline_aggregation_equivalence``).
+    substrate (verdict-equivalence proven in ``test_processor.py``).
     Returns ``None`` when the fact lacks a queryable source, a time axis,
     declared values, or numeric columns: the witness simply cannot fire on it —
     a visible abstention, never a silent guess.

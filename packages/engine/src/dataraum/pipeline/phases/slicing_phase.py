@@ -57,10 +57,10 @@ class SlicingPhase(BasePhase):
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip only when THIS run already produced slice definitions (DAT-448).
 
-        Definitions (and their ``sql_template`` DDL) are run-versioned: a fresh
-        run always re-derives against its own enriched views — silent cross-run
-        reuse of stale definitions was the DAT-405 bug class. The run-scoped
-        check keeps the activity idempotent under Temporal retry.
+        Catalog definitions are run-versioned: a fresh run always re-derives
+        against its own enriched views — silent cross-run reuse of stale
+        definitions was the DAT-405 bug class. The run-scoped check keeps the
+        activity idempotent under Temporal retry.
         """
         fact_tables = self._get_fact_tables(ctx)
 

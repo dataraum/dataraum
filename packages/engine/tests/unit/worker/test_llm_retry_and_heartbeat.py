@@ -50,9 +50,6 @@ def test_retry_for_picks_llm_policy_only_for_llm_phases() -> None:
     for phase in (
         "relationships",
         "aggregation_lineage",
-        "slicing_view",
-        "slice_analysis",
-        "temporal_slice_analysis",
         "correlations",
     ):
         assert _retry_for(phase) is _RETRY

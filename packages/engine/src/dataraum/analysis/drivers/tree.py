@@ -236,6 +236,7 @@ def discover_tree(
         measure=measure_label,
         target_type=target.target_type,
         n_rows=int(target.observed.size),
+        grain=target.grain,
         ranked_dimensions=ranked,
         root=root,
         driver_paths=paths,

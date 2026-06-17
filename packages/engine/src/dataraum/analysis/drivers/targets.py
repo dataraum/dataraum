@@ -29,6 +29,7 @@ class Target(ABC):
 
     target_type: str
     observed: np.ndarray
+    grain: str = "row"  # the exchangeable unit the permutation null shuffles
 
     @abstractmethod
     def gain(self, codes: np.ndarray, n_codes: int, *, min_support: int) -> float:
@@ -147,6 +148,8 @@ class EntityMeanTarget(Target):
     value, entity size as the weight). ``min_support`` here is an ENTITY count, not a
     row count.
     """
+
+    grain = "entity"
 
     def __init__(
         self, entity_means: np.ndarray, entity_sizes: np.ndarray, *, target_type: str

@@ -24,9 +24,13 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import select
 
-from dataraum.analysis.drivers.criterion import DEFAULT_MIN_SUPPORT, DEFAULT_MISSINGNESS_GATE
+from dataraum.analysis.drivers.criterion import (
+    DEFAULT_MIN_SUPPORT,
+    DEFAULT_MISSINGNESS_GATE,
+    intraclass_correlation,
+)
 from dataraum.analysis.drivers.models import DriverRanking, Measure
-from dataraum.analysis.drivers.targets import FlowTarget, RatioTarget, Target
+from dataraum.analysis.drivers.targets import EntityMeanTarget, FlowTarget, RatioTarget, Target
 from dataraum.analysis.drivers.tree import (
     DEFAULT_ALPHA,
     DEFAULT_MAX_DEPTH,
@@ -45,6 +49,14 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
+
+# Above this ICC (η² of the measure between entities), the row-wise permutation null
+# is invalid — the cluster is the exchangeable unit, so switch to the entity grain
+# (DAT-552 / DAT-544 E1). Conservative: even modest clustering flips it.
+DEFAULT_ICC_THRESHOLD = 0.10
+# At entity grain a candidate group is evaluated only with at least this many ENTITIES
+# (the min_support analogue — power scales with entity count, not rows).
+DEFAULT_MIN_ENTITIES = 10
 
 _TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
 
@@ -140,6 +152,7 @@ def discover_drivers(
     fact_table_id: str,
     run_id: str,
     measure: Measure,
+    cluster_key: str | None = None,
     seed: int = 0,
     max_depth: int = DEFAULT_MAX_DEPTH,
     alpha: float = DEFAULT_ALPHA,
@@ -147,6 +160,8 @@ def discover_drivers(
     missingness_gate: float = DEFAULT_MISSINGNESS_GATE,
     n_perm: int = DEFAULT_N_PERM,
     top_k_slices: int = DEFAULT_TOP_K_SLICES,
+    icc_threshold: float = DEFAULT_ICC_THRESHOLD,
+    min_entities: int = DEFAULT_MIN_ENTITIES,
 ) -> DriverRanking:
     """Rank the catalog's dimensions as drivers of ``measure`` over the enriched view.
 
@@ -156,6 +171,16 @@ def discover_drivers(
     never an error — when the fact has no grain-verified enriched view, fewer than
     two candidate dims survive in the view, or the measure columns are absent
     (a catalog/view skew is logged, not fatal).
+
+    **Cluster-aware (DAT-552):** when ``cluster_key`` names a repeated-entity column
+    and the measure's ICC within it exceeds ``icc_threshold``, the row-wise
+    permutation null is invalid (the entity, not the row, is exchangeable) — the
+    search switches to the **entity grain** (one row per entity, permute entities;
+    ``DriverRanking.grain == "entity"``, power scales with entity count). Below the
+    threshold, or with no ``cluster_key``, the row-wise null (DAT-545) is used. Only
+    entity-LEVEL candidates (constant within entity) participate at entity grain;
+    row-level dims are logged and skipped that pass. Ratio measures stay row-wise for
+    now (cluster-aware ratio is a follow-up).
 
     NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
     in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
@@ -185,11 +210,40 @@ def discover_drivers(
         logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
         return empty
 
-    select_cols = present_dims + measure_cols
+    # The cluster key is read alongside if it exists in the view (DAT-552).
+    cluster_col = cluster_key if (cluster_key and cluster_key in view_cols) else None
+    select_cols = present_dims + measure_cols + ([cluster_col] if cluster_col else [])
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
-    values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
 
+    # Cluster-aware switch: a high-ICC measure within the declared entity invalidates
+    # the row-wise null (DAT-552). flow/stock only; ratio stays row-wise for now.
+    if cluster_col is not None and measure.target_type in ("flow", "stock"):
+        ent_codes, ent_uniques = pd.factorize(frame[cluster_col])
+        icc = intraclass_correlation(
+            ent_codes.astype(int), len(ent_uniques), frame[measure.column].to_numpy(dtype=float)
+        )
+        if icc > icc_threshold:
+            logger.info(
+                "driver_cluster_aware_entity_grain",
+                cluster_key=cluster_col,
+                icc=round(icc, 3),
+                n_entities=len(ent_uniques),
+            )
+            return _entity_grain_ranking(
+                frame,
+                present_dims,
+                measure,
+                cluster_col,
+                seed=seed,
+                alpha=alpha,
+                n_perm=n_perm,
+                top_k_slices=top_k_slices,
+                min_entities=min_entities,
+            )
+        logger.info("driver_row_wise_low_icc", cluster_key=cluster_key, icc=round(icc, 3))
+
+    values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
     return discover_tree(
         values_by_dim,
         _make_target(measure, frame),
@@ -200,6 +254,61 @@ def discover_drivers(
         alpha=alpha,
         min_support=min_support,
         missingness_gate=missingness_gate,
+        n_perm=n_perm,
+        top_k_slices=top_k_slices,
+    )
+
+
+def _entity_grain_ranking(
+    frame: pd.DataFrame,
+    dims: list[str],
+    measure: Measure,
+    cluster_key: str,
+    *,
+    seed: int,
+    alpha: float,
+    n_perm: int,
+    top_k_slices: int,
+    min_entities: int,
+) -> DriverRanking:
+    """Collapse to one row per entity and rank entity-level candidates at that grain.
+
+    Only candidates that are CONSTANT within entity participate (row-level dims can't
+    be collapsed without losing their within-entity variation — logged + skipped this
+    pass). Each entity contributes its mean measure weighted by its observed-row count;
+    entities with no observed measure are dropped. Single-level (``max_depth=1``):
+    recursion at entity grain is low-power and a follow-up.
+    """
+    empty = DriverRanking(
+        measure=measure.label, target_type=measure.target_type, n_rows=0, grain="entity"
+    )
+    # Entity-level = constant within every entity (nunique ≤ 1).
+    nunique = frame.groupby(cluster_key)[dims].nunique().max()
+    entity_dims = [d for d in dims if int(nunique[d]) <= 1]
+    skipped = [d for d in dims if d not in entity_dims]
+    if skipped:
+        logger.info("driver_row_level_dims_skipped_at_entity_grain", dropped=skipped)
+    if len(entity_dims) < 2:
+        return empty
+
+    assert measure.column is not None  # entity grain is flow/stock only (Measure-guaranteed)
+    grouped = frame.groupby(cluster_key, sort=False)
+    agg = grouped[measure.column].agg(["mean", "count"])
+    keep = agg["count"].to_numpy() > 0  # drop entities with no observed measure
+    means = agg["mean"].to_numpy(dtype=float)[keep]
+    sizes = agg["count"].to_numpy(dtype=float)[keep]
+    values_by_dim = {d: grouped[d].first().to_numpy()[keep].astype(object) for d in entity_dims}
+
+    target = EntityMeanTarget(means, sizes, target_type=measure.target_type)
+    return discover_tree(
+        values_by_dim,
+        target,
+        measure_label=measure.label,
+        dims=entity_dims,
+        rng=np.random.default_rng(seed),
+        max_depth=1,
+        alpha=alpha,
+        min_support=min_entities,
         n_perm=n_perm,
         top_k_slices=top_k_slices,
     )

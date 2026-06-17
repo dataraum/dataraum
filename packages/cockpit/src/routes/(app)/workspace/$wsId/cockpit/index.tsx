@@ -81,7 +81,7 @@ function CockpitIndex() {
 			navigate({
 				to: "/workspace/$wsId/cockpit/$conversationId",
 				params: { wsId, conversationId },
-				state: { seed: message } as never,
+				state: { seed: message },
 			});
 		} catch (err) {
 			console.error("[cockpit] nav-agent routing failed:", err);

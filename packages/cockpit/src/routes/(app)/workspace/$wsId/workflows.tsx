@@ -64,7 +64,7 @@ function RunsSection() {
 			navigate({
 				to: "/workspace/$wsId/cockpit/$conversationId",
 				params: { wsId, conversationId },
-				state: { seed: resolveSeed(item.awaitingNote) } as never,
+				state: { seed: resolveSeed(item.awaitingNote) },
 			});
 		} catch (err) {
 			console.error("[cockpit] resolve-in-stage failed:", err);

@@ -138,7 +138,7 @@ function CockpitChat() {
 	// The landing nav-agent's opening message (DAT-534), carried in router state —
 	// CockpitProvider sends it once on mount into the empty chat. Absent on a normal
 	// open (drop-up / reload after the first turn). Loosely shaped, so narrowed here.
-	const seedMessage = (useLocation().state as { seed?: string }).seed;
+	const seedMessage = useLocation().state.seed;
 
 	// The chat-type drop-up wiring (was the header switcher; now in the composer).
 	// Only when the layout loader has resolved its switcher data — otherwise the

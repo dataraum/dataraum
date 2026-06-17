@@ -386,3 +386,54 @@ class TestBuilderOmRunIdOverride:
         ctx_override = build_execution_context(session, [table_id], om_run_id="run-current")
         assert len(ctx_override.business_cycles) == 1
         assert ctx_override.business_cycles[0].cycle_name == "Order to Cash"
+
+
+class TestBuilderExtractsDimensionHierarchies:
+    """Verify the builder exposes DimensionHierarchy rows (DAT-537), run-scoped.
+
+    Run-versioned, sealed at the begin_session catalog head: the builder reads only
+    the promoted run, exactly like the slice read — an unpromoted run's rows must
+    not bleed in (fail-closed).
+    """
+
+    def test_hierarchies_exposed_at_promoted_head(self, session: Session) -> None:
+        from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
+        from dataraum.storage.snapshot_head import (
+            MetadataSnapshotHead,
+            catalog_head_target,
+        )
+
+        _source_id, table_id, column_id = _insert_source_table_column(session)
+        session.add(
+            DimensionHierarchy(
+                run_id="run-1",
+                table_id=table_id,
+                kind="drilldown",
+                members=[
+                    {"column_name": "zip", "column_id": column_id, "distinct_count": 6},
+                    {"column_name": "city", "column_id": "", "distinct_count": 4},
+                    {"column_name": "state", "column_id": "", "distinct_count": 2},
+                ],
+                canonical_label="zip → city → state",
+                signature="drilldown:t:city|state|zip",
+                score=0.0,
+            )
+        )
+        head = MetadataSnapshotHead(
+            head_id=_id(), target=catalog_head_target(), stage="catalog", run_id="run-1"
+        )
+        session.add(head)
+        session.flush()
+
+        ctx = build_execution_context(session, [table_id])
+        assert len(ctx.dimension_hierarchies) == 1
+        hier = ctx.dimension_hierarchies[0]
+        assert hier.kind == "drilldown"
+        assert hier.members == ["zip", "city", "state"]
+        assert hier.canonical_label == "zip → city → state"
+        assert hier.table_name == "invoices"
+
+        # Flip the head to a run with no hierarchy rows → fail-closed empty.
+        head.run_id = "run-2"
+        session.flush()
+        assert build_execution_context(session, [table_id]).dimension_hierarchies == []

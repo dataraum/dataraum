@@ -141,6 +141,24 @@ class SliceContext:
 
 
 @dataclass
+class HierarchyContext:
+    """A discovered drill-down hierarchy or 1:1 alias group (DAT-537).
+
+    The g3 functional-dependency pass surfaces these over a fact's enriched view:
+    a ``drilldown`` carries ordered levels finest → coarsest (``zip → city →
+    state``), an ``alias`` a redundant-axis group collapsed to one canonical label.
+    Exposed for the answer agent / GraphAgent to drill and de-duplicate axes; the
+    prompt CONSUMPTION lands in DAT-538 (this is the expose seam, not the use).
+    """
+
+    kind: str  # 'drilldown' | 'alias'
+    table_name: str
+    members: list[str]  # ordered level names (drilldown) or the group (alias)
+    canonical_label: str
+    needs_confirmation: bool = False
+
+
+@dataclass
 class CycleStageContext:
     """A stage within a business cycle."""
 
@@ -250,6 +268,10 @@ class GraphExecutionContext:
     # Available slice dimensions (from slicing analysis)
     available_slices: list[SliceContext] = field(default_factory=list)
 
+    # Drill-down hierarchies + 1:1 aliases (from the g3 pass, DAT-537). Exposed for
+    # the answer agent to drill / de-duplicate axes; prompt use lands in DAT-538.
+    dimension_hierarchies: list[HierarchyContext] = field(default_factory=list)
+
     # Business cycles (from cycles analysis)
     business_cycles: list[BusinessCycleContext] = field(default_factory=list)
 
@@ -311,6 +333,7 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+    from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
     from dataraum.analysis.relationships.graph_topology import (
         analyze_graph_topology,
     )
@@ -505,6 +528,33 @@ def build_execution_context(
             )
     # Sort by priority descending
     slice_contexts.sort(key=lambda s: s.priority, reverse=True)
+
+    # 10b. Load dimension hierarchies + aliases (DAT-537) — run-versioned, same
+    # fail-closed discipline as the slices (scoped to the resolved catalog run;
+    # empty when none resolves). The expose seam for the answer agent; the GraphAgent
+    # prompt consumes them in DAT-538.
+    hierarchy_contexts: list[HierarchyContext] = []
+    if run_id is not None:
+        hier_stmt = (
+            select(DimensionHierarchy)
+            .where(
+                DimensionHierarchy.table_id.in_(table_ids),
+                DimensionHierarchy.run_id == run_id,
+            )
+            .order_by(DimensionHierarchy.score)  # strongest (lowest g3) first
+        )
+        for hier in session.execute(hier_stmt).scalars().all():
+            hier_tbl = table_map.get(hier.table_id)
+            if hier_tbl:
+                hierarchy_contexts.append(
+                    HierarchyContext(
+                        kind=hier.kind,
+                        table_name=hier_tbl.table_name,
+                        members=[str(m.get("column_name", "")) for m in hier.members],
+                        canonical_label=hier.canonical_label,
+                        needs_confirmation=hier.needs_confirmation,
+                    )
+                )
 
     # 11. Load derived columns from correlation analysis — run-versioned since
     # DAT-448, same fail-closed discipline as the slices above (scoped to the
@@ -886,6 +936,7 @@ def build_execution_context(
         slice_column=slice_column,
         slice_value=slice_value,
         available_slices=slice_contexts,
+        dimension_hierarchies=hierarchy_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,
         validations=validation_contexts,
@@ -1386,6 +1437,7 @@ __all__ = [
     "TableContext",
     "RelationshipContext",
     "SliceContext",
+    "HierarchyContext",
     "CycleStageContext",
     "EntityFlowContext",
     "BusinessCycleContext",

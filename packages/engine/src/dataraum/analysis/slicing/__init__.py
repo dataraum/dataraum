@@ -11,7 +11,6 @@ from dataraum.analysis.slicing.db_models import (
 )
 from dataraum.analysis.slicing.models import (
     SliceRecommendation,
-    SliceSQL,
     SlicingAnalysisResult,
 )
 
@@ -20,7 +19,6 @@ __all__ = [
     "SlicingAgent",
     # Models
     "SliceRecommendation",
-    "SliceSQL",
     "SlicingAnalysisResult",
     # DB Models
     "SliceDefinition",

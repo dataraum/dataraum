@@ -1,7 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
 	boolean,
-	date,
 	doublePrecision,
 	integer,
 	json,
@@ -312,27 +311,12 @@ export const currentSliceDefinitions = metadataSchema
 		reasoning: text(),
 		businessContext: text("business_context"),
 		confidence: doublePrecision(),
-		sqlTemplate: text("sql_template"),
+		grainSafe: boolean("grain_safe"),
 		detectionSource: varchar("detection_source"),
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT slice_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, sql_template, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
-	);
-
-export const currentSlicingViews = metadataSchema
-	.view("current_slicing_views", {
-		viewId: varchar("view_id"),
-		factTableId: varchar("fact_table_id"),
-		viewName: varchar("view_name"),
-		runId: varchar("run_id"),
-		sliceDefinitionIds: json("slice_definition_ids"),
-		sliceColumns: json("slice_columns"),
-		isGrainVerified: boolean("is_grain_verified"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT view_id, fact_table_id, view_name, run_id, slice_definition_ids, slice_columns, is_grain_verified, created_at FROM ws_00000000_0000_0000_0000_000000000001.slicing_views r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT slice_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, grain_safe, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentStatisticalProfiles = metadataSchema
@@ -408,23 +392,6 @@ export const currentTemporalColumnProfiles = metadataSchema
 	})
 	.as(
 		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, has_seasonality, has_trend, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
-	);
-
-export const currentTemporalSliceAnalyses = metadataSchema
-	.view("current_temporal_slice_analyses", {
-		id: varchar(),
-		runId: varchar("run_id"),
-		sliceTableName: varchar("slice_table_name", { length: 255 }),
-		timeColumn: varchar("time_column", { length: 255 }),
-		periodLabel: varchar("period_label", { length: 50 }),
-		periodStart: date("period_start"),
-		periodEnd: date("period_end"),
-		rowCount: integer("row_count"),
-		columnSums: json("column_sums"),
-		createdAt: timestamp("created_at"),
-	})
-	.as(
-		sql`SELECT id, run_id, slice_table_name, time_column, period_label, period_start, period_end, row_count, column_sums, created_at FROM ws_00000000_0000_0000_0000_000000000001.temporal_slice_analyses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema

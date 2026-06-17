@@ -4,6 +4,31 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-17: DAT-545 — driver-discovery engine (analysis/drivers/)
+
+New **pure, on-demand** engine `packages/engine/src/dataraum/analysis/drivers/`:
+ranks the catalog's grain-safe dimensions by how much they explain a numeric
+measure's variation (variance-reduction tree), gated by a **within-dataset
+permutation null** — no global threshold, vertical-agnostic. Productionizes the
+DAT-544 kill-gate spike. **No schema change, no pipeline phase, no persistence** —
+it returns an in-memory `DriverRanking`; it is not yet wired to any caller (DAT-546
+adds the artifact + cockpit read surface; an agent caller is later). So it does not
+run in add_source/begin_session and changes no existing measurement.
+
+Engine: candidate dims = `SliceDefinition.grain_safe` (DAT-536) with
+`DimensionHierarchy` 1:1 aliases collapsed (DAT-537); substrate = the fact's
+grain-verified enriched view read row-grain via DuckDB; target-type from
+`SemanticAnnotation.temporal_behavior` (additive→flow, point_in_time→stock); ratio =
+support-weighted Σnum/Σden.
+
+### dataraum-eval
+- **The real-fixture transfer check is eval's task** (agreed handoff — it needs a real enriched view with planted drivers, not a unit test). Build the FDR/recall calibration rig over the DAT-544 adversarial corpus + harness and verify separation holds on REAL data across ≥1 non-synthetic fixture (vertical-agnostic — not finance-specific).
+- **Acceptance bars the spike established** (match these): strong driver (±60%) recall ≥ 0.9; independent-null FDR ≤ 2α (α=0.05), including a participating high-card dim; marginal-driver (±25%) power ≥ ~0.6 (the documented ≈±20–25% floor — NOT 90%; weak effects miss safely). ratio + stock target types separate too.
+- **No threshold to calibrate across datasets** — both ranking (ordinal) and the noise gate (within-dataset permutation null) are self-calibrating. This is the structural difference from the cut `slice_variance`/`temporal_drift` detectors; the eval rig should confirm there is no global constant being tuned.
+
+### dataraum-testdata
+- The DAT-544 corpus (`make_corpus`: planted drivers at known effect sizes + independent nulls + a confounded proxy + measure-conditional missingness) seeds a generative family. Add **ratio** (numerator/denominator whose ratio depends on a driver, denominator varying independently) and **stock** fixtures, and a **confounded-dim** fixture (a proxy that is an 80% copy of the strongest driver) for the de-confounding check.
+
 ## 2026-06-17: DAT-537 — new `dimension_hierarchies` begin_session phase (g3 FD / drill-down / alias)
 
 A new **deterministic** value-layer phase, `dimension_hierarchies`, runs in the

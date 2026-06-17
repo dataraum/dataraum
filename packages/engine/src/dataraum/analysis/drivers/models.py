@@ -60,6 +60,23 @@ class DriverSlice:
 
 
 @dataclass(frozen=True)
+class SecondaryDriver:
+    """A significant dim from the NON-primary grain family (DAT-561).
+
+    The cluster-aware search runs two families — entity-constant candidates at entity
+    grain, row-level candidates row-wise — and reports the one selected by ICC as the
+    primary tree. The other family's significant dims land here instead of in
+    ``ranked_dimensions``: their gains were computed at a different exchangeable grain
+    (``grain``), so they are NOT comparable to the primary tree's gains and must not be
+    folded into the same ranking. A flat labeled list, strongest first.
+    """
+
+    dimension: str
+    gain: float
+    grain: str  # the exchangeable unit this dim's null used: "entity" or "row"
+
+
+@dataclass(frozen=True)
 class DriverNode:
     """One surviving split: the dimension that best explains the node's measure.
 
@@ -86,11 +103,17 @@ class DriverRanking:
     surviving dimension drill vectors; ``interesting_slices`` = the sharp-deviation
     slices across the tree, strongest first.
 
-    ``grain`` is the exchangeable unit the null used: ``"row"`` (the default) or
-    ``"entity"`` when a high-ICC measure forced the cluster-aware path (DAT-552).
-    ``n_rows`` is the count of those units (rows, or entities at entity grain) — i.e.
-    the effective sample size the power scales with, so a "no significant driver"
-    result on few entities is honestly attributable.
+    ``grain`` is the exchangeable unit the PRIMARY family's null used: ``"row"`` (the
+    default) or ``"entity"`` when the cluster-aware path made the entity-grain family
+    primary (DAT-552/561). ``n_rows`` is the count of those units (rows, or entities at
+    entity grain) — i.e. the effective sample size the power scales with, so a "no
+    significant driver" result on few entities is honestly attributable.
+
+    ``secondary_dimensions`` carries the OTHER grain family's significant dims when a
+    ``cluster_key`` is present (DAT-561 candidate-grain routing): entity-constant
+    candidates always run at entity grain, row-level candidates row-wise, and the family
+    not chosen as primary (by ICC) surfaces here as a flat grain-labeled list — never
+    mixed into ``ranked_dimensions``/``root`` (the grains are not cross-comparable).
     """
 
     measure: str
@@ -101,3 +124,4 @@ class DriverRanking:
     root: DriverNode | None = None
     driver_paths: list[list[str]] = field(default_factory=list)
     interesting_slices: list[DriverSlice] = field(default_factory=list)
+    secondary_dimensions: list[SecondaryDriver] = field(default_factory=list)

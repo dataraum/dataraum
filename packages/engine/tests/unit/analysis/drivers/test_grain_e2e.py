@@ -175,14 +175,21 @@ class TestClusterAwareSwitch:
         # (the spike's "power scales with entity count" finding), so NOT a 0.9 bar.
         assert driver_found >= seeds // 2, f"driver recall {driver_found}/{seeds}"
 
-    def test_row_level_dim_skipped_at_entity_grain(
+    def test_row_level_dim_routed_to_row_wise_secondary(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        # The row-level null (varies within entity) can't be collapsed → not evaluated
-        # at entity grain (logged + skipped), so it never appears in the ranking.
+        # DAT-561: a row-level dim (varies within entity) is NOT in the entity-grain
+        # primary — it is routed to the row-wise (secondary) family instead. The
+        # entity primary carries only entity-constant dims; the grains never mix.
         tid = _seed_catalog(real_session)
         rank = _run(real_session, duck, tid, 0, cluster_key=CL_ENTITY)
-        assert CL_ROW_NULL not in {d for d, _ in rank.ranked_dimensions}
+        assert rank.grain == "entity"
+        primary = {d for d, _ in rank.ranked_dimensions}
+        assert CL_ROW_NULL not in primary
+        assert primary <= {CL_DRIVER, *CL_ENTITY_NULLS}  # only entity-constant dims
+        # CL_ROW_NULL is random → it won't be a significant secondary either, but every
+        # secondary that DID surface is labeled row grain (never entity).
+        assert all(s.grain == "row" for s in rank.secondary_dimensions)
 
     def test_low_icc_cluster_key_stays_row_wise(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
@@ -232,6 +239,70 @@ class TestClusterAwareSwitch:
             n_perm=N_PERM,
         )
         assert lo_rank.grain == "row"
+
+
+def _run_low_icc(session, duck, tid, seed, *, cluster_key):  # noqa: ANN001, ANN202
+    # row_sigma=6 drowns the between-entity signal → ICC ≈ 0.03, the DAT-552 residual
+    # regime where the row-wise null FALSELY surfaced a high-K entity-level dim.
+    _write_view(duck, make_clustered_corpus(np.random.default_rng(100 + seed), row_sigma=6.0))
+    return discover_drivers(
+        session,
+        duckdb_conn=duck,
+        fact_table_id=tid,
+        run_id=RUN,
+        measure=MEASURE,
+        cluster_key=cluster_key,
+        n_perm=N_PERM,
+        seed=seed,
+    )
+
+
+class TestCandidateGrainRouting:
+    """DAT-561 — route by candidate constancy, not the measure's global ICC.
+
+    The eval-gate residual: at ICC ≈ 0.03 a high-cardinality entity-LEVEL random dim
+    still false-positived under the row-wise null (pseudoreplication — the row-wise null
+    is structurally invalid for an entity-constant candidate at ANY ICC). The fix routes
+    every entity-constant candidate to the entity grain regardless of ICC.
+    """
+
+    def test_entity_constant_dim_never_enters_row_wise_primary(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_catalog(real_session)
+        seeds = 30
+        in_secondary = 0
+        for s in range(seeds):
+            rank = _run_low_icc(real_session, duck, tid, s, cluster_key=CL_ENTITY)
+            # Low ICC → the row-wise family is primary…
+            assert rank.grain == "row"
+            primary = {d for d, _ in rank.ranked_dimensions}
+            # …and it can ONLY contain row-level dims — every entity-constant candidate
+            # was routed to the entity grain (the structural fix; reverting to global-ICC
+            # routing puts entity-level dims back into this row-wise primary → fails here).
+            assert primary.isdisjoint({CL_DRIVER, *CL_ENTITY_NULLS})
+            sec = {d.dimension for d in rank.secondary_dimensions}
+            assert all(d.grain == "entity" for d in rank.secondary_dimensions)
+            in_secondary += CL_ENTITY_NULLS[1] in sec
+        # At the CORRECT (entity) grain the high-K entity-level null is gated at ≈α —
+        # the false positive the row-wise null produced is gone.
+        assert in_secondary <= 2 * ALPHA * seeds, (
+            f"entity-level null surfaced {in_secondary}/{seeds} even at entity grain"
+        )
+
+    def test_low_icc_row_level_recall_preserved(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # AC2: routing entity-constant dims out must not cost low-ICC row-level recall —
+        # the row-wise primary still finds a genuine row-level driver. CL_ROW_NULL is a
+        # null here, but it must remain EVALUABLE (present as a row-level candidate); the
+        # planted row-level driver case is covered by TestWithinEntityPower (high ICC).
+        tid = _seed_catalog(real_session)
+        rank = _run_low_icc(real_session, duck, tid, 0, cluster_key=CL_ENTITY)
+        # The row-level null is a row-wise candidate (could appear in the primary), never
+        # mis-routed to the entity grain.
+        assert all(d.grain == "entity" for d in rank.secondary_dimensions)
+        assert CL_ROW_NULL not in {d.dimension for d in rank.secondary_dimensions}
 
 
 class TestClusterAwareRatio:

@@ -196,10 +196,11 @@ def discover_drivers(
     ``DriverRanking.grain == "entity"``, power scales with entity count). Below the
     threshold, or with no ``cluster_key``, the row-wise null (DAT-545) is used. Only
     entity-LEVEL candidates (constant within entity) participate at entity grain;
-    row-level dims are logged and skipped that pass. Ratio measures stay row-wise for
-    now (cluster-aware ratio is a follow-up). ``max_depth`` applies only to the
-    row-wise path; the entity grain always uses ``max_depth=1`` (recursion at entity
-    grain is low-power — a follow-up).
+    row-level dims are logged and skipped that pass (their within-entity analysis is
+    DAT-561). Ratio enters the cluster-aware path on the same ICC condition as
+    flow/stock (entity statistic = Σnum/Σden, weight = Σden). ``max_depth`` applies
+    only to the row-wise path; the entity grain always uses ``max_depth=1`` (recursion
+    at entity grain is low-power — a follow-up).
 
     NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
     in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add

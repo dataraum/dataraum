@@ -138,8 +138,9 @@ class RatioTarget(Target):
 class EntityMeanTarget(Target):
     """The cluster-aware target for high-ICC measures (DAT-552).
 
-    One row per ENTITY — the entity's mean measure, weighted by its observed (non-NaN)
-    row count — so the permutation null shuffles ENTITIES, not rows (the exchangeable
+    One row per ENTITY — the entity's statistic weighted by its size (mean measure
+    weighted by observed-row count for flow/stock; Σnum/Σden weighted by Σden for
+    ratio) — so the permutation null shuffles ENTITIES, not rows (the exchangeable
     unit when the measure is clustered, DAT-544 E1). Power then scales with entity
     count, not row count. The processor collapses the frame to entity grain and
     supplies entity-level candidate values (constant within entity) before building

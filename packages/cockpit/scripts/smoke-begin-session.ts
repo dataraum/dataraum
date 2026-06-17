@@ -17,8 +17,7 @@
 //   METADATA_DATABASE_URL=postgresql://dataraum:dataraum@localhost:5432/dataraum \
 //   DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001 \
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-//   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
-//   TEMPORAL_TASK_QUEUE=dataraum-pipeline S3_BUCKET=dataraum-lake \
+//   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default S3_BUCKET=dataraum-lake \
 //   SOURCE_PATH=s3://dataraum-lake/invoices.csv,s3://dataraum-lake/payments.csv \
 //   bun run scripts/smoke-begin-session.ts
 
@@ -27,6 +26,7 @@ import { Client, Connection } from "@temporalio/client";
 import { z } from "zod";
 
 import { cockpitDb } from "#/db/cockpit/client";
+import { engineTaskQueueFor } from "#/db/cockpit/registry";
 import { recordRun } from "#/db/cockpit/runs";
 import { actors, workspaces } from "#/db/cockpit/schema";
 import { metadataDb } from "#/db/metadata/client";
@@ -43,7 +43,6 @@ const env = z
 	.object({
 		TEMPORAL_HOST: z.string().min(1),
 		TEMPORAL_NAMESPACE: z.string().min(1),
-		TEMPORAL_TASK_QUEUE: z.string().min(1),
 		DATARAUM_WORKSPACE_ID: z.string().min(1),
 		SOURCE_PATH: z.string().min(1),
 	})
@@ -113,7 +112,11 @@ async function ingest(client: Client): Promise<string[]> {
 	const handle = await client.workflow.start<
 		(p: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
-		taskQueue: env.TEMPORAL_TASK_QUEUE,
+		// The workspace's own queue (`engine-<id>`, DAT-505) — the same scheme the
+		// production driver resolves from the registry (trigger-add-source.ts), NOT
+		// the bare TEMPORAL_TASK_QUEUE env (which predated per-workspace queues and
+		// left the workflow stranded on a queue no worker polls).
+		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
 		args: [input],
 	});

@@ -129,7 +129,6 @@ class TestRunGrainGate:
             "entropy_readiness",
             "entropy_objects",
             "enriched_views",
-            "slicing_views",
             "derived_columns",
         }
         assert set(_RUN_GRAIN_EXEMPT) <= versioned

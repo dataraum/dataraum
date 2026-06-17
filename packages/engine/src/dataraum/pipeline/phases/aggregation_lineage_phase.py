@@ -1,11 +1,10 @@
-"""Aggregation-lineage phase (DAT-491) — events→measure rollup discovery.
+"""Aggregation-lineage phase (DAT-491/536) — events→measure rollup discovery.
 
-Session value phase, runs after ``temporal_slice_analysis``: discovery is
-deterministic arithmetic over the slice substrate that phase just persisted
-(per-(slice value, period) sums on ``TemporalSliceAnalysis.column_sums``),
-paired across facts by the shared slice dimensions the slicing agent chose.
-No LLM call and no SQL — the LLM judgments this depends on (slice dimensions,
-time axes, enriched joins) were all made upstream by the agents that own them.
+Session value phase: discovery aggregates inline (one ``GROUP BY dim, period``
+over each fact's enriched view, DAT-536) and reconciles the per-(slice value,
+period) sums across facts sharing a catalog slice dimension. No LLM call — the
+judgments this depends on (slice dimensions, time axes, enriched joins) were all
+made upstream by the agents that own them.
 
 The phase declares the ``temporal_behavior`` detector in ``pipeline.yaml``, so
 the terminal ``session_detect`` re-adjudicates stock/flow with the
@@ -64,6 +63,7 @@ class AggregationLineagePhase(BasePhase):
         run_id = ctx.require_run_id()
         persisted = discover_aggregation_lineage(
             ctx.session,
+            duckdb_conn=ctx.duckdb_conn,
             table_ids=ctx.table_ids or [],
             run_id=run_id,
             period_grain=str(ctx.config.get("time_grain", "monthly")),

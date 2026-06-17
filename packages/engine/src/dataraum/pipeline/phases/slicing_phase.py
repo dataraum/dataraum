@@ -17,10 +17,8 @@ from dataraum.analysis.slicing.agent import SlicingAgent
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import (
     SliceRecommendation,
-    SliceSQL,
     SlicingAnalysisResult,
 )
-from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -59,10 +57,10 @@ class SlicingPhase(BasePhase):
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip only when THIS run already produced slice definitions (DAT-448).
 
-        Definitions (and their ``sql_template`` DDL) are run-versioned: a fresh
-        run always re-derives against its own enriched views — silent cross-run
-        reuse of stale definitions was the DAT-405 bug class. The run-scoped
-        check keeps the activity idempotent under Temporal retry.
+        Catalog definitions are run-versioned: a fresh run always re-derives
+        against its own enriched views — silent cross-run reuse of stale
+        definitions was the DAT-405 bug class. The run-scoped check keeps the
+        activity idempotent under Temporal retry.
         """
         fact_tables = self._get_fact_tables(ctx)
 
@@ -212,7 +210,7 @@ class SlicingPhase(BasePhase):
 
         # Propagate enriched FK dimension recommendations to other tables
         # that share the same dimension column
-        slicing = self._propagate_enriched_dimensions(slicing, context_data, agent)
+        slicing = self._propagate_enriched_dimensions(slicing, context_data)
 
         # Land the agent's time-axis judgments (DAT-491): fill the canonical
         # ``TableEntity.time_column`` where semantic_per_table left it None —
@@ -278,7 +276,13 @@ class SlicingPhase(BasePhase):
                 "reasoning": rec.reasoning,
                 "business_context": rec.business_context,
                 "confidence": rec.confidence,
-                "sql_template": rec.sql_template,
+                # grain_safe (DAT-536): the catalog's grain-safety flag for
+                # downstream GROUP BY consumers (answer agent, driver tree). True
+                # by construction — ``_get_fact_tables`` only slices facts whose
+                # enriched view is grain-verified, so every cataloged dimension on
+                # it is safe to aggregate; the flag denormalizes that provenance so
+                # consumers needn't re-derive it.
+                "grain_safe": True,
                 "detection_source": "llm",
             }
         upsert(
@@ -291,12 +295,11 @@ class SlicingPhase(BasePhase):
         return PhaseResult.success(
             outputs={
                 "slice_definitions": len(slicing.recommendations),
-                "slice_queries": len(slicing.slice_queries),
                 "tables_analyzed": [t.table_name for t in unsliced_tables],
             },
             records_processed=len(unsliced_tables),
             records_created=len(slicing.recommendations),
-            summary=f"{len(slicing.recommendations)} definitions, {len(slicing.slice_queries)} queries",
+            summary=f"{len(slicing.recommendations)} slice definitions",
         )
 
     def _pre_filter_columns(self, context_data: dict[str, Any]) -> None:
@@ -354,18 +357,16 @@ class SlicingPhase(BasePhase):
         self,
         result: SlicingAnalysisResult,
         context_data: dict[str, Any],
-        agent: SlicingAgent,
     ) -> SlicingAnalysisResult:
         """Copy enriched FK dim recommendations to all tables sharing the same dimension column.
 
         When the LLM recommends an enriched dimension (e.g. ``account_id__account_type``)
         for one fact table, this method finds other fact tables that also have that
-        enriched column and creates matching recommendations + SQL for them.
+        enriched column and creates matching catalog recommendations for them.
 
         Args:
             result: LLM slicing analysis result.
             context_data: Context data with table/column metadata.
-            agent: Slicing agent (for SQL generation helpers).
 
         Returns:
             Updated result with propagated recommendations.
@@ -387,7 +388,6 @@ class SlicingPhase(BasePhase):
             existing_recs.add((rec.table_name, rec.column_name))
 
         new_recs: list[SliceRecommendation] = []
-        new_queries: list[SliceSQL] = []
 
         for rec in result.recommendations:
             col_name = rec.column_name
@@ -408,24 +408,6 @@ class SlicingPhase(BasePhase):
                 if not target_col_id:
                     continue
 
-                # Build SQL using target table's enriched view if present;
-                # otherwise read from the typed table by its bare duckdb_path
-                # (connection USEs ``lake.typed`` so unqualified resolves).
-                # ``duckdb_path`` is always set by the loader/typing phases —
-                # KeyError here means upstream invariant was broken.
-                enriched_view = tdata.get("enriched_duckdb_path")
-                duckdb_table = enriched_view or tdata["duckdb_path"]
-
-                # Name the propagated slices off the target fact's source-qualified
-                # duckdb_path (DAT-356), consistent with the agent + the matchers.
-                target_source_key = tdata["duckdb_path"]
-                sql_template = agent._build_sql_template(
-                    duckdb_table,
-                    col_name,
-                    rec.distinct_values,
-                    source_key=target_source_key,
-                )
-
                 new_rec = SliceRecommendation(
                     table_id=tdata.get("table_id", ""),
                     table_name=target_table_name,
@@ -437,24 +419,9 @@ class SlicingPhase(BasePhase):
                     reasoning=f"Propagated from {rec.table_name}: {rec.reasoning}",
                     business_context=rec.business_context,
                     confidence=rec.confidence,
-                    sql_template=sql_template,
                 )
                 new_recs.append(new_rec)
                 existing_recs.add((target_table_name, col_name))
-
-                # Generate slice queries for the new table
-                for value in rec.distinct_values:
-                    slice_name = slice_table_name(target_source_key, col_name, value)
-
-                    sql_query = agent._build_slice_sql(duckdb_table, col_name, value, slice_name)
-                    new_queries.append(
-                        SliceSQL(
-                            slice_name=f"{col_name}={value}",
-                            slice_value=str(value),
-                            table_name=slice_name,
-                            sql_query=sql_query,
-                        )
-                    )
 
                 logger.info(
                     "propagated_enriched_dimension",
@@ -465,7 +432,6 @@ class SlicingPhase(BasePhase):
 
         if new_recs:
             result.recommendations.extend(new_recs)
-            result.slice_queries.extend(new_queries)
 
         return result
 

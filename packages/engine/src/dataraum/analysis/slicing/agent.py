@@ -14,11 +14,9 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.models import (
     SliceRecommendation,
-    SliceSQL,
     SlicingAnalysisOutput,
     SlicingAnalysisResult,
 )
-from dataraum.analysis.slicing.naming import slice_table_name
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import DecisionSource, Result
 from dataraum.llm.features._base import LLMFeature
@@ -172,7 +170,6 @@ class SlicingAgent(LLMFeature):
             Result containing SlicingAnalysisResult
         """
         recommendations: list[SliceRecommendation] = []
-        slice_queries: list[SliceSQL] = []
 
         # Build lookup maps
         table_map = {t["table_name"]: t for t in context_data.get("tables", [])}
@@ -214,20 +211,6 @@ class SlicingAgent(LLMFeature):
                 top_values = col_info.get("top_values", [])
                 distinct_values = [v.get("value", "") for v in top_values]
 
-            # Use enriched view if available, otherwise read the typed table by
-            # its bare duckdb_path (connection USEs ``lake.typed`` so unqualified
-            # resolves). ``duckdb_path`` is always set by the loader/typing
-            # phases — KeyError here means upstream invariant was broken.
-            enriched_view = table_info.get("enriched_duckdb_path")
-            duckdb_table = enriched_view or table_info["duckdb_path"]
-            # Name slices off the fact's source-qualified duckdb_path (DAT-356),
-            # never the bare table_name — two same-named facts in different sources
-            # must not collide on a shared lake name.
-            source_key = table_info["duckdb_path"]
-            sql_template = self._build_sql_template(
-                duckdb_table, column_name, distinct_values, source_key=source_key
-            )
-
             recommendation = SliceRecommendation(
                 table_id=table_info.get("table_id", ""),
                 table_name=table_name,
@@ -239,28 +222,11 @@ class SlicingAgent(LLMFeature):
                 reasoning=rec.reasoning,
                 business_context=rec.business_context,
                 confidence=rec.confidence,
-                sql_template=sql_template,
             )
             recommendations.append(recommendation)
 
-            # Generate individual slice SQL queries
-            for value in distinct_values:
-                slice_name = slice_table_name(source_key, column_name, value)
-
-                sql_query = self._build_slice_sql(duckdb_table, column_name, value, slice_name)
-
-                slice_queries.append(
-                    SliceSQL(
-                        slice_name=f"{column_name}={value}",
-                        slice_value=str(value),
-                        table_name=slice_name,
-                        sql_query=sql_query,
-                    )
-                )
-
         result = SlicingAnalysisResult(
             recommendations=recommendations,
-            slice_queries=slice_queries,
             # The per-table time-axis judgments (DAT-491); only tables the agent
             # actually analyzed count — hallucinated names resolve to nothing.
             time_columns={
@@ -274,73 +240,6 @@ class SlicingAgent(LLMFeature):
         )
 
         return Result.ok(result)
-
-    def _build_sql_template(
-        self,
-        table_name: str,
-        column_name: str,
-        distinct_values: list[str],
-        *,
-        source_key: str,
-    ) -> str:
-        """Build SQL template for creating all slices.
-
-        Args:
-            table_name: Source table/view name to read FROM (e.g. enriched view).
-            column_name: Column to slice on.
-            distinct_values: List of values to create slices for.
-            source_key: The fact's source-qualified ``duckdb_path``, used to name
-                the slice tables (DAT-356) — never the bare table name.
-
-        Returns:
-            SQL template string
-        """
-        lines = [f"-- Slicing on {column_name} ({len(distinct_values)} slices)"]
-        lines.append(f"-- Source table: {table_name}")
-        lines.append("")
-
-        for value in distinct_values:
-            slice_table = slice_table_name(source_key, column_name, value)
-
-            # Use proper quoting for column names with spaces
-            quoted_column = f'"{column_name}"'
-            escaped_value = str(value).replace("'", "''")
-
-            lines.append(f"-- Slice: {column_name} = '{value}'")
-            lines.append(f"CREATE OR REPLACE VIEW {slice_table} AS")
-            lines.append(f"SELECT * FROM {table_name}")
-            lines.append(f"WHERE {quoted_column} = '{escaped_value}';")
-            lines.append("")
-
-        return "\n".join(lines)
-
-    def _build_slice_sql(
-        self,
-        source_table: str,
-        column_name: str,
-        value: str,
-        target_table: str,
-    ) -> str:
-        """Build SQL for a single slice.
-
-        Args:
-            source_table: Source table name
-            column_name: Column to filter on
-            value: Value to filter for
-            target_table: Name for the slice table
-
-        Returns:
-            DuckDB SQL query
-        """
-        # Quote column name to handle spaces and special chars
-        quoted_column = f'"{column_name}"'
-
-        # Escape single quotes in value
-        escaped_value = str(value).replace("'", "''")
-
-        return f"""CREATE OR REPLACE VIEW {target_table} AS
-SELECT * FROM {source_table}
-WHERE {quoted_column} = '{escaped_value}';"""
 
 
 __all__ = ["SlicingAgent"]

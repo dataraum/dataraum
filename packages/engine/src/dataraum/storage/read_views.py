@@ -74,9 +74,7 @@ _CATALOG_GRAIN: dict[str, str] = {
     "relationships": "catalog",
     "table_entities": "catalog",
     "enriched_views": "catalog",
-    "slicing_views": "catalog",
     "slice_definitions": "catalog",
-    "temporal_slice_analyses": "catalog",
     "derived_columns": "catalog",
     "measure_aggregation_lineage": "catalog",  # begin_session aggregation_lineage (DAT-491)
     "lifecycle_artifacts": "operating_model",
@@ -127,12 +125,6 @@ _RUN_GRAIN_EXEMPT: dict[str, str] = {
         "(entropy/engine.py run-scoped clear)"
     ),
     "enriched_views": (
-        "latest-only, name-keyed (DAT-506): a materialized view is name-unique in "
-        "the workspace (UNIQUE(fact_table_id)), its content per-run; DuckLake native "
-        "snapshots version the artifact, not a Postgres run_id row axis — so no "
-        "(key, run_id) UNIQUE on the metadata row"
-    ),
-    "slicing_views": (
         "latest-only, name-keyed (DAT-506): a materialized view is name-unique in "
         "the workspace (UNIQUE(fact_table_id)), its content per-run; DuckLake native "
         "snapshots version the artifact, not a Postgres run_id row axis — so no "

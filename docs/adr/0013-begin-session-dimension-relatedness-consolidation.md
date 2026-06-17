@@ -1,9 +1,51 @@
 # ADR-0013 — Consolidate begin_session's dimension & relatedness output (DAT-514)
 
-- **Status:** Accepted
+- **Status:** Accepted; **amended 2026-06-17** (one-view model — see Amendment)
 - **Date:** 2026-06-16
 - **Ticket:** DAT-514 (epic "Stabilise relationships and slices discovery"); spike DAT-535
 - **Design doc:** Confluence DD/36798466
+
+## Amendment (2026-06-17): one-view model — the aggregation-view substrate is dropped
+
+Reviewing DAT-536 (P1) under the light of DAT-543 (driver discovery) collapsed the original
+decision's justification for *building* an aggregation-view substrate. The "Keep the witness;
+replace slice materialization with aggregation VIEWS" bullet below is **superseded in part**:
+we still kill the slice sprawl and still re-point the witness off the enriched view behind the
+same equivalence gate — but we do **not** build named, recipe-versioned aggregation views.
+
+Why: the substrate was justified by **three** consumers. Under DAT-543 only one is live, and it
+runs once:
+- **Driver tree (DAT-543/545)** — reads `enriched_view` at **row grain**, never a pre-summed
+  view, because its (A) dim-present / (B) missingness-concentration gates need the raw NULL rows
+  a `GROUP BY` has already discarded. It also searches dimension *combinations* (recursive splits,
+  per measure, on demand) — combinatorial, so a fixed one-view-per-dimension set is the wrong
+  *shape* for it regardless.
+- **Catalog** — its readers consume `SliceDefinition` *metadata*, not a physical view; "each
+  cataloged dimension *is* an aggregation view" was a conceptual flourish, not a dependency.
+- **Metrics page** — north-star, and per this ADR itself Haiku-composed-SQL on demand, not
+  pre-built views.
+
+That leaves the `structural_reconciliation` witness as the sole live consumer, and it runs **once
+per session over single dimensions** — a lazy view caches nothing, so a named/recipe-versioned
+view for one once-per-run reader is speculative generality.
+
+**Revised decision — separate the two concerns:**
+- begin_session **evaluates** the dimensional/aggregation *quality vectors* — grain-safety,
+  cardinality, FD/hierarchy edges (DAT-537), and later driver rankings (DAT-545) — and promotes
+  that **catalog metadata** downstream. This is the durable value of the slice/dice phase.
+- **Materializing** slices/aggregations *for reuse* is deferred to the downstream consumers that
+  actually need a concrete artifact — the SQL / graph / answer agents and a future
+  metrics-exploration agent — composed on demand as SQL, and promoted to a materialized table
+  only on a measured hot path. Reusability is their concern, not begin_session's.
+- The witness computes its per-(dim-value, period) sums **inline** over the enriched view (a
+  CTE/subquery keyed by the catalog's `distinct_values`, `WHERE time IS NOT NULL`, same numeric
+  column set) — no named view, no aggregation `MaterializationRecipe`, no versioning discipline.
+  Same equivalence gate (verdicts unchanged on `detection-stockflow-events-v1`), simpler mechanism.
+
+Net change to the model below: **one-view** (`enriched_view`) + inline witness aggregation,
+**not** a two-view (`enriched_view` + `aggregation_view`) model. Everything else in this ADR —
+the catalog promotion, `grain_safe`-is-free, the g3 FD/hierarchy pass, the `dimensional_entropy`
+cut, the dead-correlation cut, the slice-sprawl removal list — stands unchanged.
 
 ## Context
 
@@ -42,7 +84,9 @@ Eval results (kill-gate, recorded as evidence):
 Reframe DAT-514 to **consolidate the dimension declaration and keep the proven machinery** —
 almost nothing is deleted:
 
-- **Keep the witness; replace slice materialization with aggregation VIEWS.** The
+- **Keep the witness; replace slice materialization with aggregation VIEWS.** *(Superseded in
+  part by the 2026-06-17 Amendment: the witness is kept and re-pointed off the enriched view, but
+  the aggregation views are NOT built — the witness aggregates inline; see Amendment.)* The
   `structural_reconciliation` witness, `reconcile`, and `MeasureAggregationLineage` are
   eval-justified and stay. Their input — per-(dimension-value, period) numeric sums — is
   **path-independent**: `temporal_slice` is `FROM {slice_table} … GROUP BY period` per
@@ -112,8 +156,9 @@ the method that caught the `loaders.py:757` orphan and falsified the original "d
   `sql_template`; the `slice_table_name` collision guard; and the defined-but-never-queried cockpit
   views `currentSlicingViews` / `currentTemporalSliceAnalyses` (+ their `read_views.py` catalog
   registrations). `schema.sql` regenerated; `schema-drift` gate green.
-- **New:** the dimension catalog (declaration consolidation) + **aggregation views** (replacing
-  slices) + the g3 FD/hierarchy pass (its own phase — additive, not core to the catalog v1).
+- **New:** the dimension catalog (declaration consolidation) + the g3 FD/hierarchy pass (its own
+  phase — additive, not core to the catalog v1). *(Per the Amendment: no aggregation-view
+  substrate — the witness aggregates inline over the enriched view.)*
 - **Cut:** `dimensional_entropy` (detector + loss row + `expected_dependency` teach — failed its
   eval gate) and the dead Pearson/Spearman numeric correlation.
 - **Dropped from the original plan:** the brutal delete, the stock/flow "rescue," and the
@@ -125,7 +170,7 @@ the method that caught the `loaders.py:757` orphan and falsified the original "d
   aggregation opportunities, composed by a Haiku agent + validated with polyglot (not a
   deterministic composer). Per-metric base-grain lands when that does.
 - **Follow-ups / risks:** g3 FD false positives on thin domains (mitigate with min-support +
-  teach-confirm); the FD pass + aggregation-view substrate are genuinely new work; the
-  aggregation-view switch is gated on the equivalence proof (witness verdicts unchanged). Eval
+  teach-confirm); the FD pass is genuinely new work; the witness re-point (inline aggregation
+  over the enriched view) is gated on the equivalence proof (witness verdicts unchanged). Eval
   caveat: both kill-gate results are small-n directional reads — widen the corpora before
   treating reliabilities as final.

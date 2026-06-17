@@ -23,7 +23,6 @@
 //   DATARAUM_LAKE_PATH=/var/lib/dataraum/lake \
 //   ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
-//   TEMPORAL_TASK_QUEUE=dataraum-pipeline \
 //   S3_BUCKET=dataraum-lake \
 //   SOURCE_PATH=s3://dataraum-lake/invoices.csv,s3://dataraum-lake/payments.csv \
 //   bun run scripts/smoke-add-source.ts
@@ -32,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import { count, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { engineTaskQueueFor } from "#/db/cockpit/registry";
 import { recordRun } from "#/db/cockpit/runs";
 import { metadataDb } from "#/db/metadata/client";
 import { configOverlay } from "#/db/metadata/schema";
@@ -45,7 +45,6 @@ const env = z
 	.object({
 		TEMPORAL_HOST: z.string().min(1),
 		TEMPORAL_NAMESPACE: z.string().min(1),
-		TEMPORAL_TASK_QUEUE: z.string().min(1),
 		DATARAUM_WORKSPACE_ID: z.string().min(1),
 		// Object-store bucket holding both the lake and uploaded source files.
 		S3_BUCKET: z.string().min(1).default("dataraum-lake"),
@@ -127,7 +126,11 @@ async function runInitial(
 	const handle = await client.workflow.start<
 		(input: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
-		taskQueue: env.TEMPORAL_TASK_QUEUE,
+		// The workspace's own queue (`engine-<id>`, DAT-505) — the scheme the
+		// production driver resolves from the registry, NOT the bare
+		// TEMPORAL_TASK_QUEUE env (which predated per-workspace queues and stranded
+		// the workflow on a queue no worker polls).
+		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
 		args: [input],
 	});

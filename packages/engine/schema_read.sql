@@ -237,16 +237,6 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
-DROP VIEW IF EXISTS __READ__.current_slicing_views;
-CREATE VIEW __READ__.current_slicing_views AS
-SELECT r.* FROM __WS__.slicing_views r
-WHERE EXISTS (
-  SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'catalog'
-    AND h.stage = 'catalog'
-    AND h.run_id = r.run_id
-);
-
 DROP VIEW IF EXISTS __READ__.snippet_usage;
 CREATE VIEW __READ__.snippet_usage AS
 SELECT * FROM __WS__.snippet_usage;
@@ -306,16 +296,6 @@ WHERE EXISTS (
     ON h.target = 'table:' || c.table_id
   WHERE c.column_id = r.column_id
     AND h.stage = 'generation'
-    AND h.run_id = r.run_id
-);
-
-DROP VIEW IF EXISTS __READ__.current_temporal_slice_analyses;
-CREATE VIEW __READ__.current_temporal_slice_analyses AS
-SELECT r.* FROM __WS__.temporal_slice_analyses r
-WHERE EXISTS (
-  SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'catalog'
-    AND h.stage = 'catalog'
     AND h.run_id = r.run_id
 );
 

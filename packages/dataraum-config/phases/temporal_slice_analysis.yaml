@@ -1,9 +1,0 @@
-# Temporal slice analysis settings
-# time_column: Override per-table semantic annotation (optional, rarely needed).
-# Resolved automatically from TableEntity.time_column per table.
-
-# Time granularity: daily, weekly, monthly
-time_grain: monthly
-
-# JS divergence threshold for drift detection
-drift_threshold: 0.1

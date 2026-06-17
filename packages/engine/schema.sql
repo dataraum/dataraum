@@ -118,25 +118,6 @@ CREATE INDEX ix_sql_snippets_standard_field ON sql_snippets (standard_field);
 
 CREATE INDEX ix_sql_snippets_workspace_id ON sql_snippets (workspace_id);
 
-CREATE TABLE temporal_slice_analyses (
-	id VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	slice_table_name VARCHAR(255) NOT NULL, 
-	time_column VARCHAR(255) NOT NULL, 
-	period_label VARCHAR(50) NOT NULL, 
-	period_start DATE NOT NULL, 
-	period_end DATE NOT NULL, 
-	row_count INTEGER, 
-	column_sums JSON, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_temporal_slice_analyses PRIMARY KEY (id), 
-	CONSTRAINT uq_tsa_slice_period_run UNIQUE (slice_table_name, period_label, run_id)
-);
-
-CREATE INDEX ix_temporal_slice_analyses_period_label ON temporal_slice_analyses (period_label);
-
-CREATE INDEX ix_temporal_slice_analyses_slice_table_name ON temporal_slice_analyses (slice_table_name);
-
 CREATE TABLE validation_results (
 	result_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -302,22 +283,6 @@ CREATE TABLE run_tables (
 );
 
 CREATE INDEX idx_run_tables_table ON run_tables (table_id);
-
-CREATE TABLE slicing_views (
-	view_id VARCHAR NOT NULL, 
-	fact_table_id VARCHAR NOT NULL, 
-	view_name VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	slice_definition_ids JSON, 
-	slice_columns JSON, 
-	is_grain_verified BOOLEAN NOT NULL, 
-	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
-	CONSTRAINT pk_slicing_views PRIMARY KEY (view_id), 
-	CONSTRAINT uq_slicing_view_fact_table UNIQUE (fact_table_id), 
-	CONSTRAINT fk_slicing_views_fact_table_id_tables FOREIGN KEY(fact_table_id) REFERENCES tables (table_id)
-);
-
-CREATE INDEX ix_slicing_views_run_id ON slicing_views (run_id);
 
 CREATE TABLE table_entities (
 	entity_id VARCHAR NOT NULL, 
@@ -541,7 +506,7 @@ CREATE TABLE slice_definitions (
 	reasoning TEXT, 
 	business_context TEXT, 
 	confidence FLOAT, 
-	sql_template TEXT, 
+	grain_safe BOOLEAN NOT NULL, 
 	detection_source VARCHAR NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 

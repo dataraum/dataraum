@@ -72,15 +72,12 @@ def worker_activities(phase_activities: PhaseActivities) -> list[object]:
         phase_activities.run_begin_session_select,
         phase_activities.run_relationships,
         phase_activities.run_semantic_per_table,
-        # DAT-491 events→measure lineage — the structural witness's supply
-        # step (executes in the value order, after temporal_slice_analysis).
+        # DAT-491/536 events→measure lineage — the structural witness's supply
+        # step (inline aggregation over the enriched views, in the value order).
         phase_activities.run_aggregation_lineage,
         phase_activities.run_enriched_views,
         # DAT-403 value layer — runs after enriched_views.
         phase_activities.run_slicing,
-        phase_activities.run_slicing_view,
-        phase_activities.run_slice_analysis,
-        phase_activities.run_temporal_slice_analysis,
         phase_activities.run_correlations,
         # DAT-408/409 begin_session: materialize durable overlays →
         # terminal detect → silent-accept keepers → promote.

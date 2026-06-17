@@ -309,9 +309,7 @@ def _analysis_result(time_columns: dict[str, str]) -> Result[SlicingAnalysisResu
     the single-fact-table contexts below keep ``_propagate_enriched_dimensions``
     a no-op (it needs >= 2 tables) — no mocked-agent internals can leak into rows.
     """
-    return Result.ok(
-        SlicingAnalysisResult(recommendations=[], slice_queries=[], time_columns=time_columns)
-    )
+    return Result.ok(SlicingAnalysisResult(recommendations=[], time_columns=time_columns))
 
 
 @patch("dataraum.pipeline.phases.slicing_phase.SlicingAgent")
@@ -510,14 +508,12 @@ class TestSliceDefinitionWriterIdempotent:
             value_count=2,
             reasoning="status partitions",
             confidence=confidence,
-            sql_template="CREATE OR REPLACE VIEW x AS SELECT 1",
         )
         # The same dimension twice in one batch (agent duplicate) — the
         # in-batch dedup must keep one row (last wins).
         return Result.ok(
             SlicingAnalysisResult(
                 recommendations=[rec, rec.model_copy(update={"confidence": confidence})],
-                slice_queries=[],
                 time_columns={},
             )
         )
@@ -600,7 +596,7 @@ class TestSliceDefinitionWriterIdempotent:
                 "value_count": 2,
                 "reasoning": "status partitions",
                 "confidence": confidence,
-                "sql_template": "CREATE OR REPLACE VIEW x AS SELECT 1",
+                "grain_safe": True,
                 "detection_source": "llm",
             }
 

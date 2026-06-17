@@ -11,23 +11,14 @@ from dataraum.analysis.slicing.db_models import (
 )
 from dataraum.analysis.slicing.models import (
     SliceRecommendation,
-    SliceSQL,
     SlicingAnalysisResult,
-)
-from dataraum.analysis.slicing.slice_runner import (
-    SliceTableInfo,
-    register_slice_tables,
 )
 
 __all__ = [
     # Main entry points
     "SlicingAgent",
-    # Slice runner
-    "register_slice_tables",
-    "SliceTableInfo",
     # Models
     "SliceRecommendation",
-    "SliceSQL",
     "SlicingAnalysisResult",
     # DB Models
     "SliceDefinition",

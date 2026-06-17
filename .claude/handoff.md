@@ -4,6 +4,34 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-17: DAT-536 — slice materialization removed; witness substrate re-pointed inline; dimensional_entropy no longer runs
+
+The slice sprawl is gone (ADR-0013 one-view model). The
+`structural_reconciliation` witness of `temporal_behavior` (stock/flow) now gets
+its per-(dimension-value, period) sums by **inline aggregation** — one
+`GROUP BY dim, period` over each fact's enriched view in the `aggregation_lineage`
+phase — instead of the materialized `slice_*` tables → `TemporalSliceAnalysis`
+substrate. **Verdict-equivalent** (proven byte-identical per cell on the current
+code before the cut; the witness verdicts are unchanged by construction).
+
+Removed: the `slicing_view`, `slice_analysis`, `temporal_slice_analysis` phases +
+their worker activities; the `temporal_slicing` module; `TemporalSliceAnalysis`
+and `slicing_views` tables; per-value `slice_*` materialization; the slicing
+agent's slice-SQL generation. `SliceDefinition` is now the **dimension catalog**:
+`sql_template` dropped, `grain_safe` (Boolean) added.
+
+**`dimensional_entropy` no longer runs.** It was already DEMOTED off the loss path
+(2026-06-16 entry below — informative DirectSignal). Its only run site was the
+`temporal_slice_analysis` phase, now removed, so it produces **no** EntropyObject
+at all this run. Its formal removal (detector module + `expected_dependency` teach
++ any residual config) stays **DAT-539**.
+
+### dataraum-eval
+- **Affects engine phases/tables**: `slicing_view` / `slice_analysis` / `temporal_slice_analysis` phases removed; `slice_definitions` schema changed (`-sql_template`, `+grain_safe`); `slicing_views` + `temporal_slice_analyses` tables (and the `current_slicing_views` / `current_temporal_slice_analyses` read views) dropped. Engine `schema.sql` + `schema_read.sql` regenerated; cockpit drizzle mirror regenerated.
+- **Re-point**: any eval driver/probe that asserts slice or temporal-slice tables, or reads a `dimensional_entropy` EntropyObject, must drop those assertions. The stock/flow witness behaviour on `detection-stockflow-events-v1` should be **unchanged** — re-pin it as the equivalence check (engine-side it's `tests/unit/analysis/lineage/test_processor.py`, DuckDB-fixture verdicts).
+- **Calibrate**: no detector recall/precision change is intended (the reconciliation arithmetic is untouched; only its substrate path changed). `dimensional_entropy` disposition: now **not produced** in begin_session (was already `informative`); the DAT-539 cut finalizes it.
+- **Status**: pending
+
 ## 2026-06-16: refactor — dimensional_entropy DEMOTED off the loss path (informative DirectSignal)
 
 `dimensional_entropy` (cross-column NMI) was removed from `loss.yaml` (it had

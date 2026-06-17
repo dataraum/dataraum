@@ -63,28 +63,19 @@ phases:
     detectors: [dimension_coverage]
 
   slicing:
-    description: LLM-powered slice dimension identification
-
-  slicing_view:
-    description: Create slicing views narrowed to slice-relevant columns
-
-  slice_analysis:
-    description: Execute slice SQL and analyze slice tables
-    # No detector: slice_variance was cut (DAT-442 reset). The phase still runs
-    # to build the slice profiles dimensional_entropy reads in
-    # temporal_slice_analysis.
-
-  temporal_slice_analysis:
-    description: Distribution drift analysis on slices
-    detectors: [dimensional_entropy]  # temporal_drift cut (DAT-442 reset)
+    description: LLM-powered slice dimension identification (the dimension catalog)
+    # DAT-536: slice materialization (slicing_view / slice_analysis /
+    # temporal_slice_analysis) removed — the structural_reconciliation substrate is
+    # now aggregated inline over the enriched views in aggregation_lineage.
+    # dimensional_entropy lost its run site here; its formal cut is DAT-539.
 
   aggregation_lineage:
-    description: Events→measure rollup discovery over the slice substrate (deterministic)
-    # temporal_behavior is declared HERE TOO (DAT-491): at the session detect
-    # the measurement re-adjudicates with the data-grounded
-    # structural_reconciliation witness this phase just persisted — the witness
-    # that escapes name-anchoring. At add_source detect (no lineage rows for
-    # that run) the witness abstains and the two-witness behaviour is unchanged.
+    description: Events→measure rollup discovery, inline-aggregated over enriched views
+    # temporal_behavior is declared HERE (DAT-491/536): at the session detect the
+    # measurement re-adjudicates with the data-grounded structural_reconciliation
+    # witness this phase just produced (inline GROUP BY over the enriched views) —
+    # the witness that escapes name-anchoring. At add_source detect (no lineage rows
+    # for that run) the witness abstains and the two-witness behaviour is unchanged.
     detectors: [temporal_behavior]
 
   correlations:

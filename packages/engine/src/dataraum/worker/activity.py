@@ -101,27 +101,20 @@ _DETECTOR_PHASES = (
 # ``detect`` runs: ``semantic_per_table`` declares the relationship detectors
 # (join_path_determinism + relationship_entropy, DAT-408); ``enriched_views``
 # declares ``dimension_coverage`` (table-grain fact-table enrichment coverage,
-# DAT-415); the value layer (DAT-403) declares ``dimensional_entropy``
-# (temporal_slice_analysis), ``temporal_behavior`` (aggregation_lineage,
-# DAT-491 — the session re-adjudication with the structural witness) and
-# ``derived_value`` (correlations) — column/table-grain
-# value-readiness signals over the slices + enriched views the begin_session spine
-# just built. (slice_analysis still runs — temporal_slice_analysis + validation read
-# its slice tables — but it produces no entropy detector now: dimensional_entropy reads
-# typed values directly via NMI (DAT-442/472), and slice_variance / temporal_drift / the
-# per-column ColumnSliceProfile production were cut in the DAT-442 reset.) Distinct from the
+# DAT-415); the value layer (DAT-403/536) declares ``temporal_behavior``
+# (aggregation_lineage, DAT-491 — the session re-adjudication with the structural
+# witness, supplied by inline aggregation over the enriched views) and
+# ``derived_value`` (correlations) — column/table-grain value-readiness signals over
+# the enriched views the begin_session spine just built. Distinct from the
 # source-scoped ``_DETECTOR_PHASES`` so add_source never runs these and begin_session
 # never runs the column-profiling ones. A declared detector whose inputs are absent
-# (no slice profiles / drift / derived columns) simply produces no objects — the
-# value detectors no-op cleanly on a relationship-only run. Public (imported by
-# ``activities.py`` + tests).
+# (no derived columns) simply produces no objects — the value detectors no-op cleanly
+# on a relationship-only run. Public (imported by ``activities.py`` + tests).
 SESSION_DETECTOR_PHASES = (
     "relationships",
     "semantic_per_table",
     "aggregation_lineage",
     "enriched_views",
-    "slice_analysis",
-    "temporal_slice_analysis",
     "correlations",
 )
 

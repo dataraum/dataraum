@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -29,10 +30,13 @@ if TYPE_CHECKING:
 
 
 class SliceDefinition(Base):
-    """Stores slice definitions for a table.
+    """The dimension catalog: one recommended aggregation/filter dimension per row.
 
-    Each record represents a recommended slicing dimension,
-    with the column to slice on and the SQL to create slices.
+    Each record is a grain-safe dimension a fact can be sliced/grouped by — the
+    durable output of the slicing phase, consumed downstream by the answer agent,
+    the metrics page, and the driver-tree engine (DAT-545). Slice *materialization*
+    was removed (DAT-536): the structural_reconciliation substrate is aggregated
+    inline over the enriched views, so there is no ``sql_template`` to store.
 
     One definition per ``(table_id, column_name, run_id)`` (DAT-502): the
     slicing agent can emit a dimension twice and the propagation pass adds
@@ -50,8 +54,8 @@ class SliceDefinition(Base):
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     # Snapshot version axis (DAT-448): the begin_session run that derived this
-    # definition (and its sql_template DDL). Definitions were table-scoped and
-    # immortal before — stale cross-run reuse was the DAT-405 bug class.
+    # definition. Definitions were table-scoped and immortal before — stale
+    # cross-run reuse was the DAT-405 bug class.
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
     column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
@@ -71,8 +75,12 @@ class SliceDefinition(Base):
     business_context: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float | None] = mapped_column(Float)
 
-    # SQL template
-    sql_template: Mapped[str | None] = mapped_column(Text)
+    # Catalog grain-safety (DAT-536): safe to GROUP BY without fan-out. True by
+    # construction — slicing only runs on facts with a grain-verified enriched
+    # view (= EnrichedView.is_grain_verified), so every cataloged dimension is
+    # grain-safe; denormalized here so downstream GROUP BY consumers (answer
+    # agent, driver tree) read it without re-deriving.
+    grain_safe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Provenance
     detection_source: Mapped[str] = mapped_column(String, nullable=False, default="llm")

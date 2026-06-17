@@ -301,13 +301,13 @@ class PhaseActivities:
 
     @activity.defn(name="aggregation_lineage")
     def run_aggregation_lineage(self, payload: SessionScopedInput) -> PhaseOutcome:
-        """Aggregation-lineage activity — events→measure rollup discovery (DAT-491).
+        """Aggregation-lineage activity — events→measure rollup discovery (DAT-491/536).
 
-        Deterministic arithmetic over the slice substrate (per-period sums
-        persisted by ``temporal_slice_analysis``, paired across facts by their
-        shared slice dimensions) — NO LLM call. Reconciled lineage persists
-        run-versioned, feeding the ``structural_reconciliation`` witness at the
-        terminal ``session_detect``.
+        Deterministic inline aggregation (one ``GROUP BY dim, period`` over each
+        fact's enriched view, paired across facts by their shared catalog slice
+        dimensions) — NO LLM call. Reconciled lineage persists run-versioned,
+        feeding the ``structural_reconciliation`` witness at the terminal
+        ``session_detect``.
         """
         return self._run_session_or_raise(
             "aggregation_lineage", payload.run, payload.table_ids, payload.vertical
@@ -340,41 +340,6 @@ class PhaseActivities:
         """
         return self._run_session_or_raise(
             "slicing", payload.run, payload.table_ids, payload.vertical
-        )
-
-    @activity.defn(name="slicing_view")
-    def run_slicing_view(self, payload: SessionScopedInput) -> PhaseOutcome:
-        """Slicing-view activity — narrow each fact table to its slice-relevant columns.
-
-        Projects the enriched view down to the fact columns plus the slice
-        dimension columns, registering a ``slicing_view`` lake artifact per fact
-        table. No LLM call.
-        """
-        return self._run_session_or_raise(
-            "slicing_view", payload.run, payload.table_ids, payload.vertical
-        )
-
-    @activity.defn(name="slice_analysis")
-    def run_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
-        """Slice-analysis activity — materialize the slice tables and profile them.
-
-        Executes each slice definition's SQL to create the per-value slice tables,
-        registers them, and runs statistics + quality on each. No LLM call.
-        """
-        return self._run_session_or_raise(
-            "slice_analysis", payload.run, payload.table_ids, payload.vertical
-        )
-
-    @activity.defn(name="temporal_slice_analysis")
-    def run_temporal_slice_analysis(self, payload: SessionScopedInput) -> PhaseOutcome:
-        """Temporal-slice-analysis activity — drift/period metrics on the slice tables.
-
-        Runs JS-divergence drift detection and period completeness/anomaly analysis
-        per slice. No LLM call. (Per-column ColumnSliceProfile production was cut in
-        the DAT-442 reset; dimensional_entropy reads typed values directly via NMI.)
-        """
-        return self._run_session_or_raise(
-            "temporal_slice_analysis", payload.run, payload.table_ids, payload.vertical
         )
 
     @activity.defn(name="correlations")

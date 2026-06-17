@@ -110,6 +110,24 @@ describe("recordRun (DAT-461, DAT-506)", () => {
 		expect(run?.row.conversationId).toBe("conv-9");
 	});
 
+	it("an EXPLICIT conversationId wins over the ALS (DAT-530 — the worker has no ALS)", async () => {
+		// Even inside an ALS scope, an explicit value is authoritative: the journey
+		// threads the conversationId it captured at the tool boundary.
+		await runWithConversation("conv-als", () =>
+			recordRun({ ...BASE, conversationId: "conv-explicit" }),
+		);
+		const run = h.inserts.find((i) => i.table === "session_runs");
+		expect(run?.row.conversationId).toBe("conv-explicit");
+	});
+
+	it("an explicit null records a non-narrating run even within an ALS scope", async () => {
+		await runWithConversation("conv-als", () =>
+			recordRun({ ...BASE, conversationId: null }),
+		);
+		const run = h.inserts.find((i) => i.table === "session_runs");
+		expect(run?.row.conversationId).toBeNull();
+	});
+
 	it("is AUTHORITATIVE: a db error THROWS (an unrecorded run is orphaned)", async () => {
 		h.throwOnInsert = true;
 		await expect(recordRun(BASE)).rejects.toThrow(/db down/);

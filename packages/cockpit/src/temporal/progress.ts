@@ -175,7 +175,12 @@ export async function getWorkflowProgress(
 	input: WorkflowProgressInput,
 ): Promise<WorkflowProgress> {
 	const client = await getTemporalClient();
-	const handle = client.workflow.getHandle(input.workflow_id, input.run_id);
+	// Resolve the LATEST execution of the workflow id (DAT-530): a journey-started
+	// stage's runId isn't known to the caller, and progress always reflects the
+	// current run, so we key on the workflow id and let getHandle pick the latest
+	// execution. `run_id` is still accepted in the input (the poll body sends it)
+	// but no longer pins the iteration.
+	const handle = client.workflow.getHandle(input.workflow_id);
 	const description = await handle.describe();
 	const status = description.status.name;
 

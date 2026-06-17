@@ -26,3 +26,27 @@ export function journeyWorkflowId(workspaceId: string): string {
 export interface VerticalEstablished {
 	vertical: string;
 }
+
+/** The INTENTIONAL begin_session trigger (DAT-530): the user chose a table set,
+ * so the journey runs `beginSessionWorkflow` as a cross-language child. */
+export const RUN_BEGIN_SESSION_SIGNAL = "runBeginSession";
+
+/** Payload of `runBeginSession`. The tool (which has the request context) computes
+ * the derived values and passes them, so the sandboxed journey stays free of any
+ * workspace IO — it just orchestrates the child + records the run. */
+export interface RunBeginSession {
+	/** Cockpit-minted session id (the run-correlation key + workflow-id segment). */
+	sessionId: string;
+	/** The deterministic engine workflow id (tool-computed via beginSessionWorkflowId);
+	 * the journey starts the child + records the run under it. Stable across re-runs. */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
+	engineTaskQueue: string;
+	/** The typed table ids to stage. */
+	tables: string[];
+	/** The workspace verticals (one today; the engine is born-loud on >1). */
+	verticals: string[];
+	/** The originating chat (DAT-528), captured at the tool boundary so the journey
+	 * — which has no request ALS — stamps the run for narration routing. Null = none. */
+	conversationId: string | null;
+}

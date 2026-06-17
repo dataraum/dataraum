@@ -19,6 +19,8 @@ import { config } from "#/config";
 import {
 	JOURNEY_WORKFLOW_TYPE,
 	journeyWorkflowId,
+	RUN_BEGIN_SESSION_SIGNAL,
+	type RunBeginSession,
 	VERTICAL_ESTABLISHED_SIGNAL,
 	type VerticalEstablished,
 } from "#/worker/contracts";
@@ -36,17 +38,19 @@ function requireTemporalConfig(): { host: string; namespace: string } {
 }
 
 /**
- * Signal `verticalEstablished` to the workspace's journey, starting it if it
- * isn't running yet. Returns the journey's workflow id.
+ * `signalWithStart` the workspace's journey with `signal`, starting it if it
+ * isn't running yet. Idempotent for the long-lived per-workspace journey: a
+ * running journey (incl. across continue-as-new — the workflow id is stable) just
+ * receives the signal; otherwise it's started and signalled in one call. So a
+ * workspace has exactly one journey execution. Returns the journey workflow id.
  */
-export async function signalVerticalEstablished(
+async function signalJourney<A>(
 	workspaceId: string,
-	vertical: string,
+	signal: string,
+	signalArgs: [A],
 ): Promise<string> {
 	const { host, namespace } = requireTemporalConfig();
 	const workflowId = journeyWorkflowId(workspaceId);
-	const signalArgs: [VerticalEstablished] = [{ vertical }];
-
 	const connection = await Connection.connect({ address: host });
 	try {
 		const client = new Client({ connection, namespace });
@@ -54,11 +58,35 @@ export async function signalVerticalEstablished(
 			taskQueue: config.cockpitOrchestrationTaskQueue,
 			workflowId,
 			args: [workspaceId],
-			signal: VERTICAL_ESTABLISHED_SIGNAL,
+			signal,
 			signalArgs,
 		});
 		return workflowId;
 	} finally {
 		await connection.close();
 	}
+}
+
+/** Signal `verticalEstablished` (the vertical gate / entry event). */
+export function signalVerticalEstablished(
+	workspaceId: string,
+	vertical: string,
+): Promise<string> {
+	return signalJourney<VerticalEstablished>(
+		workspaceId,
+		VERTICAL_ESTABLISHED_SIGNAL,
+		[{ vertical }],
+	);
+}
+
+/** Signal `runBeginSession` — the journey runs the engine begin_session stage as
+ * a cross-language child (DAT-530). The tool passes the derived ids/queue + the
+ * conversationId so the journey (no request ALS) records + narrates correctly. */
+export function signalRunBeginSession(
+	workspaceId: string,
+	req: RunBeginSession,
+): Promise<string> {
+	return signalJourney<RunBeginSession>(workspaceId, RUN_BEGIN_SESSION_SIGNAL, [
+		req,
+	]);
 }

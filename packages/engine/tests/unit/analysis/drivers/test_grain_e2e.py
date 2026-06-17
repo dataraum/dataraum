@@ -27,9 +27,12 @@ from .conftest import (
     CL_ENTITY,
     CL_ENTITY_NULLS,
     CL_RATIO_DIMS,
+    CL_ROW_DRIVER,
     CL_ROW_NULL,
+    TWO_DRIVER_DIMS,
     make_clustered_corpus,
     make_clustered_ratio_corpus,
+    make_clustered_two_driver_corpus,
 )
 
 RUN = "session-run-1"
@@ -40,18 +43,18 @@ MEASURE = Measure(target_type="flow", column="measure")
 RATIO_MEASURE = Measure(target_type="ratio", numerator="numerator", denominator="denominator")
 
 
-def _seed_catalog(session: Session) -> str:
+def _seed_catalog(session: Session, dims: list[str] = CL_DIMS) -> str:
     """Seed the fact + catalog (the candidate dims; the entity key is NOT a slice dim)."""
     fact = Table(
         table_id=str(uuid4()), source_id="s", table_name="sales", layer="typed", duckdb_path="sales"
     )
     session.add(fact)
-    for pos, name in enumerate([*CL_DIMS, CL_ENTITY, "measure"]):
+    for pos, name in enumerate([*dims, CL_ENTITY, "measure"]):
         col = Column(
             column_id=str(uuid4()), table_id=fact.table_id, column_name=name, column_position=pos
         )
         session.add(col)
-        if name in CL_DIMS:  # only real candidate dims are cataloged (not the entity id / measure)
+        if name in dims:  # only real candidate dims are cataloged (not the entity id / measure)
             session.add(
                 SliceDefinition(
                     run_id=RUN,
@@ -303,6 +306,62 @@ class TestCandidateGrainRouting:
         # mis-routed to the entity grain.
         assert all(d.grain == "entity" for d in rank.secondary_dimensions)
         assert CL_ROW_NULL not in {d.dimension for d in rank.secondary_dimensions}
+
+
+class TestWithinEntityPower:
+    """DAT-561 power add-on (AC4): under high ICC the row-level (secondary) family gates
+    on the within-entity de-meaned residual, so a planted within-entity driver surfaces
+    and the row-level null stays gated — while the entity-level driver leads the primary
+    tree and the two grains never mix.
+    """
+
+    def _run(self, session, duck, tid, seed):  # noqa: ANN001, ANN202
+        _write_view(duck, make_clustered_two_driver_corpus(np.random.default_rng(400 + seed)))
+        return discover_drivers(
+            session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=MEASURE,
+            cluster_key=CL_ENTITY,
+            n_perm=N_PERM,
+            seed=seed,
+        )
+
+    def test_entity_and_within_entity_drivers_cleanly_separated(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_catalog(real_session, TWO_DRIVER_DIMS)
+        rank = self._run(real_session, duck, tid, 0)
+        assert rank.grain == "entity"  # high ICC → the entity-grain family is primary
+        primary = {d for d, _ in rank.ranked_dimensions}
+        secondary = {d.dimension for d in rank.secondary_dimensions}
+        # The entity-level driver leads the primary; the within-entity driver surfaces in
+        # the de-meaned row-wise secondary — and NEITHER bleeds into the other grain.
+        assert CL_DRIVER in primary
+        assert CL_ROW_DRIVER in secondary
+        assert CL_DRIVER not in secondary
+        assert CL_ROW_DRIVER not in primary
+        assert all(d.grain == "row" for d in rank.secondary_dimensions)
+
+    def test_within_entity_driver_found_and_residual_null_gated(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_catalog(real_session, TWO_DRIVER_DIMS)
+        seeds = 30
+        driver_found = 0
+        row_null_surfaced = 0
+        for s in range(seeds):
+            rank = self._run(real_session, duck, tid, s)
+            secondary = {d.dimension for d in rank.secondary_dimensions}
+            driver_found += CL_ROW_DRIVER in secondary
+            row_null_surfaced += CL_ROW_NULL in secondary
+        # The de-meaned residual gives the within-entity driver real power…
+        assert driver_found >= seeds // 2, f"within-entity driver recall {driver_found}/{seeds}"
+        # …and the residual null is gated at ≈α (FDR ≤ 2α).
+        assert row_null_surfaced <= 2 * ALPHA * seeds, (
+            f"row-level null surfaced {row_null_surfaced}/{seeds} on the residual"
+        )
 
 
 class TestClusterAwareRatio:

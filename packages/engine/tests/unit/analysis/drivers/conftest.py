@@ -187,6 +187,37 @@ def make_clustered_corpus(
     return df
 
 
+# Two-driver clustered corpus (DAT-561): a HIGH-ICC measure carrying BOTH a
+# between-entity (entity-level) driver AND a within-entity (row-level) driver, plus one
+# null at each grain. Additive (not lognormal) so the within-entity de-mean cleanly
+# isolates the row driver: residual = measure − entity_mean strips the entity level, so
+# the row driver — diluted ~7× in the raw measure by the between-entity variance — is
+# recovered, while the entity driver correctly drops out of the row-level family.
+CL_ROW_DRIVER = "D_row_real"  # within-entity (row-level) driver
+TWO_DRIVER_DIMS = [CL_DRIVER, CL_ROW_DRIVER, CL_ENTITY_NULLS[1], CL_ROW_NULL]
+
+
+def make_clustered_two_driver_corpus(rng: np.random.Generator) -> pd.DataFrame:
+    """200 entities × 100 rows; high ICC, with an entity-level AND a row-level driver."""
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    n = CL_N_ENTITIES * CL_PER_ENTITY
+    # Between-entity (high ICC): driver shift + a large entity random effect (var ≈ 14).
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    ent_effect = np.array([-3.0, -1.0, 1.0, 3.0])[drv_grp] + rng.normal(0, 3.0, CL_N_ENTITIES)
+    # Within-entity (row-level) driver shift (var ≈ 1.25) + row noise (var ≈ 1.0).
+    row_grp = rng.integers(0, 4, n)
+    row_shift = np.array([-1.5, -0.5, 0.5, 1.5])[row_grp]
+
+    df = pd.DataFrame(index=np.arange(n))
+    df[CL_ENTITY] = ent
+    df["measure"] = 100.0 + ent_effect[ent] + row_shift + rng.normal(0, 1.0, n)
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]  # entity-level driver
+    df[CL_ROW_DRIVER] = [f"w{g}" for g in row_grp]  # row-level driver
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]  # ent null
+    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
+    return df
+
+
 # Clustered RATIO corpus (DAT-552 #321 fold): the per-row ratio (num/den) carries a
 # per-entity level (high ICC on the ratio); an entity-level driver shifts that level;
 # the denominator (volume) varies independently. Tests cluster-aware ratio.

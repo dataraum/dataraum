@@ -1,10 +1,11 @@
 // JourneyWorkflow (DAT-529) — the cockpit's orchestration workflow.
 //
 // SANDBOXED: this module runs inside the worker's deterministic vm isolate, NOT
-// the main thread. It may import ONLY `@temporalio/workflow` + activity *types*
-// — no db client, no config, no node/bun IO. All side effects (recordRun, the
-// engine-stage start) live in `../activities`, dispatched through the proxy
-// below; doing IO here would be non-deterministic and crash the sandbox.
+// the main thread. It may import ONLY `@temporalio/workflow`, the pure shared
+// `../contracts`, and activity *types* — no db client, no config, no node/bun
+// IO. All side effects (recordRun, the engine-stage start) live in
+// `../activities`, dispatched through the proxy below; doing IO here would be
+// non-deterministic and crash the sandbox.
 //
 // Grain (the resolved spike): ONE long-lived workflow PER WORKSPACE, its
 // workflow-id keyed by the workspace id (`journey-<workspaceId>`), bounded by
@@ -21,25 +22,24 @@ import {
 	defineSignal,
 	proxyActivities,
 	setHandler,
+	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	VERTICAL_ESTABLISHED_SIGNAL,
+	type VerticalEstablished,
+} from "../contracts";
 
 const { startStage } = proxyActivities<typeof activities>({
 	// A stage start + its control-plane writes; generous because the real engine
 	// stage (wired in P3) is long-running. Retried — the activity is idempotent
-	// (recordRun upserts on the deterministic workflow-id).
+	// (recordRun upserts on the deterministic stage-run id passed in).
 	startToCloseTimeout: "10 minutes",
 	retry: { maximumAttempts: 3 },
 });
 
-/** The entry event: a vertical was established for the workspace (a `frame`
- * promotion or a `use_vertical` adoption). Carries the vertical name so the
- * stage activity can resolve against it. */
-export interface VerticalEstablished {
-	vertical: string;
-}
 export const verticalEstablished = defineSignal<[VerticalEstablished]>(
-	"verticalEstablished",
+	VERTICAL_ESTABLISHED_SIGNAL,
 );
 
 // Bound the event history: after this many handled events, hand off to a fresh
@@ -58,12 +58,16 @@ export async function journeyWorkflow(workspaceId: string): Promise<void> {
 		pending.push(input);
 	});
 
+	const { workflowId } = workflowInfo();
 	let handled = 0;
 	// Drain to idle before continuing-as-new — never carry (or drop) a backlog.
 	while (!(handled >= EVENTS_BEFORE_CONTINUE && pending.length === 0)) {
 		await condition(() => pending.length > 0);
 		const event = pending.shift() as VerticalEstablished;
-		await startStage(workspaceId, event.vertical);
+		// Deterministic + retry-stable id for the stage's control-plane record:
+		// workflowId is stable across retries; `handled` is deterministic workflow
+		// state — so a retried activity upserts the same row, not a duplicate.
+		await startStage(workspaceId, event.vertical, `${workflowId}-${handled}`);
 		handled += 1;
 	}
 

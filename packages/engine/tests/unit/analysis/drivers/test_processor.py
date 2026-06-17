@@ -5,6 +5,11 @@ End-to-end: seed a fact's grain-verified enriched view in DuckDB (the spike corp
 (SliceDefinition grain_safe + a DimensionHierarchy alias group + SemanticAnnotation
 temporal_behavior), then assert discover_drivers ranks the planted drivers, collapses
 the alias out of the candidate set, and resolves the target type from the catalog.
+
+The cluster-aware ``cluster_key`` path of the public ``discover_drivers`` API (DAT-552
+entity grain + DAT-561 candidate-grain routing / ``secondary_dimensions``) is covered
+end-to-end in ``test_grain_e2e.py`` — those tests drive the same public entry point on
+clustered corpora.
 """
 
 from __future__ import annotations

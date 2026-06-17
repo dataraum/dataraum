@@ -293,19 +293,34 @@ class TestCandidateGrainRouting:
             f"entity-level null surfaced {in_secondary}/{seeds} even at entity grain"
         )
 
-    def test_low_icc_row_level_recall_preserved(
+    def test_low_icc_row_level_driver_still_surfaces(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        # AC2: routing entity-constant dims out must not cost low-ICC row-level recall —
-        # the row-wise primary still finds a genuine row-level driver. CL_ROW_NULL is a
-        # null here, but it must remain EVALUABLE (present as a row-level candidate); the
-        # planted row-level driver case is covered by TestWithinEntityPower (high ICC).
-        tid = _seed_catalog(real_session)
-        rank = _run_low_icc(real_session, duck, tid, 0, cluster_key=CL_ENTITY)
-        # The row-level null is a row-wise candidate (could appear in the primary), never
-        # mis-routed to the entity grain.
-        assert all(d.grain == "entity" for d in rank.secondary_dimensions)
-        assert CL_ROW_NULL not in {d.dimension for d in rank.secondary_dimensions}
+        # AC2: routing entity-constant dims out to the entity grain must NOT cost
+        # low-ICC row-level recall — a genuine row-level driver still surfaces in the
+        # row-wise PRIMARY (raw measure, no de-mean at low ICC). The two-driver corpus
+        # at ent_scale=0.08 has ICC ≈ 0.04 and a planted within-entity row driver.
+        tid = _seed_catalog(real_session, TWO_DRIVER_DIMS)
+        seeds = 10
+        found = 0
+        for s in range(seeds):
+            _write_view(
+                duck,
+                make_clustered_two_driver_corpus(np.random.default_rng(500 + s), ent_scale=0.08),
+            )
+            rank = discover_drivers(
+                real_session,
+                duckdb_conn=duck,
+                fact_table_id=tid,
+                run_id=RUN,
+                measure=MEASURE,
+                cluster_key=CL_ENTITY,
+                n_perm=N_PERM,
+                seed=s,
+            )
+            assert rank.grain == "row"  # low ICC → row-wise family is primary
+            found += CL_ROW_DRIVER in {d for d, _ in rank.ranked_dimensions}
+        assert found >= seeds // 2, f"low-ICC row-level driver recall {found}/{seeds}"
 
 
 class TestWithinEntityPower:

@@ -197,13 +197,23 @@ CL_ROW_DRIVER = "D_row_real"  # within-entity (row-level) driver
 TWO_DRIVER_DIMS = [CL_DRIVER, CL_ROW_DRIVER, CL_ENTITY_NULLS[1], CL_ROW_NULL]
 
 
-def make_clustered_two_driver_corpus(rng: np.random.Generator) -> pd.DataFrame:
-    """200 entities × 100 rows; high ICC, with an entity-level AND a row-level driver."""
+def make_clustered_two_driver_corpus(
+    rng: np.random.Generator, *, ent_scale: float = 1.0
+) -> pd.DataFrame:
+    """200 entities × 100 rows, with an entity-level AND a within-entity row-level driver.
+
+    ``ent_scale`` knobs the between-entity variance: ``1.0`` → high ICC (≈0.86, the
+    de-mean power case); a small value (e.g. ``0.08``) → low ICC (≈0.04), where the
+    row-level driver must surface in the row-wise PRIMARY on the raw measure (the
+    low-ICC row-level recall case — no de-mean needed there).
+    """
     ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
     n = CL_N_ENTITIES * CL_PER_ENTITY
-    # Between-entity (high ICC): driver shift + a large entity random effect (var ≈ 14).
+    # Between-entity (ICC set by ent_scale): driver shift + an entity random effect.
     drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
-    ent_effect = np.array([-3.0, -1.0, 1.0, 3.0])[drv_grp] + rng.normal(0, 3.0, CL_N_ENTITIES)
+    ent_effect = ent_scale * (
+        np.array([-3.0, -1.0, 1.0, 3.0])[drv_grp] + rng.normal(0, 3.0, CL_N_ENTITIES)
+    )
     # Within-entity (row-level) driver shift (var ≈ 1.25) + row noise (var ≈ 1.0).
     row_grp = rng.integers(0, 4, n)
     row_shift = np.array([-1.5, -0.5, 0.5, 1.5])[row_grp]

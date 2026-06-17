@@ -337,6 +337,9 @@ def _partition_by_entity_constancy(
     everything else varies within entity → the row-wise null (DAT-561). This is the
     routing decision: it is per-candidate, independent of the measure's global ICC.
     """
+    # ``nunique`` counts non-null distinct values, so ``<= 1`` also catches an all-null
+    # dim (nunique 0) as entity-constant — harmless: it contributes nothing (every row
+    # gated out by the (A) gate) wherever it lands, exactly as on the old row-wise path.
     nunique = frame.groupby(cluster_key)[dims].nunique().max()
     entity_constant = [d for d in dims if int(nunique[d]) <= 1]
     row_level = [d for d in dims if d not in entity_constant]
@@ -431,7 +434,7 @@ def _routed_ranking(
             frame,
             row_dims,
             measure,
-            seed=seed,
+            seed=seed + 1,  # an independent permutation stream from the entity family
             max_depth=max_depth,
             alpha=alpha,
             min_support=min_support,

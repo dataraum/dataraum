@@ -69,7 +69,9 @@ export function RunMonitor({ runs, limit, temporalUiUrl }: RunMonitorProps) {
 											{formatStartedAt(run.startedAt)}
 										</Text>
 									</Table.Td>
-									<Table.Td>
+									{/* maxWidth so `truncate` actually clips (Mantine truncate needs a
+									    width constraint) instead of the column growing to the id. */}
+									<Table.Td style={{ maxWidth: 220 }}>
 										<Text size="xs" c="dimmed" ff="monospace" truncate="end">
 											{run.workflowId}
 										</Text>

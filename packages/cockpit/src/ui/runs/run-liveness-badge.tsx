@@ -23,9 +23,17 @@ async function fetchRunningCount(): Promise<number> {
 
 export function RunLivenessBadge({ children }: { children: ReactNode }) {
 	const { data } = useQuery({
+		// TODO(DAT-357): when multi-workspace switching lands, scope this key (and
+		// /api/running-runs) by workspace id — today the endpoint resolves the
+		// single active workspace server-side, so the bare key is correct.
 		queryKey: ["workspace-running-runs"],
 		queryFn: fetchRunningCount,
 		refetchInterval: POLL_MS,
+		// The badge mounts in the always-rendered shell, so the query would
+		// otherwise run during SSR — where a relative fetch has no host. Gate to
+		// the client; the badge renders inactive on the server, then polls once
+		// hydrated (the project's `typeof window` SSR-guard idiom).
+		enabled: typeof window !== "undefined",
 	});
 	const running = (data ?? 0) > 0;
 	return (

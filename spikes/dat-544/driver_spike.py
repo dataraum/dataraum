@@ -1,26 +1,30 @@
-"""DAT-544 — driver-discovery feasibility kill-gate (throwaway spike, v3).
+"""DAT-544 — driver-discovery feasibility kill-gate (throwaway spike, v4).
 
 Question: does within-dataset variance-reduction RANKING + a within-dataset
 PERMUTATION NULL separate real drivers from null dims on financial-shaped data,
-WITHOUT a global threshold? (slice_variance/temporal_drift were cut because they
-needed a global cutoff on an absolute statistic that natural financial variation
-defeats. Hypothesis: ranking is ordinal/self-calibrating; the permutation null
-adapts to each dataset's noise floor.)
+WITHOUT a global threshold? (slice_variance/temporal_drift were cut: they needed a
+global cutoff on an absolute statistic that natural financial variation defeats.
+Hypothesis: ranking is ordinal/self-calibrating; the permutation null adapts to
+each dataset's noise floor.)
 
-Standalone: numpy + pandas. Single split (root) — the tree is recursion.
+Standalone: numpy + pandas.
 
-v3 (after an adversarial review of v2 found the GREEN OVERSTATED):
-  - v2 vacuously "gated" N_highcard: 400 cats / 20k rows ≈ 50 rows each, all below
-    MIN_SUPPORT, so gain() hard-returned 0 — the SUPPORT FILTER excised it, the
-    permutation null never actually faced finite-sample inflation (the headline claim).
-    v3 adds N_midcard (~90 cats, ~222 rows) that PARTICIPATES past min-support, so the
-    null is genuinely shown to tame an inflated dim (asserted: midcard real gain > 0).
-    N_highcard kept to show min-support as the complementary defense for extreme card.
-  - effect-size LADDER (±60/25/15/8/4 %) to locate the detection threshold, not just a
-    300 %-spread softball.
-  Deferred to P1 (documented): correlated/confounded dims; harder-MNAR (signal in
-  surviving labels); recursive 2-level splits. The single-node inflation-control is
-  what the kill-gate must settle, and N_midcard settles it.
+History:
+  v1 (12 min) gave the first read; v2 vectorized + added the (B) missingness gate;
+  v3 fixed a review finding (v2 vacuously "gated" high-card — excised by min-support,
+  the null never faced inflation) by adding a PARTICIPATING N_midcard, and added an
+  effect-size ladder. v3 verdict: GREEN ON SEPARATION (independent-dims, single node),
+  FDR controlled at alpha, power floor ~±20-25%.
+  v4 (this) eats the two synthetic-testable residuals a review flagged, on-branch,
+  before committing the build:
+    - CONFOUNDING: N_proxy (80% copy of the strongest driver). Expected to SURFACE
+      (it's a legit proxy; acceptable for aggregation). The real test: do the
+      genuinely-independent nulls stay gated when a strong proxy competes in the
+      max-over-candidates null?
+    - RECURSION: a 2-level split. Does FDR COMPOUND across depth (more nodes -> more
+      chances for a pure null to surface)? Per-node permutation null rebuilt on the
+      node's rows; measure depth-2 null surfacing rate vs alpha.
+  Still deferred to P1 (needs the real substrate): real-ERP-fixture transfer.
 
 Run:  uv run --with numpy --with pandas python spikes/dat-544/driver_spike.py
 """
@@ -30,49 +34,55 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# ── PRE-REGISTERED bar ───────────────────────────────────────────────────────
 ALPHA = 0.05
 N_PERM = 500
 N_ROWS = 20_000
 MIN_SUPPORT = 200
 MISSINGNESS_GATE = 0.5
 N_SEEDS = 40
-RECALL_BAR = int(0.9 * N_SEEDS)   # strong+moderate pass & outrank all nulls
-FDR_BAR = 2 * ALPHA               # a correct gate fires at ~alpha; finite-seed tolerance
+RECURSION_SEEDS = 12
+RECALL_BAR = int(0.9 * N_SEEDS)
+FDR_BAR = 2 * ALPHA
 
-# Effect-size ladder: half-spread of the group-mean multiplier around 1.0.
 EFFECTS = {"D_e60": 0.60, "D_e25": 0.25, "D_e15": 0.15, "D_e08": 0.08, "D_e04": 0.04}
 DRIVERS = list(EFFECTS)
-REQUIRED = ["D_e60", "D_e25"]                       # the recall bar (clear drivers)
-NULLS = ["N_lowcard", "N_midcard", "N_highcard", "N_mnar", "N_measure_missing"]
-DIMS = DRIVERS + NULLS
+REQUIRED = ["D_e60", "D_e25"]
+NULLS_INDEP = ["N_lowcard", "N_midcard", "N_highcard", "N_mnar", "N_measure_missing"]
+PROXY = "N_proxy"                                    # confounded with D_e60 (expected to surface)
+DIMS = DRIVERS + NULLS_INDEP + [PROXY]
 
 
 def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
     n = N_ROWS
-    base = rng.lognormal(mean=6.0, sigma=1.1, size=n)   # heavy-tailed, CV≈2
+    base = rng.lognormal(mean=6.0, sigma=1.1, size=n)
     measure = base.copy()
     df = pd.DataFrame(index=np.arange(n))
 
-    # drivers: 4 values each; multiplier spread = ±eps around 1.0
+    v_e60 = None
     for name, eps in EFFECTS.items():
         v = rng.integers(0, 4, n)
-        mult = 1.0 + eps * (v - 1.5) / 1.5          # values map to [1-eps, 1+eps]
-        measure *= mult
+        if name == "D_e60":
+            v_e60 = v
+        measure *= 1.0 + eps * (v - 1.5) / 1.5
         df[name] = [f"{name}:{x}" for x in v]
 
-    # nulls (independent of measure)
-    df["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
-    df["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]    # ~222/grp: PARTICIPATES → inflation test
-    df["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]  # ~50/grp: excised by min-support
+    # CONFOUNDED proxy: 80% a copy of D_e60's value, else random -> correlated with the
+    # strongest driver (it explains the measure THROUGH D_e60). Should surface; that is
+    # acceptable for aggregation (a real proxy), only wrong for causal "root cause".
+    proxy_v = np.where(rng.random(n) < 0.8, v_e60, rng.integers(0, 4, n))
+    df[PROXY] = [f"px{x}" for x in proxy_v]
 
-    present = rng.random(n) < 0.5                                  # MNAR-dim
+    df["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
+    df["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]    # participates -> inflation test
+    df["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]  # excised by min-support
+
+    present = rng.random(n) < 0.5
     df["N_mnar"] = np.where(present, [f"p{v}" for v in rng.integers(0, 5, n)], None)
     measure[~present] *= 1.5
 
     df["measure"] = measure
 
-    n_mm = rng.integers(0, 5, n)                                   # measure-missing slice
+    n_mm = rng.integers(0, 5, n)
     df["N_measure_missing"] = [f"x{v}" for v in n_mm]
     bias = n_mm == 0
     drop = bias & (rng.random(n) < 0.85)
@@ -86,13 +96,13 @@ def build_codes(s_obj: np.ndarray, y_real: np.ndarray, *, handle: bool) -> tuple
     yobs = ~np.isnan(y_real)
     codes = np.full(len(s_obj), -1, dtype=int)
     if handle:
-        present = ~dimnull                                        # (A) drop dim-null rows
+        present = ~dimnull
         baseline = yobs[present].mean() if present.any() else 0.0
         nxt = 0
         for lab in pd.unique(s_obj[present]):
             sl = present & (s_obj == lab)
             rate = yobs[sl].mean() if sl.any() else 0.0
-            if rate < MISSINGNESS_GATE * baseline:                # (B) drop high-missingness slice
+            if rate < MISSINGNESS_GATE * baseline:
                 continue
             codes[sl] = nxt
             nxt += 1
@@ -126,125 +136,96 @@ def gain(codes: np.ndarray, ncodes: int, y: np.ndarray) -> float:
     return max(0.0, (total_var - within) / total_var)
 
 
-def gate(df: pd.DataFrame, y: np.ndarray, rng, *, handle: bool) -> dict:
-    cm = {d: build_codes(df[d].astype(object).to_numpy(), y, handle=handle) for d in DIMS}
-    real = {d: gain(*cm[d], y) for d in DIMS}
+def gate(df: pd.DataFrame, y: np.ndarray, rng, *, handle: bool, dims: list[str] = DIMS) -> dict:
+    cm = {d: build_codes(df[d].astype(object).to_numpy(), y, handle=handle) for d in dims}
+    real = {d: gain(*cm[d], y) for d in dims}
     perm_max = np.empty(N_PERM)
     for i in range(N_PERM):
         yp = rng.permutation(y)
-        perm_max[i] = max(gain(*cm[d], yp) for d in DIMS)
-    return {d: {"gain": real[d], "p": (1 + np.sum(perm_max >= real[d])) / (1 + N_PERM)} for d in DIMS}
+        perm_max[i] = max(gain(*cm[d], yp) for d in dims)
+    return {d: {"gain": real[d], "p": (1 + np.sum(perm_max >= real[d])) / (1 + N_PERM)} for d in dims}
 
 
-def ratio_probe(seed: int) -> dict:
-    rng = np.random.default_rng(1000 + seed)
-    n = N_ROWS
-    den = rng.lognormal(5.0, 1.0, n)
-    d = rng.integers(0, 4, n)
-    num = den * (np.array([0.10, 0.20, 0.30, 0.40])[d] + rng.normal(0, 0.04, n))
-    cols = {"R_driver": [f"r{v}" for v in d],
-            "N_low": [f"l{v}" for v in rng.integers(0, 6, n)],
-            "N_high": [f"h{v}" for v in rng.integers(0, 400, n)]}
-    rdims = list(cols)
-
-    def codes_of(vals):
-        uniq = pd.unique(np.array(vals, dtype=object))
-        idx = {l: i for i, l in enumerate(uniq)}
-        return np.array([idx[v] for v in vals]), len(uniq)
-
-    cm = {k: codes_of(v) for k, v in cols.items()}
-
-    def rgain(codes, ncodes, num_, den_):
-        counts = np.bincount(codes, minlength=ncodes)
-        W = np.bincount(codes, weights=den_, minlength=ncodes)
-        WN = np.bincount(codes, weights=num_, minlength=ncodes)
-        WNR = np.bincount(codes, weights=num_ * num_ / den_, minlength=ncodes)
-        big = counts >= MIN_SUPPORT
-        if big.sum() < 2:
-            return 0.0
-        Wb, WNb, WNRb = W[big], WN[big], WNR[big]
-        Wtot = Wb.sum()
-        grand = WNb.sum() / Wtot
-        total = WNRb.sum() / Wtot - grand**2
-        if total <= 0:
-            return 0.0
-        within = (WNRb.sum() - np.sum(WNb * WNb / Wb)) / Wtot
-        return max(0.0, (total - within) / total)
-
-    real = {k: rgain(*cm[k], num, den) for k in rdims}
-    perm_max = np.empty(N_PERM)
-    for i in range(N_PERM):
-        p = rng.permutation(n)
-        perm_max[i] = max(rgain(*cm[k], num[p], den[p]) for k in rdims)
-    return {k: {"gain": real[k], "p": (1 + np.sum(perm_max >= real[k])) / (1 + N_PERM)} for k in rdims}
+def recursion_fdr(seed: int) -> tuple[int, int, int, int]:
+    """2-level split: root on the empirically top driver, re-gate within each child.
+    Returns (depth2_null_pass, depth2_null_tests, e25_pass, e25_tests)."""
+    rng = np.random.default_rng(seed)
+    df = make_corpus(rng)
+    y = df["measure"].to_numpy(float)
+    root_res = gate(df, y, rng, handle=True)
+    root = max(DIMS, key=lambda d: root_res[d]["gain"])
+    remaining = [d for d in DIMS if d != root]
+    s = df[root].astype(object).to_numpy()
+    npass = ntest = e25p = e25t = 0
+    for val in pd.unique(s):
+        if pd.isna(val):
+            continue
+        m = s == val
+        if m.sum() < 4 * MIN_SUPPORT:
+            continue
+        sub = df[m].reset_index(drop=True)
+        suby = y[m]
+        res = gate(sub, suby, rng, handle=True, dims=remaining)
+        for nd in NULLS_INDEP:
+            ntest += 1
+            npass += res[nd]["p"] < ALPHA
+        if "D_e25" in remaining:
+            e25t += 1
+            e25p += res["D_e25"]["p"] < ALPHA
+    return npass, ntest, e25p, e25t
 
 
 def main() -> None:
-    print("=" * 80)
-    print("DAT-544 driver-discovery kill-gate (v3) — PRE-REGISTERED bar")
-    print(f"  alpha={ALPHA} n_perm={N_PERM} n_rows={N_ROWS} min_support={MIN_SUPPORT} "
-          f"missingness_gate={MISSINGNESS_GATE} seeds={N_SEEDS}")
-    print(f"  GREEN iff: required drivers {REQUIRED} pass & outrank all nulls in "
-          f">={RECALL_BAR}/{N_SEEDS}; every null pass-rate <= {FDR_BAR:.0%}; "
-          "N_midcard genuinely participates (real gain>0) yet is gated; ablation surfaces confounds.")
-    print("=" * 80)
+    print("=" * 82)
+    print("DAT-544 driver-discovery kill-gate (v4) — confounding + recursion residuals")
+    print(f"  alpha={ALPHA} n_perm={N_PERM} n_rows={N_ROWS} min_support={MIN_SUPPORT} seeds={N_SEEDS}")
+    print("=" * 82)
 
-    for mode, handle in [("HANDLING ON", True), ("ABLATION: HANDLING OFF", False)]:
-        print(f"\n### {mode}")
-        recall_ok = 0
-        nullc = {d: 0 for d in NULLS}
-        g_acc = {d: [] for d in DIMS}
-        p_acc = {d: [] for d in DIMS}
-        drvc = {d: 0 for d in DRIVERS}
-        for seed in range(N_SEEDS):
-            rng = np.random.default_rng(seed)
-            df = make_corpus(rng)
-            res = gate(df, df["measure"].to_numpy(float), rng, handle=handle)
-            for d in DIMS:
-                g_acc[d].append(res[d]["gain"])
-                p_acc[d].append(res[d]["p"])
-            passed = {d: res[d]["p"] < ALPHA for d in DIMS}
-            for d in DRIVERS:
-                drvc[d] += passed[d]
-            for d in NULLS:
-                nullc[d] += passed[d]
-            outrank = all(res[r]["gain"] > max(res[nl]["gain"] for nl in NULLS) for r in REQUIRED)
-            if all(passed[r] for r in REQUIRED) and outrank:
-                recall_ok += 1
-        print(f"  recall (required pass & outrank all nulls): {recall_ok}/{N_SEEDS}")
-        print("  effect-size ladder (driver pass-rate | mean gain):")
-        for d in DRIVERS:
-            print(f"      {d} (±{EFFECTS[d]:.0%})  pass {drvc[d]:2d}/{N_SEEDS}  gain={np.mean(g_acc[d]):.4f}")
-        print("  nulls (pass-rate | mean gain | mean p):")
-        for d in NULLS:
-            print(f"      {d:20s} pass {nullc[d]:2d}/{N_SEEDS}  gain={np.mean(g_acc[d]):.4f}  p={np.mean(p_acc[d]):.4f}")
-        if handle:
-            midcard_participates = np.mean(g_acc["N_midcard"]) > 0.0
-            green = (
-                recall_ok >= RECALL_BAR
-                and all(c <= FDR_BAR * N_SEEDS for c in nullc.values())
-                and midcard_participates
-            )
-            print(f"  midcard participates (real gain>0, not excised): {midcard_participates} "
-                  f"(mean gain {np.mean(g_acc['N_midcard']):.4f})")
-            print(f"  >>> handling-on verdict: {'GREEN' if green else 'RED'}")
-        else:
-            print(f"  >>> ablation: confounds surface w/o handling? "
-                  f"{'YES' if (nullc['N_mnar'] or nullc['N_measure_missing']) else 'NO'}")
-
-    print("\n### RATIO / NON-ADDITIVE PROBE")
-    rdims = ["R_driver", "N_low", "N_high"]
-    rc = {k: 0 for k in rdims}
-    rg = {k: [] for k in rdims}
+    # ── single node (with the confounded proxy now competing in the candidate set) ──
+    print("\n### SINGLE NODE (handling on; N_proxy = 80% copy of D_e60, competing)")
+    recall_ok = 0
+    nullc = {d: 0 for d in NULLS_INDEP}
+    proxy_pass = proxy_below_e60 = 0
+    g_acc = {d: [] for d in DIMS}
+    drvc = {d: 0 for d in DRIVERS}
     for seed in range(N_SEEDS):
-        res = ratio_probe(seed)
-        for k in rdims:
-            rg[k].append(res[k]["gain"])
-            rc[k] += res[k]["p"] < ALPHA
-    for k in rdims:
-        tag = "DRIVER" if k == "R_driver" else "null  "
-        print(f"      [{tag}] {k:10s} pass {rc[k]:2d}/{N_SEEDS}  gain={np.mean(rg[k]):.4f}")
-    print(f"  >>> ratio probe: {'GREEN' if rc['R_driver'] >= RECALL_BAR and rc['N_low'] <= FDR_BAR * N_SEEDS and rc['N_high'] <= FDR_BAR * N_SEEDS else 'RED'}")
+        rng = np.random.default_rng(seed)
+        df = make_corpus(rng)
+        res = gate(df, df["measure"].to_numpy(float), rng, handle=True)
+        for d in DIMS:
+            g_acc[d].append(res[d]["gain"])
+        passed = {d: res[d]["p"] < ALPHA for d in DIMS}
+        for d in DRIVERS:
+            drvc[d] += passed[d]
+        for d in NULLS_INDEP:
+            nullc[d] += passed[d]
+        proxy_pass += passed[PROXY]
+        proxy_below_e60 += res[PROXY]["gain"] <= res["D_e60"]["gain"]
+        outrank = all(res[r]["gain"] > max(res[nl]["gain"] for nl in NULLS_INDEP) for r in REQUIRED)
+        if all(passed[r] for r in REQUIRED) and outrank:
+            recall_ok += 1
+    print(f"  recall (required pass & outrank independent nulls): {recall_ok}/{N_SEEDS}")
+    print("  drivers:")
+    for d in DRIVERS:
+        print(f"      {d} (±{EFFECTS[d]:.0%})  pass {drvc[d]:2d}/{N_SEEDS}  gain={np.mean(g_acc[d]):.4f}")
+    print("  INDEPENDENT nulls (the FDR metric — must stay gated):")
+    for d in NULLS_INDEP:
+        print(f"      {d:20s} pass {nullc[d]:2d}/{N_SEEDS}  gain={np.mean(g_acc[d]):.4f}")
+    print(f"  CONFOUNDED proxy N_proxy: pass {proxy_pass}/{N_SEEDS} (expected to surface), "
+          f"gain={np.mean(g_acc[PROXY]):.4f}, ranked<=D_e60 in {proxy_below_e60}/{N_SEEDS}")
+    indep_ok = all(c <= FDR_BAR * N_SEEDS for c in nullc.values())
+    print(f"  >>> independent-null FDR intact under confounding: {indep_ok}")
+
+    # ── recursion: does FDR compound at depth 2? ──
+    print(f"\n### RECURSION (2-level split, {RECURSION_SEEDS} seeds)")
+    npass = ntest = e25p = e25t = 0
+    for seed in range(RECURSION_SEEDS):
+        a, b, c, d = recursion_fdr(seed)
+        npass += a; ntest += b; e25p += c; e25t += d
+    rate = npass / ntest if ntest else 0.0
+    print(f"  depth-2 independent-null surfacing: {npass}/{ntest} = {rate:.3f}  (alpha={ALPHA})")
+    print(f"  depth-2 D_e25 detection within children: {e25p}/{e25t}")
+    print(f"  >>> FDR compounds across depth? {'YES (>2*alpha)' if rate > FDR_BAR else 'NO (<=2*alpha)'}")
 
 
 if __name__ == "__main__":

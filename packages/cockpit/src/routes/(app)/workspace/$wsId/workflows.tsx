@@ -1,44 +1,31 @@
-import { Anchor, Card, Stack, Text, Title } from "@mantine/core";
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { config } from "#/config";
+import { resolveActiveWorkspace } from "#/db/cockpit/registry";
+import { listRunsByWorkspace } from "#/db/cockpit/runs";
+import { RunMonitor } from "#/ui/runs/run-monitor";
 
-// The Temporal Web UI runs as its own service; we embed it rather than
-// reimplement workflow inspection. The URL is config-driven (TEMPORAL_UI_URL,
-// default http://localhost:8080) and read server-side so the server-only
-// config never leaks into the client bundle.
-const getTemporalUiUrl = createServerFn({ method: "GET" }).handler(
-	() => config.temporalUiUrl,
-);
+// The native run monitor (DAT-550) — replaces the external Temporal-UI iframe
+// with a workspace-wide view of stage runs read from cockpit_db. The Temporal UI
+// is kept as a deep-link for low-level debugging. Workspace resolved server-side
+// (mirrors loadHistory), not from the route param. Bounded to the latest N.
+const RUN_LIMIT = 100;
 
-export const Route = createFileRoute("/(app)/workspace/$wsId/workflows")({
-	loader: () => getTemporalUiUrl(),
-	component: WorkflowsSection,
+const loadRuns = createServerFn({ method: "GET" }).handler(async () => {
+	const workspaceId = await resolveActiveWorkspace();
+	return {
+		runs: await listRunsByWorkspace(workspaceId, RUN_LIMIT),
+		temporalUiUrl: config.temporalUiUrl,
+		limit: RUN_LIMIT,
+	};
 });
 
-function WorkflowsSection() {
-	const temporalUiUrl = Route.useLoaderData();
-	return (
-		<Stack gap="md" h="100%">
-			<Stack gap="xs">
-				<Title order={2}>Workflows</Title>
-				<Text c="dimmed" size="sm">
-					Durable execution runs in Temporal. Inspect workflows and activities
-					in the Temporal Web UI.
-				</Text>
-			</Stack>
-			<Card withBorder padding="md" flex={1}>
-				<Stack gap="sm" h="100%">
-					<Anchor href={temporalUiUrl} target="_blank" rel="noreferrer">
-						Open Temporal UI ({temporalUiUrl})
-					</Anchor>
-					<iframe
-						title="Temporal Web UI"
-						src={temporalUiUrl}
-						style={{ flex: 1, width: "100%", border: "none" }}
-					/>
-				</Stack>
-			</Card>
-		</Stack>
-	);
+export const Route = createFileRoute("/(app)/workspace/$wsId/workflows")({
+	loader: () => loadRuns(),
+	component: RunsSection,
+});
+
+function RunsSection() {
+	const { runs, temporalUiUrl, limit } = Route.useLoaderData();
+	return <RunMonitor runs={runs} limit={limit} temporalUiUrl={temporalUiUrl} />;
 }

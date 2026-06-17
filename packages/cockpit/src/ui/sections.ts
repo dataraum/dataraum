@@ -50,8 +50,10 @@ export const sections: readonly Section[] = [
 		to: "/workspace/$wsId/library",
 	},
 	{
+		// Native run monitor (DAT-550). Route path stays `/workflows`; the label is
+		// "Runs" — it's a cockpit_db-backed view of stage runs, not the raw Temporal UI.
 		id: "workflows",
-		label: "Workflows",
+		label: "Runs",
 		icon: Workflow,
 		to: "/workspace/$wsId/workflows",
 	},

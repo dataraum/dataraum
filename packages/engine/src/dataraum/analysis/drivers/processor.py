@@ -21,10 +21,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 from sqlalchemy import select
 
 from dataraum.analysis.drivers.criterion import DEFAULT_MIN_SUPPORT, DEFAULT_MISSINGNESS_GATE
 from dataraum.analysis.drivers.models import DriverRanking, Measure
+from dataraum.analysis.drivers.targets import FlowTarget, RatioTarget, Target
 from dataraum.analysis.drivers.tree import (
     DEFAULT_ALPHA,
     DEFAULT_MAX_DEPTH,
@@ -113,7 +115,22 @@ def _measure_columns(measure: Measure) -> list[str]:
     """The enriched-view columns a measure needs read."""
     if measure.target_type in ("flow", "stock"):
         return [measure.column] if measure.column else []
-    raise NotImplementedError(f"target_type {measure.target_type!r} arrives in DAT-545 P4")
+    assert measure.numerator and measure.denominator  # guaranteed by Measure.__post_init__
+    return [measure.numerator, measure.denominator]
+
+
+def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
+    """Build the row-aligned target from the measure's columns in ``frame``."""
+    if measure.target_type in ("flow", "stock"):
+        assert measure.column  # guaranteed by Measure.__post_init__
+        return FlowTarget(
+            frame[measure.column].to_numpy(dtype=float), target_type=measure.target_type
+        )
+    assert measure.numerator and measure.denominator  # guaranteed by Measure.__post_init__
+    return RatioTarget(
+        frame[measure.numerator].to_numpy(dtype=float),
+        frame[measure.denominator].to_numpy(dtype=float),
+    )
 
 
 def discover_drivers(
@@ -162,13 +179,11 @@ def discover_drivers(
         logger.info("driver_dims_absent_from_view", view=view, present=present_dims)
         return empty
     values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
-    measure_array = frame[measure.column].to_numpy(dtype=float)
 
     return discover_tree(
         values_by_dim,
-        measure_array,
+        _make_target(measure, frame),
         measure_label=measure.label,
-        target_type=measure.target_type,
         dims=present_dims,
         rng=np.random.default_rng(seed),
         max_depth=max_depth,

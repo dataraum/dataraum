@@ -115,3 +115,31 @@ def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
 def columns(df: pd.DataFrame, dim: str) -> tuple[np.ndarray, np.ndarray]:
     """``(values, measure)`` numpy arrays for one dimension — the criterion's inputs."""
     return df[dim].astype(object).to_numpy(), df["measure"].to_numpy(dtype=float)
+
+
+# Ratio corpus (DAT-545 P4): the RATIO numerator/denominator depends on the driver
+# dims, with the denominator (volume) varying independently — so a naive mean of
+# per-row ratios would misweight, but Σnum/Σden support-weighting recovers the driver.
+RATIO_EFFECTS = {"R_e60": 0.60, "R_e25": 0.25}
+RATIO_DRIVERS = list(RATIO_EFFECTS)
+RATIO_NULLS = ["N_lowcard", "N_midcard", "N_highcard"]
+RATIO_DIMS = RATIO_DRIVERS + RATIO_NULLS
+
+
+def make_ratio_corpus(rng: np.random.Generator) -> pd.DataFrame:
+    """A ratio (numerator/denominator) whose VALUE depends on the driver dims."""
+    n = N_ROWS
+    df = pd.DataFrame(index=np.arange(n))
+    denominator = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
+    log_ratio = np.full(n, np.log(0.2))  # base ratio 0.2
+    for name, eps in RATIO_EFFECTS.items():
+        v = rng.integers(0, 4, n)
+        df[name] = [f"{name}:{x}" for x in v]
+        log_ratio += np.log1p(eps * (v - 1.5) / 1.5)
+    ratio = np.exp(log_ratio + rng.normal(0.0, 0.1, n))  # + per-row noise
+    df["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
+    df["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]
+    df["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]
+    df["numerator"] = denominator * ratio
+    df["denominator"] = denominator
+    return df

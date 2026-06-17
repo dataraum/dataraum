@@ -127,3 +127,45 @@ def variance_reduction(
         return 0.0
     within_var = (sq_big.sum() - np.sum(sum_big * sum_big / n_big)) / total_n
     return max(0.0, float((total_var - within_var) / total_var))
+
+
+def weighted_variance_reduction(
+    codes: np.ndarray,
+    n_codes: int,
+    ratio: np.ndarray,
+    weight: np.ndarray,
+    *,
+    min_support: int = DEFAULT_MIN_SUPPORT,
+) -> float:
+    """Support-weighted variance reduction for a RATIO measure (DAT-545 P4).
+
+    A ratio ``R = Σnum / Σden`` is the weight-``den`` mean of the per-row ratios
+    ``r = num/den`` — so the explained fraction is a *weighted* variance reduction of
+    ``r`` with weights ``w = den`` (averaging raw per-row ratios would weight a
+    ₂-row group like a ₂-million-row one; Simpson's paradox). Rows with a
+    non-positive or missing denominator carry no ratio and are dropped. Same shape as
+    :func:`variance_reduction` — groups clear ``min_support`` by ROW count, the result
+    is ``[0, 1]`` and only ever ranked / permutation-gated.
+    """
+    valid = (codes >= 0) & ~np.isnan(ratio) & (weight > 0)
+    if int(valid.sum()) < min_support:
+        return 0.0
+    c, r, w = codes[valid], ratio[valid], weight[valid]
+    counts = np.bincount(c, minlength=n_codes)
+    w_sum = np.bincount(c, weights=w, minlength=n_codes)
+    wr = np.bincount(c, weights=w * r, minlength=n_codes)
+    wrr = np.bincount(c, weights=w * r * r, minlength=n_codes)
+
+    big = counts >= min_support
+    if int(big.sum()) < 2:
+        return 0.0
+    w_big, wr_big, wrr_big = w_sum[big], wr[big], wrr[big]
+    total_w = w_big.sum()
+    if total_w <= 0:
+        return 0.0
+    grand = wr_big.sum() / total_w
+    total_var = wrr_big.sum() / total_w - grand**2
+    if total_var <= 0:
+        return 0.0
+    within_var = (wrr_big.sum() - np.sum(wr_big * wr_big / w_big)) / total_w
+    return max(0.0, float((total_var - within_var) / total_var))

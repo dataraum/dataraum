@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from dataraum.analysis.drivers.models import DriverRanking
+from dataraum.analysis.drivers.targets import FlowTarget
 from dataraum.analysis.drivers.tree import discover_tree
 
 from .conftest import ALL_DIMS, INDEPENDENT_NULLS, PROXY, make_corpus
@@ -29,9 +30,8 @@ def _run(seed: int, *, max_depth: int) -> DriverRanking:
     measure = df["measure"].to_numpy(dtype=float)
     return discover_tree(
         values_by_dim,
-        measure,
+        FlowTarget(measure),
         measure_label="measure",
-        target_type="flow",
         dims=ALL_DIMS,
         rng=rng,
         max_depth=max_depth,
@@ -126,9 +126,8 @@ class TestTreeOutputs:
         measure = rng.normal(size=n)
         rank = discover_tree(
             values_by_dim,
-            measure,
+            FlowTarget(measure),
             measure_label="m",
-            target_type="flow",
             dims=list(values_by_dim),
             rng=rng,
             n_perm=N_PERM,

@@ -2,5 +2,18 @@
 // orchestration workflow the worker can run is re-exported here. Sandboxed code
 // only (see ./journey).
 
-export type { VerticalEstablished } from "../contracts";
-export { journeyWorkflow, verticalEstablished } from "./journey";
+export type {
+	JourneyState,
+	RunBeginSession,
+	RunOperatingModel,
+	VerticalEstablished,
+} from "../contracts";
+export {
+	journeyState,
+	journeyWorkflow,
+	pauseAutoMode,
+	resumeAutoMode,
+	runBeginSession,
+	runOperatingModel,
+	verticalEstablished,
+} from "./journey";

@@ -121,7 +121,7 @@ beforeEach(() => {
 });
 
 describe("getWorkflowProgress (DAT-352)", () => {
-	it("queries get_progress on the precise (workflowId, runId) and maps the shape", async () => {
+	it("queries get_progress on the latest execution by workflowId and maps the shape (DAT-530)", async () => {
 		h.snapshot = {
 			phase: "processing_tables",
 			tables_total: 4,
@@ -132,7 +132,7 @@ describe("getWorkflowProgress (DAT-352)", () => {
 			run_id: "run-1",
 		});
 
-		expect(getHandleMock).toHaveBeenCalledWith("addsource-ws-src", "run-1");
+		expect(getHandleMock).toHaveBeenCalledWith("addsource-ws-src");
 		expect(h.queryName).toBe("get_progress");
 		expect(result).toEqual({
 			phase: "processing_tables",

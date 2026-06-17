@@ -162,7 +162,7 @@ export function WorkflowProgressView({
 		// terminal state on a reload-pinned widget); `refetchInterval: false` +
 		// infinite staleTime means it never polls — live updates arrive via
 		// setQueryData.
-		queryKey: progressQueryKey(workflowId, runId),
+		queryKey: progressQueryKey(workflowId),
 		queryFn: () => fetchProgress(workflowId, runId),
 		refetchInterval: false,
 		refetchOnWindowFocus: false,

@@ -1,12 +1,10 @@
-// Unit tests for the operating_model tool (DAT-440).
-//
-// Mirrors begin-session.test.ts: mock `#/config` and `@temporalio/client`
-// (record the start call). The contract this guards (DAT-438, DAT-506): the
-// workflow is started with a FLAT input — { workspace_id, verticals } only, no
-// table set + no session id on the wire (the engine re-reads the table set from
-// the catalog head's run_tables) — non-blocking, under the session-keyed workflow
-// id with ALLOW_DUPLICATE so re-runs group under one id. The cockpit_db session row
-// already exists (begin_session recorded it); recordRun appends the run.
+// Unit tests for the operating_model tool (DAT-440; routed through the journey in
+// DAT-530). The tool no longer starts the workflow directly — it signals the
+// per-workspace JourneyWorkflow (`runOperatingModel`), which records the run +
+// starts the engine child. So the unit asserts the SIGNAL payload, not a
+// workflow.start. Mocked seams: #/config, the registry (workspace + vertical +
+// queue), the journey trigger (signalRunOperatingModel), the ALS conversation
+// context, and the DAT-511 sequencing pre-check.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,8 +17,17 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
-	recordRun: vi.fn(async () => {}),
-	attachRunId: vi.fn(async () => {}),
+	conversationId: "conv-1" as string | null,
+	signalled: null as {
+		workspaceId: string;
+		req: Record<string, unknown>;
+	} | null,
+	signalRunOperatingModel: vi.fn(
+		async (workspaceId: string, req: Record<string, unknown>) => {
+			h.signalled = { workspaceId, req };
+			return req.workflowId as string;
+		},
+	),
 	hasRunningRun: vi.fn(async () => false),
 }));
 
@@ -30,34 +37,24 @@ vi.mock("#/config", () => ({
 	},
 }));
 
-// cockpit_db control plane (DAT-461): the active workspace resolves through the
-// registry, and the run is recorded after start. Both mocked at the seam.
+// cockpit_db control plane: the active workspace resolves through the registry; the
+// DAT-511 pre-check reads hasRunningRun. Both mocked at the seam.
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
-		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
+		// Per-workspace queue (DAT-505) — the journey runs the child here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
 		vertical: h.vertical,
 	})),
 }));
 vi.mock("#/db/cockpit/runs", () => ({
-	recordRun: h.recordRun,
-	attachRunId: h.attachRunId,
 	hasRunningRun: h.hasRunningRun,
 }));
-
-const startMock = vi.fn(async (_name: string, _opts: unknown) => ({
-	firstExecutionRunId: "run-xyz",
+vi.mock("#/temporal/journey-trigger", () => ({
+	signalRunOperatingModel: h.signalRunOperatingModel,
 }));
-const closeMock = vi.fn(async () => {});
-vi.mock("@temporalio/client", () => ({
-	Connection: { connect: vi.fn(async () => ({ close: closeMock })) },
-	Client: vi.fn(function Client() {
-		return { workflow: { start: startMock } };
-	}),
-}));
-vi.mock("@temporalio/common", () => ({
-	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
+vi.mock("#/lib/run-context", () => ({
+	currentConversationId: () => h.conversationId,
 }));
 
 import { operatingModel } from "./operating-model";
@@ -69,86 +66,61 @@ beforeEach(() => {
 		temporalNamespace: "default",
 	};
 	h.vertical = "_adhoc";
-	startMock.mockClear();
-	closeMock.mockClear();
-	h.recordRun.mockClear();
-	h.attachRunId.mockClear();
+	h.conversationId = "conv-1";
+	h.signalled = null;
+	h.signalRunOperatingModel.mockClear();
 	h.hasRunningRun.mockClear();
 	h.hasRunningRun.mockResolvedValue(false);
 });
 
-describe("operatingModel (DAT-440, DAT-506)", () => {
-	it("starts operatingModelWorkflow with a FLAT input — workspace_id + verticals, no table set, no session id on the wire", async () => {
+describe("operatingModel (DAT-440, routed via the journey — DAT-530)", () => {
+	it("signals the journey with the derived ids/queue + verticals + the session", async () => {
 		h.vertical = "finance";
 		const result = await operatingModel({ session_id: "sess-1" });
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
-		expect(startMock).toHaveBeenCalledTimes(1);
-		expect(startMock.mock.calls[0][0]).toBe("operatingModelWorkflow");
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [Record<string, unknown>];
-		// FLAT input (DAT-506): just { workspace_id, verticals } — no identity
-		// envelope, no session id on the wire. The engine re-reads the session's
-		// table set from the catalog head's run_tables; the verticals come from the
-		// workspace registry (one-element array, born-loud on >1).
-		expect(args[0]).toEqual({
-			workspace_id: WS,
+		expect(h.signalled?.workspaceId).toBe(WS);
+		expect(h.signalled?.req).toEqual({
+			sessionId: "sess-1",
+			workflowId: `operatingmodel-${WS}-sess-1`,
+			engineTaskQueue: `engine-${WS}`,
 			verticals: ["finance"],
+			conversationId: "conv-1",
 		});
-		// Routed to the workspace's OWN queue (DAT-505), not the bare env queue.
-		expect(opts.taskQueue).toBe(`engine-${WS}`);
+		// The tool returns the deterministic workflow id (run_id mirrors it — the
+		// journey owns the real execution id; progress resolves latest by id).
 		expect(result).toEqual({
 			workflow_id: `operatingmodel-${WS}-sess-1`,
-			run_id: "run-xyz",
+			run_id: `operatingmodel-${WS}-sess-1`,
 			session_id: "sess-1",
 		});
 	});
 
-	it("reuses the session-keyed workflow id under ALLOW_DUPLICATE and closes the connection", async () => {
-		await operatingModel({ session_id: "sess-reuse" });
-
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		expect(opts.workflowId).toBe(`operatingmodel-${WS}-sess-reuse`);
-		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
-		expect(closeMock).toHaveBeenCalledTimes(1);
+	it("threads a NULL conversationId when outside a chat turn (non-narrating run)", async () => {
+		h.conversationId = null;
+		const result = await operatingModel({ session_id: "sess-1" });
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
+		expect(h.signalled?.req.conversationId).toBeNull();
 	});
 
-	it("throws when Temporal is unconfigured and does NOT start", async () => {
+	it("throws when Temporal is unconfigured and signals nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(operatingModel({ session_id: "sess-1" })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
-		expect(startMock).not.toHaveBeenCalled();
-		// The guard runs before any cockpit write.
-		expect(h.recordRun).not.toHaveBeenCalled();
-	});
-
-	it("records an operating_model run on the begin_session session before start", async () => {
-		await operatingModel({ session_id: "sess-1" });
-		expect(h.recordRun).toHaveBeenCalledTimes(1);
-		expect(h.recordRun).toHaveBeenCalledWith({
-			workspaceId: WS,
-			engineSessionId: "sess-1",
-			kind: "begin_session",
-			stage: "operating_model",
-			workflowId: `operatingmodel-${WS}-sess-1`,
-		});
-		expect(h.attachRunId).toHaveBeenCalledWith(
-			`operatingmodel-${WS}-sess-1`,
-			"run-xyz",
-		);
+		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
 	});
 
 	it("refuses with { error } while begin_session is still running (DAT-511)", async () => {
 		// The engine guards the same precondition born-loud; the tool turns the
-		// would-be workflow failure into an agent-actionable sentence — and
-		// must NOT start the workflow or record a run.
+		// would-be workflow failure into an agent-actionable sentence — and must
+		// NOT signal the journey.
 		h.hasRunningRun.mockResolvedValueOnce(true);
 		const result = await operatingModel({ session_id: "sess-1" });
 		expect(result).toMatchObject({
 			error: expect.stringContaining("begin_session is still running"),
 		});
-		expect(startMock).not.toHaveBeenCalled();
-		expect(h.recordRun).not.toHaveBeenCalled();
+		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
 	});
 
 	it("checks the begin_session stage for the requested session", async () => {

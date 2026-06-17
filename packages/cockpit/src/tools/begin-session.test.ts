@@ -1,10 +1,10 @@
-// Unit tests for the begin_session tool (DAT-409, DAT-506).
-//
-// DAT-506: no engine seed — sessions live in cockpit_db and the run is recorded
-// there BEFORE the workflow starts (recordRun is authoritative). The vertical is
-// the workspace property from the registry, not a per-session input. Mocked seams
-// (no DB / no Temporal in units): the cockpit registry (workspace + vertical), the
-// cockpit runs writer (recordRun/attachRunId), and `@temporalio/client`.
+// Unit tests for the begin_session tool (DAT-409; routed through the journey in
+// DAT-530). The tool no longer starts the workflow directly — it signals the
+// per-workspace JourneyWorkflow (`runBeginSession`), which records the run + starts
+// the engine child. So the unit asserts the SIGNAL payload, not a workflow.start.
+// Mocked seams: #/config, the registry (workspace + vertical + queue), the journey
+// trigger (signalRunBeginSession), the ALS conversation context, and the
+// born-loud pre-check.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,13 +17,17 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
-	calls: [] as string[],
-	recordedRun: null as Record<string, unknown> | null,
-	recordRun: vi.fn(async (input: Record<string, unknown>) => {
-		h.recordedRun = input;
-		h.calls.push("record");
-	}),
-	attachRunId: vi.fn(async () => {}),
+	conversationId: "conv-1" as string | null,
+	signalled: null as {
+		workspaceId: string;
+		req: Record<string, unknown>;
+	} | null,
+	signalRunBeginSession: vi.fn(
+		async (workspaceId: string, req: Record<string, unknown>) => {
+			h.signalled = { workspaceId, req };
+			return req.workflowId as string;
+		},
+	),
 	hasImportedTables: vi.fn(async () => true),
 }));
 
@@ -32,40 +36,22 @@ vi.mock("#/config", () => ({
 		return h.config;
 	},
 }));
-
-// cockpit_db control plane (DAT-461/505/506): workspace + its vertical via the
-// registry, run recorded BEFORE start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
-		// Per-workspace queue (DAT-505) — the driver routes the workflow here.
+		// Per-workspace engine queue (DAT-505) — the journey runs the child here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
 		vertical: h.vertical,
 	})),
 }));
-vi.mock("#/db/cockpit/runs", () => ({
-	recordRun: h.recordRun,
-	attachRunId: h.attachRunId,
+vi.mock("#/temporal/journey-trigger", () => ({
+	signalRunBeginSession: h.signalRunBeginSession,
 }));
-// The DAT-534 born-loud pre-check reads workspace state; mock it (default: data
-// present, so the existing record/start tests are unaffected).
+vi.mock("#/lib/run-context", () => ({
+	currentConversationId: () => h.conversationId,
+}));
 vi.mock("#/db/metadata/workspace-state", () => ({
 	hasImportedTables: h.hasImportedTables,
-}));
-
-const startMock = vi.fn(async (_name: string, _opts: unknown) => {
-	h.calls.push("start");
-	return { firstExecutionRunId: "run-xyz" };
-});
-const closeMock = vi.fn(async () => {});
-vi.mock("@temporalio/client", () => ({
-	Connection: { connect: vi.fn(async () => ({ close: closeMock })) },
-	Client: vi.fn(function Client() {
-		return { workflow: { start: startMock } };
-	}),
-}));
-vi.mock("@temporalio/common", () => ({
-	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
 }));
 
 import { beginSession } from "./begin-session";
@@ -77,91 +63,66 @@ beforeEach(() => {
 		temporalNamespace: "default",
 	};
 	h.vertical = "_adhoc";
-	h.calls = [];
-	h.recordedRun = null;
-	startMock.mockClear();
-	closeMock.mockClear();
-	h.recordRun.mockClear();
-	h.attachRunId.mockClear();
+	h.conversationId = "conv-1";
+	h.signalled = null;
+	h.signalRunBeginSession.mockClear();
 	h.hasImportedTables.mockClear();
 	h.hasImportedTables.mockResolvedValue(true);
 });
 
-describe("beginSession (DAT-409, DAT-506)", () => {
-	it("records the run BEFORE starting the workflow (no orphaned run)", async () => {
-		await beginSession({ table_ids: ["t1", "t2"] });
-		expect(h.calls).toEqual(["record", "start"]);
-	});
-
-	it("hands the workflow a FLAT input — workspace_id + table set + verticals — and returns the cockpit session", async () => {
+describe("beginSession (DAT-409, routed via the journey — DAT-530)", () => {
+	it("signals the journey with the derived ids/queue + verticals + the session", async () => {
 		h.vertical = "finance";
 		const result = await beginSession({ table_ids: ["t1", "t2"] });
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [
-			{ workspace_id: string; tables: string[]; verticals: string[] },
-		];
-		// FLAT input (DAT-506): no identity envelope, no session id on the wire —
-		// workspace_id + the table selection + verticals (one-element array).
-		expect(args[0]).toEqual({
-			workspace_id: WS,
+		expect(h.signalled?.workspaceId).toBe(WS);
+		expect(h.signalled?.req).toEqual({
+			sessionId: result.session_id,
+			workflowId: `beginsession-${WS}-${result.session_id}`,
+			engineTaskQueue: `engine-${WS}`,
 			tables: ["t1", "t2"],
 			verticals: ["finance"],
+			conversationId: "conv-1",
 		});
+		// The tool returns the deterministic workflow id (run_id mirrors it — the
+		// journey owns the real execution id; progress resolves latest by id).
+		expect(result.workflow_id).toBe(`beginsession-${WS}-${result.session_id}`);
+		expect(result.run_id).toBe(result.workflow_id);
 		expect(result.table_ids).toEqual(["t1", "t2"]);
-		// The workflow id is keyed by the cockpit session-of-record (cockpit_db).
-		expect(opts.workflowId).toBe(`beginsession-${WS}-${result.session_id}`);
-		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
-		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("reuses a caller-supplied cockpit session id for the workflow id", async () => {
+	it("threads a NULL conversationId when outside a chat turn (non-narrating run)", async () => {
+		h.conversationId = null;
+		const result = await beginSession({ table_ids: ["t1"] });
+		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
+		expect(h.signalled?.req.conversationId).toBeNull();
+	});
+
+	it("reuses a caller-supplied session id for the workflow id", async () => {
 		const result = await beginSession({
 			table_ids: ["t1"],
 			session_id: "sess-reuse",
 		});
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 		expect(result.session_id).toBe("sess-reuse");
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		expect(opts.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
+		expect(h.signalled?.req.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
 	});
 
-	it("throws when Temporal is unconfigured and records nothing / starts nothing", async () => {
+	it("throws when Temporal is unconfigured and signals nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(beginSession({ table_ids: ["t1"] })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
-		expect(startMock).not.toHaveBeenCalled();
-		expect(h.recordRun).not.toHaveBeenCalled();
+		expect(h.signalRunBeginSession).not.toHaveBeenCalled();
 	});
 
-	it("refuses with { error } before start when the workspace has no typed tables (DAT-534)", async () => {
-		// The engine errors late on an empty table set; the cockpit pre-flight turns
-		// that into an agent-actionable sentence — and must NOT record or start a run.
+	it("refuses with { error } before signalling when the workspace has no typed tables (DAT-534)", async () => {
 		h.hasImportedTables.mockResolvedValue(false);
 		const result = await beginSession({ table_ids: ["t1"] });
 		expect(result).toMatchObject({
 			error: expect.stringContaining("import data in a Connect chat"),
 		});
-		expect(h.recordRun).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
-	});
-
-	it("records the cockpit session + run before start, then attaches the runId", async () => {
-		const result = await beginSession({ table_ids: ["t1", "t2"] });
-		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
-		expect(h.recordRun).toHaveBeenCalledTimes(1);
-		expect(h.recordedRun).toEqual({
-			workspaceId: WS,
-			engineSessionId: result.session_id,
-			kind: "begin_session",
-			stage: "begin_session",
-			workflowId: `beginsession-${WS}-${result.session_id}`,
-		});
-		expect(h.attachRunId).toHaveBeenCalledWith(
-			`beginsession-${WS}-${result.session_id}`,
-			"run-xyz",
-		);
+		expect(h.signalRunBeginSession).not.toHaveBeenCalled();
 	});
 });

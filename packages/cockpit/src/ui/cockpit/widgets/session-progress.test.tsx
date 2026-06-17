@@ -64,7 +64,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("SessionProgressWidget (DAT-435)", () => {
-	it("seeds on the precise (workflowId, runId) key and does NOT poll", () => {
+	it("seeds on the workflowId key (latest execution) and does NOT poll", () => {
 		h.queryResult = {
 			data: snapshot({}),
 			error: undefined,
@@ -74,7 +74,6 @@ describe("SessionProgressWidget (DAT-435)", () => {
 		expect(h.lastOptions?.queryKey).toEqual([
 			"workflow-progress",
 			"beginsession-ws-sess",
-			"run-1",
 		]);
 		// No polling — live updates arrive via the watcher's pushed CUSTOM events
 		// written to this same key (Phase 2A.3).

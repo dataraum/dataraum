@@ -19,6 +19,12 @@ import { config } from "#/config";
 import {
 	JOURNEY_WORKFLOW_TYPE,
 	journeyWorkflowId,
+	PAUSE_AUTO_MODE_SIGNAL,
+	RESUME_AUTO_MODE_SIGNAL,
+	RUN_BEGIN_SESSION_SIGNAL,
+	RUN_OPERATING_MODEL_SIGNAL,
+	type RunBeginSession,
+	type RunOperatingModel,
 	VERTICAL_ESTABLISHED_SIGNAL,
 	type VerticalEstablished,
 } from "#/worker/contracts";
@@ -36,17 +42,19 @@ function requireTemporalConfig(): { host: string; namespace: string } {
 }
 
 /**
- * Signal `verticalEstablished` to the workspace's journey, starting it if it
- * isn't running yet. Returns the journey's workflow id.
+ * `signalWithStart` the workspace's journey with `signal`, starting it if it
+ * isn't running yet. Idempotent for the long-lived per-workspace journey: a
+ * running journey (incl. across continue-as-new — the workflow id is stable) just
+ * receives the signal; otherwise it's started and signalled in one call. So a
+ * workspace has exactly one journey execution. Returns the journey workflow id.
  */
-export async function signalVerticalEstablished(
+async function signalJourney(
 	workspaceId: string,
-	vertical: string,
+	signal: string,
+	signalArgs: unknown[],
 ): Promise<string> {
 	const { host, namespace } = requireTemporalConfig();
 	const workflowId = journeyWorkflowId(workspaceId);
-	const signalArgs: [VerticalEstablished] = [{ vertical }];
-
 	const connection = await Connection.connect({ address: host });
 	try {
 		const client = new Client({ connection, namespace });
@@ -54,11 +62,54 @@ export async function signalVerticalEstablished(
 			taskQueue: config.cockpitOrchestrationTaskQueue,
 			workflowId,
 			args: [workspaceId],
-			signal: VERTICAL_ESTABLISHED_SIGNAL,
+			signal,
 			signalArgs,
 		});
 		return workflowId;
 	} finally {
 		await connection.close();
 	}
+}
+
+/** Signal `verticalEstablished` (the vertical gate / entry event). */
+export function signalVerticalEstablished(
+	workspaceId: string,
+	vertical: string,
+): Promise<string> {
+	return signalJourney(workspaceId, VERTICAL_ESTABLISHED_SIGNAL, [
+		{ vertical } satisfies VerticalEstablished,
+	]);
+}
+
+/** Signal `runBeginSession` — the journey runs the engine begin_session stage as
+ * a cross-language child (DAT-530). The tool passes the derived ids/queue + the
+ * conversationId so the journey (no request ALS) records + narrates correctly. */
+export function signalRunBeginSession(
+	workspaceId: string,
+	req: RunBeginSession,
+): Promise<string> {
+	return signalJourney(workspaceId, RUN_BEGIN_SESSION_SIGNAL, [req]);
+}
+
+/** Signal `runOperatingModel` — the MANUAL operating_model re-trigger (DAT-530).
+ * The autonomous cascade runs operating_model automatically after a clean
+ * begin_session; this is the tool path (a teach re-run, P3c) routed through the
+ * journey so it stays the single owner of stage execution. */
+export function signalRunOperatingModel(
+	workspaceId: string,
+	req: RunOperatingModel,
+): Promise<string> {
+	return signalJourney(workspaceId, RUN_OPERATING_MODEL_SIGNAL, [req]);
+}
+
+/** Signal `pauseAutoMode` — suspend the autonomous cascade (the breaker's manual
+ * counterpart). Pause-don't-kill: a stage in flight finishes; only the next
+ * cascade decision is gated. */
+export function signalPauseAutoMode(workspaceId: string): Promise<string> {
+	return signalJourney(workspaceId, PAUSE_AUTO_MODE_SIGNAL, []);
+}
+
+/** Signal `resumeAutoMode` — re-arm the cascade and clear the failure tally. */
+export function signalResumeAutoMode(workspaceId: string): Promise<string> {
+	return signalJourney(workspaceId, RESUME_AUTO_MODE_SIGNAL, []);
 }

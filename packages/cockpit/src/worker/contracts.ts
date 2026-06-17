@@ -26,3 +26,71 @@ export function journeyWorkflowId(workspaceId: string): string {
 export interface VerticalEstablished {
 	vertical: string;
 }
+
+/** The INTENTIONAL begin_session trigger (DAT-530): the user chose a table set,
+ * so the journey runs `beginSessionWorkflow` as a cross-language child. */
+export const RUN_BEGIN_SESSION_SIGNAL = "runBeginSession";
+
+/** Payload of `runBeginSession`. The tool (which has the request context) computes
+ * the derived values and passes them, so the sandboxed journey stays free of any
+ * workspace IO — it just orchestrates the child + records the run. */
+export interface RunBeginSession {
+	/** Cockpit-minted session id (the run-correlation key + workflow-id segment). */
+	sessionId: string;
+	/** The deterministic engine workflow id (tool-computed via beginSessionWorkflowId);
+	 * the journey starts the child + records the run under it. Stable across re-runs. */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
+	engineTaskQueue: string;
+	/** The typed table ids to stage. */
+	tables: string[];
+	/** The workspace verticals (one today; the engine is born-loud on >1). */
+	verticals: string[];
+	/** The originating chat (DAT-528), captured at the tool boundary so the journey
+	 * — which has no request ALS — stamps the run for narration routing. Null = none. */
+	conversationId: string | null;
+}
+
+/** The MANUAL operating_model trigger (DAT-530 P3b.2): the autonomous cascade runs
+ * operating_model automatically after a clean begin_session, but the tool is kept
+ * as a re-trigger (a teach re-run, P3c). It signals the journey rather than starting
+ * the workflow directly, so the journey stays the single owner of stage execution. */
+export const RUN_OPERATING_MODEL_SIGNAL = "runOperatingModel";
+
+/** Payload of `runOperatingModel`. Like {@link RunBeginSession} but for the third
+ * stage — no `tables` (the engine re-reads the session's table set from the catalog
+ * head; DAT-506). A manual re-trigger always runs (it is user-intentional, like
+ * begin_session — the breaker / auto-mode gate only the AUTONOMOUS cascade). */
+export interface RunOperatingModel {
+	/** The begin_session session to run the stage over (run-correlation key). */
+	sessionId: string;
+	/** The deterministic engine workflow id (tool-computed via operatingModelWorkflowId). */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
+	engineTaskQueue: string;
+	/** The workspace verticals (one today; born-loud on >1) — drive the declared
+	 * validations/cycles/metrics. */
+	verticals: string[];
+	/** The originating chat (DAT-528) for narration routing. Null = none. */
+	conversationId: string | null;
+}
+
+/** Pause the AUTONOMOUS cascade (the breaker's manual counterpart) — stop
+ * auto-advancing begin_session → operating_model. Does NOT kill the journey or a
+ * stage already in flight (pause-don't-kill). */
+export const PAUSE_AUTO_MODE_SIGNAL = "pauseAutoMode";
+/** Re-enable the autonomous cascade and clear the failure tally (the breaker's
+ * manual reset). */
+export const RESUME_AUTO_MODE_SIGNAL = "resumeAutoMode";
+
+/** The journey-state query (DAT-530) — read the breaker's live state for ops
+ * (`temporal workflow query --type journeyState`) and tests. */
+export const JOURNEY_STATE_QUERY = "journeyState";
+
+/** The breaker's observable state. `autoMode` off ⇒ the cascade is suspended
+ * (tripped by repeated failures or a manual pause); `consecutiveFailures` is the
+ * running tally that trips it. */
+export interface JourneyState {
+	autoMode: boolean;
+	consecutiveFailures: number;
+}

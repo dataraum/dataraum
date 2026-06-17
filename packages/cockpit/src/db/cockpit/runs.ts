@@ -49,6 +49,13 @@ export interface RecordRunInput {
 	// The deterministic workflow id (known before start). The run row is keyed by
 	// it; `runId` is the workflowId placeholder until `attachRunId` finalizes it.
 	workflowId: string;
+	// The originating chat (DAT-528) for run→chat narration routing. OMITTED by
+	// the in-request tool drivers — they fall back to the request-scoped ALS
+	// (`currentConversationId()`). Passed EXPLICITLY by the orchestration worker
+	// (DAT-530): the journey runs outside any request, so it has no ALS and must
+	// thread the conversationId captured at the tool boundary, or narration would
+	// silently break. Pass `null` to deliberately record a non-narrating run.
+	conversationId?: string | null;
 }
 
 /**
@@ -93,12 +100,15 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 			// until after start. Keyed by the deterministic workflowId so the row is
 			// addressable now and the (workflowId, runId) UNIQUE upsert is idempotent.
 			runId: input.workflowId,
-			// The originating chat (DAT-528), read from the request-scoped ALS context
-			// the chat handler binds (lib/run-context) — recordRun fires two driver
-			// hops deep where there is no per-request channel. Null when started
-			// outside a chat turn (a future auto-orchestrated run); such a run simply
-			// doesn't narrate (the watcher filters on a matching conversationId).
-			conversationId: currentConversationId(),
+			// The originating chat (DAT-528). An explicit value (incl. null) wins —
+			// the orchestration worker passes it, since it has no request ALS. When
+			// omitted (the in-request tool drivers), fall back to the ALS context the
+			// chat handler binds (lib/run-context). Null → the run doesn't narrate
+			// (the watcher filters on a matching conversationId).
+			conversationId:
+				input.conversationId !== undefined
+					? input.conversationId
+					: currentConversationId(),
 			status: "running",
 		})
 		.onConflictDoNothing({

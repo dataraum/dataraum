@@ -3,7 +3,18 @@
 // test-server stalls CI, so it's deliberately avoided). If the workflow code
 // ever drifts non-deterministically against this committed history, replay
 // throws and this fails. Fixture captured from a real run via
-// `temporal workflow show --output json` (signal → activity → parked).
+// `temporal workflow show --output json` (signal → recordRun → startChild →
+// attachRunId → parked awaiting child.result).
+//
+// COVERAGE NOTE (DAT-530 P3b.2): this fixture exercises only the begin_session
+// START path — it parks before the child completes, so the auto-cascade
+// (begin_session done → patched() → operating_model child) and the breaker fold
+// are NOT replay-covered here. The cascade is `patched()`-gated, so this
+// marker-less history correctly replays the OLD (no-cascade) path. Capturing a
+// cascade fixture needs a begin_session child that actually completes = a real
+// engine + LLM run (the gated compose-smoke); regenerate this fixture from such a
+// run when one is available. Until then the cascade's determinism rests on the
+// breaker unit tests + review.
 
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";

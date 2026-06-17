@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("MeasureProgressWidget (DAT-352)", () => {
-	it("seeds on the precise (workflowId, runId) key and does NOT poll", () => {
+	it("seeds on the workflowId key (latest execution) and does NOT poll", () => {
 		h.queryResult = {
 			data: {
 				phase: "import",
@@ -72,7 +72,6 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		expect(h.lastOptions?.queryKey).toEqual([
 			"workflow-progress",
 			"addsource-ws-src",
-			"run-1",
 		]);
 		// No polling — the seed fetch is one-shot; live updates arrive via the
 		// watcher's pushed CUSTOM events written to this same key (Phase 2A.3).

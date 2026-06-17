@@ -189,10 +189,7 @@ export function CockpitProvider({
 		(chunk: unknown) => {
 			const ev = asWorkflowProgressEvent(chunk);
 			if (ev) {
-				queryClient.setQueryData(
-					progressQueryKey(ev.workflow_id, ev.run_id),
-					ev.progress,
-				);
+				queryClient.setQueryData(progressQueryKey(ev.workflow_id), ev.progress);
 			}
 		},
 		[queryClient],

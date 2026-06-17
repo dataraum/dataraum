@@ -1,20 +1,24 @@
-"""Aggregation-lineage discovery over the slice substrate (DAT-491).
+"""Aggregation-lineage discovery over the enriched-view substrate (DAT-491/536).
 
-No LLM call and no SQL assembly: the begin_session value layer already built
-everything this needs. The slicing agent partitioned the facts by shared
-dimensions (propagated across tables) and named each table's time axis;
-temporal slice analysis segmented every slice by calendar period and persisted
-per-period SUMs of each numeric column (``TemporalSliceAnalysis.column_sums``).
+No LLM call and no slice materialization: the begin_session value layer already
+declared everything this needs. The slicing agent partitioned the facts by
+shared dimensions (the catalog ``SliceDefinition``, propagated across tables)
+and named each fact's time axis (``TableEntity.time_column``).
 
-Discovery is arithmetic over those stored numbers: for every dimension shared
-by two facts, pair the slice series by (slice value, period_label), enumerate
-the signed conventions (each numeric column, and ordered pair differences like
-``debit − credit`` — sums are linear, so conventions distribute over them),
-and let the deterministic reconciliation statistic
-(:mod:`dataraum.analysis.lineage.reconcile`) dispose every pairing. A wrong
-pairing lands at residual ≈ 1 and abstains (probe margins: true ≈ 0.02 vs
-wrong-anchor ≈ 1.0); the best reconciling verdict per measure column persists
-as one run-versioned ``MeasureAggregationLineage`` row.
+Discovery aggregates **inline** (DAT-536, one-view model): for each fact × shared
+dimension, a single ``GROUP BY dim, period`` over the fact's enriched view —
+keyed to the catalog's declared values, summing the fact's own numeric columns —
+yields the per-(slice value, period) row counts + sums the reconciliation needs.
+(This replaced the slice→``TemporalSliceAnalysis`` substrate; the equivalence is
+verdict-preserving — proven byte-identical per cell in
+``test_inline_aggregation_equivalence``.) It then pairs the series by (slice
+value, period_label), enumerates the signed conventions (each numeric column,
+and ordered pair differences like ``debit − credit`` — sums are linear, so
+conventions distribute over them), and lets the deterministic reconciliation
+statistic (:mod:`dataraum.analysis.lineage.reconcile`) dispose every pairing. A
+wrong pairing lands at residual ≈ 1 and abstains (probe margins: true ≈ 0.02 vs
+wrong-anchor ≈ 1.0); the best reconciling verdict per measure column persists as
+one run-versioned ``MeasureAggregationLineage`` row.
 
 Every abstention logs its stage (``lineage_candidate_dropped``) — visible,
 never silent.
@@ -31,14 +35,15 @@ from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.lineage.models import CandidateDisposal
 from dataraum.analysis.lineage.reconcile import dispose
 from dataraum.analysis.relationships.utils import load_defined_relationships
+from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.naming import slice_table_name
-from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
+from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
 from dataraum.storage.upsert import upsert
 
 if TYPE_CHECKING:
+    import duckdb
     from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
@@ -47,6 +52,26 @@ logger = get_logger(__name__)
 # n·(n−1) ordered differences. Wide event facts are capped (sorted column
 # names, deterministic) — and the cap is LOGGED, never silent.
 MAX_CONVENTION_COLUMNS = 8
+
+# DuckDB ``date_trunc`` unit + ``strftime`` label per grain — the cross-fact
+# alignment key (ISO semantics; stable across facts of the same grain). Mirrors
+# the retired ``temporal_slicing`` analyzer so period labels are unchanged.
+_GRAIN_SQL: dict[str, tuple[str, str]] = {
+    "daily": ("day", "%Y-%m-%d"),
+    "weekly": ("week", "%G-W%V"),
+    "monthly": ("month", "%Y-%m"),
+}
+
+_NUMERIC_TYPES = frozenset(
+    {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "FLOAT", "DOUBLE", "DECIMAL"}
+)
+
+
+def _is_numeric(resolved_type: str | None) -> bool:
+    """A column's resolved type is a summable numeric (ignores DECIMAL precision)."""
+    return (
+        resolved_type is not None and resolved_type.split("(")[0].strip().upper() in _NUMERIC_TYPES
+    )
 
 
 @dataclass(frozen=True)
@@ -62,32 +87,59 @@ class _SliceSeries:
 
 
 def _slice_series(
+    duckdb_conn: duckdb.DuckDBPyConnection,
     table: Table,
     slice_def: SliceDefinition,
     dim_col: str,
-    tsa_rows: list[TemporalSliceAnalysis],
+    *,
+    source_name: str | None,
+    time_col: str | None,
+    numeric_cols: list[str],
+    grain: str,
 ) -> _SliceSeries | None:
-    """Assemble the fact's slice series for one dimension from persisted rows.
+    """Assemble the fact's per-(value, period) series by inline aggregation.
 
-    Slice tables are matched by EXACT reconstructed name per declared value
-    (``slice_table_name``), never by prefix scan — sanitized prefixes are not
-    prefix-free (``account`` vs ``account_type``), and a prefix match would
-    merge two different partitions into one vote-contaminated series.
+    One ``GROUP BY dim, period`` over the fact's enriched view (DAT-536), keyed
+    to the catalog's declared values and summing the fact's own numeric columns
+    — the path-independent replacement for the slice→``TemporalSliceAnalysis``
+    substrate (equivalence proven in ``test_inline_aggregation_equivalence``).
+    Returns ``None`` when the fact lacks a queryable source, a time axis,
+    declared values, or numeric columns: the witness simply cannot fire on it —
+    a visible abstention, never a silent guess.
     """
-    name_to_value = {
-        slice_table_name(table.duckdb_path or "", dim_col, v): str(v)
-        for v in (slice_def.distinct_values or [])
-    }
+    values = [str(v) for v in (slice_def.distinct_values or [])]
+    if not (source_name and time_col and numeric_cols and values):
+        return None
+    unit, label_fmt = _GRAIN_SQL.get(grain, _GRAIN_SQL["monthly"])
+    sum_parts = "".join(f', SUM("{c}") AS s{i}' for i, c in enumerate(numeric_cols))
+    values_sql = ", ".join("'" + v.replace("'", "''") + "'" for v in values)
+    sql = f"""
+        SELECT "{dim_col}" AS dim_value,
+            CAST(date_trunc('{unit}', CAST("{time_col}" AS DATE)) AS DATE) AS period_start,
+            COUNT(*) AS row_count{sum_parts}
+        FROM "{source_name}"
+        WHERE "{time_col}" IS NOT NULL AND "{dim_col}" IN ({values_sql})
+        GROUP BY 1, 2
+    """
+    try:
+        result_rows = duckdb_conn.execute(sql).fetchall()
+    except Exception as e:
+        logger.warning(
+            "inline_slice_series_failed", table=table.table_name, dimension=dim_col, error=str(e)
+        )
+        return None
     sums: dict[str, dict[str, dict[str, float]]] = {}
     rows: dict[str, dict[str, int]] = {}
     columns: set[str] = set()
-    for row in tsa_rows:
-        value = name_to_value.get(row.slice_table_name.lower())
-        if value is None:
-            continue
-        sums.setdefault(value, {})[row.period_label] = dict(row.column_sums or {})
-        rows.setdefault(value, {})[row.period_label] = int(row.row_count or 0)
-        columns.update((row.column_sums or {}).keys())
+    for r in result_rows:
+        value = str(r[0])
+        label = r[1].strftime(label_fmt)
+        period_sums = {
+            col: float(r[3 + i]) for i, col in enumerate(numeric_cols) if r[3 + i] is not None
+        }
+        sums.setdefault(value, {})[label] = period_sums
+        rows.setdefault(value, {})[label] = int(r[2])
+        columns.update(period_sums.keys())
     if not sums:
         return None
     return _SliceSeries(table=table, sums=sums, rows=rows, numeric_columns=sorted(columns))
@@ -176,6 +228,7 @@ class _Best:
 def discover_aggregation_lineage(
     session: Session,
     *,
+    duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     run_id: str,
     period_grain: str = "monthly",
@@ -228,20 +281,40 @@ def discover_aggregation_lineage(
         key_columns_by_table.setdefault(rel.from_table_id, set()).add(rel.from_column.column_name)
         key_columns_by_table.setdefault(rel.to_table_id, set()).add(rel.to_column.column_name)
 
-    tsa_rows = (
-        session.execute(
-            select(TemporalSliceAnalysis).where(
-                TemporalSliceAnalysis.run_id == run_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-
     # column name -> Column row per table, to persist measure_column_id.
     columns_by_table: dict[str, dict[str, Column]] = {}
     for col in session.execute(select(Column).where(Column.table_id.in_(table_ids))).scalars():
         columns_by_table.setdefault(col.table_id, {})[col.column_name] = col
+
+    # Inline-aggregation inputs per fact (DAT-536): the queryable source (the
+    # grain-verified enriched view, else the typed fact), the agent-named time
+    # axis (run-scoped ``TableEntity.time_column``), and the fact's own numeric
+    # columns (the SUM targets — the same set the retired slice path summed).
+    enriched_by_fact = {
+        ev.fact_table_id: ev.view_name
+        for ev in session.execute(
+            select(EnrichedView).where(
+                EnrichedView.fact_table_id.in_(table_ids),
+                EnrichedView.is_grain_verified.is_(True),
+            )
+        ).scalars()
+    }
+    source_by_table = {
+        tid: enriched_by_fact.get(tid) or (t.duckdb_path or None) for tid, t in tables.items()
+    }
+    time_entity_stmt = select(TableEntity).where(
+        TableEntity.table_id.in_(table_ids),
+        TableEntity.time_column.isnot(None),
+    )
+    if run_id is not None:
+        time_entity_stmt = time_entity_stmt.where(TableEntity.run_id == run_id)
+    time_col_by_table = {
+        e.table_id: e.time_column for e in session.execute(time_entity_stmt).scalars()
+    }
+    numeric_cols_by_table = {
+        tid: sorted(name for name, col in by_name.items() if _is_numeric(col.resolved_type))
+        for tid, by_name in columns_by_table.items()
+    }
 
     # Best verdict per measure column across dimensions, event tables, conventions.
     best_by_measure: dict[str, tuple[_Best, Table, str, str]] = {}
@@ -251,7 +324,19 @@ def discover_aggregation_lineage(
             tid: s
             for tid, sd in shared_dims[dim_col].items()
             if (t := tables.get(tid)) is not None
-            and (s := _slice_series(t, sd, dim_col, list(tsa_rows))) is not None
+            and (
+                s := _slice_series(
+                    duckdb_conn,
+                    t,
+                    sd,
+                    dim_col,
+                    source_name=source_by_table.get(tid),
+                    time_col=time_col_by_table.get(tid),
+                    numeric_cols=numeric_cols_by_table.get(tid, []),
+                    grain=period_grain,
+                )
+            )
+            is not None
         }
         if len(series_by_table) < 2:
             logger.info("lineage_no_slice_series", dimension=dim_col)

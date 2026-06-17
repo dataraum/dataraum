@@ -71,7 +71,7 @@ def _golden_via_slice_path(conn: duckdb.DuckDBPyConnection) -> _Cells:
     for value in _VALUES:
         name = f"slice_enriched_tb_acct_{value}"
         conn.execute(
-            f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM enriched_tb WHERE acct = \'{value}\''
+            f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM enriched_tb WHERE acct = '{value}'"
         )
         result = compute_period_sums(name, "period_date", TimeGrain.MONTHLY, conn)
         assert result.success, result.error
@@ -99,9 +99,7 @@ def _inline_group_by(conn: duckdb.DuckDBPyConnection) -> _Cells:
     for row in conn.execute(sql).fetchall():
         label = row[1].strftime("%Y-%m")
         sums = {
-            col: float(row[3 + i])
-            for i, col in enumerate(_NUMERIC_COLS)
-            if row[3 + i] is not None
+            col: float(row[3 + i]) for i, col in enumerate(_NUMERIC_COLS) if row[3 + i] is not None
         }
         out[(row[0], label)] = (int(row[2]), sums)
     return out

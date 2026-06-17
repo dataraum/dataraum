@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiWorkflowProgressRouteImport } from './routes/api/workflow-progress'
 import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiShippedMetricDagRouteImport } from './routes/api/shipped-metric-dag'
+import { Route as ApiRunningRunsRouteImport } from './routes/api/running-runs'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -49,6 +50,11 @@ const ApiUploadRoute = ApiUploadRouteImport.update({
 const ApiShippedMetricDagRoute = ApiShippedMetricDagRouteImport.update({
   id: '/api/shipped-metric-dag',
   path: '/api/shipped-metric-dag',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiRunningRunsRoute = ApiRunningRunsRouteImport.update({
+  id: '/api/running-runs',
+  path: '/api/running-runs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
@@ -124,6 +130,7 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
@@ -142,6 +149,7 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
@@ -161,6 +169,7 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
+  '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
@@ -181,6 +190,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
+    | '/api/running-runs'
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
@@ -199,6 +209,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
+    | '/api/running-runs'
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
@@ -217,6 +228,7 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
+    | '/api/running-runs'
     | '/api/shipped-metric-dag'
     | '/api/upload'
     | '/api/workflow-progress'
@@ -236,6 +248,7 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
+  ApiRunningRunsRoute: typeof ApiRunningRunsRoute
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
   ApiUploadRoute: typeof ApiUploadRoute
   ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
@@ -276,6 +289,13 @@ declare module '@tanstack/react-router' {
       path: '/api/shipped-metric-dag'
       fullPath: '/api/shipped-metric-dag'
       preLoaderRoute: typeof ApiShippedMetricDagRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/running-runs': {
+      id: '/api/running-runs'
+      path: '/api/running-runs'
+      fullPath: '/api/running-runs'
+      preLoaderRoute: typeof ApiRunningRunsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/run-sql': {
@@ -424,6 +444,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
+  ApiRunningRunsRoute: ApiRunningRunsRoute,
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
   ApiUploadRoute: ApiUploadRoute,
   ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,

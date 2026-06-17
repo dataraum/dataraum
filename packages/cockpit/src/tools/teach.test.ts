@@ -110,6 +110,39 @@ describe("validateTeach", () => {
 		});
 	});
 
+	describe("unit", () => {
+		it("accepts {table, column, unit} (DAT-428 column-scoped unit teach)", () => {
+			// Engine consumer: _apply_unit keys EXACTLY on payload.{table, column} →
+			// overrides.units."<table>.<column>". Identify by NAME, not a column id.
+			const out = validateTeach({
+				type: "unit",
+				payload: { table: "trades", column: "amount", unit: "EUR" },
+			});
+			expect(out).toEqual({ table: "trades", column: "amount", unit: "EUR" });
+		});
+
+		it.each(["table", "column", "unit"])("rejects missing %s", (field) => {
+			const payload: Record<string, string> = {
+				table: "trades",
+				column: "amount",
+				unit: "EUR",
+			};
+			delete payload[field];
+			expect(() => validateTeach({ type: "unit", payload })).toThrow(
+				TeachValidationError,
+			);
+		});
+
+		it("rejects an empty column (string of length 0)", () => {
+			expect(() =>
+				validateTeach({
+					type: "unit",
+					payload: { table: "trades", column: "", unit: "EUR" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+	});
+
 	describe("concept", () => {
 		it("accepts vertical+name (minimal)", () => {
 			const out = validateTeach({
@@ -341,6 +374,7 @@ describe("validateTeach", () => {
 				new Set([
 					"type_pattern",
 					"null_value",
+					"unit",
 					"concept_property",
 					"relationship",
 					"hierarchy",
@@ -360,6 +394,7 @@ describe("validateTeach", () => {
 				new Set([
 					"type_pattern",
 					"null_value",
+					"unit",
 					"concept",
 					"concept_property",
 					"relationship",

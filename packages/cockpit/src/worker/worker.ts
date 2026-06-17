@@ -15,6 +15,7 @@
 // smoke-tested with no full cockpit env; the boot plugin reads `config` and
 // passes them in.
 
+import { fileURLToPath } from "node:url";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import * as activities from "./activities";
 
@@ -34,7 +35,12 @@ async function resolveWorkflowSource(): Promise<
 		};
 		return { workflowBundle: { code: workflowBundleCode } };
 	} catch {
-		return { workflowsPath: require.resolve("./workflows") };
+		// ESM-native resolution (no CJS `require` shim) — matches build-workflow-bundle.ts.
+		return {
+			workflowsPath: fileURLToPath(
+				new URL("./workflows/index.ts", import.meta.url),
+			),
+		};
 	}
 }
 

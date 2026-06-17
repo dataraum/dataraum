@@ -58,16 +58,20 @@ export async function journeyWorkflow(workspaceId: string): Promise<void> {
 		pending.push(input);
 	});
 
-	const { workflowId } = workflowInfo();
+	// `runId` (not workflowId) keys the per-stage record: it is unique PER
+	// continue-as-new epoch (workflowId is stable across epochs — `handled` resets
+	// to 0 each epoch, so workflowId+handled would collide after the first
+	// EVENTS_BEFORE_CONTINUE and recordRun's onConflictDoNothing would silently drop
+	// the record). Within an epoch runId is stable across activity retries, so the
+	// derived id stays retry-idempotent. Both fields are safe to cache (stable for
+	// the execution), unlike volatile workflowInfo() fields (e.g. searchAttributes).
+	const { runId } = workflowInfo();
 	let handled = 0;
 	// Drain to idle before continuing-as-new — never carry (or drop) a backlog.
 	while (!(handled >= EVENTS_BEFORE_CONTINUE && pending.length === 0)) {
 		await condition(() => pending.length > 0);
 		const event = pending.shift() as VerticalEstablished;
-		// Deterministic + retry-stable id for the stage's control-plane record:
-		// workflowId is stable across retries; `handled` is deterministic workflow
-		// state — so a retried activity upserts the same row, not a duplicate.
-		await startStage(workspaceId, event.vertical, `${workflowId}-${handled}`);
+		await startStage(workspaceId, event.vertical, `${runId}-${handled}`);
 		handled += 1;
 	}
 

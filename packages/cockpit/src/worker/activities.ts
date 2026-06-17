@@ -42,10 +42,13 @@ export async function startStage(
 		stage: "add_source",
 		workflowId,
 	});
-	console.log(
-		`[orchestration-worker] startStage ws=${workspaceId} vertical=${vertical} run=${workflowId}`,
-	);
 	// runId === workflowId until a real engine workflow.start mints the execution
 	// id (P3); the (workflowId, runId) pair keys the row recordRun just wrote.
 	await markRunStatus(workflowId, workflowId, "completed");
+	// Logged after the terminal record so the line reflects a recorded+completed
+	// run — in P3 the gap above spans a real (minutes-long) engine stage, so a
+	// "started" log here would mislead.
+	console.log(
+		`[orchestration-worker] stage recorded ws=${workspaceId} vertical=${vertical} run=${workflowId}`,
+	);
 }

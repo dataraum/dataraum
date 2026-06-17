@@ -18,6 +18,7 @@ import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { Link, useParams } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { CommandPalette } from "#/ui/command-palette";
+import { RunLivenessBadge } from "#/ui/runs/run-liveness-badge";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
 
@@ -30,7 +31,15 @@ import { tokens } from "#/ui/theme";
  */
 function RailItem({ section, wsId }: { section: Section; wsId: string }) {
 	const Icon = section.icon;
-	const inner = <Icon size={20} aria-hidden />;
+	// The Runs rail icon carries a liveness badge — a processing dot while the
+	// workspace has in-flight runs (DAT-550), polled tab-independently.
+	const icon = <Icon size={20} aria-hidden />;
+	const inner =
+		section.id === "workflows" ? (
+			<RunLivenessBadge>{icon}</RunLivenessBadge>
+		) : (
+			icon
+		);
 	const common = {
 		variant: "subtle" as const,
 		size: "lg" as const,

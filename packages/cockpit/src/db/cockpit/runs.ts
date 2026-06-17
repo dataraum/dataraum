@@ -25,7 +25,7 @@
 // stores it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq, isNull } from "drizzle-orm";
 import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
@@ -322,4 +322,66 @@ export async function hasRunningRun(
 		)
 		.limit(1);
 	return row !== undefined;
+}
+
+/** One run for the workspace-wide monitor (DAT-550). Joined to its session for
+ * the workspace filter + the session `kind`. */
+export interface WorkspaceRun {
+	workflowId: string;
+	runId: string;
+	stage: RunStage;
+	status: string;
+	startedAt: Date;
+	kind: SessionKind;
+}
+
+/**
+ * The workspace's runs, newest-first, BOUNDED — the native run monitor (DAT-550,
+ * replacing the `/workflows` Temporal-UI iframe). WORKSPACE-scoped (joins
+ * `sessions`), unlike the conversation-scoped queries above: the monitor is a
+ * workspace-wide view of every stage run, independent of any chat. Bounded so a
+ * long-lived workspace's run history can't dump an unbounded set into the page.
+ */
+export async function listRunsByWorkspace(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<WorkspaceRun>> {
+	const rows = await cockpitDb
+		.select({
+			workflowId: sessionRuns.workflowId,
+			runId: sessionRuns.runId,
+			stage: sessionRuns.stage,
+			status: sessionRuns.status,
+			startedAt: sessionRuns.startedAt,
+			kind: sessions.kind,
+		})
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(eq(sessions.workspaceId, workspaceId))
+		.orderBy(desc(sessionRuns.startedAt))
+		.limit(limit);
+	return rows.map((r) => ({
+		...r,
+		stage: r.stage as RunStage,
+		kind: r.kind as SessionKind,
+	}));
+}
+
+/**
+ * Count of the workspace's in-flight (`running`) runs — feeds the rail liveness
+ * badge (DAT-550), polled tab-independently (a cockpit_db read, no open chat
+ * stream). Cheap aggregate, workspace-scoped.
+ */
+export async function countRunningRuns(workspaceId: string): Promise<number> {
+	const [row] = await cockpitDb
+		.select({ n: count() })
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(
+			and(
+				eq(sessions.workspaceId, workspaceId),
+				eq(sessionRuns.status, "running"),
+			),
+		);
+	return row?.n ?? 0;
 }

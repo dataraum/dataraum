@@ -18,6 +18,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CockpitShell } from "#/ui/app-shell";
+import { TestQueryProvider } from "#/ui/cockpit/test-query-provider";
 import { sections } from "#/ui/sections";
 import { theme } from "#/ui/theme";
 
@@ -56,9 +57,14 @@ function renderShellAt(path: string, activeWorkspaceId = "test-ws") {
 	});
 
 	render(
-		<MantineProvider theme={theme} env="test">
-			<RouterProvider router={router} />
-		</MantineProvider>,
+		// The Runs rail item mounts a liveness badge that useQuery-polls
+		// /api/running-runs — needs a QueryClient (the fetch is a no-op in jsdom;
+		// the badge just stays inactive, which is fine for the shell smoke).
+		<TestQueryProvider>
+			<MantineProvider theme={theme} env="test">
+				<RouterProvider router={router} />
+			</MantineProvider>
+		</TestQueryProvider>,
 	);
 }
 

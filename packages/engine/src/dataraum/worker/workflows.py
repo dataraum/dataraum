@@ -471,6 +471,10 @@ def _retry_for(phase: str) -> RetryPolicy:
 # by the session's table set (``scoped``), source-free like the spine above.
 _SESSION_VALUE_PHASE_ORDER = (
     "slicing",
+    # DAT-537: deterministic g3 FD pass over the slice catalog — drill-down
+    # hierarchies + 1:1 aliases (no LLM). Reads slicing's catalog; nothing in the
+    # value layer depends on it yet (answer agent consumes it in DAT-538).
+    "dimension_hierarchies",
     # DAT-491/536: aggregates each fact's enriched view inline (GROUP BY dim, period)
     # and reconciles the per-period sums across facts sharing a catalog dimension.
     "aggregation_lineage",

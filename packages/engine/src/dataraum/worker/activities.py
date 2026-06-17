@@ -342,6 +342,20 @@ class PhaseActivities:
             "slicing", payload.run, payload.table_ids, payload.vertical
         )
 
+    @activity.defn(name="dimension_hierarchies")
+    def run_dimension_hierarchies(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Dimension-hierarchies activity — g3 FD / drill-down / alias discovery (DAT-537).
+
+        Deterministic g3 functional-dependency pass over each fact's grain-verified
+        enriched view across the catalog's grain-safe slice dimensions — NO LLM call.
+        Drill-down chains + 1:1 aliases persist run-versioned (also folding the user's
+        durable hierarchy/alias teaches into this run); consumed by the answer agent
+        (DAT-538) and the driver tree (DAT-545).
+        """
+        return self._run_session_or_raise(
+            "dimension_hierarchies", payload.run, payload.table_ids, payload.vertical
+        )
+
     @activity.defn(name="correlations")
     def run_correlations(self, payload: SessionScopedInput) -> PhaseOutcome:
         """Correlations activity — detect derived columns over the enriched views.

@@ -78,6 +78,8 @@ def worker_activities(phase_activities: PhaseActivities) -> list[object]:
         phase_activities.run_enriched_views,
         # DAT-403 value layer — runs after enriched_views.
         phase_activities.run_slicing,
+        # DAT-537 g3 drill-down / alias discovery over the slice catalog.
+        phase_activities.run_dimension_hierarchies,
         phase_activities.run_correlations,
         # DAT-408/409 begin_session: materialize durable overlays →
         # terminal detect → silent-accept keepers → promote.

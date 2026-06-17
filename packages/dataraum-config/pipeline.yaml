@@ -69,6 +69,13 @@ phases:
     # now aggregated inline over the enriched views in aggregation_lineage.
     # dimensional_entropy lost its run site here; its formal cut is DAT-539.
 
+  dimension_hierarchies:
+    description: Deterministic g3 FD pass — drill-down hierarchies + 1:1 aliases over the slice catalog
+    # DAT-537: no detectors and no LLM — reads slicing's grain-safe dimension catalog
+    # and the grain-verified enriched views, writes run-versioned drill-down chains
+    # (zip → city → state) + alias groups. Consumed by the answer agent (DAT-538) and
+    # the driver tree (DAT-545, which uses alias collapse to de-confound its ranking).
+
   aggregation_lineage:
     description: Events→measure rollup discovery, inline-aggregated over enriched views
     # temporal_behavior is declared HERE (DAT-491/536): at the session detect the

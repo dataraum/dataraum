@@ -23,6 +23,9 @@ from dataraum.worker.workflows import _SESSION_VALUE_PHASE_ORDER
 def test_value_phase_order_is_the_agreed_chain() -> None:
     assert _SESSION_VALUE_PHASE_ORDER == (
         "slicing",
+        # DAT-537: deterministic g3 FD pass over slicing's catalog — drill-down
+        # hierarchies + aliases. Reads slicing; consumed by the answer agent (DAT-538).
+        "dimension_hierarchies",
         # DAT-491/536: lineage aggregates each fact's enriched view inline and
         # reconciles the per-period sums — no slice-materialization phases precede it.
         "aggregation_lineage",

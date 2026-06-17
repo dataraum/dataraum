@@ -1,17 +1,16 @@
-// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422, DAT-506).
+// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422, DAT-506; routed
+// through the journey in DAT-551).
 //
 // Replay takes a SESSION (the named analytical unit the agent thinks in),
 // resolves the workspace's currently-imported sources, and re-runs add_source over
-// them as a NEW session. DAT-506: the engine mints its own run_id the cockpit never
-// sees, so a per-session join is impossible at the cockpit edge — replay resolves
-// the sources from the live per-table GENERATION heads (metadata_snapshot_head →
-// run_tables → tables → source), which in single-active-workspace are the session's
-// sources. There is NO engine seed; the new replay session/run is recorded in
-// cockpit_db BEFORE the workflow starts, and the vertical is the workspace property
-// from the registry (no per-session pick).
+// them as a NEW session. DAT-551: it no longer starts the workflow directly — it
+// signals the per-workspace JourneyWorkflow (`runAddSource`, kind "replay"), which
+// records the run + starts the engine child. So the unit asserts the SIGNAL
+// payload. The source resolution + "nothing to replay" guards stay request-side.
 //
-// Mocks: `#/config`, the cockpit registry + runs writer, the Drizzle metadata
-// client (generation-head → source ids), and `@temporalio/client`.
+// Mocks: `#/config`, the cockpit registry, the Drizzle metadata client
+// (generation-head → source ids), the journey trigger (signalRunAddSource), the ALS
+// conversation context, and the current-session resolver.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,19 +23,25 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
-	// Records the order of side effects so we can assert resolve-then-record-then-start.
+	conversationId: "conv-1" as string | null,
+	// Records the order of side effects so we can assert resolve-then-signal.
 	calls: [] as string[],
-	recordedRun: null as Record<string, unknown> | null,
+	signalled: null as {
+		workspaceId: string;
+		req: Record<string, unknown>;
+	} | null,
 	// Rows the generation-head → run_tables → tables source query returns
 	// (empty = nothing imported = nothing to replay).
 	sourceRows: [] as Array<{ sourceId: string | null }>,
 	// The current session currentSessionId() resolves (null = none — replay rejects).
 	currentSession: null as string | null,
-	recordRun: vi.fn(async (input: Record<string, unknown>) => {
-		h.recordedRun = input;
-		h.calls.push("record");
-	}),
-	attachRunId: vi.fn(async () => {}),
+	signalRunAddSource: vi.fn(
+		async (workspaceId: string, req: Record<string, unknown>) => {
+			h.signalled = { workspaceId, req };
+			h.calls.push("signal");
+			return req.workflowId as string;
+		},
+	),
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -46,18 +51,12 @@ vi.mock("#/config", () => ({
 	},
 }));
 
-// cockpit_db control plane (DAT-461/505/506): workspace + its vertical via the
-// registry, run recorded BEFORE start — both mocked at the seam (no DB in units).
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
 		vertical: h.vertical,
 	})),
-}));
-vi.mock("#/db/cockpit/runs", () => ({
-	recordRun: h.recordRun,
-	attachRunId: h.attachRunId,
 }));
 
 // Metadata client: generation-head → run_tables → tables source ids via
@@ -86,20 +85,11 @@ vi.mock("drizzle-orm", () => ({
 	eq: (...a: unknown[]) => a,
 }));
 
-// Temporal client: record the start args (after the record) + hand back a run id.
-const startMock = vi.fn(async (_name: string, _opts: unknown) => {
-	h.calls.push("start");
-	return { firstExecutionRunId: "run-xyz" };
-});
-const closeMock = vi.fn(async () => {});
-vi.mock("@temporalio/client", () => ({
-	Connection: { connect: vi.fn(async () => ({ close: closeMock })) },
-	Client: vi.fn(function Client() {
-		return { workflow: { start: startMock } };
-	}),
+vi.mock("#/temporal/journey-trigger", () => ({
+	signalRunAddSource: h.signalRunAddSource,
 }));
-vi.mock("@temporalio/common", () => ({
-	WorkflowIdReusePolicy: { ALLOW_DUPLICATE: "ALLOW_DUPLICATE" },
+vi.mock("#/lib/run-context", () => ({
+	currentConversationId: () => h.conversationId,
 }));
 // The current-session resolver replay falls back to when no session_id is given.
 vi.mock("#/prompts/workspace-context", () => ({
@@ -115,66 +105,62 @@ beforeEach(() => {
 		temporalNamespace: "default",
 	};
 	h.vertical = "_adhoc";
+	h.conversationId = "conv-1";
 	h.calls = [];
-	h.recordedRun = null;
+	h.signalled = null;
 	h.sourceRows = [{ sourceId: "src-1" }];
 	h.currentSession = null;
-	startMock.mockClear();
-	closeMock.mockClear();
-	h.recordRun.mockClear();
-	h.attachRunId.mockClear();
+	h.signalRunAddSource.mockClear();
 });
 
-describe("replay (DAT-422, DAT-506)", () => {
-	it("resolves the workspace sources, then records a FRESH run BEFORE start", async () => {
+describe("replay (DAT-422, routed via the journey — DAT-551)", () => {
+	it("resolves the workspace sources, then signals the journey for a FRESH session", async () => {
 		const result = await replay({ session_id: "old-sess" });
 
-		// Order: resolve the workspace's imported sources (generation heads), record
-		// the NEW run (authoritative, no orphan), then start.
-		expect(h.calls).toEqual(["resolveSources", "record", "start"]);
+		// Order: resolve the workspace's imported sources (generation heads), then
+		// signal the journey to run the NEW add_source.
+		expect(h.calls).toEqual(["resolveSources", "signal"]);
 		// A FRESH session — not the one being replayed.
 		expect(result.session_id).not.toBe("old-sess");
 	});
 
-	it("re-runs the session's source SET as a new run keyed by the new session", async () => {
+	it("signals the journey with the resolved source SET + kind replay + verticals", async () => {
 		h.sourceRows = [{ sourceId: "src-1" }, { sourceId: "src-2" }];
 		h.vertical = "finance";
 		const result = await replay({ session_id: "old-sess" });
 		const newSessionId = result.session_id;
 
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [
-			{ workspace_id: string; sources: string[]; verticals: string[] },
-		];
-		// FLAT input (DAT-506): no identity envelope, no session/source id on the
-		// wire — workspace_id + the resolved source SET (DAT-422) + verticals.
-		expect(args[0]).toEqual({
-			workspace_id: WS,
+		expect(h.signalled?.workspaceId).toBe(WS);
+		expect(h.signalled?.req).toEqual({
+			sessionId: newSessionId,
+			workflowId: `addsource-${WS}-${newSessionId}`,
+			engineTaskQueue: `engine-${WS}`,
 			sources: ["src-1", "src-2"],
 			verticals: ["finance"],
+			kind: "replay",
+			conversationId: "conv-1",
 		});
-		expect(result.sources).toEqual(["src-1", "src-2"]);
-		// Workflow id is keyed by the NEW run's cockpit session (DAT-422).
-		expect(opts.workflowId).toBe(`addsource-${WS}-${newSessionId}`);
-		expect(opts.workflowIdReusePolicy).toBe("ALLOW_DUPLICATE");
-		expect(closeMock).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({
+			workflow_id: `addsource-${WS}-${newSessionId}`,
+			run_id: `addsource-${WS}-${newSessionId}`,
+			sources: ["src-1", "src-2"],
+			session_id: newSessionId,
+		});
 	});
 
-	it("rejects when the workspace has no imported sources (nothing to replay) — no record, no start", async () => {
+	it("rejects when the workspace has no imported sources (nothing to replay) — no signal", async () => {
 		h.sourceRows = [];
 		await expect(replay({ session_id: "empty-sess" })).rejects.toThrow(
 			/no imported sources/,
 		);
-		expect(h.recordRun).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
+		expect(h.signalRunAddSource).not.toHaveBeenCalled();
 	});
 
 	it("defaults to the CURRENT session when no session_id is given (bare 'replay')", async () => {
 		h.currentSession = "current-sess";
 		h.sourceRows = [{ sourceId: "src-1" }];
 		const result = await replay({});
-		expect(h.calls).toContain("resolveSources");
-		expect(h.calls).toContain("start");
+		expect(h.calls).toEqual(["resolveSources", "signal"]);
 		expect(result.sources).toEqual(["src-1"]);
 		// It re-ran the current session into a FRESH one (replay is non-destructive).
 		expect(result.session_id).not.toBe("current-sess");
@@ -183,42 +169,27 @@ describe("replay (DAT-422, DAT-506)", () => {
 	it("rejects when there is no current session to replay", async () => {
 		h.currentSession = null;
 		await expect(replay({})).rejects.toThrow(/No session to replay/);
-		expect(h.recordRun).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
+		expect(h.signalRunAddSource).not.toHaveBeenCalled();
 	});
 
-	it("throws when Temporal is unconfigured and does NOT read, record, or start", async () => {
+	it("throws when Temporal is unconfigured and does NOT read or signal", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(replay({ session_id: "old-sess" })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		expect(h.calls).toEqual([]); // the guard is first — nothing ran
-		expect(h.recordRun).not.toHaveBeenCalled();
-		expect(startMock).not.toHaveBeenCalled();
+		expect(h.signalRunAddSource).not.toHaveBeenCalled();
 	});
 
-	it("records the new replay session + run before start, then attaches the runId", async () => {
-		const result = await replay({ session_id: "old-sess" });
-		const newSessionId = result.session_id;
-		expect(h.recordRun).toHaveBeenCalledTimes(1);
-		expect(h.recordedRun).toEqual({
-			workspaceId: WS,
-			engineSessionId: newSessionId,
-			kind: "replay",
-			stage: "add_source",
-			workflowId: `addsource-${WS}-${newSessionId}`,
-		});
-		expect(h.attachRunId).toHaveBeenCalledWith(
-			`addsource-${WS}-${newSessionId}`,
-			"run-xyz",
-		);
+	it("threads a NULL conversationId when outside a chat turn", async () => {
+		h.conversationId = null;
+		await replay({ session_id: "old-sess" });
+		expect(h.signalled?.req.conversationId).toBeNull();
 	});
 
 	it("re-runs on the WORKSPACE vertical (from the registry) as a one-element array", async () => {
 		h.vertical = "marketing";
 		await replay({ session_id: "old-sess" });
-		const opts = startMock.mock.calls[0][1] as Record<string, unknown>;
-		const args = opts.args as [{ verticals: string[] }];
-		expect(args[0].verticals).toEqual(["marketing"]);
+		expect(h.signalled?.req.verticals).toEqual(["marketing"]);
 	});
 });

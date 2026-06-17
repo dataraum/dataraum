@@ -80,6 +80,32 @@ const NullValuePayload = z
 	})
 	.passthrough();
 
+// `unit` overlays are column-scoped unit teaches (DAT-428): they land a unit on an
+// already-typed numeric column without having to win a type pattern. The engine
+// (_apply_unit) keys EXACTLY on payload.{table, column} → patches that column's best
+// type candidate's `detected_unit` (forcing unit_confidence → 1.0) under
+// phases/typing.yaml::overrides.units."<table>.<column>". Identify the column by
+// NAME (table + column), not a column id — the override is read in typing, before
+// column ids are stable.
+const UnitPayload = z
+	.object({
+		table: z
+			.string()
+			.min(1)
+			.describe("The typed table NAME the column lives in (not a column id)."),
+		column: z
+			.string()
+			.min(1)
+			.describe("The column NAME to assign the unit to (not a column id)."),
+		unit: z
+			.string()
+			.min(1)
+			.describe(
+				"The unit the column's values carry, e.g. 'EUR', 'kg', 'percent'.",
+			),
+	})
+	.passthrough();
+
 const ConceptPropertyPayload = z
 	.object({
 		vertical: z
@@ -244,6 +270,7 @@ const HierarchyPayload = z
 const TYPE_SCHEMAS = {
 	type_pattern: TypePatternPayload,
 	null_value: NullValuePayload,
+	unit: UnitPayload,
 	concept: ConceptPayload,
 	concept_property: ConceptPropertyPayload,
 	relationship: RelationshipPayload,
@@ -272,6 +299,7 @@ export const TEACH_TYPES = Object.keys(TYPE_SCHEMAS) as readonly TeachType[];
 export const AGENT_TEACH_TYPES = [
 	"type_pattern",
 	"null_value",
+	"unit",
 	"concept",
 	"concept_property",
 	"relationship",
@@ -289,6 +317,7 @@ export const TeachPayloadSchema = z
 	.union([
 		TypePatternPayload,
 		NullValuePayload,
+		UnitPayload,
 		ConceptPayload,
 		ConceptPropertyPayload,
 		RelationshipPayload,
@@ -298,6 +327,7 @@ export const TeachPayloadSchema = z
 		"The teach payload; required fields depend on `type` — " +
 			"type_pattern: {name, pattern, inferred_type?, …}; " +
 			"null_value: {category, value}; " +
+			"unit: {table, column, unit} (column identified by NAME); " +
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +

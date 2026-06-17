@@ -4,6 +4,7 @@
 
 export type {
 	JourneyState,
+	RunAddSource,
 	RunBeginSession,
 	RunOperatingModel,
 	VerticalEstablished,
@@ -13,6 +14,7 @@ export {
 	journeyWorkflow,
 	pauseAutoMode,
 	resumeAutoMode,
+	runAddSource,
 	runBeginSession,
 	runOperatingModel,
 	verticalEstablished,

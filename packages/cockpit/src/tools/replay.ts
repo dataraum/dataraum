@@ -13,7 +13,9 @@
 // choose — a replay is always a full, non-destructive re-run that re-reads the
 // durable teach overlays.
 //
-// Pure compute kick: starts a fresh `addSourceWorkflow` keyed by the NEW session
+// Pure compute kick (DAT-551: routed through the JourneyWorkflow — it SIGNALS the
+// per-workspace journey, which records the run + starts the child): a fresh
+// `addSourceWorkflow` keyed by the NEW session
 // (`addsource-<workspace_id>-<session_id>`; see workflow-id.ts, DAT-422 — a run
 // is keyed by its session) and returns the workflow id + run id immediately; the
 // caller polls / queries Temporal for progress. End-to-end "replay actually
@@ -22,25 +24,23 @@
 //
 // No engine seed (DAT-506): sessions live in cockpit_db, and the run's table set
 // is anchored by `run_tables` (keyed by `run_id`), not `session_tables`. The new
-// replay session + run are recorded in cockpit_db AUTHORITATIVELY (`recordRun`
-// throws) BEFORE the workflow starts. The `vertical` is the workspace property,
+// replay session + run are recorded by the JOURNEY in cockpit_db AUTHORITATIVELY
+// BEFORE the child starts (DAT-551). The `vertical` is the workspace property,
 // sourced from the registry (DAT-506 retired the per-session vertical pick).
 
 import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
-import { Client, Connection } from "@temporalio/client";
-import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
-import { attachRunId, recordRun } from "../db/cockpit/runs";
 import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
+import { currentConversationId } from "../lib/run-context";
 import { currentSessionId } from "../prompts/workspace-context";
-import type { AddSourceInput, AddSourceResult } from "../temporal/types";
+import { signalRunAddSource } from "../temporal/journey-trigger";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 import {
 	AgentActionableError,
@@ -96,13 +96,13 @@ export interface ReplayResult {
 }
 
 /**
- * Start an `addSourceWorkflow` execution to re-apply pending teaches as a full
- * re-run of a session's sources. Returns immediately with the workflow + run id
- * (and the new session id); the caller polls Temporal for progress.
+ * Signal the journey to run a fresh `addSourceWorkflow` that re-applies pending
+ * teaches as a full re-run of a session's sources (DAT-551). Returns immediately
+ * with the workflow + session id; the journey records the run + starts the child,
+ * and progress resolves the latest execution by workflow id (run_id mirrors it).
  *
  * The new run is keyed by the fresh session (`addsource-<workspace_id>-<session_id>`,
- * DAT-422). `ALLOW_DUPLICATE` is kept for parity with triggerAddSource; each replay
- * is its own session, so it is a distinct workflow id (no accidental reuse).
+ * DAT-422) — each replay is its own session, so it is a distinct workflow id.
  */
 export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	if (!config.temporalHost || !config.temporalNamespace) {
@@ -134,65 +134,36 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	}
 
 	const workspace = await resolveActiveWorkspaceRow();
-	const workspaceId = workspace.id;
-	// The workspace vertical (DAT-506) — a replay re-runs against the workspace's
-	// chosen ontology, not a per-session pick.
-	const vertical = workspace.vertical;
-
 	// A replay generates a NEW session — a fresh analytical pass over the same
-	// sources. The id is fresh, so the cockpit_db record is a clean insert.
+	// sources. The id is fresh, so the journey records a clean insert.
 	const newSessionId = randomUUID();
-	const workflowId = addSourceWorkflowId(workspaceId, newSessionId);
+	const workflowId = addSourceWorkflowId(workspace.id, newSessionId);
 
-	// Record the new replay session + run BEFORE starting (Q4): an unrecorded run
-	// is orphaned, so recordRun is AUTHORITATIVE — it throws on failure.
-	await recordRun({
-		workspaceId,
-		engineSessionId: newSessionId,
-		kind: "replay",
-		stage: "add_source",
+	// Signal the journey to run the stage (DAT-551). kind:"replay" marks the session
+	// origin; the journey records the run authoritatively + starts the engine child
+	// on the workspace's OWN queue (DAT-505), re-reading the durable teach overlays.
+	// The conversationId is captured HERE (request ALS) so the run narrates into THIS
+	// chat — the journey has none. `verticals` is the workspace ontology (born-loud
+	// on >1); the engine scopes each `import` to one source + resolves provenance
+	// relationally past import.
+	await signalRunAddSource(workspace.id, {
+		sessionId: newSessionId,
 		workflowId,
+		engineTaskQueue: workspace.taskQueue,
+		sources: replaySources,
+		verticals: [workspace.vertical],
+		kind: "replay",
+		conversationId: currentConversationId(),
 	});
 
-	// FLAT, source-free input (DAT-506): no identity envelope, no session/source id
-	// on the wire. The resolved sources ride in `sources`; the engine scopes each
-	// `import` to one and resolves provenance relationally past import. `verticals`
-	// is a one-element array of the workspace ontology (born-loud on >1).
-	const payload: AddSourceInput = {
-		workspace_id: workspaceId,
+	return {
+		// Deterministic workflow id; run_id mirrors it (the journey owns the real
+		// execution id — progress resolves the latest run by workflow_id, DAT-530).
+		workflow_id: workflowId,
+		run_id: workflowId,
 		sources: replaySources,
-		verticals: [vertical],
+		session_id: newSessionId,
 	};
-
-	const connection = await Connection.connect({ address: config.temporalHost });
-	try {
-		const client = new Client({
-			connection,
-			namespace: config.temporalNamespace,
-		});
-		const handle = await client.workflow.start<
-			(p: AddSourceInput) => Promise<AddSourceResult>
-		>("addSourceWorkflow", {
-			// Route to the workspace's OWN queue (DAT-505).
-			taskQueue: workspace.taskQueue,
-			workflowId,
-			args: [payload],
-			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
-		});
-
-		// Finalize the provisional Temporal execution runId (best-effort); the
-		// engine-minted metadata run_id lands on the completion edge.
-		await attachRunId(workflowId, handle.firstExecutionRunId);
-
-		return {
-			workflow_id: workflowId,
-			run_id: handle.firstExecutionRunId,
-			sources: replaySources,
-			session_id: newSessionId,
-		};
-	} finally {
-		await connection.close();
-	}
 }
 
 /**

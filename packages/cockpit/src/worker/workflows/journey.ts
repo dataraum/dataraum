@@ -47,8 +47,10 @@ import {
 	type JourneyState,
 	PAUSE_AUTO_MODE_SIGNAL,
 	RESUME_AUTO_MODE_SIGNAL,
+	RUN_ADD_SOURCE_SIGNAL,
 	RUN_BEGIN_SESSION_SIGNAL,
 	RUN_OPERATING_MODEL_SIGNAL,
+	type RunAddSource,
 	type RunBeginSession,
 	type RunOperatingModel,
 	VERTICAL_ESTABLISHED_SIGNAL,
@@ -68,6 +70,7 @@ const { recordRun, attachRunId, markRunStatus } = proxyActivities<
 export const verticalEstablished = defineSignal<[VerticalEstablished]>(
 	VERTICAL_ESTABLISHED_SIGNAL,
 );
+export const runAddSource = defineSignal<[RunAddSource]>(RUN_ADD_SOURCE_SIGNAL);
 export const runBeginSession = defineSignal<[RunBeginSession]>(
 	RUN_BEGIN_SESSION_SIGNAL,
 );
@@ -88,10 +91,11 @@ const EVENTS_BEFORE_CONTINUE = 500;
 // predate it; it's established here as the discipline for future incremental edits.
 const CASCADE_PATCH = "journey-cascade-operating-model";
 
-/** A queued, user-intentional stage trigger (begin_session always; operating_model
- * as a manual re-trigger). The auto-cascade is NOT queued — it runs inline right
- * after its begin_session, so a session's two stages stay an atomic pair. */
+/** A queued, user-intentional stage trigger (add_source / begin_session always;
+ * operating_model as a manual re-trigger). The auto-cascade is NOT queued — it runs
+ * inline right after its begin_session, so a session's two stages stay an atomic pair. */
 type PendingStage =
+	| { kind: "add_source"; req: RunAddSource }
 	| { kind: "begin_session"; req: RunBeginSession }
 	| { kind: "operating_model"; req: RunOperatingModel };
 
@@ -108,7 +112,11 @@ async function runChildStage(
 		workflowType: string;
 		workflowId: string;
 		taskQueue: string;
-		stage: "begin_session" | "operating_model";
+		stage: "add_source" | "begin_session" | "operating_model";
+		// The session origin for recordRun (ignored on conflict — operating_model
+		// reuses begin_session's row): add_source carries onboarding|replay; the
+		// later stages reuse "begin_session".
+		kind: "onboarding" | "begin_session" | "replay";
 		engineSessionId: string;
 		conversationId: string | null;
 		args: unknown[];
@@ -121,12 +129,10 @@ async function runChildStage(
 		// Authoritative record BEFORE start (throws → caught below, child not
 		// started). EXPLICIT conversationId — the worker has no request ALS, so this
 		// is what keeps the completion narrating into the originating chat (DAT-528).
-		// `kind` is always begin_session: the session was born from begin_session and
-		// operating_model reuses its row (recordRun ignores kind on conflict).
 		await recordRun({
 			workspaceId,
 			engineSessionId: spec.engineSessionId,
-			kind: "begin_session",
+			kind: spec.kind,
 			stage: spec.stage,
 			workflowId: spec.workflowId,
 			conversationId: spec.conversationId,
@@ -159,6 +165,29 @@ async function runChildStage(
 	}
 }
 
+/** Run an add_source stage from its trigger (a fresh import or a replay). */
+function runAddSourceStage(
+	workspaceId: string,
+	req: RunAddSource,
+): Promise<boolean> {
+	return runChildStage(workspaceId, {
+		workflowType: "addSourceWorkflow",
+		workflowId: req.workflowId,
+		taskQueue: req.engineTaskQueue,
+		stage: "add_source",
+		kind: req.kind,
+		engineSessionId: req.sessionId,
+		conversationId: req.conversationId,
+		args: [
+			{
+				workspace_id: workspaceId,
+				sources: req.sources,
+				verticals: req.verticals,
+			},
+		],
+	});
+}
+
 /** Run a begin_session stage from its trigger. */
 function runBeginSessionStage(
 	workspaceId: string,
@@ -169,6 +198,7 @@ function runBeginSessionStage(
 		workflowId: req.workflowId,
 		taskQueue: req.engineTaskQueue,
 		stage: "begin_session",
+		kind: "begin_session",
 		engineSessionId: req.sessionId,
 		conversationId: req.conversationId,
 		args: [
@@ -193,6 +223,8 @@ function runOperatingModelStage(
 		workflowId: om.workflowId,
 		taskQueue: om.engineTaskQueue,
 		stage: "operating_model",
+		// Reuses begin_session's session row (recordRun ignores kind on conflict).
+		kind: "begin_session",
 		engineSessionId: om.sessionId,
 		conversationId: om.conversationId,
 		args: [{ workspace_id: workspaceId, verticals: om.verticals }],
@@ -221,6 +253,9 @@ export async function journeyWorkflow(
 	setHandler(verticalEstablished, () => {});
 
 	const pending: PendingStage[] = [];
+	setHandler(runAddSource, (req) => {
+		pending.push({ kind: "add_source", req });
+	});
 	setHandler(runBeginSession, (req) => {
 		pending.push({ kind: "begin_session", req });
 	});
@@ -256,6 +291,17 @@ export async function journeyWorkflow(
 	while (!(handled >= EVENTS_BEFORE_CONTINUE && pending.length === 0)) {
 		await condition(() => pending.length > 0);
 		const next = pending.shift() as PendingStage;
+
+		if (next.kind === "add_source") {
+			// A fresh import or a replay — always user-triggered (select / replay),
+			// never autonomous in this slice, so it does NOT fold into the breaker:
+			// the breaker is scoped to the begin_session → operating_model cascade
+			// (ADR-0014). runChildStage still records + marks the run. No cascade
+			// follows add_source here (the agentic grounding-teach loop is slice 2).
+			await runAddSourceStage(workspaceId, next.req);
+			handled += 1;
+			continue;
+		}
 
 		if (next.kind === "operating_model") {
 			// A manual re-trigger is user-intentional — it runs regardless of the

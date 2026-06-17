@@ -95,8 +95,8 @@ export const teachTool = toolDefinition({
 	name: "teach",
 	description:
 		"Record a grounding-layer correction about the data — a typing pattern, " +
-		"null token, ontology concept/property, or a column relationship. Writes a " +
-		"config_overlay row; follow with `replay` to apply " +
+		"null token, column unit, ontology concept/property, or a column " +
+		"relationship. Writes a config_overlay row; follow with `replay` to apply " +
 		"it to the source. For operating-model declarations use the dedicated tools " +
 		"instead: teach_validation, teach_cycle, teach_metric.",
 	inputSchema: z.object({

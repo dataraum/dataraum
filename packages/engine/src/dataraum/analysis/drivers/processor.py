@@ -180,7 +180,9 @@ def discover_drivers(
     threshold, or with no ``cluster_key``, the row-wise null (DAT-545) is used. Only
     entity-LEVEL candidates (constant within entity) participate at entity grain;
     row-level dims are logged and skipped that pass. Ratio measures stay row-wise for
-    now (cluster-aware ratio is a follow-up).
+    now (cluster-aware ratio is a follow-up). ``max_depth`` applies only to the
+    row-wise path; the entity grain always uses ``max_depth=1`` (recursion at entity
+    grain is low-power — a follow-up).
 
     NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
     in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
@@ -241,7 +243,7 @@ def discover_drivers(
                 top_k_slices=top_k_slices,
                 min_entities=min_entities,
             )
-        logger.info("driver_row_wise_low_icc", cluster_key=cluster_key, icc=round(icc, 3))
+        logger.info("driver_row_wise_low_icc", cluster_key=cluster_col, icc=round(icc, 3))
 
     values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
     return discover_tree(
@@ -297,6 +299,8 @@ def _entity_grain_ranking(
     keep = agg["count"].to_numpy() > 0  # drop entities with no observed measure
     means = agg["mean"].to_numpy(dtype=float)[keep]
     sizes = agg["count"].to_numpy(dtype=float)[keep]
+    if means.size == 0:  # every entity all-NaN measure — nothing to rank
+        return empty
     values_by_dim = {d: grouped[d].first().to_numpy()[keep].astype(object) for d in entity_dims}
 
     target = EntityMeanTarget(means, sizes, target_type=measure.target_type)

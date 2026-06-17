@@ -160,18 +160,22 @@ CL_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS, CL_ROW_NULL]
 CL_ENTITY = "entity"
 
 
-def make_clustered_corpus(rng: np.random.Generator) -> pd.DataFrame:
+def make_clustered_corpus(
+    rng: np.random.Generator, *, row_sigma: float = CL_ROW_SIGMA
+) -> pd.DataFrame:
     """200 entities × 100 rows; measure carries a per-entity random effect (high ICC).
 
     The row-wise permutation null is INVALID here (the entity is the exchangeable
     unit). Columns: ``entity``, ``measure``, an entity-level driver, two entity-level
-    nulls, one row-level null. Rows are contiguous by entity.
+    nulls, one row-level null. Rows are contiguous by entity. ``row_sigma`` knobs the
+    within-entity noise: large values drown the between-entity signal → low ICC
+    (used to test the ICC switch's row-wise side).
     """
     ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
     drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
     drv_shift = np.array([-0.6, -0.2, 0.2, 0.6])[drv_grp]
     ent_effect = drv_shift + rng.normal(0, CL_ENT_SIGMA, CL_N_ENTITIES)
-    row_noise = rng.normal(0, CL_ROW_SIGMA, CL_N_ENTITIES * CL_PER_ENTITY)
+    row_noise = rng.normal(0, row_sigma, CL_N_ENTITIES * CL_PER_ENTITY)
 
     df = pd.DataFrame(index=np.arange(CL_N_ENTITIES * CL_PER_ENTITY))
     df[CL_ENTITY] = ent

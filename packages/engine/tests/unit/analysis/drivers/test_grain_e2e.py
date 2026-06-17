@@ -157,3 +157,43 @@ class TestClusterAwareSwitch:
         tid = _seed_catalog(real_session)
         rank = _run(real_session, duck, tid, 0, cluster_key=CL_ROW_NULL)
         assert rank.grain == "row"
+
+    def test_icc_switch_pinned_to_clustering_strength(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # The switch is driven by ICC, not by the cluster_key's mere presence: the SAME
+        # entity key flips entity→row when within-entity noise is inflated enough to
+        # drown the between-entity signal below icc_threshold. Pins the 0.10 default.
+        tid = _seed_catalog(real_session)
+
+        duck.execute(f'DROP TABLE IF EXISTS "{VIEW}"')
+        high = make_clustered_corpus(np.random.default_rng(0))  # default → ICC ≫ 0.10
+        duck.register("hi", high)
+        duck.execute(f'CREATE TABLE "{VIEW}" AS SELECT * FROM hi')
+        duck.unregister("hi")
+        hi_rank = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=MEASURE,
+            cluster_key=CL_ENTITY,
+            n_perm=N_PERM,
+        )
+        assert hi_rank.grain == "entity"
+
+        duck.execute(f'DROP TABLE IF EXISTS "{VIEW}"')
+        low = make_clustered_corpus(np.random.default_rng(0), row_sigma=6.0)  # noise drowns signal
+        duck.register("lo", low)
+        duck.execute(f'CREATE TABLE "{VIEW}" AS SELECT * FROM lo')
+        duck.unregister("lo")
+        lo_rank = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=MEASURE,
+            cluster_key=CL_ENTITY,
+            n_perm=N_PERM,
+        )
+        assert lo_rank.grain == "row"

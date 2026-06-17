@@ -138,11 +138,15 @@ class RatioTarget(Target):
 class EntityMeanTarget(Target):
     """The cluster-aware target for high-ICC measures (DAT-552).
 
-    One row per ENTITY — the entity's mean measure, weighted by its row count — so the
-    permutation null shuffles ENTITIES, not rows (the exchangeable unit when the
-    measure is clustered, DAT-544 E1). Power then scales with entity count, not row
-    count. The processor collapses the frame to entity grain and supplies entity-level
-    candidate values (constant within entity) before building this. Gain is the
+    One row per ENTITY — the entity's mean measure, weighted by its observed (non-NaN)
+    row count — so the permutation null shuffles ENTITIES, not rows (the exchangeable
+    unit when the measure is clustered, DAT-544 E1). Power then scales with entity
+    count, not row count. The processor collapses the frame to entity grain and
+    supplies entity-level candidate values (constant within entity) before building
+    this. (The DAT-544 probe validated the fix with an equal-block reshape on
+    contiguous fixed-size blocks; entity-grain aggregation is the correct
+    generalization to the UNEQUAL entity sizes of real data — same exchangeable unit,
+    no equal-block assumption.) Gain is the
     support-weighted between-entity variance reduction — algebraically the same
     :func:`weighted_variance_reduction` the ratio target uses (entity mean as the
     value, entity size as the weight). ``min_support`` here is an ENTITY count, not a

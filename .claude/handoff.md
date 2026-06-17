@@ -4,6 +4,36 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-17: DAT-561 — candidate-grain routing (fixes the low-ICC entity-level FP)
+
+Closes the DAT-552 eval-gate residual: at **ICC ≈ 0.03** a high-cardinality
+entity-LEVEL random dim still false-positived under the row-wise null. Root cause:
+the row-wise null is structurally invalid for an **entity-constant** candidate at
+ANY ICC > 0 (pseudoreplication — its groups are whole entities). The 0.10 threshold
+only masked it for high-ICC measures. `discover_drivers` now routes **per-candidate
+by within-entity constancy**, not by the measure's global ICC:
+- **Entity-constant** candidates (one value per entity) → entity-grain null ALWAYS.
+- **Row-level** candidates (vary within entity) → row-wise null (valid at any ICC).
+- The two families merge into ONE `DriverRanking`: the ICC-preferred family is the
+  primary tree; the other family's significant dims surface in the NEW
+  `DriverRanking.secondary_dimensions` field (a flat list of `SecondaryDriver(dimension,
+  gain, grain)` — grains are not cross-comparable, never folded into the primary).
+- **Power add-on:** under high ICC the row-level (secondary) family gates on the
+  within-entity **de-meaned residual** (`measure − entity_mean`, flow/stock) — valid
+  and powered for within-entity drivers. Ratio keeps raw row-wise there (deferred).
+
+`discover_drivers`' public signature is unchanged; `DriverRanking` gains one additive
+field. Still a pure engine (no schema/persistence).
+
+### dataraum-eval
+- **The arr_delay/tailnum (low-ICC, high-K entity-level) fixture is now the regression guard.** Verify the entity-level dim never enters the row-wise primary (`ranked_dimensions`) and is gated at the entity grain (≤ 2α). Reverting to global-ICC routing puts it back into the row-wise primary → the guard fails.
+- **New result field to consume: `DriverRanking.secondary_dimensions`** — the non-primary grain family's significant dims, each carrying its own `grain` (`"entity"`/`"row"`). The harness must read drivers from BOTH `ranked_dimensions` (primary) and `secondary_dimensions` (secondary), and must NOT compare gains across the two (different exchangeable grains).
+- **Add a clustered fixture carrying BOTH an entity-level and a within-entity row-level driver** (the synthetic reference is conftest `make_clustered_two_driver_corpus`, additive, ICC ≈ 0.86). Verify: the entity-level driver leads the entity-grain primary; the within-entity driver surfaces in the de-meaned row-wise secondary; the row-level null FDR ≤ 2α on the residual; no grain-mixing.
+- The DAT-552 entry's "open follow-up: row-level drivers skipped at entity grain" is now CLOSED by this routing — calibration CAN expect within-entity drivers from the de-meaned row-level family (flow/stock).
+
+### dataraum-testdata
+- The clustered family (DAT-552) should gain a **within-entity row-level driver** variant: a row-level column that shifts the measure within entity (independent of the entity level), alongside the existing entity-level driver — so the real fixture exercises BOTH grains in one dataset (matches `make_clustered_two_driver_corpus`).
+
 ## 2026-06-17: DAT-552 — grain-aware permutation null for driver discovery
 
 Fixes the DAT-545 engine's row-exchangeability flaw (eval residual probe E1: the
@@ -19,7 +49,7 @@ row-wise null (DAT-545) is unchanged. Still a pure engine (no schema/persistence
 - **The calibration harness must now condition on `DriverRanking.grain`.** When `grain == "entity"`, the effective sample size is the **entity count**, reported in `DriverRanking.n_rows` (NOT the row count) — power scales with entities, so recall bars at entity grain must be entity-count-aware, not row-count-aware.
 - **The real-fixture transfer check (DAT-545 handoff) MUST include repeated-entity / high-ICC fixtures** — that is exactly the case this fixes; an i.i.d.-only fixture would never exercise it. Verify: (a) row-wise null on a high-ICC fixture inflates FDR (the bug), (b) the `cluster_key` path holds FDR ≤ 2α, (c) the ICC switch fires at ~0.10. The eval probes `scripts/probes/dat-544/{exchangeability_and_measure_types,real_fixture}.py` are the validated reference; graduate them into the rig.
 - **Cluster-aware applies to ratio too:** a clustered ratio uses the entity grain on the same ICC condition (entity statistic = Σnum/Σden, weight = Σden) — so the real-fixture check should include a **clustered-ratio** fixture, not just clustered levels.
-- **Open follow-ups (documented gaps, not bugs):** row-level (within-entity) drivers under high ICC are skipped at entity grain — their proper analysis (entity-demeaned residuals) is **DAT-561**; entity grain is single-level (`max_depth=1`). Calibration should not expect drivers from those paths yet.
+- **Open follow-ups (documented gaps, not bugs):** ~~row-level (within-entity) drivers under high ICC are skipped at entity grain~~ — **CLOSED by DAT-561** (see the entry above: row-level dims now route to a de-meaned row-wise family, entity-constant dims always to the entity grain). Entity grain remains single-level (`max_depth=1`).
 
 ### dataraum-testdata
 - Add a **clustered / repeated-entity** generative family (per-entity random effect on the measure → high ICC; entity-level driver + entity-level nulls + a row-level null) — the conftest `make_clustered_corpus` (200 entities × 100 rows) is the synthetic reference; a real analogue (e.g. customer/account recurring across transactions) is the target.

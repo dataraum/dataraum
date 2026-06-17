@@ -21,8 +21,10 @@ import {
 	journeyWorkflowId,
 	PAUSE_AUTO_MODE_SIGNAL,
 	RESUME_AUTO_MODE_SIGNAL,
+	RUN_ADD_SOURCE_SIGNAL,
 	RUN_BEGIN_SESSION_SIGNAL,
 	RUN_OPERATING_MODEL_SIGNAL,
+	type RunAddSource,
 	type RunBeginSession,
 	type RunOperatingModel,
 	VERTICAL_ESTABLISHED_SIGNAL,
@@ -79,6 +81,17 @@ export function signalVerticalEstablished(
 	return signalJourney(workspaceId, VERTICAL_ESTABLISHED_SIGNAL, [
 		{ vertical } satisfies VerticalEstablished,
 	]);
+}
+
+/** Signal `runAddSource` — the journey runs the engine add_source stage as a
+ * cross-language child (DAT-551). `select` (kind onboarding) and `replay` (kind
+ * replay) both route here. The tool passes the derived ids/queue + sources +
+ * conversationId so the journey (no request ALS) records + narrates correctly. */
+export function signalRunAddSource(
+	workspaceId: string,
+	req: RunAddSource,
+): Promise<string> {
+	return signalJourney(workspaceId, RUN_ADD_SOURCE_SIGNAL, [req]);
 }
 
 /** Signal `runBeginSession` — the journey runs the engine begin_session stage as

@@ -27,6 +27,32 @@ export interface VerticalEstablished {
 	vertical: string;
 }
 
+/** The add_source trigger (DAT-551 slice 1): `select` (a fresh import) or `replay`
+ * (re-run a session's sources to apply teaches) signals the journey, which runs
+ * `addSourceWorkflow` as a cross-language child. The journey is the single owner of
+ * stage execution; the agentic grounding-teach loop (slice 2) rides on this. */
+export const RUN_ADD_SOURCE_SIGNAL = "runAddSource";
+
+/** Payload of `runAddSource`. Carries `kind` because add_source originates two ways
+ * — `onboarding` (select) and `replay` — unlike begin_session (always one kind);
+ * the journey threads it to `recordRun`. */
+export interface RunAddSource {
+	/** Cockpit-minted session id (run-correlation key + workflow-id segment). */
+	sessionId: string;
+	/** The deterministic engine workflow id (tool-computed via addSourceWorkflowId). */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
+	engineTaskQueue: string;
+	/** The source ids this run imports — a run is over a SET of objects (DAT-422). */
+	sources: string[];
+	/** The workspace verticals (one today; born-loud on >1). */
+	verticals: string[];
+	/** How the session originated: `onboarding` (select) or `replay` (re-run). */
+	kind: "onboarding" | "replay";
+	/** The originating chat (DAT-528) for narration routing. Null = none. */
+	conversationId: string | null;
+}
+
 /** The INTENTIONAL begin_session trigger (DAT-530): the user chose a table set,
  * so the journey runs `beginSessionWorkflow` as a cross-language child. */
 export const RUN_BEGIN_SESSION_SIGNAL = "runBeginSession";

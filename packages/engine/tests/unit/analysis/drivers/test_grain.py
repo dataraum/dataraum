@@ -134,3 +134,14 @@ class TestWithinEntityDemean:
         residual_gain = weighted_variance_reduction(codes, n, residual, weight, min_support=2)
         assert residual_gain > 3 * raw_gain
         assert residual_gain > 0.3, f"residual ratio gain too weak: {residual_gain:.3f}"
+
+    def test_ratio_residual_handles_null_cluster_key(self) -> None:
+        # A NaN cluster key factorizes to code -1; the residual must not crash (bincount
+        # rejects negatives) and the row must be excluded (NaN residual, 0 weight).
+        df = make_clustered_ratio_two_driver_corpus(np.random.default_rng(0))
+        df[CL_ENTITY] = df[CL_ENTITY].astype("float")
+        df.loc[0, CL_ENTITY] = np.nan  # one row with no entity
+        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
+        assert np.isnan(residual[0]) and weight[0] == 0.0
+        # the rest are unaffected (still produce finite residuals somewhere)
+        assert np.isfinite(residual[1:]).any()

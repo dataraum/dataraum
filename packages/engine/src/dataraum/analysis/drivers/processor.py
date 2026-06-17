@@ -379,16 +379,19 @@ def _within_entity_ratio_residual(
     """
     num = frame[numerator].to_numpy(dtype=float)
     den = frame[denominator].to_numpy(dtype=float)
-    valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0)
     codes, uniques = pd.factorize(frame[cluster_key])
     codes = codes.astype(int)
     n_ent = len(uniques)
+    # A NaN cluster key factorizes to code -1 (no entity to de-mean against): exclude it
+    # — bincount rejects negative codes, and a -1 gather would wrap to the last entity.
+    valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0) & (codes >= 0)
     sum_num = np.bincount(codes[valid], weights=num[valid], minlength=n_ent)
     sum_den = np.bincount(codes[valid], weights=den[valid], minlength=n_ent)
     with np.errstate(divide="ignore", invalid="ignore"):
         entity_ratio = np.where(sum_den > 0, sum_num / np.where(sum_den > 0, sum_den, 1.0), np.nan)
         r = np.where(valid, num / np.where(valid, den, 1.0), np.nan)
-    residual = r - entity_ratio[codes]  # NaN where r or the entity ratio is NaN
+    gather = np.where(codes >= 0, codes, 0)  # safe index; invalid rows masked to NaN below
+    residual = np.where(valid, r - entity_ratio[gather], np.nan)
     weight = np.where(valid, den, 0.0)
     return residual, weight
 

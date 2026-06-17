@@ -122,3 +122,35 @@ class TestDiscoverDimensionHierarchies:
             )
             == 0
         )
+
+
+class TestDimensionHierarchiesPhaseSkip:
+    """The phase's should_skip preconditions (deterministic re-run discipline)."""
+
+    def _ctx(self, session: Session, duck: duckdb.DuckDBPyConnection, table_ids: list[str]):
+        from dataraum.pipeline.base import PhaseContext
+
+        return PhaseContext(
+            session=session,
+            duckdb_conn=duck,
+            table_ids=table_ids,
+            run_id=RUN,
+            config={},
+        )
+
+    def test_skips_when_no_slice_definitions(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        from dataraum.pipeline.phases.dimension_hierarchies_phase import DimensionHierarchiesPhase
+
+        # A table id with no SliceDefinition rows for this run → nothing to relate.
+        reason = DimensionHierarchiesPhase().should_skip(self._ctx(real_session, duck, ["nope"]))
+        assert reason is not None and "slice definitions" in reason
+
+    def test_does_not_skip_with_catalog(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        from dataraum.pipeline.phases.dimension_hierarchies_phase import DimensionHierarchiesPhase
+
+        tid = seed_sales(real_session, duck)
+        assert DimensionHierarchiesPhase().should_skip(self._ctx(real_session, duck, [tid])) is None

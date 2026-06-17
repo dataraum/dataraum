@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, cast
 from sqlalchemy import select
 
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
+from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -350,18 +351,19 @@ def _apply_teaches(
     g3 row (clears ``needs_confirmation``). Keyed by signature so the result stays
     one row per ``(signature, run_id)``.
     """
-    from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
-
     by_sig: dict[str, dict[str, object]] = {str(r["signature"]): r for r in rows}
 
     def _row_member_names(r: dict[str, object]) -> frozenset[str]:
         members = cast("list[dict[str, object]]", r["members"])
         return frozenset(str(m["column_name"]) for m in members)
 
+    # One read of the active hierarchy teaches, grouped by action (the parser
+    # re-queries per action, so load each once).
+    specs = {a: hierarchy_overlay_specs(session, a) for a in ("reject", "add", "alias")}
+
     # reject: drop any g3 structure whose table + member-set matches.
     rejected: set[tuple[str, frozenset[str]]] = {
-        (spec.table_id, frozenset(spec.members))
-        for spec in hierarchy_overlay_specs(session, "reject")
+        (spec.table_id, frozenset(spec.members)) for spec in specs["reject"]
     }
     if rejected:
         by_sig = {
@@ -373,7 +375,7 @@ def _apply_teaches(
     # add → manual drilldown, alias → manual alias (ordered members preserved).
     col_ids = _member_column_ids(session, table_ids, run_id)
     for action, kind in (("add", "drilldown"), ("alias", "alias")):
-        for spec in hierarchy_overlay_specs(session, action):
+        for spec in specs[action]:
             members = spec.members
             if kind == "drilldown" and len(members) < 2:
                 logger.info("hierarchy_teach_skipped", reason="drilldown_needs_2_levels", spec=spec)
@@ -476,6 +478,10 @@ def _view_structures(
     reduced = _transitive_reduction(edges)
 
     # Per-edge g3 (on the original measured columns behind each rep) for scoring.
+    # ``pairs`` keys are always (lex-smaller, lex-larger) because
+    # ``cand_names = sorted(by_name)`` — so ``forward=(a, b) in pairs`` resolves
+    # which endpoint is ``d_a`` in the stored ``_Pair``. (If cand_names ever stops
+    # being lexicographically sorted, this direction test must be revisited.)
     def _edge_g3(a: str, b: str) -> float:
         pair = pairs.get((a, b)) or pairs.get((b, a))
         if pair is None:
@@ -511,6 +517,9 @@ def _view_structures(
         logger.info("hierarchy_drilldown", view=view_name, chain=chain, score=round(score, 4))
 
     for group in groups:
+        # Representative-pair score. For a 3+ member group every pair already passed
+        # the alias threshold in union-find, so the first pair's g3 bounds the group
+        # (≤ FD_MAX_G3) — a faithful, conservative score.
         gpair = pairs.get((group[0], group[1])) or pairs.get((group[1], group[0]))
         score = max(gpair.g3(forward=True), gpair.g3(forward=False)) if gpair else 0.0
         out.append(

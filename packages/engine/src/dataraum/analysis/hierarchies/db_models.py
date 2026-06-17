@@ -75,9 +75,10 @@ class DimensionHierarchy(Base):
     # JSON ``members`` column cannot be a conflict target.
     signature: Mapped[str] = mapped_column(String, nullable=False)
 
-    # The g3 evidence: the WEAKEST edge's g3 for a drilldown (max over edges), or
-    # the bidirectional g3 for an alias. Lower = stronger (0 = exact FD). Audit +
-    # the support/confidence ordering for downstream consumers.
+    # The g3 evidence: the highest edge g3 in a drilldown chain (the weakest link;
+    # max over edges), or the bidirectional g3 for an alias. Lower = stronger
+    # (0 = every edge is an exact FD). Audit + the support/confidence ordering for
+    # downstream consumers.
     score: Mapped[float] = mapped_column(Float, nullable=False)
 
     # 'g3' (auto-discovered) | 'manual' (a teach add/alias assertion).

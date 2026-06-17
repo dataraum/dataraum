@@ -13,19 +13,16 @@
 // reconcile. Conservative-correct: a newer upstream head always flags stale even if
 // the output wouldn't change (worst case: an offered no-op re-run, never a miss).
 //
-// The DB read lives below `deriveStaleness`/`collapseHeads`, which are PURE (the
-// real SQL is smoke-verified per the metadata-read convention; the logic is
-// unit-tested in isolation).
+// PURE module (no I/O) — the logic is unit-tested in isolation; the DB read that
+// feeds it lives in `stage-staleness-read.ts` (the real SQL is smoke-verified per
+// the metadata-read convention). Keeping this client-free is what lets the unit
+// test import it without dragging in the postgres client (the at-import hang trap).
 
-import { isNull } from "drizzle-orm";
 import type { RunStage } from "#/db/cockpit/runs";
-import { metadataDb } from "#/db/metadata/client";
 import {
 	CATALOG_HEAD_TARGET,
 	GENERATION_STAGE,
 } from "#/db/metadata/relationship-target";
-import { metadataSnapshotHead } from "#/db/metadata/schema";
-import { configOverlayWrite } from "#/db/metadata/write-surface";
 import { affectedStage } from "#/tools/teach-routing";
 
 /** Upstream → downstream. Staleness only ever looks LEFT of a stage. */
@@ -129,44 +126,4 @@ export function deriveStaleness(
 			reason: upstreamNewer ? "upstream-newer" : null,
 		};
 	});
-}
-
-/**
- * Read the workspace's per-stage staleness (DAT-531) — the thin I/O shell over the
- * pure logic above: fetch the generation-head log + the un-superseded teach
- * overlays, collapse, derive. Workspace-scoped via the `ws_<id>` metadata schema
- * the read client binds (DAT-505). Both reads are over engine metadata (read-only);
- * the SQL is smoke-verified per convention (the logic is unit-tested). Degrades to
- * "nothing stale" on a read blip — a missing staleness hint is a soft advisory, it
- * must never break the monitor.
- */
-export async function readStageStaleness(): Promise<StageStaleness[]> {
-	try {
-		const [rawHeads, overlays] = await Promise.all([
-			metadataDb
-				.select({
-					target: metadataSnapshotHead.target,
-					stage: metadataSnapshotHead.stage,
-					promotedAt: metadataSnapshotHead.promotedAt,
-				})
-				.from(metadataSnapshotHead),
-			metadataDb
-				.select({
-					type: configOverlayWrite.type,
-					createdAt: configOverlayWrite.createdAt,
-				})
-				.from(configOverlayWrite)
-				.where(isNull(configOverlayWrite.supersededAt)),
-		]);
-		// The head view's columns are nullable; keep only complete rows.
-		const heads: RawHead[] = rawHeads.flatMap((h) =>
-			h.target && h.stage && h.promotedAt
-				? [{ target: h.target, stage: h.stage, promotedAt: h.promotedAt }]
-				: [],
-		);
-		return deriveStaleness(collapseHeads(heads), overlays);
-	} catch (err) {
-		console.warn(`[stage-staleness] read failed, assuming fresh: ${err}`);
-		return [];
-	}
 }

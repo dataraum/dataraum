@@ -31,7 +31,13 @@ from dataraum.analysis.drivers.criterion import (
     intraclass_correlation,
 )
 from dataraum.analysis.drivers.models import DriverRanking, Measure, SecondaryDriver
-from dataraum.analysis.drivers.targets import EntityMeanTarget, FlowTarget, RatioTarget, Target
+from dataraum.analysis.drivers.targets import (
+    EntityDemeanedRatioTarget,
+    EntityMeanTarget,
+    FlowTarget,
+    RatioTarget,
+    Target,
+)
 from dataraum.analysis.drivers.tree import (
     DEFAULT_ALPHA,
     DEFAULT_MAX_DEPTH,
@@ -218,10 +224,11 @@ def discover_drivers(
 
     **Power add-on (DAT-561):** under HIGH ICC the row-level (secondary) family's
     row-wise null on the raw measure has little power — the between-entity variance is
-    noise. For flow/stock it gates on the **within-entity de-meaned residual** instead
-    (the fixed-effects "within" transform: ``measure − entity_mean``), which is row-
-    exchangeable and powered — this is the within-entity driver analysis. Ratio keeps
-    the raw row-wise null there (valid, lower power — a deferred power follow-up).
+    noise. It gates on the **within-entity de-meaned residual** instead (the
+    fixed-effects "within" transform), which is row-exchangeable and powered — this is
+    the within-entity driver analysis. Flow/stock de-mean the measure
+    (``measure − entity_mean``); ratio de-means the per-row ratio by its entity's
+    volume-weighted mean (its pooled ``Σnum/Σden``).
 
     NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
     in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
@@ -359,6 +366,33 @@ def _within_entity_residual(frame: pd.DataFrame, cluster_key: str, column: str) 
     return np.asarray(measure - entity_mean, dtype=float)
 
 
+def _within_entity_ratio_residual(
+    frame: pd.DataFrame, cluster_key: str, numerator: str, denominator: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(residual_ratio, weight)`` for the within-entity de-meaned RATIO (DAT-561).
+
+    The per-row ratio ``r = num/den`` minus its entity's VOLUME-WEIGHTED mean — which is
+    the entity's pooled ratio ``Σnum/Σden`` (the weighted mean of ``r`` with weight
+    ``den``). Strips the between-entity ratio level so the row-wise null on the residual
+    is valid + powered for a within-entity ratio driver. NaN where the row has no usable
+    ratio (missing/≤0 denominator); ``weight`` is the denominator mass (0 where invalid).
+    """
+    num = frame[numerator].to_numpy(dtype=float)
+    den = frame[denominator].to_numpy(dtype=float)
+    valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0)
+    codes, uniques = pd.factorize(frame[cluster_key])
+    codes = codes.astype(int)
+    n_ent = len(uniques)
+    sum_num = np.bincount(codes[valid], weights=num[valid], minlength=n_ent)
+    sum_den = np.bincount(codes[valid], weights=den[valid], minlength=n_ent)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        entity_ratio = np.where(sum_den > 0, sum_num / np.where(sum_den > 0, sum_den, 1.0), np.nan)
+        r = np.where(valid, num / np.where(valid, den, 1.0), np.nan)
+    residual = r - entity_ratio[codes]  # NaN where r or the entity ratio is NaN
+    weight = np.where(valid, den, 0.0)
+    return residual, weight
+
+
 def _merge_secondary(
     primary: DriverRanking | None, secondary: DriverRanking | None
 ) -> DriverRanking:
@@ -468,14 +502,23 @@ def _row_wise_ranking(
 ) -> DriverRanking:
     """Rank ``dims`` row-wise. ``cluster_key`` set → de-mean the measure within entity.
 
-    The within-entity de-mean (flow/stock only) is the DAT-561 power add-on for the
-    row-level family under high ICC; ratio keeps the raw row-wise null (valid, lower
-    power). With ``cluster_key=None`` this is the plain DAT-545 row-wise search.
+    The within-entity de-mean is the DAT-561 power add-on for the row-level family under
+    high ICC: flow/stock de-mean the measure (``FlowTarget`` on the residual), ratio
+    de-means the per-row ratio by its entity's volume-weighted mean
+    (``EntityDemeanedRatioTarget``). With ``cluster_key=None`` this is the plain DAT-545
+    row-wise search on the raw measure.
     """
-    if cluster_key is not None and measure.target_type in ("flow", "stock"):
-        assert measure.column is not None
-        residual = _within_entity_residual(frame, cluster_key, measure.column)
-        target: Target = FlowTarget(residual, target_type=measure.target_type)
+    if cluster_key is not None:
+        if measure.target_type in ("flow", "stock"):
+            assert measure.column is not None
+            residual = _within_entity_residual(frame, cluster_key, measure.column)
+            target: Target = FlowTarget(residual, target_type=measure.target_type)
+        else:  # ratio
+            assert measure.numerator and measure.denominator
+            res_ratio, weight = _within_entity_ratio_residual(
+                frame, cluster_key, measure.numerator, measure.denominator
+            )
+            target = EntityDemeanedRatioTarget(res_ratio, weight)
     else:
         target = _make_target(measure, frame)
     values_by_dim = {d: frame[d].astype(object).to_numpy() for d in dims}

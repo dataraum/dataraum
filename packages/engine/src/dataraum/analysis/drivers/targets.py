@@ -199,3 +199,49 @@ class EntityMeanTarget(Target):
             effect = (group_mean / baseline - 1.0) if baseline else 0.0
             out.append((c, effect, n_entities))  # support = ENTITY count
         return out
+
+
+class EntityDemeanedRatioTarget(Target):
+    """Row-wise null on a within-entity de-meaned RATIO — the DAT-561 ratio power add-on.
+
+    The ratio analogue of the flow/stock within-entity residual: the per-row ratio
+    ``r = num/den`` is de-meaned within entity by its **volume-weighted** entity mean
+    (``Σnum/Σden`` over the entity, since the weighted mean of ``r`` with weight ``den``
+    IS the pooled entity ratio). The residual carries only the within-entity ratio
+    variation, so the row-wise null is valid + powered for a within-entity (row-level)
+    ratio driver under high ICC — where the raw ``RatioTarget`` null is diluted by the
+    between-entity ratio level (and mildly inflated for partially-entity-correlated
+    dims). The gain is the support-weighted variance reduction of the residual with the
+    SAME ``den`` weight (Simpson-safe, consistent with the pooled-ratio de-mean); the
+    null permutes the ``(residual, weight)`` PAIRS jointly.
+
+    The processor builds this only under high ICC, where the entity-grain family is
+    primary — so this is always a SECONDARY family: its tree/slices are never surfaced
+    (only its ranked dims feed ``secondary_dimensions``), hence ``group_effects`` returns
+    ``[]`` (a residual deviation is not a comparable slice effect to report).
+    """
+
+    grain = "row"
+
+    def __init__(self, residual_ratio: np.ndarray, weight: np.ndarray) -> None:
+        self.target_type = "ratio"
+        self._residual = residual_ratio  # NaN where the row has no usable ratio
+        self._weight = weight  # denominator mass (0 where invalid)
+        self.observed = residual_ratio  # doubles as the (B)-gate observed mask
+
+    def gain(self, codes: np.ndarray, n_codes: int, *, min_support: int) -> float:
+        return weighted_variance_reduction(
+            codes, n_codes, self._residual, self._weight, min_support=min_support
+        )
+
+    def permuted(self, rng: np.random.Generator) -> EntityDemeanedRatioTarget:
+        idx = rng.permutation(self._residual.size)
+        return EntityDemeanedRatioTarget(self._residual[idx], self._weight[idx])
+
+    def subset(self, mask: np.ndarray) -> EntityDemeanedRatioTarget:
+        return EntityDemeanedRatioTarget(self._residual[mask], self._weight[mask])
+
+    def group_effects(
+        self, codes: np.ndarray, n_codes: int, *, min_support: int
+    ) -> list[tuple[int, float, int]]:
+        return []

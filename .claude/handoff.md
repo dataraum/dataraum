@@ -19,8 +19,10 @@ by within-entity constancy**, not by the measure's global ICC:
   `DriverRanking.secondary_dimensions` field (a flat list of `SecondaryDriver(dimension,
   gain, grain)` — grains are not cross-comparable, never folded into the primary).
 - **Power add-on:** under high ICC the row-level (secondary) family gates on the
-  within-entity **de-meaned residual** (`measure − entity_mean`, flow/stock) — valid
-  and powered for within-entity drivers. Ratio keeps raw row-wise there (deferred).
+  within-entity **de-meaned residual** — valid and powered for within-entity drivers.
+  Flow/stock de-mean the measure (`measure − entity_mean`); ratio de-means the per-row
+  ratio by its entity's volume-weighted mean (pooled `Σnum/Σden`), weighted-VR on the
+  residual with the `den` weight.
 
 `discover_drivers`' public signature is unchanged; `DriverRanking` gains one additive
 field. Still a pure engine (no schema/persistence).
@@ -28,7 +30,7 @@ field. Still a pure engine (no schema/persistence).
 ### dataraum-eval
 - **The arr_delay/tailnum (low-ICC, high-K entity-level) fixture is now the regression guard.** Verify the entity-level dim never enters the row-wise primary (`ranked_dimensions`) and is gated at the entity grain (≤ 2α). Reverting to global-ICC routing puts it back into the row-wise primary → the guard fails.
 - **New result field to consume: `DriverRanking.secondary_dimensions`** — the non-primary grain family's significant dims, each carrying its own `grain` (`"entity"`/`"row"`). The harness must read drivers from BOTH `ranked_dimensions` (primary) and `secondary_dimensions` (secondary), and must NOT compare gains across the two (different exchangeable grains).
-- **Add a clustered fixture carrying BOTH an entity-level and a within-entity row-level driver** (the synthetic reference is conftest `make_clustered_two_driver_corpus`, additive, ICC ≈ 0.86). Verify: the entity-level driver leads the entity-grain primary; the within-entity driver surfaces in the de-meaned row-wise secondary; the row-level null FDR ≤ 2α on the residual; no grain-mixing.
+- **Add a clustered fixture carrying BOTH an entity-level and a within-entity row-level driver** — for FLOW/stock (`make_clustered_two_driver_corpus`, additive, ICC ≈ 0.86) AND for RATIO (`make_clustered_ratio_two_driver_corpus`, ICC ≈ 0.85). Verify: the entity-level driver leads the entity-grain primary; the within-entity driver surfaces in the de-meaned row-wise secondary; the row-level null FDR ≤ 2α on the residual; no grain-mixing. The ratio residual is the per-row ratio minus its entity's volume-weighted mean.
 - The DAT-552 entry's "open follow-up: row-level drivers skipped at entity grain" is now CLOSED by this routing — calibration CAN expect within-entity drivers from the de-meaned row-level family (flow/stock).
 
 ### dataraum-testdata

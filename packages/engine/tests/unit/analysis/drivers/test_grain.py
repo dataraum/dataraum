@@ -14,16 +14,22 @@ from dataraum.analysis.drivers.criterion import (
     build_codes,
     intraclass_correlation,
     variance_reduction,
+    weighted_variance_reduction,
 )
-from dataraum.analysis.drivers.processor import _within_entity_residual
+from dataraum.analysis.drivers.processor import (
+    _within_entity_ratio_residual,
+    _within_entity_residual,
+)
 from dataraum.analysis.drivers.targets import EntityMeanTarget
 
 from .conftest import (
     CL_DRIVER,
     CL_ENTITY,
     CL_ENTITY_NULLS,
+    CL_RATIO_ROW_DRIVER,
     CL_ROW_DRIVER,
     make_clustered_corpus,
+    make_clustered_ratio_two_driver_corpus,
     make_clustered_two_driver_corpus,
 )
 
@@ -113,3 +119,18 @@ class TestWithinEntityDemean:
         # de-meaned residual strips it, recovering a multiple-times larger gain.
         assert residual_gain > 3 * raw_gain
         assert residual_gain > 0.3, f"residual gain too weak: {residual_gain:.3f}"
+
+    def test_demean_recovers_within_entity_ratio_signal(self) -> None:
+        df = make_clustered_ratio_two_driver_corpus(np.random.default_rng(0))
+        num = df["numerator"].to_numpy(dtype=float)
+        den = df["denominator"].to_numpy(dtype=float)
+        ratio = num / den
+        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
+        codes, n = build_codes(
+            df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy(), ratio, handle_nulls=True
+        )
+        # Both gains are volume-weighted (weight = denominator); only the de-mean differs.
+        raw_gain = weighted_variance_reduction(codes, n, ratio, den, min_support=2)
+        residual_gain = weighted_variance_reduction(codes, n, residual, weight, min_support=2)
+        assert residual_gain > 3 * raw_gain
+        assert residual_gain > 0.3, f"residual ratio gain too weak: {residual_gain:.3f}"

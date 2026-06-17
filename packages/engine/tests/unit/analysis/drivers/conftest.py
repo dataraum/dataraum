@@ -254,3 +254,38 @@ def make_clustered_ratio_corpus(
     df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
     df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
     return df
+
+
+# Two-driver clustered RATIO corpus (DAT-561): a HIGH-ICC ratio carrying BOTH a
+# between-entity (entity-level) ratio driver AND a within-entity (row-level) ratio
+# driver, plus a null at each grain — the ratio analogue of make_clustered_two_driver_
+# corpus. The within-entity de-mean (volume-weighted) must recover the row driver that
+# the between-entity ratio level dilutes in the raw row-wise null.
+CL_RATIO_ROW_DRIVER = "D_row_ratio"  # within-entity (row-level) ratio driver
+RATIO_TWO_DRIVER_DIMS = [CL_DRIVER, CL_RATIO_ROW_DRIVER, CL_ENTITY_NULLS[1], CL_ROW_NULL]
+
+
+def make_clustered_ratio_two_driver_corpus(rng: np.random.Generator) -> pd.DataFrame:
+    """200 entities × 100 rows; high-ICC ratio with an entity-level AND a row-level driver."""
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    n = CL_N_ENTITIES * CL_PER_ENTITY
+    # Between-entity ratio level (high ICC): driver shift + a sizeable entity effect.
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    ent_ratio = (
+        0.30 + np.array([-0.10, -0.03, 0.03, 0.10])[drv_grp] + rng.normal(0, 0.08, CL_N_ENTITIES)
+    )
+    # Within-entity (row-level) ratio shift + small row noise.
+    row_grp = rng.integers(0, 4, n)
+    row_shift = np.array([-0.06, -0.02, 0.02, 0.06])[row_grp]
+    den = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
+    row_ratio = ent_ratio[ent] + row_shift + rng.normal(0, 0.01, n)
+
+    df = pd.DataFrame(index=np.arange(n))
+    df[CL_ENTITY] = ent
+    df["numerator"] = den * row_ratio
+    df["denominator"] = den
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]  # entity-level ratio driver
+    df[CL_RATIO_ROW_DRIVER] = [f"w{g}" for g in row_grp]  # within-entity ratio driver
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]  # ent null
+    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
+    return df

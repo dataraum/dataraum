@@ -27,11 +27,14 @@ from .conftest import (
     CL_ENTITY,
     CL_ENTITY_NULLS,
     CL_RATIO_DIMS,
+    CL_RATIO_ROW_DRIVER,
     CL_ROW_DRIVER,
     CL_ROW_NULL,
+    RATIO_TWO_DRIVER_DIMS,
     TWO_DRIVER_DIMS,
     make_clustered_corpus,
     make_clustered_ratio_corpus,
+    make_clustered_ratio_two_driver_corpus,
     make_clustered_two_driver_corpus,
 )
 
@@ -81,18 +84,18 @@ def _seed_catalog(session: Session, dims: list[str] = CL_DIMS) -> str:
     return fact.table_id
 
 
-def _seed_ratio_catalog(session: Session) -> str:
+def _seed_ratio_catalog(session: Session, dims: list[str] = CL_RATIO_DIMS) -> str:
     """Seed a fact whose measure is a ratio (numerator/denominator) over a clustered view."""
     fact = Table(
         table_id=str(uuid4()), source_id="s", table_name="sales", layer="typed", duckdb_path="sales"
     )
     session.add(fact)
-    for pos, name in enumerate([*CL_RATIO_DIMS, CL_ENTITY, "numerator", "denominator"]):
+    for pos, name in enumerate([*dims, CL_ENTITY, "numerator", "denominator"]):
         col = Column(
             column_id=str(uuid4()), table_id=fact.table_id, column_name=name, column_position=pos
         )
         session.add(col)
-        if name in CL_RATIO_DIMS:
+        if name in dims:
             session.add(
                 SliceDefinition(
                     run_id=RUN,
@@ -431,3 +434,57 @@ class TestClusterAwareRatio:
             assert c <= 2 * ALPHA * seeds, f"entity null {n} surfaced {c}/{seeds}"
         # …and the entity-level ratio driver surfaces in the majority.
         assert driver_found >= seeds // 2, f"ratio driver recall {driver_found}/{seeds}"
+
+
+class TestWithinEntityRatioPower:
+    """DAT-561 ratio power add-on: under high ICC the row-level (secondary) RATIO family
+    gates on the within-entity volume-weighted de-meaned ratio, so a within-entity ratio
+    driver surfaces and the row-level null stays gated — while the entity-level ratio
+    driver leads the entity-grain primary and the grains never mix.
+    """
+
+    def _run(self, session, duck, tid, seed):  # noqa: ANN001, ANN202
+        _write_view(duck, make_clustered_ratio_two_driver_corpus(np.random.default_rng(600 + seed)))
+        return discover_drivers(
+            session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=RATIO_MEASURE,
+            cluster_key=CL_ENTITY,
+            n_perm=N_PERM,
+            seed=seed,
+        )
+
+    def test_entity_and_within_entity_ratio_drivers_cleanly_separated(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_ratio_catalog(real_session, RATIO_TWO_DRIVER_DIMS)
+        rank = self._run(real_session, duck, tid, 0)
+        assert rank.grain == "entity" and rank.target_type == "ratio"
+        primary = {d for d, _ in rank.ranked_dimensions}
+        secondary = {d.dimension for d in rank.secondary_dimensions}
+        assert CL_DRIVER in primary
+        assert CL_RATIO_ROW_DRIVER in secondary
+        assert CL_DRIVER not in secondary
+        assert CL_RATIO_ROW_DRIVER not in primary
+        assert all(d.grain == "row" for d in rank.secondary_dimensions)
+
+    def test_within_entity_ratio_driver_found_and_residual_null_gated(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_ratio_catalog(real_session, RATIO_TWO_DRIVER_DIMS)
+        seeds = 30
+        driver_found = 0
+        row_null_surfaced = 0
+        for s in range(seeds):
+            rank = self._run(real_session, duck, tid, s)
+            secondary = {d.dimension for d in rank.secondary_dimensions}
+            driver_found += CL_RATIO_ROW_DRIVER in secondary
+            row_null_surfaced += CL_ROW_NULL in secondary
+        assert driver_found >= seeds // 2, (
+            f"within-entity ratio driver recall {driver_found}/{seeds}"
+        )
+        assert row_null_surfaced <= 2 * ALPHA * seeds, (
+            f"row-level null surfaced {row_null_surfaced}/{seeds} on the ratio residual"
+        )

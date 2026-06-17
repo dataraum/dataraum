@@ -2,9 +2,10 @@
 //
 // SANDBOXED: this module runs inside the worker's deterministic vm isolate, NOT
 // the main thread. It may import ONLY `@temporalio/workflow`, the pure shared
-// `../contracts`, the pure `./breaker` reducer, the pure `../../temporal/workflow-id`
-// helpers, and activity *types* — no db client, no config, no node/bun IO. All
-// side effects live in `../activities`, dispatched through the proxy below.
+// `../contracts`, the pure `./breaker` + `./grounding-step` reducers, the pure
+// `../../temporal/workflow-id` helpers, and *types* (contracts + AddSourceResult +
+// activities) — no db client, no config, no node/bun IO. All side effects live in
+// `../activities`, dispatched through the proxies below.
 //
 // Grain: ONE long-lived workflow PER WORKSPACE (`journey-<workspaceId>`), bounded
 // by continue-as-new. The worker is a process singleton, so it hosts N workspaces'
@@ -27,6 +28,14 @@
 // change onto the Phase-1 structure. The operating_model TOOL stays as a manual
 // re-trigger (a teach re-run, P3c) — it signals the journey too, so the journey is
 // the single owner of all stage execution.
+//
+// P3c — GROUNDING AUTONOMY (DAT-551): a clean add_source AUTO-CASCADES into the
+// grounding-teach loop (`runGroundingLoop`): the `assessAndGround` activity
+// auto-applies the mechanical grounding teaches a detector can verify, the journey
+// replays (re-runs add_source) to re-measure, bounded by `numberOfAttempts`. A
+// human-judgement gap or exhaustion parks the run `awaiting_input` (the human
+// teaches + replays — a fresh loop); it NEVER blocks the shared journey on human
+// input. Gated by its own `patched()` + autoMode (the master autonomy switch).
 
 import {
 	condition,
@@ -40,6 +49,7 @@ import {
 	setHandler,
 	startChild,
 } from "@temporalio/workflow";
+import type { AddSourceResult } from "../../temporal/types";
 import { operatingModelWorkflowId } from "../../temporal/workflow-id";
 import type * as activities from "../activities";
 import {
@@ -57,14 +67,22 @@ import {
 	type VerticalEstablished,
 } from "../contracts";
 import { applyOutcome } from "./breaker";
+import { decideGroundingStep } from "./grounding-step";
 
 // The control-plane writers (cockpit_db) the journey brackets each child with.
 // Short timeout — these are quick local writes, not the (long) engine stage.
-const { recordRun, attachRunId, markRunStatus } = proxyActivities<
-	typeof activities
->({
-	startToCloseTimeout: "1 minute",
-	retry: { maximumAttempts: 3 },
+const { recordRun, attachRunId, markRunStatus, markRunAwaitingInput } =
+	proxyActivities<typeof activities>({
+		startToCloseTimeout: "1 minute",
+		retry: { maximumAttempts: 3 },
+	});
+
+// The grounding-teach agent (DAT-551 P3c) — an LLM tool-loop, so a much longer
+// timeout than the cockpit_db writes, and only one retry (a re-run is expensive +
+// the loop tolerates a failed round by stopping, never crashing the journey).
+const { assessAndGround } = proxyActivities<typeof activities>({
+	startToCloseTimeout: "10 minutes",
+	retry: { maximumAttempts: 2 },
 });
 
 export const verticalEstablished = defineSignal<[VerticalEstablished]>(
@@ -91,6 +109,12 @@ const EVENTS_BEFORE_CONTINUE = 500;
 // predate it; it's established here as the discipline for future incremental edits.
 const CASCADE_PATCH = "journey-cascade-operating-model";
 
+// Gates the post-add_source grounding-teach loop (DAT-551 P3c).
+const GROUNDING_PATCH = "journey-grounding-loop";
+
+// Default replay budget for the grounding loop when the trigger carries none.
+const DEFAULT_GROUNDING_ATTEMPTS = 3;
+
 /** A queued, user-intentional stage trigger (add_source / begin_session always;
  * operating_model as a manual re-trigger). The auto-cascade is NOT queued — it runs
  * inline right after its begin_session, so a session's two stages stay an atomic pair. */
@@ -99,11 +123,19 @@ type PendingStage =
 	| { kind: "begin_session"; req: RunBeginSession }
 	| { kind: "operating_model"; req: RunOperatingModel };
 
+/** A finished stage: whether it succeeded + the engine child's result (null on
+ * failure). The breaker folds `ok`; the grounding loop reads `result` (the
+ * AddSourceResult) for the typed table ids to assess. */
+interface StageOutcome {
+	ok: boolean;
+	result: unknown;
+}
+
 /**
  * Run one engine stage as a cross-language child of the journey. Records the run
  * authoritatively before start, attaches the child's real execution id, marks it
- * terminal on completion. Returns whether it succeeded — the caller folds that into
- * the breaker and decides whether to cascade. A failure NEVER crashes the
+ * terminal on completion. Returns {ok, result} — the caller folds `ok` into the
+ * breaker and reads `result` to drive a cascade. A failure NEVER crashes the
  * long-lived journey: the run is marked failed and the loop continues.
  */
 async function runChildStage(
@@ -121,7 +153,7 @@ async function runChildStage(
 		conversationId: string | null;
 		args: unknown[];
 	},
-): Promise<boolean> {
+): Promise<StageOutcome> {
 	// runId is the deterministic workflowId placeholder until the child mints its
 	// execution id (so a failure before start still has a key to mark).
 	let runId = spec.workflowId;
@@ -142,16 +174,18 @@ async function runChildStage(
 			taskQueue: spec.taskQueue,
 			workflowId: spec.workflowId,
 			// The journey's continue-as-new (or restart) must NOT kill a running
-			// engine stage — let it complete independently.
+			// engine stage — let it complete independently. A grounding REPLAY reuses
+			// this same workflowId; the prior execution is already closed by then, so
+			// the child default (allow-duplicate-when-closed) permits it.
 			parentClosePolicy: ParentClosePolicy.ABANDON,
 			args: spec.args,
 		});
 		runId = child.firstExecutionRunId;
 		await attachRunId(spec.workflowId, runId);
 
-		await child.result();
+		const result = await child.result();
 		await markRunStatus(spec.workflowId, runId, "completed");
-		return true;
+		return { ok: true, result };
 	} catch (err) {
 		log.warn("journey stage failed", {
 			stage: spec.stage,
@@ -161,7 +195,7 @@ async function runChildStage(
 		// Mark failed best-effort (markRunStatus is a no-op if the run wasn't
 		// recorded). Don't rethrow — one bad stage must not crash the journey.
 		await markRunStatus(spec.workflowId, runId, "failed").catch(() => {});
-		return false;
+		return { ok: false, result: null };
 	}
 }
 
@@ -169,7 +203,7 @@ async function runChildStage(
 function runAddSourceStage(
 	workspaceId: string,
 	req: RunAddSource,
-): Promise<boolean> {
+): Promise<StageOutcome> {
 	return runChildStage(workspaceId, {
 		workflowType: "addSourceWorkflow",
 		workflowId: req.workflowId,
@@ -192,7 +226,7 @@ function runAddSourceStage(
 function runBeginSessionStage(
 	workspaceId: string,
 	req: RunBeginSession,
-): Promise<boolean> {
+): Promise<StageOutcome> {
 	return runChildStage(workspaceId, {
 		workflowType: "beginSessionWorkflow",
 		workflowId: req.workflowId,
@@ -217,7 +251,7 @@ function runBeginSessionStage(
 function runOperatingModelStage(
 	workspaceId: string,
 	om: RunOperatingModel,
-): Promise<boolean> {
+): Promise<StageOutcome> {
 	return runChildStage(workspaceId, {
 		workflowType: "operatingModelWorkflow",
 		workflowId: om.workflowId,
@@ -229,6 +263,78 @@ function runOperatingModelStage(
 		conversationId: om.conversationId,
 		args: [{ workspace_id: workspaceId, verticals: om.verticals }],
 	});
+}
+
+/** The typed table ids from an add_source result — the readiness scope the
+ * grounding agent assesses. Narrows the child's `unknown` result defensively. */
+function typedTableIds(result: unknown): string[] {
+	const r = result as Partial<AddSourceResult> | null;
+	if (!r?.tables) return [];
+	return r.tables
+		.map((t) => t.typed_table_id)
+		.filter((id): id is string => typeof id === "string");
+}
+
+/**
+ * The post-add_source grounding-teach loop (DAT-551 P3c) — the autonomy step.
+ * Bounded by `numberOfAttempts`: assess the run's readiness, auto-apply the
+ * mechanical grounding teaches a detector can verify, replay (re-run add_source to
+ * re-measure), repeat — until readiness is clean, nothing mechanical is left, or the
+ * attempt budget runs out. On a human-judgement gap or exhaustion it parks the run
+ * in `awaiting_input` (a human resolves by teaching + replaying — a fresh loop) and
+ * RETURNS: it NEVER blocks the shared journey on human input (B1). Returns the
+ * number of replays it ran (for the continue-as-new event bound).
+ */
+async function runGroundingLoop(
+	workspaceId: string,
+	req: RunAddSource,
+	firstResult: unknown,
+): Promise<number> {
+	let tableIds = typedTableIds(firstResult);
+	if (tableIds.length === 0) return 0;
+	let attemptsRemaining = req.numberOfAttempts ?? DEFAULT_GROUNDING_ATTEMPTS;
+	let replays = 0;
+	while (true) {
+		let verdict: activities.AssessAndGroundResult;
+		try {
+			verdict = await assessAndGround({ tableIds, attemptsRemaining });
+		} catch (err) {
+			// The assessment died (LLM error after retries) — stop grounding, don't
+			// crash the journey. The import itself is already recorded complete.
+			log.warn("journey grounding assess failed", {
+				workflowId: req.workflowId,
+				err: String(err),
+			});
+			return replays;
+		}
+
+		const step = decideGroundingStep(verdict, attemptsRemaining);
+		if (step.action === "done") return replays;
+		if (step.action === "surface") {
+			await markRunAwaitingInput(req.workflowId, step.note).catch(() => {});
+			log.info("journey grounding surfaced for input", {
+				workflowId: req.workflowId,
+				reason: step.reason,
+			});
+			return replays;
+		}
+
+		// action === "replay": re-run add_source for the SAME session to apply the
+		// teaches + re-measure. A failed replay stops the loop (the run is marked).
+		// conversationId=null: these are INTERNAL autonomous re-runs — they must NOT
+		// each fire the completion-watcher's "import finished" narration (the user
+		// already heard the import landed; the loop's outcome surfaces via the run
+		// monitor / awaiting_input, not N chat messages).
+		attemptsRemaining -= 1;
+		const { ok, result } = await runAddSourceStage(workspaceId, {
+			...req,
+			conversationId: null,
+		});
+		replays += 1;
+		if (!ok) return replays;
+		tableIds = typedTableIds(result);
+		if (tableIds.length === 0) return replays;
+	}
 }
 
 /**
@@ -293,13 +399,20 @@ export async function journeyWorkflow(
 		const next = pending.shift() as PendingStage;
 
 		if (next.kind === "add_source") {
-			// A fresh import or a replay — always user-triggered (select / replay),
-			// never autonomous in this slice, so it does NOT fold into the breaker:
-			// the breaker is scoped to the begin_session → operating_model cascade
-			// (ADR-0014). runChildStage still records + marks the run. No cascade
-			// follows add_source here (the agentic grounding-teach loop is slice 2).
-			await runAddSourceStage(workspaceId, next.req);
+			// A fresh import or a replay — always user-triggered (select / replay), so
+			// it does NOT fold into the breaker (scoped to the begin_session →
+			// operating_model cascade, ADR-0014). On a clean import it AUTO-CASCADES
+			// into the grounding-teach loop (DAT-551 P3c): auto-apply mechanical
+			// grounding teaches + replay until ready or attempts run out. Gated by
+			// patched() (the control-flow change) + autoMode (the master autonomy
+			// switch — a paused/tripped journey skips auto-grounding). The loop never
+			// blocks on human input; it parks awaiting_input + returns.
+			const req = next.req;
+			const { ok, result } = await runAddSourceStage(workspaceId, req);
 			handled += 1;
+			if (patched(GROUNDING_PATCH) && ok && breaker.autoMode) {
+				handled += await runGroundingLoop(workspaceId, req, result);
+			}
 			continue;
 		}
 
@@ -308,12 +421,12 @@ export async function journeyWorkflow(
 			// breaker (the breaker only gates the AUTONOMOUS follow-on). It STILL
 			// folds into the tally: a stage that keeps failing is a bad engine
 			// whoever triggered it, so repeated manual failures trip the breaker too.
-			fold(await runOperatingModelStage(workspaceId, next.req));
+			fold((await runOperatingModelStage(workspaceId, next.req)).ok);
 			handled += 1;
 			continue;
 		}
 
-		const beganOk = await runBeginSessionStage(workspaceId, next.req);
+		const beganOk = (await runBeginSessionStage(workspaceId, next.req)).ok;
 		fold(beganOk);
 		handled += 1;
 
@@ -328,13 +441,15 @@ export async function journeyWorkflow(
 		if (cascadeEnabled && beganOk && breaker.autoMode) {
 			const req = next.req;
 			fold(
-				await runOperatingModelStage(workspaceId, {
-					sessionId: req.sessionId,
-					workflowId: operatingModelWorkflowId(workspaceId, req.sessionId),
-					engineTaskQueue: req.engineTaskQueue,
-					verticals: req.verticals,
-					conversationId: req.conversationId,
-				}),
+				(
+					await runOperatingModelStage(workspaceId, {
+						sessionId: req.sessionId,
+						workflowId: operatingModelWorkflowId(workspaceId, req.sessionId),
+						engineTaskQueue: req.engineTaskQueue,
+						verticals: req.verticals,
+						conversationId: req.conversationId,
+					})
+				).ok,
 			);
 			handled += 1;
 		}

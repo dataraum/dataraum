@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatStartedAt, stageLabel, statusTone } from "#/ui/runs/run-row";
+import {
+	formatStartedAt,
+	stageLabel,
+	statusLabel,
+	statusTone,
+} from "#/ui/runs/run-row";
 
 describe("run-row presentation (DAT-550)", () => {
 	it("labels known stages and passes unknown ones through", () => {
@@ -13,7 +18,15 @@ describe("run-row presentation (DAT-550)", () => {
 		expect(statusTone("running")).toBe("blue");
 		expect(statusTone("completed")).toBe("green");
 		expect(statusTone("failed")).toBe("red");
-		expect(statusTone("awaiting_input")).toBe("gray");
+		// The grounding loop's human-handoff state (DAT-551) — amber, not gray.
+		expect(statusTone("awaiting_input")).toBe("yellow");
+		expect(statusTone("future_status")).toBe("gray");
+	});
+
+	it("labels awaiting_input as a call to action, others verbatim (DAT-551)", () => {
+		expect(statusLabel("awaiting_input")).toBe("Needs input");
+		expect(statusLabel("running")).toBe("running");
+		expect(statusLabel("completed")).toBe("completed");
 	});
 
 	it("formats startedAt as stable UTC from a Date or its wire string", () => {

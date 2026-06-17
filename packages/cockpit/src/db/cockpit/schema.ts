@@ -22,6 +22,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	text,
 	timestamp,
 	uniqueIndex,
 	varchar,
@@ -143,6 +144,12 @@ export const sessionRuns = pgTable(
 		// terminal-status writers (the progress poll / reconcile) don't touch it, so
 		// the claim never races them. NULL = not yet narrated.
 		completionNarratedAt: timestamp("completion_narrated_at", { mode: "date" }),
+		// Why the run is parked in `status='awaiting_input'` (DAT-551 P3c): the
+		// grounding-teach agent fixed what it mechanically could and a human-judgement
+		// gap remains (a concept/relationship the agent must not auto-apply), or it hit
+		// its attempt limit. One sentence the surface shows + deep-links a Stage chat
+		// from. NULL for every other run. Written by the journey's markRunAwaitingInput.
+		awaitingNote: text("awaiting_note"),
 	},
 	(t) => [
 		uniqueIndex("session_runs_workflow_run_uq").on(t.workflowId, t.runId),

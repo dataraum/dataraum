@@ -6,7 +6,12 @@
 
 import { Anchor, Badge, Group, Stack, Table, Text, Title } from "@mantine/core";
 import type { WorkspaceRun } from "#/db/cockpit/runs";
-import { formatStartedAt, stageLabel, statusTone } from "#/ui/runs/run-row";
+import {
+	formatStartedAt,
+	stageLabel,
+	statusLabel,
+	statusTone,
+} from "#/ui/runs/run-row";
 
 export interface RunMonitorProps {
 	runs: ReadonlyArray<WorkspaceRun>;
@@ -48,36 +53,56 @@ export function RunMonitor({ runs, limit, temporalUiUrl }: RunMonitorProps) {
 							</Table.Tr>
 						</Table.Thead>
 						<Table.Tbody>
-							{runs.map((run) => (
-								<Table.Tr
-									key={`${run.workflowId}:${run.runId}`}
-									data-testid="run-monitor-row"
-								>
-									<Table.Td>{stageLabel(run.stage)}</Table.Td>
-									<Table.Td>
-										<Badge
-											size="sm"
-											variant="light"
-											color={statusTone(run.status)}
-											data-testid="run-status"
-										>
-											{run.status}
-										</Badge>
-									</Table.Td>
-									<Table.Td>
-										<Text size="sm" c="dimmed">
-											{formatStartedAt(run.startedAt)}
-										</Text>
-									</Table.Td>
-									{/* maxWidth so `truncate` actually clips (Mantine truncate needs a
+							{runs.map((run) => {
+								// `awaitingNote` is the durable "needs you" signal — only the
+								// grounding loop ever writes it, so it can't be clobbered the
+								// way `status` can (the completion-watcher may re-mark a run
+								// `completed` on its terminal poll). Drive the badge off the note
+								// when present so the surface is race-proof (DAT-551 review).
+								const effectiveStatus = run.awaitingNote
+									? "awaiting_input"
+									: run.status;
+								return (
+									<Table.Tr
+										key={`${run.workflowId}:${run.runId}`}
+										data-testid="run-monitor-row"
+									>
+										<Table.Td>{stageLabel(run.stage)}</Table.Td>
+										<Table.Td>
+											<Badge
+												size="sm"
+												variant="light"
+												color={statusTone(effectiveStatus)}
+												data-testid="run-status"
+											>
+												{statusLabel(effectiveStatus)}
+											</Badge>
+											{run.awaitingNote && (
+												<Text
+													size="xs"
+													c="dimmed"
+													mt={4}
+													data-testid="run-awaiting-note"
+												>
+													{run.awaitingNote}
+												</Text>
+											)}
+										</Table.Td>
+										<Table.Td>
+											<Text size="sm" c="dimmed">
+												{formatStartedAt(run.startedAt)}
+											</Text>
+										</Table.Td>
+										{/* maxWidth so `truncate` actually clips (Mantine truncate needs a
 									    width constraint) instead of the column growing to the id. */}
-									<Table.Td style={{ maxWidth: 220 }}>
-										<Text size="xs" c="dimmed" ff="monospace" truncate="end">
-											{run.workflowId}
-										</Text>
-									</Table.Td>
-								</Table.Tr>
-							))}
+										<Table.Td style={{ maxWidth: 220 }}>
+											<Text size="xs" c="dimmed" ff="monospace" truncate="end">
+												{run.workflowId}
+											</Text>
+										</Table.Td>
+									</Table.Tr>
+								);
+							})}
 						</Table.Tbody>
 					</Table>
 					{runs.length >= limit && (

@@ -14,6 +14,7 @@ function run(over: Partial<WorkspaceRun> = {}): WorkspaceRun {
 		status: "completed",
 		startedAt: new Date("2026-06-17T06:58:27.925Z"),
 		kind: "onboarding",
+		awaitingNote: null,
 		...over,
 	};
 }
@@ -47,6 +48,35 @@ describe("RunMonitor (DAT-550)", () => {
 			.getAllByTestId("run-status")
 			.map((b) => b.textContent);
 		expect(statuses).toEqual(["completed", "running"]);
+	});
+
+	it("shows an awaiting_input run as 'Needs input' with its note (DAT-551)", () => {
+		renderMonitor({
+			runs: [
+				run({
+					status: "awaiting_input",
+					awaitingNote: "payments.method needs a concept mapping",
+				}),
+			],
+		});
+		expect(screen.getByTestId("run-status").textContent).toBe("Needs input");
+		expect(screen.getByTestId("run-awaiting-note").textContent).toContain(
+			"payments.method needs a concept",
+		);
+	});
+
+	it("shows 'Needs input' from the note even if status was re-marked completed (race-proof, DAT-551)", () => {
+		// The completion-watcher can re-mark a run `completed`; awaitingNote is the
+		// durable signal, so the surface drives off it, not the status badge alone.
+		renderMonitor({
+			runs: [
+				run({
+					status: "completed",
+					awaitingNote: "needs a relationship teach",
+				}),
+			],
+		});
+		expect(screen.getByTestId("run-status").textContent).toBe("Needs input");
 	});
 
 	it("shows an empty state with no runs", () => {

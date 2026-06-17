@@ -1,9 +1,8 @@
-"""Source-qualified slice + slicing-view names (DAT-356).
+"""Source-qualified slice-table names (DAT-356).
 
-The single source of truth for the physical names of slice tables and slicing
-views, so name GENERATION (the slicing agent) and name MATCHING (slice_runner,
-temporal_slice_analysis, profiling, and the temporal_drift / dimensional_entropy
-detector loaders) can never drift.
+The single source of truth for the physical names of the slice tables the
+slicing agent's ``sql_template`` generates, so name GENERATION and name MATCHING
+can never drift.
 
 Names key off the fact table's **source-qualified** ``duckdb_path`` (``csv__orders``,
 the same key enriched_views uses) rather than the bare ``table_name`` — so two
@@ -48,9 +47,4 @@ def slice_table_name(source_key: str, column_name: str, value: str) -> str:
     return f"{slice_table_prefix(source_key, column_name)}{_sanitize(value) or 'unknown'}"
 
 
-def slicing_view_name(source_key: str) -> str:
-    """The slicing view's bare name ``slicing_{source}`` (source-qualified, DAT-356)."""
-    return f"slicing_{_sanitize(source_key)}"
-
-
-__all__ = ["slice_table_prefix", "slice_table_name", "slicing_view_name"]
+__all__ = ["slice_table_prefix", "slice_table_name"]

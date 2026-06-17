@@ -1,9 +1,11 @@
-"""Guard the begin_session value layer is wired, not dormant (DAT-403).
+"""Guard the begin_session value layer is wired, not dormant (DAT-403/536).
 
-The slicing → slicing_view → slice_analysis → temporal_slice_analysis →
-correlations phases were code-complete but DORMANT (declared in pipeline.yaml,
-never executed by any workflow) before DAT-403 revived them. This pins the two
-invariants that keep them live:
+The value chain (slicing → aggregation_lineage → correlations) was code-complete
+but DORMANT (declared in pipeline.yaml, never executed by any workflow) before
+DAT-403 revived them; DAT-536 then removed the slice-materialization phases
+(slicing_view / slice_analysis / temporal_slice_analysis) — the
+structural_reconciliation substrate is now aggregated inline in
+aggregation_lineage. This pins the two invariants that keep the chain live:
 
 1. ``_SESSION_VALUE_PHASE_ORDER`` (what ``beginSessionWorkflow`` executes after
    ``enriched_views``) is the agreed value chain, in dependency order.
@@ -21,11 +23,8 @@ from dataraum.worker.workflows import _SESSION_VALUE_PHASE_ORDER
 def test_value_phase_order_is_the_agreed_chain() -> None:
     assert _SESSION_VALUE_PHASE_ORDER == (
         "slicing",
-        "slicing_view",
-        "slice_analysis",
-        "temporal_slice_analysis",
-        # DAT-491: lineage pairs the per-period slice sums temporal_slice_analysis
-        # just persisted — it must follow that phase.
+        # DAT-491/536: lineage aggregates each fact's enriched view inline and
+        # reconciles the per-period sums — no slice-materialization phases precede it.
         "aggregation_lineage",
         "correlations",
     )

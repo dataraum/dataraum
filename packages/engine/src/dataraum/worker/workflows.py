@@ -465,17 +465,14 @@ def _retry_for(phase: str) -> RetryPolicy:
     return _LLM_RETRY if phase in _LLM_PHASES else _RETRY
 
 
-# The value layer (DAT-403), in dependency order, runs AFTER ``enriched_views``:
-# slice the fact tables (LLM), narrow each to a slicing view, materialize + profile
-# the slices, run drift/period analysis on them, then detect derived columns. All
-# scoped by the session's table set (``scoped``), source-free like the spine above.
+# The value layer (DAT-403/536), in dependency order, runs AFTER ``enriched_views``:
+# declare the slice dimensions (LLM → catalog), reconcile events→measure lineage by
+# inline aggregation over the enriched views, then detect derived columns. All scoped
+# by the session's table set (``scoped``), source-free like the spine above.
 _SESSION_VALUE_PHASE_ORDER = (
     "slicing",
-    "slicing_view",
-    "slice_analysis",
-    "temporal_slice_analysis",
-    # DAT-491: pairs the per-period slice sums temporal_slice_analysis just
-    # persisted — must follow it.
+    # DAT-491/536: aggregates each fact's enriched view inline (GROUP BY dim, period)
+    # and reconciles the per-period sums across facts sharing a catalog dimension.
     "aggregation_lineage",
     "correlations",
 )
@@ -619,11 +616,11 @@ class BeginSessionWorkflow:
             retry_policy=_LLM_RETRY,
         )
 
-        # Value layer (DAT-403): slicing → slicing_view → slice_analysis →
-        # temporal_slice_analysis → correlations, over the enriched substrate just
-        # built. Scoped by the session's table set; feeds the value-layer detectors
-        # the terminal ``session_detect`` measures. Each is idempotent on its
-        # CREATE-OR-REPLACE / reconcile, so a re-run under a fresh run_id re-derives.
+        # Value layer (DAT-403/536): slicing → aggregation_lineage → correlations,
+        # over the enriched substrate just built. Scoped by the session's table set;
+        # feeds the value-layer detectors the terminal ``session_detect`` measures.
+        # Each is idempotent on its reconcile, so a re-run under a fresh run_id
+        # re-derives.
         for phase in _SESSION_VALUE_PHASE_ORDER:
             self._progress.phase = phase
             await workflow.execute_activity(

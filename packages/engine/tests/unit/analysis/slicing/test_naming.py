@@ -1,9 +1,8 @@
-"""Tests for the centralized slice / slicing-view naming (DAT-356).
+"""Tests for the centralized slice naming (DAT-356).
 
-These names are the contract between GENERATION (the slicing agent) and MATCHING
-(slice_runner, temporal_slice, profiling, the temporal_drift / dimensional_entropy
-loaders). The single source of truth lives in ``slicing.naming``; these pin the
-two properties everything else relies on.
+These names are the contract between GENERATION (the slicing agent) and MATCHING.
+The single source of truth lives in ``slicing.naming``; these pin the two
+properties everything else relies on.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 from dataraum.analysis.slicing.naming import (
     slice_table_name,
     slice_table_prefix,
-    slicing_view_name,
 )
 
 
@@ -33,7 +31,6 @@ def test_source_qualified_no_collision_across_sources() -> None:
     a = slice_table_name("csv_a__orders", "region", "us")
     b = slice_table_name("csv_b__orders", "region", "us")
     assert a != b
-    assert slicing_view_name("csv_a__orders") != slicing_view_name("csv_b__orders")
 
 
 def test_sanitization_and_empty_value() -> None:
@@ -43,4 +40,3 @@ def test_sanitization_and_empty_value() -> None:
         == "slice_sales_orders_region_code_n_a"
     )
     assert slice_table_name("x", "c", "") == "slice_x_c_unknown"
-    assert slicing_view_name("CSV__Orders") == "slicing_csv_orders"

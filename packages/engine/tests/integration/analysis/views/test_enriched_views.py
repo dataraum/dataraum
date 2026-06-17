@@ -639,34 +639,6 @@ class TestVersionedGrainConstraints:
             session.flush()
         session.rollback()
 
-    def test_slicing_view_unique_per_fact(self, session):
-        """A second SlicingView for the same fact_table_id is rejected (DAT-415)."""
-        from uuid import uuid4
-
-        from sqlalchemy.exc import IntegrityError
-
-        from dataraum.analysis.views.db_models import SlicingView
-
-        fact_id = self._fact(session)
-        session.add(
-            SlicingView(
-                view_id=str(uuid4()),
-                fact_table_id=fact_id,
-                view_name="slicing_orders",
-            )
-        )
-        session.flush()
-        session.add(
-            SlicingView(
-                view_id=str(uuid4()),
-                fact_table_id=fact_id,
-                view_name="slicing_orders_dup",
-            )
-        )
-        with pytest.raises(IntegrityError):
-            session.flush()
-        session.rollback()
-
     def test_table_entity_unique_per_table_run(self, session):
         """A second TableEntity for the same (table_id, run_id) is rejected."""
         from uuid import uuid4

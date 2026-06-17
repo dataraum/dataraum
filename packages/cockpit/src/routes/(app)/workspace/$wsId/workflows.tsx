@@ -74,10 +74,12 @@ function RunsSection() {
 	return (
 		<Stack gap="md" h="100%">
 			<NeedsYouPanel items={awaiting} onResolve={onResolve} />
-			{/* The monitor fills the remaining height + scrolls internally (sticky
-			    header); when the panel is empty it renders null, so the monitor fills
+			{/* The monitor fills the remaining height + scrolls INTERNALLY so its
+			    sticky header sticks (overflowY:auto makes this Box the scroll
+			    container — minHeight:0 lets a flex child actually shrink to enable
+			    it). When the panel is empty it renders null, so the monitor fills
 			    everything — the DAT-550 layout, unchanged. */}
-			<Box style={{ flex: 1, minHeight: 0 }}>
+			<Box style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
 				<RunMonitor runs={runs} limit={limit} temporalUiUrl={temporalUiUrl} />
 			</Box>
 		</Stack>

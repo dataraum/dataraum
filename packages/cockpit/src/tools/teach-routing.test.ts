@@ -3,14 +3,21 @@ import { TEACH_TYPES } from "#/tools/teach.validation";
 import { affectedStage } from "#/tools/teach-routing";
 
 describe("affectedStage (DAT-531 teach → stage map)", () => {
-	it("routes grounding teaches to add_source", () => {
-		for (const t of ["type_pattern", "null_value", "unit", "concept"]) {
+	it("routes grounding teaches (incl. concept_property) to add_source", () => {
+		for (const t of [
+			"type_pattern",
+			"null_value",
+			"unit",
+			"concept",
+			"concept_property",
+		]) {
 			expect(affectedStage(t)).toBe("add_source");
 		}
 	});
 
-	it("routes relationship to begin_session", () => {
+	it("routes relationship + hierarchy to begin_session", () => {
 		expect(affectedStage("relationship")).toBe("begin_session");
+		expect(affectedStage("hierarchy")).toBe("begin_session");
 	});
 
 	it("routes the operating-model families to operating_model", () => {

@@ -7,11 +7,14 @@
 
 import { Alert, Button, Group, Stack, Text } from "@mantine/core";
 import type { RunStage } from "#/db/cockpit/runs";
-import type { StageStaleness } from "#/db/metadata/stage-staleness";
+import type {
+	StageStaleness,
+	StaleReason,
+} from "#/db/metadata/stage-staleness";
 import { stageLabel } from "#/ui/runs/run-row";
 
-/** Human "why it's behind" copy per derived reason. */
-const REASON_COPY: Record<string, string> = {
+/** Human "why it's behind" copy per derived reason (exhaustive over StaleReason). */
+const REASON_COPY: Record<StaleReason, string> = {
 	"teach-pending": "A teach is waiting — re-run to apply it.",
 	"upstream-newer": "Upstream data changed since this last ran.",
 };
@@ -49,7 +52,7 @@ export function StaleStagesPanel({ stages, onRerun }: StaleStagesPanelProps) {
 								{stageLabel(s.stage)}
 							</Text>
 							<Text size="xs" c="dimmed" data-testid="stale-stage-reason">
-								{s.reason ? (REASON_COPY[s.reason] ?? "") : ""}
+								{s.reason ? REASON_COPY[s.reason] : ""}
 							</Text>
 						</Stack>
 						<Button

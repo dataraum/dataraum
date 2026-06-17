@@ -71,16 +71,24 @@ const rerunStage = createServerFn({ method: "POST" })
 		if (!sessionId) {
 			throw new Error("No current session to re-run — import a source first.");
 		}
+		let result: unknown;
 		if (stage === "operating_model") {
-			await operatingModel({ session_id: sessionId });
+			result = await operatingModel({ session_id: sessionId });
 		} else if (stage === "begin_session") {
 			// begin_session stages over the workspace's current typed table set.
-			await beginSession({
+			result = await beginSession({
 				session_id: sessionId,
 				table_ids: await currentTypedTableIds(),
 			});
 		} else {
-			await replay({ session_id: sessionId });
+			// add_source — the DAT-551 full replay path.
+			result = await replay({ session_id: sessionId });
+		}
+		// The tool fns return an { error } envelope for their born-loud guards (e.g.
+		// operating_model's "begin_session still running"). Surface it as a throw so
+		// the client handler shows the failure instead of a silent no-op re-run.
+		if (result && typeof result === "object" && "error" in result) {
+			throw new Error(String((result as { error: unknown }).error));
 		}
 	});
 

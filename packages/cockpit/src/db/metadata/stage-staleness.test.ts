@@ -147,4 +147,14 @@ describe("deriveStaleness (DAT-531)", () => {
 		expect(stale(r, "begin_session")?.stale).toBe(false);
 		expect(stale(r, "operating_model")?.stale).toBe(false);
 	});
+
+	it("throws born-loud on an overlay with an unknown teach type (caught at the DB layer)", () => {
+		// The pure module's contract: an unmappable teach type surfaces loudly; the
+		// read layer (stage-staleness-read.ts) catches it and degrades to "fresh".
+		expect(() =>
+			deriveStaleness(heads("2026-06-17T10:00:00Z", null, null), [
+				{ type: "not_a_real_type", createdAt: t("2026-06-17T11:00:00Z") },
+			]),
+		).toThrow(/no stage mapped/);
+	});
 });

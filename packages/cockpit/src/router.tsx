@@ -41,3 +41,18 @@ declare module "@tanstack/react-router" {
 		router: ReturnType<typeof getRouter>;
 	}
 }
+
+// Typed router history state. The cockpit carries a one-shot `seed` in router
+// state — the landing "tell" entry and the Needs-you "Resolve in Stage" deep-link
+// (DAT-553) both navigate with it, and the chat route reads it once on mount.
+// Augmenting HistoryState (the same way react-router augments it for its own
+// internal keys) types `navigate({ state: { seed } })` AND `useLocation().state.seed`
+// end-to-end — replacing the `as never` write casts + the read-side cast that
+// erased that safety (a rename of `seed` is now a compile error, not a silent
+// runtime `undefined`).
+declare module "@tanstack/history" {
+	interface HistoryState {
+		/** A message to send once into a freshly-opened chat on mount. */
+		seed?: string;
+	}
+}

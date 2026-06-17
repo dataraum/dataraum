@@ -25,7 +25,8 @@
 // stores it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, isNull } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, notExists } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
 import { DEFAULT_ACTOR_ID } from "./registry";
@@ -429,5 +430,84 @@ export async function countRunningRuns(workspaceId: string): Promise<number> {
 				eq(sessionRuns.status, "running"),
 			),
 		);
+	return row?.n ?? 0;
+}
+
+/** One open "Needs you" item (DAT-553) — a session whose LATEST run is parked
+ * `awaiting_input` (the grounding loop hit a human-judgement gap or exhausted its
+ * attempts). Carries the note (why it needs a human), the stage, and the engine
+ * session id so the inbox can deep-link a resolve in a Stage chat. */
+export interface AwaitingInputItem {
+	workflowId: string;
+	stage: RunStage;
+	awaitingNote: string | null;
+	engineSessionId: string;
+	startedAt: Date;
+}
+
+/**
+ * The "open item" predicate (DAT-553): an `awaiting_input` run in this workspace
+ * that is still its SESSION's LATEST run. The `NOT EXISTS` newer-run guard is what
+ * makes the inbox SELF-CLEARING — a human teach + replay appends a newer run for
+ * the session, so the parked item drops off automatically (no dismiss lifecycle).
+ * Shared by the list + count so the two surfaces can never disagree on "open".
+ */
+function openAwaitingItem(workspaceId: string) {
+	const newer = alias(sessionRuns, "newer_run");
+	return and(
+		eq(sessions.workspaceId, workspaceId),
+		eq(sessionRuns.status, "awaiting_input"),
+		notExists(
+			cockpitDb
+				.select({ id: newer.id })
+				.from(newer)
+				.where(
+					and(
+						eq(newer.sessionId, sessionRuns.sessionId),
+						gt(newer.startedAt, sessionRuns.startedAt),
+					),
+				),
+		),
+	);
+}
+
+/**
+ * The workspace's open "Needs you" items, newest-first, BOUNDED — the inbox panel
+ * (DAT-553). Self-clearing via `openAwaitingItem` (latest-run-per-session). The run
+ * monitor (DAT-550/551) still shows these PASSIVELY as "Needs input"; this is the
+ * ACTIVE worklist read. Bounded so a long-lived workspace can't dump an unbounded
+ * set into the page.
+ */
+export async function listAwaitingInput(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<AwaitingInputItem>> {
+	const rows = await cockpitDb
+		.select({
+			workflowId: sessionRuns.workflowId,
+			stage: sessionRuns.stage,
+			awaitingNote: sessionRuns.awaitingNote,
+			engineSessionId: sessions.engineSessionId,
+			startedAt: sessionRuns.startedAt,
+		})
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(openAwaitingItem(workspaceId))
+		.orderBy(desc(sessionRuns.startedAt))
+		.limit(limit);
+	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
+}
+
+/**
+ * Count of the workspace's open "Needs you" items — feeds the rail "Needs you (N)"
+ * badge (DAT-553), polled tab-independently like the liveness count. Same
+ * `openAwaitingItem` predicate as the list, so badge and panel never disagree.
+ */
+export async function countAwaitingInput(workspaceId: string): Promise<number> {
+	const [row] = await cockpitDb
+		.select({ n: count() })
+		.from(sessionRuns)
+		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.where(openAwaitingItem(workspaceId));
 	return row?.n ?? 0;
 }

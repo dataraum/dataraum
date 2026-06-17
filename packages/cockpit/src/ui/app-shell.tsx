@@ -18,7 +18,7 @@ import { useDisclosure, useHotkeys } from "@mantine/hooks";
 import { Link, useParams } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { CommandPalette } from "#/ui/command-palette";
-import { RunLivenessBadge } from "#/ui/runs/run-liveness-badge";
+import { RunRailBadge } from "#/ui/runs/run-rail-badge";
 import { type Section, sections } from "#/ui/sections";
 import { tokens } from "#/ui/theme";
 
@@ -31,15 +31,12 @@ import { tokens } from "#/ui/theme";
  */
 function RailItem({ section, wsId }: { section: Section; wsId: string }) {
 	const Icon = section.icon;
-	// The Runs rail icon carries a liveness badge — a processing dot while the
-	// workspace has in-flight runs (DAT-550), polled tab-independently.
+	// The Runs rail icon carries a badge — a yellow "Needs you (N)" count when the
+	// grounding loop parked runs for a human (DAT-553), else a processing dot while
+	// the workspace has in-flight runs (DAT-550). Polled tab-independently.
 	const icon = <Icon size={20} aria-hidden />;
 	const inner =
-		section.id === "workflows" ? (
-			<RunLivenessBadge>{icon}</RunLivenessBadge>
-		) : (
-			icon
-		);
+		section.id === "workflows" ? <RunRailBadge>{icon}</RunRailBadge> : icon;
 	const common = {
 		variant: "subtle" as const,
 		size: "lg" as const,

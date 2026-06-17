@@ -18,6 +18,7 @@ import { Route as ApiRunningRunsRouteImport } from './routes/api/running-runs'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
@@ -70,6 +71,11 @@ const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
 const ApiChatRoute = ApiChatRouteImport.update({
   id: '/api/chat',
   path: '/api/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAwaitingInputRoute = ApiAwaitingInputRouteImport.update({
+  id: '/api/awaiting-input',
+  path: '/api/awaiting-input',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appSettingsRoute = appSettingsRouteImport.update({
@@ -127,6 +133,7 @@ const appWorkspaceWsIdCockpitConversationIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
+  '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -146,6 +153,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/settings': typeof appSettingsRoute
+  '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -166,6 +174,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
   '/(app)/settings': typeof appSettingsRoute
+  '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
   '/api/run-sql': typeof ApiRunSqlRoute
@@ -187,6 +196,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/settings'
+    | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/settings'
+    | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
@@ -225,6 +236,7 @@ export interface FileRouteTypes {
     | '/'
     | '/(app)'
     | '/(app)/settings'
+    | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
     | '/api/run-sql'
@@ -245,6 +257,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
+  ApiAwaitingInputRoute: typeof ApiAwaitingInputRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
@@ -317,6 +330,13 @@ declare module '@tanstack/react-router' {
       path: '/api/chat'
       fullPath: '/api/chat'
       preLoaderRoute: typeof ApiChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/awaiting-input': {
+      id: '/api/awaiting-input'
+      path: '/api/awaiting-input'
+      fullPath: '/api/awaiting-input'
+      preLoaderRoute: typeof ApiAwaitingInputRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/settings': {
@@ -441,6 +461,7 @@ const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
+  ApiAwaitingInputRoute: ApiAwaitingInputRoute,
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
@@ -452,12 +473,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

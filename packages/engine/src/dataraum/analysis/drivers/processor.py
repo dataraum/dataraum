@@ -131,6 +131,23 @@ def _measure_columns(measure: Measure) -> list[str]:
     return [measure.numerator, measure.denominator]
 
 
+def _icc_measure(frame: pd.DataFrame, measure: Measure) -> np.ndarray:
+    """The per-row scalar the ICC is computed on.
+
+    The column itself (flow/stock) or the per-row ratio num/den (ratio; NaN where
+    the denominator is missing or ≤ 0).
+    """
+    if measure.target_type in ("flow", "stock"):
+        assert measure.column is not None
+        return frame[measure.column].to_numpy(dtype=float)
+    assert measure.numerator and measure.denominator
+    num = frame[measure.numerator].to_numpy(dtype=float)
+    den = frame[measure.denominator].to_numpy(dtype=float)
+    valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(valid, num / np.where(valid, den, 1.0), np.nan)
+
+
 def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
     """Build the row-aligned target from the measure's columns in ``frame``."""
     if measure.target_type in ("flow", "stock"):
@@ -219,11 +236,12 @@ def discover_drivers(
     frame = duckdb_conn.execute(sql).df()
 
     # Cluster-aware switch: a high-ICC measure within the declared entity invalidates
-    # the row-wise null (DAT-552). flow/stock only; ratio stays row-wise for now.
-    if cluster_col is not None and measure.target_type in ("flow", "stock"):
+    # the row-wise null (DAT-552) — for flow/stock (the column) AND ratio (the per-row
+    # num/den, which can cluster within entity just as a level does).
+    if cluster_col is not None:
         ent_codes, ent_uniques = pd.factorize(frame[cluster_col])
         icc = intraclass_correlation(
-            ent_codes.astype(int), len(ent_uniques), frame[measure.column].to_numpy(dtype=float)
+            ent_codes.astype(int), len(ent_uniques), _icc_measure(frame, measure)
         )
         if icc > icc_threshold:
             logger.info(
@@ -261,6 +279,42 @@ def discover_drivers(
     )
 
 
+def _collapse_to_entity(
+    frame: pd.DataFrame, cluster_key: str, measure: Measure, entity_dims: list[str]
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """One row per entity: (statistic, weight, entity-level dim values), row-aligned.
+
+    flow/stock → (mean measure, observed-row count); ratio → (Σnum/Σden, Σden), the
+    support-correct entity ratio weighted by its denominator mass. Entities with no
+    usable measure are dropped; the dim values come from the SAME grouping so they
+    stay aligned with the kept entities.
+    """
+    if measure.target_type == "ratio":
+        assert measure.numerator and measure.denominator
+        valid = (
+            frame[measure.numerator].notna()
+            & frame[measure.denominator].notna()
+            & (frame[measure.denominator] > 0)
+        )
+        grouped = frame[valid].groupby(cluster_key, sort=False)
+        sum_num = grouped[measure.numerator].sum().to_numpy(dtype=float)
+        sum_den = grouped[measure.denominator].sum().to_numpy(dtype=float)
+        keep = sum_den > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            values = (sum_num / sum_den)[keep]
+        sizes = sum_den[keep]  # weight = denominator mass
+    else:
+        assert measure.column is not None
+        grouped = frame.groupby(cluster_key, sort=False)
+        agg = grouped[measure.column].agg(["mean", "count"])
+        keep = agg["count"].to_numpy() > 0
+        values = agg["mean"].to_numpy(dtype=float)[keep]
+        sizes = agg["count"].to_numpy(dtype=float)[keep]
+
+    values_by_dim = {d: grouped[d].first().to_numpy()[keep].astype(object) for d in entity_dims}
+    return values, sizes, values_by_dim
+
+
 def _entity_grain_ranking(
     frame: pd.DataFrame,
     dims: list[str],
@@ -277,9 +331,10 @@ def _entity_grain_ranking(
 
     Only candidates that are CONSTANT within entity participate (row-level dims can't
     be collapsed without losing their within-entity variation — logged + skipped this
-    pass). Each entity contributes its mean measure weighted by its observed-row count;
-    entities with no observed measure are dropped. Single-level (``max_depth=1``):
-    recursion at entity grain is low-power and a follow-up.
+    pass). The entity statistic is the mean measure weighted by observed-row count
+    (flow/stock) or Σnum/Σden weighted by Σden (ratio); entities with no usable
+    measure are dropped. Single-level (``max_depth=1``): recursion at entity grain is
+    low-power and a follow-up.
     """
     empty = DriverRanking(
         measure=measure.label, target_type=measure.target_type, n_rows=0, grain="entity"
@@ -293,17 +348,11 @@ def _entity_grain_ranking(
     if len(entity_dims) < 2:
         return empty
 
-    assert measure.column is not None  # entity grain is flow/stock only (Measure-guaranteed)
-    grouped = frame.groupby(cluster_key, sort=False)
-    agg = grouped[measure.column].agg(["mean", "count"])
-    keep = agg["count"].to_numpy() > 0  # drop entities with no observed measure
-    means = agg["mean"].to_numpy(dtype=float)[keep]
-    sizes = agg["count"].to_numpy(dtype=float)[keep]
-    if means.size == 0:  # every entity all-NaN measure — nothing to rank
+    values, sizes, values_by_dim = _collapse_to_entity(frame, cluster_key, measure, entity_dims)
+    if values.size == 0:  # every entity has no usable measure — nothing to rank
         return empty
-    values_by_dim = {d: grouped[d].first().to_numpy()[keep].astype(object) for d in entity_dims}
 
-    target = EntityMeanTarget(means, sizes, target_type=measure.target_type)
+    target = EntityMeanTarget(values, sizes, target_type=measure.target_type)
     return discover_tree(
         values_by_dim,
         target,

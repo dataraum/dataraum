@@ -185,3 +185,31 @@ def make_clustered_corpus(
     df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
     df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, CL_N_ENTITIES * CL_PER_ENTITY)]
     return df
+
+
+# Clustered RATIO corpus (DAT-552 #321 fold): the per-row ratio (num/den) carries a
+# per-entity level (high ICC on the ratio); an entity-level driver shifts that level;
+# the denominator (volume) varies independently. Tests cluster-aware ratio.
+CL_RATIO_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS]  # all entity-level
+
+
+def make_clustered_ratio_corpus(
+    rng: np.random.Generator, *, ent_ratio_sigma: float = 0.05, row_sigma: float = 0.02
+) -> pd.DataFrame:
+    """200 entities × 100 rows; the RATIO num/den clusters within entity (high ICC)."""
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    drv_shift = np.array([-0.10, -0.03, 0.03, 0.10])[drv_grp]  # ratio shift (pp) by driver
+    ent_ratio = 0.30 + drv_shift + rng.normal(0, ent_ratio_sigma, CL_N_ENTITIES)
+    n = CL_N_ENTITIES * CL_PER_ENTITY
+    den = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
+    row_ratio = ent_ratio[ent] + rng.normal(0, row_sigma, n)
+
+    df = pd.DataFrame(index=np.arange(n))
+    df[CL_ENTITY] = ent
+    df["numerator"] = den * row_ratio
+    df["denominator"] = den
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
+    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
+    return df

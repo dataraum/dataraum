@@ -26,8 +26,10 @@ from .conftest import (
     CL_DRIVER,
     CL_ENTITY,
     CL_ENTITY_NULLS,
+    CL_RATIO_DIMS,
     CL_ROW_NULL,
     make_clustered_corpus,
+    make_clustered_ratio_corpus,
 )
 
 RUN = "session-run-1"
@@ -35,6 +37,7 @@ VIEW = "sales_enriched"
 ALPHA = 0.05
 N_PERM = 200
 MEASURE = Measure(target_type="flow", column="measure")
+RATIO_MEASURE = Measure(target_type="ratio", numerator="numerator", denominator="denominator")
 
 
 def _seed_catalog(session: Session) -> str:
@@ -64,6 +67,38 @@ def _seed_catalog(session: Session) -> str:
             session.add(
                 SemanticAnnotation(
                     column_id=col.column_id, run_id=RUN, temporal_behavior="additive"
+                )
+            )
+    session.add(
+        EnrichedView(
+            run_id=RUN, fact_table_id=fact.table_id, view_name=VIEW, is_grain_verified=True
+        )
+    )
+    session.flush()
+    return fact.table_id
+
+
+def _seed_ratio_catalog(session: Session) -> str:
+    """Seed a fact whose measure is a ratio (numerator/denominator) over a clustered view."""
+    fact = Table(
+        table_id=str(uuid4()), source_id="s", table_name="sales", layer="typed", duckdb_path="sales"
+    )
+    session.add(fact)
+    for pos, name in enumerate([*CL_RATIO_DIMS, CL_ENTITY, "numerator", "denominator"]):
+        col = Column(
+            column_id=str(uuid4()), table_id=fact.table_id, column_name=name, column_position=pos
+        )
+        session.add(col)
+        if name in CL_RATIO_DIMS:
+            session.add(
+                SliceDefinition(
+                    run_id=RUN,
+                    table_id=fact.table_id,
+                    column_id=col.column_id,
+                    column_name=name,
+                    slice_priority=1,
+                    grain_safe=True,
+                    detection_source="llm",
                 )
             )
     session.add(
@@ -197,3 +232,57 @@ class TestClusterAwareSwitch:
             n_perm=N_PERM,
         )
         assert lo_rank.grain == "row"
+
+
+class TestClusterAwareRatio:
+    """A clustered RATIO measure must get the entity-grain fix too (#321 fold)."""
+
+    def _run_ratio(self, session, duck, tid, seed, *, cluster_key):
+        _write_view(duck, make_clustered_ratio_corpus(np.random.default_rng(300 + seed)))
+        return discover_drivers(
+            session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=RATIO_MEASURE,
+            cluster_key=cluster_key,
+            n_perm=N_PERM,
+            seed=seed,
+        )
+
+    def test_row_wise_ratio_is_broken_on_clustered_data(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # Without cluster_key, a clustered ratio takes the row-wise null → the SAME
+        # FDR inflation as a clustered level (the gap #321 closes for ratio too).
+        tid = _seed_ratio_catalog(real_session)
+        seeds = 8
+        ent_null_surfaced = 0
+        for s in range(seeds):
+            rank = self._run_ratio(real_session, duck, tid, s, cluster_key=None)
+            assert rank.grain == "row" and rank.target_type == "ratio"
+            sig = {d for d, _ in rank.ranked_dimensions}
+            ent_null_surfaced += any(n in sig for n in CL_ENTITY_NULLS)
+        assert ent_null_surfaced >= seeds // 2, (
+            f"expected false positives, got {ent_null_surfaced}/{seeds}"
+        )
+
+    def test_entity_grain_ratio_controls_fdr_and_finds_driver(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_ratio_catalog(real_session)
+        seeds = 30
+        driver_found = 0
+        ent_null_surfaced = dict.fromkeys(CL_ENTITY_NULLS, 0)
+        for s in range(seeds):
+            rank = self._run_ratio(real_session, duck, tid, s, cluster_key=CL_ENTITY)
+            assert rank.grain == "entity" and rank.target_type == "ratio"
+            sig = {d for d, _ in rank.ranked_dimensions}
+            driver_found += CL_DRIVER in sig
+            for n in CL_ENTITY_NULLS:
+                ent_null_surfaced[n] += n in sig
+        # The entity-grain ratio null (Σnum/Σden per entity) controls FDR…
+        for n, c in ent_null_surfaced.items():
+            assert c <= 2 * ALPHA * seeds, f"entity null {n} surfaced {c}/{seeds}"
+        # …and the entity-level ratio driver surfaces in the majority.
+        assert driver_found >= seeds // 2, f"ratio driver recall {driver_found}/{seeds}"

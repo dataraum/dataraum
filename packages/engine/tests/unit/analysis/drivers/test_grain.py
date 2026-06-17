@@ -1,0 +1,88 @@
+"""DAT-552 P1 — ICC + the entity-grain (cluster-aware) target.
+
+Unit-level: ICC detects within-entity clustering; EntityMeanTarget ranks an
+entity-level driver above an entity-level null on entity-collapsed data and permutes
+ENTITIES (not rows). The end-to-end ICC-switch lives in test_grain_e2e (P2).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from dataraum.analysis.drivers.criterion import intraclass_correlation
+from dataraum.analysis.drivers.targets import EntityMeanTarget
+
+from .conftest import (
+    CL_DRIVER,
+    CL_ENTITY,
+    CL_ENTITY_NULLS,
+    make_clustered_corpus,
+)
+
+
+def _codes(series: pd.Series) -> tuple[np.ndarray, int]:
+    codes, uniques = pd.factorize(series)
+    return codes.astype(int), len(uniques)
+
+
+class TestICC:
+    def test_high_on_clustered_measure(self) -> None:
+        df = make_clustered_corpus(np.random.default_rng(0))
+        ent_codes, n = _codes(df[CL_ENTITY])
+        measure = df["measure"].to_numpy(dtype=float)
+        icc = intraclass_correlation(ent_codes, n, measure)
+        assert icc > 0.3, f"clustered measure should have high ICC, got {icc:.3f}"
+
+    def test_near_zero_on_random_grouping(self) -> None:
+        # A grouping unrelated to the measure carries ~no between-group variance.
+        df = make_clustered_corpus(np.random.default_rng(0))
+        rng = np.random.default_rng(1)
+        fake_entity = rng.integers(0, 200, len(df))
+        codes, n = _codes(pd.Series(fake_entity))
+        icc = intraclass_correlation(codes, n, df["measure"].to_numpy(dtype=float))
+        assert icc < 0.05, f"random grouping should have ~0 ICC, got {icc:.3f}"
+
+
+class TestEntityMeanTarget:
+    def _collapse(self, df: pd.DataFrame):
+        g = df.groupby(CL_ENTITY, sort=False).agg(
+            m=("measure", "mean"),
+            w=("measure", "size"),
+            drv=(CL_DRIVER, "first"),
+            nul=(CL_ENTITY_NULLS[0], "first"),
+        )
+        means = g["m"].to_numpy(dtype=float)
+        sizes = g["w"].to_numpy(dtype=float)
+        return g, means, sizes
+
+    def test_driver_outranks_null_at_entity_grain(self) -> None:
+        df = make_clustered_corpus(np.random.default_rng(0))
+        g, means, sizes = self._collapse(df)
+        target = EntityMeanTarget(means, sizes, target_type="flow")
+        drv_codes, dn = _codes(g["drv"])
+        null_codes, nn = _codes(g["nul"])
+        assert target.gain(drv_codes, dn, min_support=2) > target.gain(
+            null_codes, nn, min_support=2
+        )
+
+    def test_permutes_entities_not_rows(self) -> None:
+        df = make_clustered_corpus(np.random.default_rng(0))
+        _g, means, sizes = self._collapse(df)
+        target = EntityMeanTarget(means, sizes, target_type="stock")
+        assert target.observed.size == 200  # one value per entity, not 20k rows
+        permuted = target.permuted(np.random.default_rng(2))
+        assert permuted.observed.size == 200
+        assert permuted.target_type == "stock"
+        # The same multiset of entity means, reordered (entity-level shuffle).
+        assert sorted(permuted.observed.tolist()) == sorted(target.observed.tolist())
+
+    def test_group_effects_weighted_and_entity_counted(self) -> None:
+        df = make_clustered_corpus(np.random.default_rng(0))
+        g, means, sizes = self._collapse(df)
+        target = EntityMeanTarget(means, sizes, target_type="flow")
+        drv_codes, dn = _codes(g["drv"])
+        effects = target.group_effects(drv_codes, dn, min_support=2)
+        assert effects  # the driver's 4 groups deviate from baseline
+        # support is an ENTITY count (≤ 200 entities), never a row count.
+        assert all(0 < support <= 200 for _c, _e, support in effects)

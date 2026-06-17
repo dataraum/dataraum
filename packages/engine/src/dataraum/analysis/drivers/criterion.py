@@ -129,6 +129,26 @@ def variance_reduction(
     return max(0.0, float((total_var - within_var) / total_var))
 
 
+def intraclass_correlation(
+    entity_codes: np.ndarray,
+    n_entities: int,
+    measure: np.ndarray,
+    *,
+    min_entity_rows: int = 2,
+) -> float:
+    """ICC of the measure within an entity = η² of the measure BY the entity.
+
+    The fraction of the measure's variance that sits BETWEEN entities — exactly
+    :func:`variance_reduction` with the entity as the grouping (DAT-544 E2). It
+    decides whether the row-wise permutation null is valid: rows are exchangeable
+    only when this is ≈0; a high ICC (per-entity-level measure) means the cluster,
+    not the row, is the exchangeable unit (DAT-552). Uses a small ``min_entity_rows``
+    (not the driver ``min_support``) so ordinary-sized entities still count — an
+    entity needs ≥2 rows to carry within-variance.
+    """
+    return variance_reduction(entity_codes, n_entities, measure, min_support=min_entity_rows)
+
+
 def weighted_variance_reduction(
     codes: np.ndarray,
     n_codes: int,

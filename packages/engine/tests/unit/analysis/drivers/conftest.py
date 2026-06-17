@@ -143,3 +143,41 @@ def make_ratio_corpus(rng: np.random.Generator) -> pd.DataFrame:
     df["numerator"] = denominator * ratio
     df["denominator"] = denominator
     return df
+
+
+# Clustered corpus (DAT-552, ported from DAT-544 E1): repeated entities with a
+# within-entity-correlated (high-ICC) measure. The driver + nulls are ENTITY-LEVEL
+# (constant within entity); the measure has a per-entity random effect, so the
+# exchangeable unit is the entity, not the row. ``CL_*`` names are abstract.
+CL_N_ENTITIES = 200
+CL_PER_ENTITY = 100  # → 20k rows, contiguous by entity
+CL_ENT_SIGMA = 0.8  # entity random-effect sd (the within-entity correlation)
+CL_ROW_SIGMA = 0.5
+CL_DRIVER = "D_ent_real"  # entity-level attr that shifts the entity effect
+CL_ENTITY_NULLS = ["N_ent_K6", "N_ent_K30"]  # entity-level, random wrt the effect
+CL_ROW_NULL = "N_row_K6"  # row-level, random (a control — stays safe row-wise)
+CL_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS, CL_ROW_NULL]
+CL_ENTITY = "entity"
+
+
+def make_clustered_corpus(rng: np.random.Generator) -> pd.DataFrame:
+    """200 entities × 100 rows; measure carries a per-entity random effect (high ICC).
+
+    The row-wise permutation null is INVALID here (the entity is the exchangeable
+    unit). Columns: ``entity``, ``measure``, an entity-level driver, two entity-level
+    nulls, one row-level null. Rows are contiguous by entity.
+    """
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    drv_shift = np.array([-0.6, -0.2, 0.2, 0.6])[drv_grp]
+    ent_effect = drv_shift + rng.normal(0, CL_ENT_SIGMA, CL_N_ENTITIES)
+    row_noise = rng.normal(0, CL_ROW_SIGMA, CL_N_ENTITIES * CL_PER_ENTITY)
+
+    df = pd.DataFrame(index=np.arange(CL_N_ENTITIES * CL_PER_ENTITY))
+    df[CL_ENTITY] = ent
+    df["measure"] = np.exp(6.0 + ent_effect[ent] + row_noise)
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
+    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
+    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, CL_N_ENTITIES * CL_PER_ENTITY)]
+    return df

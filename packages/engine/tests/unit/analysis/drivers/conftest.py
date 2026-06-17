@@ -143,3 +143,73 @@ def make_ratio_corpus(rng: np.random.Generator) -> pd.DataFrame:
     df["numerator"] = denominator * ratio
     df["denominator"] = denominator
     return df
+
+
+# Clustered corpus (DAT-552, ported from DAT-544 E1): repeated entities with a
+# within-entity-correlated (high-ICC) measure. The driver + nulls are ENTITY-LEVEL
+# (constant within entity); the measure has a per-entity random effect, so the
+# exchangeable unit is the entity, not the row. ``CL_*`` names are abstract.
+CL_N_ENTITIES = 200
+CL_PER_ENTITY = 100  # → 20k rows, contiguous by entity
+CL_ENT_SIGMA = 0.8  # entity random-effect sd (the within-entity correlation)
+CL_ROW_SIGMA = 0.5
+CL_DRIVER = "D_ent_real"  # entity-level attr that shifts the entity effect
+CL_ENTITY_NULLS = ["N_ent_K6", "N_ent_K30"]  # entity-level, random wrt the effect
+CL_ROW_NULL = "N_row_K6"  # row-level, random (a control — stays safe row-wise)
+CL_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS, CL_ROW_NULL]
+CL_ENTITY = "entity"
+
+
+def make_clustered_corpus(
+    rng: np.random.Generator, *, row_sigma: float = CL_ROW_SIGMA
+) -> pd.DataFrame:
+    """200 entities × 100 rows; measure carries a per-entity random effect (high ICC).
+
+    The row-wise permutation null is INVALID here (the entity is the exchangeable
+    unit). Columns: ``entity``, ``measure``, an entity-level driver, two entity-level
+    nulls, one row-level null. Rows are contiguous by entity. ``row_sigma`` knobs the
+    within-entity noise: large values drown the between-entity signal → low ICC
+    (used to test the ICC switch's row-wise side).
+    """
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    drv_shift = np.array([-0.6, -0.2, 0.2, 0.6])[drv_grp]
+    ent_effect = drv_shift + rng.normal(0, CL_ENT_SIGMA, CL_N_ENTITIES)
+    row_noise = rng.normal(0, row_sigma, CL_N_ENTITIES * CL_PER_ENTITY)
+
+    df = pd.DataFrame(index=np.arange(CL_N_ENTITIES * CL_PER_ENTITY))
+    df[CL_ENTITY] = ent
+    df["measure"] = np.exp(6.0 + ent_effect[ent] + row_noise)
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
+    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
+    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, CL_N_ENTITIES * CL_PER_ENTITY)]
+    return df
+
+
+# Clustered RATIO corpus (DAT-552 #321 fold): the per-row ratio (num/den) carries a
+# per-entity level (high ICC on the ratio); an entity-level driver shifts that level;
+# the denominator (volume) varies independently. Tests cluster-aware ratio.
+CL_RATIO_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS]  # all entity-level
+
+
+def make_clustered_ratio_corpus(
+    rng: np.random.Generator, *, ent_ratio_sigma: float = 0.05, row_sigma: float = 0.02
+) -> pd.DataFrame:
+    """200 entities × 100 rows; the RATIO num/den clusters within entity (high ICC)."""
+    ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
+    drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
+    drv_shift = np.array([-0.10, -0.03, 0.03, 0.10])[drv_grp]  # ratio shift (pp) by driver
+    ent_ratio = 0.30 + drv_shift + rng.normal(0, ent_ratio_sigma, CL_N_ENTITIES)
+    n = CL_N_ENTITIES * CL_PER_ENTITY
+    den = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
+    row_ratio = ent_ratio[ent] + rng.normal(0, row_sigma, n)
+
+    df = pd.DataFrame(index=np.arange(n))
+    df[CL_ENTITY] = ent
+    df["numerator"] = den * row_ratio
+    df["denominator"] = den
+    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
+    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
+    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
+    return df

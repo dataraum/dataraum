@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-17: DAT-552 — grain-aware permutation null for driver discovery
+
+Fixes the DAT-545 engine's row-exchangeability flaw (eval residual probe E1: the
+row-wise null inflates FDR to ~100% on clustered / per-entity-level measures —
+which dominate ERP/finance). `discover_drivers` gains an optional `cluster_key`:
+it measures the measure's **ICC within that entity** (`intraclass_correlation` = η²
+of the measure by the entity) and, above `icc_threshold` (0.10), switches to an
+**entity-grain** null — collapse to one row per entity (mean measure, observed-row
+weight), permute ENTITIES not rows. Below the threshold / no `cluster_key` → the
+row-wise null (DAT-545) is unchanged. Still a pure engine (no schema/persistence).
+
+### dataraum-eval
+- **The calibration harness must now condition on `DriverRanking.grain`.** When `grain == "entity"`, the effective sample size is the **entity count**, reported in `DriverRanking.n_rows` (NOT the row count) — power scales with entities, so recall bars at entity grain must be entity-count-aware, not row-count-aware.
+- **The real-fixture transfer check (DAT-545 handoff) MUST include repeated-entity / high-ICC fixtures** — that is exactly the case this fixes; an i.i.d.-only fixture would never exercise it. Verify: (a) row-wise null on a high-ICC fixture inflates FDR (the bug), (b) the `cluster_key` path holds FDR ≤ 2α, (c) the ICC switch fires at ~0.10. The eval probes `scripts/probes/dat-544/{exchangeability_and_measure_types,real_fixture}.py` are the validated reference; graduate them into the rig.
+- **Cluster-aware applies to ratio too:** a clustered ratio uses the entity grain on the same ICC condition (entity statistic = Σnum/Σden, weight = Σden) — so the real-fixture check should include a **clustered-ratio** fixture, not just clustered levels.
+- **Open follow-ups (documented gaps, not bugs):** row-level (within-entity) drivers under high ICC are skipped at entity grain — their proper analysis (entity-demeaned residuals) is **DAT-561**; entity grain is single-level (`max_depth=1`). Calibration should not expect drivers from those paths yet.
+
+### dataraum-testdata
+- Add a **clustered / repeated-entity** generative family (per-entity random effect on the measure → high ICC; entity-level driver + entity-level nulls + a row-level null) — the conftest `make_clustered_corpus` (200 entities × 100 rows) is the synthetic reference; a real analogue (e.g. customer/account recurring across transactions) is the target.
+
 ## 2026-06-17: DAT-545 — driver-discovery engine (analysis/drivers/)
 
 New **pure, on-demand** engine `packages/engine/src/dataraum/analysis/drivers/`:

@@ -85,11 +85,18 @@ class DriverRanking:
     aggregation vectors); ``root`` = the greedy driver tree; ``driver_paths`` = the
     surviving dimension drill vectors; ``interesting_slices`` = the sharp-deviation
     slices across the tree, strongest first.
+
+    ``grain`` is the exchangeable unit the null used: ``"row"`` (the default) or
+    ``"entity"`` when a high-ICC measure forced the cluster-aware path (DAT-552).
+    ``n_rows`` is the count of those units (rows, or entities at entity grain) — i.e.
+    the effective sample size the power scales with, so a "no significant driver"
+    result on few entities is honestly attributable.
     """
 
     measure: str
     target_type: str
     n_rows: int
+    grain: str = "row"
     ranked_dimensions: list[tuple[str, float]] = field(default_factory=list)
     root: DriverNode | None = None
     driver_paths: list[list[str]] = field(default_factory=list)

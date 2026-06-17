@@ -29,6 +29,7 @@ class Target(ABC):
 
     target_type: str
     observed: np.ndarray
+    grain: str = "row"  # the exchangeable unit the permutation null shuffles
 
     @abstractmethod
     def gain(self, codes: np.ndarray, n_codes: int, *, min_support: int) -> float:
@@ -131,4 +132,70 @@ class RatioTarget(Target):
             group_ratio = float(self._num[in_group].sum() / den_g) if den_g else 0.0
             effect = (group_ratio / baseline - 1.0) if baseline else 0.0
             out.append((c, effect, support))
+        return out
+
+
+class EntityMeanTarget(Target):
+    """The cluster-aware target for high-ICC measures (DAT-552).
+
+    One row per ENTITY — the entity's statistic weighted by its size (mean measure
+    weighted by observed-row count for flow/stock; Σnum/Σden weighted by Σden for
+    ratio) — so the permutation null shuffles ENTITIES, not rows (the exchangeable
+    unit when the measure is clustered, DAT-544 E1). Power then scales with entity
+    count, not row count. The processor collapses the frame to entity grain and
+    supplies entity-level candidate values (constant within entity) before building
+    this. (The DAT-544 probe validated the fix with an equal-block reshape on
+    contiguous fixed-size blocks; entity-grain aggregation is the correct
+    generalization to the UNEQUAL entity sizes of real data — same exchangeable unit,
+    no equal-block assumption.) Gain is the
+    support-weighted between-entity variance reduction — algebraically the same
+    :func:`weighted_variance_reduction` the ratio target uses (entity mean as the
+    value, entity size as the weight). ``min_support`` here is an ENTITY count, not a
+    row count.
+    """
+
+    grain = "entity"
+
+    def __init__(
+        self, entity_means: np.ndarray, entity_sizes: np.ndarray, *, target_type: str
+    ) -> None:
+        self.target_type = target_type
+        self._means = entity_means
+        self._sizes = entity_sizes
+        self.observed = entity_means  # one observed value per entity (collapse drops NaN)
+
+    def gain(self, codes: np.ndarray, n_codes: int, *, min_support: int) -> float:
+        return weighted_variance_reduction(
+            codes, n_codes, self._means, self._sizes, min_support=min_support
+        )
+
+    def permuted(self, rng: np.random.Generator) -> EntityMeanTarget:
+        idx = rng.permutation(self._means.size)
+        return EntityMeanTarget(self._means[idx], self._sizes[idx], target_type=self.target_type)
+
+    def subset(self, mask: np.ndarray) -> EntityMeanTarget:
+        return EntityMeanTarget(self._means[mask], self._sizes[mask], target_type=self.target_type)
+
+    def group_effects(
+        self, codes: np.ndarray, n_codes: int, *, min_support: int
+    ) -> list[tuple[int, float, int]]:
+        keep = codes >= 0
+        if int(keep.sum()) < min_support:
+            return []
+        w_total = float(self._sizes[keep].sum())
+        baseline = (
+            float((self._means[keep] * self._sizes[keep]).sum() / w_total) if w_total else 0.0
+        )
+        out: list[tuple[int, float, int]] = []
+        for c in range(n_codes):
+            in_group = codes == c
+            n_entities = int(in_group.sum())
+            if n_entities < min_support:
+                continue
+            w_g = float(self._sizes[in_group].sum())
+            group_mean = (
+                float((self._means[in_group] * self._sizes[in_group]).sum() / w_g) if w_g else 0.0
+            )
+            effect = (group_mean / baseline - 1.0) if baseline else 0.0
+            out.append((c, effect, n_entities))  # support = ENTITY count
         return out

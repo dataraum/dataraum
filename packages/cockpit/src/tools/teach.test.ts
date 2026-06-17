@@ -280,6 +280,44 @@ describe("validateTeach", () => {
 		});
 	});
 
+	describe("hierarchy", () => {
+		it.each([
+			"add",
+			"reject",
+			"alias",
+		] as const)("accepts {action, table_id, members} for the %s action (DAT-537)", (action) => {
+			const out = validateTeach({
+				type: "hierarchy",
+				payload: {
+					action,
+					table_id: "tbl-1",
+					members: ["zip", "city", "state"],
+				},
+			});
+			expect(out.action).toBe(action);
+			expect(out.table_id).toBe("tbl-1");
+			expect(out.members).toEqual(["zip", "city", "state"]);
+		});
+
+		it("rejects an unknown action (confirm is relationship-only)", () => {
+			expect(() =>
+				validateTeach({
+					type: "hierarchy",
+					payload: { action: "confirm", table_id: "t", members: ["a", "b"] },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects an empty members list", () => {
+			expect(() =>
+				validateTeach({
+					type: "hierarchy",
+					payload: { action: "add", table_id: "t", members: [] },
+				}),
+			).toThrow(TeachValidationError);
+		});
+	});
+
 	// validation/cycle/metric are internal-only dispatch targets (the typed
 	// teach_validation/teach_cycle/teach_metric tools write through them with an
 	// already-validated payload), so the primitive still passthrough-accepts them.
@@ -305,6 +343,7 @@ describe("validateTeach", () => {
 					"null_value",
 					"concept_property",
 					"relationship",
+					"hierarchy",
 					"concept",
 					"validation",
 					"cycle",
@@ -324,6 +363,7 @@ describe("validateTeach", () => {
 					"concept",
 					"concept_property",
 					"relationship",
+					"hierarchy",
 				]),
 			);
 			for (const t of ["validation", "cycle", "metric", "explanation"]) {

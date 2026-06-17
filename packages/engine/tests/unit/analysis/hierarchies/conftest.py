@@ -1,0 +1,132 @@
+"""Shared fixtures for the hierarchy-discovery tests (DAT-537).
+
+Metadata lives in in-memory SQLite (FKs off, the resolve-test pattern); the
+queryable enriched view is an in-memory DuckDB table seeded by ``seed_sales`` so a
+known ``zip → city → state`` chain, two 1:1 aliases, a constant, and a near-key id
+are present for both the g3 and the teach tests.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from uuid import uuid4
+
+import duckdb
+import pytest
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.views.db_models import EnrichedView
+from dataraum.storage import Column, Table, init_database
+
+RUN = "session-run-1"
+VIEW = "sales_enriched"
+
+# zip → (city, state): multiple zips per city, multiple cities per state — a real
+# FD chain (not a 1:1 bijection, which would read as an alias instead).
+ZIP_MAP = {
+    "07001": ("newark", "nj"),
+    "07002": ("newark", "nj"),
+    "07003": ("jersey", "nj"),
+    "10001": ("nyc", "ny"),
+    "10002": ("nyc", "ny"),
+    "10003": ("albany", "ny"),
+}
+STATE_NAME = {"nj": "New Jersey", "ny": "New York"}
+DIMS = ["zip", "zip_code", "city", "state", "state_name", "country", "order_id"]
+
+
+@pytest.fixture
+def real_session() -> Iterator[Session]:
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _pragma(dbapi_conn, _record):  # noqa: ANN001, ANN202
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=OFF")
+        cur.close()
+
+    init_database(engine)
+    factory = sessionmaker(bind=engine)
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def duck() -> Iterator[duckdb.DuckDBPyConnection]:
+    conn = duckdb.connect(":memory:")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def seed_sales(session: Session, duck: duckdb.DuckDBPyConnection, *, rows_per_zip: int = 20) -> str:
+    """Seed the fact, its grain-verified enriched view, the catalog, and DuckDB rows.
+
+    ``zip_code`` is a 1:1 copy of ``zip`` and ``state_name`` of ``state`` (alias
+    groups); ``country`` is constant; ``order_id`` is unique (near-key). Returns the
+    fact ``table_id``.
+    """
+    table = Table(
+        table_id=str(uuid4()),
+        source_id="src-1",
+        table_name="sales",
+        layer="typed",
+        duckdb_path="sales",
+    )
+    session.add(table)
+    for pos, name in enumerate(DIMS):
+        column = Column(
+            column_id=str(uuid4()),
+            table_id=table.table_id,
+            column_name=name,
+            column_position=pos,
+            resolved_type="VARCHAR",
+        )
+        session.add(column)
+        session.add(
+            SliceDefinition(
+                run_id=RUN,
+                table_id=table.table_id,
+                column_id=column.column_id,
+                column_name=name,
+                slice_priority=1,
+                slice_type="categorical",
+                grain_safe=True,
+                detection_source="llm",
+            )
+        )
+    session.add(
+        EnrichedView(
+            run_id=RUN, fact_table_id=table.table_id, view_name=VIEW, is_grain_verified=True
+        )
+    )
+    session.flush()
+
+    duck.execute(
+        f"CREATE TABLE {VIEW} ("
+        "zip VARCHAR, zip_code VARCHAR, city VARCHAR, state VARCHAR, "
+        "state_name VARCHAR, country VARCHAR, order_id BIGINT)"
+    )
+    values: list[str] = []
+    oid = 0
+    for _ in range(rows_per_zip):
+        for zip_code, (city, state) in ZIP_MAP.items():
+            oid += 1
+            values.append(
+                f"('{zip_code}', '{zip_code}', '{city}', '{state}', "
+                f"'{STATE_NAME[state]}', 'us', {oid})"
+            )
+    duck.execute(f"INSERT INTO {VIEW} VALUES {', '.join(values)}")  # noqa: S608 — test data
+    return table.table_id

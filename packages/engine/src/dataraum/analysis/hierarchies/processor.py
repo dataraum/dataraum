@@ -33,7 +33,7 @@ signal, never a silent cut.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import select
 
@@ -300,8 +300,105 @@ def discover_dimension_hierarchies(
             )
         )
 
+    # Fold the user's durable hierarchy/alias teaches into this run (DAT-537),
+    # mirroring relationship-overlay materialization minus keeper-lift-up + witness
+    # (g3 is deterministic). reject suppresses a g3 structure; add/alias assert one.
+    rows = _apply_teaches(session, rows, table_ids=table_ids, run_id=run_id)
+
     upsert(session, DimensionHierarchy, rows, index_elements=["signature", "run_id"])
     return len(rows)
+
+
+def _member_column_ids(
+    session: Session, table_ids: list[str], run_id: str
+) -> dict[str, dict[str, str]]:
+    """``table_id -> {column_name: column_id}`` from this run's slice catalog.
+
+    Resolves a manual teach's member columns to their catalog column ids; a member
+    the catalog doesn't carry (a forced edge on an excluded/unknown column) resolves
+    to ``""`` rather than failing the teach.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for sd in (
+        session.execute(
+            select(SliceDefinition).where(
+                SliceDefinition.table_id.in_(table_ids),
+                SliceDefinition.run_id == run_id,
+                SliceDefinition.column_name.isnot(None),
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        if sd.column_name:
+            out.setdefault(sd.table_id, {})[sd.column_name] = sd.column_id
+    return out
+
+
+def _apply_teaches(
+    session: Session,
+    rows: list[dict[str, object]],
+    *,
+    table_ids: list[str],
+    run_id: str,
+) -> list[dict[str, object]]:
+    """Apply reject / add / alias hierarchy overlays to the g3 row set.
+
+    reject drops the g3 structure with a matching ``(table_id, member-set)``
+    (kind-agnostic — a member-set is one structure); add asserts a ``manual``
+    drilldown, alias a ``manual`` alias. A manual assert overrides a same-signature
+    g3 row (clears ``needs_confirmation``). Keyed by signature so the result stays
+    one row per ``(signature, run_id)``.
+    """
+    from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
+
+    by_sig: dict[str, dict[str, object]] = {str(r["signature"]): r for r in rows}
+
+    def _row_member_names(r: dict[str, object]) -> frozenset[str]:
+        members = cast("list[dict[str, object]]", r["members"])
+        return frozenset(str(m["column_name"]) for m in members)
+
+    # reject: drop any g3 structure whose table + member-set matches.
+    rejected: set[tuple[str, frozenset[str]]] = {
+        (spec.table_id, frozenset(spec.members))
+        for spec in hierarchy_overlay_specs(session, "reject")
+    }
+    if rejected:
+        by_sig = {
+            sig: r
+            for sig, r in by_sig.items()
+            if (str(r["table_id"]), _row_member_names(r)) not in rejected
+        }
+
+    # add → manual drilldown, alias → manual alias (ordered members preserved).
+    col_ids = _member_column_ids(session, table_ids, run_id)
+    for action, kind in (("add", "drilldown"), ("alias", "alias")):
+        for spec in hierarchy_overlay_specs(session, action):
+            members = spec.members
+            if kind == "drilldown" and len(members) < 2:
+                logger.info("hierarchy_teach_skipped", reason="drilldown_needs_2_levels", spec=spec)
+                continue
+            names = col_ids.get(spec.table_id, {})
+            sig = f"{kind}:{spec.table_id}:" + "|".join(sorted(members))
+            by_sig[sig] = {
+                "run_id": run_id,
+                "table_id": spec.table_id,
+                "kind": kind,
+                "members": [
+                    {"column_name": n, "column_id": names.get(n, ""), "distinct_count": None}
+                    for n in members
+                ],
+                "canonical_label": " → ".join(members) if kind == "drilldown" else members[0],
+                "signature": sig,
+                "score": 0.0,
+                "detection_source": "manual",
+                "needs_confirmation": False,
+            }
+            logger.info(
+                "hierarchy_teach_applied", action=action, table_id=spec.table_id, members=members
+            )
+
+    return list(by_sig.values())
 
 
 def _view_structures(

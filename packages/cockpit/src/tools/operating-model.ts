@@ -1,7 +1,8 @@
-// operating_model tool (DAT-440) — run the journey's third stage over an
-// existing begin_session session: take the vertical's declared validations
-// through the typed lifecycle (declare → ground/bind → execute) and promote the
-// outcome under the workspace `operating_model` catalog head.
+// operating_model tool (DAT-440; routed through the JourneyWorkflow in DAT-530
+// P3b) — run the journey's third stage over an existing begin_session session:
+// take the vertical's declared validations through the typed lifecycle (declare →
+// ground/bind → execute) and promote the outcome under the workspace
+// `operating_model` catalog head.
 //
 // Identity + vertical (DAT-438, DAT-506): begin_session ESTABLISHES the table
 // set; the workflow's pre-flight resolve activity re-reads it from the catalog
@@ -10,27 +11,26 @@
 // cockpit session row already exists (begin_session recorded it), and the engine
 // fails loud when the catalog has no tables.
 //
-// Non-blocking (`workflow.start`), mirroring begin_session: returns the
-// workflow + run id immediately; the cockpit narrates completion automatically
-// (a server-side watcher) — the caller does NOT poll. The
-// workflow id is reused per session (`operatingmodel-<workspace_id>-
-// <session_id>`) under ALLOW_DUPLICATE so re-runs of the same session group
-// under one id. Outcomes are read back with `look_validation` /
-// `why_validation` — the engine's persisted state/reason verbatim, never
-// re-derived here.
+// DAT-530: the autonomous journey auto-runs operating_model right after a clean
+// begin_session (the cascade). This tool is kept as the MANUAL re-trigger (a teach
+// re-run, P3c) — it no longer starts the workflow directly; it signals the
+// per-workspace JourneyWorkflow (`runOperatingModel`), which records the run +
+// starts `operatingModelWorkflow` as a cross-language child on the workspace's
+// `engine-<id>` queue and narrates completion into THIS chat (the conversationId is
+// captured at the tool boundary — the journey has no request ALS, DAT-528). The
+// tool returns the deterministic workflow id immediately (progress polls by id —
+// the latest execution; the journey owns the real run id). Outcomes are read back
+// with `look_validation` / `why_validation` — the engine's persisted state/reason
+// verbatim, never re-derived here.
 
 import { toolDefinition } from "@tanstack/ai";
-import { Client, Connection } from "@temporalio/client";
-import { WorkflowIdReusePolicy } from "@temporalio/common";
 import { z } from "zod";
 
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
-import { attachRunId, hasRunningRun, recordRun } from "../db/cockpit/runs";
-import type {
-	OperatingModelInput,
-	OperatingModelResult,
-} from "../temporal/types";
+import { hasRunningRun } from "../db/cockpit/runs";
+import { currentConversationId } from "../lib/run-context";
+import { signalRunOperatingModel } from "../temporal/journey-trigger";
 import { operatingModelWorkflowId } from "../temporal/workflow-id";
 import { type AgentError, withAgentError } from "./agent-error";
 
@@ -41,15 +41,23 @@ export interface OperatingModelToolInput {
 }
 
 export interface OperatingModelToolResult {
+	// The deterministic engine workflow id (`operatingmodel-<ws>-<session>`).
+	// Progress is polled by this id (the latest execution); the journey owns the
+	// real run id.
 	workflow_id: string;
+	// Kept for the result contract; equals workflow_id (the journey starts the run,
+	// so no Temporal execution id is known at tool-return time — progress resolves
+	// the latest run by workflow_id, DAT-530).
 	run_id: string;
 	session_id: string;
 }
 
 /**
- * Start `operatingModelWorkflow` NON-blocking. Returns the workflow + run id
- * immediately; the cockpit narrates completion automatically (a server-side
- * watcher) — the caller does NOT poll. Read the outcome via `look_validation`.
+ * Signal the workspace's JourneyWorkflow to run an operating_model stage (the
+ * manual re-trigger). Returns the deterministic workflow + session id immediately;
+ * the journey records the run (authoritative) and starts + awaits the engine child,
+ * narrating completion into this chat. The caller does NOT poll. Read the outcome
+ * via `look_validation`.
  */
 export async function operatingModel(
 	input: OperatingModelToolInput,
@@ -75,59 +83,28 @@ export async function operatingModel(
 		};
 	}
 
+	// The active workspace ROW (DAT-461/505/506): the source of truth for the engine
+	// task queue (`engine-<id>`) and the frame `vertical` (a workspace property).
 	const workspace = await resolveActiveWorkspaceRow();
-	const workspaceId = workspace.id;
+	const workflowId = operatingModelWorkflowId(workspace.id, input.session_id);
 
-	const workflowId = operatingModelWorkflowId(workspaceId, input.session_id);
-
-	// Append an operating_model run to the session begin_session created BEFORE
-	// starting (Q4): the session row is reused by engine session id (the kind is
-	// ignored on conflict). recordRun is AUTHORITATIVE — it throws on failure.
-	await recordRun({
-		workspaceId,
-		engineSessionId: input.session_id,
-		kind: "begin_session",
-		stage: "operating_model",
+	// Signal the journey to run the stage. The tool passes the derived ids/queue +
+	// verticals + the originating conversationId (captured from the request-scoped
+	// ALS HERE, while we're still in the chat turn — the journey has none). The
+	// journey records the run authoritatively and starts the engine child.
+	await signalRunOperatingModel(workspace.id, {
+		sessionId: input.session_id,
 		workflowId,
+		engineTaskQueue: workspace.taskQueue,
+		verticals: [workspace.vertical],
+		conversationId: currentConversationId(),
 	});
 
-	// FLAT, source-free input (DAT-506): no identity envelope, no session id on the
-	// wire — begin_session ESTABLISHED the table set; the engine's pre-flight resolve
-	// re-reads it from the catalog head's run_tables. The `verticals` drive the
-	// declared validations/cycles/metrics — sourced from the workspace registry (one
-	// element today; the engine raises born-loud on >1, the array is forward-compat).
-	const payload: OperatingModelInput = {
-		workspace_id: workspaceId,
-		verticals: [workspace.vertical],
+	return {
+		workflow_id: workflowId,
+		run_id: workflowId,
+		session_id: input.session_id,
 	};
-
-	const connection = await Connection.connect({ address: config.temporalHost });
-	try {
-		const client = new Client({
-			connection,
-			namespace: config.temporalNamespace,
-		});
-		const handle = await client.workflow.start<
-			(p: OperatingModelInput) => Promise<OperatingModelResult>
-		>("operatingModelWorkflow", {
-			// Route to the workspace's OWN queue (DAT-505).
-			taskQueue: workspace.taskQueue,
-			workflowId,
-			args: [payload],
-			workflowIdReusePolicy: WorkflowIdReusePolicy.ALLOW_DUPLICATE,
-		});
-
-		// Finalize the provisional runId on the pre-recorded run (best-effort).
-		await attachRunId(workflowId, handle.firstExecutionRunId);
-
-		return {
-			workflow_id: workflowId,
-			run_id: handle.firstExecutionRunId,
-			session_id: input.session_id,
-		};
-	} finally {
-		await connection.close();
-	}
 }
 
 /**
@@ -139,11 +116,13 @@ export async function operatingModel(
 export const operatingModelTool = toolDefinition({
 	name: "operating_model",
 	description:
-		"Run the operating-model stage over a begin_session session: take the " +
+		"Re-run the operating-model stage over a begin_session session: take the " +
 		"vertical's declared validations through their lifecycle — ground each " +
 		"against the session's tables and execute the ones that bind; a " +
-		"validation that cannot run stays visible with the reason. Runs engine " +
-		"processing + LLM calls. Returns the workflow_id + " +
+		"validation that cannot run stays visible with the reason. NOTE: a " +
+		"successful begin_session AUTOMATICALLY runs operating_model — only call " +
+		"this to RE-run after teaching. Runs engine processing + LLM calls. " +
+		"Returns the workflow_id + " +
 		"run_id; the run proceeds in the background and its progress shows live " +
 		"in the canvas — you'll be told automatically when it finishes, so don't " +
 		"poll for status; then use look_validation to see the outcomes. " +

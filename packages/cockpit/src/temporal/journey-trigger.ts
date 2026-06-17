@@ -19,8 +19,12 @@ import { config } from "#/config";
 import {
 	JOURNEY_WORKFLOW_TYPE,
 	journeyWorkflowId,
+	PAUSE_AUTO_MODE_SIGNAL,
+	RESUME_AUTO_MODE_SIGNAL,
 	RUN_BEGIN_SESSION_SIGNAL,
+	RUN_OPERATING_MODEL_SIGNAL,
 	type RunBeginSession,
+	type RunOperatingModel,
 	VERTICAL_ESTABLISHED_SIGNAL,
 	type VerticalEstablished,
 } from "#/worker/contracts";
@@ -44,10 +48,10 @@ function requireTemporalConfig(): { host: string; namespace: string } {
  * receives the signal; otherwise it's started and signalled in one call. So a
  * workspace has exactly one journey execution. Returns the journey workflow id.
  */
-async function signalJourney<A>(
+async function signalJourney(
 	workspaceId: string,
 	signal: string,
-	signalArgs: [A],
+	signalArgs: unknown[],
 ): Promise<string> {
 	const { host, namespace } = requireTemporalConfig();
 	const workflowId = journeyWorkflowId(workspaceId);
@@ -72,11 +76,9 @@ export function signalVerticalEstablished(
 	workspaceId: string,
 	vertical: string,
 ): Promise<string> {
-	return signalJourney<VerticalEstablished>(
-		workspaceId,
-		VERTICAL_ESTABLISHED_SIGNAL,
-		[{ vertical }],
-	);
+	return signalJourney(workspaceId, VERTICAL_ESTABLISHED_SIGNAL, [
+		{ vertical } satisfies VerticalEstablished,
+	]);
 }
 
 /** Signal `runBeginSession` — the journey runs the engine begin_session stage as
@@ -86,7 +88,28 @@ export function signalRunBeginSession(
 	workspaceId: string,
 	req: RunBeginSession,
 ): Promise<string> {
-	return signalJourney<RunBeginSession>(workspaceId, RUN_BEGIN_SESSION_SIGNAL, [
-		req,
-	]);
+	return signalJourney(workspaceId, RUN_BEGIN_SESSION_SIGNAL, [req]);
+}
+
+/** Signal `runOperatingModel` — the MANUAL operating_model re-trigger (DAT-530).
+ * The autonomous cascade runs operating_model automatically after a clean
+ * begin_session; this is the tool path (a teach re-run, P3c) routed through the
+ * journey so it stays the single owner of stage execution. */
+export function signalRunOperatingModel(
+	workspaceId: string,
+	req: RunOperatingModel,
+): Promise<string> {
+	return signalJourney(workspaceId, RUN_OPERATING_MODEL_SIGNAL, [req]);
+}
+
+/** Signal `pauseAutoMode` — suspend the autonomous cascade (the breaker's manual
+ * counterpart). Pause-don't-kill: a stage in flight finishes; only the next
+ * cascade decision is gated. */
+export function signalPauseAutoMode(workspaceId: string): Promise<string> {
+	return signalJourney(workspaceId, PAUSE_AUTO_MODE_SIGNAL, []);
+}
+
+/** Signal `resumeAutoMode` — re-arm the cascade and clear the failure tally. */
+export function signalResumeAutoMode(workspaceId: string): Promise<string> {
+	return signalJourney(workspaceId, RESUME_AUTO_MODE_SIGNAL, []);
 }

@@ -25,7 +25,13 @@ vi.mock("@temporalio/client", () => ({
 	}),
 }));
 
-import { signalVerticalEstablished } from "./journey-trigger";
+import {
+	signalPauseAutoMode,
+	signalResumeAutoMode,
+	signalRunBeginSession,
+	signalRunOperatingModel,
+	signalVerticalEstablished,
+} from "./journey-trigger";
 
 beforeEach(() => {
 	h.config = {
@@ -61,5 +67,60 @@ describe("signalVerticalEstablished (DAT-529)", () => {
 			/not configured/,
 		);
 		expect(h.signalWithStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("stage + breaker signals (DAT-530)", () => {
+	it("signals runBeginSession with the full payload on the per-workspace journey", async () => {
+		const req = {
+			sessionId: "sess-1",
+			workflowId: "beginsession-ws-1-sess-1",
+			engineTaskQueue: "engine-ws-1",
+			tables: ["t1", "t2"],
+			verticals: ["finance"],
+			conversationId: "conv-1",
+		};
+		const wfId = await signalRunBeginSession("ws-1", req);
+		expect(wfId).toBe("journey-ws-1");
+		expect(h.signalWithStart).toHaveBeenCalledWith(
+			"journeyWorkflow",
+			expect.objectContaining({
+				workflowId: "journey-ws-1",
+				args: ["ws-1"],
+				signal: "runBeginSession",
+				signalArgs: [req],
+			}),
+		);
+	});
+
+	it("signals runOperatingModel (the manual re-trigger) with its payload", async () => {
+		const req = {
+			sessionId: "sess-1",
+			workflowId: "operatingmodel-ws-1-sess-1",
+			engineTaskQueue: "engine-ws-1",
+			verticals: ["finance"],
+			conversationId: null,
+		};
+		await signalRunOperatingModel("ws-1", req);
+		expect(h.signalWithStart).toHaveBeenCalledWith(
+			"journeyWorkflow",
+			expect.objectContaining({
+				signal: "runOperatingModel",
+				signalArgs: [req],
+			}),
+		);
+	});
+
+	it("signals pause / resume auto-mode with no payload", async () => {
+		await signalPauseAutoMode("ws-1");
+		expect(h.signalWithStart).toHaveBeenCalledWith(
+			"journeyWorkflow",
+			expect.objectContaining({ signal: "pauseAutoMode", signalArgs: [] }),
+		);
+		await signalResumeAutoMode("ws-1");
+		expect(h.signalWithStart).toHaveBeenCalledWith(
+			"journeyWorkflow",
+			expect.objectContaining({ signal: "resumeAutoMode", signalArgs: [] }),
+		);
 	});
 });

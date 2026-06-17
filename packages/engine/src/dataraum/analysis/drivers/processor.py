@@ -18,6 +18,7 @@ On-demand and pure: returns a :class:`DriverRanking`, persists nothing (DAT-546)
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,8 +30,14 @@ from dataraum.analysis.drivers.criterion import (
     DEFAULT_MISSINGNESS_GATE,
     intraclass_correlation,
 )
-from dataraum.analysis.drivers.models import DriverRanking, Measure
-from dataraum.analysis.drivers.targets import EntityMeanTarget, FlowTarget, RatioTarget, Target
+from dataraum.analysis.drivers.models import DriverRanking, Measure, SecondaryDriver
+from dataraum.analysis.drivers.targets import (
+    EntityDemeanedRatioTarget,
+    EntityMeanTarget,
+    FlowTarget,
+    RatioTarget,
+    Target,
+)
 from dataraum.analysis.drivers.tree import (
     DEFAULT_ALPHA,
     DEFAULT_MAX_DEPTH,
@@ -50,9 +57,13 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Above this ICC (η² of the measure between entities), the row-wise permutation null
-# is invalid — the cluster is the exchangeable unit, so switch to the entity grain
-# (DAT-552 / DAT-544 E1). Conservative: even modest clustering flips it.
+# The measure's ICC (η² between entities) selects which grain family is PRIMARY
+# (DAT-561): above this, the entity-grain family leads (the measure clusters, so the
+# between-entity story is the headline); below, the row-wise family leads. It no longer
+# gates WHICH dims go to which grain — that is now decided per-candidate by within-
+# entity constancy (an entity-constant candidate takes the entity-grain null at ANY
+# ICC, since the row-wise null is structurally invalid for it). Conservative: even
+# modest clustering makes the entity story primary (DAT-552 / DAT-544 E1).
 DEFAULT_ICC_THRESHOLD = 0.10
 # At entity grain a candidate group is evaluated only with at least this many ENTITIES
 # (the min_support analogue — power scales with entity count, not rows).
@@ -189,18 +200,35 @@ def discover_drivers(
     two candidate dims survive in the view, or the measure columns are absent
     (a catalog/view skew is logged, not fatal).
 
-    **Cluster-aware (DAT-552):** when ``cluster_key`` names a repeated-entity column
-    and the measure's ICC within it exceeds ``icc_threshold``, the row-wise
-    permutation null is invalid (the entity, not the row, is exchangeable) — the
-    search switches to the **entity grain** (one row per entity, permute entities;
-    ``DriverRanking.grain == "entity"``, power scales with entity count). Below the
-    threshold, or with no ``cluster_key``, the row-wise null (DAT-545) is used. Only
-    entity-LEVEL candidates (constant within entity) participate at entity grain;
-    row-level dims are logged and skipped that pass (their within-entity analysis is
-    DAT-561). Ratio enters the cluster-aware path on the same ICC condition as
-    flow/stock (entity statistic = Σnum/Σden, weight = Σden). ``max_depth`` applies
-    only to the row-wise path; the entity grain always uses ``max_depth=1`` (recursion
-    at entity grain is low-power — a follow-up).
+    **Cluster-aware candidate-grain routing (DAT-552/561):** when ``cluster_key`` names
+    a repeated-entity column, candidates are routed by their **within-entity
+    constancy**, not by the measure's global ICC:
+
+    - **Entity-constant** candidates (one value per entity) take the **entity-grain**
+      null ALWAYS — collapse to one row per entity, permute entities. The row-wise null
+      is structurally invalid for them at any ICC > 0 (their groups are whole entities,
+      so correlated within-entity rows would be counted as independent — DAT-561).
+    - **Row-level** candidates (vary within entity) take the **row-wise** null, which is
+      valid for them at any ICC (it just loses power as the measure clusters — see the
+      de-mean power add-on below).
+
+    The two families are merged into one ranking: the **primary** family (its tree,
+    paths, slices, ``ranked_dimensions``, and ``grain``) is the one selected by the
+    measure's ICC — entity grain above ``icc_threshold`` (the between-entity story is
+    the headline), row-wise below; the **secondary** family's significant dims are
+    exposed as ``secondary_dimensions`` (a flat grain-labeled list, not folded into the
+    primary ranking — the grains are not cross-comparable). Ratio routes the same way
+    (entity statistic = Σnum/Σden, weight = Σden). With no ``cluster_key`` the plain
+    row-wise null (DAT-545) is used. ``max_depth`` applies to the row-wise family; the
+    entity grain always uses ``max_depth=1`` (recursion there is low-power).
+
+    **Power add-on (DAT-561):** under HIGH ICC the row-level (secondary) family's
+    row-wise null on the raw measure has little power — the between-entity variance is
+    noise. It gates on the **within-entity de-meaned residual** instead (the
+    fixed-effects "within" transform), which is row-exchangeable and powered — this is
+    the within-entity driver analysis. Flow/stock de-mean the measure
+    (``measure − entity_mean``); ratio de-means the per-row ratio by its entity's
+    volume-weighted mean (its pooled ``Σnum/Σden``).
 
     NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
     in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
@@ -236,41 +264,32 @@ def discover_drivers(
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
 
-    # Cluster-aware switch: a high-ICC measure within the declared entity invalidates
-    # the row-wise null (DAT-552) — for flow/stock (the column) AND ratio (the per-row
-    # num/den, which can cluster within entity just as a level does).
+    # Cluster-aware candidate-grain routing (DAT-561): a declared entity column splits
+    # the candidates by within-entity constancy and runs two grain families; the
+    # measure's ICC only picks which is primary. With no cluster_key, the plain
+    # row-wise null (DAT-545) over all candidates.
     if cluster_col is not None:
-        ent_codes, ent_uniques = pd.factorize(frame[cluster_col])
-        icc = intraclass_correlation(
-            ent_codes.astype(int), len(ent_uniques), _icc_measure(frame, measure)
+        return _routed_ranking(
+            frame,
+            present_dims,
+            measure,
+            cluster_col,
+            seed=seed,
+            max_depth=max_depth,
+            alpha=alpha,
+            min_support=min_support,
+            missingness_gate=missingness_gate,
+            n_perm=n_perm,
+            top_k_slices=top_k_slices,
+            icc_threshold=icc_threshold,
+            min_entities=min_entities,
         )
-        if icc > icc_threshold:
-            logger.info(
-                "driver_cluster_aware_entity_grain",
-                cluster_key=cluster_col,
-                icc=round(icc, 3),
-                n_entities=len(ent_uniques),
-            )
-            return _entity_grain_ranking(
-                frame,
-                present_dims,
-                measure,
-                cluster_col,
-                seed=seed,
-                alpha=alpha,
-                n_perm=n_perm,
-                top_k_slices=top_k_slices,
-                min_entities=min_entities,
-            )
-        logger.info("driver_row_wise_low_icc", cluster_key=cluster_col, icc=round(icc, 3))
 
-    values_by_dim = {d: frame[d].astype(object).to_numpy() for d in present_dims}
-    return discover_tree(
-        values_by_dim,
-        _make_target(measure, frame),
-        measure_label=measure.label,
-        dims=present_dims,
-        rng=np.random.default_rng(seed),
+    return _row_wise_ranking(
+        frame,
+        present_dims,
+        measure,
+        seed=seed,
         max_depth=max_depth,
         alpha=alpha,
         min_support=min_support,
@@ -316,9 +335,214 @@ def _collapse_to_entity(
     return values, sizes, values_by_dim
 
 
-def _entity_grain_ranking(
+def _partition_by_entity_constancy(
+    frame: pd.DataFrame, cluster_key: str, dims: list[str]
+) -> tuple[list[str], list[str]]:
+    """Split candidates into ``(entity_constant, row_level)`` by within-entity nunique.
+
+    Entity-constant = one value per entity (nunique ≤ 1) → the entity-grain null;
+    everything else varies within entity → the row-wise null (DAT-561). This is the
+    routing decision: it is per-candidate, independent of the measure's global ICC.
+    """
+    # ``nunique`` counts non-null distinct values, so ``<= 1`` also catches an all-null
+    # dim (nunique 0) as entity-constant — harmless: it contributes nothing (every row
+    # gated out by the (A) gate) wherever it lands, exactly as on the old row-wise path.
+    nunique = frame.groupby(cluster_key)[dims].nunique().max()
+    entity_constant = [d for d in dims if int(nunique[d]) <= 1]
+    row_level = [d for d in dims if d not in entity_constant]
+    return entity_constant, row_level
+
+
+def _within_entity_residual(frame: pd.DataFrame, cluster_key: str, column: str) -> np.ndarray:
+    """The fixed-effects "within" transform: ``measure − entity_mean`` (DAT-561).
+
+    Removes the between-entity level so the row-wise null on the residual is both valid
+    (residuals are row-exchangeable within entity) and powered for a within-entity
+    row-level driver — the entity-mean subtraction strips the clustered variance that
+    would otherwise swamp it. NaN measure rows stay NaN (the (B) gate handles them).
+    """
+    measure = frame[column].to_numpy(dtype=float)
+    entity_mean = frame.groupby(cluster_key)[column].transform("mean").to_numpy(dtype=float)
+    return np.asarray(measure - entity_mean, dtype=float)
+
+
+def _within_entity_ratio_residual(
+    frame: pd.DataFrame, cluster_key: str, numerator: str, denominator: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(residual_ratio, weight)`` for the within-entity de-meaned RATIO (DAT-561).
+
+    The per-row ratio ``r = num/den`` minus its entity's VOLUME-WEIGHTED mean — which is
+    the entity's pooled ratio ``Σnum/Σden`` (the weighted mean of ``r`` with weight
+    ``den``). Strips the between-entity ratio level so the row-wise null on the residual
+    is valid + powered for a within-entity ratio driver. NaN where the row has no usable
+    ratio (missing/≤0 denominator); ``weight`` is the denominator mass (0 where invalid).
+    """
+    num = frame[numerator].to_numpy(dtype=float)
+    den = frame[denominator].to_numpy(dtype=float)
+    codes, uniques = pd.factorize(frame[cluster_key])
+    codes = codes.astype(int)
+    n_ent = len(uniques)
+    # A NaN cluster key factorizes to code -1 (no entity to de-mean against): exclude it
+    # — bincount rejects negative codes, and a -1 gather would wrap to the last entity.
+    valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0) & (codes >= 0)
+    sum_num = np.bincount(codes[valid], weights=num[valid], minlength=n_ent)
+    sum_den = np.bincount(codes[valid], weights=den[valid], minlength=n_ent)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        entity_ratio = np.where(sum_den > 0, sum_num / np.where(sum_den > 0, sum_den, 1.0), np.nan)
+        r = np.where(valid, num / np.where(valid, den, 1.0), np.nan)
+    gather = np.where(codes >= 0, codes, 0)  # safe index; invalid rows masked to NaN below
+    residual = np.where(valid, r - entity_ratio[gather], np.nan)
+    weight = np.where(valid, den, 0.0)
+    return residual, weight
+
+
+def _merge_secondary(
+    primary: DriverRanking | None, secondary: DriverRanking | None
+) -> DriverRanking:
+    """Fold the secondary family's significant dims into ``primary`` as a labeled list.
+
+    The ICC-preferred family is primary; if it has no candidate dims the other becomes
+    primary (so a real driver in the only populated family is never hidden behind an
+    empty primary). The remaining family contributes ``secondary_dimensions`` only —
+    its gains are at a different grain, never mixed into the primary ranking.
+    """
+    if primary is None:
+        primary, secondary = secondary, None
+    if primary is None:  # neither family had candidate dims (caller guarantees ≥2 total)
+        raise AssertionError("candidate-grain routing produced no family")
+    if secondary is None:
+        return primary
+    labeled = [SecondaryDriver(d, g, secondary.grain) for d, g in secondary.ranked_dimensions]
+    return replace(primary, secondary_dimensions=labeled)
+
+
+def _routed_ranking(
     frame: pd.DataFrame,
     dims: list[str],
+    measure: Measure,
+    cluster_key: str,
+    *,
+    seed: int,
+    max_depth: int,
+    alpha: float,
+    min_support: int,
+    missingness_gate: float,
+    n_perm: int,
+    top_k_slices: int,
+    icc_threshold: float,
+    min_entities: int,
+) -> DriverRanking:
+    """Route candidates to two grain families and merge primary (by ICC) + secondary."""
+    ent_codes, ent_uniques = pd.factorize(frame[cluster_key])
+    icc = intraclass_correlation(
+        ent_codes.astype(int), len(ent_uniques), _icc_measure(frame, measure)
+    )
+    high_icc = icc > icc_threshold
+    entity_dims, row_dims = _partition_by_entity_constancy(frame, cluster_key, dims)
+    logger.info(
+        "driver_candidate_grain_routing",
+        cluster_key=cluster_key,
+        icc=round(icc, 3),
+        n_entities=len(ent_uniques),
+        primary="entity" if high_icc else "row",
+        entity_constant=entity_dims,
+        row_level=row_dims,
+    )
+
+    entity_ranking = (
+        _entity_grain_ranking(
+            frame,
+            entity_dims,
+            measure,
+            cluster_key,
+            seed=seed,
+            alpha=alpha,
+            n_perm=n_perm,
+            top_k_slices=top_k_slices,
+            min_entities=min_entities,
+        )
+        if entity_dims
+        else None
+    )
+    # The row-level family de-means within entity ONLY under high ICC (the power add-on);
+    # at low ICC the raw measure is already powered and stays the primary tree as-is.
+    row_ranking = (
+        _row_wise_ranking(
+            frame,
+            row_dims,
+            measure,
+            seed=seed + 1,  # an independent permutation stream from the entity family
+            max_depth=max_depth,
+            alpha=alpha,
+            min_support=min_support,
+            missingness_gate=missingness_gate,
+            n_perm=n_perm,
+            top_k_slices=top_k_slices,
+            cluster_key=cluster_key if high_icc else None,
+        )
+        if row_dims
+        else None
+    )
+
+    if high_icc:
+        return _merge_secondary(entity_ranking, row_ranking)
+    return _merge_secondary(row_ranking, entity_ranking)
+
+
+def _row_wise_ranking(
+    frame: pd.DataFrame,
+    dims: list[str],
+    measure: Measure,
+    *,
+    seed: int,
+    max_depth: int,
+    alpha: float,
+    min_support: int,
+    missingness_gate: float,
+    n_perm: int,
+    top_k_slices: int,
+    cluster_key: str | None = None,
+) -> DriverRanking:
+    """Rank ``dims`` row-wise. ``cluster_key`` set → de-mean the measure within entity.
+
+    The within-entity de-mean is the DAT-561 power add-on for the row-level family under
+    high ICC: flow/stock de-mean the measure (``FlowTarget`` on the residual), ratio
+    de-means the per-row ratio by its entity's volume-weighted mean
+    (``EntityDemeanedRatioTarget``). With ``cluster_key=None`` this is the plain DAT-545
+    row-wise search on the raw measure.
+    """
+    if cluster_key is not None:
+        if measure.target_type in ("flow", "stock"):
+            assert measure.column is not None
+            residual = _within_entity_residual(frame, cluster_key, measure.column)
+            target: Target = FlowTarget(residual, target_type=measure.target_type)
+        else:  # ratio
+            assert measure.numerator and measure.denominator
+            res_ratio, weight = _within_entity_ratio_residual(
+                frame, cluster_key, measure.numerator, measure.denominator
+            )
+            target = EntityDemeanedRatioTarget(res_ratio, weight)
+    else:
+        target = _make_target(measure, frame)
+    values_by_dim = {d: frame[d].astype(object).to_numpy() for d in dims}
+    return discover_tree(
+        values_by_dim,
+        target,
+        measure_label=measure.label,
+        dims=dims,
+        rng=np.random.default_rng(seed),
+        max_depth=max_depth,
+        alpha=alpha,
+        min_support=min_support,
+        missingness_gate=missingness_gate,
+        n_perm=n_perm,
+        top_k_slices=top_k_slices,
+    )
+
+
+def _entity_grain_ranking(
+    frame: pd.DataFrame,
+    entity_dims: list[str],
     measure: Measure,
     cluster_key: str,
     *,
@@ -328,27 +552,17 @@ def _entity_grain_ranking(
     top_k_slices: int,
     min_entities: int,
 ) -> DriverRanking:
-    """Collapse to one row per entity and rank entity-level candidates at that grain.
+    """Collapse to one row per entity and rank the (pre-partitioned) entity-level dims.
 
-    Only candidates that are CONSTANT within entity participate (row-level dims can't
-    be collapsed without losing their within-entity variation — logged + skipped this
-    pass). The entity statistic is the mean measure weighted by observed-row count
-    (flow/stock) or Σnum/Σden weighted by Σden (ratio); entities with no usable
-    measure are dropped. Single-level (``max_depth=1``): recursion at entity grain is
-    low-power and a follow-up.
+    ``entity_dims`` are already constant within entity (the caller's routing). The
+    entity statistic is the mean measure weighted by observed-row count (flow/stock) or
+    Σnum/Σden weighted by Σden (ratio); entities with no usable measure are dropped.
+    Single-level (``max_depth=1``): recursion at entity grain is low-power and a
+    follow-up.
     """
     empty = DriverRanking(
         measure=measure.label, target_type=measure.target_type, n_rows=0, grain="entity"
     )
-    # Entity-level = constant within every entity (nunique ≤ 1).
-    nunique = frame.groupby(cluster_key)[dims].nunique().max()
-    entity_dims = [d for d in dims if int(nunique[d]) <= 1]
-    skipped = [d for d in dims if d not in entity_dims]
-    if skipped:
-        logger.info("driver_row_level_dims_skipped_at_entity_grain", dropped=skipped)
-    if len(entity_dims) < 2:
-        return empty
-
     values, sizes, values_by_dim = _collapse_to_entity(frame, cluster_key, measure, entity_dims)
     if values.size == 0:  # every entity has no usable measure — nothing to rank
         return empty

@@ -259,7 +259,9 @@ export async function journeyWorkflow(
 
 		if (next.kind === "operating_model") {
 			// A manual re-trigger is user-intentional — it runs regardless of the
-			// breaker (the breaker only gates the AUTONOMOUS follow-on).
+			// breaker (the breaker only gates the AUTONOMOUS follow-on). It STILL
+			// folds into the tally: a stage that keeps failing is a bad engine
+			// whoever triggered it, so repeated manual failures trip the breaker too.
 			fold(await runOperatingModelStage(workspaceId, next.req));
 			handled += 1;
 			continue;
@@ -272,8 +274,10 @@ export async function journeyWorkflow(
 		// Auto-cascade (DAT-530 P3b.2): a clean begin_session auto-advances into
 		// operating_model as the journey's next child — gated by patched() (the
 		// control-flow change) and by the breaker's auto-mode. Built inline so the
-		// session's two stages stay an atomic pair; `patched()` is evaluated every
-		// iteration unconditionally (loop-safe in the TS SDK).
+		// session's two stages stay an atomic pair. `patched()` is reached on every
+		// replay of the begin_session arm (the operating_model arm `continue`s
+		// before here), so the marker is recorded consistently — loop-safe in the
+		// TS SDK (patched() is not memoized on false).
 		const cascadeEnabled = patched(CASCADE_PATCH);
 		if (cascadeEnabled && beganOk && breaker.autoMode) {
 			const req = next.req;

@@ -13,5 +13,11 @@
 // it (DAT-528). These are thin re-exports — the SQL + idempotency are tested in
 // db/cockpit/runs.test; the journey's orchestration is tested via the Replayer +
 // compose-smoke.
+//
+// DAT-551 P3c adds `assessAndGround` — a heavier activity that reads the run's
+// readiness and runs an LLM to auto-apply mechanical grounding teaches. It is the
+// non-deterministic half of the post-add_source grounding loop; the journey's
+// deterministic loop drives the replays around it.
 
 export { attachRunId, markRunStatus, recordRun } from "#/db/cockpit/runs";
+export { assessAndGround } from "#/worker/grounding-agent";

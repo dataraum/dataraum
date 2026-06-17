@@ -306,6 +306,28 @@ export const AGENT_TEACH_TYPES = [
 	"hierarchy",
 ] as const satisfies readonly TeachType[];
 
+// The teach types an AGENT may AUTO-APPLY unattended (DAT-551 P3c — the grounding
+// loop). The authoritative, single source of truth for "the agent can fix this
+// without a human", NOT derived from the engine's loss table: by that definition
+// `relationship` (join_path_determinism) and `concept` grounding (business_meaning)
+// are entropy-measurable too, but they are JUDGEMENT (what a column means / how
+// tables relate) and must surface to a human. The gate is narrower — MECHANICAL
+// grounding the agent can both formulate without semantic judgement AND self-verify
+// by re-measuring readiness after a replay:
+//   type_pattern → type_fidelity   (a value-format regex)
+//   null_value   → null_semantics   (a null token)
+//   unit         → unit_entropy      (a column's unit)
+// Everything else (concept/concept_property/relationship/hierarchy + the
+// operating-model declarations) stays human-surfaced. The grounding-teach activity
+// offers the agent ONLY these via the constrained grounding-teach tool.
+export const AGENT_AUTOAPPLY_TEACH_TYPES = [
+	"type_pattern",
+	"null_value",
+	"unit",
+] as const satisfies readonly TeachType[];
+
+export type AutoApplyTeachType = (typeof AGENT_AUTOAPPLY_TEACH_TYPES)[number];
+
 // The payload shape surfaced in the teach TOOL's input schema — a union of ONLY
 // the agent-advertised (AGENT_TEACH_TYPES) payloads, so `toJSONSchema` dumps each
 // type's exact fields into the schema the model sees. Anthropic's tool
@@ -333,6 +355,19 @@ export const TeachPayloadSchema = z
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
 			"(keep is engine-internal, not a user action); " +
 			"hierarchy: {action: add|reject|alias, table_id, members}.",
+	);
+
+// The payload union for the AGENT-AUTOAPPLY teach types only (DAT-551) — the
+// constrained schema the grounding-teach agent's tool uses, so the model can ONLY
+// express a mechanical grounding teach (type_pattern / null_value / unit), never a
+// judgement-family one. The narrow gate is the type enum + this union together.
+export const AutoApplyTeachPayloadSchema = z
+	.union([TypePatternPayload, NullValuePayload, UnitPayload])
+	.describe(
+		"The grounding teach payload; required fields depend on type. " +
+			"type_pattern: {name, pattern, inferred_type?}; " +
+			"null_value: {category, value}; " +
+			"unit: {table, column, unit} (column identified by NAME).",
 	);
 
 export interface TeachInput {

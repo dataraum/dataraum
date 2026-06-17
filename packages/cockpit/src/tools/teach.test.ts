@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	AGENT_AUTOAPPLY_TEACH_TYPES,
 	AGENT_TEACH_TYPES,
 	TEACH_TYPES,
 	TeachValidationError,
@@ -403,6 +404,30 @@ describe("validateTeach", () => {
 			);
 			for (const t of ["validation", "cycle", "metric", "explanation"]) {
 				expect(AGENT_TEACH_TYPES as readonly string[]).not.toContain(t);
+			}
+		});
+
+		it("AGENT_AUTOAPPLY_TEACH_TYPES is the mechanical grounding subset only (DAT-551)", () => {
+			// The agent may AUTO-APPLY only mechanical grounding teaches it can
+			// self-verify by re-measuring. Judgement-family types (concept/
+			// relationship/hierarchy) are entropy-measurable but stay human-surfaced.
+			expect(new Set(AGENT_AUTOAPPLY_TEACH_TYPES)).toEqual(
+				new Set(["type_pattern", "null_value", "unit"]),
+			);
+			// It is a strict subset of what the teach tool advertises.
+			for (const t of AGENT_AUTOAPPLY_TEACH_TYPES) {
+				expect(AGENT_TEACH_TYPES as readonly string[]).toContain(t);
+			}
+			// Judgement-family types are NEVER auto-appliable.
+			for (const t of [
+				"concept",
+				"concept_property",
+				"relationship",
+				"hierarchy",
+			]) {
+				expect(AGENT_AUTOAPPLY_TEACH_TYPES as readonly string[]).not.toContain(
+					t,
+				);
 			}
 		});
 

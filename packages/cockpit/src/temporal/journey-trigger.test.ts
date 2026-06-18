@@ -73,8 +73,7 @@ describe("signalVerticalEstablished (DAT-529)", () => {
 describe("stage + breaker signals (DAT-530)", () => {
 	it("signals runBeginSession with the full payload on the per-workspace journey", async () => {
 		const req = {
-			sessionId: "sess-1",
-			workflowId: "beginsession-ws-1-sess-1",
+			workflowId: "beginsession-ws-1",
 			engineTaskQueue: "engine-ws-1",
 			tables: ["t1", "t2"],
 			verticals: ["finance"],
@@ -95,8 +94,7 @@ describe("stage + breaker signals (DAT-530)", () => {
 
 	it("signals runOperatingModel (the manual re-trigger) with its payload", async () => {
 		const req = {
-			sessionId: "sess-1",
-			workflowId: "operatingmodel-ws-1-sess-1",
+			workflowId: "operatingmodel-ws-1",
 			engineTaskQueue: "engine-ws-1",
 			verticals: ["finance"],
 			conversationId: null,

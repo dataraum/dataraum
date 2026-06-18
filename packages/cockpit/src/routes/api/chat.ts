@@ -219,12 +219,13 @@ export const Route = createFileRoute("/api/chat")({
 					persistTo = null;
 				}
 
-				// The current sessions, so the agent knows where the user is (replay /
-				// teach / look_relationships resolve against the session without asking).
+				// The workspace's vertical + imported tables, so the agent knows what it
+				// can act on (replay / teach / look_relationships resolve against the
+				// workspace without asking — DAT-562 retired the per-session id).
 				// A cheap DB read per turn — negligible beside the LLM call. It is
 				// OPPORTUNISTIC enrichment: a DB hiccup must NOT take down chat, so a
-				// throw degrades to no block (the agent falls back to asking for an id —
-				// the pre-fix behavior), never a dead turn.
+				// throw degrades to no block (the agent falls back to asking — the
+				// pre-fix behavior), never a dead turn.
 				const workspaceContext = await buildWorkspaceContext().catch(
 					(err: unknown) => {
 						console.error(

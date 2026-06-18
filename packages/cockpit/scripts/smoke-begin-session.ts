@@ -60,7 +60,6 @@ const VERTICAL = "finance";
  * then run addSourceWorkflow to type the files. Returns the typed table ids. */
 async function ingest(client: Client): Promise<string[]> {
 	const sourceId = randomUUID();
-	const sessionId = randomUUID();
 	const now = new Date();
 
 	// The workspace registry carries the vertical (DAT-506): seed it = finance so
@@ -92,13 +91,13 @@ async function ingest(client: Client): Promise<string[]> {
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
 
-	// Record the add_source run in cockpit_db (DAT-506 — the session-of-record).
+	// Record the add_source run in cockpit_db (DAT-562 — runs group by workspace,
+	// no session row; keyed by the workspace's deterministic add_source workflow id).
 	await recordRun({
 		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		engineSessionId: sessionId,
 		kind: "onboarding",
 		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 	});
 
 	const input: AddSourceInput = {
@@ -117,7 +116,7 @@ async function ingest(client: Client): Promise<string[]> {
 		// the bare TEMPORAL_TASK_QUEUE env (which predated per-workspace queues and
 		// left the workflow stranded on a queue no worker polls).
 		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
 	});
 	const result = (await handle.result()) as AddSourceResult;
@@ -146,9 +145,7 @@ async function main(): Promise<void> {
 		// beginSession returns a born-loud {error} when the workspace has no typed
 		// tables (DAT-534); the smoke ingested above, so it must have started.
 		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
-		console.log(
-			`✓ begin_session started: workflow=${begun.workflow_id} session=${begun.session_id}`,
-		);
+		console.log(`✓ begin_session started: workflow=${begun.workflow_id}`);
 		// Await the workflow to completion (it seals + promotes the relationship heads).
 		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
 		console.log("✓ begin_session workflow completed (sealed + promoted)");

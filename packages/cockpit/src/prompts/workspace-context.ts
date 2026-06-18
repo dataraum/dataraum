@@ -1,26 +1,19 @@
-// Per-turn WORKSPACE CONTEXT for the agent — session-awareness (DAT-506).
+// Per-turn WORKSPACE CONTEXT for the agent — workspace-awareness (DAT-506, DAT-562).
 //
-// The agent learns state ONLY from what reaches its message context (tool
-// results + the structured handoff parts), and the chat messages are
-// in-memory, so a reload wipes them. Result: replay / teach / look_relationships
-// / why_relationship had no way to know which session the user is in, and asked
-// for an id.
+// The agent learns state ONLY from what reaches its message context (tool results +
+// the structured handoff parts), and the chat messages are in-memory, so a reload
+// wipes them. Without a hint, replay / teach / look_relationships had no idea whether
+// the workspace even has imported data, and asked the user for ids.
 //
-// Fix: each turn, read the workspace's sessions from cockpit_db (`sessions` — the
-// session-of-record post-DAT-506; the engine no longer has `investigation_sessions`)
-// and hand the agent the CURRENT session (most recent) plus the recent ones. The
-// workspace's imported tables come from the live per-table GENERATION heads (the
-// engine mints its own `run_id` the cockpit never sees, and no engine table carries
-// the cockpit `session_id`, so a session→run_tables join is impossible at the
-// cockpit edge — the generation heads ARE the workspace's current typed-table set,
-// which in single-active-workspace equals the session's tables). A session is
-// ambient state, like the workspace: the user is always in exactly one, and
-// add_source / begin_session are the transitions into a new one.
+// Fix: each turn, tell the agent what the workspace HAS — its framed vertical and the
+// imported tables — so session-scoped actions (replay / teach / look_relationships)
+// just work without asking. There is no session id to surface: DAT-562 retired the
+// cockpit "session" (it scoped nothing post-DAT-506 — the engine resolves every stage
+// from the workspace-current generation heads), so replay/operating_model take no id
+// and the context block names the workspace, not a session.
 
-import { desc, eq } from "drizzle-orm";
-import { cockpitDb } from "../db/cockpit/client";
+import { eq } from "drizzle-orm";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
-import { sessions } from "../db/cockpit/schema";
 import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import {
@@ -30,32 +23,6 @@ import {
 	tables,
 } from "../db/metadata/schema";
 import { displayTableName } from "../lib/display-names";
-
-const RECENT_LIMIT = 5;
-
-/** A session as the agent should see it: its (engine) id, framed vertical, and
- * the human-named tables the workspace spans (de-prefixed filenames). */
-export interface SessionSummary {
-	sessionId: string;
-	vertical: string | null;
-	tableNames: string[];
-}
-
-/** The engine session ids of a workspace's sessions, most recent first. cockpit_db
- * is the session-of-record (DAT-506); the engine session id is the value the tools
- * + workflow ids key on. */
-async function recentSessions(
-	workspaceId: string,
-	limit: number,
-): Promise<string[]> {
-	const rows = await cockpitDb
-		.select({ engineSessionId: sessions.engineSessionId })
-		.from(sessions)
-		.where(eq(sessions.workspaceId, workspaceId))
-		.orderBy(desc(sessions.createdAt))
-		.limit(limit);
-	return rows.map((r) => r.engineSessionId);
-}
 
 /** The workspace's currently-imported tables (de-prefixed display names) — the
  * tables at the live per-table GENERATION heads (DAT-506). Empty until an
@@ -76,72 +43,35 @@ async function workspaceTableNames(): Promise<string[]> {
 }
 
 /**
- * The most recent session — the CURRENT session the user is in — when the
- * workspace has imported tables to act on; null otherwise. The "with tables" gate
- * keeps a bare "replay" right after onboarding from running before anything is
- * imported. (DAT-506: the table set is workspace-current, not per-session — the
- * engine run_id the cockpit can't see makes a per-session join impossible.)
- *
- * `replay` defaults to this so "replay" re-runs without an id.
+ * Format the WORKSPACE CONTEXT block. Pure — the DB read lives in
+ * `buildWorkspaceContext`, so the wording is unit-testable. Null when the workspace
+ * has no imported tables (nothing the agent can act on yet).
  */
-export async function currentSessionId(): Promise<string | null> {
-	const workspaceId = (await resolveActiveWorkspaceRow()).id;
-	const recent = await recentSessions(workspaceId, 1);
-	if (recent.length === 0) return null;
-	const tableNames = await workspaceTableNames();
-	return tableNames.length > 0 ? recent[0] : null;
+export function formatWorkspaceContext(
+	vertical: string | null,
+	tableNames: string[],
+): string | null {
+	if (tableNames.length === 0) return null;
+	return (
+		"WORKSPACE CONTEXT — the user's current workspace. Imported tables: " +
+		`${tableNames.join(", ")} · vertical ${vertical ?? "_adhoc"}. For replay, ` +
+		"teach, look_relationships, why_relationship and any session-scoped action, " +
+		"operate on this workspace directly — never ask the user for a session id " +
+		"(there is none). `replay` re-runs the workspace's imported sources; " +
+		"`operating_model` re-runs over the workspace's begin_session result."
+	);
 }
 
 /**
- * Format the WORKSPACE CONTEXT block from the recent sessions (most-recent
- * first). Pure — the DB read lives in `buildWorkspaceContext`, so the wording +
- * the CURRENT tag are unit-testable. Null when there are no sessions (nothing to
- * tell the agent).
- */
-export function formatWorkspaceContext(
-	recent: SessionSummary[],
-): string | null {
-	if (recent.length === 0) return null;
-	const lines = recent.map((s, i) => {
-		const span =
-			s.tableNames.length > 0 ? s.tableNames.join(", ") : "no tables yet";
-		const tag = i === 0 ? " ← CURRENT (the session the user is in)" : "";
-		return `- ${s.sessionId} — ${span} · vertical ${s.vertical ?? "_adhoc"}${tag}`;
-	});
-	return (
-		"WORKSPACE CONTEXT — the analytical sessions in this workspace, most recent " +
-		"first. The user is always in ONE session; the most recent is the CURRENT " +
-		"one. For replay, teach, look_relationships, why_relationship and any " +
-		"session-scoped action, use the CURRENT session's id (or the one the user " +
-		"names) — never ask the user for a session id when this block has one. " +
-		"`replay` with no session_id re-runs the CURRENT session.\n" +
-		lines.join("\n")
-	);
-}
-
-/** Read the recent sessions + the workspace's imported tables, most-recent first.
- * Only emitted when the workspace HAS imported tables (a freshly-recorded session
+ * Read the workspace's vertical + imported tables and format the context block.
+ * Only emitted when the workspace HAS imported tables (a freshly-created workspace
  * with nothing imported isn't something the agent can act on). The vertical is the
- * WORKSPACE's (DAT-506: a workspace property, not a per-session pick); the table
- * set is the workspace-current set (the generation heads), shown against each
- * recent session. */
+ * WORKSPACE's (DAT-506: a workspace property); the table set is the workspace-current
+ * set (the generation heads).
+ */
 export async function buildWorkspaceContext(): Promise<string | null> {
 	const workspace = await resolveActiveWorkspaceRow();
-	const [recent, tableNames] = await Promise.all([
-		recentSessions(workspace.id, RECENT_LIMIT),
-		workspaceTableNames(),
-	]);
-	if (recent.length === 0 || tableNames.length === 0) return null;
-
-	return formatWorkspaceContext(
-		recent.map((sessionId, i) => ({
-			sessionId,
-			// Vertical is a workspace property now (DAT-506) — same on every session.
-			vertical: workspace.vertical,
-			// The workspace-current tables belong to the CURRENT session; older
-			// sessions list "no tables yet" (their own run's tables aren't separable
-			// at the cockpit edge — see the module header).
-			tableNames: i === 0 ? tableNames : [],
-		})),
-	);
+	const tableNames = await workspaceTableNames();
+	if (tableNames.length === 0) return null;
+	return formatWorkspaceContext(workspace.vertical, tableNames);
 }

@@ -442,16 +442,15 @@ describe("select — upsert", () => {
 
 describe("select — one call (DAT-436)", () => {
 	// The injected trigger stub: records its input + the call order and hands
-	// back a fixed run identity (the real triggerAddSource seeds the session +
+	// back a fixed run identity (the real triggerAddSource signals the journey +
 	// starts addSourceWorkflow — its own unit test covers that).
 	function makeTrigger() {
 		return vi.fn(async (input: { sources: string[] }) => {
 			preflight.calls.push("trigger");
 			return {
-				workflow_id: "addsource-ws-sess",
+				workflow_id: "addsource-ws",
 				run_id: "run-1",
 				sources: input.sources,
-				cockpit_session_id: "sess-1",
 			};
 		});
 	}
@@ -473,9 +472,8 @@ describe("select — one call (DAT-436)", () => {
 
 		// The result merges the persisted descriptor with the run identity — the
 		// canvas keys its progress poll on these ids.
-		expect(result.workflow_id).toBe("addsource-ws-sess");
+		expect(result.workflow_id).toBe("addsource-ws");
 		expect(result.run_id).toBe("run-1");
-		expect(result.session_id).toBe("sess-1");
 		expect(result.name).toBe("orders.csv");
 	});
 
@@ -521,7 +519,7 @@ describe("select — one call (DAT-436)", () => {
 		expect(trigger).toHaveBeenCalledWith({
 			sources: result.sources,
 		});
-		expect(result.workflow_id).toBe("addsource-ws-sess");
+		expect(result.workflow_id).toBe("addsource-ws");
 		expect(result.run_id).toBe("run-1");
 	});
 });

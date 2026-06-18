@@ -74,15 +74,15 @@ beforeEach(() => {
 });
 
 describe("operatingModel (DAT-440, routed via the journey — DAT-530)", () => {
-	it("signals the journey with the derived ids/queue + verticals + the session", async () => {
+	it("signals the journey with the derived ids/queue + verticals", async () => {
 		h.vertical = "finance";
-		const result = await operatingModel({ session_id: "sess-1" });
+		const result = await operatingModel();
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
+		// One workflow id per workspace (DAT-562) — no session arg.
 		expect(h.signalled?.workspaceId).toBe(WS);
 		expect(h.signalled?.req).toEqual({
-			sessionId: "sess-1",
-			workflowId: `operatingmodel-${WS}-sess-1`,
+			workflowId: `operatingmodel-${WS}`,
 			engineTaskQueue: `engine-${WS}`,
 			verticals: ["finance"],
 			conversationId: "conv-1",
@@ -90,22 +90,21 @@ describe("operatingModel (DAT-440, routed via the journey — DAT-530)", () => {
 		// The tool returns the deterministic workflow id (run_id mirrors it — the
 		// journey owns the real execution id; progress resolves latest by id).
 		expect(result).toEqual({
-			workflow_id: `operatingmodel-${WS}-sess-1`,
-			run_id: `operatingmodel-${WS}-sess-1`,
-			session_id: "sess-1",
+			workflow_id: `operatingmodel-${WS}`,
+			run_id: `operatingmodel-${WS}`,
 		});
 	});
 
 	it("threads a NULL conversationId when outside a chat turn (non-narrating run)", async () => {
 		h.conversationId = null;
-		const result = await operatingModel({ session_id: "sess-1" });
+		const result = await operatingModel();
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 		expect(h.signalled?.req.conversationId).toBeNull();
 	});
 
 	it("throws when Temporal is unconfigured and signals nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
-		await expect(operatingModel({ session_id: "sess-1" })).rejects.toThrow(
+		await expect(operatingModel()).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
@@ -116,15 +115,15 @@ describe("operatingModel (DAT-440, routed via the journey — DAT-530)", () => {
 		// would-be workflow failure into an agent-actionable sentence — and must
 		// NOT signal the journey.
 		h.hasRunningRun.mockResolvedValueOnce(true);
-		const result = await operatingModel({ session_id: "sess-1" });
+		const result = await operatingModel();
 		expect(result).toMatchObject({
 			error: expect.stringContaining("begin_session is still running"),
 		});
 		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
 	});
 
-	it("checks the begin_session stage for the requested session", async () => {
-		await operatingModel({ session_id: "sess-1" });
-		expect(h.hasRunningRun).toHaveBeenCalledWith("sess-1", "begin_session");
+	it("checks the begin_session stage for the workspace", async () => {
+		await operatingModel();
+		expect(h.hasRunningRun).toHaveBeenCalledWith(WS, "begin_session");
 	});
 });

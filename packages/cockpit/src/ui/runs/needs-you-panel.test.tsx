@@ -8,10 +8,9 @@ import { NeedsYouPanel } from "#/ui/runs/needs-you-panel";
 
 function item(over: Partial<AwaitingInputItem> = {}): AwaitingInputItem {
 	return {
-		workflowId: "addsource-ws-1-abc",
+		workflowId: "addsource-ws-1",
 		stage: "add_source",
 		awaitingNote: "columns 'vid' and 'pt' have unclear meaning",
-		engineSessionId: "eng-sess-1",
 		startedAt: new Date("2026-06-17T06:58:27.925Z"),
 		...over,
 	};
@@ -38,7 +37,7 @@ describe("NeedsYouPanel (DAT-553)", () => {
 		renderPanel([
 			item(),
 			item({
-				engineSessionId: "eng-sess-2",
+				workflowId: "beginsession-ws-1",
 				stage: "begin_session",
 				awaitingNote: "needs a concept",
 			}),

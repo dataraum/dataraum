@@ -60,12 +60,11 @@ const fileUris = env.SOURCE_PATH.split(",")
 	.map((u) => u.trim())
 	.filter(Boolean);
 
-async function seed(sourceId: string, sessionId: string): Promise<void> {
+async function seed(sourceId: string): Promise<void> {
 	// Seed the `sources` row through the Drizzle metadata write seam (the one-gate
-	// `select` writes it the same way). No engine session seed (DAT-506): sessions
-	// live in cockpit_db. This driver seeds DIRECTLY (not through select), then
-	// records the run in cockpit_db so replay can resolve the session's sources
-	// (replay reads cockpit_db sessions/session_runs → engine run_tables).
+	// `select` writes it the same way). This driver seeds DIRECTLY (not through
+	// select), then records the run in cockpit_db so the workspace's run grouping
+	// (DAT-562) is populated; replay re-runs the workspace's current sources.
 	// Source.name is UNIQUE — keep it unique per run so the driver is repeatable.
 	const name = `source_${sourceId.slice(0, 8)}`;
 	const now = new Date();
@@ -81,14 +80,13 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	// Record the cockpit session + run (DAT-506) keyed by this session id, so the
-	// replay step below resolves the session's sources from cockpit_db.
+	// Record the cockpit run (DAT-562: runs group by workspace, no session row);
+	// the run is keyed by the workspace's deterministic add_source workflow id.
 	await recordRun({
 		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		engineSessionId: sessionId,
 		kind: "onboarding",
 		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 	});
 }
 
@@ -108,7 +106,6 @@ async function countOverlays(): Promise<number> {
 async function runInitial(
 	client: Client,
 	sourceId: string,
-	sessionId: string,
 ): Promise<{ result: AddSourceResult; runId: string }> {
 	const input: AddSourceInput = {
 		// FLAT, source-free input (DAT-506): no identity, no session/source id on the
@@ -131,7 +128,7 @@ async function runInitial(
 		// TEMPORAL_TASK_QUEUE env (which predated per-workspace queues and stranded
 		// the workflow on a queue no worker polls).
 		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
 	});
 	const result = (await handle.result()) as AddSourceResult;
@@ -160,16 +157,15 @@ async function awaitReplay(
 	workflowId: string,
 	runId: string,
 ): Promise<AddSourceResult> {
-	// The replay reuses the run's session, so its workflow id is the session-keyed
-	// one the replay returned (DAT-422) — get the handle by that exact id + run.
+	// The replay reuses the workspace's add_source workflow id (DAT-562) — get the
+	// handle by that exact id + run the replay returned.
 	const handle = client.workflow.getHandle(workflowId, runId);
 	return (await handle.result()) as AddSourceResult;
 }
 
 async function main(): Promise<void> {
 	const sourceId = randomUUID();
-	const sessionId = randomUUID();
-	await seed(sourceId, sessionId);
+	await seed(sourceId);
 
 	const connection = await Connection.connect({ address: env.TEMPORAL_HOST });
 	try {
@@ -182,7 +178,6 @@ async function main(): Promise<void> {
 		const { result: initial, runId: initialRunId } = await runInitial(
 			client,
 			sourceId,
-			sessionId,
 		);
 		console.log(
 			`✓ initial run: ${initial.tables.length} table(s) fanned out + typed via Temporal`,
@@ -213,13 +208,13 @@ async function main(): Promise<void> {
 			);
 		}
 
-		// ---- Replay: re-run the workspace's sources (DAT-422, DAT-506) ----
-		// Replay takes the session we just built (the named unit), resolves the
-		// workspace's imported sources (the generation heads), and re-runs add_source
-		// over them as a NEW session — the engine mints a fresh run_id internally. No
-		// scope/from_phase; a full, non-destructive re-run. The vertical is the
-		// workspace property (sourced from the registry, not passed here).
-		const replayResult = await replay({ session_id: sessionId });
+		// ---- Replay: re-run the workspace's sources (DAT-422, DAT-562) ----
+		// Replay takes NO args (DAT-562): it resolves the workspace's imported
+		// sources (the generation heads) and re-runs add_source over them — the
+		// engine mints a fresh run_id internally. No scope/from_phase; a full,
+		// non-destructive re-run. The vertical is the workspace property (sourced
+		// from the registry, not passed here).
+		const replayResult = await replay({});
 		const replayed = await awaitReplay(
 			client,
 			replayResult.workflow_id,

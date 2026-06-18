@@ -1,34 +1,28 @@
-// Replay tool (DAT-343, DAT-413, DAT-422) — re-run a SESSION to apply pending
-// teaches as a full add_source re-run under a fresh run_id.
+// Replay tool (DAT-343, DAT-413, DAT-422, DAT-562) — re-run the workspace's
+// imported sources through add_source to apply pending teaches.
 //
-// The agent thinks in SESSIONS (the only named analytical unit), not sources —
-// so replay takes a `session_id` (the user's replay intent), and re-runs
-// add_source over the workspace's CURRENT imported source set as a NEW session.
-// In single-active-workspace (Phase 1) that set IS the named session's sources;
-// resolving a per-session source set (an older session, not the current one) is
-// DAT-357 — see workspaceSources. A replay generates a NEW session: a fresh
-// analytical pass over the same data (transparent — the agent replays the session
-// it knows and gets a new one back). The engine mints a fresh `run_id` internally
-// (versioned metadata, append-only snapshots); there is no scope or from_phase to
-// choose — a replay is always a full, non-destructive re-run that re-reads the
-// durable teach overlays.
+// Replay takes NO input (DAT-562 retired the cockpit session): it resolves the
+// workspace's CURRENT imported source set (the generation heads) and re-runs
+// add_source over it. The engine mints a fresh `run_id` internally (versioned
+// metadata, append-only snapshots); there is no scope or from_phase to choose — a
+// replay is always a full, non-destructive re-run that re-reads the durable teach
+// overlays.
 //
 // Pure compute kick (DAT-551: routed through the JourneyWorkflow — it SIGNALS the
-// per-workspace journey, which records the run + starts the child): a fresh
-// `addSourceWorkflow` keyed by the NEW session
-// (`addsource-<workspace_id>-<session_id>`; see workflow-id.ts, DAT-422 — a run
-// is keyed by its session) and returns the workflow id + run id immediately; the
-// caller polls / queries Temporal for progress. End-to-end "replay actually
-// produces clean output" coverage lives in the integration smoke that drives the
-// running stack.
+// per-workspace journey, which records the run + starts the child): it REUSES the
+// workspace's `addsource-<workspace_id>` workflow id (see workflow-id.ts — one id
+// per workspace) and returns the workflow id + run id immediately; the caller polls
+// / queries Temporal for progress. Reusing the id is what makes a replay that
+// resolves a parked grounding gap self-clear the "Needs you" inbox (the parked
+// run's workflow gets a newer run — see openAwaitingItem). End-to-end "replay
+// actually produces clean output" coverage lives in the integration smoke that
+// drives the running stack.
 //
-// No engine seed (DAT-506): sessions live in cockpit_db, and the run's table set
-// is anchored by `run_tables` (keyed by `run_id`), not `session_tables`. The new
-// replay session + run are recorded by the JOURNEY in cockpit_db AUTHORITATIVELY
+// No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
+// by `run_id`). The run is recorded by the JOURNEY in cockpit_db AUTHORITATIVELY
 // BEFORE the child starts (DAT-551). The `vertical` is the workspace property,
 // sourced from the registry (DAT-506 retired the per-session vertical pick).
 
-import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
@@ -39,7 +33,6 @@ import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
 import { currentConversationId } from "../lib/run-context";
-import { currentSessionId } from "../prompts/workspace-context";
 import { signalRunAddSource } from "../temporal/journey-trigger";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 import {
@@ -54,17 +47,10 @@ import {
  * of objects from 1–N sources (DAT-422); replay re-runs add_source over exactly
  * the workspace's current set.
  *
- * Why the generation heads, not a per-session join: post-DAT-506 the engine mints
- * its own internal `run_id` (the version axis) and persists `run_tables` keyed by
- * it — the cockpit never sees that id (it only holds the Temporal execution runId),
- * and no engine table carries the cockpit `session_id`. So a session→run_tables
- * join is impossible at the cockpit edge. The live generation heads ARE the
- * workspace's current typed-table set (one head per table → its run_id → run_tables
- * → tables → source), which in single-active-workspace (Phase 1) is exactly the
- * replayed session's sources. True per-session scoping (replaying an OLDER session's
- * source set, not the workspace's current one) waits on the multi-workspace switcher
- * (DAT-357); until then the resolution is workspace-current.
- * Empty when nothing is imported yet (the caller rejects that — nothing to replay).
+ * The live generation heads ARE the workspace's current typed-table set (one head
+ * per table → its run_id → run_tables → tables → source), so replay re-runs over
+ * exactly that set. Empty when nothing is imported yet (the caller rejects that —
+ * nothing to replay).
  */
 async function workspaceSources(): Promise<string[]> {
 	const rows = await metadataDb
@@ -78,33 +64,29 @@ async function workspaceSources(): Promise<string[]> {
 		.filter((id): id is string => id !== null && id !== undefined);
 }
 
-export interface ReplayInput {
-	// The session to replay. OPTIONAL: omitted, replay re-runs the CURRENT session
-	// (the most recent — the one the user has been teaching). Replay resolves the
-	// session's sources and re-runs add_source over them as a NEW session, applying
-	// any pending teaches.
-	session_id?: string;
-}
+// Replay takes no input (DAT-562): it re-runs add_source over the workspace's
+// current imported sources to apply pending teaches. There is no session to name —
+// the workspace's generation heads ARE what gets re-run.
+export type ReplayInput = Record<string, never>;
 
 export interface ReplayResult {
 	workflow_id: string;
 	run_id: string;
-	// The sources the new run re-ingested (resolved from the replayed session).
+	// The sources the run re-ingested (the workspace's current imported set).
 	sources: string[];
-	// The NEW session the replay created (≠ the replayed session_id).
-	session_id: string;
 }
 
 /**
  * Signal the journey to run a fresh `addSourceWorkflow` that re-applies pending
- * teaches as a full re-run of a session's sources (DAT-551). Returns immediately
- * with the workflow + session id; the journey records the run + starts the child,
+ * teaches as a full re-run of the workspace's current sources (DAT-551). Returns
+ * immediately with the workflow id; the journey records the run + starts the child,
  * and progress resolves the latest execution by workflow id (run_id mirrors it).
  *
- * The new run is keyed by the fresh session (`addsource-<workspace_id>-<session_id>`,
- * DAT-422) — each replay is its own session, so it is a distinct workflow id.
+ * The run REUSES the workspace's `addsource-<ws>` workflow id (DAT-562) — so a
+ * replay that resolves a parked grounding gap appends a newer run under the SAME id,
+ * which is exactly what self-clears the "Needs you" inbox (openAwaitingItem).
  */
-export async function replay(input: ReplayInput): Promise<ReplayResult> {
+export async function replay(_input: ReplayInput): Promise<ReplayResult> {
 	if (!config.temporalHost || !config.temporalNamespace) {
 		throw new Error(
 			"Temporal client is not configured. Set TEMPORAL_HOST, " +
@@ -112,19 +94,8 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		);
 	}
 
-	// The session to replay: the one named, else the CURRENT session (most recent —
-	// the one the user is in / has been teaching). So a bare "replay" just works.
-	const sessionId = input.session_id ?? (await currentSessionId());
-	if (!sessionId) {
-		throw new AgentActionableError(
-			"No session to replay — add a source or begin a session first.",
-		);
-	}
-
-	// Resolve what to replay — the workspace's current source set (DAT-506: no
-	// per-session join exists at the cockpit edge; true per-session scoping is
-	// DAT-357). `sessionId` gates the user's intent + names the run; it does not
-	// scope the resolution.
+	// Resolve what to replay — the workspace's current source set (the generation
+	// heads). Empty ⇒ nothing has been imported yet, so there is nothing to replay.
 	const replaySources = await workspaceSources();
 	if (replaySources.length === 0) {
 		throw new AgentActionableError(
@@ -134,12 +105,9 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	}
 
 	const workspace = await resolveActiveWorkspaceRow();
-	// A replay generates a NEW session — a fresh analytical pass over the same
-	// sources. The id is fresh, so the journey records a clean insert.
-	const newSessionId = randomUUID();
-	const workflowId = addSourceWorkflowId(workspace.id, newSessionId);
+	const workflowId = addSourceWorkflowId(workspace.id);
 
-	// Signal the journey to run the stage (DAT-551). kind:"replay" marks the session
+	// Signal the journey to run the stage (DAT-551). kind:"replay" marks the run
 	// origin; the journey records the run authoritatively + starts the engine child
 	// on the workspace's OWN queue (DAT-505), re-reading the durable teach overlays.
 	// The conversationId is captured HERE (request ALS) so the run narrates into THIS
@@ -147,7 +115,6 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 	// on >1); the engine scopes each `import` to one source + resolves provenance
 	// relationally past import.
 	await signalRunAddSource(workspace.id, {
-		sessionId: newSessionId,
 		workflowId,
 		engineTaskQueue: workspace.taskQueue,
 		sources: replaySources,
@@ -162,7 +129,6 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		workflow_id: workflowId,
 		run_id: workflowId,
 		sources: replaySources,
-		session_id: newSessionId,
 	};
 }
 
@@ -174,24 +140,16 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 export const replayTool = toolDefinition({
 	name: "replay",
 	description:
-		"Replay a session — re-run the sources it was built from through add_source as a NEW session to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope to choose). Omit session_id to replay the CURRENT session (from the WORKSPACE CONTEXT) — a bare 'replay' re-runs the session the user has been teaching. Returns the workflow_id + run_id; the run proceeds durably in the background and its progress renders live in the canvas — you'll be told automatically when it finishes, so don't poll for status.",
-	inputSchema: z.object({
-		session_id: z
-			.string()
-			.optional()
-			.describe(
-				"Optional. The session to replay (a session_id, e.g. from the WORKSPACE CONTEXT block or a prior add_source / begin_session). Omit to replay the CURRENT (most recent) session.",
-			),
-	}),
-	// Success OR `{ error }`: "no session to replay" / "session has no sources"
-	// are the agent's to fix (add a source / begin a session first), so they come
-	// back as data. A missing Temporal config is infra → still throws (pass 2b).
+		"Replay — re-run the workspace's current imported sources through add_source to apply pending teaches. A full, non-destructive re-run under a fresh run_id (no scope or session to choose; takes no arguments). Returns the workflow_id + run_id; the run proceeds durably in the background and its progress renders live in the canvas — you'll be told automatically when it finishes, so don't poll for status.",
+	inputSchema: z.object({}),
+	// Success OR `{ error }`: "nothing to replay" (no imported sources yet) is the
+	// agent's to fix (add a source first), so it comes back as data. A missing
+	// Temporal config is infra → still throws (pass 2b).
 	outputSchema: withAgentError(
 		z.object({
 			workflow_id: z.string(),
 			run_id: z.string(),
 			sources: z.array(z.string()),
-			session_id: z.string(),
 		}),
 	),
 }).server((input) => catchActionable(() => replay(input)));

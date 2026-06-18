@@ -55,13 +55,13 @@ type ChatStream = ReturnType<
  * prompt-cache hit for the chat's life (a chat's kind is immutable). It must stay
  * stateless — that's what is cached.
  *
- * `workspaceContext` (the current sessions — session-awareness for replay / teach
- * / look) is a SECOND system block placed AFTER the orchestrator. The cache
- * breakpoint is ON the orchestrator, so the cached prefix is exactly the
- * orchestrator; this dynamic block sits past the breakpoint and is never cached —
- * a small fresh suffix each turn. So the orchestrator keeps hitting even as the
- * session changes; the two don't thrash. The caller computes the block (a DB
- * read) and passes it; `buildChatOptions` stays pure for the unit wiring test.
+ * `workspaceContext` (the workspace's vertical + imported tables — workspace-
+ * awareness for replay / teach / look) is a SECOND system block placed AFTER the
+ * orchestrator. The cache breakpoint is ON the orchestrator, so the cached prefix is
+ * exactly the orchestrator; this dynamic block sits past the breakpoint and is never
+ * cached — a small fresh suffix each turn. So the orchestrator keeps hitting even as
+ * the imported tables change; the two don't thrash. The caller computes the block (a
+ * DB read) and passes it; `buildChatOptions` stays pure for the unit wiring test.
  *
  * `abortController` (when given) is threaded into the agentic loop so a cancelled
  * stream — the client calling useChat's `stop()`, or simply disconnecting —

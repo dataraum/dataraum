@@ -31,14 +31,12 @@ import { runWithConversation } from "#/lib/run-context";
 import {
 	conversationMessages,
 	conversations,
-	sessionRuns,
-	sessions,
+	runs,
 	uiState,
 } from "#/db/cockpit/schema";
 import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
 
-const ENGINE_SESSION = `smoke-462-${crypto.randomUUID()}`;
-const WF = `wf-${ENGINE_SESSION}`;
+const WF = `wf-${crypto.randomUUID()}`;
 // DAT-506: recordRun keys the run by its workflowId; the runId is the workflowId
 // placeholder until attachRunId, so the listed/marked runId is WF here.
 const RUN = WF;
@@ -107,7 +105,6 @@ async function main(): Promise<void> {
 	await runWithConversation(CONV, () =>
 		recordRun({
 			workspaceId: wsId,
-			engineSessionId: ENGINE_SESSION,
 			kind: "begin_session",
 			stage: "begin_session",
 			workflowId: WF,
@@ -133,24 +130,15 @@ async function main(): Promise<void> {
 		"terminal run no longer listed",
 	);
 
-	// Cleanup — the dedicated conversation + the test session/runs. Leaves the
-	// shared registry rows (workspace, default actor) intact.
+	// Cleanup — the test run (DAT-562: deleted by its workflow id), then the
+	// dedicated conversation. The run FKs the conversation, so delete it first.
+	// Leaves the shared registry rows (workspace, default actor) intact.
+	await cockpitDb.delete(runs).where(eq(runs.workflowId, WF));
 	await cockpitDb.delete(uiState).where(eq(uiState.conversationId, CONV));
 	await cockpitDb
 		.delete(conversationMessages)
 		.where(eq(conversationMessages.conversationId, CONV));
 	await cockpitDb.delete(conversations).where(eq(conversations.id, CONV));
-	const [sess] = await cockpitDb
-		.select({ id: sessions.id })
-		.from(sessions)
-		.where(eq(sessions.engineSessionId, ENGINE_SESSION))
-		.limit(1);
-	if (sess) {
-		await cockpitDb
-			.delete(sessionRuns)
-			.where(eq(sessionRuns.sessionId, sess.id));
-		await cockpitDb.delete(sessions).where(eq(sessions.id, sess.id));
-	}
 
 	console.log("✓ DAT-462 lane smoke passed");
 }

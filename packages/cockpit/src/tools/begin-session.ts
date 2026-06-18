@@ -19,10 +19,9 @@
 //
 // The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
 // progress by workflow id — the latest execution; the real Temporal run id is
-// owned by the journey). The workflow id is reused per session
-// (`beginsession-<workspace_id>-<session_id>`) so teach re-runs group under one id.
+// owned by the journey). The workflow id is `beginsession-<workspace_id>` — one per
+// workspace (DAT-562) so teach re-runs group under one id.
 
-import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
@@ -36,21 +35,17 @@ import { type AgentError, withAgentError } from "./agent-error";
 
 export interface BeginSessionToolInput {
 	table_ids: string[];
-	// Per-session id — the cockpit's run-correlation key. Optional: omit to start a
-	// fresh session; pass an existing one to re-run that session (teach → re-run),
-	// reusing the recorded row conflict-safely.
-	session_id?: string;
 }
 
 export interface BeginSessionToolResult {
-	// The deterministic engine workflow id (`beginsession-<ws>-<session>`). Progress
-	// is polled by this id (the latest execution); the journey owns the real run id.
+	// The deterministic engine workflow id (`beginsession-<ws>`). Progress is polled
+	// by this id (the latest execution); the journey owns the real run id. One id per
+	// workspace (DAT-562) — re-running begin_session after a teach reuses it.
 	workflow_id: string;
 	// Kept for the result contract; equals workflow_id (the journey starts the run,
 	// so no Temporal execution id is known at tool-return time — progress resolves
 	// the latest run by workflow_id, DAT-530).
 	run_id: string;
-	session_id: string;
 	table_ids: string[];
 }
 
@@ -82,20 +77,17 @@ export async function beginSession(
 		};
 	}
 
-	const sessionId = input.session_id ?? randomUUID();
-
 	// The active workspace ROW (DAT-461/505/506): the source of truth for the
 	// engine task queue (`engine-<id>`) and the frame `vertical` (a workspace
 	// property chosen once — DAT-506 retired the per-session pick).
 	const workspace = await resolveActiveWorkspaceRow();
-	const workflowId = beginSessionWorkflowId(workspace.id, sessionId);
+	const workflowId = beginSessionWorkflowId(workspace.id);
 
 	// Signal the journey to run the stage. The tool passes the derived ids/queue +
 	// verticals + the originating conversationId (captured from the request-scoped
 	// ALS HERE, while we're still in the chat turn — the journey has none). The
 	// journey records the run authoritatively and starts the engine child.
 	await signalRunBeginSession(workspace.id, {
-		sessionId,
 		workflowId,
 		engineTaskQueue: workspace.taskQueue,
 		tables: input.table_ids,
@@ -106,7 +98,6 @@ export async function beginSession(
 	return {
 		workflow_id: workflowId,
 		run_id: workflowId,
-		session_id: sessionId,
 		table_ids: input.table_ids,
 	};
 }
@@ -125,9 +116,9 @@ export const beginSessionTool = toolDefinition({
 		"look_relationships / why_relationship and refine with teach. Runs engine " +
 		"processing + LLM calls. Returns the workflow_id; the run proceeds in the " +
 		"background and its progress shows live in the canvas — you'll be told " +
-		"automatically when it finishes, so don't poll for status. Pass an existing " +
-		"session_id to re-run a session after teaching. Runs on the WORKSPACE's " +
-		"vertical (set once for the workspace — not chosen per session).",
+		"automatically when it finishes, so don't poll for status. To re-run after " +
+		"teaching, just call begin_session again with the table set. Runs on the " +
+		"WORKSPACE's vertical (set once for the workspace — not chosen per session).",
 	inputSchema: z.object({
 		table_ids: z
 			.array(z.string())
@@ -135,18 +126,11 @@ export const beginSessionTool = toolDefinition({
 			.describe(
 				"The typed table ids to compose into the session (from list_tables).",
 			),
-		session_id: z
-			.string()
-			.optional()
-			.describe(
-				"Optional session id; omit to start a fresh session, pass one to re-run it after teaching.",
-			),
 	}),
 	outputSchema: withAgentError(
 		z.object({
 			workflow_id: z.string(),
 			run_id: z.string(),
-			session_id: z.string(),
 			table_ids: z.array(z.string()),
 		}),
 	),

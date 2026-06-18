@@ -69,12 +69,11 @@ describe("triggerAddSource (DAT-352, one-call DAT-436, routed via the journey â€
 	it("signals the journey with the source SET / queue / verticals + kind onboarding", async () => {
 		h.vertical = "financial_reporting";
 		const result = await triggerAddSource({ sources: ["src-1"] });
-		const cockpitSessionId = result.cockpit_session_id;
 
+		// One workflow id per workspace (DAT-562) â€” no minted session segment.
 		expect(h.signalled?.workspaceId).toBe(WS);
 		expect(h.signalled?.req).toEqual({
-			sessionId: cockpitSessionId,
-			workflowId: `addsource-${WS}-${cockpitSessionId}`,
+			workflowId: `addsource-${WS}`,
 			engineTaskQueue: `engine-${WS}`,
 			sources: ["src-1"],
 			verticals: ["financial_reporting"],
@@ -84,10 +83,9 @@ describe("triggerAddSource (DAT-352, one-call DAT-436, routed via the journey â€
 		// The trigger returns the deterministic workflow id (run_id mirrors it â€” the
 		// journey owns the real execution id; progress resolves latest by id).
 		expect(result).toEqual({
-			workflow_id: `addsource-${WS}-${cockpitSessionId}`,
-			run_id: `addsource-${WS}-${cockpitSessionId}`,
+			workflow_id: `addsource-${WS}`,
+			run_id: `addsource-${WS}`,
 			sources: ["src-1"],
-			cockpit_session_id: cockpitSessionId,
 		});
 	});
 

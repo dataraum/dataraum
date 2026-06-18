@@ -71,7 +71,6 @@ const VERTICAL = "finance";
  * type the files. Returns the typed table ids (the begin_session selection). */
 async function ingest(client: Client): Promise<string[]> {
 	const sourceId = randomUUID();
-	const sessionId = randomUUID();
 	const now = new Date();
 
 	// The workspace registry carries the vertical (DAT-506): seed it = finance so
@@ -103,13 +102,13 @@ async function ingest(client: Client): Promise<string[]> {
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
 
-	// Record the add_source run in cockpit_db (DAT-506 — the session-of-record).
+	// Record the add_source run in cockpit_db (DAT-562 — runs group by workspace,
+	// no session row; keyed by the workspace's deterministic add_source workflow id).
 	await recordRun({
 		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		engineSessionId: sessionId,
 		kind: "onboarding",
 		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 	});
 
 	const input: AddSourceInput = {
@@ -122,7 +121,7 @@ async function ingest(client: Client): Promise<string[]> {
 		(p: AddSourceInput) => Promise<AddSourceResult>
 	>("addSourceWorkflow", {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID, sessionId),
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
 	});
 	const result = (await handle.result()) as AddSourceResult;
@@ -153,7 +152,7 @@ async function main(): Promise<void> {
 		// typed tables (DAT-534); the smoke ingested above, so it must have started.
 		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
 		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
-		console.log(`✓ begin_session completed: session=${begun.session_id}`);
+		console.log(`✓ begin_session completed: workflow=${begun.workflow_id}`);
 
 		// ---- operatingModelWorkflow: flat input (DAT-438, DAT-506) ----------------
 		// The stage re-reads the session's table set from the catalog head's
@@ -167,10 +166,7 @@ async function main(): Promise<void> {
 			(p: OperatingModelInput) => Promise<OperatingModelResult>
 		>("operatingModelWorkflow", {
 			taskQueue: env.TEMPORAL_TASK_QUEUE,
-			workflowId: operatingModelWorkflowId(
-				env.DATARAUM_WORKSPACE_ID,
-				begun.session_id,
-			),
+			workflowId: operatingModelWorkflowId(env.DATARAUM_WORKSPACE_ID),
 			args: [input],
 		});
 		const result = (await handle.result()) as OperatingModelResult;

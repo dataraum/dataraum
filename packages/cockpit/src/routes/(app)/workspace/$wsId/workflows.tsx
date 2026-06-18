@@ -16,7 +16,6 @@ import {
 } from "#/db/cockpit/runs";
 import { readStageStaleness } from "#/db/metadata/stage-staleness-read";
 import { currentTypedTableIds } from "#/db/metadata/workspace-state";
-import { currentSessionId } from "#/prompts/workspace-context";
 import { beginSession } from "#/tools/begin-session";
 import { operatingModel } from "#/tools/operating-model";
 import { replay } from "#/tools/replay";
@@ -67,22 +66,15 @@ const openStageChat = createServerFn({ method: "POST" }).handler(async () => {
 const rerunStage = createServerFn({ method: "POST" })
 	.inputValidator((stage: RunStage) => stage)
 	.handler(async ({ data: stage }) => {
-		const sessionId = await currentSessionId();
-		if (!sessionId) {
-			throw new Error("No current session to re-run — import a source first.");
-		}
 		let result: unknown;
 		if (stage === "operating_model") {
-			result = await operatingModel({ session_id: sessionId });
+			result = await operatingModel();
 		} else if (stage === "begin_session") {
 			// begin_session stages over the workspace's current typed table set.
-			result = await beginSession({
-				session_id: sessionId,
-				table_ids: await currentTypedTableIds(),
-			});
+			result = await beginSession({ table_ids: await currentTypedTableIds() });
 		} else {
-			// add_source — the DAT-551 full replay path.
-			result = await replay({ session_id: sessionId });
+			// add_source — the DAT-551 full replay path (re-runs the workspace sources).
+			result = await replay({});
 		}
 		// The tool fns return an { error } envelope for their born-loud guards (e.g.
 		// operating_model's "begin_session still running"). Surface it as a throw so

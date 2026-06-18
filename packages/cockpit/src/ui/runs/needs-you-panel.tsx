@@ -36,7 +36,7 @@ export function NeedsYouPanel({ items, onResolve }: NeedsYouPanelProps) {
 				</Text>
 				{items.map((item) => (
 					<Group
-						key={item.engineSessionId}
+						key={item.workflowId}
 						justify="space-between"
 						wrap="nowrap"
 						data-testid="needs-you-item"

@@ -1,15 +1,15 @@
 // Real-Postgres integration test for the WORKSPACE CONTEXT reader
-// (session-awareness, DAT-506). The pure formatter is unit-tested; the DB readers
-// (`currentSessionId`, `buildWorkspaceContext`) — the cockpit_db sessions/session_runs
-// join, the engine `run_tables` → tables → sources de-prefix, and the "only
-// sessions WITH linked tables" filter — are validated HERE against real schemas, so
-// a column/join regression after `db:pull:metadata` is caught rather than shipped
-// (the reader runs on EVERY chat turn).
+// (workspace-awareness, DAT-506, DAT-562). The pure formatter is unit-tested; the DB
+// reader (`buildWorkspaceContext`) — the engine `run_tables` → tables → sources
+// de-prefix through the generation head + the workspace vertical — is validated HERE
+// against real schemas, so a column/join regression after `db:pull:metadata` is
+// caught rather than shipped (the reader runs on EVERY chat turn).
 //
-// DAT-506 grain: sessions live in cockpit_db (`sessions`/`session_runs`); the run's
-// table set is anchored engine-side by `run_tables(run_id, table_id)`. The fixture
-// seeds the engine source/table/run_tables via a raw (superuser) SQL connection
-// (cockpit_reader can't write run_tables) and the cockpit sessions/runs via cockpitDb.
+// DAT-562 grain: the cockpit "session" is retired — the context block names the
+// workspace's imported tables + vertical, not a session. The workspace's tables are
+// the live per-table GENERATION heads (DAT-506); the fixture seeds the engine
+// source/table/run_tables + head via a raw (superuser) SQL connection (cockpit_reader
+// can't write run_tables) and the workspace row via cockpitDb.
 //
 // Requires the compose stack (postgres on 127.0.0.1:5432). Self-skips when
 // METADATA_DATABASE_URL is unset so unit CI without the stack stays green.
@@ -45,14 +45,12 @@ const WS = (process.env.DATARAUM_WORKSPACE_ID as string) ?? "";
 const SCHEMA = STACK_AVAILABLE ? `ws_${WS.replaceAll("-", "_")}` : "";
 
 describe.skipIf(!STACK_AVAILABLE)(
-	"workspace-context reader (session-awareness, DAT-506)",
+	"workspace-context reader (workspace-awareness, DAT-562)",
 	() => {
 		/* biome-ignore-start lint/suspicious/noExplicitAny: dynamic-imported module shapes */
 		let cockpitDb: any;
 		let cockpitSchema: any;
-		let eq: any;
 		let sql: any;
-		let currentSessionId: any;
 		let buildWorkspaceContext: any;
 		/* biome-ignore-end lint/suspicious/noExplicitAny: dynamic-imported module shapes */
 
@@ -63,25 +61,15 @@ describe.skipIf(!STACK_AVAILABLE)(
 		const tableId = `wc_it_tbl_${u}`;
 		// `<source>__<stem>` so displayTableName de-prefixes to the filename "widgets".
 		const tableName = `${sourceName}__widgets`;
-		// The most-recent session — the CURRENT one. The workspace-current tables
-		// (the generation heads) attach to it (DAT-506: the table set is
-		// workspace-current, not per-session — see the module header).
-		const sessId = `wc_it_sess_${u}`;
 		const runId = `wc_it_run_${u}`;
-		// An OLDER session — listed but not CURRENT.
-		const olderSessId = `wc_it_older_${u}`;
-		const cockpitSessRowId = `wc_it_csess_${u}`;
-		const cockpitOlderRowId = `wc_it_colder_${u}`;
 
 		beforeAll(async () => {
 			cockpitDb = (await import("../db/cockpit/client")).cockpitDb;
 			cockpitSchema = await import("../db/cockpit/schema");
-			eq = (await import("drizzle-orm")).eq;
 			const { SQL } = await import("bun");
 			sql = new SQL(process.env.METADATA_DATABASE_URL as string);
-			const wc = await import("./workspace-context");
-			currentSessionId = wc.currentSessionId;
-			buildWorkspaceContext = wc.buildWorkspaceContext;
+			buildWorkspaceContext = (await import("./workspace-context"))
+				.buildWorkspaceContext;
 
 			// Engine side (raw superuser SQL — cockpit_reader can't write run_tables):
 			// source → table → run_tables. far-future created_at so this run's tables
@@ -112,21 +100,13 @@ describe.skipIf(!STACK_AVAILABLE)(
 				[`wc_it_head_${u}`, `table:${tableId}`, runId],
 			);
 
-			// cockpit_db side: the session-of-record rows (most-recent = CURRENT). The
-			// workspace's tables resolve via the engine GENERATION head above, not a
-			// per-session run join (DAT-506 — see the module header), so no
-			// session_runs seed is needed for the reader.
-			const { actors, workspaces, sessions } = cockpitSchema;
-			await cockpitDb
-				.insert(actors)
-				.values({ id: "default", displayName: "Default user" })
-				.onConflictDoNothing();
-			// UPSERT the vertical (not onConflictDoNothing): the cockpit registry
-			// self-seeds this same workspace row with the `_adhoc` cold-start default
-			// on first resolve (registry.ensureRegistry), and against the shared live
-			// stack that seed runs at container boot — before this suite. This test
-			// owns the `vertical finance` assertion, so it must SET the vertical, not
-			// silently no-op on the pre-existing `_adhoc` row.
+			// cockpit_db side: only the workspace row carries the vertical now (DAT-562
+			// retired the sessions table). UPSERT the vertical (not onConflictDoNothing):
+			// the cockpit registry self-seeds this same workspace row with the `_adhoc`
+			// cold-start default on first resolve, and against the shared live stack that
+			// seed runs at container boot — before this suite. This test owns the
+			// `vertical finance` assertion, so it must SET the vertical.
+			const { workspaces } = cockpitSchema;
 			await cockpitDb
 				.insert(workspaces)
 				.values({
@@ -139,44 +119,9 @@ describe.skipIf(!STACK_AVAILABLE)(
 					target: workspaces.id,
 					set: { vertical: "finance" },
 				});
-			await cockpitDb
-				.insert(sessions)
-				.values({
-					id: cockpitSessRowId,
-					workspaceId: WS,
-					engineSessionId: sessId,
-					kind: "begin_session",
-					status: "active",
-					createdBy: "default",
-					// The most recent — the CURRENT session.
-					createdAt: new Date("2100-01-01T00:00:00Z"),
-				})
-				.onConflictDoNothing();
-			await cockpitDb
-				.insert(sessions)
-				.values({
-					id: cockpitOlderRowId,
-					workspaceId: WS,
-					engineSessionId: olderSessId,
-					kind: "begin_session",
-					status: "active",
-					createdBy: "default",
-					// OLDER — listed but not CURRENT.
-					createdAt: new Date("2099-01-01T00:00:00Z"),
-				})
-				.onConflictDoNothing();
 		});
 
 		afterAll(async () => {
-			const { sessions } = cockpitSchema;
-			if (cockpitDb) {
-				await cockpitDb
-					.delete(sessions)
-					.where(eq(sessions.id, cockpitSessRowId));
-				await cockpitDb
-					.delete(sessions)
-					.where(eq(sessions.id, cockpitOlderRowId));
-			}
 			if (sql) {
 				await sql.unsafe(
 					`DELETE FROM "${SCHEMA}".metadata_snapshot_head WHERE run_id = $1`,
@@ -197,19 +142,13 @@ describe.skipIf(!STACK_AVAILABLE)(
 			}
 		});
 
-		it("currentSessionId returns the most-recent session when the workspace has tables", async () => {
-			expect(await currentSessionId()).toBe(sessId);
-		});
-
-		it("buildWorkspaceContext surfaces the current session by filename + workspace vertical + the CURRENT tag", async () => {
+		it("buildWorkspaceContext surfaces the imported tables by filename + the workspace vertical", async () => {
 			const block: string = await buildWorkspaceContext();
-			expect(block).toContain(sessId);
+			expect(block).toContain("Imported tables");
 			expect(block).toContain("widgets"); // de-prefixed table name, not the raw __ name
 			expect(block).toContain("vertical finance"); // the WORKSPACE vertical
-			expect(block).toContain("← CURRENT");
-			// The older session is listed too (most-recent-first), not tagged CURRENT.
-			expect(block).toContain(olderSessId);
-			expect(block.match(/← CURRENT/g)).toHaveLength(1);
+			// No session id to surface any more (DAT-562).
+			expect(block).toContain("never ask the user for a session id");
 		});
 	},
 );

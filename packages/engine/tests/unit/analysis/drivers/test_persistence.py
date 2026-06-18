@@ -118,6 +118,18 @@ def _write_view(duck: duckdb.DuckDBPyConnection, df, view_name: str = VIEW) -> N
     duck.unregister("seed_df")
 
 
+# --- target-type mapping is pinned to the validated engine's --------------------
+
+
+def test_temporal_to_target_matches_processor() -> None:
+    # persistence inlines the temporal_behavior→target map so the validated processor
+    # stays untouched; pin it to processor's so a future vocabulary change can't
+    # silently diverge the two (the only thing this duplication risks).
+    from dataraum.analysis.drivers import persistence, processor
+
+    assert persistence._TEMPORAL_TO_TARGET == processor._TEMPORAL_TO_TARGET
+
+
 # --- the serializer: grain labels preserved, never flattened ----------------------
 
 

@@ -81,8 +81,14 @@ def _measure_columns(
 
     Read by ``column_id`` without a run filter (the ``slicing_phase`` convention):
     ``semantic_role`` is stable from add_source generation. Deduped to one row per
-    column (a deterministic pick by ``column_id``) so a re-adjudicated annotation can
-    never run discovery twice for the same measure.
+    column so a re-adjudicated annotation can never run discovery twice. UNLIKE
+    slicing (which only reads the stable role), the ``temporal_behavior`` picked here
+    drives ``discover_drivers``' target function — so when a column carries annotations
+    from multiple coexisting runs the pick MUST be deterministic, or a Temporal
+    redelivery could persist a different ranking than the promoted head. The
+    ``run_id`` desc tiebreak makes it stable (a deterministic pick, not a recency
+    claim — ``run_id`` isn't time-ordered; resolving the true per-table semantic head
+    is the value layer's shared gap with slicing, out of scope here).
     """
     rows = session.execute(
         select(
@@ -96,7 +102,7 @@ def _measure_columns(
             Column.table_id.in_(table_ids),
             SemanticAnnotation.semantic_role == "measure",
         )
-        .order_by(Column.column_id)
+        .order_by(Column.column_id, SemanticAnnotation.run_id.desc())
     ).all()
     by_column: dict[str, tuple[str, str, str, str | None]] = {}
     for column_id, table_id, column_name, behavior in rows:

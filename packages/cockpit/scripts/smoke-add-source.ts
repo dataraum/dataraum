@@ -155,12 +155,29 @@ async function runInitial(
 async function awaitReplay(
 	client: Client,
 	workflowId: string,
-	runId: string,
-): Promise<AddSourceResult> {
-	// The replay reuses the workspace's add_source workflow id (DAT-562) — get the
-	// handle by that exact id + run the replay returned.
-	const handle = client.workflow.getHandle(workflowId, runId);
-	return (await handle.result()) as AddSourceResult;
+	initialRunId: string,
+): Promise<{ result: AddSourceResult; runId: string }> {
+	// Replay routes through the JOURNEY now (DAT-562): the tool SIGNALS the
+	// per-workspace journey and returns the workflow id with the run_id as a
+	// placeholder (the journey owns the real Temporal execution id). So we can't
+	// await by a run id from the result — instead wait for a FRESH execution of the
+	// workspace's `addsource-<ws>` id to appear (the journey starts it shortly after
+	// the signal), then await that execution's result. The replay reuses the
+	// constant workflow id, so a new execution = a new firstExecutionRunId.
+	for (let i = 0; i < 120; i++) {
+		const runId = (await client.workflow.getHandle(workflowId).describe())
+			.runId;
+		if (runId !== initialRunId) {
+			const result = (await client.workflow
+				.getHandle(workflowId, runId)
+				.result()) as AddSourceResult;
+			return { result, runId };
+		}
+		await new Promise((r) => setTimeout(r, 1000));
+	}
+	throw new Error(
+		`replay: no fresh execution of ${workflowId} appeared within 120s`,
+	);
 }
 
 async function main(): Promise<void> {
@@ -215,18 +232,25 @@ async function main(): Promise<void> {
 		// non-destructive re-run. The vertical is the workspace property (sourced
 		// from the registry, not passed here).
 		const replayResult = await replay({});
-		const replayed = await awaitReplay(
+		// The replay reuses the workspace's add_source workflow id (DAT-562).
+		if (replayResult.workflow_id !== addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID)) {
+			throw new Error(
+				`replay: expected the workspace add_source workflow id, got ${replayResult.workflow_id}`,
+			);
+		}
+		const { result: replayed, runId: replayRunId } = await awaitReplay(
 			client,
 			replayResult.workflow_id,
-			replayResult.run_id,
+			initialRunId,
 		);
 
-		// A replay is a fresh execution, so it carries a NEW run_id (≠ the
-		// initial run). The engine mints the version run_id internally; here we
-		// only assert the replay started its own Temporal run.
-		if (replayResult.run_id === initialRunId) {
+		// A replay is a fresh Temporal execution under the SAME (reused) workflow id,
+		// so it carries a NEW execution run id (≠ the initial run). The engine mints
+		// the version run_id internally; here we only assert the replay ran its own
+		// Temporal execution.
+		if (replayRunId === initialRunId) {
 			throw new Error(
-				`replay: expected a fresh run_id, got the initial run ${initialRunId}`,
+				`replay: expected a fresh execution, got the initial run ${initialRunId}`,
 			);
 		}
 
@@ -240,7 +264,7 @@ async function main(): Promise<void> {
 		}
 		console.log(
 			`✓ replay (full re-run): ${replayed.tables.length} table(s) re-processed ` +
-				`under fresh run ${replayResult.run_id}`,
+				`under fresh execution ${replayRunId} of ${replayResult.workflow_id}`,
 		);
 
 		// Sanity: the overlay rows are still active after replay (replay

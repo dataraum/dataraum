@@ -19,6 +19,7 @@ from uuid import uuid4
 import duckdb
 import numpy as np
 from sqlalchemy.orm import Session
+from structlog.testing import capture_logs
 
 from dataraum.analysis.drivers.models import Measure
 from dataraum.analysis.drivers.processor import (
@@ -189,3 +190,76 @@ class TestDiscoverDrivers:
         )
         assert ranking.root is None
         assert ranking.n_rows == 0
+
+
+class TestRowCountGate:
+    """DAT-571: bound the in-memory frame by bottom-k-by-hash sampling over-large views."""
+
+    def test_oversized_view_is_sampled_and_logged(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # The 20k-row corpus with a 5k cap → exactly 5k rows analyzed, and a loud log
+        # naming the full + sampled counts (the cheap COUNT(*) drives the gate).
+        tid = _seed(real_session, duck)
+        with capture_logs() as logs:
+            ranking = discover_drivers(
+                real_session,
+                duckdb_conn=duck,
+                fact_table_id=tid,
+                run_id=RUN,
+                measure=Measure(target_type="flow", column="measure"),
+                n_perm=200,
+                max_rows=5_000,
+            )
+        assert ranking.n_rows == 5_000
+        sampled = [e for e in logs if e["event"] == "driver_rankings_view_sampled"]
+        assert sampled and sampled[0]["full_n"] == 20_000 and sampled[0]["sample_n"] == 5_000
+
+    def test_normal_view_takes_full_load_path(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # At/below the cap → the validated full-load path, untouched: every row, no log.
+        tid = _seed(real_session, duck)
+        with capture_logs() as logs:
+            ranking = discover_drivers(
+                real_session,
+                duckdb_conn=duck,
+                fact_table_id=tid,
+                run_id=RUN,
+                measure=Measure(target_type="flow", column="measure"),
+                n_perm=50,
+                max_rows=1_000_000,
+            )
+        assert ranking.n_rows == 20_000
+        assert not [e for e in logs if e["event"] == "driver_rankings_view_sampled"]
+
+    def test_sampled_ranking_is_deterministic_and_keeps_strong_driver(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # Bottom-k-by-hash is a total order → identical ranking across runs (no REPEATABLE
+        # or thread dependence). And the sample preserves the ordinal signal: the strong
+        # driver still surfaces (recall) while independent nulls stay gated (precision).
+        tid = _seed(real_session, duck)
+        measure = Measure(target_type="flow", column="measure")
+        first = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=measure,
+            n_perm=200,
+            max_rows=5_000,
+        )
+        second = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=measure,
+            n_perm=200,
+            max_rows=5_000,
+        )
+        assert first.ranked_dimensions == second.ranked_dimensions  # deterministic sample
+        sig = {d for d, _ in first.ranked_dimensions}
+        assert "D_e60" in sig  # strong driver survives sampling (recall)
+        assert "N_lowcard" not in sig and "N_highcard" not in sig  # nulls gated (precision)

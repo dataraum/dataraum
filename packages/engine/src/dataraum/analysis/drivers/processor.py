@@ -68,6 +68,12 @@ DEFAULT_ICC_THRESHOLD = 0.10
 # At entity grain a candidate group is evaluated only with at least this many ENTITIES
 # (the min_support analogue — power scales with entity count, not rows).
 DEFAULT_MIN_ENTITIES = 10
+# Above this row count the enriched view is sub-sampled before the in-memory load
+# (DAT-571). The bound is the pandas frame, NOT DuckDB's scan (which is memory_limit-
+# capped): ``.df()`` materializes string dims as Python objects (~50–80 B/value), so
+# ~800k rows × the (already pruned) candidate dims is the comfortable per-frame size
+# under the worker's concurrent activities. DAT-580 (arrow-backed load) will raise it.
+DEFAULT_MAX_ROWS = 800_000
 
 _TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
 
@@ -242,6 +248,7 @@ def discover_drivers(
     top_k_slices: int = DEFAULT_TOP_K_SLICES,
     icc_threshold: float = DEFAULT_ICC_THRESHOLD,
     min_entities: int = DEFAULT_MIN_ENTITIES,
+    max_rows: int = DEFAULT_MAX_ROWS,
 ) -> DriverRanking:
     """Rank the catalog's dimensions as drivers of ``measure`` over the enriched view.
 
@@ -290,9 +297,18 @@ def discover_drivers(
     (``measure − entity_mean``); ratio de-means the per-row ratio by its entity's
     volume-weighted mean (its pooled ``Σnum/Σden``).
 
-    NOTE: the ``(present_dims + measure)`` columns are read into memory at row grain
-    in one pass. At ~1M rows × ~15 dims that is several hundred MB; DAT-546 should add
-    a row-count gate before calling on very large views.
+    **Bounded load (DAT-571):** the ``(present_dims + measure)`` columns are read into
+    memory at row grain in one pass — at ~1M rows × ~15 dims that pandas frame is several
+    hundred MB. Above ``max_rows`` the view is deterministically sub-sampled to ``max_rows``
+    rows via a bottom-k-by-hash sketch (the N smallest row-hashes are a uniform sample
+    without replacement) rather than dropping the analysis: large finance/logistics facts
+    are exactly where drivers matter most. The sketch is deterministic regardless of DuckDB
+    thread count (``ORDER BY`` is a total order — ``REPEATABLE()`` only holds single-threaded,
+    which the shared multi-thread worker connection can't guarantee), and uniform PER ROW, so
+    unlike ``SYSTEM``/block sampling it does not shred the entity grain. Cost: the entity-grain
+    family loses power on weak drivers under sampling (the permutation null is recomputed on
+    the sample, so FDR holds — it degrades to a miss, never a fabricated driver). DAT-580
+    (arrow-backed load) will raise the ceiling so sampling becomes a rare fallback.
     """
     empty = DriverRanking(measure=measure.label, target_type=measure.target_type, n_rows=0)
 
@@ -335,7 +351,19 @@ def discover_drivers(
         if col not in view_cols:
             logger.info("driver_identity_not_in_view", identity=col, view=view)
     select_cols = list(dict.fromkeys(present_dims + measure_cols + present_proposed))
-    sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
+    cols_sql = ", ".join(quote(c) for c in select_cols)
+    # Bound the in-memory frame (DAT-571): a cheap COUNT(*) keeps normal-size views on
+    # the validated full-load path byte-for-byte; above max_rows, deterministically
+    # sub-sample to max_rows rows via a bottom-k-by-hash sketch instead of dropping the
+    # analysis. hash() is variadic over the selected columns, so identical rows hash
+    # alike and the cutoff is stable across runs and thread counts.
+    count_row = duckdb_conn.execute(f"SELECT COUNT(*) FROM {quote(view)}").fetchone()  # noqa: S608
+    n_full = int(count_row[0]) if count_row else 0
+    if n_full > max_rows:
+        logger.info("driver_rankings_view_sampled", view=view, full_n=n_full, sample_n=max_rows)
+        sql = f"SELECT {cols_sql} FROM {quote(view)} ORDER BY hash({cols_sql}) LIMIT {max_rows}"  # noqa: S608 — catalog identifiers
+    else:
+        sql = f"SELECT {cols_sql} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
 
     # The resolver path ICC-verifies the persisted identities (drop those the measure does

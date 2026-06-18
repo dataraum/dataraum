@@ -147,6 +147,27 @@ export const currentDimensionHierarchies = metadataSchema
 		sql`SELECT hierarchy_id, run_id, table_id, kind, members, canonical_label, signature, score, detection_source, needs_confirmation, created_at FROM ws_00000000_0000_0000_0000_000000000001.dimension_hierarchies r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
+export const currentDriverRankings = metadataSchema
+	.view("current_driver_rankings", {
+		rankingId: varchar("ranking_id"),
+		runId: varchar("run_id"),
+		measureTableId: varchar("measure_table_id"),
+		measureColumnId: varchar("measure_column_id"),
+		measureLabel: varchar("measure_label"),
+		targetType: varchar("target_type"),
+		grain: varchar(),
+		entity: varchar(),
+		nRows: integer("n_rows"),
+		rankedDimensions: json("ranked_dimensions"),
+		driverPaths: json("driver_paths"),
+		interestingSlices: json("interesting_slices"),
+		secondaryDimensions: json("secondary_dimensions"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	})
+	.as(
+		sql`SELECT ranking_id, run_id, measure_table_id, measure_column_id, measure_label, target_type, grain, entity, n_rows, ranked_dimensions, driver_paths, interesting_slices, secondary_dimensions, created_at FROM ws_00000000_0000_0000_0000_000000000001.driver_rankings r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentEnrichedViews = metadataSchema
 	.view("current_enriched_views", {
 		viewId: varchar("view_id"),

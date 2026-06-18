@@ -5,7 +5,7 @@
 // `DATARAUM_WORKSPACE_ID`, and `resolveActiveWorkspace()` returns it. The value
 // is still the env-designated workspace — what changes is that the cockpit_db
 // `workspaces` table is now the system of record (its row backs the FK on
-// `sessions.workspaceId`, and reads go through here). Per-request workspace
+// `runs.workspaceId`, and reads go through here). Per-request workspace
 // SELECTION (a switcher) is Phase 3 (DAT-357); tools have no per-request context
 // channel today (TanStack AI `.server((input)=>…)` passes only input), so a
 // single resolver is the correct seam now.
@@ -20,9 +20,10 @@ import { config } from "../../config";
 import { cockpitDb } from "./client";
 import { actors, workspaces } from "./schema";
 
-// The single coarse actor (DAT-460): no auth, no multi-user yet. `sessions`
-// stamp `createdBy` with this so attribution exists without engine-side actor_id
-// plumbing (the retired DAT-365). Real actors/auth are Phase 3 (DAT-357).
+// The single coarse actor (DAT-460): no auth, no multi-user yet. Seeded so the
+// attribution seam exists for when auth lands (DAT-357); run `createdBy` was carried
+// by the retired `sessions` table (DAT-562) and had no reader, so nothing stamps this
+// today. Real actors/auth are Phase 3 (DAT-357).
 export const DEFAULT_ACTOR_ID = "default";
 
 // The no-vertical placeholder a cold-start workspace is seeded with (DAT-505) —
@@ -80,7 +81,7 @@ async function ensureRegistry(workspaceId: string): Promise<void> {
  * The single seam the drivers use to route a workflow: it carries the per-workspace
  * task queue (`engine-<id>`) and the frame `vertical` alongside the id, so nothing
  * re-derives routing from the bare env var. Proven to exist as a `workspaces` row,
- * so `sessions.workspaceId` FKs resolve.
+ * so `runs.workspaceId` FKs resolve.
  */
 export async function resolveActiveWorkspaceRow(): Promise<ActiveWorkspace> {
 	const workspaceId = config.dataraumWorkspaceId;
@@ -107,7 +108,7 @@ export async function resolveActiveWorkspaceRow(): Promise<ActiveWorkspace> {
 /**
  * The active workspace id, read from the registry (seeding it on the cold path).
  * Returns the `DATARAUM_WORKSPACE_ID` value in Phase 1 — but proven to exist as
- * a `workspaces` row, so `sessions.workspaceId` FKs resolve. Thin wrapper over
+ * a `workspaces` row, so `runs.workspaceId` FKs resolve. Thin wrapper over
  * `resolveActiveWorkspaceRow` for call sites that need only the id.
  */
 export async function resolveActiveWorkspace(): Promise<string> {

@@ -76,10 +76,10 @@ describe("beginSession (DAT-409, routed via the journey — DAT-530)", () => {
 		const result = await beginSession({ table_ids: ["t1", "t2"] });
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
+		// One workflow id per workspace (DAT-562) — no minted session segment.
 		expect(h.signalled?.workspaceId).toBe(WS);
 		expect(h.signalled?.req).toEqual({
-			sessionId: result.session_id,
-			workflowId: `beginsession-${WS}-${result.session_id}`,
+			workflowId: `beginsession-${WS}`,
 			engineTaskQueue: `engine-${WS}`,
 			tables: ["t1", "t2"],
 			verticals: ["finance"],
@@ -87,7 +87,7 @@ describe("beginSession (DAT-409, routed via the journey — DAT-530)", () => {
 		});
 		// The tool returns the deterministic workflow id (run_id mirrors it — the
 		// journey owns the real execution id; progress resolves latest by id).
-		expect(result.workflow_id).toBe(`beginsession-${WS}-${result.session_id}`);
+		expect(result.workflow_id).toBe(`beginsession-${WS}`);
 		expect(result.run_id).toBe(result.workflow_id);
 		expect(result.table_ids).toEqual(["t1", "t2"]);
 	});
@@ -97,16 +97,6 @@ describe("beginSession (DAT-409, routed via the journey — DAT-530)", () => {
 		const result = await beginSession({ table_ids: ["t1"] });
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 		expect(h.signalled?.req.conversationId).toBeNull();
-	});
-
-	it("reuses a caller-supplied session id for the workflow id", async () => {
-		const result = await beginSession({
-			table_ids: ["t1"],
-			session_id: "sess-reuse",
-		});
-		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
-		expect(result.session_id).toBe("sess-reuse");
-		expect(h.signalled?.req.workflowId).toBe(`beginsession-${WS}-sess-reuse`);
 	});
 
 	it("throws when Temporal is unconfigured and signals nothing", async () => {

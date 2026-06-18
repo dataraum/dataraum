@@ -6,10 +6,14 @@
 // `ws_<id>` analytical schema (which the cockpit reads through ../metadata/).
 //
 // Control plane vs data plane (DD/32538626): the engine owns analytical data;
-// cockpit_db owns *who / which-workspace / which-session / which-runs*. Sessions
-// live HERE now (DAT-506) — the engine dropped `investigation_sessions`; the run's
-// table set is anchored engine-side by `run_tables` (keyed by `run_id`). `sessions`
-// is the session-of-record, keyed to a run-correlation id (`engineSessionId`).
+// cockpit_db owns *who / which-workspace / which-runs*. Post-DAT-506 the analytical
+// truth is the engine's per-table / catalog GENERATION heads; the cockpit's job is
+// purely run-grouping. DAT-562 RETIRED the `sessions` table: a cockpit "session" no
+// longer scoped anything (the id never went on the wire, no engine table carried it,
+// every stage resolves what it operates on from the heads — workspace-current), and
+// minting one per import only fragmented run-grouping. Runs now group by WORKSPACE
+// directly (`runs.workspaceId`), and workflow ids drop the session segment
+// (`addsource-<ws>` — see temporal/workflow-id.ts).
 //
 // Source of truth: this file. Migrations land in ../../../drizzle/cockpit/ via
 // `bun run db:generate:cockpit`, applied by `bun run db:migrate:cockpit` (the
@@ -31,10 +35,9 @@ import {
 /**
  * Who triggered control-plane work. A coarse identity seam (DAT-460): a single
  * seeded `default` row for now — NO auth, NO multi-user. Real actors/auth are
- * Phase 3 (DAT-357). `sessions.createdBy` references this so attribution exists
- * from day one without threading `actor_id` through the engine (the retired
- * DAT-365 approach — identity is a control-plane concern, kept out of the data
- * plane).
+ * Phase 3 (DAT-357). The registry seeds the `default` row; run attribution
+ * (`createdBy`) was carried by the retired `sessions` table (DAT-562) and had no
+ * reader, so it is reintroduced on `runs` only when auth lands.
  */
 export const actors = pgTable("actors", {
 	id: varchar("id").primaryKey(),
@@ -67,60 +70,33 @@ export const workspaces = pgTable("workspaces", {
 });
 
 /**
- * A control-plane session — the cockpit's record of an analytical session, the
- * session-of-record (DAT-506: the engine no longer has `investigation_sessions`).
- * `engineSessionId` (UNIQUE) is the run-correlation id the cockpit mints and keys
- * its workflow ids on (DAT-506 dropped the on-wire identity envelope — it is not
- * sent to the engine). begin_session/add_source/replay each create one;
- * operating_model REUSES begin_session's (looked up by `engineSessionId`). `kind`
- * is the run origin (onboarding | begin_session | replay); `status` carries the
- * lifecycle (active | ended | archived) that DAT-404 will drive.
- */
-export const sessions = pgTable(
-	"sessions",
-	{
-		id: varchar("id").primaryKey(),
-		workspaceId: varchar("workspace_id")
-			.notNull()
-			.references(() => workspaces.id),
-		engineSessionId: varchar("engine_session_id").notNull(),
-		kind: varchar("kind").notNull(),
-		status: varchar("status").notNull().default("active"),
-		createdBy: varchar("created_by")
-			.notNull()
-			.references(() => actors.id),
-		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
-		endedAt: timestamp("ended_at", { mode: "date" }),
-	},
-	(t) => [
-		// One cockpit session per engine session — the upsert key the tools use so
-		// operating_model's append (and any re-run) reuses the row instead of
-		// duplicating it.
-		uniqueIndex("sessions_engine_session_uq").on(t.engineSessionId),
-		index("sessions_workspace_idx").on(t.workspaceId),
-	],
-);
-
-/**
- * One Temporal run under a session — the reload-recovery substrate (DAT-462
- * reads non-terminal rows to re-attach progress). A session has 1:N runs:
- * re-runs / teach-replays append a new row. `stage` is the workflow that ran
- * (add_source | begin_session | operating_model); `(workflowId, runId)` is the
- * Temporal identity the progress widget polls, UNIQUE so an idempotent record
- * call can't double-insert.
+ * One Temporal run in a workspace — the reload-recovery substrate (DAT-462 reads
+ * non-terminal rows to re-attach progress) and the native monitor's row (DAT-550).
+ * Runs group by WORKSPACE directly (DAT-562 retired the per-import `sessions` row):
+ * every add_source / begin_session / operating_model run — fresh or a teach-replay —
+ * is one row, attributed to its workspace.
+ *
+ * `kind` is the run's ORIGIN (onboarding | begin_session | replay) — formerly the
+ * `sessions` row's origin, now the run's own truth (a run has exactly one origin).
+ * `stage` is the workflow that ran (add_source | begin_session | operating_model);
+ * `(workflowId, runId)` is the Temporal identity the progress widget polls, UNIQUE
+ * so an idempotent record call can't double-insert.
  *
  * `runId` is Temporal's EXECUTION runId (`firstExecutionRunId`) — what
  * `getHandle(workflowId, runId)` pins for the progress poll / reconcile. The engine
  * mints its OWN internal metadata `run_id` (the version axis, DAT-413) and resolves
  * replay from the generation heads, so the cockpit does not store it (DAT-506).
  */
-export const sessionRuns = pgTable(
-	"session_runs",
+export const runs = pgTable(
+	"runs",
 	{
 		id: varchar("id").primaryKey(),
-		sessionId: varchar("session_id")
+		workspaceId: varchar("workspace_id")
 			.notNull()
-			.references(() => sessions.id),
+			.references(() => workspaces.id),
+		// The run's origin (onboarding | begin_session | replay) — drives the
+		// monitor's label. Was the retired `sessions.kind`; a run has one origin.
+		kind: varchar("kind").notNull(),
 		stage: varchar("stage").notNull(),
 		workflowId: varchar("workflow_id").notNull(),
 		runId: varchar("run_id").notNull(),
@@ -152,10 +128,10 @@ export const sessionRuns = pgTable(
 		awaitingNote: text("awaiting_note"),
 	},
 	(t) => [
-		uniqueIndex("session_runs_workflow_run_uq").on(t.workflowId, t.runId),
-		index("session_runs_session_idx").on(t.sessionId),
+		uniqueIndex("runs_workflow_run_uq").on(t.workflowId, t.runId),
+		index("runs_workspace_idx").on(t.workspaceId),
 		// The run-routing filter (DAT-528): the watcher/reconcile scope by it.
-		index("session_runs_conversation_idx").on(t.conversationId),
+		index("runs_conversation_idx").on(t.conversationId),
 	],
 );
 

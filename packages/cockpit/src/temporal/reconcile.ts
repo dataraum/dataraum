@@ -1,7 +1,7 @@
 // Reload reconcile (DAT-462) — bridge cockpit_db's in-flight runs to Temporal.
 //
 // On cockpit load, a run may have FINISHED while the tab was closed: its
-// `session_runs` row still reads "running" but the workflow is long done. This
+// `runs` row still reads "running" but the workflow is long done. This
 // chat's loader fires the sweep for ITS conversation (DAT-528: conversation-scoped
 // — a chat reconciles its own runs); a run in another chat is swept when that chat
 // opens. The progress widget's own re-poll also terminates runs whose conversation

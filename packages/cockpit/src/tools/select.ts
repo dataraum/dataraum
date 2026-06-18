@@ -18,8 +18,8 @@
 //
 // Order inside the call: the source upsert(s); then the trigger (records the run
 // in cockpit_db, then the non-blocking workflow.start — temporal/trigger-add-
-// source.ts). The result carries the workflow/run/session ids so the progress
-// canvas member follows immediately. The vertical is a workspace property now
+// source.ts). The result carries the workflow/run ids so the progress canvas member
+// follows immediately. The vertical is a workspace property now
 // (DAT-506) — sourced by the trigger from the registry, NOT a select input, so
 // there is no per-add_source concept pre-flight.
 //
@@ -86,8 +86,8 @@ const STAGE_AFTER_SELECT = "add_source";
 const INITIAL_STATUS = "configured";
 
 /** The persisted Source descriptor + the started run's identity. The
- * workflow/run/session ids are what the progress canvas member keys its
- * `get_progress` poll on (tool-result-to-canvas.ts, replay precedent). */
+ * workflow/run ids are what the progress canvas member keys its `get_progress`
+ * poll on (tool-result-to-canvas.ts, replay precedent). */
 export const SelectResult = z.object({
 	// Every source `select` minted/UPSERTed for this selection — the SET the
 	// add_source run ingests (DAT-422). N for a file selection (one content-keyed
@@ -111,10 +111,10 @@ export const SelectResult = z.object({
 		.nullable(),
 	// The started addSourceWorkflow run (DAT-436: calling select STARTS the
 	// import). workflow_id + run_id pin the precise execution the progress
-	// canvas polls; session_id is the run's cockpit_db session.
+	// canvas polls (DAT-562 retired the cockpit session id — runs group by
+	// workspace, the workflow id is `addsource-<ws>`).
 	workflow_id: z.string(),
 	run_id: z.string(),
-	session_id: z.string(),
 });
 export type SelectResult = z.infer<typeof SelectResult>;
 
@@ -123,10 +123,7 @@ export type SelectResult = z.infer<typeof SelectResult>;
  * integration smoke drives `persistSelection` directly (row-shape contract
  * against a real Postgres; starting a real workflow is the compose smoke's
  * job). */
-export type PersistedSelection = Omit<
-	SelectResult,
-	"workflow_id" | "run_id" | "session_id"
->;
+export type PersistedSelection = Omit<SelectResult, "workflow_id" | "run_id">;
 
 export interface SelectInput {
 	// Database source only: the unique source name (lowercase, starts with a
@@ -414,7 +411,6 @@ export async function select(
 		...selection,
 		workflow_id: run.workflow_id,
 		run_id: run.run_id,
-		session_id: run.cockpit_session_id,
 	};
 }
 

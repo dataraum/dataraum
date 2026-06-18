@@ -8,8 +8,8 @@
 //   config_overlay  — the teach vocabulary IS overlay rows
 //   sql_snippets    — save-on-clean grows the snippet library (DAT-486)
 //
-// (DAT-506 removed `investigation_sessions` — sessions live in cockpit_db now,
-// and the engine dropped the table + its write grant.)
+// (DAT-506 removed `investigation_sessions` — the engine dropped the table + its
+// write grant; run-grouping is the cockpit's concern, in cockpit_db.)
 //
 // The engine bootstrap grants the reader role exactly these verbs on exactly
 // these tables (storage/read_views.py::_CONTROL_WRITE_GRANTS); everything else

@@ -141,7 +141,7 @@ export function isProgressDone(phase: string, status: string): boolean {
 }
 
 /**
- * The terminal cockpit `session_runs.status` for a DONE run. "completed" covers
+ * The terminal cockpit `runs.status` for a DONE run. "completed" covers
  * the clean exits — phase=="done" (the workflow finished even if describe()
  * hasn't flipped yet), an actual COMPLETED, and CONTINUED_AS_NEW (a handoff, not
  * a failure); everything else terminal (FAILED / TERMINATED / CANCELED /

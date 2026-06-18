@@ -5,55 +5,42 @@
 // and builds the child (`processTableWorkflow`) IDs off the same prefix (see
 // `dataraum.worker.contracts.{add_source_workflow_id,process_table_workflow_id}`).
 //
-// Every workflow ID encodes `workspace_id` as its first segment. Slice 1 runs
-// single-workspace so it's constant today, but threading it through now makes
-// slice 2+ multi-workspace routing a no-op and guarantees two workspaces sharing
-// a `session_id` never collide on a workflow ID. `workspace_id` is kept verbatim
-// (raw UUID with dashes) — Temporal IDs have no charset restriction, so we favour
-// grep-able IDs over the underscored `ws_<id>` schema form.
+// A workflow ID is `<stage>-<workspace_id>` — ONE id per stage per workspace
+// (DAT-562 retired the per-import `session_id` segment). `workspace_id` is kept
+// verbatim (raw UUID with dashes) — Temporal IDs have no charset restriction, so we
+// favour grep-able IDs over the underscored `ws_<id>` schema form — and guarantees
+// two workspaces never collide on an id.
 //
-// The `session_id` segment is COCKPIT-MINTED (DAT-506: sessions live in cockpit_db,
-// the engine no longer owns them and the id is not sent on the wire) — the cockpit's
-// own session-of-record id, used purely to make the workflow ID deterministic and
-// re-run-stable.
+// Why constant-per-workspace is correct (not too coarse): the per-workspace
+// JourneyWorkflow drains its triggers SERIALLY (one stage child at a time), so two
+// executions of the same stage are never open simultaneously — Temporal's
+// allow-duplicate-when-closed policy lets each re-run / replay reuse the id, and the
+// SDK groups the iterations under it. Distinct executions still record as distinct
+// `(workflowId, runId)` rows, so the monitor never loses a run. The engine builds
+// its child ids as `<parent_id>-table-<raw_id>` (an opaque prefix it never
+// re-parses), so the shorter parent id is engine-safe.
 
 /**
- * Workflow ID for the parent `addSourceWorkflow` of one run. A run ingests a SET
- * of objects from 1–N sources (DAT-422), so it is keyed by its cockpit-minted
- * `session_id` — the cockpit's session-of-record id — NOT a source, mirroring
- * `beginSessionWorkflowId`. Reused across teach replays of the same run (with
- * `ALLOW_DUPLICATE`) so Temporal groups the iterations under one ID.
+ * Workflow ID for the parent `addSourceWorkflow` of an import run (a fresh import
+ * or a replay). One id per workspace; re-runs / replays reuse it (the SDK groups
+ * the iterations, and the grounding-teach loop's replays already do).
  */
-export function addSourceWorkflowId(
-	workspaceId: string,
-	sessionId: string,
-): string {
-	return `addsource-${workspaceId}-${sessionId}`;
+export function addSourceWorkflowId(workspaceId: string): string {
+	return `addsource-${workspaceId}`;
 }
 
 /**
- * Workflow ID for the parent `beginSessionWorkflow` of one analytical session
- * (DAT-409). Keyed by the cockpit-minted `session_id` (begin_session is
- * source-free); reused across teach re-runs of the same session (with
- * `ALLOW_DUPLICATE`) so Temporal groups the iterations under one ID.
+ * Workflow ID for the parent `beginSessionWorkflow` (DAT-409). One id per
+ * workspace; re-running begin_session after a teach reuses it.
  */
-export function beginSessionWorkflowId(
-	workspaceId: string,
-	sessionId: string,
-): string {
-	return `beginsession-${workspaceId}-${sessionId}`;
+export function beginSessionWorkflowId(workspaceId: string): string {
+	return `beginsession-${workspaceId}`;
 }
 
 /**
- * Workflow ID for the `operatingModelWorkflow` of one analytical session
- * (DAT-438). Keyed by the cockpit-minted `session_id` like
- * `beginSessionWorkflowId` — the stage operates on the session's anchored table
- * set; reused across re-runs of the same session (with `ALLOW_DUPLICATE`) so
- * Temporal groups the iterations under one ID.
+ * Workflow ID for the `operatingModelWorkflow` (DAT-438). One id per workspace;
+ * the auto-cascade and the manual re-trigger share it.
  */
-export function operatingModelWorkflowId(
-	workspaceId: string,
-	sessionId: string,
-): string {
-	return `operatingmodel-${workspaceId}-${sessionId}`;
+export function operatingModelWorkflowId(workspaceId: string): string {
+	return `operatingmodel-${workspaceId}`;
 }

@@ -37,9 +37,8 @@ export const RUN_ADD_SOURCE_SIGNAL = "runAddSource";
  * — `onboarding` (select) and `replay` — unlike begin_session (always one kind);
  * the journey threads it to `recordRun`. */
 export interface RunAddSource {
-	/** Cockpit-minted session id (run-correlation key + workflow-id segment). */
-	sessionId: string;
-	/** The deterministic engine workflow id (tool-computed via addSourceWorkflowId). */
+	/** The deterministic engine workflow id (`addsource-<ws>`, tool-computed via
+	 * addSourceWorkflowId). One per workspace — DAT-562 retired the session segment. */
 	workflowId: string;
 	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
 	engineTaskQueue: string;
@@ -65,10 +64,9 @@ export const RUN_BEGIN_SESSION_SIGNAL = "runBeginSession";
  * the derived values and passes them, so the sandboxed journey stays free of any
  * workspace IO — it just orchestrates the child + records the run. */
 export interface RunBeginSession {
-	/** Cockpit-minted session id (the run-correlation key + workflow-id segment). */
-	sessionId: string;
-	/** The deterministic engine workflow id (tool-computed via beginSessionWorkflowId);
-	 * the journey starts the child + records the run under it. Stable across re-runs. */
+	/** The deterministic engine workflow id (`beginsession-<ws>`, tool-computed via
+	 * beginSessionWorkflowId); the journey starts the child + records the run under
+	 * it. One per workspace, stable across re-runs (DAT-562). */
 	workflowId: string;
 	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
 	engineTaskQueue: string;
@@ -88,13 +86,12 @@ export interface RunBeginSession {
 export const RUN_OPERATING_MODEL_SIGNAL = "runOperatingModel";
 
 /** Payload of `runOperatingModel`. Like {@link RunBeginSession} but for the third
- * stage — no `tables` (the engine re-reads the session's table set from the catalog
- * head; DAT-506). A manual re-trigger always runs (it is user-intentional, like
+ * stage — no `tables` (the engine re-reads the table set from the catalog head;
+ * DAT-506). A manual re-trigger always runs (it is user-intentional, like
  * begin_session — the breaker / auto-mode gate only the AUTONOMOUS cascade). */
 export interface RunOperatingModel {
-	/** The begin_session session to run the stage over (run-correlation key). */
-	sessionId: string;
-	/** The deterministic engine workflow id (tool-computed via operatingModelWorkflowId). */
+	/** The deterministic engine workflow id (`operatingmodel-<ws>`, tool-computed via
+	 * operatingModelWorkflowId). One per workspace (DAT-562). */
 	workflowId: string;
 	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
 	engineTaskQueue: string;

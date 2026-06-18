@@ -20,13 +20,11 @@
 //
 // The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
 // progress by workflow id — the latest execution; the real Temporal run id is owned
-// by the journey). A run ingests a SET of objects from 1–N sources (DAT-422), so the
-// workflow id is keyed by the cockpit session id (addsource-<workspace_id>-
-// <cockpitSessionId>), mirroring begin_session. The `verticals` ride on the FLAT
-// workflow INPUT, sourced from the workspace registry (DAT-506), NOT picked per
-// add_source — no identity envelope, no session/source id on the wire.
-
-import { randomUUID } from "node:crypto";
+// by the journey). The workflow id is `addsource-<workspace_id>` — one per workspace
+// (DAT-562 retired the per-import session segment); the serial per-workspace journey
+// makes re-runs reuse it safely. The `verticals` ride on the FLAT workflow INPUT,
+// sourced from the workspace registry (DAT-506), NOT picked per add_source — no
+// identity envelope, no session/source id on the wire.
 
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
@@ -45,9 +43,6 @@ export interface TriggerAddSourceResult {
 	workflow_id: string;
 	run_id: string;
 	sources: string[];
-	// The cockpit-side session-of-record id (cockpit_db `sessions`), NOT a wire
-	// field — the run's correlation key + the workflow-id segment.
-	cockpit_session_id: string;
 }
 
 /** The Temporal-unconfigured guard, mirroring begin-session.ts: Temporal config is
@@ -70,23 +65,20 @@ function requireTemporalConfig(): void {
  * child, narrating completion into the originating chat. The caller does NOT poll a
  * run id — progress resolves the latest execution by workflow id.
  *
- * No engine seed (DAT-506): sessions live in cockpit_db, the run's table set is
- * anchored by `run_tables` (keyed by `run_id`), and the `vertical` is the workspace
- * property from the registry.
+ * No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
+ * by `run_id`), and the `vertical` is the workspace property from the registry.
  */
 export async function triggerAddSource(
 	input: TriggerAddSourceInput,
 ): Promise<TriggerAddSourceResult> {
 	requireTemporalConfig();
 
-	const cockpitSessionId = randomUUID();
-
 	// The active workspace ROW, from the cockpit_db registry (DAT-461/505/506):
 	// the source of truth for the per-workspace task queue the child routes to AND
 	// the frame `vertical` (a workspace property chosen once — DAT-506 retired the
 	// per-add_source pick).
 	const workspace = await resolveActiveWorkspaceRow();
-	const workflowId = addSourceWorkflowId(workspace.id, cockpitSessionId);
+	const workflowId = addSourceWorkflowId(workspace.id);
 
 	// Signal the journey to run the stage (DAT-551). The tool passes the derived
 	// ids/queue + the source SET + verticals + the originating conversationId
@@ -95,7 +87,6 @@ export async function triggerAddSource(
 	// the engine child on the workspace's OWN queue (DAT-505). `kind: onboarding`
 	// marks the session origin (a fresh import, vs replay's "replay").
 	await signalRunAddSource(workspace.id, {
-		sessionId: cockpitSessionId,
 		workflowId,
 		engineTaskQueue: workspace.taskQueue,
 		sources: input.sources,
@@ -110,6 +101,5 @@ export async function triggerAddSource(
 		workflow_id: workflowId,
 		run_id: workflowId,
 		sources: input.sources,
-		cockpit_session_id: cockpitSessionId,
 	};
 }

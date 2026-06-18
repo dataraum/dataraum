@@ -3,8 +3,13 @@
 // The cockpit client uses Bun's `SQL` (bun:sql), so this is a `bun run` script,
 // NOT a vitest test (vitest runs under Node, which can't import `bun`). The unit
 // tests cover the writer LOGIC with a mocked Drizzle client; this exercises the
-// actual SQL — registry seed, the session upsert + run append, idempotency, and
-// the terminal-status update — end to end.
+// actual SQL — registry seed, recordRun, idempotency, attachRunId, and the
+// terminal-status update — end to end.
+//
+// DAT-562: the `sessions` / `session_runs` tables are retired. Runs group by
+// WORKSPACE directly — recordRun writes one `runs` row keyed by its deterministic
+// `workflowId`, the `kind` (origin) lives on the run row, and `(workflowId, runId)`
+// is UNIQUE so a re-record is a no-op. There is no ENGINE_SESSION concept.
 //
 // Prereqs: compose postgres up + the migration applied:
 //   docker compose -f packages/infra/docker-compose.yml up -d --wait postgres
@@ -18,20 +23,15 @@ import { and, eq } from "drizzle-orm";
 import { cockpitDb } from "#/db/cockpit/client";
 import { DEFAULT_ACTOR_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { attachRunId, markRunStatus, recordRun } from "#/db/cockpit/runs";
-import {
-	actors,
-	sessionRuns,
-	sessions,
-	workspaces,
-} from "#/db/cockpit/schema";
+import { actors, runs, workspaces } from "#/db/cockpit/schema";
 
-const ENGINE_SESSION = `smoke-461-${crypto.randomUUID()}`;
-// DAT-506: a run is recorded keyed by its deterministic workflowId; runId is the
-// workflowId placeholder until attachRunId. Two runs on one session → two distinct
-// workflowIds (the begin_session run + the operating_model run).
-const WF_1 = `beginsession-smoke-${ENGINE_SESSION}`;
-const WF_2 = `operatingmodel-smoke-${ENGINE_SESSION}`;
-const TEMPORAL_RUN = `${ENGINE_SESSION}-exec-1`;
+// DAT-562: a run is recorded keyed by its deterministic workflowId; runId is the
+// workflowId placeholder until attachRunId. Two stages on one workspace → two
+// distinct workflowIds (the begin_session run + the operating_model run).
+const SUFFIX = crypto.randomUUID();
+const WF_1 = `beginsession-smoke-${SUFFIX}`;
+const WF_2 = `operatingmodel-smoke-${SUFFIX}`;
+const TEMPORAL_RUN = `exec-1-${SUFFIX}`;
 
 async function main(): Promise<void> {
 	// 1. Registry seed + resolve.
@@ -54,69 +54,61 @@ async function main(): Promise<void> {
 		.limit(1);
 	assert.equal(actor?.id, DEFAULT_ACTOR_ID, "default actor seeded");
 
-	// 2. recordRun: creates a session + run; idempotent per (workflowId, runId);
-	//    a 2nd run on the same engine session appends + reuses the one session.
+	// 2. recordRun: writes one `runs` row (DAT-562) keyed by (workflowId, runId);
+	//    re-recording the same run is a UNIQUE no-op. The kind lives on the run row.
 	const base = {
 		workspaceId: wsId,
-		engineSessionId: ENGINE_SESSION,
 		kind: "begin_session",
 		stage: "begin_session",
 		workflowId: WF_1,
 	} as const;
 	await recordRun(base);
 	await recordRun(base); // re-record same run → UNIQUE no-op (runId=WF_1 placeholder)
-	const sess = await cockpitDb
-		.select({ id: sessions.id, kind: sessions.kind })
-		.from(sessions)
-		.where(eq(sessions.engineSessionId, ENGINE_SESSION));
-	assert.equal(sess.length, 1, "exactly one session row");
-	assert.equal(sess[0].kind, "begin_session", "session kind recorded");
-	const runsBefore = await cockpitDb
-		.select({ runId: sessionRuns.runId, status: sessionRuns.status })
-		.from(sessionRuns)
-		.where(eq(sessionRuns.sessionId, sess[0].id));
-	assert.equal(runsBefore.length, 1, "one run after idempotent re-record");
-	assert.equal(runsBefore[0].status, "running", "run starts running");
+	const wf1Rows = await cockpitDb
+		.select({ runId: runs.runId, status: runs.status, kind: runs.kind })
+		.from(runs)
+		.where(eq(runs.workflowId, WF_1));
+	assert.equal(wf1Rows.length, 1, "one run after idempotent re-record");
+	assert.equal(wf1Rows[0].kind, "begin_session", "run kind recorded on the row");
+	assert.equal(wf1Rows[0].status, "running", "run starts running");
 	// Provisional runId = the workflowId until attachRunId.
-	assert.equal(runsBefore[0].runId, WF_1, "runId is the workflowId placeholder");
+	assert.equal(wf1Rows[0].runId, WF_1, "runId is the workflowId placeholder");
 
 	// attachRunId rewrites the provisional runId to the Temporal execution id.
 	await attachRunId(WF_1, TEMPORAL_RUN);
 	const [attached] = await cockpitDb
-		.select({ runId: sessionRuns.runId })
-		.from(sessionRuns)
-		.where(eq(sessionRuns.workflowId, WF_1))
+		.select({ runId: runs.runId })
+		.from(runs)
+		.where(eq(runs.workflowId, WF_1))
 		.limit(1);
 	assert.equal(attached?.runId, TEMPORAL_RUN, "runId finalized to the exec id");
 
+	// A second stage with a DIFFERENT workflowId adds a second run row (same
+	// workspace) — runs group by workspace, not by a shared session.
 	await recordRun({ ...base, stage: "operating_model", workflowId: WF_2 });
-	const sessAfter = await cockpitDb
-		.select({ id: sessions.id })
-		.from(sessions)
-		.where(eq(sessions.engineSessionId, ENGINE_SESSION));
-	assert.equal(sessAfter.length, 1, "second run reuses the session");
-	const runsAfter = await cockpitDb
-		.select({ runId: sessionRuns.runId })
-		.from(sessionRuns)
-		.where(eq(sessionRuns.sessionId, sess[0].id));
-	assert.equal(runsAfter.length, 2, "second run appended");
+	const wsRuns = await cockpitDb
+		.select({ workflowId: runs.workflowId })
+		.from(runs)
+		.where(eq(runs.workspaceId, wsId));
+	assert.ok(
+		wsRuns.some((r) => r.workflowId === WF_1) &&
+			wsRuns.some((r) => r.workflowId === WF_2),
+		"second stage appended a second run row for the workspace",
+	);
 
 	// 3. markRunStatus: terminal transition (keyed by the finalized runId).
 	await markRunStatus(WF_1, TEMPORAL_RUN, "completed");
 	const [r] = await cockpitDb
-		.select({ status: sessionRuns.status })
-		.from(sessionRuns)
-		.where(
-			and(eq(sessionRuns.workflowId, WF_1), eq(sessionRuns.runId, TEMPORAL_RUN)),
-		)
+		.select({ status: runs.status })
+		.from(runs)
+		.where(and(eq(runs.workflowId, WF_1), eq(runs.runId, TEMPORAL_RUN)))
 		.limit(1);
 	assert.equal(r?.status, "completed", "run marked completed");
 
-	// Cleanup — leave the shared registry rows (workspace, default actor) intact.
-	await cockpitDb
-		.delete(sessionRuns)
-		.where(eq(sessionRuns.sessionId, sess[0].id));
-	await cockpitDb.delete(sessions).where(eq(sessions.id, sess[0].id));
+	// Cleanup — delete the test runs (by their workflow ids). Leave the shared
+	// registry rows (workspace, default actor) intact.
+	await cockpitDb.delete(runs).where(eq(runs.workflowId, WF_1));
+	await cockpitDb.delete(runs).where(eq(runs.workflowId, WF_2));
 
 	console.log("✓ DAT-461 lane smoke passed");
 }

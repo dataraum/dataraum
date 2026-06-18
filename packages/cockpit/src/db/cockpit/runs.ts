@@ -1,51 +1,45 @@
-// Control-plane run recording (DAT-461, DAT-506) — the driver tools call this
-// BEFORE a Temporal workflow starts to record the session + its run in cockpit_db.
+// Control-plane run recording (DAT-461, DAT-506, DAT-562) — the driver tools call
+// this BEFORE a Temporal workflow starts to record the run in cockpit_db.
 //
-// cockpit_db is the session-of-record now (DAT-506): the engine no longer has an
-// `investigation_sessions` table. This records the COCKPIT's view — which
-// workspace, who, and the `(workflowId, runId)` the reload-recovery substrate
-// (DAT-462) reads to re-attach progress.
+// Runs group by WORKSPACE (DAT-562 retired the `sessions` table — a cockpit session
+// scoped nothing post-DAT-506 and minting one per import only fragmented grouping).
+// This records the COCKPIT's view — which workspace, the run's origin/stage, and the
+// `(workflowId, runId)` the reload-recovery substrate (DAT-462) reads to re-attach
+// progress.
 //
 // AUTHORITATIVE, not best-effort (Q4 ruling, DAT-506): an unrecorded run is
-// orphaned — the reload-recovery substrate can't re-attach to it and there is no
-// session-of-record for it — so recordRun runs BEFORE `workflow.start` and THROWS
-// on failure, aborting the start. Idempotent so a retried start is safe: the
-// `sessions` upsert is conflict-safe (one row per engine session — operating_model
-// reuses begin_session's, re-runs reuse too), and `(workflowId, runId)` is UNIQUE
-// so a repeated record is a no-op. The COMPLETION-side writers (`markRunStatus` /
-// `claimRunNarration`) stay best-effort — by then the run is recorded and live.
+// orphaned — the reload-recovery substrate can't re-attach to it — so recordRun runs
+// BEFORE `workflow.start` and THROWS on failure, aborting the start. Idempotent so a
+// retried start is safe: `(workflowId, runId)` is UNIQUE so a repeated record is a
+// no-op. The COMPLETION-side writers (`markRunStatus` / `claimRunNarration`) stay
+// best-effort — by then the run is recorded and live.
 //
 // `runId` is Temporal's EXECUTION id (`firstExecutionRunId`, minted only at
 // `workflow.start`) — the poll/reconcile identity. The pre-start call records the
 // run keyed by its deterministic `workflowId` with `runId` left as the workflowId
 // placeholder; `attachRunId` rewrites it to the real execution id right after start.
-// That post-record writer is best-effort — the orphan-critical session + run rows
-// already exist by then. The engine mints its own internal metadata `run_id` (the
-// version axis) and resolves replay from the generation heads, so the cockpit never
-// stores it (DAT-506: nothing reads it back).
+// That post-record writer is best-effort — the orphan-critical run row already
+// exists by then. The engine mints its own internal metadata `run_id` (the version
+// axis) and resolves replay from the generation heads, so the cockpit never stores
+// it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, gt, isNull, notExists } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
-import { DEFAULT_ACTOR_ID } from "./registry";
-import { sessionRuns, sessions } from "./schema";
+import { runs } from "./schema";
 
-/** How a cockpit session originated — mirrors the run `kind`. */
-export type SessionKind = "onboarding" | "begin_session" | "replay";
+/** How a run originated (was the retired `sessions.kind`). */
+export type RunKind = "onboarding" | "begin_session" | "replay";
 /** Which workflow a run executed. */
 export type RunStage = "add_source" | "begin_session" | "operating_model";
 
 export interface RecordRunInput {
 	workspaceId: string;
-	// The engine's session-correlation id (the workflow-id segment + the value
-	// echoed back in results). The cockpit `sessions` row is keyed by it.
-	engineSessionId: string;
-	// The session's origin — used only when the session row is first created;
-	// ignored (onConflictDoNothing) when it already exists (operating_model /
-	// re-runs reuse the row).
-	kind: SessionKind;
+	// The run's origin — onboarding | begin_session | replay (DAT-562: stored on
+	// the run row itself; operating_model re-uses "begin_session", as before).
+	kind: RunKind;
 	stage: RunStage;
 	// The deterministic workflow id (known before start). The run row is keyed by
 	// it; `runId` is the workflowId placeholder until `attachRunId` finalizes it.
@@ -60,41 +54,18 @@ export interface RecordRunInput {
 }
 
 /**
- * Record the session + its run AUTHORITATIVELY, BEFORE `workflow.start`. Throws
- * on failure (the caller must not start an unrecorded — orphaned — run). The run
- * row's `runId` is the deterministic `workflowId` until `attachRunId` rewrites it
- * to the Temporal execution id post-start.
+ * Record the run AUTHORITATIVELY, BEFORE `workflow.start`. Throws on failure (the
+ * caller must not start an unrecorded — orphaned — run). The run row's `runId` is
+ * the deterministic `workflowId` until `attachRunId` rewrites it to the Temporal
+ * execution id post-start.
  */
 export async function recordRun(input: RecordRunInput): Promise<void> {
 	await cockpitDb
-		.insert(sessions)
+		.insert(runs)
 		.values({
 			id: randomUUID(),
 			workspaceId: input.workspaceId,
-			engineSessionId: input.engineSessionId,
 			kind: input.kind,
-			status: "active",
-			createdBy: DEFAULT_ACTOR_ID,
-		})
-		.onConflictDoNothing({ target: sessions.engineSessionId });
-
-	const [session] = await cockpitDb
-		.select({ id: sessions.id })
-		.from(sessions)
-		.where(eq(sessions.engineSessionId, input.engineSessionId))
-		.limit(1);
-	if (!session) {
-		throw new Error(
-			`[cockpit] recordRun could not resolve the session row for ` +
-				`${input.engineSessionId} — refusing to start an orphaned run`,
-		);
-	}
-
-	await cockpitDb
-		.insert(sessionRuns)
-		.values({
-			id: randomUUID(),
-			sessionId: session.id,
 			stage: input.stage,
 			workflowId: input.workflowId,
 			// Provisional until attachRunId: the Temporal execution runId isn't known
@@ -112,15 +83,21 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 					: currentConversationId(),
 			status: "running",
 		})
+		// Idempotent on the deterministic (workflowId, runId=workflowId) key. Workflow
+		// ids are constant-per-workspace now (DAT-562), so this also guards a second
+		// trigger for the same stage — but the per-workspace journey drains triggers
+		// SERIALLY (signal handling is FIFO; the next stage only starts after the
+		// prior child resolves + `attachRunId` has rewritten its provisional runId off
+		// the placeholder), so two adds never race for this one row in practice.
 		.onConflictDoNothing({
-			target: [sessionRuns.workflowId, sessionRuns.runId],
+			target: [runs.workflowId, runs.runId],
 		});
 }
 
 /**
  * Rewrite a recorded run's provisional `runId` (the workflowId placeholder) to
  * the real Temporal execution id, right after `workflow.start`. Best-effort: the
- * orphan-critical session + run rows already exist; this only refines the run's
+ * orphan-critical run row already exists; this only refines the run's
  * Temporal identity for the progress poll / reload-recovery.
  */
 export async function attachRunId(
@@ -129,14 +106,9 @@ export async function attachRunId(
 ): Promise<void> {
 	try {
 		await cockpitDb
-			.update(sessionRuns)
+			.update(runs)
 			.set({ runId })
-			.where(
-				and(
-					eq(sessionRuns.workflowId, workflowId),
-					eq(sessionRuns.runId, workflowId),
-				),
-			);
+			.where(and(eq(runs.workflowId, workflowId), eq(runs.runId, workflowId)));
 	} catch (err) {
 		console.warn(
 			`[cockpit] attachRunId failed for ${workflowId} (run ${runId}): ${err}`,
@@ -157,14 +129,9 @@ export async function markRunStatus(
 ): Promise<void> {
 	try {
 		await cockpitDb
-			.update(sessionRuns)
+			.update(runs)
 			.set({ status })
-			.where(
-				and(
-					eq(sessionRuns.workflowId, workflowId),
-					eq(sessionRuns.runId, runId),
-				),
-			);
+			.where(and(eq(runs.workflowId, workflowId), eq(runs.runId, runId)));
 	} catch (err) {
 		console.warn(
 			`[cockpit] markRunStatus failed for run ${runId} (${workflowId}): ${err}`,
@@ -177,7 +144,7 @@ export async function markRunStatus(
  * (DAT-551 P3c). The grounding-teach loop calls this when it has applied every
  * mechanical teach it can and a judgement gap remains (or it hit its attempt
  * limit): the run isn't failed — it's waiting for a human teach. Targets the most
- * recent execution for the workflow id (the current state), since a session's
+ * recent execution for the workflow id (the current state), since the workflow's
  * add_source has one run row per replay execution. Best-effort (mirrors
  * markRunStatus): a write error is logged, not thrown — the journey must not crash.
  */
@@ -187,16 +154,16 @@ export async function markRunAwaitingInput(
 ): Promise<void> {
 	try {
 		const [latest] = await cockpitDb
-			.select({ id: sessionRuns.id })
-			.from(sessionRuns)
-			.where(eq(sessionRuns.workflowId, workflowId))
-			.orderBy(desc(sessionRuns.startedAt))
+			.select({ id: runs.id })
+			.from(runs)
+			.where(eq(runs.workflowId, workflowId))
+			.orderBy(desc(runs.startedAt))
 			.limit(1);
 		if (!latest) return;
 		await cockpitDb
-			.update(sessionRuns)
+			.update(runs)
 			.set({ status: "awaiting_input", awaitingNote: note })
-			.where(eq(sessionRuns.id, latest.id));
+			.where(eq(runs.id, latest.id));
 	} catch (err) {
 		console.warn(
 			`[cockpit] markRunAwaitingInput failed for ${workflowId}: ${err}`,
@@ -219,16 +186,16 @@ export async function claimRunNarration(
 ): Promise<boolean> {
 	try {
 		const claimed = await cockpitDb
-			.update(sessionRuns)
+			.update(runs)
 			.set({ completionNarratedAt: new Date() })
 			.where(
 				and(
-					eq(sessionRuns.workflowId, workflowId),
-					eq(sessionRuns.runId, runId),
-					isNull(sessionRuns.completionNarratedAt),
+					eq(runs.workflowId, workflowId),
+					eq(runs.runId, runId),
+					isNull(runs.completionNarratedAt),
 				),
 			)
-			.returning({ id: sessionRuns.id });
+			.returning({ id: runs.id });
 		return claimed.length > 0;
 	} catch (err) {
 		console.warn(
@@ -258,17 +225,14 @@ export async function listNonTerminalRuns(
 ): Promise<Array<ActiveRun>> {
 	return cockpitDb
 		.select({
-			workflowId: sessionRuns.workflowId,
-			runId: sessionRuns.runId,
+			workflowId: runs.workflowId,
+			runId: runs.runId,
 		})
-		.from(sessionRuns)
+		.from(runs)
 		.where(
-			and(
-				eq(sessionRuns.conversationId, conversationId),
-				eq(sessionRuns.status, "running"),
-			),
+			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
 		)
-		.orderBy(desc(sessionRuns.startedAt))
+		.orderBy(desc(runs.startedAt))
 		.limit(limit);
 }
 
@@ -283,13 +247,10 @@ export async function listRunningStages(
 	conversationId: string,
 ): Promise<Array<RunStage>> {
 	const rows = await cockpitDb
-		.selectDistinct({ stage: sessionRuns.stage })
-		.from(sessionRuns)
+		.selectDistinct({ stage: runs.stage })
+		.from(runs)
 		.where(
-			and(
-				eq(sessionRuns.conversationId, conversationId),
-				eq(sessionRuns.status, "running"),
-			),
+			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
 		);
 	return rows.map((r) => r.stage as RunStage);
 }
@@ -321,61 +282,60 @@ export async function listWatchableRuns(
 ): Promise<Array<WatchableRun>> {
 	const rows = await cockpitDb
 		.select({
-			workflowId: sessionRuns.workflowId,
-			runId: sessionRuns.runId,
-			stage: sessionRuns.stage,
+			workflowId: runs.workflowId,
+			runId: runs.runId,
+			stage: runs.stage,
 		})
-		.from(sessionRuns)
+		.from(runs)
 		.where(
 			and(
-				eq(sessionRuns.conversationId, conversationId),
-				eq(sessionRuns.status, "running"),
-				isNull(sessionRuns.completionNarratedAt),
+				eq(runs.conversationId, conversationId),
+				eq(runs.status, "running"),
+				isNull(runs.completionNarratedAt),
 			),
 		)
-		.orderBy(desc(sessionRuns.startedAt))
+		.orderBy(desc(runs.startedAt))
 		.limit(limit);
 	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
 }
 
 /**
- * Whether the engine session has an in-flight run at `stage` (DAT-511). The
+ * Whether the workspace has an in-flight run at `stage` (DAT-511, DAT-562). The
  * `operating_model` tool pre-checks `begin_session` here so a user (or the
  * agent, mis-narrated per DAT-510) can't start the operating model against a
- * session that hasn't promoted yet — the engine guards the same precondition
- * born-loud (`resolve_operating_model_scope`); this check just turns the
- * workflow failure into a friendly in-chat sentence. Conservative on staleness:
+ * workspace whose begin_session hasn't promoted yet — the engine guards the same
+ * precondition born-loud (`resolve_operating_model_scope`); this check just turns
+ * the workflow failure into a friendly in-chat sentence. Conservative on staleness:
  * a crashed run lingering as `running` blocks until the reload reconcile
  * (`reconcileActiveRuns`) sweeps it terminal.
  */
 export async function hasRunningRun(
-	engineSessionId: string,
+	workspaceId: string,
 	stage: RunStage,
 ): Promise<boolean> {
 	const [row] = await cockpitDb
-		.select({ id: sessionRuns.id })
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.select({ id: runs.id })
+		.from(runs)
 		.where(
 			and(
-				eq(sessions.engineSessionId, engineSessionId),
-				eq(sessionRuns.stage, stage),
-				eq(sessionRuns.status, "running"),
+				eq(runs.workspaceId, workspaceId),
+				eq(runs.stage, stage),
+				eq(runs.status, "running"),
 			),
 		)
 		.limit(1);
 	return row !== undefined;
 }
 
-/** One run for the workspace-wide monitor (DAT-550). Joined to its session for
- * the workspace filter + the session `kind`. */
+/** One run for the workspace-wide monitor (DAT-550). `kind` is the run's own
+ * origin (DAT-562 — no session join). */
 export interface WorkspaceRun {
 	workflowId: string;
 	runId: string;
 	stage: RunStage;
 	status: string;
 	startedAt: Date;
-	kind: SessionKind;
+	kind: RunKind;
 	/** When status is `awaiting_input`, why the grounding loop parked it (DAT-551) —
 	 * the monitor shows it as the "needs you" detail. Null otherwise. */
 	awaitingNote: string | null;
@@ -383,10 +343,11 @@ export interface WorkspaceRun {
 
 /**
  * The workspace's runs, newest-first, BOUNDED — the native run monitor (DAT-550,
- * replacing the `/workflows` Temporal-UI iframe). WORKSPACE-scoped (joins
- * `sessions`), unlike the conversation-scoped queries above: the monitor is a
- * workspace-wide view of every stage run, independent of any chat. Bounded so a
- * long-lived workspace's run history can't dump an unbounded set into the page.
+ * replacing the `/workflows` Temporal-UI iframe). WORKSPACE-scoped directly
+ * (DAT-562 — runs carry `workspaceId`), unlike the conversation-scoped queries
+ * above: the monitor is a workspace-wide view of every stage run, independent of
+ * any chat. Bounded so a long-lived workspace's run history can't dump an unbounded
+ * set into the page.
  */
 export async function listRunsByWorkspace(
 	workspaceId: string,
@@ -394,23 +355,22 @@ export async function listRunsByWorkspace(
 ): Promise<Array<WorkspaceRun>> {
 	const rows = await cockpitDb
 		.select({
-			workflowId: sessionRuns.workflowId,
-			runId: sessionRuns.runId,
-			stage: sessionRuns.stage,
-			status: sessionRuns.status,
-			startedAt: sessionRuns.startedAt,
-			kind: sessions.kind,
-			awaitingNote: sessionRuns.awaitingNote,
+			workflowId: runs.workflowId,
+			runId: runs.runId,
+			stage: runs.stage,
+			status: runs.status,
+			startedAt: runs.startedAt,
+			kind: runs.kind,
+			awaitingNote: runs.awaitingNote,
 		})
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
-		.where(eq(sessions.workspaceId, workspaceId))
-		.orderBy(desc(sessionRuns.startedAt))
+		.from(runs)
+		.where(eq(runs.workspaceId, workspaceId))
+		.orderBy(desc(runs.startedAt))
 		.limit(limit);
 	return rows.map((r) => ({
 		...r,
 		stage: r.stage as RunStage,
-		kind: r.kind as SessionKind,
+		kind: r.kind as RunKind,
 	}));
 }
 
@@ -422,49 +382,46 @@ export async function listRunsByWorkspace(
 export async function countRunningRuns(workspaceId: string): Promise<number> {
 	const [row] = await cockpitDb
 		.select({ n: count() })
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
-		.where(
-			and(
-				eq(sessions.workspaceId, workspaceId),
-				eq(sessionRuns.status, "running"),
-			),
-		);
+		.from(runs)
+		.where(and(eq(runs.workspaceId, workspaceId), eq(runs.status, "running")));
 	return row?.n ?? 0;
 }
 
-/** One open "Needs you" item (DAT-553) — a session whose LATEST run is parked
+/** One open "Needs you" item (DAT-553) — a workflow whose LATEST run is parked
  * `awaiting_input` (the grounding loop hit a human-judgement gap or exhausted its
- * attempts). Carries the note (why it needs a human), the stage, and the engine
- * session id so the inbox can deep-link a resolve in a Stage chat. */
+ * attempts). Carries the note (why it needs a human) and the stage; `workflowId`
+ * keys the inbox row. */
 export interface AwaitingInputItem {
 	workflowId: string;
 	stage: RunStage;
 	awaitingNote: string | null;
-	engineSessionId: string;
 	startedAt: Date;
 }
 
 /**
- * The "open item" predicate (DAT-553): an `awaiting_input` run in this workspace
- * that is still its SESSION's LATEST run. The `NOT EXISTS` newer-run guard is what
- * makes the inbox SELF-CLEARING — a human teach + replay appends a newer run for
- * the session, so the parked item drops off automatically (no dismiss lifecycle).
- * Shared by the list + count so the two surfaces can never disagree on "open".
+ * The "open item" predicate (DAT-553, fixed by DAT-562): an `awaiting_input` run in
+ * this workspace that is still its WORKFLOW's LATEST run. The `NOT EXISTS` newer-run
+ * guard makes the inbox SELF-CLEARING — a human teach + replay reuses the parked
+ * import's workflow id (`addsource-<ws>`) and appends a newer run, so the parked
+ * item drops off automatically (no dismiss lifecycle). Keying on `workflowId` (not
+ * the retired per-import session) is what makes the HUMAN replay path clear it: under
+ * the old session-scoped predicate a replay minted a new session, so the parked item
+ * never saw a newer run and never cleared. Shared by the list + count so the two
+ * surfaces can never disagree on "open".
  */
 function openAwaitingItem(workspaceId: string) {
-	const newer = alias(sessionRuns, "newer_run");
+	const newer = alias(runs, "newer_run");
 	return and(
-		eq(sessions.workspaceId, workspaceId),
-		eq(sessionRuns.status, "awaiting_input"),
+		eq(runs.workspaceId, workspaceId),
+		eq(runs.status, "awaiting_input"),
 		notExists(
 			cockpitDb
 				.select({ id: newer.id })
 				.from(newer)
 				.where(
 					and(
-						eq(newer.sessionId, sessionRuns.sessionId),
-						gt(newer.startedAt, sessionRuns.startedAt),
+						eq(newer.workflowId, runs.workflowId),
+						gt(newer.startedAt, runs.startedAt),
 					),
 				),
 		),
@@ -473,7 +430,7 @@ function openAwaitingItem(workspaceId: string) {
 
 /**
  * The workspace's open "Needs you" items, newest-first, BOUNDED — the inbox panel
- * (DAT-553). Self-clearing via `openAwaitingItem` (latest-run-per-session). The run
+ * (DAT-553). Self-clearing via `openAwaitingItem` (latest-run-per-workflow). The run
  * monitor (DAT-550/551) still shows these PASSIVELY as "Needs input"; this is the
  * ACTIVE worklist read. Bounded so a long-lived workspace can't dump an unbounded
  * set into the page.
@@ -484,16 +441,14 @@ export async function listAwaitingInput(
 ): Promise<Array<AwaitingInputItem>> {
 	const rows = await cockpitDb
 		.select({
-			workflowId: sessionRuns.workflowId,
-			stage: sessionRuns.stage,
-			awaitingNote: sessionRuns.awaitingNote,
-			engineSessionId: sessions.engineSessionId,
-			startedAt: sessionRuns.startedAt,
+			workflowId: runs.workflowId,
+			stage: runs.stage,
+			awaitingNote: runs.awaitingNote,
+			startedAt: runs.startedAt,
 		})
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.from(runs)
 		.where(openAwaitingItem(workspaceId))
-		.orderBy(desc(sessionRuns.startedAt))
+		.orderBy(desc(runs.startedAt))
 		.limit(limit);
 	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
 }
@@ -506,8 +461,7 @@ export async function listAwaitingInput(
 export async function countAwaitingInput(workspaceId: string): Promise<number> {
 	const [row] = await cockpitDb
 		.select({ n: count() })
-		.from(sessionRuns)
-		.innerJoin(sessions, eq(sessionRuns.sessionId, sessions.id))
+		.from(runs)
 		.where(openAwaitingItem(workspaceId));
 	return row?.n ?? 0;
 }

@@ -2,7 +2,7 @@
 // a SSR-safe timestamp format. Extracted as a .ts module with its own tests
 // (cockpit React rule 10); the component stays a pure render over these.
 
-/** Human label for a run stage (the `session_runs.stage` varchar). */
+/** Human label for a run stage (the `runs.stage` varchar). */
 const STAGE_LABEL: Record<string, string> = {
 	add_source: "Add source",
 	begin_session: "Begin session",

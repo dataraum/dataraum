@@ -145,11 +145,9 @@ async function runChildStage(
 		workflowId: string;
 		taskQueue: string;
 		stage: "add_source" | "begin_session" | "operating_model";
-		// The session origin for recordRun (ignored on conflict — operating_model
-		// reuses begin_session's row): add_source carries onboarding|replay; the
-		// later stages reuse "begin_session".
+		// The run's origin for recordRun (DAT-562 — stored on the run row): add_source
+		// carries onboarding|replay; the later stages use "begin_session".
 		kind: "onboarding" | "begin_session" | "replay";
-		engineSessionId: string;
 		conversationId: string | null;
 		args: unknown[];
 	},
@@ -163,7 +161,6 @@ async function runChildStage(
 		// is what keeps the completion narrating into the originating chat (DAT-528).
 		await recordRun({
 			workspaceId,
-			engineSessionId: spec.engineSessionId,
 			kind: spec.kind,
 			stage: spec.stage,
 			workflowId: spec.workflowId,
@@ -210,7 +207,6 @@ function runAddSourceStage(
 		taskQueue: req.engineTaskQueue,
 		stage: "add_source",
 		kind: req.kind,
-		engineSessionId: req.sessionId,
 		conversationId: req.conversationId,
 		args: [
 			{
@@ -233,7 +229,6 @@ function runBeginSessionStage(
 		taskQueue: req.engineTaskQueue,
 		stage: "begin_session",
 		kind: "begin_session",
-		engineSessionId: req.sessionId,
 		conversationId: req.conversationId,
 		args: [
 			{
@@ -257,9 +252,8 @@ function runOperatingModelStage(
 		workflowId: om.workflowId,
 		taskQueue: om.engineTaskQueue,
 		stage: "operating_model",
-		// Reuses begin_session's session row (recordRun ignores kind on conflict).
+		// The OM run's origin (DAT-562 — stored on the run row, like begin_session's).
 		kind: "begin_session",
-		engineSessionId: om.sessionId,
 		conversationId: om.conversationId,
 		args: [{ workspace_id: workspaceId, verticals: om.verticals }],
 	});
@@ -319,7 +313,7 @@ async function runGroundingLoop(
 			return replays;
 		}
 
-		// action === "replay": re-run add_source for the SAME session to apply the
+		// action === "replay": re-run add_source for the SAME workspace to apply the
 		// teaches + re-measure. A failed replay stops the loop (the run is marked).
 		// conversationId=null: these are INTERNAL autonomous re-runs — they must NOT
 		// each fire the completion-watcher's "import finished" narration (the user
@@ -443,8 +437,7 @@ export async function journeyWorkflow(
 			fold(
 				(
 					await runOperatingModelStage(workspaceId, {
-						sessionId: req.sessionId,
-						workflowId: operatingModelWorkflowId(workspaceId, req.sessionId),
+						workflowId: operatingModelWorkflowId(workspaceId),
 						engineTaskQueue: req.engineTaskQueue,
 						verticals: req.verticals,
 						conversationId: req.conversationId,

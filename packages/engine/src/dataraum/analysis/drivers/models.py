@@ -61,19 +61,25 @@ class DriverSlice:
 
 @dataclass(frozen=True)
 class SecondaryDriver:
-    """A significant dim from the NON-primary grain family (DAT-561).
+    """A significant dim from a NON-primary grain family (DAT-561/563).
 
-    The cluster-aware search runs two families — entity-constant candidates at entity
-    grain, row-level candidates row-wise — and reports the one selected by ICC as the
-    primary tree. The other family's significant dims land here instead of in
-    ``ranked_dimensions``: their gains were computed at a different exchangeable grain
-    (``grain``), so they are NOT comparable to the primary tree's gains and must not be
-    folded into the same ranking. A flat labeled list, strongest first.
+    The cluster-aware search runs one family per resolved entity (entity-constant
+    candidates at that entity's grain) plus a row-level family, and reports ONE as the
+    primary tree (the highest-ICC entity, or row-wise when nothing clusters). Every
+    other family's significant dims land here instead of in ``ranked_dimensions``: their
+    gains were computed at a different exchangeable grain (``grain``), so they are NOT
+    comparable to the primary tree's gains and must not be folded into the same ranking.
+    A flat labeled list, strongest first.
+
+    ``entity`` names the identity column whose grain this dim was ranked at (DAT-563
+    N-entity routing) — ``None`` for the row-level family. It disambiguates the now-many
+    ``grain == "entity"`` families (one per resolved identity: customer, product, …).
     """
 
     dimension: str
     gain: float
     grain: str  # the exchangeable unit this dim's null used: "entity" or "row"
+    entity: str | None = None  # the identity column this dim's entity grain belongs to
 
 
 @dataclass(frozen=True)
@@ -104,22 +110,29 @@ class DriverRanking:
     slices across the tree, strongest first.
 
     ``grain`` is the exchangeable unit the PRIMARY family's null used: ``"row"`` (the
-    default) or ``"entity"`` when the cluster-aware path made the entity-grain family
-    primary (DAT-552/561). ``n_rows`` is the count of those units (rows, or entities at
-    entity grain) — i.e. the effective sample size the power scales with, so a "no
-    significant driver" result on few entities is honestly attributable.
+    default) or ``"entity"`` when the cluster-aware path made an entity-grain family
+    primary (DAT-552/561). ``entity`` names WHICH identity column that entity grain
+    belongs to (DAT-563) — ``None`` at row grain; with N resolved identities the primary
+    is the highest-ICC one, so the headline must say which. ``n_rows`` is the count of
+    those units (rows, or entities at entity grain) — i.e. the effective sample size the
+    power scales with, so a "no significant driver" result on few entities is honestly
+    attributable.
 
-    ``secondary_dimensions`` carries the OTHER grain family's significant dims when a
-    ``cluster_key`` is present (DAT-561 candidate-grain routing): entity-constant
-    candidates always run at entity grain, row-level candidates row-wise, and the family
-    not chosen as primary (by ICC) surfaces here as a flat grain-labeled list — never
-    mixed into ``ranked_dimensions``/``root`` (the grains are not cross-comparable).
+    ``secondary_dimensions`` carries every NON-primary grain family's significant dims
+    when cluster keys are present (DAT-561/563 home-grain routing): each candidate is
+    ranked at exactly one home grain — the entity it is constant within (entity grain) or
+    row-wise — and one family is chosen primary (the highest-ICC entity, or row-wise when
+    nothing clusters). All other families surface here as a flat list, each
+    ``SecondaryDriver`` labeled with its ``grain`` and ``entity`` — never mixed into
+    ``ranked_dimensions``/``root`` (the grains are not cross-comparable). With N=1 this is
+    exactly DAT-561's primary/secondary split.
     """
 
     measure: str
     target_type: str
     n_rows: int
     grain: str = "row"
+    entity: str | None = None  # which identity the primary entity grain belongs to (DAT-563)
     ranked_dimensions: list[tuple[str, float]] = field(default_factory=list)
     root: DriverNode | None = None
     driver_paths: list[list[str]] = field(default_factory=list)

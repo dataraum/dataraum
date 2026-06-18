@@ -159,6 +159,12 @@ def _icc_measure(frame: pd.DataFrame, measure: Measure) -> np.ndarray:
         return np.where(valid, num / np.where(valid, den, 1.0), np.nan)
 
 
+def _entity_icc(frame: pd.DataFrame, entity: str, measure: Measure) -> float:
+    """The measure's ICC (η² between entities) for one identity column (DAT-563)."""
+    codes, uniques = pd.factorize(frame[entity])
+    return intraclass_correlation(codes.astype(int), len(uniques), _icc_measure(frame, measure))
+
+
 def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
     """Build the row-aligned target from the measure's columns in ``frame``."""
     if measure.target_type in ("flow", "stock"):
@@ -180,7 +186,7 @@ def discover_drivers(
     fact_table_id: str,
     run_id: str,
     measure: Measure,
-    cluster_key: str | None = None,
+    cluster_keys: list[str] | None = None,
     seed: int = 0,
     max_depth: int = DEFAULT_MAX_DEPTH,
     alpha: float = DEFAULT_ALPHA,
@@ -200,27 +206,35 @@ def discover_drivers(
     two candidate dims survive in the view, or the measure columns are absent
     (a catalog/view skew is logged, not fatal).
 
-    **Cluster-aware candidate-grain routing (DAT-552/561):** when ``cluster_key`` names
-    a repeated-entity column, candidates are routed by their **within-entity
-    constancy**, not by the measure's global ICC:
+    **Cluster-aware home-grain routing (DAT-552/561/563):** ``cluster_keys`` names the
+    fact's recurring identity columns (customer, product, …) — one entity grain each.
+    Each candidate is routed to its **home grain**, by within-entity constancy, not by
+    the measure's global ICC:
 
-    - **Entity-constant** candidates (one value per entity) take the **entity-grain**
-      null ALWAYS — collapse to one row per entity, permute entities. The row-wise null
-      is structurally invalid for them at any ICC > 0 (their groups are whole entities,
-      so correlated within-entity rows would be counted as independent — DAT-561).
-    - **Row-level** candidates (vary within entity) take the **row-wise** null, which is
-      valid for them at any ICC (it just loses power as the measure clusters — see the
-      de-mean power add-on below).
+    - A candidate **constant within entity E** (one value per E) takes E's **entity-grain**
+      null — collapse to one row per E, permute entities. The row-wise null is
+      structurally invalid for it at any ICC > 0 (its groups are whole entities, so
+      correlated within-entity rows would be counted as independent — DAT-561). Constant
+      within several entities → its home is the **finest** (highest-cardinality) one.
+    - A candidate **constant within none** is row-level and takes the **row-wise** null,
+      valid at any ICC (it just loses power as the measure clusters — see the de-mean
+      power add-on below).
 
-    The two families are merged into one ranking: the **primary** family (its tree,
-    paths, slices, ``ranked_dimensions``, and ``grain``) is the one selected by the
-    measure's ICC — entity grain above ``icc_threshold`` (the between-entity story is
-    the headline), row-wise below; the **secondary** family's significant dims are
-    exposed as ``secondary_dimensions`` (a flat grain-labeled list, not folded into the
-    primary ranking — the grains are not cross-comparable). Ratio routes the same way
-    (entity statistic = Σnum/Σden, weight = Σden). With no ``cluster_key`` the plain
-    row-wise null (DAT-545) is used. ``max_depth`` applies to the row-wise family; the
-    entity grain always uses ``max_depth=1`` (recursion there is low-power).
+    One family per entity-with-home-dims plus a row-level family are assembled into one
+    ranking: the **primary** (its tree, paths, slices, ``ranked_dimensions``, ``grain``)
+    is the highest-ICC entity above ``icc_threshold`` (the between-entity story is the
+    headline), else row-wise; every other family's significant dims are exposed as
+    ``secondary_dimensions`` — a flat list, each labeled with its ``grain`` and
+    ``entity`` (not folded into the primary ranking — the grains are not cross-comparable).
+    Ratio routes the same way (entity statistic = Σnum/Σden, weight = Σden). With no
+    ``cluster_keys`` the plain row-wise null (DAT-545) is used. ``max_depth`` applies to
+    the row-wise family; the entity grain always uses ``max_depth=1`` (recursion there is
+    low-power). N=1 reduces exactly to the DAT-561 primary/secondary split.
+
+    **v1 limit (crossed effects):** a candidate constant within NO single entity but
+    clustered on two at once cannot be fully de-clustered by a single-entity de-mean; it
+    is handled row-wise, de-meaned against the highest-ICC entity only. Per-entity
+    marginals are surfaced; there is no joint two-way model.
 
     **Power add-on (DAT-561):** under HIGH ICC the row-level (secondary) family's
     row-wise null on the raw measure has little power — the between-entity variance is
@@ -258,22 +272,25 @@ def discover_drivers(
         logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
         return empty
 
-    # The cluster key is read alongside if it exists in the view (DAT-552).
-    cluster_col = cluster_key if (cluster_key and cluster_key in view_cols) else None
-    select_cols = present_dims + measure_cols + ([cluster_col] if cluster_col else [])
+    # The resolved identity columns are read alongside, deduped, and filtered to those
+    # present in the view (DAT-552/563). Phase 2 resolves them from ``identity_columns``
+    # when the caller passes none; an explicit list (tests / override) is used verbatim.
+    present_cluster_keys = [k for k in (cluster_keys or []) if k in view_cols]
+    select_cols = list(dict.fromkeys(present_dims + measure_cols + present_cluster_keys))
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
 
-    # Cluster-aware candidate-grain routing (DAT-561): a declared entity column splits
-    # the candidates by within-entity constancy and runs two grain families; the
-    # measure's ICC only picks which is primary. With no cluster_key, the plain
-    # row-wise null (DAT-545) over all candidates.
-    if cluster_col is not None:
+    # Cluster-aware home-grain routing (DAT-561/563): each resolved identity column is an
+    # entity grain; candidates are routed to their home grain (the entity they are
+    # constant within) and ranked there, row-level candidates row-wise; the highest-ICC
+    # entity (or row-wise when nothing clusters) is primary. With no identities, the
+    # plain row-wise null (DAT-545) over all candidates.
+    if present_cluster_keys:
         return _routed_ranking(
             frame,
             present_dims,
             measure,
-            cluster_col,
+            present_cluster_keys,
             seed=seed,
             max_depth=max_depth,
             alpha=alpha,
@@ -396,31 +413,37 @@ def _within_entity_ratio_residual(
     return residual, weight
 
 
-def _merge_secondary(
-    primary: DriverRanking | None, secondary: DriverRanking | None
-) -> DriverRanking:
-    """Fold the secondary family's significant dims into ``primary`` as a labeled list.
+def _home_grain_partition(
+    frame: pd.DataFrame, cluster_keys: list[str], dims: list[str]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Assign each candidate its HOME grain — the entity it is constant within (DAT-563).
 
-    The ICC-preferred family is primary; if it has no candidate dims the other becomes
-    primary (so a real driver in the only populated family is never hidden behind an
-    empty primary). The remaining family contributes ``secondary_dimensions`` only —
-    its gains are at a different grain, never mixed into the primary ranking.
+    Per entity, reuse the validated :func:`_partition_by_entity_constancy` nunique logic
+    to find the dims constant within it. A dim constant within ONE entity homes there; a
+    dim constant within SEVERAL homes at the **finest** (highest-cardinality) one — the
+    most specific grain — with a deterministic name tiebreak; a dim constant within none
+    is row-level. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
     """
-    if primary is None:
-        primary, secondary = secondary, None
-    if primary is None:  # neither family had candidate dims (caller guarantees ≥2 total)
-        raise AssertionError("candidate-grain routing produced no family")
-    if secondary is None:
-        return primary
-    labeled = [SecondaryDriver(d, g, secondary.grain) for d, g in secondary.ranked_dimensions]
-    return replace(primary, secondary_dimensions=labeled)
+    card = {e: int(frame[e].nunique()) for e in cluster_keys}
+    constant_within = {
+        e: set(_partition_by_entity_constancy(frame, e, dims)[0]) for e in cluster_keys
+    }
+    home_by_entity: dict[str, list[str]] = {e: [] for e in cluster_keys}
+    row_dims: list[str] = []
+    for d in dims:
+        homes = [e for e in cluster_keys if d in constant_within[e]]
+        if not homes:
+            row_dims.append(d)
+            continue
+        home_by_entity[max(homes, key=lambda e: (card[e], e))].append(d)
+    return {e: ds for e, ds in home_by_entity.items() if ds}, row_dims
 
 
 def _routed_ranking(
     frame: pd.DataFrame,
     dims: list[str],
     measure: Measure,
-    cluster_key: str,
+    cluster_keys: list[str],
     *,
     seed: int,
     max_depth: int,
@@ -432,61 +455,89 @@ def _routed_ranking(
     icc_threshold: float,
     min_entities: int,
 ) -> DriverRanking:
-    """Route candidates to two grain families and merge primary (by ICC) + secondary."""
-    ent_codes, ent_uniques = pd.factorize(frame[cluster_key])
-    icc = intraclass_correlation(
-        ent_codes.astype(int), len(ent_uniques), _icc_measure(frame, measure)
-    )
-    high_icc = icc > icc_threshold
-    entity_dims, row_dims = _partition_by_entity_constancy(frame, cluster_key, dims)
+    """Route candidates to per-entity home grains + row-wise; primary = highest-ICC entity.
+
+    Reuse-orchestrate (DAT-563): the validated :func:`_entity_grain_ranking` and
+    :func:`_row_wise_ranking` are called verbatim, once per family. N=1 reduces exactly to
+    the DAT-561 two-family split. Each family carries ``(ranking, grain, entity)``; the
+    primary is the highest-ICC entity family when the measure clusters, the row family
+    otherwise (with low-ICC entity families behind it as a deterministic fallback). Every
+    non-primary family's dims surface as grain+entity-labeled ``secondary_dimensions``.
+    """
+    icc_by_entity = {e: _entity_icc(frame, e, measure) for e in cluster_keys}
+    top_entity = max(cluster_keys, key=lambda e: (icc_by_entity[e], e))
+    high_icc = icc_by_entity[top_entity] > icc_threshold
+    home_by_entity, row_dims = _home_grain_partition(frame, cluster_keys, dims)
     logger.info(
-        "driver_candidate_grain_routing",
-        cluster_key=cluster_key,
-        icc=round(icc, 3),
-        n_entities=len(ent_uniques),
-        primary="entity" if high_icc else "row",
-        entity_constant=entity_dims,
+        "driver_home_grain_routing",
+        cluster_keys=cluster_keys,
+        icc={e: round(v, 3) for e, v in icc_by_entity.items()},
+        n_entities={e: int(frame[e].nunique()) for e in cluster_keys},
+        primary=f"entity:{top_entity}" if high_icc else "row",
+        home_dims=home_by_entity,
         row_level=row_dims,
     )
 
-    entity_ranking = (
-        _entity_grain_ranking(
-            frame,
-            entity_dims,
-            measure,
-            cluster_key,
-            seed=seed,
-            alpha=alpha,
-            n_perm=n_perm,
-            top_k_slices=top_k_slices,
-            min_entities=min_entities,
+    # One family per entity-with-home-dims (deterministic seed by sorted name), plus the
+    # row-level family. The row family de-means within the highest-ICC entity ONLY under
+    # high ICC (the DAT-561 power add-on; the v1 crossed-effects limit lives here).
+    families: list[tuple[DriverRanking, str, str | None]] = []
+    for i, e in enumerate(sorted(home_by_entity)):
+        families.append(
+            (
+                _entity_grain_ranking(
+                    frame,
+                    home_by_entity[e],
+                    measure,
+                    e,
+                    seed=seed + i,
+                    alpha=alpha,
+                    n_perm=n_perm,
+                    top_k_slices=top_k_slices,
+                    min_entities=min_entities,
+                ),
+                "entity",
+                e,
+            )
         )
-        if entity_dims
-        else None
-    )
-    # The row-level family de-means within entity ONLY under high ICC (the power add-on);
-    # at low ICC the raw measure is already powered and stays the primary tree as-is.
-    row_ranking = (
-        _row_wise_ranking(
-            frame,
-            row_dims,
-            measure,
-            seed=seed + 1,  # an independent permutation stream from the entity family
-            max_depth=max_depth,
-            alpha=alpha,
-            min_support=min_support,
-            missingness_gate=missingness_gate,
-            n_perm=n_perm,
-            top_k_slices=top_k_slices,
-            cluster_key=cluster_key if high_icc else None,
+    if row_dims:
+        families.append(
+            (
+                _row_wise_ranking(
+                    frame,
+                    row_dims,
+                    measure,
+                    seed=seed + len(cluster_keys),
+                    max_depth=max_depth,
+                    alpha=alpha,
+                    min_support=min_support,
+                    missingness_gate=missingness_gate,
+                    n_perm=n_perm,
+                    top_k_slices=top_k_slices,
+                    cluster_key=top_entity if high_icc else None,
+                ),
+                "row",
+                None,
+            )
         )
-        if row_dims
-        else None
-    )
 
-    if high_icc:
-        return _merge_secondary(entity_ranking, row_ranking)
-    return _merge_secondary(row_ranking, entity_ranking)
+    # Primary precedence: high-ICC entity families (by ICC desc) → row family → low-ICC
+    # entity families. The first is the headline; the rest become labeled secondaries.
+    def precedence(fam: tuple[DriverRanking, str, str | None]) -> tuple[int, float, str]:
+        _ranking, grain, entity = fam
+        if grain == "entity":
+            ic = icc_by_entity[entity]  # type: ignore[index]
+            return (0 if ic > icc_threshold else 2, -ic, entity or "")
+        return (1, 0.0, "")  # row family sits between high- and low-ICC entity families
+
+    families.sort(key=precedence)
+    primary, _primary_grain, primary_entity = families[0]
+    secondary = [
+        SecondaryDriver(d, g, grain, entity)
+        for ranking, grain, entity in families[1:]
+        for d, g in ranking.ranked_dimensions
+    ]
+    return replace(primary, secondary_dimensions=secondary, entity=primary_entity)
 
 
 def _row_wise_ranking(

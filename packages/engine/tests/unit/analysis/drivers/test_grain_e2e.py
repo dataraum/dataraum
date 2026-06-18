@@ -31,11 +31,19 @@ from .conftest import (
     CL_ROW_DRIVER,
     CL_ROW_NULL,
     RATIO_TWO_DRIVER_DIMS,
+    TE_CUST,
+    TE_CUST_DRIVER,
+    TE_DIMS,
+    TE_PROD,
+    TE_PROD_DRIVER,
+    TE_PROD_NULL,
+    TE_ROW_NULL,
     TWO_DRIVER_DIMS,
     make_clustered_corpus,
     make_clustered_ratio_corpus,
     make_clustered_ratio_two_driver_corpus,
     make_clustered_two_driver_corpus,
+    make_two_entity_corpus,
 )
 
 RUN = "session-run-1"
@@ -131,7 +139,7 @@ def _run(session: Session, duck: duckdb.DuckDBPyConnection, tid: str, seed: int,
         fact_table_id=tid,
         run_id=RUN,
         measure=MEASURE,
-        cluster_key=cluster_key,
+        cluster_keys=[cluster_key] if cluster_key is not None else None,
         n_perm=N_PERM,
         seed=seed,
     )
@@ -225,7 +233,7 @@ class TestClusterAwareSwitch:
             fact_table_id=tid,
             run_id=RUN,
             measure=MEASURE,
-            cluster_key=CL_ENTITY,
+            cluster_keys=[CL_ENTITY],
             n_perm=N_PERM,
         )
         assert hi_rank.grain == "entity"
@@ -241,7 +249,7 @@ class TestClusterAwareSwitch:
             fact_table_id=tid,
             run_id=RUN,
             measure=MEASURE,
-            cluster_key=CL_ENTITY,
+            cluster_keys=[CL_ENTITY],
             n_perm=N_PERM,
         )
         assert lo_rank.grain == "row"
@@ -257,7 +265,7 @@ def _run_low_icc(session, duck, tid, seed, *, cluster_key):  # noqa: ANN001, ANN
         fact_table_id=tid,
         run_id=RUN,
         measure=MEASURE,
-        cluster_key=cluster_key,
+        cluster_keys=[cluster_key] if cluster_key is not None else None,
         n_perm=N_PERM,
         seed=seed,
     )
@@ -317,7 +325,7 @@ class TestCandidateGrainRouting:
                 fact_table_id=tid,
                 run_id=RUN,
                 measure=MEASURE,
-                cluster_key=CL_ENTITY,
+                cluster_keys=[CL_ENTITY],
                 n_perm=N_PERM,
                 seed=s,
             )
@@ -341,7 +349,7 @@ class TestWithinEntityPower:
             fact_table_id=tid,
             run_id=RUN,
             measure=MEASURE,
-            cluster_key=CL_ENTITY,
+            cluster_keys=[CL_ENTITY],
             n_perm=N_PERM,
             seed=seed,
         )
@@ -393,7 +401,7 @@ class TestClusterAwareRatio:
             fact_table_id=tid,
             run_id=RUN,
             measure=RATIO_MEASURE,
-            cluster_key=cluster_key,
+            cluster_keys=[cluster_key] if cluster_key is not None else None,
             n_perm=N_PERM,
             seed=seed,
         )
@@ -451,7 +459,7 @@ class TestWithinEntityRatioPower:
             fact_table_id=tid,
             run_id=RUN,
             measure=RATIO_MEASURE,
-            cluster_key=CL_ENTITY,
+            cluster_keys=[CL_ENTITY],
             n_perm=N_PERM,
             seed=seed,
         )
@@ -488,3 +496,50 @@ class TestWithinEntityRatioPower:
         assert row_null_surfaced <= 2 * ALPHA * seeds, (
             f"row-level null surfaced {row_null_surfaced}/{seeds} on the ratio residual"
         )
+
+
+class TestTwoEntityRouting:
+    """DAT-563: N=2 home-grain routing end to end — customer (higher ICC) is primary, the
+    product family runs at its own entity grain as a labeled secondary, no grain mixes."""
+
+    def _run(self, session: Session, duck: duckdb.DuckDBPyConnection, tid: str, seed: int):
+        _write_view(duck, make_two_entity_corpus(np.random.default_rng(700 + seed)))
+        return discover_drivers(
+            session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=MEASURE,
+            cluster_keys=[TE_CUST, TE_PROD],
+            n_perm=N_PERM,
+            seed=seed,
+        )
+
+    def test_primary_is_highest_icc_entity_secondary_is_the_other(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        rank = self._run(real_session, duck, tid, 0)
+
+        # Customer clusters harder than product → customer is the primary entity grain,
+        # and the headline says which (DAT-563 entity label).
+        assert rank.grain == "entity"
+        assert rank.entity == TE_CUST
+        primary = {d for d, _ in rank.ranked_dimensions}
+        assert TE_CUST_DRIVER in primary  # the strong customer driver leads the primary
+
+        # The product family ran at ITS OWN entity grain: the product driver surfaces as a
+        # secondary labeled (entity, product) — proof the second entity was routed, not
+        # collapsed into customer or row.
+        prod_secondary = [s for s in rank.secondary_dimensions if s.entity == TE_PROD]
+        assert any(s.dimension == TE_PROD_DRIVER for s in prod_secondary)
+        assert all(s.grain == "entity" for s in prod_secondary)
+
+        # No grain mixes: product-grain dims never in the customer primary; the row null is
+        # never ranked at an entity grain; every dim appears at exactly ONE grain.
+        assert TE_PROD_DRIVER not in primary and TE_PROD_NULL not in primary
+        assert all(
+            s.grain == "row" for s in rank.secondary_dimensions if s.dimension == TE_ROW_NULL
+        )
+        seen = list(primary) + [s.dimension for s in rank.secondary_dimensions]
+        assert len(seen) == len(set(seen)), f"a dim was ranked at two grains: {seen}"

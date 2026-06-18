@@ -352,13 +352,17 @@ def discover_drivers(
             logger.info("driver_identity_not_in_view", identity=col, view=view)
     select_cols = list(dict.fromkeys(present_dims + measure_cols + present_proposed))
     cols_sql = ", ".join(quote(c) for c in select_cols)
-    # Bound the in-memory frame (DAT-571): a cheap COUNT(*) keeps normal-size views on
-    # the validated full-load path byte-for-byte; above max_rows, deterministically
-    # sub-sample to max_rows rows via a bottom-k-by-hash sketch instead of dropping the
-    # analysis. hash() is variadic over the selected columns, so identical rows hash
-    # alike and the cutoff is stable across runs and thread counts.
+    # Bound the in-memory frame (DAT-571): a COUNT(*) keeps normal-size views — the common
+    # case — on the validated full-load path byte-for-byte (a single plain SELECT); above
+    # max_rows, deterministically sub-sample to max_rows rows via a bottom-k-by-hash sketch
+    # instead of dropping the analysis. hash() is variadic over the selected columns, so
+    # identical rows hash alike and the cutoff is stable across runs and thread counts. The
+    # oversized branch deliberately scans twice (COUNT, then the ORDER BY) — fusing them via
+    # COUNT(*) OVER () would force the sort + a reload onto the common small-view path; that
+    # path is hot, the oversized path is rare, and memory (not scan time) is what we bound.
     count_row = duckdb_conn.execute(f"SELECT COUNT(*) FROM {quote(view)}").fetchone()  # noqa: S608
-    n_full = int(count_row[0]) if count_row else 0
+    assert count_row is not None  # COUNT(*) on an existing view always returns one row
+    n_full = int(count_row[0])
     if n_full > max_rows:
         logger.info("driver_rankings_view_sampled", view=view, full_n=n_full, sample_n=max_rows)
         sql = f"SELECT {cols_sql} FROM {quote(view)} ORDER BY hash({cols_sql}) LIMIT {max_rows}"  # noqa: S608 — catalog identifiers

@@ -198,8 +198,10 @@ class TestRowCountGate:
     def test_oversized_view_is_sampled_and_logged(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        # The 20k-row corpus with a 5k cap → exactly 5k rows analyzed, and a loud log
-        # naming the full + sampled counts (the cheap COUNT(*) drives the gate).
+        # The 20k-row corpus with a 5k cap → the materialized frame is capped at 5k rows,
+        # and a loud log names the full + sampled counts (the COUNT(*) drives the gate).
+        # n_rows == frame length (NaN measure rows included — FlowTarget.observed keeps the
+        # raw array), so this pins the bottom-k LIMIT, not a finite-value count.
         tid = _seed(real_session, duck)
         with capture_logs() as logs:
             ranking = discover_drivers(

@@ -4,6 +4,30 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-18: DAT-571 — driver-discovery in-memory load is bounded by sampling
+
+`discover_drivers` now caps the row-grain frame it materializes. A `max_rows` gate
+(`DEFAULT_MAX_ROWS = 800_000`): at/below the cap the view loads in full (validated path,
+byte-for-byte unchanged — the COUNT(*) is the only added work); above it, the view is
+deterministically sub-sampled to `max_rows` rows via a bottom-k-by-hash sketch
+(`ORDER BY hash(<cols>) LIMIT max_rows`) and a `driver_rankings_view_sampled` log fires.
+Engine core (`tree.py`/`targets.py`/`criterion.py`) untouched.
+
+### dataraum-eval
+- **Two regimes for the DAT-546 "n_rows stable across reruns" assertion.** On views ≤ 800k
+  rows nothing changes. On views **> 800k rows**, `DriverRanking.n_rows` now reports the
+  **sample size (800k)**, not the full view size — and the bottom-k sketch is a total order
+  (deterministic regardless of DuckDB thread count), so the rerun-stability assertion still
+  holds in BOTH regimes (same corpus → same sample → same ranking). If a large-view
+  calibration fixture exists, expect `n_rows == 800_000` and a `driver_rankings_view_sampled`
+  log, not the raw row count.
+- **Sampling is fail-safe, not power-neutral.** The permutation null is recomputed on the
+  sample, so FDR/precision hold; the entity-grain family loses some power on *weak* drivers
+  under sampling (degrades to a miss, never a fabricated driver). A large-view recall fixture
+  should treat a missed *weak* entity-grain driver as expected, not a regression; a missed
+  *strong* driver (or any false positive) is a real bug. DAT-580 (arrow-backed load) will
+  raise the ceiling so sampling becomes a rare fallback.
+
 ## 2026-06-18: DAT-546 — driver_rankings begin_session artifact
 
 Driver discovery is now PERSISTED, not just an in-memory engine. A new begin_session

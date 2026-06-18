@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.drivers.models import Measure
 from dataraum.analysis.drivers.processor import discover_drivers
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
@@ -33,6 +33,7 @@ from .conftest import (
     RATIO_TWO_DRIVER_DIMS,
     TE_CUST,
     TE_CUST_DRIVER,
+    TE_CUST_NULL,
     TE_DIMS,
     TE_PROD,
     TE_PROD_DRIVER,
@@ -122,6 +123,19 @@ def _seed_ratio_catalog(session: Session, dims: list[str] = CL_RATIO_DIMS) -> st
     )
     session.flush()
     return fact.table_id
+
+
+def _seed_identities(session: Session, tid: str, cols: list[str]) -> None:
+    """Persist the fact's ``identity_columns`` (DAT-565) so the resolver can read them."""
+    session.add(
+        TableEntity(
+            run_id=RUN,
+            table_id=tid,
+            detected_entity_type="orders",
+            identity_columns=[{"column": c, "note": "seed identity"} for c in cols],
+        )
+    )
+    session.flush()
 
 
 def _write_view(duck: duckdb.DuckDBPyConnection, df) -> None:
@@ -543,3 +557,89 @@ class TestTwoEntityRouting:
         )
         seen = list(primary) + [s.dimension for s in rank.secondary_dimensions]
         assert len(seen) == len(set(seen)), f"a dim was ranked at two grains: {seen}"
+
+
+class TestIdentityResolver:
+    """DAT-563: cluster keys RESOLVED from persisted ``identity_columns`` (DAT-565) and
+    ICC-verified — ``discover_drivers`` is called with NO ``cluster_keys`` (the real path)."""
+
+    def _resolve(self, session: Session, duck: duckdb.DuckDBPyConnection, tid: str, seed: int = 0):
+        return discover_drivers(  # no cluster_keys → resolve from identity_columns
+            session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=MEASURE,
+            n_perm=N_PERM,
+            seed=seed,
+        )
+
+    def test_resolves_named_identities_and_routes(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        _seed_identities(real_session, tid, [TE_CUST, TE_PROD])
+        _write_view(duck, make_two_entity_corpus(np.random.default_rng(0)))
+        rank = self._resolve(real_session, duck, tid)
+        # Both identities resolved + ICC-verified → same routing as the explicit N=2 case.
+        assert rank.grain == "entity" and rank.entity == TE_CUST
+        assert TE_CUST_DRIVER in {d for d, _ in rank.ranked_dimensions}
+        assert any(
+            s.entity == TE_PROD and s.dimension == TE_PROD_DRIVER for s in rank.secondary_dimensions
+        )
+
+    def test_drops_mis_named_low_icc_identity_no_heuristic(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # The LLM mis-names a row-level RANDOM column as an identity. Cardinality alone
+        # can't tell it from a real identity — only ICC can: the measure does not cluster
+        # within it, so verification drops it → plain row-wise, no spurious de-mean.
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        _seed_identities(real_session, tid, [TE_ROW_NULL])
+        _write_view(duck, make_two_entity_corpus(np.random.default_rng(0)))
+        rank = self._resolve(real_session, duck, tid)
+        assert rank.grain == "row" and rank.entity is None
+
+    def test_no_identities_falls_back_to_row_wise(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # No TableEntity / no identity_columns named → the N=0 arm: plain row-wise.
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        _write_view(duck, make_two_entity_corpus(np.random.default_rng(0)))
+        rank = self._resolve(real_session, duck, tid)
+        assert rank.grain == "row"
+
+    def test_flat_denormalized_identity_resolved_not_row_wise(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # A single named identity on a clustered (high-ICC) flat table is resolved +
+        # clustered, NOT silently left to the broken row-wise null (the AC).
+        tid = _seed_catalog(real_session, dims=CL_DIMS)
+        _seed_identities(real_session, tid, [CL_ENTITY])
+        _write_view(duck, make_clustered_corpus(np.random.default_rng(0)))
+        rank = self._resolve(real_session, duck, tid)
+        assert rank.grain == "entity" and rank.entity == CL_ENTITY
+
+    def test_fdr_controlled_per_grain_multi_entity(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # The statistical AC: over many seeds, the null at EACH grain stays gated (≤ 2α)
+        # while the strong customer driver recalls — FDR controlled per grain, not pooled
+        # across the two entity families + the row family.
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        _seed_identities(real_session, tid, [TE_CUST, TE_PROD])
+        seeds = 20
+        cust_driver = cust_null = prod_null = row_null = 0
+        for s in range(seeds):
+            _write_view(duck, make_two_entity_corpus(np.random.default_rng(900 + s)))
+            rank = self._resolve(real_session, duck, tid, seed=s)
+            primary = {d for d, _ in rank.ranked_dimensions}
+            sec = {(x.dimension, x.entity) for x in rank.secondary_dimensions}
+            cust_driver += TE_CUST_DRIVER in primary
+            cust_null += TE_CUST_NULL in primary  # customer-grain null (the customer primary)
+            prod_null += (TE_PROD_NULL, TE_PROD) in sec  # product-grain null
+            row_null += any(x.dimension == TE_ROW_NULL for x in rank.secondary_dimensions)
+        assert cust_driver >= seeds // 2, f"customer driver recall {cust_driver}/{seeds}"
+        assert cust_null <= 2 * ALPHA * seeds, f"customer null surfaced {cust_null}/{seeds}"
+        assert prod_null <= 2 * ALPHA * seeds, f"product null surfaced {prod_null}/{seeds}"
+        assert row_null <= 2 * ALPHA * seeds, f"row null surfaced {row_null}/{seeds}"

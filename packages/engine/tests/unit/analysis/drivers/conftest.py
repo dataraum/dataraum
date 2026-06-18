@@ -253,12 +253,16 @@ def make_two_entity_corpus(rng: np.random.Generator) -> pd.DataFrame:
     n = TE_N_ROWS
     cust = rng.integers(0, TE_N_CUST, n)
     prod = rng.integers(0, TE_N_PROD, n)
-    # Customer-level driver + a large entity effect (high ICC → customer primary).
+    # Customer-level driver + entity effect — the LARGER share (ICC ≈ 0.65 → customer is
+    # primary AND clears the resolver's verify threshold).
     cust_drv = rng.integers(0, 4, TE_N_CUST)
-    cust_effect = np.array([-3.0, -1.0, 1.0, 3.0])[cust_drv] + rng.normal(0, 3.0, TE_N_CUST)
-    # Product-level driver + a smaller entity effect (lower ICC → product secondary).
+    cust_effect = np.array([-3.0, -1.0, 1.0, 3.0])[cust_drv] + rng.normal(0, 2.5, TE_N_CUST)
+    # Product-level driver + a smaller-but-real entity effect (ICC ≈ 0.27 → a verified
+    # SECONDARY entity grain, below customer but above the 0.10 verify threshold). The
+    # driver dominates the between-product variance (low entity noise) so it recalls
+    # reliably at the 40-product entity grain.
     prod_drv = rng.integers(0, 4, TE_N_PROD)
-    prod_effect = np.array([-1.0, -0.3, 0.3, 1.0])[prod_drv] + rng.normal(0, 0.8, TE_N_PROD)
+    prod_effect = np.array([-2.5, -0.8, 0.8, 2.5])[prod_drv] + rng.normal(0, 1.0, TE_N_PROD)
 
     df = pd.DataFrame(index=np.arange(n))
     df[TE_CUST] = cust

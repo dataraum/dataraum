@@ -46,7 +46,7 @@ from dataraum.analysis.drivers.tree import (
     discover_tree,
 )
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -134,6 +134,25 @@ def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[s
     return sorted(candidates)
 
 
+def _identity_columns(session: Session, fact_table_id: str, run_id: str) -> list[str]:
+    """The fact's persisted recurring-identity column names (DAT-565), this run.
+
+    Read from ``TableEntity.identity_columns`` — the cluster-entity roles
+    ``semantic_per_table`` named (would-be foreign keys, distinct from grain). Empty when
+    none were named, so a fact with no identities falls back to the plain row-wise null.
+    These are PROPOSALS; :func:`_resolve_cluster_keys` ICC-verifies them before routing.
+    """
+    blob = session.execute(
+        select(TableEntity.identity_columns).where(
+            TableEntity.table_id == fact_table_id,
+            TableEntity.run_id == run_id,
+        )
+    ).scalar_one_or_none()
+    if not blob:
+        return []
+    return [c["column"] for c in blob if isinstance(c, dict) and c.get("column")]
+
+
 def _measure_columns(measure: Measure) -> list[str]:
     """The enriched-view columns a measure needs read."""
     if measure.target_type in ("flow", "stock"):
@@ -163,6 +182,30 @@ def _entity_icc(frame: pd.DataFrame, entity: str, measure: Measure) -> float:
     """The measure's ICC (η² between entities) for one identity column (DAT-563)."""
     codes, uniques = pd.factorize(frame[entity])
     return intraclass_correlation(codes.astype(int), len(uniques), _icc_measure(frame, measure))
+
+
+def _resolve_cluster_keys(
+    frame: pd.DataFrame, proposed: list[str], measure: Measure, *, icc_threshold: float
+) -> list[str]:
+    """ICC-verify the proposed identities — keep those the measure actually clusters within.
+
+    For each proposed identity present in ``frame``, compute the measure's ICC and keep it
+    only when ICC > ``icc_threshold`` (DAT-563). **No heuristic:** an identity and a
+    high-cardinality ATTRIBUTE are indistinguishable by cardinality/recurrence, so the only
+    sound test is whether the measure clusters within it. Dropping an unverified column is
+    load-bearing — routing a mis-named identity would de-mean a real row-level driver away.
+    Proposed order is preserved (deterministic).
+    """
+    verified: list[str] = []
+    for col in proposed:
+        if col not in frame.columns:
+            continue
+        icc = _entity_icc(frame, col, measure)
+        if icc > icc_threshold:
+            verified.append(col)
+        else:
+            logger.info("driver_identity_unverified", identity=col, icc=round(icc, 3))
+    return verified
 
 
 def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
@@ -272,25 +315,40 @@ def discover_drivers(
         logger.info("driver_view_skew", view=view, present=present_dims, measure_cols=measure_cols)
         return empty
 
-    # The resolved identity columns are read alongside, deduped, and filtered to those
-    # present in the view (DAT-552/563). Phase 2 resolves them from ``identity_columns``
-    # when the caller passes none; an explicit list (tests / override) is used verbatim.
-    present_cluster_keys = [k for k in (cluster_keys or []) if k in view_cols]
-    select_cols = list(dict.fromkeys(present_dims + measure_cols + present_cluster_keys))
+    # Resolve the clustering identities (DAT-563). An explicit ``cluster_keys`` list is a
+    # caller override (tests) used verbatim; otherwise read the fact's persisted
+    # ``identity_columns`` (DAT-565) — those are PROPOSALS, ICC-verified below. Read the
+    # proposed columns into the frame alongside the dims + measure.
+    explicit = cluster_keys is not None
+    proposed = (
+        cluster_keys
+        if cluster_keys is not None
+        else _identity_columns(session, fact_table_id, run_id)
+    )
+    present_proposed = [k for k in proposed if k in view_cols]
+    select_cols = list(dict.fromkeys(present_dims + measure_cols + present_proposed))
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
+
+    # The resolver path ICC-verifies the persisted identities (drop those the measure does
+    # not cluster within — no heuristic); an explicit override is asserted by the caller.
+    keys = (
+        present_proposed
+        if explicit
+        else _resolve_cluster_keys(frame, present_proposed, measure, icc_threshold=icc_threshold)
+    )
 
     # Cluster-aware home-grain routing (DAT-561/563): each resolved identity column is an
     # entity grain; candidates are routed to their home grain (the entity they are
     # constant within) and ranked there, row-level candidates row-wise; the highest-ICC
-    # entity (or row-wise when nothing clusters) is primary. With no identities, the
-    # plain row-wise null (DAT-545) over all candidates.
-    if present_cluster_keys:
+    # entity (or row-wise when nothing clusters) is primary. With no verified identities,
+    # the plain row-wise null (DAT-545) over all candidates.
+    if keys:
         return _routed_ranking(
             frame,
             present_dims,
             measure,
-            present_cluster_keys,
+            keys,
             seed=seed,
             max_depth=max_depth,
             alpha=alpha,

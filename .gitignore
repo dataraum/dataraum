@@ -12,7 +12,6 @@ data_sources/
 
 # AI assistants
 .claude/agent-memory/
-.claude/memory/
 .claude/worktrees/
 .claude/.mailbox/
 .claire/

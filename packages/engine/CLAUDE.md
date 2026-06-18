@@ -1,6 +1,6 @@
 # DataRaum Context Engine
 
-Python library that pre-computes rich metadata from data sources and serves it as structured **context documents** — interpreted through domain ontologies — so AI tools reason over prepared context instead of discovering metadata at runtime.
+Python **engine** that pre-computes rich metadata from data sources — interpreted through domain ontologies — so AI tools reason over prepared context instead of discovering metadata at runtime. It runs as a **Temporal activity worker** (no HTTP); the cockpit reads the metadata directly from the `ws_<id>` Postgres schema.
 
 ## What "working" means here
 

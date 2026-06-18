@@ -104,13 +104,22 @@ export type TableReadiness = z.infer<typeof TableReadiness>;
 // dimension), its grain, its time column, and a short description.
 // begin_session's `detect` writes it; `current_table_entities` head-resolves to
 // the promoted run. Null when no detect run has promoted (pre-session).
+// One event-time axis (DAT-565): a denormalized table commonly has several
+// (order vs ship vs delivery), each a distinct lens with a one-line note.
+const TimeColumn = z.object({
+	column: z.string(),
+	aspect: z.string(),
+	note: z.string(),
+});
+
 const TableEntity = z.object({
 	entity_type: z.string().nullable(),
 	is_fact_table: z.boolean().nullable(),
 	is_dimension_table: z.boolean().nullable(),
 	// The column names that uniquely identify a row (the table's grain).
 	grain: z.array(z.string()),
-	time_column: z.string().nullable(),
+	// Every event-time axis the table records, each labelled + described.
+	time_columns: z.array(TimeColumn),
 	description: z.string().nullable(),
 });
 export type TableEntity = z.infer<typeof TableEntity>;
@@ -287,9 +296,16 @@ export interface TableEntityRow {
 	isFactTable: boolean | null;
 	isDimensionTable: boolean | null;
 	grainColumns: unknown;
-	timeColumn: string | null;
+	timeColumns: unknown;
 	description: string | null;
 }
+
+// The persisted time-axis shape (DAT-565): the engine writes a JSON list of
+// `{column, aspect, note}` (`analysis/semantic/processor.py`); null/malformed
+// degrades to []. Anything else is dropped rather than thrown.
+const TimeColumns = z.array(
+	z.object({ column: z.string(), aspect: z.string(), note: z.string() }),
+);
 
 // The persisted grain shape. The engine ALWAYS writes the dict form
 // `{"columns": [...]}` (`analysis/semantic/processor.py:343`; the engine's own
@@ -313,13 +329,16 @@ const GrainColumns = z.union([
  */
 export function projectTableEntity(row: TableEntityRow): TableEntity {
 	const grain = GrainColumns.safeParse(row.grainColumns);
+	const times = TimeColumns.safeParse(row.timeColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
 		is_fact_table: row.isFactTable ?? null,
 		is_dimension_table: row.isDimensionTable ?? null,
 		grain: grain.success ? grain.data.map(stripSrcDigests) : [],
-		time_column:
-			row.timeColumn == null ? null : stripSrcDigests(row.timeColumn),
+		// Strip src_<digest> from each axis column; aspect/note pass through.
+		time_columns: times.success
+			? times.data.map((tc) => ({ ...tc, column: stripSrcDigests(tc.column) }))
+			: [],
 		description:
 			row.description == null ? null : stripSrcDigests(row.description),
 	};
@@ -499,7 +518,7 @@ async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
 			isFactTable: currentTableEntities.isFactTable,
 			isDimensionTable: currentTableEntities.isDimensionTable,
 			grainColumns: currentTableEntities.grainColumns,
-			timeColumn: currentTableEntities.timeColumn,
+			timeColumns: currentTableEntities.timeColumns,
 			description: currentTableEntities.description,
 		})
 		.from(currentTableEntities)

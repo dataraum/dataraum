@@ -80,6 +80,7 @@ def _seed(
     shared_dimension: bool = True,
     junk_column: bool = False,
     key_column: bool = False,
+    multi_axis: bool = False,
 ) -> dict[str, str]:
     """Seed Tables/Columns/SliceDefinitions/TableEntity + the DuckDB rows.
 
@@ -115,13 +116,18 @@ def _seed(
             )
             session.add(column)
             ids[f"{name}.{col}"] = column.column_id
-        # The agent-named time axis the inline producer resolves (DAT-491).
+        # The agent-named time axes the inline producer resolves (DAT-491/565).
+        # multi_axis adds a SECOND, degenerate axis (``ship_date``, constant) on
+        # the measure fact: the search must compete both and keep the good one.
+        axes = [{"column": "period_date", "aspect": "period", "note": "Period."}]
+        if multi_axis and name == "trial_balance":
+            axes.append({"column": "ship_date", "aspect": "ship", "note": "Shipped."})
         session.add(
             TableEntity(
                 run_id=_RUN,
                 table_id=table.table_id,
                 detected_entity_type="fact",
-                time_column="period_date",
+                time_columns=axes,
             )
         )
 
@@ -144,12 +150,13 @@ def _seed(
     # DuckDB sources — one table per fact (typed-fact fallback). Columns mirror
     # the metadata above; the dimension is an enriched-style "fk__attr" name.
     tb_extra_cols = ", account_key DOUBLE" if key_column else ""
+    tb_axis_col = ", ship_date DATE" if multi_axis else ""
     jl_extra_cols = (", account_key DOUBLE" if key_column else "") + (
         ", line_id DOUBLE" if junk_column else ""
     )
     duck.execute(
         f'CREATE TABLE trial_balance ("{_DIM}" VARCHAR, period_date DATE,'
-        f" balance DOUBLE, net_change DOUBLE{tb_extra_cols})"
+        f" balance DOUBLE, net_change DOUBLE{tb_extra_cols}{tb_axis_col})"
     )
     duck.execute(
         f'CREATE TABLE journal_lines ("{_DIM}" VARCHAR, period_date DATE,'
@@ -165,7 +172,10 @@ def _seed(
             running += net
             d = f"DATE '2025-{month:02d}-15'"
             tb_extra = f", {float(k * 100)}" if key_column else ""
-            tb_rows.append(f"('{value}', {d}, {running}, {net}{tb_extra})")
+            # Degenerate second axis: every row shares one ship_date, collapsing
+            # the per-period series to a single bucket so this axis cannot win.
+            tb_axis_val = ", DATE '2025-01-15'" if multi_axis else ""
+            tb_rows.append(f"('{value}', {d}, {running}, {net}{tb_extra}{tb_axis_val})")
             # Two finer-grained event rows summing to the movement.
             for half in (net / 2, net - net / 2):
                 jl_extra = f", {float(k * 100)}" if key_column else ""
@@ -221,6 +231,23 @@ class TestDiscoverAggregationLineage:
         assert row is not None
         assert row.pattern == "per_period"
         assert row.event_table_id == ids["journal_lines"]
+
+    def test_competes_time_axes_and_keeps_best(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A measure with TWO time axes (DAT-565): the search buckets by each and
+        keeps the best-reconciling verdict. The degenerate ``ship_date`` axis (all
+        rows in one period) cannot reconcile; the good ``period_date`` axis still
+        wins, identical to the single-axis verdict — a bad axis never degrades it.
+        """
+        ids = _seed(real_session, duck, multi_axis=True)
+        assert _discover(real_session, duck, ids) > 0
+        row = _row_for(real_session, ids["trial_balance.balance"])
+        assert row is not None
+        assert row.pattern == "cumulative"
+        assert row.event_table_id == ids["journal_lines"]
+        assert row.match_rate > 0.99
+        assert row.convention_sql == '"debit"'
 
     def test_junk_numeric_column_does_not_win(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

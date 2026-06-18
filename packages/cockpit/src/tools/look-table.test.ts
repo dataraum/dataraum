@@ -181,7 +181,13 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 		// so the projection's real-shape parse is exercised (the bare-array form
 		// only ever shows up as a tolerated fallback).
 		grainColumns: { columns: ["order_id", "line_no"] },
-		timeColumn: "order_date",
+		timeColumns: [
+			{
+				column: "order_date",
+				aspect: "order",
+				note: "When the order was placed.",
+			},
+		],
 		description: "One row per order line item.",
 		...overrides,
 	};
@@ -194,9 +200,24 @@ describe("projectTableEntity (DAT-476)", () => {
 			is_fact_table: true,
 			is_dimension_table: false,
 			grain: ["order_id", "line_no"],
-			time_column: "order_date",
+			time_columns: [
+				{
+					column: "order_date",
+					aspect: "order",
+					note: "When the order was placed.",
+				},
+			],
 			description: "One row per order line item.",
 		});
+	});
+
+	it("tolerates a null/malformed time_columns blob (degrades to [])", () => {
+		expect(
+			projectTableEntity(entityRow({ timeColumns: null })).time_columns,
+		).toEqual([]);
+		expect(
+			projectTableEntity(entityRow({ timeColumns: "nope" })).time_columns,
+		).toEqual([]);
 	});
 
 	it("tolerates a bare string[] grain (defensive fallback)", () => {
@@ -220,19 +241,21 @@ describe("projectTableEntity (DAT-476)", () => {
 		).toEqual([]);
 	});
 
-	it("strips src_<digest>__ prefixes from grain / time_column / description", () => {
+	it("strips src_<digest>__ prefixes from grain / time-axis columns / description", () => {
 		// Engine free-text/name fields can carry the content-keyed source prefix;
 		// the projection digest-strips them before they reach the tool output.
 		const D = "204bc8e118543a6c35654c1f68c43539a2e226f2";
 		const out = projectTableEntity(
 			entityRow({
 				grainColumns: { columns: [`src_${D}__order_id`, "line_no"] },
-				timeColumn: `src_${D}__order_date`,
+				timeColumns: [
+					{ column: `src_${D}__order_date`, aspect: "order", note: "Placed." },
+				],
 				description: `One row per line in src_${D}__orders.`,
 			}),
 		);
 		expect(out.grain).toEqual(["order_id", "line_no"]);
-		expect(out.time_column).toBe("order_date");
+		expect(out.time_columns[0].column).toBe("order_date");
 		// The 40-hex digest is gone from every projected field.
 		expect(JSON.stringify(out)).not.toMatch(/src_[0-9a-f]{40}/);
 	});

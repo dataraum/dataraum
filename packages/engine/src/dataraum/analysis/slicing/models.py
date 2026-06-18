@@ -61,9 +61,10 @@ class SlicingAnalysisResult(BaseModel):
     # Recommendations ordered by priority
     recommendations: list[SliceRecommendation] = Field(default_factory=list)
 
-    # Per-table time axis (DAT-491): table_name -> column name (own column or an
-    # enriched "fk__col" name). The agent inherits an existing time_column and
-    # judges only where none was identified.
+    # Per-table fallback time axis (DAT-491/565): table_name -> column name (own
+    # column or an enriched "fk__col" name). The agent judges ONE axis only for
+    # tables whose ``time_columns`` came back empty from semantic_per_table;
+    # tables that already have axes are inherited untouched.
     time_columns: dict[str, str] = Field(default_factory=dict)
 
     # Metadata
@@ -101,8 +102,9 @@ class TableTimeColumnOutput(BaseModel):
         description=(
             "The table's time axis: the column recording WHEN each row's event "
             "occurred. Either an own column or an enriched 'fk__col' name (a "
-            "header date). Keep the table's existing time_column when one is "
-            "given in the context."
+            "header date). Only name an axis for a table whose context "
+            "'time_columns' is EMPTY; tables that already list axes are kept "
+            "as-is."
         )
     )
 
@@ -121,9 +123,10 @@ class SlicingAnalysisOutput(BaseModel):
     time_columns: list[TableTimeColumnOutput] = Field(
         default_factory=list,
         description=(
-            "The time axis for EVERY analyzed table that has one — inherit the "
-            "existing time_column when given; otherwise pick the enriched column "
-            "flagged is_dimension_time_column; omit tables with no time axis."
+            "A fallback time axis ONLY for analyzed tables whose context "
+            "'time_columns' is empty — pick the enriched column flagged "
+            "is_dimension_time_column. Omit any table that already lists axes "
+            "or genuinely has none."
         ),
     )
 

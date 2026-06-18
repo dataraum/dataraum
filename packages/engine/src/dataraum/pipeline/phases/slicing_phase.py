@@ -212,8 +212,8 @@ class SlicingPhase(BasePhase):
         # that share the same dimension column
         slicing = self._propagate_enriched_dimensions(slicing, context_data)
 
-        # Land the agent's time-axis judgments (DAT-491): fill the canonical
-        # ``TableEntity.time_column`` where semantic_per_table left it None —
+        # Land the agent's time-axis judgments (DAT-491/565): seed
+        # ``TableEntity.time_columns`` where semantic_per_table left it empty —
         # gap-closing only, never overriding the earlier judgment. Run-scoped:
         # this run's entity row, same version axis as the rest of the spine.
         if slicing.time_columns:
@@ -244,8 +244,8 @@ class SlicingPhase(BasePhase):
                     for t in context_data.get("tables", [])
                 }
                 for entity in entities:
-                    if entity.time_column:
-                        continue  # inherit, never override
+                    if entity.time_columns:
+                        continue  # the table already has axes — inherit, never override
                     table_name = name_by_id.get(entity.table_id, "")
                     chosen = slicing.time_columns.get(table_name)
                     if not chosen:
@@ -253,7 +253,16 @@ class SlicingPhase(BasePhase):
                     if chosen not in known_cols_by_table.get(table_name, set()):
                         logger.warning("time_axis_unknown_column", table=table_name, column=chosen)
                         continue
-                    entity.time_column = chosen
+                    # Fallback fires only when semantic found NO axis, so a fresh
+                    # single-element list is correct; reassign (not append) so the
+                    # JSON column is marked dirty for the flush.
+                    entity.time_columns = [
+                        {
+                            "column": chosen,
+                            "aspect": "event",
+                            "note": "Event-time axis identified by the slice-agent fallback (semantic phase found none).",
+                        }
+                    ]
                     logger.info("time_axis_filled", table=table_name, column=chosen)
 
         # Store slice definitions — form-(a) idempotent writer (DAT-502):
@@ -467,10 +476,10 @@ class SlicingPhase(BasePhase):
         except Exception:
             pass  # Enriched views not available, proceed without
 
-        # Time-axis context (DAT-491): each table's already-identified time_column
-        # (this run's TableEntity — the semantic_per_table judgment the agent
-        # INHERITS), plus the joined dimension tables' time columns so an enriched
-        # "fk__col" entry can be flagged as the header's event date.
+        # Time-axis context (DAT-491/565): each table's already-identified
+        # time_columns (this run's TableEntity — the semantic_per_table judgment
+        # the agent INHERITS), plus the joined dimension tables' time columns so an
+        # enriched "fk__col" entry can be flagged as the header's event date.
         dim_table_ids = {
             tid for ev in ev_by_fact.values() if ev for tid in (ev.dimension_table_ids or [])
         }
@@ -479,8 +488,8 @@ class SlicingPhase(BasePhase):
         )
         if ctx.run_id is not None:
             entity_stmt = entity_stmt.where(TableEntity.run_id == ctx.run_id)
-        time_col_by_table: dict[str, str | None] = {
-            e.table_id: e.time_column for e in ctx.session.execute(entity_stmt).scalars()
+        time_col_by_table: dict[str, list[dict[str, Any]]] = {
+            e.table_id: (e.time_columns or []) for e in ctx.session.execute(entity_stmt).scalars()
         }
         # FK column -> joined dimension table, from the enriched views' own
         # relationship provenance (never name-inferred).
@@ -571,10 +580,13 @@ class SlicingPhase(BasePhase):
                     # no own time_column.
                     dim_table_id = dim_table_by_fk_col.get(fk_col_id or "")
                     dim_suffix = dim_col.column_name.split("__", 1)[1] if fk_prefix else None
+                    # Plural (DAT-565): the enriched suffix is a time axis if it
+                    # matches ANY of the dim table's event-time columns. (`x in
+                    # set` already short-circuits on a falsy ``dim_suffix``.)
                     is_dim_time = bool(
                         dim_table_id
                         and dim_suffix
-                        and time_col_by_table.get(dim_table_id) == dim_suffix
+                        in {tc.get("column") for tc in time_col_by_table.get(dim_table_id, [])}
                     )
                     dim_entry: dict[str, Any] = {
                         "column_id": fk_col_id or dim_col.column_id,
@@ -603,9 +615,10 @@ class SlicingPhase(BasePhase):
                     "table_name": table.table_name,
                     "duckdb_path": table.duckdb_path,
                     "row_count": table.row_count,
-                    # The already-identified time axis the agent INHERITS (DAT-491);
-                    # null = the agent judges, from the flagged enriched columns.
-                    "time_column": time_col_by_table.get(table.table_id),
+                    # The already-identified time axes the agent INHERITS
+                    # (DAT-491/565); empty = the agent judges, from the flagged
+                    # enriched columns.
+                    "time_columns": time_col_by_table.get(table.table_id, []),
                     "columns": columns_list,
                     # Use enriched view if available, otherwise use typed table
                     "enriched_view_name": enriched_view_name,

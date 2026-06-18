@@ -75,9 +75,10 @@ system_prompt: |
   recording WHEN each row's event occurred (booking/transaction/observation date) —
   NOT attribute dates like due_date or valid_until, and not record metadata.
 
-  - When a table's context already shows "time_column", INHERIT it verbatim — do not
-    re-decide.
-  - When "time_column" is null, look at the enriched columns: one flagged
+  - When a table's context already lists "time_columns" (one or more axes,
+    each {column, aspect, note}), INHERIT them — the axes are already decided,
+    do not re-judge that table.
+  - Only when "time_columns" is EMPTY, look at the enriched columns: one flagged
     "is_dimension_time_column": true is the joined header's event date (e.g. journal
     lines dated by their journal entry) — name that enriched column.
   - Omit a table only when it genuinely has no time axis.
@@ -116,8 +117,8 @@ user_prompt: |
   {enriched_columns_json}
   </enriched_columns>
 
-  Each table object includes "time_column" — its already-identified time axis
-  (null when none was identified; then check enriched columns flagged
+  Each table object includes "time_columns" — its already-identified event-time
+  axes (empty when none were identified; then check enriched columns flagged
   "is_dimension_time_column").
 
   Use the analyze_slicing tool to provide your recommendations and the

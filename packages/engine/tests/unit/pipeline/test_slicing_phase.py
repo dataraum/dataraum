@@ -1,12 +1,12 @@
 """Unit tests for the DAT-491 time-axis legs of the slicing phase.
 
 Part A pins ``SlicingPhase._build_context_data``: each table dict carries the
-``time_column`` read from THIS run's ``TableEntity``, and enriched dimension
-entries are flagged ``is_dimension_time_column`` strictly via the enriched
-view's relationship provenance (FK column -> dimension table -> that table's
-``TableEntity.time_column``), never by name inference.
+``time_columns`` read from THIS run's ``TableEntity`` (DAT-565 plural), and
+enriched dimension entries are flagged ``is_dimension_time_column`` strictly via
+the enriched view's relationship provenance (FK column -> dimension table ->
+membership in that table's ``TableEntity.time_columns``), never by name inference.
 
-Part B pins the post-analysis ``TableEntity.time_column`` fill in ``_run``,
+Part B pins the post-analysis ``TableEntity.time_columns`` fill in ``_run``,
 with the LLM boundary mocked at the phase module import site (the
 ``should_skip`` gates live in ``tests/integration/pipeline/test_slicing_phase.py``).
 """
@@ -34,10 +34,16 @@ from dataraum.storage.upsert import upsert
 from tests.conftest import baseline_run_id
 
 
+def _axes(column: str | None) -> list[dict[str, str]]:
+    """Plural ``time_columns`` JSON for a single named axis (DAT-565), or empty."""
+    return [{"column": column, "aspect": "event", "note": "seed axis."}] if column else []
+
+
 def _seed(
     session: Session,
     *,
     dim_time_column: str | None = "date",
+    dim_axes: list[dict[str, str]] | None = None,
     fact_time_column: str | None = None,
     link_relationship: bool = True,
 ) -> dict[str, Any]:
@@ -98,7 +104,7 @@ def _seed(
         table_id=fact.table_id,
         run_id=None,
         detected_entity_type="transaction",
-        time_column=fact_time_column,
+        time_columns=_axes(fact_time_column),
         detection_source="llm",
         confidence=0.9,
     )
@@ -106,7 +112,7 @@ def _seed(
         table_id=dim.table_id,
         run_id=None,
         detected_entity_type="document",
-        time_column=dim_time_column,
+        time_columns=dim_axes if dim_axes is not None else _axes(dim_time_column),
         detection_source="llm",
         confidence=0.9,
     )
@@ -208,7 +214,7 @@ class TestBuildContextDataTimeAxis:
 
         (table_data,) = data["tables"]
         # The fact has no own time axis — the agent must judge, not inherit.
-        assert table_data["time_column"] is None
+        assert table_data["time_columns"] == []
 
         by_name = _columns_by_name(table_data)
         date_entry = by_name["invoice_id__date"]
@@ -218,6 +224,29 @@ class TestBuildContextDataTimeAxis:
         # individually registered on the fact).
         assert date_entry["column_id"] == seeded["fk_col"].column_id
         # Sibling dim column whose suffix is NOT the dim's time_column.
+        assert by_name["invoice_id__status"]["is_dimension_time_column"] is False
+
+    def test_dim_time_flag_matches_any_of_multiple_axes(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-565: the enriched suffix is flagged when it matches ANY of the dim's
+        event-time axes — here the SECOND of two, exercising the set-membership
+        match rather than equality-to-a-single-column."""
+        seeded = _seed(
+            session,
+            dim_axes=[
+                {"column": "other", "aspect": "x", "note": "n"},
+                {"column": "date", "aspect": "event", "note": "n"},
+            ],
+        )
+        fact: Table = seeded["fact"]
+
+        data = SlicingPhase()._build_context_data(
+            _ctx(session, duckdb_conn, [fact.table_id]), [fact]
+        )
+
+        by_name = _columns_by_name(data["tables"][0])
+        assert by_name["invoice_id__date"]["is_dimension_time_column"] is True
         assert by_name["invoice_id__status"]["is_dimension_time_column"] is False
 
     def test_no_flag_when_dim_time_column_differs(
@@ -271,7 +300,7 @@ class TestBuildContextDataTimeAxis:
                 table_id=fact.table_id,
                 run_id="run-A",
                 detected_entity_type="transaction",
-                time_column="booking_date",
+                time_columns=_axes("booking_date"),
                 detection_source="llm",
                 confidence=0.9,
             )
@@ -283,7 +312,7 @@ class TestBuildContextDataTimeAxis:
         )
 
         (table_data,) = data["tables"]
-        assert table_data["time_column"] == "booking_date"
+        assert [tc["column"] for tc in table_data["time_columns"]] == ["booking_date"]
         # The dim's entity is None-run — out of scope for run-A, so the
         # enriched date column is not flagged either.
         by_name = _columns_by_name(table_data)
@@ -346,7 +375,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "invoice_id__date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" and e["table"] == "invoices" for e in logs)
         # Empty recommendations — nothing mocked landed in SliceDefinition rows.
         assert session.execute(select(SliceDefinition)).scalars().all() == []
@@ -397,7 +426,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "invoice_id__date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 
@@ -422,7 +451,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column is None
+        assert seeded["fact_entity"].time_columns == []
         assert any(
             e["event"] == "time_axis_unknown_column" and e["table"] == "invoices" for e in logs
         )
@@ -449,7 +478,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "booking_date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["booking_date"]
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 
@@ -474,7 +503,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column is None
+        assert seeded["fact_entity"].time_columns == []
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 

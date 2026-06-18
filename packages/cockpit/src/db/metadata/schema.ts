@@ -385,12 +385,13 @@ export const currentTableEntities = metadataSchema
 		grainColumns: json("grain_columns"),
 		isFactTable: boolean("is_fact_table"),
 		isDimensionTable: boolean("is_dimension_table"),
-		timeColumn: varchar("time_column"),
+		timeColumns: json("time_columns"),
+		identityColumns: json("identity_columns"),
 		detectionSource: varchar("detection_source"),
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, is_fact_table, is_dimension_table, time_column, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT entity_id, table_id, run_id, detected_entity_type, description, confidence, evidence, grain_columns, is_fact_table, is_dimension_table, time_columns, identity_columns, detection_source, detected_at FROM ws_00000000_0000_0000_0000_000000000001.table_entities r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTemporalColumnProfiles = metadataSchema

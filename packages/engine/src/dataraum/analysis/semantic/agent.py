@@ -250,7 +250,8 @@ class SemanticAgent(LLMFeature):
                 grain_columns=table.grain,
                 is_fact_table=table.is_fact_table,
                 is_dimension_table=not table.is_fact_table,
-                time_column=table.time_column,
+                time_columns=table.time_columns,
+                identity_columns=table.identity_columns,
             )
             for table in synthesis.tables
         ]

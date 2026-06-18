@@ -94,9 +94,21 @@ function TableEntityHeader({ entity }: { entity: TableEntity }) {
 						Grain: {entity.grain.join(", ")}
 					</Text>
 				)}
-				{entity.time_column && (
-					<Text span size="xs" c="dimmed">
-						Time: {entity.time_column}
+				{entity.time_columns.length > 0 && (
+					<Text
+						span
+						size="xs"
+						c="dimmed"
+						title={entity.time_columns
+							.map((tc) => `${tc.column}: ${tc.note}`)
+							.join("\n")}
+					>
+						Time:{" "}
+						{entity.time_columns
+							.map((tc) =>
+								tc.aspect ? `${tc.column} (${tc.aspect})` : tc.column,
+							)
+							.join(", ")}
 					</Text>
 				)}
 			</Group>

@@ -167,7 +167,9 @@ class TestBuilderExtractsTableEntity:
                 detected_entity_type="financial_transaction",
                 description="Records of all financial transactions",
                 grain_columns=["invoice_id"],
-                time_column="created_at",
+                time_columns=[
+                    {"column": "created_at", "aspect": "created", "note": "Row created."}
+                ],
                 is_fact_table=True,
             )
         )
@@ -183,7 +185,7 @@ class TestBuilderExtractsTableEntity:
         table = ctx.tables[0]
         assert table.table_description == "Records of all financial transactions"
         assert table.grain_columns == ["invoice_id"]
-        assert table.time_column == "created_at"
+        assert [tc["column"] for tc in table.time_columns] == ["created_at"]
 
     def test_unresolved_catalog_reads_no_run_versioned_data(self, session: Session) -> None:
         """Fail-closed (DAT-429): no resolved catalog run ⇒ no entities/relationships.

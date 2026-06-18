@@ -355,7 +355,8 @@ def synthesize_and_store_tables(
                 grain_columns={"columns": entity.grain_columns},
                 is_fact_table=entity.is_fact_table,
                 is_dimension_table=entity.is_dimension_table,
-                time_column=entity.time_column,
+                time_columns=[tc.model_dump() for tc in entity.time_columns],
+                identity_columns=[ic.model_dump() for ic in entity.identity_columns],
                 detection_source="llm",
             )
         )

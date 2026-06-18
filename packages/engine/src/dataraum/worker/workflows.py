@@ -479,6 +479,11 @@ _SESSION_VALUE_PHASE_ORDER = (
     # and reconciles the per-period sums across facts sharing a catalog dimension.
     "aggregation_lineage",
     "correlations",
+    # DAT-546: rank each measure-role column's drivers over the enriched view and
+    # persist run-versioned (read by the answer agent via look_drivers). Last in the
+    # value layer — needs slicing's catalog, dimension_hierarchies, and the enriched
+    # views all present this run. Deterministic, no LLM.
+    "driver_rankings",
 )
 
 

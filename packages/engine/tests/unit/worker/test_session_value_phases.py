@@ -30,6 +30,9 @@ def test_value_phase_order_is_the_agreed_chain() -> None:
         # reconciles the per-period sums — no slice-materialization phases precede it.
         "aggregation_lineage",
         "correlations",
+        # DAT-546: per-measure driver rankings, run-versioned. Last in the chain —
+        # needs slicing's catalog + dimension_hierarchies + the enriched views.
+        "driver_rankings",
     )
 
 

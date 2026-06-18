@@ -81,6 +81,8 @@ def worker_activities(phase_activities: PhaseActivities) -> list[object]:
         # DAT-537 g3 drill-down / alias discovery over the slice catalog.
         phase_activities.run_dimension_hierarchies,
         phase_activities.run_correlations,
+        # DAT-546: per-measure driver rankings persisted run-versioned (last value phase).
+        phase_activities.run_driver_rankings,
         # DAT-408/409 begin_session: materialize durable overlays →
         # terminal detect → silent-accept keepers → promote.
         phase_activities.run_session_materialize_overlays,

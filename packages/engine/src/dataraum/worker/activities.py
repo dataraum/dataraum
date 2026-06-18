@@ -367,6 +367,19 @@ class PhaseActivities:
             "correlations", payload.run, payload.table_ids, payload.vertical
         )
 
+    @activity.defn(name="driver_rankings")
+    def run_driver_rankings(self, payload: SessionScopedInput) -> PhaseOutcome:
+        """Driver-rankings activity — persist per-measure driver discovery (DAT-546).
+
+        Runs the validated driver-discovery engine over each measure-role fact
+        column's enriched view and persists the grain-labeled ranking run-versioned
+        (one row per ``(measure_column_id, run_id)``). Deterministic, NO LLM call.
+        Read by the answer agent via ``look_drivers``.
+        """
+        return self._run_session_or_raise(
+            "driver_rankings", payload.run, payload.table_ids, payload.vertical
+        )
+
     @activity.defn(name="session_materialize_overlays")
     def run_session_materialize_overlays(self, run: RunRef) -> PhaseOutcome:
         """Materialize durable relationship overlays into this run (DAT-409).

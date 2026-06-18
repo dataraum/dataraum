@@ -4,6 +4,34 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-18: DAT-546 — driver_rankings begin_session artifact
+
+Driver discovery is now PERSISTED, not just an in-memory engine. A new begin_session
+value-layer phase `driver_rankings` (runs last in `_SESSION_VALUE_PHASE_ORDER`, after
+`correlations`, before `session_detect`) enumerates each session fact's
+`semantic_role='measure'` columns, runs the unchanged `discover_drivers` over each (it
+self-resolves cluster keys from `identity_columns`), and writes one run-versioned
+`DriverRankingArtifact` per `(measure_column_id, run_id)`. The grain-labeled output is
+stored GRANULARLY (primary `grain`/`entity` + the `secondary_dimensions` list, each item
+keeping its own `grain`/`entity`) — never merged into one cross-grain ranking.
+
+- New table `driver_rankings` + read view `current_driver_rankings` (catalog grain, in
+  `schema.sql`/`schema_read.sql`). The proven engine core is untouched.
+- Run-scoping: measure role + temporal_behavior read unscoped-by-run (the `slicing_phase`
+  convention; role is generation-stable); `discover_drivers`' substrate reads stay on the
+  begin_session run.
+- v1 = measure-role columns only (flow/stock). Declared-metric ratios + genuinely-ad-hoc
+  question ratios are deferred (the on-demand `discover_drivers` tool, same result contract).
+
+### dataraum-eval
+- **Ranking-stability across reruns:** the artifact must be rerun-stable (DAT-563's
+  home-grain routing is what makes it deterministic). Run begin_session twice on the same
+  corpus and assert each measure's persisted `ranked_dimensions` + `secondary_dimensions`
+  (dimension, grain, entity) are identical run-to-run; n_rows stable. A drift here is a
+  determinism regression in the engine, not a calibration knob.
+- The phase persists EVERY measure-role column, including empty rankings (`n_rows` records
+  the power) — assert "no significant driver" is a stored row, not an absent one.
+
 ## 2026-06-18: DAT-563 — N-entity home-grain driver routing + ICC-verification resolver
 
 Makes the cluster-aware driver path actually fire end to end, generalized to N recurring

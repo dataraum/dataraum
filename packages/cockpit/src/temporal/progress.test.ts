@@ -3,8 +3,10 @@
 // Mocked seams: `#/config` (Temporal config) + `@temporalio/client` (a handle
 // whose query/describe the test scripts). We assert: getWorkflowProgress queries
 // `get_progress` on getHandle(id, runId) and maps to the mirrored snake_case
-// shape; `done` is true on phase==="done" OR a terminal describe() status; and
-// the unconfigured guard throws like replay.ts.
+// shape; `done` is true on phase==="done" OR a terminal describe() status; the
+// unconfigured guard throws like replay.ts; and the two trigger poll-races
+// (DAT-570) — no execution yet (describe → NotFound → PENDING) and a not-yet-
+// queryable execution (query fails → describe()-only) — degrade, never 500.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -39,6 +41,9 @@ const h = vi.hoisted(() => ({
 	queryName: null as string | null,
 	// When set, the mocked get_progress query rejects with this (the fallback path).
 	queryError: null as Error | null,
+	// When set, the mocked describe() rejects with this (the no-execution-yet
+	// poll-race — WorkflowNotFoundError, DAT-570).
+	describeError: null as Error | null,
 }));
 
 // A live getter, not a snapshot: the tests reassign `h.config`, so the module's
@@ -75,7 +80,10 @@ const queryMock = vi.fn(async (name: string) => {
 	if (h.queryError) throw h.queryError;
 	return h.snapshot;
 });
-const describeMock = vi.fn(async () => ({ status: { name: h.status } }));
+const describeMock = vi.fn(async () => {
+	if (h.describeError) throw h.describeError;
+	return { status: { name: h.status } };
+});
 const getHandleMock = vi.fn((...args: unknown[]) => {
 	h.getHandleArgs = args;
 	return { query: queryMock, describe: describeMock };
@@ -113,6 +121,7 @@ beforeEach(() => {
 	h.getHandleArgs = null;
 	h.queryName = null;
 	h.queryError = null;
+	h.describeError = null;
 	queryMock.mockClear();
 	describeMock.mockClear();
 	getHandleMock.mockClear();
@@ -232,11 +241,11 @@ describe("getWorkflowProgress (DAT-352)", () => {
 	});
 
 	it("falls back to describe()-only when the workflow has no get_progress query (operating_model)", async () => {
-		// operatingModelWorkflow registers no get_progress (begin_session does
-		// since DAT-435) — the query raises WorkflowQueryFailedError; the poll
-		// degrades to status + done, no phase detail.
+		// A workflow that registers no get_progress raises QueryNotRegisteredError;
+		// the poll degrades to status + done, no phase detail (no 500). All three
+		// parent workflows serve the query today — this is the forward-compat path.
 		const err = new Error("query not registered: get_progress");
-		err.name = "WorkflowQueryFailedError";
+		err.name = "QueryNotRegisteredError";
 		h.queryError = err;
 		h.status = "RUNNING";
 
@@ -257,7 +266,7 @@ describe("getWorkflowProgress (DAT-352)", () => {
 
 	it("fallback reports done with the terminal 'done' phase on a COMPLETED run", async () => {
 		const err = new Error("query not registered: get_progress");
-		err.name = "WorkflowQueryFailedError";
+		err.name = "QueryNotRegisteredError";
 		h.queryError = err;
 		h.status = "COMPLETED";
 
@@ -270,11 +279,63 @@ describe("getWorkflowProgress (DAT-352)", () => {
 		expect(result.status).toBe("COMPLETED");
 	});
 
-	it("rethrows a non-query-handler query failure (a real error is not swallowed)", async () => {
-		h.queryError = new Error("connection reset"); // name !== WorkflowQueryFailedError
+	it("returns a PENDING snapshot when the workflow has no execution yet (DAT-570)", async () => {
+		// The trigger returns the deterministic workflow id before the journey starts
+		// the engine child, so an eager poll finds no execution: describe() throws
+		// WorkflowNotFoundError. The poll must report PENDING (done:false) so the
+		// widget keeps polling — NOT 500.
+		const err = new Error("workflow not found");
+		err.name = "WorkflowNotFoundError";
+		h.describeError = err;
+
+		const result = await getWorkflowProgress({
+			workflow_id: "beginsession-ws",
+			run_id: "beginsession-ws",
+		});
+		expect(result).toEqual({
+			phase: "pending",
+			tables_total: 0,
+			tables_completed: 0,
+			tables: [],
+			failure: null,
+			status: "PENDING",
+			done: false,
+		});
+		// describe() failed before the query — never queried.
+		expect(queryMock).not.toHaveBeenCalled();
+	});
+
+	it("rethrows a non-NotFound describe() failure (a real error is not swallowed)", async () => {
+		// A connection/config failure on describe() is NOT the poll-race — surface it.
+		h.describeError = new Error("connection reset"); // name !== WorkflowNotFoundError
 		await expect(
 			getWorkflowProgress({ workflow_id: "w", run_id: "r" }),
 		).rejects.toThrow(/connection reset/);
+	});
+
+	it("degrades to describe()-only when the query can't be served yet — sibling poll-race (DAT-570)", async () => {
+		// The execution exists (describe() returns RUNNING) but its first workflow
+		// task hasn't completed, so get_progress can't be served (QueryRejectedError
+		// / a transient query RPC error). The poll degrades to the run's authoritative
+		// status instead of 500ing, so the widget keeps polling.
+		const err = new Error("query rejected: workflow task not completed");
+		err.name = "QueryRejectedError";
+		h.queryError = err;
+		h.status = "RUNNING";
+
+		const result = await getWorkflowProgress({
+			workflow_id: "beginsession-ws",
+			run_id: "beginsession-ws",
+		});
+		expect(result).toEqual({
+			phase: "running",
+			tables_total: 0,
+			tables_completed: 0,
+			tables: [],
+			failure: null,
+			status: "RUNNING",
+			done: false,
+		});
 	});
 
 	it("throws when Temporal is unconfigured (like replay.ts)", async () => {

@@ -141,6 +141,24 @@ export function isProgressDone(phase: string, status: string): boolean {
 }
 
 /**
+ * The snapshot returned while a triggered run isn't queryable yet (DAT-570). A
+ * stage trigger returns the deterministic workflow id immediately, but the
+ * per-workspace journey starts the engine child a beat later (DAT-530/562) — so an
+ * eager poll can land before any execution exists. Report PENDING (done:false) so
+ * the widget keeps polling, rather than letting the poll 500 on a
+ * `WorkflowNotFoundError`.
+ */
+const PENDING_PROGRESS: WorkflowProgress = {
+	phase: "pending",
+	tables_total: 0,
+	tables_completed: 0,
+	tables: [],
+	failure: null,
+	status: "PENDING",
+	done: false,
+};
+
+/**
  * The terminal cockpit `runs.status` for a DONE run. "completed" covers
  * the clean exits — phase=="done" (the workflow finished even if describe()
  * hasn't flipped yet), an actual COMPLETED, and CONTINUED_AS_NEW (a handoff, not
@@ -165,11 +183,16 @@ export function terminalRunStatus(
  * Works for any cockpit-triggered workflow. `addSourceWorkflow` (DAT-406) and
  * `beginSessionWorkflow` (DAT-435) both register a `get_progress`
  * @workflow.query serving the same snapshot shape (add_source with per-table
- * fan-out detail, begin_session sequential with empty fan-out fields). A
- * workflow without the query (none today; forward-compat) raises
- * `WorkflowQueryFailedError` — caught here to fall back to a `describe()`-only
- * status (no phase detail, but the authoritative run status + `done`). Any
- * OTHER query error is a real failure and rethrows.
+ * fan-out detail, begin_session sequential with empty fan-out fields).
+ *
+ * Tolerant of the two poll-races a stage trigger opens (DAT-570): the trigger
+ * returns the deterministic workflow id before the journey starts the engine
+ * child, so an eager poll can (a) find NO execution yet — `describe()` throws
+ * `WorkflowNotFoundError`, reported as PENDING; or (b) reach a brand-new execution
+ * whose first workflow task hasn't completed, so the query can't be served — the
+ * query failure degrades to a `describe()`-only snapshot. Same describe()-only
+ * fallback also covers a workflow that registers no `get_progress` handler (none
+ * today; forward-compat). Neither race 500s the poll.
  */
 export async function getWorkflowProgress(
 	input: WorkflowProgressInput,
@@ -181,20 +204,45 @@ export async function getWorkflowProgress(
 	// execution. `run_id` is still accepted in the input (the poll body sends it)
 	// but no longer pins the iteration.
 	const handle = client.workflow.getHandle(input.workflow_id);
-	const description = await handle.describe();
+
+	// describe() throws WorkflowNotFoundError when the workflow id has no execution
+	// yet — the poll-race the trigger opens (DAT-570). Report PENDING (not a 500) so
+	// the widget keeps polling; any OTHER describe() failure (config/connection) is
+	// a real error and surfaces. Match on `.name` (the SDK sets it on the prototype)
+	// to avoid coupling to the class export.
+	let description: Awaited<ReturnType<typeof handle.describe>>;
+	try {
+		description = await handle.describe();
+	} catch (err) {
+		if (err instanceof Error && err.name === "WorkflowNotFoundError") {
+			return PENDING_PROGRESS;
+		}
+		throw err;
+	}
 	const status = description.status.name;
 
 	let snapshot: ProgressSnapshot | null = null;
 	try {
 		snapshot = await handle.query<ProgressSnapshot, []>("get_progress");
 	} catch (err) {
-		// A workflow with no get_progress handler (none today; kept for
-		// forward-compat — all three parent workflows serve the query) raises
-		// WorkflowQueryFailedError — degrade to describe()-only. Match on the
-		// error name to avoid coupling to the SDK's class export.
-		if (!(err instanceof Error) || err.name !== "WorkflowQueryFailedError") {
-			throw err;
-		}
+		// describe() already gave the authoritative status; the query only adds the
+		// phase + per-table detail, so a query that can't be served must NOT 500 the
+		// poll — degrade to the describe()-only snapshot below. Covers the sibling
+		// poll-race to describe()'s NotFound (DAT-570): a brand-new execution whose
+		// first workflow task hasn't completed yet can't serve `get_progress`
+		// (QueryRejectedError / a transient query RPC error), and also a workflow
+		// with no `get_progress` handler (QueryNotRegisteredError; forward-compat).
+		// Logged so a genuinely broken query stays visible while the run keeps
+		// polling on its authoritative describe() status.
+		console.warn("get_progress query failed; degrading to describe()-only", {
+			workflow_id: input.workflow_id,
+			status,
+			// `error_name` makes log triage trivial: QueryRejectedError =
+			// first-task-not-ready race, QueryNotRegisteredError = no handler, anything
+			// else = a real query RPC failure degraded on purpose (DAT-570).
+			error_name: err instanceof Error ? err.name : undefined,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 
 	if (!snapshot) {

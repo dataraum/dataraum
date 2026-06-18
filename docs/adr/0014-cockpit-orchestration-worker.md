@@ -68,3 +68,45 @@ owner of all stage execution.
 - Open follow-ups: per-tenant queue fairness (each tenant gets a full deployment, so strict separation
   isn't needed yet — DAT-526 note); the agentic grounding-teach loop (DAT-551) rides on this substrate;
   the `verticalEstablished` entry gate is not yet wired into frame/use_vertical.
+
+## Deploying journey-code changes (DAT-567)
+
+The journey is long-lived (one execution per workspace, bounded by continue-as-new every ~500
+events), so "how does a running journey pick up new workflow code?" is a real operational question.
+The answer, **verified empirically** (DAT-567, against a live 24-minute-old journey on the smoke
+stack):
+
+- **A running journey adopts new code on its NEXT signal after the *worker process* is running the
+  new bundle — no continue-as-new and no workflow restart required.** When the redeployed worker
+  picks up the next workflow task it replays the full history under the new bundle and then processes
+  the new signal live. Confirmed: redeploying the cockpit container and signalling the *existing*
+  journey ran the new code path on the same execution (`runId` unchanged) with no
+  `DeterminismViolation`.
+- The true gate is therefore **"is the worker process running the new bundle?"**, NOT continue-as-new.
+  In prod that means **recreating the cockpit container so the new `workflowBundle` is loaded**:
+
+  ```bash
+  docker compose -f packages/infra/docker-compose.yml up -d --build --force-recreate cockpit
+  ```
+
+  The real failure mode is the **cached-image / no-recreate trap** — `up` without `--force-recreate`
+  (or without rebuilding) leaves the old worker polling the old bundle, so the change silently never
+  lands. (Same family as the cockpit-migrate cached-image gotcha.)
+- **Already-executed and in-flight stages keep their original behavior by design.** `patched()`
+  returns `false` while replaying the marker-less historical part of the journey, so a stage that
+  already ran under the old code is *not* retroactively re-run under new logic — you cannot, e.g.,
+  retro-apply the grounding loop to an import that already completed. A *new* stage after the deploy
+  gets the new path. This is correct, not a bug (it's exactly what DAT-551 observed and what got
+  re-filed as DAT-567).
+- **Discipline for future edits — never reorder the marker sequence.** Inserting a new `patched()`
+  gate (or a new activity call, timer, or child) *before* an existing committed marker in a path the
+  live history already traversed reorders commands against history → `DeterminismViolation` on every
+  running journey. Append-only changes are safe: a new `patched()` gate reached only on *new* work, a
+  side-effect-free `log.*`, or a trailing branch. The offline `journey-replay.test.ts` guard catches
+  reorders against its committed fixture — keep a rich, recent fixture (DAT-568) so it covers the
+  cascade + grounding paths, not just begin_session-start.
+
+In **dev** (`bun --bun run dev`) the worker is a `globalThis`-pinned singleton bundled once at
+`Worker.create`; HMR re-imports the module but reuses the running worker, so **edits to
+`src/worker/` are NOT hot-reloaded — restart the dev server to load them** (see `worker.ts` and the
+cockpit CLAUDE.md dev loop).

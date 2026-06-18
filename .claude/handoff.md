@@ -4,6 +4,42 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-18: DAT-565 — multi-role semantic_per_table (all time axes + identity columns)
+
+`semantic_per_table` now emits **every** event-time axis and the table's recurring
+**identity** columns, replacing the singular `TableEntity.time_column`:
+- `TableEntity.time_column VARCHAR` is **GONE**, replaced by two run-versioned JSON
+  columns: `time_columns` (`[{column, aspect, note}, …]`) and `identity_columns`
+  (`[{column, note}, …]`). Schema change in `packages/engine/schema.sql`.
+- Formatters emit ALL axes: `graphs/context.py` renders each axis (granularity/range +
+  note) into the answer-agent SQL context; `slicing_phase` passes all axes to the slice
+  agent and matches `is_dimension_time_column` by set-membership.
+- **Lineage** (`analysis/lineage/processor.py`): the stock/flow reconciliation now
+  competes EVERY event-time axis per measure and keeps the best-reconciling verdict.
+  **Grain unchanged** — still one row per `(measure_column, run_id)` in
+  `measure_aggregation_lineage`; the `structural_reconciliation` witness is untouched.
+- `identity_columns` is **additive** — sole consumer is DAT-563 (not yet built); nothing
+  reads it today.
+
+### dataraum-eval
+- **BREAKING fixture change:** any eval fixture that seeds `TableEntity(time_column=…)`
+  will fail (the column no longer exists). Switch to
+  `time_columns=[{"column": …, "aspect": …, "note": …}]`. Existing `ws_*` schemas need a
+  fresh `down -v` (or migration) — `time_column` → `time_columns` + `identity_columns`.
+- **Lineage is behavior-preserving for single-axis tables** (one axis ⇒ identical verdict
+  to before). Add a **denormalized fixture with ≥2 event-time columns** on a measure fact
+  and verify the best-reconciling axis still produces the correct flow/stock verdict and a
+  bad/degenerate axis does not dislodge it (engine guard: `test_competes_time_axes_and_keeps_best`).
+- The answer-agent SQL context now lists **all** time axes per table (each with range +
+  note) — calibration that pins the metadata-document/SQL-gen context should expect the
+  multi-line "Time column" block, not a single line.
+
+### dataraum-testdata
+- Add a **denormalized multi-temporal** fixture: a fact with several genuine event-time
+  columns (e.g. `order_date` / `ship_date` / `delivery_date`), each a distinct lens, plus
+  **≥1 recurring identity column that is a NON-grain FK** (high-cardinality, recurs across
+  rows, not part of the row grain) — the shape DAT-565 produces and DAT-563 will consume.
+
 ## 2026-06-17: DAT-561 — candidate-grain routing (fixes the low-ICC entity-level FP)
 
 Closes the DAT-552 eval-gate residual: at **ICC ≈ 0.03** a high-cardinality

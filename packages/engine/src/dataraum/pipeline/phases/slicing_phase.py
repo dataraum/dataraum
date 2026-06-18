@@ -476,10 +476,10 @@ class SlicingPhase(BasePhase):
         except Exception:
             pass  # Enriched views not available, proceed without
 
-        # Time-axis context (DAT-491): each table's already-identified time_column
-        # (this run's TableEntity — the semantic_per_table judgment the agent
-        # INHERITS), plus the joined dimension tables' time columns so an enriched
-        # "fk__col" entry can be flagged as the header's event date.
+        # Time-axis context (DAT-491/565): each table's already-identified
+        # time_columns (this run's TableEntity — the semantic_per_table judgment
+        # the agent INHERITS), plus the joined dimension tables' time columns so an
+        # enriched "fk__col" entry can be flagged as the header's event date.
         dim_table_ids = {
             tid for ev in ev_by_fact.values() if ev for tid in (ev.dimension_table_ids or [])
         }
@@ -581,10 +581,10 @@ class SlicingPhase(BasePhase):
                     dim_table_id = dim_table_by_fk_col.get(fk_col_id or "")
                     dim_suffix = dim_col.column_name.split("__", 1)[1] if fk_prefix else None
                     # Plural (DAT-565): the enriched suffix is a time axis if it
-                    # matches ANY of the dim table's event-time columns.
+                    # matches ANY of the dim table's event-time columns. (`x in
+                    # set` already short-circuits on a falsy ``dim_suffix``.)
                     is_dim_time = bool(
                         dim_table_id
-                        and dim_suffix
                         and dim_suffix
                         in {tc.get("column") for tc in time_col_by_table.get(dim_table_id, [])}
                     )

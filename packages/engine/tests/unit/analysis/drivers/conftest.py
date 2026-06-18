@@ -228,6 +228,54 @@ def make_clustered_two_driver_corpus(
     return df
 
 
+# Two-ENTITY corpus (DAT-563): rows cross TWO recurring identities (customer, product),
+# each with its own entity-level driver + null, plus a row-level null. The measure carries
+# a LARGE customer random effect (higher ICC → customer is the primary entity grain) and a
+# smaller product random effect (lower ICC → product is an entity-grain SECONDARY). Every
+# candidate is constant within exactly one identity, so home-grain routing is unambiguous:
+# customer attrs → customer grain, product attrs → product grain, the row null → row-wise.
+TE_N_CUST = 120
+TE_N_PROD = 40
+TE_N_ROWS = 24_000
+TE_CUST = "customer"
+TE_PROD = "product"
+TE_CUST_DRIVER = "D_cust"
+TE_PROD_DRIVER = "D_prod"
+TE_CUST_NULL = "N_cust"
+TE_PROD_NULL = "N_prod"
+TE_ROW_NULL = "N_row"
+TE_DIMS = [TE_CUST_DRIVER, TE_PROD_DRIVER, TE_CUST_NULL, TE_PROD_NULL, TE_ROW_NULL]
+TE_ENTITIES = [TE_CUST, TE_PROD]
+
+
+def make_two_entity_corpus(rng: np.random.Generator) -> pd.DataFrame:
+    """24k rows over 120 customers × 40 products; measure clusters within BOTH (customer > product)."""
+    n = TE_N_ROWS
+    cust = rng.integers(0, TE_N_CUST, n)
+    prod = rng.integers(0, TE_N_PROD, n)
+    # Customer-level driver + entity effect — the LARGER share (ICC ≈ 0.65 → customer is
+    # primary AND clears the resolver's verify threshold).
+    cust_drv = rng.integers(0, 4, TE_N_CUST)
+    cust_effect = np.array([-3.0, -1.0, 1.0, 3.0])[cust_drv] + rng.normal(0, 2.5, TE_N_CUST)
+    # Product-level driver + a smaller-but-real entity effect (ICC ≈ 0.27 → a verified
+    # SECONDARY entity grain, below customer but above the 0.10 verify threshold). The
+    # driver dominates the between-product variance (low entity noise) so it recalls
+    # reliably at the 40-product entity grain.
+    prod_drv = rng.integers(0, 4, TE_N_PROD)
+    prod_effect = np.array([-2.5, -0.8, 0.8, 2.5])[prod_drv] + rng.normal(0, 1.0, TE_N_PROD)
+
+    df = pd.DataFrame(index=np.arange(n))
+    df[TE_CUST] = cust
+    df[TE_PROD] = prod
+    df["measure"] = 100.0 + cust_effect[cust] + prod_effect[prod] + rng.normal(0, 1.0, n)
+    df[TE_CUST_DRIVER] = [f"cd{g}" for g in cust_drv[cust]]  # constant within customer
+    df[TE_PROD_DRIVER] = [f"pd{g}" for g in prod_drv[prod]]  # constant within product
+    df[TE_CUST_NULL] = [f"cn{g}" for g in rng.integers(0, 6, TE_N_CUST)[cust]]  # cust-level null
+    df[TE_PROD_NULL] = [f"pn{g}" for g in rng.integers(0, 6, TE_N_PROD)[prod]]  # prod-level null
+    df[TE_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
+    return df
+
+
 # Clustered RATIO corpus (DAT-552 #321 fold): the per-row ratio (num/den) carries a
 # per-entity level (high ICC on the ratio); an entity-level driver shifts that level;
 # the denominator (volume) varies independently. Tests cluster-aware ratio.

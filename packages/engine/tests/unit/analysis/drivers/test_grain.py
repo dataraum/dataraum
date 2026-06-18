@@ -17,6 +17,7 @@ from dataraum.analysis.drivers.criterion import (
     weighted_variance_reduction,
 )
 from dataraum.analysis.drivers.processor import (
+    _home_grain_partition,
     _within_entity_ratio_residual,
     _within_entity_residual,
 )
@@ -28,15 +29,53 @@ from .conftest import (
     CL_ENTITY_NULLS,
     CL_RATIO_ROW_DRIVER,
     CL_ROW_DRIVER,
+    TE_CUST,
+    TE_CUST_DRIVER,
+    TE_CUST_NULL,
+    TE_DIMS,
+    TE_PROD,
+    TE_PROD_DRIVER,
+    TE_PROD_NULL,
+    TE_ROW_NULL,
     make_clustered_corpus,
     make_clustered_ratio_two_driver_corpus,
     make_clustered_two_driver_corpus,
+    make_two_entity_corpus,
 )
 
 
 def _codes(series: pd.Series) -> tuple[np.ndarray, int]:
     codes, uniques = pd.factorize(series)
     return codes.astype(int), len(uniques)
+
+
+class TestHomeGrainPartition:
+    """DAT-563: each candidate is assigned to EXACTLY ONE home grain (entity or row)."""
+
+    def test_each_dim_homes_at_one_grain(self) -> None:
+        df = make_two_entity_corpus(np.random.default_rng(0))
+        home, row = _home_grain_partition(df, [TE_CUST, TE_PROD], TE_DIMS)
+        # Customer attrs are constant within customer; product attrs within product.
+        assert set(home[TE_CUST]) == {TE_CUST_DRIVER, TE_CUST_NULL}
+        assert set(home[TE_PROD]) == {TE_PROD_DRIVER, TE_PROD_NULL}
+        assert row == [TE_ROW_NULL]  # varies within both → row-level
+        # The partition is exhaustive AND disjoint — every dim lands once, nowhere twice.
+        assigned = [d for ds in home.values() for d in ds] + row
+        assert sorted(assigned) == sorted(TE_DIMS)
+
+    def test_constant_within_two_homes_at_the_finer_entity(self) -> None:
+        # ``region`` is constant within BOTH store and chain (a store sits in one region,
+        # a chain spans one region here) → it must home at the FINER (higher-card) entity.
+        df = pd.DataFrame(
+            {
+                "chain": [0, 0, 1, 1, 2, 2],  # 3 chains
+                "store": [0, 1, 2, 3, 4, 5],  # 6 stores (finer)
+                "region": ["W", "W", "E", "E", "S", "S"],  # constant within store AND chain
+            }
+        )
+        home, row = _home_grain_partition(df, ["chain", "store"], ["region"])
+        assert home == {"store": ["region"]}  # finer entity wins the tiebreak
+        assert row == []
 
 
 class TestICC:

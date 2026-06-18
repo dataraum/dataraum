@@ -101,13 +101,13 @@ class TestTableContext:
             is_fact_table=True,
             table_description="Financial transactions table",
             grain_columns=["id"],
-            time_column="created_at",
+            time_columns=[{"column": "created_at", "aspect": "created", "note": "Created."}],
             columns=[col1, col2],
         )
         assert ctx.row_count == 1000
         assert ctx.table_description == "Financial transactions table"
         assert ctx.grain_columns == ["id"]
-        assert ctx.time_column == "created_at"
+        assert [tc["column"] for tc in ctx.time_columns] == ["created_at"]
         assert len(ctx.columns) == 2
 
 
@@ -244,7 +244,9 @@ class TestFormatMetadataDocument:
             entity_type="financial_transaction",
             table_description="Records of all financial transactions",
             grain_columns=["transaction_id"],
-            time_column="created_at",
+            time_columns=[
+                {"column": "created_at", "aspect": "created", "note": "When the row was created."}
+            ],
             columns=[
                 ColumnContext(
                     column_id="col-1",
@@ -267,6 +269,10 @@ class TestFormatMetadataDocument:
         assert "Records of all financial transactions" in result
         assert "transaction_id" in result
         assert "created_at" in result
+        # DAT-565: the axis renders its aspect label, range, and one-line note.
+        assert "by created" in result
+        assert "2024-01-01 to 2024-12-31" in result
+        assert "When the row was created." in result
 
     def test_column_table_format(self) -> None:
         """Columns are formatted in a table with business metadata."""

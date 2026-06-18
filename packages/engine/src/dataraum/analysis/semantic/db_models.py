@@ -145,7 +145,12 @@ class TableEntity(Base):
     )  # List of column IDs that define grain
     is_fact_table: Mapped[bool | None] = mapped_column(Boolean)
     is_dimension_table: Mapped[bool | None] = mapped_column(Boolean)
-    time_column: Mapped[str | None] = mapped_column(String, nullable=True)
+    # DAT-565: all event-time axes (multi-temporal) and recurring identity columns,
+    # each carrying a one-line note. JSON list[dict]; run-versioned like the rest.
+    #   time_columns:     [{"column": str, "aspect": str, "note": str}, ...]
+    #   identity_columns: [{"column": str, "note": str}, ...]
+    time_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    identity_columns: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
 
     # Provenance
     detection_source: Mapped[str | None] = mapped_column(String)  # 'llm', 'heuristic', 'manual'

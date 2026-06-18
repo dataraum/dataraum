@@ -99,7 +99,8 @@ class TableContext:
     # From TableEntity
     table_description: str | None = None
     grain_columns: list[str] = field(default_factory=list)
-    time_column: str | None = None
+    # DAT-565: all event-time axes — [{"column", "aspect", "note"}, ...].
+    time_columns: list[dict[str, Any]] = field(default_factory=list)
 
     # Columns
     columns: list[ColumnContext] = field(default_factory=list)
@@ -910,7 +911,7 @@ def build_execution_context(
                 entity_type=table_entity.detected_entity_type if table_entity else None,
                 table_description=table_entity.description if table_entity else None,
                 grain_columns=grain_cols,
-                time_column=table_entity.time_column if table_entity else None,
+                time_columns=(table_entity.time_columns or []) if table_entity else [],
                 columns=column_contexts,
                 flags=table_flags,
                 table_entropy=tbl_entropy,
@@ -1131,10 +1132,15 @@ def format_metadata_document(
             meta_parts.append(f"**Grain**: {', '.join(table.grain_columns)}.")
         if table.row_count:
             meta_parts.append(f"**Rows**: {table.row_count:,}.")
-        if table.time_column:
-            # Find matching temporal column for time range
-            time_col = next((c for c in table.columns if c.column_name == table.time_column), None)
-            time_info = f"**Time column**: {table.time_column}"
+        # All event-time axes (DAT-565): the answer agent picks the lens per
+        # question, so render each with its granularity/range and one-line note.
+        for tc in table.time_columns:
+            name = tc.get("column")
+            if not name:
+                continue
+            time_col = next((c for c in table.columns if c.column_name == name), None)
+            label = f"by {tc['aspect']}" if tc.get("aspect") else None
+            time_info = f"**Time column**: {name}" + (f" ({label})" if label else "")
             if time_col:
                 time_parts = []
                 if time_col.detected_granularity:
@@ -1142,8 +1148,10 @@ def format_metadata_document(
                 if time_col.min_timestamp and time_col.max_timestamp:
                     time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
                 if time_parts:
-                    time_info += f" ({', '.join(time_parts)})"
-            meta_parts.append(time_info + ".")
+                    time_info += f" — {', '.join(time_parts)}"
+            if tc.get("note"):
+                time_info += f". {tc['note']}"
+            meta_parts.append(time_info.rstrip(".") + ".")
         if meta_parts:
             lines.append(" ".join(meta_parts))
 

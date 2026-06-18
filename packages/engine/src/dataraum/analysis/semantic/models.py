@@ -200,6 +200,39 @@ class RelationshipOutput(BaseModel):
     )
 
 
+class TimeColumn(BaseModel):
+    """One event-time axis of a table (DAT-565 multi-temporal).
+
+    A denormalized table commonly has several — each a distinct temporal lens
+    (order vs ship vs delivery). Carries a one-line note so downstream
+    formatters and the answer agent can pick the right lens per question."""
+
+    column: str = Field(description="Exact column name from the provided schema.")
+    aspect: str = Field(
+        description=(
+            "The temporal aspect this column records, as a short lowercase label "
+            "(e.g. 'order', 'ship', 'delivery', 'payment') — distinguishes one "
+            "event date from another on the same row."
+        )
+    )
+    note: str = Field(description="One sentence describing what this time column represents.")
+
+
+class IdentityColumn(BaseModel):
+    """A recurring real-world identity in a table (DAT-565), distinct from grain.
+
+    A would-be foreign key: high-cardinality, recurs across rows, functionally
+    determines other columns. May be a NON-grain column (an FK pointing
+    elsewhere), so it is not derivable from ``grain`` — and the grain may be a
+    surrogate row key that identifies nothing. Consumed by driver discovery
+    (DAT-563) to cluster measurements by entity."""
+
+    column: str = Field(description="Exact column name from the provided schema.")
+    note: str = Field(
+        description=("One sentence: what entity this identifies and how it recurs across rows.")
+    )
+
+
 class TableEntityOutput(BaseModel):
     """Entity-level classification for a single table (per-table tier)."""
 
@@ -230,13 +263,26 @@ class TableEntityOutput(BaseModel):
         )
     )
 
-    time_column: str | None = Field(
-        default=None,
+    time_columns: list[TimeColumn] = Field(
+        default_factory=list,
         description=(
-            "The column recording WHEN each row's event occurred (booking/transaction/"
-            "observation date) — the axis time-based analysis segments by. NOT an "
-            "attribute date such as due_date or valid_until, and not record metadata "
-            "like created_at. None if the table has no such column."
+            "EVERY column recording WHEN a row's event occurred (booking/transaction/"
+            "observation date) — each a distinct temporal lens the analysis can "
+            "segment by (e.g. order_date, ship_date, delivery_date). A denormalized "
+            "table commonly has several; emit all. Exclude attribute dates such as "
+            "due_date or valid_until, and record metadata like created_at. Empty if "
+            "the table has no event-time column."
+        ),
+    )
+
+    identity_columns: list[IdentityColumn] = Field(
+        default_factory=list,
+        description=(
+            "Recurring real-world identities — high-cardinality columns that recur "
+            "across rows and identify a real entity (a customer, account, vehicle), "
+            "i.e. would-be foreign keys. Distinct from grain: an identity may be a "
+            "non-grain column, and the grain may be a surrogate row key that "
+            "identifies nothing. Empty if the table has none."
         ),
     )
 
@@ -332,7 +378,8 @@ class EntityDetection(BaseModel):
     grain_columns: list[str] = Field(default_factory=list)
     is_fact_table: bool = False
     is_dimension_table: bool = False
-    time_column: str | None = None  # Primary time column
+    time_columns: list[TimeColumn] = Field(default_factory=list)  # all event-time axes (DAT-565)
+    identity_columns: list[IdentityColumn] = Field(default_factory=list)  # recurring identities
 
 
 class Relationship(BaseModel):

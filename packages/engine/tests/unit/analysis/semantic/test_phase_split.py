@@ -18,9 +18,11 @@ from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
     ColumnSemanticOutput,
     EntityDetection,
+    IdentityColumn,
     Relationship,
     SemanticEnrichmentResult,
     TableColumnAnnotation,
+    TimeColumn,
 )
 from dataraum.analysis.semantic.processor import (
     persist_column_annotations,
@@ -187,6 +189,13 @@ class TestSynthesizeAndStoreTables:
                             grain_columns=["order_id"],
                             is_fact_table=True,
                             is_dimension_table=False,
+                            time_columns=[
+                                TimeColumn(column="order_date", aspect="order", note="Placed."),
+                                TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
+                            ],
+                            identity_columns=[
+                                IdentityColumn(column="customer_id", note="Buying account.")
+                            ],
                         )
                     ],
                     relationships=[
@@ -223,6 +232,10 @@ class TestSynthesizeAndStoreTables:
         )
         anns = session.execute(select(AnnotationDB)).scalars().all()
         assert len(entities) == 1 and entities[0].is_fact_table is True
+        # DAT-565: all event-time axes + identities persisted run-versioned (JSON).
+        assert [tc["column"] for tc in entities[0].time_columns] == ["order_date", "ship_date"]
+        assert entities[0].time_columns[1]["aspect"] == "ship"
+        assert [ic["column"] for ic in entities[0].identity_columns] == ["customer_id"]
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
@@ -243,6 +256,13 @@ class TestSynthesizeAndStoreTables:
                             grain_columns=["order_id"],
                             is_fact_table=True,
                             is_dimension_table=False,
+                            time_columns=[
+                                TimeColumn(column="order_date", aspect="order", note="Placed."),
+                                TimeColumn(column="ship_date", aspect="ship", note="Shipped."),
+                            ],
+                            identity_columns=[
+                                IdentityColumn(column="customer_id", note="Buying account.")
+                            ],
                         )
                     ],
                     relationships=[

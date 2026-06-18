@@ -34,6 +34,11 @@ from dataraum.storage.upsert import upsert
 from tests.conftest import baseline_run_id
 
 
+def _axes(column: str | None) -> list[dict[str, str]]:
+    """Plural ``time_columns`` JSON for a single named axis (DAT-565), or empty."""
+    return [{"column": column, "aspect": "event", "note": "seed axis."}] if column else []
+
+
 def _seed(
     session: Session,
     *,
@@ -98,7 +103,7 @@ def _seed(
         table_id=fact.table_id,
         run_id=None,
         detected_entity_type="transaction",
-        time_column=fact_time_column,
+        time_columns=_axes(fact_time_column),
         detection_source="llm",
         confidence=0.9,
     )
@@ -106,7 +111,7 @@ def _seed(
         table_id=dim.table_id,
         run_id=None,
         detected_entity_type="document",
-        time_column=dim_time_column,
+        time_columns=_axes(dim_time_column),
         detection_source="llm",
         confidence=0.9,
     )
@@ -208,7 +213,7 @@ class TestBuildContextDataTimeAxis:
 
         (table_data,) = data["tables"]
         # The fact has no own time axis — the agent must judge, not inherit.
-        assert table_data["time_column"] is None
+        assert table_data["time_columns"] == []
 
         by_name = _columns_by_name(table_data)
         date_entry = by_name["invoice_id__date"]
@@ -271,7 +276,7 @@ class TestBuildContextDataTimeAxis:
                 table_id=fact.table_id,
                 run_id="run-A",
                 detected_entity_type="transaction",
-                time_column="booking_date",
+                time_columns=_axes("booking_date"),
                 detection_source="llm",
                 confidence=0.9,
             )
@@ -283,7 +288,7 @@ class TestBuildContextDataTimeAxis:
         )
 
         (table_data,) = data["tables"]
-        assert table_data["time_column"] == "booking_date"
+        assert [tc["column"] for tc in table_data["time_columns"]] == ["booking_date"]
         # The dim's entity is None-run — out of scope for run-A, so the
         # enriched date column is not flagged either.
         by_name = _columns_by_name(table_data)
@@ -346,7 +351,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "invoice_id__date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" and e["table"] == "invoices" for e in logs)
         # Empty recommendations — nothing mocked landed in SliceDefinition rows.
         assert session.execute(select(SliceDefinition)).scalars().all() == []
@@ -397,7 +402,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "invoice_id__date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["invoice_id__date"]
         assert any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 
@@ -422,7 +427,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column is None
+        assert seeded["fact_entity"].time_columns == []
         assert any(
             e["event"] == "time_axis_unknown_column" and e["table"] == "invoices" for e in logs
         )
@@ -449,7 +454,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column == "booking_date"
+        assert [tc["column"] for tc in seeded["fact_entity"].time_columns] == ["booking_date"]
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 
@@ -474,7 +479,7 @@ class TestRunTimeAxisFill:
 
         assert result.status == PhaseStatus.COMPLETED
         mock_agent_cls.return_value.analyze.assert_called_once()
-        assert seeded["fact_entity"].time_column is None
+        assert seeded["fact_entity"].time_columns == []
         assert not any(e["event"] == "time_axis_filled" for e in logs)
         assert not any(e["event"] == "time_axis_unknown_column" for e in logs)
 

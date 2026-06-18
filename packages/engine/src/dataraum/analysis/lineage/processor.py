@@ -3,7 +3,8 @@
 No LLM call and no slice materialization: the begin_session value layer already
 declared everything this needs. The slicing agent partitioned the facts by
 shared dimensions (the catalog ``SliceDefinition``, propagated across tables)
-and named each fact's time axis (``TableEntity.time_column``).
+and named each fact's event-time axes (``TableEntity.time_columns``); every axis
+is competed and the best-reconciling verdict per measure is kept (DAT-565).
 
 Discovery aggregates **inline** (DAT-536, one-view model): for each fact × shared
 dimension, a single ``GROUP BY dim, period`` over the fact's enriched view —
@@ -288,7 +289,7 @@ def discover_aggregation_lineage(
 
     # Inline-aggregation inputs per fact (DAT-536): the queryable source (the
     # grain-verified enriched view, else the typed fact), the agent-named time
-    # axis (run-scoped ``TableEntity.time_column``), and the fact's own numeric
+    # axes (run-scoped ``TableEntity.time_columns``), and the fact's own numeric
     # columns (the SUM targets — the same set the retired slice path summed).
     enriched_by_fact = {
         ev.fact_table_id: ev.view_name
@@ -302,15 +303,19 @@ def discover_aggregation_lineage(
     source_by_table = {
         tid: enriched_by_fact.get(tid) or (t.duckdb_path or None) for tid, t in tables.items()
     }
-    time_entity_stmt = select(TableEntity).where(
-        TableEntity.table_id.in_(table_ids),
-        TableEntity.time_column.isnot(None),
-    )
+    # Every event-time axis per table (DAT-565): each named time column is a
+    # distinct temporal lens. The reconciliation competes all of them and keeps
+    # the best-reconciling verdict per measure (revenue-by-order-date vs
+    # by-ship-date genuinely differ); the persisted grain is unchanged — still
+    # one best row per ``(measure_column, run)``.
+    time_entity_stmt = select(TableEntity).where(TableEntity.table_id.in_(table_ids))
     if run_id is not None:
         time_entity_stmt = time_entity_stmt.where(TableEntity.run_id == run_id)
-    time_col_by_table = {
-        e.table_id: e.time_column for e in session.execute(time_entity_stmt).scalars()
-    }
+    time_cols_by_table: dict[str, list[str]] = {}
+    for entity in session.execute(time_entity_stmt).scalars():
+        axes = [tc["column"] for tc in (entity.time_columns or []) if tc.get("column")]
+        if axes:
+            time_cols_by_table[entity.table_id] = axes
     numeric_cols_by_table = {
         tid: sorted(name for name, col in by_name.items() if _is_numeric(col.resolved_type))
         for tid, by_name in columns_by_table.items()
@@ -320,88 +325,97 @@ def discover_aggregation_lineage(
     best_by_measure: dict[str, tuple[_Best, Table, str, str]] = {}
 
     for dim_col in sorted(shared_dims):
-        series_by_table = {
-            tid: s
-            for tid, sd in shared_dims[dim_col].items()
-            if (t := tables.get(tid)) is not None
-            and (
-                s := _slice_series(
+        # One series per (table, time-axis): each event-time column the catalog
+        # named for the table is a distinct lens to bucket by (DAT-565). A table
+        # contributes a series for every axis; the search below competes them.
+        series_by_table: dict[str, list[tuple[str, _SliceSeries]]] = {}
+        for tid, sd in shared_dims[dim_col].items():
+            t = tables.get(tid)
+            if t is None:
+                continue
+            axis_series: list[tuple[str, _SliceSeries]] = []
+            for axis in time_cols_by_table.get(tid, []):
+                s = _slice_series(
                     duckdb_conn,
                     t,
                     sd,
                     dim_col,
                     source_name=source_by_table.get(tid),
-                    time_col=time_col_by_table.get(tid),
+                    time_col=axis,
                     numeric_cols=numeric_cols_by_table.get(tid, []),
                     grain=period_grain,
                 )
-            )
-            is not None
-        }
+                if s is not None:
+                    axis_series.append((axis, s))
+            if axis_series:
+                series_by_table[tid] = axis_series
         if len(series_by_table) < 2:
             logger.info("lineage_no_slice_series", dimension=dim_col)
             continue
-        conventions_by_table = {
-            tid: _conventions(
-                [c for c in s.numeric_columns if c not in key_columns_by_table.get(tid, set())]
-            )
-            for tid, s in series_by_table.items()
-        }
 
-        for m_tid, measure in sorted(series_by_table.items()):
+        for m_tid, m_axis_series in sorted(series_by_table.items()):
             keys_m = key_columns_by_table.get(m_tid, set())
-            measure_cols = [
-                c
-                for c in measure.numeric_columns
-                if c not in keys_m
-                and c in columns_by_table.get(m_tid, {})  # persistable, not an enriched name
-            ]
-            for e_tid, event in sorted(series_by_table.items()):
-                if e_tid == m_tid:
+            for _m_axis, measure in m_axis_series:
+                measure_cols = [
+                    c
+                    for c in measure.numeric_columns
+                    if c not in keys_m
+                    and c in columns_by_table.get(m_tid, {})  # persistable, not enriched
+                ]
+                if not measure_cols:
                     continue
-                # Direction gate: a rollup aggregates MANY event rows into each
-                # measure cell — the event side must be strictly finer-grained
-                # over the paired cells. Symmetric arithmetic would otherwise
-                # persist inverted lineage (the measure "aggregating" its own
-                # summary), and equal-grain pairs (1:1 mirrors) are
-                # relationships, not rollups.
-                m_rows, e_rows = _paired_row_counts(measure, event)
-                if e_rows <= m_rows:
-                    logger.info(
-                        "lineage_direction_gate",
-                        dimension=dim_col,
-                        measure_table=measure.table.table_name,
-                        event_table=event.table.table_name,
-                        measure_rows=m_rows,
-                        event_rows=e_rows,
-                    )
-                    continue
-                for measure_col in measure_cols:
-                    for convention_sql, terms in conventions_by_table[e_tid]:
-                        by_entity = _aligned_series(measure, event, measure_col, terms)
-                        if not by_entity:
-                            continue
-                        verdict = dispose(by_entity)
-                        if verdict is None:
-                            continue
-                        residual = (
-                            verdict.r_flow_median
-                            if verdict.pattern == "per_period"
-                            else verdict.r_stock_median
-                        )
-                        prior = best_by_measure.get(columns_by_table[m_tid][measure_col].column_id)
-                        if prior is None or residual < prior[0].winning_residual:
-                            best_by_measure[columns_by_table[m_tid][measure_col].column_id] = (
-                                _Best(
-                                    verdict=verdict,
-                                    event_table=event.table,
-                                    convention_sql=convention_sql,
-                                    winning_residual=residual,
-                                ),
-                                measure.table,
-                                measure_col,
-                                dim_col,
+                for e_tid, e_axis_series in sorted(series_by_table.items()):
+                    if e_tid == m_tid:
+                        continue
+                    keys_e = key_columns_by_table.get(e_tid, set())
+                    for _e_axis, event in e_axis_series:
+                        # Direction gate: a rollup aggregates MANY event rows into
+                        # each measure cell — the event side must be strictly
+                        # finer-grained over the paired cells. Symmetric arithmetic
+                        # would otherwise persist inverted lineage (the measure
+                        # "aggregating" its own summary), and equal-grain pairs
+                        # (1:1 mirrors) are relationships, not rollups.
+                        m_rows, e_rows = _paired_row_counts(measure, event)
+                        if e_rows <= m_rows:
+                            logger.info(
+                                "lineage_direction_gate",
+                                dimension=dim_col,
+                                measure_table=measure.table.table_name,
+                                event_table=event.table.table_name,
+                                measure_rows=m_rows,
+                                event_rows=e_rows,
                             )
+                            continue
+                        conventions = _conventions(
+                            [c for c in event.numeric_columns if c not in keys_e]
+                        )
+                        for measure_col in measure_cols:
+                            for convention_sql, terms in conventions:
+                                by_entity = _aligned_series(measure, event, measure_col, terms)
+                                if not by_entity:
+                                    continue
+                                verdict = dispose(by_entity)
+                                if verdict is None:
+                                    continue
+                                residual = (
+                                    verdict.r_flow_median
+                                    if verdict.pattern == "per_period"
+                                    else verdict.r_stock_median
+                                )
+                                key = columns_by_table[m_tid][measure_col].column_id
+                                prior = best_by_measure.get(key)
+                                if prior is None or residual < prior[0].winning_residual:
+                                    best_by_measure[key] = (
+                                        _Best(
+                                            verdict=verdict,
+                                            event_table=event.table,
+                                            convention_sql=convention_sql,
+                                            winning_residual=residual,
+                                        ),
+                                        measure.table,
+                                        measure_col,
+                                        dim_col,
+                                    )
 
     # ``best_by_measure`` is keyed by measure_column_id, so the batch is
     # dedup'd by construction; PK omitted so the model's default applies.

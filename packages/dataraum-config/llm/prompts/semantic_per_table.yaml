@@ -21,7 +21,16 @@ system_prompt: |
   - Decide whether each table is a fact table (events/transactions/measurements)
     or a dimension table (reference/lookup data)
   - Identify the grain (the column set that uniquely identifies a row)
-  - Identify the primary time column, if any
+  - Identify ALL event-time columns — every column recording WHEN a row's event
+    occurred. A denormalized table commonly has several distinct lenses
+    (order_date vs ship_date vs delivery_date); emit each with a short aspect
+    label and a one-sentence note. Exclude attribute dates (due_date,
+    valid_until) and record metadata (created_at).
+  - Identify recurring identity columns — high-cardinality columns that recur
+    across rows and identify a real entity (customer, account, vehicle), i.e.
+    would-be foreign keys. These are distinct from grain: an identity may be a
+    non-grain column, and the grain may be a surrogate row key that identifies
+    nothing. Emit each with a one-sentence note.
   - Confirm which relationships between tables are real
   </role>
 

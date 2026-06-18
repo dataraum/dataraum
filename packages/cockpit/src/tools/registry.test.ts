@@ -79,6 +79,7 @@ describe("tool registry (DAT-353)", () => {
 				"why_cycle",
 				"look_metric",
 				"why_metric",
+				"look_drivers",
 				"replay",
 				"upload",
 			]),

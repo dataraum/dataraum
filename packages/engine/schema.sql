@@ -373,6 +373,31 @@ CREATE INDEX idx_derived_table ON derived_columns (table_id);
 
 CREATE INDEX ix_derived_columns_run_id ON derived_columns (run_id);
 
+CREATE TABLE driver_rankings (
+	ranking_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	measure_table_id VARCHAR NOT NULL, 
+	measure_column_id VARCHAR NOT NULL, 
+	measure_label VARCHAR NOT NULL, 
+	target_type VARCHAR NOT NULL, 
+	grain VARCHAR NOT NULL, 
+	entity VARCHAR, 
+	n_rows INTEGER NOT NULL, 
+	ranked_dimensions JSON NOT NULL, 
+	driver_paths JSON NOT NULL, 
+	interesting_slices JSON NOT NULL, 
+	secondary_dimensions JSON NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_driver_rankings PRIMARY KEY (ranking_id), 
+	CONSTRAINT uq_driver_rankings_column_run UNIQUE (measure_column_id, run_id), 
+	CONSTRAINT fk_driver_rankings_measure_table_id_tables FOREIGN KEY(measure_table_id) REFERENCES tables (table_id), 
+	CONSTRAINT fk_driver_rankings_measure_column_id_columns FOREIGN KEY(measure_column_id) REFERENCES columns (column_id)
+);
+
+CREATE INDEX ix_driver_rankings_measure_column_id ON driver_rankings (measure_column_id);
+
+CREATE INDEX ix_driver_rankings_run_id ON driver_rankings (run_id);
+
 CREATE TABLE entropy_objects (
 	object_id VARCHAR NOT NULL, 
 	layer VARCHAR NOT NULL, 

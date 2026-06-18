@@ -64,6 +64,7 @@ _PHASE_ORDER = [
     "dimension_hierarchies",
     "aggregation_lineage",
     "correlations",
+    "driver_rankings",
     "session_detect",
     "session_write_keepers",
     "session_promote_to_latest",

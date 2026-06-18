@@ -89,6 +89,13 @@ phases:
     description: Within-table correlation analysis
     detectors: [derived_value]
 
+  driver_rankings:
+    description: Per-measure driver discovery, persisted run-versioned over the enriched views
+    # DAT-546: no detectors and no LLM — runs the validated driver-discovery engine
+    # (DAT-545/561/563) over each measure-role column and writes one grain-labeled
+    # DriverRankingArtifact per (measure_column_id, run_id). Read by the answer agent
+    # (look_drivers, DAT-538).
+
   # =========================================================================
   # Zone 3: Interpretation
   # =========================================================================

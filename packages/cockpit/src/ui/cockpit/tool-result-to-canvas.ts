@@ -337,6 +337,7 @@ export const CHIP_ONLY: ReadonlySet<string> = new Set([
 	"list_verticals", // catalogue → chip summary, no widget
 	"use_vertical", // adopt = control-plane write, no renderable surface (DAT-523)
 	"probe", // quick data check, summarized in the chip
+	"look_drivers", // driver rankings → chip summary; a dedicated widget is a fast-follow (DAT-546)
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
 	"teach_validation",
 	"teach_cycle",

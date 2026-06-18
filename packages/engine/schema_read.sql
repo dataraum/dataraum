@@ -81,6 +81,16 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.current_driver_rankings;
+CREATE VIEW __READ__.current_driver_rankings AS
+SELECT r.* FROM __WS__.driver_rankings r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_enriched_views;
 CREATE VIEW __READ__.current_enriched_views AS
 SELECT r.* FROM __WS__.enriched_views r

@@ -22,6 +22,7 @@ import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
 import { listVerticalsTool } from "./list-verticals";
 import { lookCycleTool } from "./look-cycle";
+import { lookDriversTool } from "./look-drivers";
 import { lookMetricTool } from "./look-metric";
 import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
@@ -55,6 +56,7 @@ const inspectTools = [
 	lookValidationTool,
 	lookCycleTool,
 	lookMetricTool,
+	lookDriversTool,
 	whyColumnTool,
 	whyTableTool,
 	whyRelationshipTool,

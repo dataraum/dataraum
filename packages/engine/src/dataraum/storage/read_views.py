@@ -78,6 +78,7 @@ _CATALOG_GRAIN: dict[str, str] = {
     "dimension_hierarchies": "catalog",  # begin_session dimension_hierarchies (DAT-537)
     "derived_columns": "catalog",
     "measure_aggregation_lineage": "catalog",  # begin_session aggregation_lineage (DAT-491)
+    "driver_rankings": "catalog",  # begin_session driver_rankings (DAT-546)
     "lifecycle_artifacts": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",

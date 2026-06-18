@@ -12,6 +12,10 @@
 //   3. After undo, getPendingOverlays no longer surfaces the row
 //   4. Calling undoTeach on the same row twice is idempotent (no error,
 //      superseded_at unchanged)
+//   5. A teach predating a COMPLETED run is no longer pending — "pending" is
+//      run-relative, not just "not undone" (the permanent-warning fix). Without
+//      this, an applied teach surfaced forever because superseded_at is only set
+//      by undo, never by a replay.
 //
 // Requires a running compose stack (postgres on 127.0.0.1:5432 with the
 // engine-created ws_<id>.config_overlay table). Skipped automatically when
@@ -55,6 +59,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 		let undoTeach: any;
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
 		let getPendingOverlays: any;
+		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
+		let metadataDb: any;
 
 		beforeAll(async () => {
 			// Dynamic imports so the missing-env skip works — top-level imports
@@ -64,6 +70,11 @@ describe.skipIf(!STACK_AVAILABLE)(
 			undoTeach = teachMod.undoTeach;
 			const helperMod = await import("../db/metadata/pending-overlays");
 			getPendingOverlays = helperMod.getPendingOverlays;
+			// The promotion anchor lives in the metadata schema (ws_<id>), reachable
+			// via the same postgres-js client the helper uses — not the cockpit_db
+			// (bun:sql) client, which can't load under vitest.
+			const clientMod = await import("../db/metadata/client");
+			metadataDb = clientMod.metadataDb;
 		});
 
 		afterAll(async () => {
@@ -124,6 +135,67 @@ describe.skipIf(!STACK_AVAILABLE)(
 					(r: { overlay_id: string }) => r.overlay_id === result.overlay_id,
 				),
 			).toBe(false);
+		});
+
+		it("a teach is no longer pending once a later snapshot is promoted — pending is run-relative", async () => {
+			const { sql } = await import("drizzle-orm");
+			const stamp = Date.now();
+			const headId = `dat343_run_relative_head_${stamp}`;
+			// The metadata client sets no search_path (its generated SQL is
+			// schema-qualified via pgSchema), so raw DML must name the ws_<id> schema.
+			// REQUIRED_DEFAULTS already populated this; fall back to the same default
+			// rather than "" so the schema name can't silently truncate to `ws_`.
+			const wsId =
+				process.env.DATARAUM_WORKSPACE_ID ??
+				"00000000-0000-0000-0000-000000000001";
+			const wsSchema = sql.identifier(`ws_${wsId.replaceAll("-", "_")}`);
+
+			// Teach FIRST (created_at = now), so a promotion stamped after it is later.
+			const result = await teach({
+				type: "type_pattern",
+				payload: {
+					name: `dat343_run_relative_${stamp}`,
+					pattern: "^y$",
+					inferred_type: "VARCHAR",
+				},
+			});
+
+			// Still pending before any snapshot promotes past it.
+			const beforeRun = await getPendingOverlays();
+			expect(
+				beforeRun.some(
+					(r: { overlay_id: string }) => r.overlay_id === result.overlay_id,
+				),
+			).toBe(true);
+
+			// Promote a snapshot head with promoted_at AFTER the teach — the run that
+			// promoted it would have applied the teach, so it must drop out of the
+			// pending set. Bind a JS Date (not SQL now()) so it round-trips through the
+			// same client as the teach's created_at: `promoted_at` is `timestamp
+			// WITHOUT time zone`, and now() would store LOCAL wall-clock while the
+			// client writes Dates as UTC — a tz skew the engine never has (it writes
+			// both columns as UTC). A unique target avoids the (target, stage) UNIQUE.
+			const promotedAt = new Date();
+			await metadataDb.execute(sql`
+				INSERT INTO ${wsSchema}.metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
+				VALUES (${headId}, ${`test:${stamp}`}, 'generation', ${`run_${stamp}`}, ${promotedAt})
+			`);
+
+			try {
+				const afterRun = await getPendingOverlays();
+				expect(
+					afterRun.some(
+						(r: { overlay_id: string }) => r.overlay_id === result.overlay_id,
+					),
+				).toBe(false);
+			} finally {
+				// Drop the synthetic head so the anchor doesn't linger for other suites,
+				// and supersede the teach we left active.
+				await metadataDb.execute(
+					sql`DELETE FROM ${wsSchema}.metadata_snapshot_head WHERE head_id = ${headId}`,
+				);
+				await undoTeach(result.overlay_id);
+			}
 		});
 	},
 );

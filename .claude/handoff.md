@@ -4,6 +4,47 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-18: DAT-563 — N-entity home-grain driver routing + ICC-verification resolver
+
+Makes the cluster-aware driver path actually fire end to end, generalized to N recurring
+identities. `discover_drivers` now:
+- takes `cluster_keys: list[str] | None` (was `cluster_key: str | None`);
+- when `cluster_keys` is None, **resolves** them from the fact's persisted
+  `TableEntity.identity_columns` (DAT-565) and **ICC-verifies** each — keeps only identities
+  the measure clusters within (ICC > 0.10), drops the rest (no heuristic). An explicit list
+  is used verbatim;
+- routes each candidate dim to ONE home grain (the entity it's constant within; finest-entity
+  tiebreak) and ranks per entity via the unchanged `_entity_grain_ranking`, row-level dims via
+  the unchanged `_row_wise_ranking` (de-meaned against the highest-ICC entity);
+- result shape: `DriverRanking.entity` (which identity the primary entity grain belongs to) +
+  `SecondaryDriver.entity` (per non-primary family) added; N=1 is bit-for-bit DAT-561.
+
+The proven core (`_entity_grain_ranking` / `_row_wise_ranking` / `tree.py` / de-mean) is
+untouched.
+
+### dataraum-eval
+- **Graduate the dat-544 probes from a HARDCODED `entity_col` to the resolver path:** call
+  `discover_drivers` WITHOUT `cluster_keys` so it reads persisted `identity_columns` and
+  ICC-verifies. The probe must first run `semantic_per_table` (DAT-565) so the identities are
+  persisted; then assert the resolver picks the right cluster keys (not a hand-fed string).
+- **Add a multi-entity fixture** (≥2 recurring identities, each with attributes + a
+  within-entity row-level dim) and assert **FDR controlled PER GRAIN** (each entity's nulls +
+  the row null stay ≤ ~2α at their own grain — never pooled across families) and that the
+  primary is the highest-ICC entity. The engine guard is `make_two_entity_corpus` +
+  `TestIdentityResolver.test_fdr_controlled_per_grain_multi_entity`.
+- **Flat-denormalized fixture:** a named identity on a clustered flat table must resolve +
+  cluster (grain `entity`), NOT fall through to the broken row-wise null. And a **mis-named
+  low-ICC "identity"** must be dropped by verification (no heuristic) → plain row-wise.
+- New result fields to consume: `DriverRanking.entity` and `SecondaryDriver.entity` (the
+  identity each grain belongs to). DAT-546's artifact carries `grain`/entity per ranked dim.
+
+### dataraum-testdata
+- A **multi-entity denormalized** fixture: several recurring identities (e.g. customer,
+  product, vendor) that each functionally determine some attributes, plus a genuinely
+  row-level dimension — matches `make_two_entity_corpus`. Asymmetric clustering strength
+  (one identity should cluster the measure harder than the others) exercises the
+  primary-vs-secondary entity selection.
+
 ## 2026-06-18: DAT-565 — multi-role semantic_per_table (all time axes + identity columns)
 
 `semantic_per_table` now emits **every** event-time axis and the table's recurring

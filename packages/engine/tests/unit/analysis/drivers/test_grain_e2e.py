@@ -558,6 +558,20 @@ class TestTwoEntityRouting:
         seen = list(primary) + [s.dimension for s in rank.secondary_dimensions]
         assert len(seen) == len(set(seen)), f"a dim was ranked at two grains: {seen}"
 
+    def test_rerun_determinism(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        # Identical data + identities + seed → identical routing + ranking (DAT-563 AC6),
+        # for N≥2 (the per-entity seed arithmetic + sorted iteration must be stable).
+        tid = _seed_catalog(real_session, dims=TE_DIMS)
+        a = self._run(real_session, duck, tid, 0)
+        b = self._run(real_session, duck, tid, 0)
+        assert (a.grain, a.entity) == (b.grain, b.entity)
+        assert a.ranked_dimensions == b.ranked_dimensions
+        a_sec = [(s.dimension, s.gain, s.grain, s.entity) for s in a.secondary_dimensions]
+        b_sec = [(s.dimension, s.gain, s.grain, s.entity) for s in b.secondary_dimensions]
+        assert a_sec == b_sec
+
 
 class TestIdentityResolver:
     """DAT-563: cluster keys RESOLVED from persisted ``identity_columns`` (DAT-565) and

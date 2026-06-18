@@ -69,7 +69,9 @@ class SecondaryDriver:
     other family's significant dims land here instead of in ``ranked_dimensions``: their
     gains were computed at a different exchangeable grain (``grain``), so they are NOT
     comparable to the primary tree's gains and must not be folded into the same ranking.
-    A flat labeled list, strongest first.
+    A flat labeled list — strongest-first WITHIN each family's block, the family blocks in
+    primary-precedence order (gains are not comparable across grains, so there is no global
+    sort).
 
     ``entity`` names the identity column whose grain this dim was ranked at (DAT-563
     N-entity routing) — ``None`` for the row-level family. It disambiguates the now-many

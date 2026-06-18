@@ -196,9 +196,12 @@ def _resolve_cluster_keys(
     load-bearing — routing a mis-named identity would de-mean a real row-level driver away.
     Proposed order is preserved (deterministic).
     """
+    # Deferred (DAT-563, optional): a born-loud miss-audit — warn when a high-ICC recurring
+    # column was NOT proposed as an identity — would need scanning un-read high-cardinality
+    # columns (an extra view scan); it is a guardrail, never a routing fallback.
     verified: list[str] = []
     for col in proposed:
-        if col not in frame.columns:
+        if col not in frame.columns:  # defensive: callers pass view-filtered cols, so never fires
             continue
         icc = _entity_icc(frame, col, measure)
         if icc > icc_threshold:
@@ -326,6 +329,11 @@ def discover_drivers(
         else _identity_columns(session, fact_table_id, run_id)
     )
     present_proposed = [k for k in proposed if k in view_cols]
+    # Born-loud: a named identity missing from the view (LLM hallucination, or a column
+    # renamed between semantic_per_table and the enriched view) is dropped — say so.
+    for col in proposed:
+        if col not in view_cols:
+            logger.info("driver_identity_not_in_view", identity=col, view=view)
     select_cols = list(dict.fromkeys(present_dims + measure_cols + present_proposed))
     sql = f"SELECT {', '.join(quote(c) for c in select_cols)} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
     frame = duckdb_conn.execute(sql).df()
@@ -583,9 +591,9 @@ def _routed_ranking(
     # entity families. The first is the headline; the rest become labeled secondaries.
     def precedence(fam: tuple[DriverRanking, str, str | None]) -> tuple[int, float, str]:
         _ranking, grain, entity = fam
-        if grain == "entity":
-            ic = icc_by_entity[entity]  # type: ignore[index]
-            return (0 if ic > icc_threshold else 2, -ic, entity or "")
+        if grain == "entity" and entity is not None:  # entity families always carry a name
+            ic = icc_by_entity[entity]
+            return (0 if ic > icc_threshold else 2, -ic, entity)
         return (1, 0.0, "")  # row family sits between high- and low-ICC entity families
 
     families.sort(key=precedence)

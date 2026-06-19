@@ -99,8 +99,8 @@ function ProbePanel({
 				)}
 			</Group>
 			<Text size="xs" c="dimmed">
-				Read-only SQL against a configured source — no data is imported.
-				⌘/Ctrl+Enter to run.
+				Read-only DuckDB SQL against a configured source (use LIMIT, not TOP) —
+				no data is imported. ⌘/Ctrl+Enter to run.
 			</Text>
 
 			<Select
@@ -140,7 +140,7 @@ function ProbePanel({
 				value={sqlText}
 				onChange={setSqlText}
 				onRun={run}
-				placeholder="SELECT TOP 100 * FROM Sales.Orders"
+				placeholder="SELECT * FROM my_schema.my_table LIMIT 100"
 			/>
 
 			<Group>

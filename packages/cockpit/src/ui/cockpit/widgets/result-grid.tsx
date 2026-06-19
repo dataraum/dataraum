@@ -280,43 +280,64 @@ export function ResultGridWidget({
 		() => JSON.stringify([state.sql, state.params ?? null]),
 		[state.sql, state.params],
 	);
-	return <StreamingGrid key={baseKey} sql={state.sql} params={state.params} />;
+	return (
+		<StreamingGrid
+			key={baseKey}
+			endpoint="/api/run-sql"
+			body={{ sql: state.sql, params: state.params }}
+		/>
+	);
 }
 
-/** Streams `/api/run-sql` for the carried query and owns the grid-local sort. */
-function StreamingGrid({
-	sql,
-	params,
+/** The grid stream routes return a 400 body as `{ "error": "<message>" }`; surface
+ * the message, not the raw JSON. Falls back to the raw text for any other body. */
+function extractError(text: string): string {
+	try {
+		const parsed = JSON.parse(text) as { error?: unknown };
+		if (parsed && typeof parsed.error === "string") return parsed.error;
+	} catch {
+		// not JSON — use the text as-is
+	}
+	return text;
+}
+
+/**
+ * Streams an NDJSON grid endpoint for the carried request and owns the grid-local
+ * sort. Endpoint-agnostic, so it backs BOTH `/api/run-sql` (the agent's lake query)
+ * and `/api/probe-sql` (the editable probe surface) — only the `body` shape
+ * differs; the grid injects its own `sort`. Reset sort by remounting on a new base
+ * request (a `key` on the parent), never a reset effect.
+ */
+export function StreamingGrid({
+	endpoint,
+	body,
 }: {
-	sql: string;
-	params?: (string | number | boolean | null)[];
+	endpoint: string;
+	/** The base request body (WITHOUT `sort` — the grid appends its own). */
+	body: Record<string, unknown>;
 }) {
 	const storeRef = useRef(new ColumnStore());
 	const [, bump] = useState(0);
 	const [fatal, setFatal] = useState<string | null>(null);
 	// Grid-local view state: which column the SERVER should order by. Reset to
-	// null on a new base query (this component remounts — see ResultGridWidget).
+	// null on a new base request (this component remounts — see the `key`).
 	const [sort, setSort] = useState<GridSort | null>(null);
 
 	// Header click cycles the sort for that column: unsorted → asc → desc →
-	// unsorted. Switching to a different column starts at asc.
-	// Stable identity (setSort is stable, no deps) so a future React.memo on the
-	// view doesn't re-render the grid on every sort-irrelevant parent render.
+	// unsorted. Switching to a different column starts at asc. Stable identity
+	// (setSort is stable) so a future React.memo on the view doesn't re-render on
+	// every sort-irrelevant parent render.
 	const toggleSort = useCallback((column: string) => {
 		setSort((cur) => cycleSort(cur, column));
 	}, []);
 
-	// Value-stable request identity: re-stream iff sql, params, OR sort changed.
-	// Parse them back out inside the effect so the effect's ONLY dependency is the
-	// key — no stale closures, no churn from ChatRail's fresh objects.
-	const requestKey = useMemo(
-		() => JSON.stringify([sql, params ?? null, sort]),
-		[sql, params, sort],
-	);
+	// Value-stable request identity: re-stream iff the body OR sort changed. Parse
+	// it back inside the effect so the effect's ONLY dependency is the key — no
+	// stale closures, no churn from a fresh `body` object each parent render.
+	const requestKey = useMemo(() => JSON.stringify([body, sort]), [body, sort]);
 	useEffect(() => {
-		const [qSql, qParams, qSort] = JSON.parse(requestKey) as [
-			string,
-			(string | number | boolean | null)[] | null,
+		const [qBody, qSort] = JSON.parse(requestKey) as [
+			Record<string, unknown>,
 			GridSort | null,
 		];
 		const store = new ColumnStore();
@@ -327,32 +348,30 @@ function StreamingGrid({
 		const ac = new AbortController();
 		void (async () => {
 			try {
-				const res = await fetch("/api/run-sql", {
+				const res = await fetch(endpoint, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						sql: qSql,
-						params: qParams ?? undefined,
-						sort: qSort ?? undefined,
-					}),
+					body: JSON.stringify({ ...qBody, sort: qSort ?? undefined }),
 					signal: ac.signal,
 				});
 				if (!res.ok || !res.body) {
 					const detail = await res.text().catch(() => res.statusText);
-					throw new Error(detail || `run-sql failed (${res.status})`);
+					throw new Error(
+						extractError(detail) || `request failed (${res.status})`,
+					);
 				}
 				await readNdjsonStream(res.body, (frame) => {
 					store.apply(frame);
 					bump((v) => v + 1);
 				});
 			} catch (err) {
-				// An aborted fetch (unmount / new query / new sort) is expected.
+				// An aborted fetch (unmount / new request / new sort) is expected.
 				if (ac.signal.aborted) return;
 				setFatal(err instanceof Error ? err.message : String(err));
 			}
 		})();
 		return () => ac.abort();
-	}, [requestKey]);
+	}, [requestKey, endpoint]);
 
 	return (
 		<ResultGridView

@@ -41,21 +41,22 @@
 //               against a different backend; the engine-stamped
 //               `imported_recipe_hash` witness on an existing row is carried
 //               forward. The user-chosen `source_name` is required here (files
-//               are content-keyed, so it is ignored for them).
+//               are content-keyed, so it is ignored for them). This table-pick
+//               path stays the BUNDLED multi-add: N picked tables → ONE source
+//               carrying N recipe entries. The probe surface's import set
+//               (DAT-592, `server/import-sources.ts` → `select/recipe-source.ts`)
+//               is the 1-query = 1-source path — each arbitrary probed query is
+//               its own source — sharing the same write seam (`source-write.ts`)
+//               and the same batched trigger, only at a finer grain.
 //
 // An acting tool: it mutates workspace state (creates/updates source rows) AND
 // starts a durable engine run, so it runs on the user's explicit instruction —
 // there is no approval gate, exactly like `teach`/`frame`/`replay`.
 
-import { randomUUID } from "node:crypto";
 import { toolDefinition } from "@tanstack/ai";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
-import { metadataDb } from "../db/metadata/client";
-import { sources } from "../db/metadata/schema";
-import { sourcesWrite } from "../db/metadata/write-surface";
 import { ConnectSchema } from "../duckdb/connect";
 import { SUPPORTED_BACKENDS } from "../duckdb/probe";
 import { enumeratePrefixUris } from "../select/enumerate";
@@ -68,22 +69,17 @@ import {
 	SOURCE_NAME_PATTERN,
 	sourceTypeForUri,
 } from "../select/mappers";
+import {
+	importedRecipeHash,
+	STAGE_AFTER_SELECT,
+	upsertSource,
+} from "../select/source-write";
 import { triggerAddSource } from "../temporal/trigger-add-source";
 import {
 	AgentActionableError,
 	catchActionable,
 	withAgentError,
 } from "./agent-error";
-
-// The onboarding stage `select` leaves the source(s) at. The cockpit drives a
-// source `connect → frame → select → add_source` BEFORE the workflow triggers;
-// `select` writes the row already at `add_source`, the next interactive stage.
-const STAGE_AFTER_SELECT = "add_source";
-
-// Initial source status. Mirrors the seed in the integration driver
-// (`scripts/smoke-add-source.ts`): a source the cockpit has registered but not
-// yet imported reads `configured`.
-const INITIAL_STATUS = "configured";
 
 /** The persisted Source descriptor + the started run's identity. The
  * workflow/run ids are what the progress canvas member keys its `get_progress`
@@ -170,78 +166,9 @@ async function resolveFileUris(
 	return [schema.source];
 }
 
-/**
- * UPSERT one `sources` row (on the UNIQUE name) and return its source_id.
- *
- * A fresh name INSERTs a new source_id; re-selecting the same name re-points its
- * `connection_config` / `source_type` / `backend` / `stage` (an idempotent
- * re-select, not a duplicate-name error). `created_at` is only set on insert; the
- * update touches `updated_at`. Workspace scope is implicit in the ws_<id> schema
- * the client targets (no workspace_id column post-DAT-343).
- */
-async function upsertSource(values: {
-	name: string;
-	sourceType: string;
-	backend: string | null;
-	connectionConfig: Record<string, unknown>;
-	now: Date;
-}): Promise<string> {
-	const [row] = await metadataDb
-		.insert(sourcesWrite)
-		.values({
-			sourceId: randomUUID(),
-			name: values.name,
-			sourceType: values.sourceType,
-			connectionConfig: values.connectionConfig,
-			status: INITIAL_STATUS,
-			stage: STAGE_AFTER_SELECT,
-			backend: values.backend,
-			createdAt: values.now,
-			updatedAt: values.now,
-		})
-		.onConflictDoUpdate({
-			target: sourcesWrite.name,
-			set: {
-				sourceType: values.sourceType,
-				connectionConfig: values.connectionConfig,
-				status: INITIAL_STATUS,
-				stage: STAGE_AFTER_SELECT,
-				backend: values.backend,
-				updatedAt: values.now,
-			},
-		})
-		.returning({ sourceId: sourcesWrite.sourceId });
-	return row.sourceId;
-}
-
 /** The display basename (filename leaf) of an `s3://` URI. */
 function basename(uri: string): string {
 	return uri.split("/").filter(Boolean).at(-1) ?? uri;
-}
-
-/**
- * The engine-stamped `imported_recipe_hash` witness on an existing source row,
- * if any (DAT-430).
- *
- * At import success the engine copies the recipe's `recipe_hash` into
- * `connection_config.imported_recipe_hash` — the record of WHICH recipe the
- * source's raw tables were materialized from. The db-source upsert below
- * REPLACES the whole `connection_config` JSON, so `select` must carry that
- * engine-owned key forward: preserving it is what lets the engine skip an
- * idempotent re-select (current hash == witness) and fail loud on a re-pointed
- * recipe (mismatch) instead of silently serving stale raw tables. A fresh name
- * (or a never-imported source) has no witness — returns null, and the key is
- * simply absent from the new config.
- */
-async function importedRecipeHash(name: string): Promise<string | null> {
-	const rows = await metadataDb
-		.select({ connectionConfig: sources.connectionConfig })
-		.from(sources)
-		.where(eq(sources.name, name))
-		.limit(1);
-	const cc = rows[0]?.connectionConfig as Record<string, unknown> | null;
-	const witness = cc?.imported_recipe_hash;
-	return typeof witness === "string" && witness.length > 0 ? witness : null;
 }
 
 /**

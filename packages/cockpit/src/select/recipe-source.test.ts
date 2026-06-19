@@ -61,7 +61,12 @@ describe("persistRecipeSources validation (fails loud before any write)", () => 
 	it("rejects an invalid source name", async () => {
 		await expect(
 			persistRecipeSources([
-				{ source_name: "Bad Name", backend: "mssql", sql: "SELECT 1" },
+				{
+					source_name: "Bad Name",
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 1",
+				},
 			]),
 		).rejects.toThrow(/Invalid source name/);
 		expect(h.upserts).toHaveLength(0);
@@ -70,7 +75,12 @@ describe("persistRecipeSources validation (fails loud before any write)", () => 
 	it("rejects a reserved family prefix", async () => {
 		await expect(
 			persistRecipeSources([
-				{ source_name: "src_orders", backend: "mssql", sql: "SELECT 1" },
+				{
+					source_name: "src_orders",
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 1",
+				},
 			]),
 		).rejects.toThrow(/reserved prefix/);
 		expect(h.upserts).toHaveLength(0);
@@ -79,7 +89,12 @@ describe("persistRecipeSources validation (fails loud before any write)", () => 
 	it("rejects an unsupported backend", async () => {
 		await expect(
 			persistRecipeSources([
-				{ source_name: "orders", backend: "oracle", sql: "SELECT 1" },
+				{
+					source_name: "orders",
+					credential_source: "wwi",
+					backend: "oracle",
+					sql: "SELECT 1",
+				},
 			]),
 		).rejects.toThrow(/Unsupported backend/);
 		expect(h.upserts).toHaveLength(0);
@@ -88,17 +103,46 @@ describe("persistRecipeSources validation (fails loud before any write)", () => 
 	it("rejects empty SQL", async () => {
 		await expect(
 			persistRecipeSources([
-				{ source_name: "orders", backend: "mssql", sql: "   " },
+				{
+					source_name: "orders",
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "   ",
+				},
 			]),
 		).rejects.toThrow(/empty SQL/);
+		expect(h.upserts).toHaveLength(0);
+	});
+
+	it("rejects a spec with an empty credential_source", async () => {
+		await expect(
+			persistRecipeSources([
+				{
+					source_name: "orders",
+					credential_source: "",
+					backend: "mssql",
+					sql: "SELECT 1",
+				},
+			]),
+		).rejects.toThrow(/credential_source/);
 		expect(h.upserts).toHaveLength(0);
 	});
 
 	it("rejects a duplicate name in the batch — before persisting anything", async () => {
 		await expect(
 			persistRecipeSources([
-				{ source_name: "orders", backend: "mssql", sql: "SELECT 1" },
-				{ source_name: "orders", backend: "mssql", sql: "SELECT 2" },
+				{
+					source_name: "orders",
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 1",
+				},
+				{
+					source_name: "orders",
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 2",
+				},
 			]),
 		).rejects.toThrow(/Duplicate source name/);
 		// The whole batch is validated before the write loop — no half-state.
@@ -111,11 +155,13 @@ describe("persistRecipeSources row shape (one source per query)", () => {
 		const result = await persistRecipeSources([
 			{
 				source_name: "wwi_orders",
+				credential_source: "wwi",
 				backend: "mssql",
 				sql: "SELECT * FROM Sales.Orders WHERE OrderDate > '2015-01-01'",
 			},
 			{
 				source_name: "wwi_customers",
+				credential_source: "wwi",
 				backend: "mssql",
 				sql: "SELECT CustomerID, CustomerName FROM Sales.Customers",
 			},
@@ -137,7 +183,9 @@ describe("persistRecipeSources row shape (one source per query)", () => {
 		};
 		expect(first.connectionConfig).toEqual({
 			tables: [recipeTable],
-			recipe_hash: recipeContentHash("mssql", [recipeTable]),
+			// The connection the query reads through — a NAME reference (DAT-592).
+			credential_source: "wwi",
+			recipe_hash: recipeContentHash("mssql", [recipeTable], "wwi"),
 		});
 		// db recipe and file URIs never cross-contaminate.
 		expect(first.connectionConfig).not.toHaveProperty("file_uris");
@@ -146,7 +194,12 @@ describe("persistRecipeSources row shape (one source per query)", () => {
 	it("carries the engine-stamped import witness forward on re-select", async () => {
 		h.witness = "deadbeef";
 		await persistRecipeSources([
-			{ source_name: "wwi_orders", backend: "mssql", sql: "SELECT 1" },
+			{
+				source_name: "wwi_orders",
+				credential_source: "wwi",
+				backend: "mssql",
+				sql: "SELECT 1",
+			},
 		]);
 		expect(h.upserts[0].connectionConfig).toMatchObject({
 			imported_recipe_hash: "deadbeef",

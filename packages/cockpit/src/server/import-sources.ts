@@ -32,6 +32,7 @@ const ImportSourcesInput = z.object({
 		.array(
 			z.object({
 				source_name: z.string(),
+				credential_source: z.string(),
 				backend: z.string(),
 				sql: z.string(),
 			}),

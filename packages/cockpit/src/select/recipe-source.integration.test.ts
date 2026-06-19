@@ -110,8 +110,18 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const sqlB = "SELECT CustomerID, CustomerName FROM Sales.Customers";
 
 			const result = await persistRecipeSources([
-				{ source_name: a, backend: "mssql", sql: sqlA },
-				{ source_name: b, backend: "mssql", sql: sqlB },
+				{
+					source_name: a,
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: sqlA,
+				},
+				{
+					source_name: b,
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: sqlB,
+				},
 			]);
 			expect(result).toHaveLength(2);
 
@@ -122,7 +132,8 @@ describe.skipIf(!STACK_AVAILABLE)(
 			const tablesA = [{ name: a, sql: sqlA }];
 			expect(rowA.connection_config).toEqual({
 				tables: tablesA,
-				recipe_hash: recipeContentHash("mssql", tablesA),
+				credential_source: "wwi",
+				recipe_hash: recipeContentHash("mssql", tablesA, "wwi"),
 			});
 			// One statement = one source: a single recipe entry, no file cross-contamination.
 			expect((rowA.connection_config.tables as unknown[]).length).toBe(1);
@@ -140,10 +151,20 @@ describe.skipIf(!STACK_AVAILABLE)(
 			writtenNames.push(name);
 
 			await persistRecipeSources([
-				{ source_name: name, backend: "mssql", sql: "SELECT 1 AS a" },
+				{
+					source_name: name,
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 1 AS a",
+				},
 			]);
 			await persistRecipeSources([
-				{ source_name: name, backend: "mssql", sql: "SELECT 2 AS b" },
+				{
+					source_name: name,
+					credential_source: "wwi",
+					backend: "mssql",
+					sql: "SELECT 2 AS b",
+				},
 			]);
 
 			const row = await readBack(name);

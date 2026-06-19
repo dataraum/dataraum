@@ -9,13 +9,15 @@
 // editor (out of CHIP_ONLY) for the user to edit and re-run. The run itself is a
 // direct fetch — no agent round-trip.
 //
-// Import set (DAT-592): "Add to import set" stages {import-as name, backend, sql};
-// "Import N sources" calls the `importSources` server fn — deterministic, no LLM
-// round-trip — which persists one source per query and starts ONE batched
-// addSourceWorkflow run. The run's progress renders INLINE here (the canvas is
-// message-derived, so a direct action can't project a canvas member), while the
-// background completion-watcher narrates completion into the chat (the run is
-// recorded against the conversationId we pass through).
+// Import set (DAT-592): "Add to import set" stages {import-as name, backend, sql}.
+// The set lives behind a COUNT SYMBOL in the panel header (always visible, never
+// pushed below the tall result grid); clicking it opens a centered MODAL listing
+// the staged queries with remove + "Import N sources". Import calls the
+// `importSources` server fn — deterministic, no LLM round-trip — which persists one
+// source per query and starts ONE batched addSourceWorkflow run. The run's progress
+// renders INLINE at the top here (the canvas is message-derived, so a direct action
+// can't project a canvas member), while the background completion-watcher narrates
+// completion into the chat (the run is recorded against the conversationId we pass).
 
 import {
 	ActionIcon,
@@ -24,15 +26,17 @@ import {
 	Button,
 	Code,
 	Group,
-	Paper,
+	Loader,
+	Modal,
 	Select,
 	Stack,
 	Text,
 	TextInput,
+	Tooltip,
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { X } from "lucide-react";
+import { Layers, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { getConfiguredDatabases } from "#/server/configured-databases";
 import { importSources } from "#/server/import-sources";
@@ -42,9 +46,12 @@ import { StreamingGrid } from "#/ui/cockpit/widgets/result-grid";
 import { SqlEditor } from "#/ui/cockpit/widgets/sql-editor";
 
 /** One staged query — becomes one single-statement `db_recipe` source on import.
- * A `type` (not `interface`) so it's assignable to the server fn's input shape. */
+ * A `type` (not `interface`) so it's assignable to the server fn's input shape.
+ * `credential_source` is the configured connection the query reads through (the
+ * probed source) — distinct from `source_name`, the new source's own name. */
 type ImportSpec = {
 	source_name: string;
+	credential_source: string;
 	backend: string;
 	sql: string;
 };
@@ -93,7 +100,7 @@ export function ProbeWidget({
 		mutationFn: (specs: ImportSpec[]) =>
 			importSources({ data: { sources: specs, conversationId } }),
 		// Clear the staged set on a successful start — the run is now live (its
-		// progress renders below); the set is free to build the next batch.
+		// progress renders at the top); the set is free to build the next batch.
 		onSuccess: () => setImportSet([]),
 	});
 
@@ -101,28 +108,20 @@ export function ProbeWidget({
 
 	return (
 		<Stack gap="md" data-testid="canvas-probe">
-			<ProbePanel
-				key={seedKey}
-				state={state}
-				stagedNames={importSet.map((s) => s.source_name)}
-				onAdd={addToSet}
-			/>
-
-			{importSet.length > 0 && (
-				<ImportSetPanel
-					set={importSet}
-					onRemove={removeFromSet}
-					onImport={() => importMutation.mutate(importSet)}
-					pending={importMutation.isPending}
-				/>
-			)}
-
+			{/* Run status sits at the TOP, always visible — never below the tall grid. */}
 			{importMutation.error && (
 				<Alert color="red" data-testid="probe-import-error">
 					{(importMutation.error as Error).message}
 				</Alert>
 			)}
-
+			{importMutation.isPending && !run && (
+				<Group gap="xs" data-testid="probe-import-starting">
+					<Loader size="sm" />
+					<Text size="sm" c="dimmed">
+						Starting import…
+					</Text>
+				</Group>
+			)}
 			{run && (
 				<Stack gap="xs" data-testid="probe-import-progress">
 					<Text size="sm" c="dimmed">
@@ -146,18 +145,34 @@ export function ProbeWidget({
 					/>
 				</Stack>
 			)}
+
+			<ProbePanel
+				key={seedKey}
+				state={state}
+				importSet={importSet}
+				onAdd={addToSet}
+				onRemove={removeFromSet}
+				onImport={() => importMutation.mutate(importSet)}
+				pending={importMutation.isPending}
+			/>
 		</Stack>
 	);
 }
 
 function ProbePanel({
 	state,
-	stagedNames,
+	importSet,
 	onAdd,
+	onRemove,
+	onImport,
+	pending,
 }: {
 	state: Extract<CanvasState, { kind: "probe" }>;
-	stagedNames: string[];
+	importSet: ImportSpec[];
 	onAdd: (spec: ImportSpec) => void;
+	onRemove: (name: string) => void;
+	onImport: () => void;
+	pending: boolean;
 }) {
 	const sources = useQuery({
 		queryKey: ["configured-databases"],
@@ -176,6 +191,9 @@ function ProbePanel({
 	// Bumped per Run so an identical re-run still remounts StreamingGrid (fresh
 	// stream + sort reset), not just a different query.
 	const [runId, setRunId] = useState(0);
+	// The import-set modal — pure view state, fine to reset on re-seed (the SET
+	// itself lives in ProbeWidget and survives).
+	const [setOpen, setSetOpen] = useState(false);
 
 	const selectedSource = useMemo(
 		() => list.find((s) => s.name === selected) ?? null,
@@ -198,13 +216,16 @@ function ProbePanel({
 	// Re-using a staged name UPDATES that query's SQL (addToSet replaces by name) —
 	// a valid edit, not a duplicate. So the gate ALLOWS it; only the button label
 	// flips to "Update" so the action is unambiguous.
-	const nameStaged = stagedNames.includes(importAs);
+	const nameStaged = importSet.some((s) => s.source_name === importAs);
 	const canAdd = selectedSource !== null && hasSql && nameValid;
 
 	const add = () => {
 		if (!selectedSource || !hasSql || !nameValid) return;
 		onAdd({
 			source_name: importAs,
+			// The picked source IS the connection the query reads through; the engine
+			// resolves credentials from it, so the new source can be named freely.
+			credential_source: selectedSource.name,
 			backend: selectedSource.backend,
 			sql: sqlText,
 		});
@@ -219,11 +240,28 @@ function ProbePanel({
 				<Text size="sm" fw={600}>
 					Probe a database source
 				</Text>
-				{selectedSource && (
-					<Badge variant="light" size="sm" tt="none">
-						{selectedSource.backend}
-					</Badge>
-				)}
+				<Group gap="xs" wrap="nowrap">
+					{selectedSource && (
+						<Badge variant="light" size="sm" tt="none">
+							{selectedSource.backend}
+						</Badge>
+					)}
+					{/* The import-set count symbol — always here in the header (not pushed
+					    below the result grid), opens the staged-queries modal. */}
+					{importSet.length > 0 && (
+						<Tooltip label="View import set">
+							<Button
+								size="compact-xs"
+								variant="light"
+								leftSection={<Layers size={14} />}
+								onClick={() => setSetOpen(true)}
+								data-testid="probe-import-indicator"
+							>
+								{importSet.length}
+							</Button>
+						</Tooltip>
+					)}
+				</Group>
 			</Group>
 			<Text size="xs" c="dimmed">
 				Read-only DuckDB SQL against a configured source (use LIMIT, not TOP) —
@@ -308,70 +346,68 @@ function ProbePanel({
 			{submitted && (
 				<StreamingGrid key={runId} endpoint="/api/probe-sql" body={submitted} />
 			)}
-		</Stack>
-	);
-}
 
-function ImportSetPanel({
-	set,
-	onRemove,
-	onImport,
-	pending,
-}: {
-	set: ImportSpec[];
-	onRemove: (name: string) => void;
-	onImport: () => void;
-	pending: boolean;
-}) {
-	return (
-		<Paper withBorder p="sm" radius="sm" data-testid="probe-import-set">
-			<Stack gap="xs">
-				<Text size="sm" fw={600}>
-					Import set ({set.length})
-				</Text>
-				<Text size="xs" c="dimmed">
-					Each query imports as its own source. They import together as one run.
-				</Text>
-				<Stack gap={4}>
-					{set.map((spec) => (
-						<Group key={spec.source_name} justify="space-between" wrap="nowrap">
-							<Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-								<Badge variant="light" size="sm" tt="none">
-									{spec.source_name}
-								</Badge>
-								<Code
-									style={{
-										overflow: "hidden",
-										textOverflow: "ellipsis",
-										whiteSpace: "nowrap",
-									}}
+			<Modal
+				opened={setOpen}
+				onClose={() => setSetOpen(false)}
+				centered
+				size="lg"
+				title={`Import set (${importSet.length})`}
+			>
+				<Stack gap="sm">
+					<Text size="xs" c="dimmed">
+						Each query imports as its own source. They import together as one
+						run.
+					</Text>
+					{importSet.length === 0 ? (
+						<Text size="sm" c="dimmed">
+							No queries staged yet.
+						</Text>
+					) : (
+						<Stack gap="xs" data-testid="probe-import-set">
+							{importSet.map((spec) => (
+								<Group
+									key={spec.source_name}
+									justify="space-between"
+									wrap="nowrap"
+									align="flex-start"
 								>
-									{spec.sql}
-								</Code>
-							</Group>
-							<ActionIcon
-								variant="subtle"
-								color="gray"
-								size="sm"
-								aria-label={`Remove ${spec.source_name}`}
-								onClick={() => onRemove(spec.source_name)}
-							>
-								<X size={14} />
-							</ActionIcon>
-						</Group>
-					))}
+									<Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+										<Badge variant="light" size="sm" tt="none">
+											{spec.source_name}
+										</Badge>
+										<Code block>{spec.sql}</Code>
+									</Stack>
+									<ActionIcon
+										variant="subtle"
+										color="gray"
+										size="sm"
+										aria-label={`Remove ${spec.source_name}`}
+										onClick={() => onRemove(spec.source_name)}
+									>
+										<X size={14} />
+									</ActionIcon>
+								</Group>
+							))}
+						</Stack>
+					)}
+					<Group justify="flex-end">
+						<Button
+							size="xs"
+							disabled={importSet.length === 0}
+							loading={pending}
+							onClick={() => {
+								onImport();
+								setSetOpen(false);
+							}}
+							data-testid="probe-import-run"
+						>
+							Import {importSet.length} source
+							{importSet.length === 1 ? "" : "s"}
+						</Button>
+					</Group>
 				</Stack>
-				<Group>
-					<Button
-						size="xs"
-						onClick={onImport}
-						loading={pending}
-						data-testid="probe-import-run"
-					>
-						Import {set.length} source{set.length === 1 ? "" : "s"}
-					</Button>
-				</Group>
-			</Stack>
-		</Paper>
+			</Modal>
+		</Stack>
 	);
 }

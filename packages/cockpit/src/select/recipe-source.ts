@@ -30,6 +30,11 @@ import { importedRecipeHash, upsertSource } from "./source-write";
 export interface RecipeSourceSpec {
 	/** The user-chosen source name (lowercase, letter-led — `SOURCE_NAME_PATTERN`). */
 	source_name: string;
+	/** The configured CONNECTION the query reads through — the probed source name
+	 * (DAT-592). Distinct from `source_name`: the engine resolves credentials from
+	 * THIS (`DATARAUM_{credential_source}_URL`), so a query imported as a new name
+	 * still reads the right DB. Never the secret URL — just the reference. */
+	credential_source: string;
 	/** The DB backend the query runs against (persisted as the `backend` column). */
 	backend: string;
 	/** The verbatim read-only SQL — materialized by the engine into one raw table. */
@@ -56,6 +61,12 @@ function validateSpec(spec: RecipeSourceSpec): void {
 		throw new ImportSetError(
 			`Invalid source name '${name ?? ""}'. Must match ${SOURCE_NAME_PATTERN.source} ` +
 				"(lowercase, start with a letter, 2–49 chars of [a-z0-9_]).",
+		);
+	}
+	if (!spec.credential_source) {
+		throw new ImportSetError(
+			`Source '${name}' has no credential_source — the configured connection ` +
+				"to read through (the probed source) is required.",
 		);
 	}
 	const reserved = reservedSourceNamePrefix(name);
@@ -130,7 +141,14 @@ export async function persistRecipeSources(
 		const connectionConfig: Record<string, unknown> = {
 			// DISTINCT key from the file `file_uris` key — never folded together.
 			tables: [recipeTable],
-			recipe_hash: recipeContentHash(spec.backend, [recipeTable]),
+			// The connection to read through (DAT-592) — a NAME reference the engine
+			// resolves credentials from, never the secret URL.
+			credential_source: spec.credential_source,
+			recipe_hash: recipeContentHash(
+				spec.backend,
+				[recipeTable],
+				spec.credential_source,
+			),
 			...(witness === null ? {} : { imported_recipe_hash: witness }),
 		};
 		const sourceId = await upsertSource({

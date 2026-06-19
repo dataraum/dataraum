@@ -25,6 +25,16 @@
 # connection string needs `TrustServerCertificate=true`.
 
 services:
+  # Wire the sample source into the cockpit CONTAINER's env so its probe surface
+  # offers it (host dev reads the cockpit .env instead; the core compose stays
+  # backend-neutral, so this lives in the opt-in overlay). The in-container cockpit
+  # reaches MS SQL by SERVICE NAME — `@mssql:1433`, not `@localhost` (DAT-576 smoke:
+  # the URL must be a `scheme://` form so the backend is inferred and the source is
+  # offered). Merges into the base cockpit service's `environment` across -f files.
+  cockpit:
+    environment:
+      DATARAUM_WWI_URL: mssql://sa:${MSSQL_SA_PASSWORD:-Dataraum!Dev1}@mssql:1433/WideWorldImporters?TrustServerCertificate=true
+
   # SQL Server 2025 — a sample MS SQL source. Profile-gated so a default `up` (even
   # with this file merged) never starts it.
   mssql:

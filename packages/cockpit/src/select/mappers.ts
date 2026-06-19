@@ -163,10 +163,17 @@ export interface RecipeTable {
 export function recipeContentHash(
 	backend: string,
 	tables: RecipeTable[],
+	credentialSource?: string,
 ): string {
-	return createHash("sha256")
-		.update(JSON.stringify({ backend, tables }))
-		.digest("hex");
+	// `credentialSource` (DAT-592) is part of the recipe identity when present: a
+	// query-source reads through a named connection, so re-pointing it (same SQL,
+	// different DB) is a DIFFERENT recipe. Omitted for the table-pick path (a source
+	// that is its own credential), keeping that path's hash byte-identical.
+	const canonical =
+		credentialSource === undefined
+			? { backend, tables }
+			: { backend, credential_source: credentialSource, tables };
+	return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 /** Quote a single SQL identifier segment, doubling embedded double-quotes.

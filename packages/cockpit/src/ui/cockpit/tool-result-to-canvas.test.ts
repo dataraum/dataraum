@@ -431,6 +431,44 @@ describe("toolResultToCanvas", () => {
 		});
 	});
 
+	it("maps open_probe to an empty probe canvas (the UI tool just opens the editor)", () => {
+		expect(toolResultToCanvas("open_probe", { ready: true })).toEqual({
+			kind: "probe",
+		});
+	});
+
+	it("seeds the probe canvas from the probe call arguments (source + sql)", () => {
+		expect(
+			toolResultToCanvas(
+				"probe",
+				{ columns: [], rows: [], rowCount: 0 },
+				{
+					source_name: "wwi",
+					backend: "mssql",
+					sql: "SELECT TOP 10 * FROM Sales.Orders",
+				},
+			),
+		).toEqual({
+			kind: "probe",
+			source: { name: "wwi", backend: "mssql" },
+			sql: "SELECT TOP 10 * FROM Sales.Orders",
+		});
+	});
+
+	it("returns null for probe with no sql/source on the wire, or an agent error", () => {
+		expect(
+			toolResultToCanvas("probe", {}, { source_name: "wwi", backend: "mssql" }),
+		).toBeNull();
+		expect(toolResultToCanvas("probe", {}, { sql: "SELECT 1" })).toBeNull();
+		expect(
+			toolResultToCanvas(
+				"probe",
+				{ error: "bad SQL" },
+				{ source_name: "wwi", backend: "mssql", sql: "SELECT 1" },
+			),
+		).toBeNull();
+	});
+
 	it("maps select to the add-source-progress canvas (DAT-436: calling select starts the import)", () => {
 		const selection = {
 			sources: ["s1"],

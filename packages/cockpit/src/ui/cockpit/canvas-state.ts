@@ -124,7 +124,17 @@ export type CanvasState =
 	// A file-upload area (redesign) — projected by the `upload` UI tool so the user
 	// can drop local files; NOT a permanent chat fixture. Carries nothing; the
 	// widget owns the dropzone + drives connect on upload.
-	| { kind: "upload-area" };
+	| { kind: "upload-area" }
+	// DAT-576: the editable probe surface — the user picks a configured DB source,
+	// writes/edits read-only SQL, and runs it against the external DB BEFORE ingest
+	// (streamed via /api/probe-sql into the same result grid). Projected EMPTY by the
+	// `open_probe` UI tool, or SEEDED with the agent's `probe` call input (source +
+	// sql) so a generated query lands in the editor for the user to edit + re-run.
+	| {
+			kind: "probe";
+			source?: { name: string; backend: string };
+			sql?: string;
+	  };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];

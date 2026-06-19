@@ -18,6 +18,7 @@ import {
 	clampGridCap,
 	encodeFrame,
 	type GridSort,
+	parseSort,
 	type StreamableResult,
 	streamNdjson,
 } from "../../duckdb/stream-sql";
@@ -46,35 +47,6 @@ interface RunSqlStreamBody {
 	 * it as an identifier, so a bad name yields a binder error, never injection.
 	 */
 	sort?: GridSort;
-}
-
-/** Validate an optional sort field; returns the sort, null (absent), or an error. */
-function parseSort(
-	raw: unknown,
-): { sort: GridSort | null } | { error: string } {
-	if (raw === undefined || raw === null) return { sort: null };
-	// `typeof [] === "object"`, so reject arrays explicitly — otherwise a JSON
-	// array falls through to the column check and yields a misleading error.
-	if (typeof raw !== "object" || Array.isArray(raw))
-		return { error: "Field 'sort' must be an object." };
-	const { column, dir } = raw as { column?: unknown; dir?: unknown };
-	// Bound the length: a validated field must not accept an arbitrarily large
-	// string that would balloon the SQL handed to DuckDB (a column name this long
-	// is never a real output column anyway).
-	if (
-		typeof column !== "string" ||
-		column.length === 0 ||
-		column.length > 256
-	) {
-		return {
-			error:
-				"Field 'sort.column' is required and must be a non-empty string (max 256 chars).",
-		};
-	}
-	if (dir !== "asc" && dir !== "desc") {
-		return { error: "Field 'sort.dir' must be 'asc' or 'desc'." };
-	}
-	return { sort: { column, dir } };
 }
 
 let queryCounter = 0;

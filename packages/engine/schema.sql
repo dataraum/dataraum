@@ -553,7 +553,6 @@ CREATE TABLE slice_definitions (
 	reasoning TEXT, 
 	business_context TEXT, 
 	confidence FLOAT, 
-	grain_safe BOOLEAN NOT NULL, 
 	detection_source VARCHAR NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_slice_definitions PRIMARY KEY (slice_id), 

@@ -2,7 +2,7 @@
 
 End-to-end: seed a fact's grain-verified enriched view in DuckDB (the spike corpus
 + an exact 1:1 alias column) and the begin_session catalog in SQLite
-(SliceDefinition grain_safe + a DimensionHierarchy alias group + SemanticAnnotation
+(SliceDefinition slices + a DimensionHierarchy alias group + SemanticAnnotation
 temporal_behavior), then assert discover_drivers ranks the planted drivers, collapses
 the alias out of the candidate set, and resolves the target type from the catalog.
 
@@ -63,7 +63,7 @@ def _seed(
         session.add(col)
         col_id[name] = col.column_id
 
-    # Catalog: every dim (incl. the alias) is a grain-safe slice definition.
+    # Catalog: every dim (incl. the alias) is a slice definition.
     for name in [*ALL_DIMS, ALIAS]:
         session.add(
             SliceDefinition(
@@ -72,7 +72,6 @@ def _seed(
                 column_id=col_id[name],
                 column_name=name,
                 slice_priority=1,
-                grain_safe=True,
                 detection_source="llm",
             )
         )
@@ -141,19 +140,6 @@ class TestDiscoverDrivers:
         dims = _candidate_dims(real_session, tid, RUN)
         assert "D_e25" in dims  # canonical kept
         assert ALIAS not in dims  # redundant axis collapsed out (DAT-537)
-
-    def test_non_grain_safe_dims_excluded(
-        self, real_session: Session, duck: duckdb.DuckDBPyConnection
-    ) -> None:
-        # A dimension flagged grain_safe=False is not a candidate (AC: grain-safety).
-        tid = _seed(real_session, duck)
-        real_session.execute(
-            SliceDefinition.__table__.update()
-            .where(SliceDefinition.column_name == "N_lowcard")
-            .values(grain_safe=False)
-        )
-        real_session.flush()
-        assert "N_lowcard" not in _candidate_dims(real_session, tid, RUN)
 
     def test_end_to_end_ranks_drivers(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection

@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-19: DAT-538 — `slice_definitions.grain_safe` removed
+
+The `grain_safe` boolean column on `slice_definitions` (the dimension catalog,
+DAT-536) is **gone**. It was hardcoded `True` for every row and carried no
+information: the slicing phase pre-filters fan-out columns (`distinct_count > 50` /
+`cardinality_ratio > 0.5`) before the LLM, so a cataloged dimension is grain-safe by
+construction. The two always-true `grain_safe.is_(True)` filters (driver
+`_candidate_dims`, hierarchies processor) were removed (behavior-preserving), and
+`schema.sql` + the cockpit Drizzle `current_slice_definitions` mirror were regenerated.
+
+### dataraum-eval
+- **Any fixture or assertion that seeds OR reads `slice_definitions.grain_safe` will
+  break** — drop it. There is no replacement column; grain-safety is no longer a
+  persisted flag.
+- No detector/score output shape changed; calibration recall is unaffected. The
+  answer-agent's grain handling moved to a cockpit-side, cardinality-derived
+  *caveat* (inform-don't-block) — not an engine artifact, nothing to calibrate.
+- Supersedes the `SliceDefinition.grain_safe (DAT-536)` mention in the DAT-546 entry
+  below.
+
 ## 2026-06-18: DAT-571 — driver-discovery in-memory load is bounded by sampling
 
 `discover_drivers` now caps the row-grain frame it materializes. A `max_rows` gate

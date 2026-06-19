@@ -11,6 +11,9 @@ vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {
+	type CatalogAxisRow,
+	type CatalogHierarchyRow,
+	formatCatalog,
 	formatSchema,
 	preferEnriched,
 	type SchemaColumnRow,
@@ -173,5 +176,70 @@ describe("preferEnriched (mirror the engine's prefer-enriched rule)", () => {
 
 	it("returns empty for an empty input", () => {
 		expect(preferEnriched([])).toEqual([]);
+	});
+});
+
+describe("formatCatalog (DAT-538 dimension catalog block)", () => {
+	const addr = new Map<string, string>([
+		["t1", "lake.typed.sales"],
+		["t2", "lake.typed.orders"],
+	]);
+	const axes: CatalogAxisRow[] = [
+		{ tableId: "t1", columnName: "region" },
+		{ tableId: "t1", columnName: "channel" },
+	];
+
+	it("lists the natural dimensions per table (sorted)", () => {
+		const block = formatCatalog(axes, [], addr);
+		expect(block).toContain("Table lake.typed.sales:");
+		expect(block).toContain('dimensions: "channel", "region"'); // sorted
+		// No grain-safe / fan-out framing — this block is context, not a gate.
+		expect(block).not.toContain("grain-safe");
+		expect(block).not.toContain("GROUP BY");
+	});
+
+	it("renders an alias group as canonical ≡ others (group by canonical)", () => {
+		const hierarchies: CatalogHierarchyRow[] = [
+			{
+				tableId: "t1",
+				kind: "alias",
+				canonicalLabel: "region",
+				members: [{ column_name: "region" }, { column_name: "region_code" }],
+			},
+		];
+		const block = formatCatalog(axes, hierarchies, addr);
+		expect(block).toContain('alias: "region" ≡ "region_code"');
+	});
+
+	it("renders a non-alias hierarchy as an ordered drill-down chain", () => {
+		const hierarchies: CatalogHierarchyRow[] = [
+			{
+				tableId: "t1",
+				kind: "functional_dependency",
+				canonicalLabel: null,
+				members: [
+					{ column_name: "city" },
+					{ column_name: "region" },
+					{ column_name: "country" },
+				],
+			},
+		];
+		const block = formatCatalog(axes, hierarchies, addr);
+		expect(block).toContain('drill-down: "city" → "region" → "country"');
+	});
+
+	it("notes an empty catalog", () => {
+		const block = formatCatalog([], [], addr);
+		expect(block).toContain("No catalogued dimensions yet");
+		expect(block).toContain("<dimensions>");
+	});
+
+	it("falls back to the raw table_id when no address is known", () => {
+		const block = formatCatalog(
+			[{ tableId: "orphan", columnName: "x" }],
+			[],
+			new Map(),
+		);
+		expect(block).toContain("Table orphan:");
 	});
 });

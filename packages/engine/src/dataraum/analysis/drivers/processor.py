@@ -119,7 +119,6 @@ def _candidate_dims(session: Session, fact_table_id: str, run_id: str) -> list[s
         select(SliceDefinition.column_name).where(
             SliceDefinition.table_id == fact_table_id,
             SliceDefinition.run_id == run_id,
-            SliceDefinition.grain_safe.is_(True),
             SliceDefinition.column_name.isnot(None),
         )
     ).scalars()

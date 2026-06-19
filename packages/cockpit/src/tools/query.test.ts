@@ -228,6 +228,18 @@ describe("assembleAnswer", () => {
 		expect(out.assumptions).toContain("Treated null amounts as zero."); // kept
 	});
 
+	it("does not duplicate the grain caveat when the model already stated it", () => {
+		const note = 'Note: this query groups by "txn_id", which is near-unique.';
+		const d = draft();
+		d.assumptions = [note];
+		const out = assembleAnswer(
+			d,
+			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			null,
+		);
+		expect(out.assumptions.filter((a) => a === note)).toHaveLength(1);
+	});
+
 	it("yields a null grid + empty components when nothing was validated", () => {
 		const out = assembleAnswer(draft(), null, null);
 		expect(out.grid).toBeNull();

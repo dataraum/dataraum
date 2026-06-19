@@ -31,11 +31,14 @@ if TYPE_CHECKING:
 class SliceDefinition(Base):
     """The dimension catalog: one recommended aggregation/filter dimension per row.
 
-    Each record is a grain-safe dimension a fact can be sliced/grouped by — the
-    durable output of the slicing phase, consumed downstream by the answer agent,
-    the metrics page, and the driver-tree engine (DAT-545). Slice *materialization*
-    was removed (DAT-536): the structural_reconciliation substrate is aggregated
-    inline over the enriched views, so there is no ``sql_template`` to store.
+    Each record is a dimension a fact can be sliced/grouped by — grain-safe by
+    construction (the slicing phase pre-filters fan-out/near-unique columns before
+    the LLM, so a cataloged dimension is always safe to aggregate; DAT-538 removed
+    the redundant always-true ``grain_safe`` flag). The durable output of the
+    slicing phase, consumed downstream by the answer agent, the metrics page, and
+    the driver-tree engine (DAT-545). Slice *materialization* was removed (DAT-536):
+    the structural_reconciliation substrate is aggregated inline over the enriched
+    views, so there is no ``sql_template`` to store.
 
     One definition per ``(table_id, column_name, run_id)`` (DAT-502): the
     slicing agent can emit a dimension twice and the propagation pass adds

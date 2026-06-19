@@ -402,8 +402,8 @@ export function formatCatalog(
 /**
  * Read the dimension catalog for the active workspace's promoted head and format it
  * as the sub-agent's `<dimensions>` block. Addresses mirror the `<schema>` block:
- * the catalog is keyed to the typed fact tables; their grain-safe axes also surface
- * on any enriched view built from them (same column names).
+ * the catalog is keyed to the typed fact tables; the same column names surface on any
+ * enriched view built from them, so the dimensions apply regardless of join path.
  */
 export async function buildCatalogBlock(): Promise<string> {
 	const [axisRows, hierarchyRows, tableRows] = await Promise.all([

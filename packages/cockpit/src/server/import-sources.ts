@@ -18,8 +18,14 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import { persistRecipeSources } from "#/select/recipe-source";
-import { triggerAddSource } from "#/temporal/trigger-add-source";
+// `persistRecipeSources` + `triggerAddSource` pull config-bearing modules
+// (duckdb/probe, config) at load. They run ONLY server-side inside the handler, so
+// they're imported there (dynamically) — NOT statically — to keep THIS module's
+// graph config-free. The probe WIDGET imports this server fn at module scope; a
+// static pull would drag config into every test that eagerly loads the widget
+// registry (the canvas registry is deliberately config-free). `runWithConversation`
+// is just AsyncLocalStorage (config-free), so it stays a normal import.
+import { runWithConversation } from "#/lib/run-context";
 
 const ImportSourcesInput = z.object({
 	sources: z
@@ -31,10 +37,19 @@ const ImportSourcesInput = z.object({
 			}),
 		)
 		.min(1),
+	// The originating chat (route param). The agent `select` tool reads this from
+	// the request ALS (set by /api/chat); a direct server fn has none, so the widget
+	// passes it explicitly and we bind it around the trigger. Without it the run is
+	// recorded with no conversation → the completion-watcher (which filters by
+	// conversationId) never tracks it, so the inline progress never ticks and the
+	// completion never narrates. (Null when the widget is off-route — degraded.)
+	conversationId: z.string().nullish(),
 });
 
-/** The started run + the sources it imports — the widget flips the canvas to the
- * `add-source-progress` member on this (same carry as the `select` tool result). */
+/** The started run + the sources it imports. The widget renders the
+ * `add-source-progress` widget INLINE from this (the canvas is message-derived, so
+ * a direct action can't project a canvas member) — same carry as the `select`
+ * tool result; the background completion-watcher narrates completion into the chat. */
 export interface ImportSourcesResult {
 	workflow_id: string;
 	run_id: string;
@@ -58,9 +73,18 @@ export const importSources = createServerFn({ method: "POST" })
 		ImportSourcesInput.parse(input),
 	)
 	.handler(async ({ data }): Promise<ImportSourcesResult> => {
+		const { persistRecipeSources } = await import("#/select/recipe-source");
+		const { triggerAddSource } = await import("#/temporal/trigger-add-source");
 		const persisted = await persistRecipeSources(data.sources);
 		const sourceIds = persisted.map((p) => p.source_id);
-		const run = await triggerAddSource({ sources: sourceIds });
+		// Bind the conversation so the run is recorded against it (the watcher routes
+		// progress + narration by conversationId). Off-route (no id) → bare trigger,
+		// the null-conversation run the watcher simply doesn't narrate.
+		const run = await (data.conversationId
+			? runWithConversation(data.conversationId, () =>
+					triggerAddSource({ sources: sourceIds }),
+				)
+			: triggerAddSource({ sources: sourceIds }));
 		return {
 			workflow_id: run.workflow_id,
 			run_id: run.run_id,

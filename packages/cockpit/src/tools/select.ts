@@ -41,7 +41,13 @@
 //               against a different backend; the engine-stamped
 //               `imported_recipe_hash` witness on an existing row is carried
 //               forward. The user-chosen `source_name` is required here (files
-//               are content-keyed, so it is ignored for them).
+//               are content-keyed, so it is ignored for them). This table-pick
+//               path stays the BUNDLED multi-add: N picked tables → ONE source
+//               carrying N recipe entries. The probe surface's import set
+//               (DAT-592, `server/import-sources.ts` → `select/recipe-source.ts`)
+//               is the 1-query = 1-source path — each arbitrary probed query is
+//               its own source — sharing the same write seam (`source-write.ts`)
+//               and the same batched trigger, only at a finer grain.
 //
 // An acting tool: it mutates workspace state (creates/updates source rows) AND
 // starts a durable engine run, so it runs on the user's explicit instruction —

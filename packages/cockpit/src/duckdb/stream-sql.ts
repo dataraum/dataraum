@@ -242,6 +242,11 @@ export async function* streamNdjson(
 	cap: number,
 	queryId: string,
 	signal?: AbortSignalLike,
+	// Redact a credential-bearing source URL from a mid-stream DuckDB error before
+	// it lands in the footer frame: a probe streams over an external ATTACH whose
+	// driver error can echo the DSN. The probe route passes this; lake queries
+	// (run_sql) have no URL to redact, so it defaults to identity.
+	redact: (message: string) => string = (m) => m,
 ): AsyncGenerator<string> {
 	yield encodeFrame({
 		t: "h",
@@ -298,7 +303,7 @@ export async function* streamNdjson(
 		yield encodeFrame({
 			t: "f",
 			rows,
-			error: err instanceof Error ? err.message : String(err),
+			error: redact(err instanceof Error ? err.message : String(err)),
 		});
 	}
 }

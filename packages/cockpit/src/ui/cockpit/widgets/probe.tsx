@@ -37,6 +37,20 @@ export function ProbeWidget({
 }: {
 	state: Extract<CanvasState, { kind: "probe" }>;
 }) {
+	// Remount the panel whenever the agent SEED (the source + sql projected onto the
+	// canvas) changes, so a repeated probe / open_probe in a later turn re-seeds the
+	// editor + picker via fresh state init — never a reset effect (idiom rule 5, the
+	// ResultGridWidget → StreamingGrid pattern). User edits don't touch the seed, so
+	// typing never remounts.
+	const seedKey = `${state.source?.name ?? ""}|${state.sql ?? ""}`;
+	return <ProbePanel key={seedKey} state={state} />;
+}
+
+function ProbePanel({
+	state,
+}: {
+	state: Extract<CanvasState, { kind: "probe" }>;
+}) {
 	const sources = useQuery({
 		queryKey: ["configured-databases"],
 		queryFn: () => getConfiguredDatabases(),

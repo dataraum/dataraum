@@ -43,6 +43,8 @@ interface ProbeSqlStreamBody {
 	sort?: GridSort;
 }
 
+// Per-process monotonic handle (singleton in the Bun/Nitro server process), same
+// as run-sql.ts — for correlating logs/frames, not security-sensitive.
 let queryCounter = 0;
 
 /** Short, monotonic per-process handle for correlating logs/frames. */
@@ -143,6 +145,9 @@ export const Route = createFileRoute("/api/probe-sql")({
 								cap,
 								queryId,
 								aborted,
+								// Redact the source URL from any mid-stream DuckDB error
+								// footer — an external-ATTACH driver error can echo the DSN.
+								redact,
 							)) {
 								controller.enqueue(enc.encode(line));
 							}

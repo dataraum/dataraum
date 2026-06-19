@@ -284,6 +284,38 @@ describe("streamNdjson cap + truncation", () => {
 		});
 	});
 
+	it("redacts the source URL from a mid-stream error footer (probe path, DAT-576)", async () => {
+		// An external-ATTACH driver error can echo the credential-bearing DSN; the
+		// probe route passes its `redact` so the secret never lands in the footer.
+		const secret = "Server=db,1433;UID=sa;PWD=hunter2";
+		const result: StreamableResult = {
+			columnNames: () => ["id"],
+			columnTypesJson: () => ["INTEGER"],
+			fetchChunk: async () => {
+				throw new Error(`ATTACH driver error for '${secret}'`);
+			},
+		};
+		const redact = (m: string) => m.split(secret).join("<source url redacted>");
+		const lines: string[] = [];
+		for await (const line of streamNdjson(
+			result,
+			1000,
+			"q",
+			{ aborted: false },
+			redact,
+		)) {
+			const trimmed = line.trim();
+			if (trimmed) lines.push(trimmed);
+		}
+		const footer = lines
+			.map((l) => JSON.parse(l) as { t: string; error?: string })
+			.find((f) => f.t === "f");
+		expect(footer?.error).toBe(
+			"ATTACH driver error for '<source url redacted>'",
+		);
+		expect(footer?.error).not.toContain(secret);
+	});
+
 	it("reports rows emitted before a mid-stream failure in the error footer", async () => {
 		let i = 0;
 		const result: StreamableResult = {

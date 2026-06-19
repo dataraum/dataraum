@@ -103,7 +103,6 @@ def seed_sales(session: Session, duck: duckdb.DuckDBPyConnection, *, rows_per_zi
                 column_name=name,
                 slice_priority=1,
                 slice_type="categorical",
-                grain_safe=True,
                 detection_source="llm",
             )
         )

@@ -11,7 +11,6 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -74,13 +73,6 @@ class SliceDefinition(Base):
     reasoning: Mapped[str | None] = mapped_column(Text)
     business_context: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float | None] = mapped_column(Float)
-
-    # Catalog grain-safety (DAT-536): safe to GROUP BY without fan-out. True by
-    # construction — slicing only runs on facts with a grain-verified enriched
-    # view (= EnrichedView.is_grain_verified), so every cataloged dimension is
-    # grain-safe; denormalized here so downstream GROUP BY consumers (answer
-    # agent, driver tree) read it without re-deriving.
-    grain_safe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Provenance
     detection_source: Mapped[str] = mapped_column(String, nullable=False, default="llm")

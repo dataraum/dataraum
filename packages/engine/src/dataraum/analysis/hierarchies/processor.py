@@ -262,7 +262,6 @@ def discover_dimension_hierarchies(
                 select(SliceDefinition).where(
                     SliceDefinition.table_id == ev.fact_table_id,
                     SliceDefinition.run_id == run_id,
-                    SliceDefinition.grain_safe.is_(True),
                     SliceDefinition.column_name.isnot(None),
                 )
             )

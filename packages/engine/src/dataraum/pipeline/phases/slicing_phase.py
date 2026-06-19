@@ -285,13 +285,6 @@ class SlicingPhase(BasePhase):
                 "reasoning": rec.reasoning,
                 "business_context": rec.business_context,
                 "confidence": rec.confidence,
-                # grain_safe (DAT-536): the catalog's grain-safety flag for
-                # downstream GROUP BY consumers (answer agent, driver tree). True
-                # by construction — ``_get_fact_tables`` only slices facts whose
-                # enriched view is grain-verified, so every cataloged dimension on
-                # it is safe to aggregate; the flag denormalizes that provenance so
-                # consumers needn't re-derive it.
-                "grain_safe": True,
                 "detection_source": "llm",
             }
         upsert(

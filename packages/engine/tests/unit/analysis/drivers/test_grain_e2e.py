@@ -74,7 +74,6 @@ def _seed_catalog(session: Session, dims: list[str] = CL_DIMS) -> str:
                     column_id=col.column_id,
                     column_name=name,
                     slice_priority=1,
-                    grain_safe=True,
                     detection_source="llm",
                 )
             )
@@ -112,7 +111,6 @@ def _seed_ratio_catalog(session: Session, dims: list[str] = CL_RATIO_DIMS) -> st
                     column_id=col.column_id,
                     column_name=name,
                     slice_priority=1,
-                    grain_safe=True,
                     detection_source="llm",
                 )
             )

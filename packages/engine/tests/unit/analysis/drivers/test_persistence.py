@@ -79,7 +79,6 @@ def _seed(
                     column_id=col.column_id,
                     column_name=name,
                     slice_priority=1,
-                    grain_safe=True,
                     detection_source="llm",
                 )
             )

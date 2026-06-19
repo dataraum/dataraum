@@ -350,12 +350,11 @@ export const currentSliceDefinitions = metadataSchema
 		reasoning: text(),
 		businessContext: text("business_context"),
 		confidence: doublePrecision(),
-		grainSafe: boolean("grain_safe"),
 		detectionSource: varchar("detection_source"),
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT slice_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, grain_safe, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT slice_id, run_id, table_id, column_id, column_name, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM ws_00000000_0000_0000_0000_000000000001.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentStatisticalProfiles = metadataSchema

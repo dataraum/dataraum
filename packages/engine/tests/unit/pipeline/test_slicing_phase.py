@@ -625,7 +625,6 @@ class TestSliceDefinitionWriterIdempotent:
                 "value_count": 2,
                 "reasoning": "status partitions",
                 "confidence": confidence,
-                "grain_safe": True,
                 "detection_source": "llm",
             }
 

@@ -49,7 +49,7 @@ import {
 } from "../llm";
 import { getQueryInstructions } from "../prompts";
 import { asAgentError, withAgentError } from "./agent-error";
-import { checkGrainSafety, loadUnsafeAxes } from "./grain-guard";
+import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
 import { buildCatalogBlock, buildSchemaBlock } from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
@@ -167,12 +167,18 @@ const RunStepsOk = z.object({
 	rowCount: z.number(),
 	sample: z.array(z.record(z.string(), z.unknown())),
 	truncated: z.boolean(),
+	// A grain caveat (DAT-538) when a GROUP BY is over a near-unique column — the
+	// query STILL ran; this informs (never blocks). Absent when the grouping is
+	// coarse enough. The agent should reflect it to the user.
+	grain_note: z.string().optional(),
 });
 
 /** What a successful run_steps validation captured, for the grid + the surface. */
 interface ValidatedRun {
 	composedSql: string;
 	components: Component[];
+	/** Grain caveat to surface to the user (DAT-538), or null when none. */
+	grainNote: string | null;
 }
 
 // --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
@@ -247,7 +253,7 @@ export async function classifyComponents(
  */
 function makeRunStepsTool(
 	captured: { value: ValidatedRun | null },
-	unsafeAxes: Set<string>,
+	nearUniqueColumns: Set<string>,
 ) {
 	return toolDefinition({
 		name: "run_steps",
@@ -287,13 +293,15 @@ function makeRunStepsTool(
 			components.map((c) => ({ name: c.name, sql: c.sql })),
 			input.final_sql,
 		);
-		// Grain-safety teeth (DAT-538 P2): refuse a GROUP BY over a catalogued
-		// non-grain-safe axis BEFORE executing — deterministic, agent-fixable.
-		const grainError = await checkGrainSafety(composed, unsafeAxes);
-		if (grainError) return { error: grainError };
 		const result = await runSteps(composed, ctx?.abortSignal);
-		if ("ok" in result) captured.value = { composedSql: composed, components };
-		return result;
+		if (!("ok" in result)) return result;
+		// Grain caveat (DAT-538): inform-don't-block. A GROUP BY over a near-unique
+		// column STILL runs — we attach a note (the agent reflects it to the user)
+		// so an ambiguous "per X" question that meant a summary is caught. Computed
+		// only after a clean run; captured for the deterministic surface too.
+		const grainNote = await computeGrainNote(composed, nearUniqueColumns);
+		captured.value = { composedSql: composed, components, grainNote };
+		return grainNote ? { ...result, grain_note: grainNote } : result;
 	});
 }
 
@@ -360,10 +368,16 @@ export function assembleAnswer(
 	const counts = { exact_reuse: 0, adapted: 0, fresh: 0 };
 	for (const c of components) counts[c.usage] += 1;
 	const total = components.length;
+	// Surface the grain caveat deterministically (DAT-538): even if the model
+	// forgets to reflect it, the user sees it as a stated assumption.
+	const assumptions =
+		validated?.grainNote && !draft.assumptions.includes(validated.grainNote)
+			? [...draft.assumptions, validated.grainNote]
+			: draft.assumptions;
 	return {
 		answer: draft.answer,
 		grid,
-		assumptions: draft.assumptions,
+		assumptions,
 		concepts_used: draft.concepts_used,
 		tables_touched: draft.tables_touched,
 		data_quality: dataQuality,
@@ -443,12 +457,12 @@ export async function querySubAgent(
 	question: string,
 	signal?: AbortSignal,
 ): Promise<AnswerResult> {
-	const [schemaBlock, catalogBlock, vocabularyBlock, unsafeAxes] =
+	const [schemaBlock, catalogBlock, vocabularyBlock, nearUniqueColumns] =
 		await Promise.all([
 			buildSchemaBlock(),
 			buildCatalogBlock(),
 			buildVocabularyBlock(),
-			loadUnsafeAxes(),
+			loadNearUniqueColumns(),
 		]);
 
 	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${vocabularyBlock}`;
@@ -467,7 +481,7 @@ export async function querySubAgent(
 		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
 		systemPrompts: [getQueryInstructions()],
 		messages: [{ role: "user", content: userMessage }],
-		tools: [snippetSearchTool, makeRunStepsTool(captured, unsafeAxes)],
+		tools: [snippetSearchTool, makeRunStepsTool(captured, nearUniqueColumns)],
 		outputSchema: QueryDraftSchema,
 	});
 

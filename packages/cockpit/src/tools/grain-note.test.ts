@@ -1,16 +1,16 @@
-// Unit coverage for the grain-safety guard's pure core (DAT-538 P2): the
-// `json_serialize_sql` parse-tree walk + the violation check. The DuckDB parse
-// (checkGrainSafety) and the catalog read (loadUnsafeAxes) are smoke/integration-
-// covered; here we pin the deterministic projection over a realistic tree.
+// Unit coverage for the grain-note caveat's pure core (DAT-538): the
+// `json_serialize_sql` parse-tree walk + the near-unique check. The DuckDB parse
+// (computeGrainNote) and the stats read (loadNearUniqueColumns) are
+// smoke/integration-covered; here we pin the deterministic projection over a tree.
 
 import { describe, expect, it, vi } from "vitest";
 
-// grain-guard → ../duckdb/lake + ../db/metadata/{client,schema} → #/config. The
+// grain-note → ../duckdb/lake + ../db/metadata/{client,schema} → #/config. The
 // pure functions touch none of it; stub the boundary so the import graph loads.
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { extractGroupedColumns, findGrainViolations } from "./grain-guard";
+import { extractGroupedColumns, findNearUniqueGroupings } from "./grain-note";
 
 // The shape `json_serialize_sql` emits: GROUP BY items live in `group_expressions`
 // on EVERY query node (outer + each CTE/subquery). A bare column is COLUMN_REF with
@@ -87,21 +87,21 @@ describe("extractGroupedColumns", () => {
 	});
 });
 
-describe("findGrainViolations", () => {
-	it("flags grouped columns the catalog marks non-grain-safe", () => {
-		const unsafe = new Set(["order_id"]);
+describe("findNearUniqueGroupings", () => {
+	it("flags grouped columns that are near-unique (per-row keys)", () => {
+		const nearUnique = new Set(["order_id"]);
 		expect(
-			findGrainViolations(["region", "order_id", "channel"], unsafe),
+			findNearUniqueGroupings(["region", "order_id", "channel"], nearUnique),
 		).toEqual(["order_id"]);
 	});
 
-	it("passes when every grouped column is grain-safe (no violations)", () => {
+	it("stays silent when every grouped column is coarse enough", () => {
 		expect(
-			findGrainViolations(["region", "channel"], new Set(["order_id"])),
+			findNearUniqueGroupings(["region", "channel"], new Set(["order_id"])),
 		).toEqual([]);
 	});
 
-	it("is a no-op against an empty unsafe set", () => {
-		expect(findGrainViolations(["region"], new Set())).toEqual([]);
+	it("is a no-op against an empty near-unique set", () => {
+		expect(findNearUniqueGroupings(["region"], new Set())).toEqual([]);
 	});
 });

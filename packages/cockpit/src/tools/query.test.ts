@@ -187,6 +187,7 @@ describe("assembleAnswer", () => {
 						usage: "exact_reuse",
 					},
 				],
+				grainNote: null,
 			},
 			{ band: "investigate", note: "n" },
 		);
@@ -215,6 +216,18 @@ describe("assembleAnswer", () => {
 		});
 	});
 
+	it("appends the grain caveat to assumptions when the run carried one", () => {
+		const note = 'Note: this query groups by "txn_id", which is near-unique.';
+		const out = assembleAnswer(
+			draft(),
+			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			null,
+		);
+		// Surfaced deterministically — even if the model omitted it.
+		expect(out.assumptions).toContain(note);
+		expect(out.assumptions).toContain("Treated null amounts as zero."); // kept
+	});
+
 	it("yields a null grid + empty components when nothing was validated", () => {
 		const out = assembleAnswer(draft(), null, null);
 		expect(out.grid).toBeNull();
@@ -232,7 +245,7 @@ describe("assembleAnswer", () => {
 	it("yields a null grid when the captured composed SQL is blank", () => {
 		const out = assembleAnswer(
 			draft(),
-			{ composedSql: "   ", components: [] },
+			{ composedSql: "   ", components: [], grainNote: null },
 			null,
 		);
 		expect(out.grid).toBeNull();
@@ -280,6 +293,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 				comp("reused", "exact_reuse"),
 				comp("margin", "adapted", "SELECT SUM(m) AS value"),
 			],
+			grainNote: null,
 		});
 
 		// fresh + adapted only — exact_reuse is skipped.
@@ -301,6 +315,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 		await persistLearnedSnippets({
 			composedSql: "x",
 			components: [comp("a", "exact_reuse")],
+			grainNote: null,
 		});
 		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
 	});
@@ -313,6 +328,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 			persistLearnedSnippets({
 				composedSql: "x",
 				components: [comp("a", "fresh")],
+				grainNote: null,
 			}),
 		).resolves.toBeUndefined();
 		expect(warnSpy).toHaveBeenCalled();

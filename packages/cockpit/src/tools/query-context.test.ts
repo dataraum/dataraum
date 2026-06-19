@@ -185,18 +185,17 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		["t2", "lake.typed.orders"],
 	]);
 	const axes: CatalogAxisRow[] = [
-		{ tableId: "t1", columnName: "region", grainSafe: true },
-		{ tableId: "t1", columnName: "channel", grainSafe: true },
-		{ tableId: "t1", columnName: "order_id", grainSafe: false },
+		{ tableId: "t1", columnName: "region" },
+		{ tableId: "t1", columnName: "channel" },
 	];
 
-	it("splits grain-safe from non-grain-safe axes per table", () => {
+	it("lists the natural dimensions per table (sorted)", () => {
 		const block = formatCatalog(axes, [], addr);
 		expect(block).toContain("Table lake.typed.sales:");
-		expect(block).toContain('grain-safe axes: "channel", "region"'); // sorted
-		expect(block).toContain(
-			'NOT grain-safe (do NOT GROUP BY — fans out the grain): "order_id"',
-		);
+		expect(block).toContain('dimensions: "channel", "region"'); // sorted
+		// No grain-safe / fan-out framing — this block is context, not a gate.
+		expect(block).not.toContain("grain-safe");
+		expect(block).not.toContain("GROUP BY");
 	});
 
 	it("renders an alias group as canonical ≡ others (group by canonical)", () => {
@@ -237,7 +236,7 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 
 	it("falls back to the raw table_id when no address is known", () => {
 		const block = formatCatalog(
-			[{ tableId: "orphan", columnName: "x", grainSafe: true }],
+			[{ tableId: "orphan", columnName: "x" }],
 			[],
 			new Map(),
 		);

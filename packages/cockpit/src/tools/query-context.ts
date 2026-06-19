@@ -297,19 +297,20 @@ export async function buildSchemaBlock(): Promise<string> {
 // --- Dimension catalog (DAT-538) -------------------------------------------------
 //
 // The slice catalog (DAT-536 `current_slice_definitions`) + hierarchies (DAT-537
-// `current_dimension_hierarchies`) tell the answer sub-agent which columns are
-// catalogued ANALYSIS AXES and which are GRAIN-SAFE to GROUP BY. The deterministic
-// grain-safety guard (run_steps, DAT-538 P2) is the enforcement; this block is the
-// up-front context so the agent groups correctly in the first place. Axes are
-// surfaced by their column name (the enriched view exposes the same dim columns), so
-// the agent maps a "by region by month" question onto the grain-safe axes. Curation
-// (add/suppress an axis, fix a hierarchy) is a Stage-chat teach, not done here.
+// `current_dimension_hierarchies`) give the answer sub-agent the workspace's natural
+// ANALYSIS DIMENSIONS and the structural relationships between them — context the
+// `<schema>` block lacks. This is purely informational (inform-don't-block): it does
+// NOT gate anything. The genuinely additive parts are the hierarchies — an ALIAS
+// group ("region ≡ region_code") tells the agent not to double-count one axis as
+// two, and a DRILL-DOWN chain ("city → region → country") lets it roll a "by region"
+// question up from city-grain data. The flat dimension list is a soft hint at the
+// columns worth grouping by. (A near-unique GROUP BY is handled separately, as a
+// run-time caveat in grain-note.ts — not here, and never as a block.)
 
-/** One catalogued slice axis (a candidate GROUP BY dimension). */
+/** One catalogued slice axis (a natural analysis dimension). */
 export interface CatalogAxisRow {
 	tableId: string;
 	columnName: string;
-	grainSafe: boolean;
 }
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
@@ -338,36 +339,33 @@ function hierarchyLine(h: CatalogHierarchyRow): string | null {
 
 /**
  * Format the dimension catalog as the sub-agent's `<dimensions>` block (pure).
- * Grouped by table (sorted by address), grain-safe axes first. Empty catalog → a
- * one-line note. ``tableAddressById`` maps a catalog ``table_id`` to its
- * ``lake.<layer>.<name>`` address (the same address the `<schema>` block uses).
+ * Grouped by table (sorted by address); per table, the natural dimensions then their
+ * alias/drill-down structure. Empty catalog → a one-line note. ``tableAddressById``
+ * maps a catalog ``table_id`` to its ``lake.<layer>.<name>`` address (the same
+ * address the `<schema>` block uses).
  */
 export function formatCatalog(
 	axisRows: CatalogAxisRow[],
 	hierarchyRows: CatalogHierarchyRow[],
 	tableAddressById: Map<string, string>,
 ): string {
-	if (axisRows.length === 0) {
-		return "<dimensions>\n(No catalogued dimensions yet — group only by columns you can justify as grain-safe.)\n</dimensions>";
+	if (axisRows.length === 0 && hierarchyRows.length === 0) {
+		return "<dimensions>\n(No catalogued dimensions yet.)\n</dimensions>";
 	}
 
 	const byTable = new Map<
 		string,
-		{ safe: string[]; unsafe: string[]; hierarchies: string[] }
+		{ dimensions: string[]; hierarchies: string[] }
 	>();
 	const bucket = (tableId: string) => {
 		let b = byTable.get(tableId);
 		if (!b) {
-			b = { safe: [], unsafe: [], hierarchies: [] };
+			b = { dimensions: [], hierarchies: [] };
 			byTable.set(tableId, b);
 		}
 		return b;
 	};
-	for (const a of axisRows) {
-		(a.grainSafe ? bucket(a.tableId).safe : bucket(a.tableId).unsafe).push(
-			a.columnName,
-		);
-	}
+	for (const a of axisRows) bucket(a.tableId).dimensions.push(a.columnName);
 	for (const h of hierarchyRows) {
 		const line = hierarchyLine(h);
 		if (line) bucket(h.tableId).hierarchies.push(line);
@@ -379,18 +377,9 @@ export function formatCatalog(
 		.sort((a, b) => addressOf(a[0]).localeCompare(addressOf(b[0])))
 		.map(([tableId, b]) => {
 			const lines: string[] = [`Table ${addressOf(tableId)}:`];
-			if (b.safe.length)
+			if (b.dimensions.length)
 				lines.push(
-					`  grain-safe axes: ${[...b.safe]
-						.sort()
-						.map((n) => `"${n}"`)
-						.join(", ")}`,
-				);
-			if (b.unsafe.length)
-				lines.push(
-					`  NOT grain-safe (do NOT GROUP BY — fans out the grain): ${[
-						...b.unsafe,
-					]
+					`  dimensions: ${[...b.dimensions]
 						.sort()
 						.map((n) => `"${n}"`)
 						.join(", ")}`,
@@ -401,10 +390,10 @@ export function formatCatalog(
 
 	return (
 		"<dimensions>\n" +
-		"Catalogued analysis axes per table. GROUP BY ONLY grain-safe axes — grouping " +
-		"by a non-grain-safe column fans out the fact grain and the query is refused. " +
-		"For an alias group, group by the canonical column; drill down along a " +
-		"hierarchy's listed order.\n\n" +
+		"The workspace's natural analysis dimensions per table, and how they relate. " +
+		"For an alias group, group by the canonical column (don't double-count the " +
+		"same axis); to answer at a coarser level, roll a drill-down chain up along " +
+		"its listed order.\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</dimensions>"
 	);
@@ -422,7 +411,6 @@ export async function buildCatalogBlock(): Promise<string> {
 			.select({
 				tableId: currentSliceDefinitions.tableId,
 				columnName: currentSliceDefinitions.columnName,
-				grainSafe: currentSliceDefinitions.grainSafe,
 			})
 			.from(currentSliceDefinitions),
 		metadataDb
@@ -459,7 +447,6 @@ export async function buildCatalogBlock(): Promise<string> {
 			.map((a) => ({
 				tableId: a.tableId as string,
 				columnName: a.columnName as string,
-				grainSafe: a.grainSafe ?? false,
 			})),
 		hierarchyRows
 			.filter((h) => h.tableId)

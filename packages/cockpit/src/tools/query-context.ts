@@ -39,6 +39,7 @@ import {
 } from "../db/metadata/schema";
 import { getLakeConnection, LAKE_ALIAS } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
+import { type DriverRanking, lookDrivers } from "./look-drivers";
 
 /** The clean, analysis-ready layer a question is answered over. */
 const TYPED_LAYER = "typed";
@@ -460,4 +461,118 @@ export async function buildCatalogBlock(): Promise<string> {
 			})),
 		tableAddressById,
 	);
+}
+
+// --- Driver rankings (DAT-548) ---------------------------------------------------
+//
+// The pre-computed driver rankings (DAT-545) tell the answer sub-agent which
+// dimensions most explain each measure's variation — context that turns a "why did X
+// change" / "X by ?" question from a guessed GROUP BY into a grounded one. Same read +
+// projection as the look_drivers tool (DAT-546), so the injected context and an
+// explicit look_drivers call never drift. Informational (inform-don't-block): the
+// agent still authors the SQL. Empty (no promoted begin_session run, or no measures
+// with a significant driver) → a one-line note.
+
+/** Cap the per-measure slice list so the block stays a hint, not a data dump. */
+const MAX_SLICES_PER_MEASURE = 3;
+/** Cap other-grain drivers too — bounds the block on a workspace with many
+ * identity columns (the engine doesn't cap secondary families before persisting). */
+const MAX_SECONDARY_PER_MEASURE = 5;
+
+/** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
+function grainLabel(grain: string, entity: string | null): string {
+	if (grain === "row") return "row-level";
+	return entity ? `within ${entity}` : grain;
+}
+
+/**
+ * Format the driver rankings as the sub-agent's `<drivers>` block (pure). One stanza
+ * per measure that has a significant driver (input order preserved — the view yields
+ * one row per measure column): the ranked dimensions (gain, strongest first), the
+ * surviving drill paths, a few sharp slices, and any other-grain (secondary) drivers
+ * kept labeled with their own grain. Measures with no driver are dropped; an entirely
+ * empty set → a one-line note.
+ */
+export function formatDrivers(rankings: DriverRanking[]): string {
+	const withDrivers = rankings.filter(
+		(r) => r.ranked_dimensions.length > 0 || r.driver_paths.length > 0,
+	);
+	if (withDrivers.length === 0) {
+		return "<drivers>\n(No driver rankings yet.)\n</drivers>";
+	}
+
+	const g = (n: number) => n.toFixed(2);
+	const stanzas = withDrivers.map((r) => {
+		const lines: string[] = [
+			`Measure "${r.measure}" (${r.target_type}, ${grainLabel(r.grain, r.entity)}, n=${r.n_rows}):`,
+		];
+		if (r.ranked_dimensions.length)
+			lines.push(
+				`  top drivers: ${r.ranked_dimensions
+					.map((d) => `"${d.dimension}" (${g(d.gain)})`)
+					.join(", ")}`,
+			);
+		const paths = r.driver_paths.filter((p) => p.length > 0);
+		if (paths.length)
+			lines.push(
+				`  drill paths: ${paths
+					.map((p) => p.map((n) => `"${n}"`).join(" → "))
+					.join("; ")}`,
+			);
+		const slices = r.interesting_slices.slice(0, MAX_SLICES_PER_MEASURE);
+		if (slices.length)
+			lines.push(
+				`  notable slices: ${slices
+					.map(
+						(s) =>
+							`"${s.dimension}"=${s.value} (effect ${g(s.effect)}, support ${s.support})`,
+					)
+					.join(", ")}`,
+			);
+		if (r.secondary_dimensions.length)
+			lines.push(
+				`  other-grain drivers: ${r.secondary_dimensions
+					.slice(0, MAX_SECONDARY_PER_MEASURE)
+					.map(
+						(s) =>
+							`"${s.dimension}" (${grainLabel(s.grain, s.entity)}, ${g(s.gain)})`,
+					)
+					.join(", ")}`,
+			);
+		return lines.join("\n");
+	});
+
+	return (
+		"<drivers>\n" +
+		"Pre-computed driver rankings — which dimensions most explain each measure's " +
+		'variation (from the begin_session analysis). For a "why did X change / what ' +
+		'drives X" question, lean on these; for an open "X by ?" breakdown, the ' +
+		"top-ranked dimension is the sensible default. A drill path is an ordered way to " +
+		"decompose a measure (group by its columns coarse→fine). Other-grain drivers " +
+		"hold at a different unit (e.g. within an identity) — don't compare their gains " +
+		"to the primary list. Informational — you still author the SQL.\n\n" +
+		`${stanzas.join("\n\n")}\n` +
+		"</drivers>"
+	);
+}
+
+/**
+ * Read the workspace's promoted driver rankings and format them as the sub-agent's
+ * `<drivers>` block. Reuses look_drivers' read + projection (DAT-546) — the view
+ * already resolves to the promoted begin_session catalog head — so the injected
+ * context and an explicit look_drivers call never drift.
+ */
+export async function buildDriversBlock(): Promise<string> {
+	// Soft-fail: driver grounding is degradable context (the agent still writes valid
+	// SQL without it), so a metadata read failure must not fail the whole answer —
+	// honor inform-don't-block. Mirrors describeEnrichedViews' fallback above.
+	try {
+		const { rankings } = await lookDrivers({});
+		return formatDrivers(rankings);
+	} catch (err) {
+		console.warn(
+			`[cockpit] buildDriversBlock failed — omitting drivers context: ${err}`,
+		);
+		return "<drivers>\n(No driver rankings yet.)\n</drivers>";
+	}
 }

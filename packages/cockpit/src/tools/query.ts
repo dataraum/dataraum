@@ -51,7 +51,11 @@ import { getQueryInstructions } from "../prompts";
 import { asAgentError, withAgentError } from "./agent-error";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
-import { buildCatalogBlock, buildSchemaBlock } from "./query-context";
+import {
+	buildCatalogBlock,
+	buildDriversBlock,
+	buildSchemaBlock,
+} from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
 
 // The three readiness bands the engine emits, worst-first ranked.
@@ -457,15 +461,21 @@ export async function querySubAgent(
 	question: string,
 	signal?: AbortSignal,
 ): Promise<AnswerResult> {
-	const [schemaBlock, catalogBlock, vocabularyBlock, nearUniqueColumns] =
-		await Promise.all([
-			buildSchemaBlock(),
-			buildCatalogBlock(),
-			buildVocabularyBlock(),
-			loadNearUniqueColumns(),
-		]);
+	const [
+		schemaBlock,
+		catalogBlock,
+		driversBlock,
+		vocabularyBlock,
+		nearUniqueColumns,
+	] = await Promise.all([
+		buildSchemaBlock(),
+		buildCatalogBlock(),
+		buildDriversBlock(),
+		buildVocabularyBlock(),
+		loadNearUniqueColumns(),
+	]);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${vocabularyBlock}`;
+	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
 	// validation here, so it's isolated across concurrent answer calls.

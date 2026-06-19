@@ -10,10 +10,12 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
+import type { DriverRanking } from "./look-drivers";
 import {
 	type CatalogAxisRow,
 	type CatalogHierarchyRow,
 	formatCatalog,
+	formatDrivers,
 	formatSchema,
 	preferEnriched,
 	type SchemaColumnRow,
@@ -241,5 +243,105 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 			new Map(),
 		);
 		expect(block).toContain("Table orphan:");
+	});
+});
+
+// --- formatDrivers (DAT-548): the <drivers> block projection ---------------------
+
+const ranking = (over: Partial<DriverRanking> = {}): DriverRanking => ({
+	measure: "revenue",
+	target_type: "flow",
+	grain: "row",
+	entity: null,
+	n_rows: 12000,
+	ranked_dimensions: [
+		{ dimension: "region", gain: 0.421 },
+		{ dimension: "channel", gain: 0.18 },
+	],
+	driver_paths: [["region", "channel"], ["segment"]],
+	interesting_slices: [
+		{ dimension: "region", value: "EMEA", effect: 0.3, support: 1200 },
+	],
+	secondary_dimensions: [],
+	...over,
+});
+
+describe("formatDrivers", () => {
+	it("renders a row-grain stanza with top drivers (gain) + drill paths", () => {
+		const block = formatDrivers([ranking()]);
+		expect(block).toContain("<drivers>");
+		expect(block).toContain('Measure "revenue" (flow, row-level, n=12000):');
+		// Gain rounded to 2dp, strongest first.
+		expect(block).toContain('top drivers: "region" (0.42), "channel" (0.18)');
+		// Multi-col path joined coarse→fine; single-col path kept.
+		expect(block).toContain('drill paths: "region" → "channel"; "segment"');
+		expect(block).toContain(
+			'notable slices: "region"=EMEA (effect 0.30, support 1200)',
+		);
+	});
+
+	it("labels an entity grain as 'within <identity>' and keeps secondary drivers separate", () => {
+		const block = formatDrivers([
+			ranking({
+				measure: "ltv",
+				grain: "entity",
+				entity: "customer_id",
+				secondary_dimensions: [
+					{
+						dimension: "tenure",
+						gain: 0.22,
+						grain: "entity",
+						entity: "customer_id",
+					},
+				],
+			}),
+		]);
+		expect(block).toContain(
+			'Measure "ltv" (flow, within customer_id, n=12000):',
+		);
+		expect(block).toContain(
+			'other-grain drivers: "tenure" (within customer_id, 0.22)',
+		);
+	});
+
+	it("caps the slice list to keep the block a hint, not a dump", () => {
+		const slices = Array.from({ length: 6 }, (_, i) => ({
+			dimension: "region",
+			value: `R${i}`,
+			effect: 0.1,
+			support: 10,
+		}));
+		const block = formatDrivers([ranking({ interesting_slices: slices })]);
+		expect(block).toContain('"region"=R0');
+		expect(block).toContain('"region"=R2');
+		// 4th+ slice dropped (MAX_SLICES_PER_MEASURE = 3).
+		expect(block).not.toContain('"region"=R3');
+	});
+
+	it("drops a measure with no significant driver; all-empty → a note", () => {
+		const block = formatDrivers([
+			ranking({ measure: "kept" }),
+			// barren keeps the base fixture's slice but has no ranked dims/paths —
+			// still dropped (the filter gates on a driver, not on slices).
+			ranking({
+				measure: "barren",
+				ranked_dimensions: [],
+				driver_paths: [],
+			}),
+		]);
+		expect(block).toContain('Measure "kept"');
+		expect(block).not.toContain("barren");
+
+		const empty = formatDrivers([
+			ranking({ ranked_dimensions: [], driver_paths: [] }),
+		]);
+		expect(empty).toContain("No driver rankings yet");
+		expect(empty).toContain("<drivers>");
+	});
+
+	it("carries the inform-don't-block usage guidance", () => {
+		const block = formatDrivers([ranking()]);
+		expect(block).toContain("you still author the SQL");
+		expect(block).toContain("top-ranked dimension is the sensible default");
 	});
 });

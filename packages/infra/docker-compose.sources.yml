@@ -1,0 +1,101 @@
+# Sample external source backends for exercising connect/probe (DAT-589, epic DAT-574).
+#
+# OPT-IN and SEPARATE from the core stack (docker-compose.yml): bring these up only
+# when you want a real database source to connect/probe/ingest, so the platform stays
+# backend-neutral and `make up` stays fast. MS SQL is the FIRST sample backend, NOT a
+# privileged one — the engine/cockpit address sources generically (credentials by
+# name, ATTACH by TYPE; backends = mssql/postgres/mysql/sqlite). A mysql /
+# foreign-postgres / sqlite source slots in here symmetrically: its own service, its
+# own profile, its own DATARAUM_<NAME>_URL. This file is the menu; WWI is the first dish.
+#
+# Bring up MS SQL + Wide World Importers alongside the core stack:
+#   docker compose -f packages/infra/docker-compose.yml \
+#                  -f packages/infra/docker-compose.sources.yml \
+#                  --profile mssql up -d --wait
+#
+# Then point the cockpit at it (host dev, `bun --bun run dev`) by setting in the
+# cockpit .env:
+#   DATARAUM_WWI_URL=Server=localhost,1433;Database=WideWorldImporters;UID=sa;PWD=Dataraum!Dev1;TrustServerCertificate=true
+# An in-container cockpit would use Server=mssql,1433 instead.
+#
+# Apple Silicon: SQL Server images are amd64-only — `platform: linux/amd64` runs them
+# under Rosetta (verified on SQL Server 2025). The self-signed cert is why the
+# connection string needs `TrustServerCertificate=true`.
+
+services:
+  # SQL Server 2025 — a sample MS SQL source. Profile-gated so a default `up` (even
+  # with this file merged) never starts it.
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    platform: linux/amd64
+    profiles: ["mssql"]
+    environment:
+      ACCEPT_EULA: "Y"
+      # Local-dev default, committed like POSTGRES_PASSWORD. Complexity-checked by
+      # SQL Server (8+ chars, upper/lower/digit/symbol). Override in .env.
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Dataraum!Dev1}
+      MSSQL_PID: Developer
+    ports:
+      # Bound 0.0.0.0 (no 127.0.0.1 prefix — compose-ports gotcha) so the host
+      # cockpit reaches it on localhost:1433.
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+      # Nested mount for the .bak the fetch one-shot downloads + the restore reads.
+      - mssql_backup:/var/opt/mssql/backup
+    healthcheck:
+      # The port opens BEFORE logins are ready, so probe a real login. sqlcmd ships
+      # at /opt/mssql-tools18/bin in the 2025 image; -C trusts the self-signed cert.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 30
+
+  # One-shot: download the Wide World Importers backup into the shared volume,
+  # idempotent (skipped if already present). Native arm64 alpine (busybox wget) —
+  # no platform pin, so the heavy download isn't emulated.
+  mssql-wwi-fetch:
+    image: alpine:3
+    profiles: ["mssql"]
+    restart: on-failure:3
+    volumes:
+      - mssql_backup:/var/opt/mssql/backup
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        BAK=/var/opt/mssql/backup/WideWorldImporters-Full.bak
+        if [ -s "$$BAK" ]; then echo "WWI backup already present ($$(wc -c < "$$BAK") bytes)"; exit 0; fi
+        echo "Downloading Wide World Importers backup…"
+        wget -q -O "$$BAK" https://github.com/Microsoft/sql-server-samples/releases/download/wide-world-importers-v1.0/WideWorldImporters-Full.bak
+        echo "Downloaded $$(wc -c < "$$BAK") bytes"
+
+  # One-shot: restore WWI once SQL Server accepts logins AND the .bak is present.
+  # Reuses the server image (sqlcmd guaranteed, already pulled) with the entrypoint
+  # overridden so it runs the restore script instead of starting a second server.
+  mssql-wwi-restore:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    platform: linux/amd64
+    profiles: ["mssql"]
+    restart: on-failure:5
+    depends_on:
+      mssql:
+        condition: service_healthy
+      mssql-wwi-fetch:
+        condition: service_completed_successfully
+    environment:
+      MSSQL_HOST: mssql
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Dataraum!Dev1}
+    volumes:
+      - ./scripts:/scripts:ro
+      - mssql_backup:/var/opt/mssql/backup:ro
+    entrypoint: ["/bin/bash"]
+    command: /scripts/restore-wwi.sh
+
+volumes:
+  # Persisted so subsequent `up`s skip the boot-restore (and re-download); `down -v`
+  # wipes them for a clean slate, same as the core stack's postgres_data.
+  mssql_data:
+  mssql_backup:

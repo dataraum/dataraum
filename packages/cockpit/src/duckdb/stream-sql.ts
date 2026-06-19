@@ -96,6 +96,37 @@ export function buildGridQuery(sql: string, sort?: GridSort | null): string {
 	return `${base} ORDER BY ${quoteIdentifier(sort.column)} ${dir}`;
 }
 
+/**
+ * Validate an optional grid `sort` field off a request body. Shared by every grid
+ * stream route (`/api/run-sql`, `/api/probe-sql`): returns the sort, `null` when
+ * absent, or an `{ error }` the route turns into a 400. Bounds the column-name
+ * length so a validated field can't balloon the SQL handed to DuckDB.
+ */
+export function parseSort(
+	raw: unknown,
+): { sort: GridSort | null } | { error: string } {
+	if (raw === undefined || raw === null) return { sort: null };
+	// `typeof [] === "object"`, so reject arrays explicitly — otherwise a JSON
+	// array falls through to the column check and yields a misleading error.
+	if (typeof raw !== "object" || Array.isArray(raw))
+		return { error: "Field 'sort' must be an object." };
+	const { column, dir } = raw as { column?: unknown; dir?: unknown };
+	if (
+		typeof column !== "string" ||
+		column.length === 0 ||
+		column.length > 256
+	) {
+		return {
+			error:
+				"Field 'sort.column' is required and must be a non-empty string (max 256 chars).",
+		};
+	}
+	if (dir !== "asc" && dir !== "desc") {
+		return { error: "Field 'sort.dir' must be 'asc' or 'desc'." };
+	}
+	return { sort: { column, dir } };
+}
+
 // --- Wire protocol (design §4) -----------------------------------------------
 
 /**

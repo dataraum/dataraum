@@ -16,6 +16,7 @@ import { Route as ApiUploadRouteImport } from './routes/api/upload'
 import { Route as ApiShippedMetricDagRouteImport } from './routes/api/shipped-metric-dag'
 import { Route as ApiRunningRunsRouteImport } from './routes/api/running-runs'
 import { Route as ApiRunSqlRouteImport } from './routes/api/run-sql'
+import { Route as ApiProbeSqlRouteImport } from './routes/api/probe-sql'
 import { Route as ApiChatStreamRouteImport } from './routes/api/chat-stream'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
@@ -61,6 +62,11 @@ const ApiRunningRunsRoute = ApiRunningRunsRouteImport.update({
 const ApiRunSqlRoute = ApiRunSqlRouteImport.update({
   id: '/api/run-sql',
   path: '/api/run-sql',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiProbeSqlRoute = ApiProbeSqlRouteImport.update({
+  id: '/api/probe-sql',
+  path: '/api/probe-sql',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChatStreamRoute = ApiChatStreamRouteImport.update({
@@ -136,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
@@ -156,6 +163,7 @@ export interface FileRoutesByTo {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
@@ -177,6 +185,7 @@ export interface FileRoutesById {
   '/api/awaiting-input': typeof ApiAwaitingInputRoute
   '/api/chat': typeof ApiChatRoute
   '/api/chat-stream': typeof ApiChatStreamRoute
+  '/api/probe-sql': typeof ApiProbeSqlRoute
   '/api/run-sql': typeof ApiRunSqlRoute
   '/api/running-runs': typeof ApiRunningRunsRoute
   '/api/shipped-metric-dag': typeof ApiShippedMetricDagRoute
@@ -199,6 +208,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
     | '/api/shipped-metric-dag'
@@ -219,6 +229,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
     | '/api/shipped-metric-dag'
@@ -239,6 +250,7 @@ export interface FileRouteTypes {
     | '/api/awaiting-input'
     | '/api/chat'
     | '/api/chat-stream'
+    | '/api/probe-sql'
     | '/api/run-sql'
     | '/api/running-runs'
     | '/api/shipped-metric-dag'
@@ -260,6 +272,7 @@ export interface RootRouteChildren {
   ApiAwaitingInputRoute: typeof ApiAwaitingInputRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiChatStreamRoute: typeof ApiChatStreamRoute
+  ApiProbeSqlRoute: typeof ApiProbeSqlRoute
   ApiRunSqlRoute: typeof ApiRunSqlRoute
   ApiRunningRunsRoute: typeof ApiRunningRunsRoute
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
@@ -316,6 +329,13 @@ declare module '@tanstack/react-router' {
       path: '/api/run-sql'
       fullPath: '/api/run-sql'
       preLoaderRoute: typeof ApiRunSqlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/probe-sql': {
+      id: '/api/probe-sql'
+      path: '/api/probe-sql'
+      fullPath: '/api/probe-sql'
+      preLoaderRoute: typeof ApiProbeSqlRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/chat-stream': {
@@ -464,6 +484,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAwaitingInputRoute: ApiAwaitingInputRoute,
   ApiChatRoute: ApiChatRoute,
   ApiChatStreamRoute: ApiChatStreamRoute,
+  ApiProbeSqlRoute: ApiProbeSqlRoute,
   ApiRunSqlRoute: ApiRunSqlRoute,
   ApiRunningRunsRoute: ApiRunningRunsRoute,
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
@@ -473,3 +494,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

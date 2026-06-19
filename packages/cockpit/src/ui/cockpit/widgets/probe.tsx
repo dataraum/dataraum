@@ -38,6 +38,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { Layers, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { getActiveVerticalStatus } from "#/server/active-vertical";
 import { getConfiguredDatabases } from "#/server/configured-databases";
 import { importSources } from "#/server/import-sources";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -180,6 +181,17 @@ function ProbePanel({
 	});
 	const list = useMemo(() => sources.data ?? [], [sources.data]);
 
+	// Is the workspace framed? Importing grounds against the vertical's concepts and
+	// fails loud if there are none, so the import set is gated on this (DAT-592
+	// follow-up). Probing (Run) stays open — read-only exploration is how you decide
+	// the frame. `framed` only when CONFIRMED true (loading/error → gated, safe).
+	const frameStatus = useQuery({
+		queryKey: ["active-vertical-status"],
+		queryFn: () => getActiveVerticalStatus(),
+	});
+	const framed = frameStatus.data?.framed === true;
+	const unframed = frameStatus.isSuccess && !framed;
+
 	// Seed from the canvas state (agent-generate): a projected source + sql preload
 	// the picker + editor as INITIAL values; the user then edits freely.
 	const [selected, setSelected] = useState<string | null>(
@@ -217,7 +229,9 @@ function ProbePanel({
 	// a valid edit, not a duplicate. So the gate ALLOWS it; only the button label
 	// flips to "Update" so the action is unambiguous.
 	const nameStaged = importSet.some((s) => s.source_name === importAs);
-	const canAdd = selectedSource !== null && hasSql && nameValid;
+	// `framed` is the load-bearing gate (DAT-592 follow-up): no business model →
+	// the import would die at grounding, so staging is blocked until one exists.
+	const canAdd = selectedSource !== null && hasSql && nameValid && framed;
 
 	const add = () => {
 		if (!selectedSource || !hasSql || !nameValid) return;
@@ -268,6 +282,18 @@ function ProbePanel({
 				no data is imported until you add a query to the import set.
 				⌘/Ctrl+Enter to run.
 			</Text>
+
+			{unframed && (
+				<Alert color="yellow" data-testid="probe-unframed">
+					No business model yet — the workspace vertical{" "}
+					<Text span ff="monospace" size="xs">
+						{frameStatus.data?.vertical}
+					</Text>{" "}
+					has no concepts, so an imported source has nothing to ground against.
+					Frame a vertical (or pick one) in the chat before importing — probing
+					here still works.
+				</Alert>
+			)}
 
 			<Select
 				data-testid="probe-source-select"
@@ -394,7 +420,7 @@ function ProbePanel({
 					<Group justify="flex-end">
 						<Button
 							size="xs"
-							disabled={importSet.length === 0}
+							disabled={importSet.length === 0 || !framed}
 							loading={pending}
 							onClick={() => {
 								onImport();

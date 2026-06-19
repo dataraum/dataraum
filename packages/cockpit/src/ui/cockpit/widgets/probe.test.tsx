@@ -17,11 +17,15 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getConfiguredDatabasesMock = vi.fn();
 vi.mock("#/server/configured-databases", () => ({
 	getConfiguredDatabases: () => getConfiguredDatabasesMock(),
+}));
+const getActiveVerticalStatusMock = vi.fn();
+vi.mock("#/server/active-vertical", () => ({
+	getActiveVerticalStatus: () => getActiveVerticalStatusMock(),
 }));
 const importSourcesMock = vi.fn();
 vi.mock("#/server/import-sources", () => ({
@@ -96,6 +100,15 @@ const seededState: Extract<CanvasState, { kind: "probe" }> = {
 	source: { name: "wwi", backend: "mssql" },
 	sql: "SELECT * FROM Sales.Orders",
 };
+
+// Default: a framed workspace, so the import-set gate is open. Tests that exercise
+// the unframed gate override this. (afterEach clears mocks; this re-seeds the default.)
+beforeEach(() => {
+	getActiveVerticalStatusMock.mockResolvedValue({
+		vertical: "retail",
+		framed: true,
+	});
+});
 
 describe("ProbeWidget (DAT-576)", () => {
 	afterEach(() => {
@@ -175,6 +188,25 @@ describe("ProbeWidget import set (DAT-592)", () => {
 			target: { value: "wwi_orders" },
 		});
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
+	});
+
+	it("blocks Add when the workspace is unframed (no business model)", async () => {
+		getConfiguredDatabasesMock.mockResolvedValue([
+			{ name: "wwi", backend: "mssql" },
+		]);
+		getActiveVerticalStatusMock.mockResolvedValue({
+			vertical: "_adhoc",
+			framed: false,
+		});
+		renderProbe(seededState);
+		// The unframed banner shows; Add stays disabled even with a valid name + sql.
+		await waitFor(() =>
+			expect(screen.getByTestId("probe-unframed")).toBeTruthy(),
+		);
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		expect(addBtn().disabled).toBe(true);
 	});
 
 	it("stages a query, imports the set, and shows progress", async () => {

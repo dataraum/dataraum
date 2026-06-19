@@ -17,11 +17,15 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getConfiguredDatabasesMock = vi.fn();
 vi.mock("#/server/configured-databases", () => ({
 	getConfiguredDatabases: () => getConfiguredDatabasesMock(),
+}));
+const getActiveVerticalStatusMock = vi.fn();
+vi.mock("#/server/active-vertical", () => ({
+	getActiveVerticalStatus: () => getActiveVerticalStatusMock(),
 }));
 const importSourcesMock = vi.fn();
 vi.mock("#/server/import-sources", () => ({
@@ -96,6 +100,15 @@ const seededState: Extract<CanvasState, { kind: "probe" }> = {
 	source: { name: "wwi", backend: "mssql" },
 	sql: "SELECT * FROM Sales.Orders",
 };
+
+// Default: a framed workspace, so the import-set gate is open. Tests that exercise
+// the unframed gate override this per-test (a later mockResolvedValue wins).
+beforeEach(() => {
+	getActiveVerticalStatusMock.mockResolvedValue({
+		vertical: "retail",
+		framed: true,
+	});
+});
 
 describe("ProbeWidget (DAT-576)", () => {
 	afterEach(() => {
@@ -177,6 +190,25 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 	});
 
+	it("blocks Add when the workspace is unframed (no business model)", async () => {
+		getConfiguredDatabasesMock.mockResolvedValue([
+			{ name: "wwi", backend: "mssql" },
+		]);
+		getActiveVerticalStatusMock.mockResolvedValue({
+			vertical: "_adhoc",
+			framed: false,
+		});
+		renderProbe(seededState);
+		// The unframed banner shows; Add stays disabled even with a valid name + sql.
+		await waitFor(() =>
+			expect(screen.getByTestId("probe-unframed")).toBeTruthy(),
+		);
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		expect(addBtn().disabled).toBe(true);
+	});
+
 	it("stages a query, imports the set, and shows progress", async () => {
 		getConfiguredDatabasesMock.mockResolvedValue([
 			{ name: "wwi", backend: "mssql" },
@@ -196,7 +228,10 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 		fireEvent.click(addBtn());
 
-		// The staged query shows in the import-set panel.
+		// The set lives behind a count symbol; open the modal to see it.
+		const indicator = await screen.findByTestId("probe-import-indicator");
+		expect(indicator.textContent).toContain("1");
+		fireEvent.click(indicator);
 		const setPanel = await screen.findByTestId("probe-import-set");
 		expect(setPanel.textContent).toContain("wwi_orders");
 
@@ -209,6 +244,7 @@ describe("ProbeWidget import set (DAT-592)", () => {
 				sources: [
 					{
 						source_name: "wwi_orders",
+						credential_source: "wwi",
 						backend: "mssql",
 						sql: "SELECT * FROM Sales.Orders",
 					},
@@ -224,7 +260,7 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		expect(
 			screen.getByTestId("measure-progress").getAttribute("data-workflow"),
 		).toBe("addsource-ws");
-		expect(screen.queryByTestId("probe-import-set")).toBeNull();
+		expect(screen.queryByTestId("probe-import-indicator")).toBeNull();
 	});
 
 	it("re-adding a staged name updates its SQL rather than duplicating", async () => {
@@ -252,8 +288,11 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		expect(addBtn().disabled).toBe(false);
 		fireEvent.click(addBtn());
 
-		// One entry, updated SQL — not a duplicate.
-		const setPanel = screen.getByTestId("probe-import-set");
+		// Still one staged source (the symbol reads 1); open the modal to verify SQL.
+		const indicator = screen.getByTestId("probe-import-indicator");
+		expect(indicator.textContent).toContain("1");
+		fireEvent.click(indicator);
+		const setPanel = await screen.findByTestId("probe-import-set");
 		expect(setPanel.textContent).toContain("SELECT 99 AS x");
 		expect(setPanel.textContent).not.toContain("SELECT * FROM Sales.Orders");
 		expect(screen.getAllByText("wwi_orders")).toHaveLength(1);
@@ -272,12 +311,13 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		});
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 		fireEvent.click(addBtn());
-		fireEvent.click(screen.getByTestId("probe-import-run"));
+		fireEvent.click(await screen.findByTestId("probe-import-indicator"));
+		fireEvent.click(await screen.findByTestId("probe-import-run"));
 
-		// The error surfaces and the set is NOT cleared — the user can retry.
+		// The error surfaces and the set is NOT cleared — the symbol persists for retry.
 		const err = await screen.findByTestId("probe-import-error");
 		expect(err.textContent).toContain("Temporal not configured");
-		expect(screen.getByTestId("probe-import-set")).toBeTruthy();
+		expect(screen.getByTestId("probe-import-indicator")).toBeTruthy();
 		expect(screen.queryByTestId("probe-import-progress")).toBeNull();
 	});
 });

@@ -242,4 +242,17 @@ describe("recipeContentHash (DAT-430)", () => {
 		const h = recipeContentHash("mssql", tables);
 		expect(recipeContentHash("postgres", tables)).not.toBe(h);
 	});
+
+	it("folds credentialSource into the identity when present, leaving the table-pick hash byte-identical (DAT-592)", () => {
+		// A query-source reads through a named connection: same SQL, different
+		// connection = a different recipe, so re-pointing it must NOT match the
+		// witness (else a presence-skip over stale raw tables).
+		const withWwi = recipeContentHash("mssql", tables, "wwi");
+		expect(withWwi).toMatch(/^[0-9a-f]{64}$/);
+		expect(recipeContentHash("mssql", tables, "staging")).not.toBe(withWwi);
+		// The table-pick path (no credentialSource arg) keeps the OLD canonical
+		// {backend, tables} hash — existing import witnesses stay valid, and it is
+		// distinct from any credential-qualified hash.
+		expect(recipeContentHash("mssql", tables)).not.toBe(withWwi);
+	});
 });

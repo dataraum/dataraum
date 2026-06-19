@@ -110,6 +110,44 @@ class TestImportDispatch:
         assert result.status == PhaseStatus.FAILED
         assert "backend" in (result.error or "").lower()
 
+    def test_db_recipe_resolves_credentials_by_credential_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A db_recipe source reads through ``credential_source``, NOT its own name
+        (DAT-592): a probed query imported as ``wwi_recent_orders`` resolves the
+        ``wwi`` connection's ``DATARAUM_WWI_URL`` — never
+        ``DATARAUM_WWI_RECENT_ORDERS_URL``. Both env keys are unset here, so the
+        lookup fails; the message must name the CONNECTION's key, proving
+        ``credential_source`` (not the source name) is the resolution key."""
+        monkeypatch.delenv("DATARAUM_WWI_URL", raising=False)
+        monkeypatch.delenv("DATARAUM_WWI_RECENT_ORDERS_URL", raising=False)
+        phase = ImportPhase()
+        session = MagicMock()
+        session.get.return_value = MagicMock()  # Source row present
+        # No existing raw tables for this source (the re-import guard reads []).
+        session.execute.return_value.scalars.return_value.all.return_value = []
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=MagicMock(),
+            config={
+                "source_id": "test-source",
+                "source_name": "wwi_recent_orders",
+                "source_type": "db_recipe",
+                "source_connection_config": {
+                    "tables": [{"name": "t", "sql": "SELECT 1"}],
+                    "recipe_hash": "abc",
+                    "credential_source": "wwi",
+                },
+                "source_backend": "mssql",
+            },
+        )
+        result = phase._run(ctx)
+        assert result.status == PhaseStatus.FAILED
+        err = result.error or ""
+        assert "DATARAUM_WWI_URL" in err
+        assert "DATARAUM_WWI_RECENT_ORDERS_URL" not in err
+        assert "connection 'wwi'" in err
+
 
 class TestSuffixDispatch:
     """File-source loader selection is driven by the URI suffix alone (DAT-389).

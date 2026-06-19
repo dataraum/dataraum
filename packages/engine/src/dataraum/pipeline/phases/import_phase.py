@@ -411,12 +411,27 @@ class ImportPhase(BasePhase):
                 )
             queries.append(RecipeTable(name=q["name"], sql=q["sql"]))
 
+        # The CONNECTION a db_recipe source reads from is decoupled from the
+        # source's own NAME (DAT-592). A probed query imported as a new source
+        # (`wwi_recent_orders`) still reads through the configured connection it was
+        # probed against (`wwi`): `connection_config.credential_source` names that
+        # connection. Absent it, a source IS its own credential — the table-pick
+        # model, where the source name equals the `DATARAUM_{NAME}_URL` key. Only
+        # the CREDENTIAL lookup uses this; the raw-table prefix below stays the
+        # source's own name, so two query-sources off one DB never collide.
+        cred_ref = connection_config.get("credential_source")
+        credential_source = cred_ref if isinstance(cred_ref, str) and cred_ref else source_name
         chain = CredentialChain()
-        credential = chain.resolve(source_name)
+        credential = chain.resolve(credential_source)
         if credential is None:
+            named = (
+                f"'{source_name}'"
+                if credential_source == source_name
+                else f"'{source_name}' (connection '{credential_source}')"
+            )
             return PhaseResult.failed(
-                f"No credentials found for database source '{source_name}'. "
-                f"Set DATARAUM_{source_name.upper()}_URL in the environment "
+                f"No credentials found for database source {named}. "
+                f"Set DATARAUM_{credential_source.upper()}_URL in the environment "
                 "(via .env or the docker-compose environment)."
             )
 

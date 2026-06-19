@@ -107,6 +107,12 @@ async function openConnection(): Promise<DuckDBConnection> {
 export function getLakeConnection(): Promise<DuckDBConnection> {
 	if (!connectionPromise) {
 		connectionPromise = openConnection().catch((err) => {
+			// Surface WHY the lake is unreachable (catalog down, S3 creds, bad
+			// DATA_PATH) — otherwise it only ever reaches the agent as an opaque
+			// run_steps { error } string with no server trace.
+			console.error(
+				`[lake] ATTACH/connection failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
 			// Clear the memo so a transient failure (catalog briefly unreachable)
 			// doesn't wedge the process into a permanently-rejected state.
 			connectionPromise = null;

@@ -319,7 +319,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 	});
 
 	it.each([
-		"probe",
+		// probe is NO LONGER here — it now seeds the editable probe canvas (DAT-576).
 		"teach",
 	])("renders %s as a display-only chip (no rehydrate target)", (name) => {
 		h.messages = [

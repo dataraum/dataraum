@@ -28,6 +28,7 @@ import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
+import { openProbeTool } from "./open-probe";
 import { operatingModelTool } from "./operating-model";
 import { probeTool } from "./probe";
 import { answerTool } from "./query";
@@ -81,6 +82,7 @@ export const toolsByKind = {
 		listVerticalsTool,
 		connectTool,
 		probeTool,
+		openProbeTool,
 		useVerticalTool,
 		frameTool,
 		selectTool,

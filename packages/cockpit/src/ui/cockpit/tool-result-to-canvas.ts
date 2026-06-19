@@ -315,6 +315,34 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 	// The `upload` UI tool carries no data — it just opens the upload area so the
 	// user can drop local files.
 	upload: () => ({ kind: "upload-area" }),
+	// The `open_probe` UI tool carries no data — it opens an EMPTY editable probe
+	// panel for the user to pick a source + write SQL.
+	open_probe: () => ({ kind: "probe" }),
+	// The agent's `probe` ran a sample for ITS context; the human grid re-streams the
+	// FULL result. Like run_sql, the query is in the CALL INPUT (source + sql), not the
+	// result — so it SEEDS the editable panel (probe is OUT of CHIP_ONLY now): the user
+	// sees the agent's query, can edit it, and re-runs it as a stream. An errored probe
+	// (`{ error }`) or a call missing source/sql leaves the canvas unchanged.
+	probe: (result, input) => {
+		if (isAgentError(result)) return null;
+		const args = (input ?? {}) as {
+			source_name?: unknown;
+			backend?: unknown;
+			sql?: unknown;
+		};
+		if (typeof args.sql !== "string" || args.sql.length === 0) return null;
+		if (
+			typeof args.source_name !== "string" ||
+			typeof args.backend !== "string"
+		) {
+			return null;
+		}
+		return {
+			kind: "probe",
+			source: { name: args.source_name, backend: args.backend },
+			sql: args.sql,
+		};
+	},
 };
 
 /**
@@ -336,7 +364,6 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
 export const CHIP_ONLY: ReadonlySet<string> = new Set([
 	"list_verticals", // catalogue → chip summary, no widget
 	"use_vertical", // adopt = control-plane write, no renderable surface (DAT-523)
-	"probe", // quick data check, summarized in the chip
 	"look_drivers", // driver rankings → chip summary; a dedicated widget is a fast-follow (DAT-546)
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
 	"teach_validation",

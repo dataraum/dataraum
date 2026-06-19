@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.within_table import (
-    compute_numeric_correlations,
     detect_derived_columns,
 )
 from dataraum.storage import Column, Source, Table
@@ -105,22 +104,6 @@ def table_numeric(session: Session, test_source: Source):
     return table
 
 
-def test_compute_numeric_correlations(session, test_duckdb, table_numeric):
-    """Test numeric correlation detection."""
-    result = compute_numeric_correlations(table_numeric, test_duckdb, session, min_correlation=0.3)
-
-    assert result.success
-    correlations = result.unwrap()
-
-    # Should find correlation between col_a and col_c (r ≈ 1.0)
-    col_a_c = next(
-        (c for c in correlations if {c.column1_name, c.column2_name} == {"col_a", "col_c"}),
-        None,
-    )
-    assert col_a_c is not None
-    assert abs(col_a_c.pearson_r - 1.0) < 0.01  # Perfect correlation
-
-
 def test_detect_derived_columns(session, test_duckdb, table_numeric):
     """Test derived column detection."""
     result = detect_derived_columns(
@@ -143,44 +126,6 @@ def test_detect_derived_columns(session, test_duckdb, table_numeric):
     )
     assert col_d_sum is not None
     assert col_d_sum.match_rate > 0.99  # Near perfect match
-
-
-def test_no_correlations_with_insufficient_data(session, test_source):
-    """Test that analysis handles tables with insufficient data."""
-    conn = duckdb.connect(":memory:")
-    conn.execute("CREATE TABLE small_table (id INTEGER, val DOUBLE)")
-    conn.execute("INSERT INTO small_table VALUES (1, 1.0), (2, 2.0)")
-
-    table = Table(
-        table_id=str(uuid4()),
-        source_id=test_source.source_id,
-        table_name="small_table",
-        duckdb_path="small_table",
-        layer="typed",
-        row_count=2,
-        created_at=datetime.now(UTC),
-    )
-    session.add(table)
-
-    for i, (name, dtype) in enumerate([("id", "INTEGER"), ("val", "DOUBLE")]):
-        col = Column(
-            column_id=str(uuid4()),
-            table_id=table.table_id,
-            column_name=name,
-            column_position=i,
-            raw_type="VARCHAR",
-            resolved_type=dtype,
-        )
-        session.add(col)
-
-    session.commit()
-
-    result = compute_numeric_correlations(table, conn, session)
-    assert result.success
-    # Should return empty list (not enough data points)
-    assert len(result.unwrap()) == 0
-
-    conn.close()
 
 
 def test_zero_target_not_false_positive(session, test_source):
@@ -249,19 +194,3 @@ def test_zero_target_not_false_positive(session, test_source):
         f"formula={false_positive.formula}, match_rate={false_positive.match_rate}"
     )
     conn.close()
-
-
-def test_correlation_strength_classification(session, test_duckdb, table_numeric):
-    """Test that correlation strength is correctly classified."""
-    result = compute_numeric_correlations(table_numeric, test_duckdb, session, min_correlation=0.3)
-
-    assert result.success
-    correlations = result.unwrap()
-
-    # Find the perfect correlation (col_a <-> col_c)
-    perfect = next(
-        (c for c in correlations if abs(c.pearson_r or 0) > 0.99),
-        None,
-    )
-    assert perfect is not None
-    assert perfect.correlation_strength == "very_strong"

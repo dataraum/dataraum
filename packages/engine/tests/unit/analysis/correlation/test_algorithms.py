@@ -12,41 +12,6 @@ from dataraum.analysis.correlation.algorithms.categorical import (
 from dataraum.analysis.correlation.algorithms.multicollinearity import (
     compute_multicollinearity,
 )
-from dataraum.analysis.correlation.algorithms.numeric import (
-    _classify_strength as classify_numeric_strength,
-)
-from dataraum.analysis.correlation.algorithms.numeric import (
-    compute_pairwise_correlations,
-)
-
-
-class TestClassifyNumericStrength:
-    """Tests for numeric _classify_strength."""
-
-    def test_very_strong(self):
-        assert classify_numeric_strength(0.95) == "very_strong"
-        assert classify_numeric_strength(-0.95) == "very_strong"
-
-    def test_strong(self):
-        assert classify_numeric_strength(0.75) == "strong"
-        assert classify_numeric_strength(-0.75) == "strong"
-
-    def test_moderate(self):
-        assert classify_numeric_strength(0.55) == "moderate"
-
-    def test_weak(self):
-        assert classify_numeric_strength(0.35) == "weak"
-
-    def test_none(self):
-        assert classify_numeric_strength(0.1) == "none"
-        assert classify_numeric_strength(0.0) == "none"
-
-    def test_boundary_values(self):
-        assert classify_numeric_strength(0.9) == "very_strong"
-        assert classify_numeric_strength(0.7) == "strong"
-        assert classify_numeric_strength(0.5) == "moderate"
-        assert classify_numeric_strength(0.3) == "weak"
-        assert classify_numeric_strength(0.29) == "none"
 
 
 class TestClassifyCategoricalStrength:
@@ -69,95 +34,6 @@ class TestClassifyCategoricalStrength:
         assert classify_categorical_strength(0.3) == "moderate"
         assert classify_categorical_strength(0.1) == "weak"
         assert classify_categorical_strength(0.09) == "none"
-
-
-class TestComputePairwiseCorrelations:
-    """Tests for compute_pairwise_correlations."""
-
-    def test_perfect_positive_correlation(self):
-        rng = np.random.default_rng(42)
-        x = rng.normal(0, 1, 100)
-        data = np.column_stack([x, x * 2 + 1])  # y = 2x + 1
-
-        results = compute_pairwise_correlations(data, min_correlation=0.3)
-
-        assert len(results) == 1
-        assert abs(results[0].pearson_r - 1.0) < 0.01
-        assert results[0].is_significant
-
-    def test_no_correlation(self):
-        rng = np.random.default_rng(42)
-        data = rng.normal(0, 1, (100, 2))
-
-        results = compute_pairwise_correlations(data, min_correlation=0.3)
-
-        # Random data should have near-zero correlation, filtered by threshold
-        assert len(results) == 0
-
-    def test_filters_by_min_correlation(self):
-        rng = np.random.default_rng(42)
-        x = rng.normal(0, 1, 100)
-        y = x + rng.normal(0, 2, 100)  # Weak correlation
-        data = np.column_stack([x, y])
-
-        # With high threshold, weak correlation is filtered
-        results_high = compute_pairwise_correlations(data, min_correlation=0.9)
-        # With low threshold, it's included
-        results_low = compute_pairwise_correlations(data, min_correlation=0.1)
-
-        assert len(results_high) == 0
-        assert len(results_low) >= 1
-
-    def test_skips_constant_columns(self):
-        data = np.column_stack(
-            [
-                np.ones(100),  # constant
-                np.arange(100, dtype=float),
-            ]
-        )
-
-        results = compute_pairwise_correlations(data, min_correlation=0.0)
-        assert len(results) == 0
-
-    def test_skips_insufficient_samples(self):
-        data = np.column_stack(
-            [
-                np.array([1.0, 2.0, 3.0]),
-                np.array([4.0, 5.0, 6.0]),
-            ]
-        )
-
-        results = compute_pairwise_correlations(data, min_correlation=0.0, min_samples=10)
-        assert len(results) == 0
-
-    def test_handles_nan_values(self):
-        x = np.arange(50, dtype=float)
-        y = x * 2.0
-        # Add NaN values
-        x = np.concatenate([x, [np.nan] * 10])
-        y = np.concatenate([y, [np.nan] * 10])
-        data = np.column_stack([x, y])
-
-        results = compute_pairwise_correlations(data, min_correlation=0.3)
-
-        assert len(results) == 1
-        assert results[0].sample_size == 50
-
-    def test_multiple_columns(self):
-        rng = np.random.default_rng(42)
-        x = rng.normal(0, 1, 100)
-        data = np.column_stack(
-            [
-                x,
-                x * 2 + 1,  # perfect correlation with x
-                rng.normal(0, 1, 100),  # uncorrelated
-            ]
-        )
-
-        results = compute_pairwise_correlations(data, min_correlation=0.5)
-
-        # Should find correlation between col0 and col1
-        assert any(r.col1_idx == 0 and r.col2_idx == 1 for r in results)
 
 
 class TestComputeCramersV:

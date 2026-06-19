@@ -12,7 +12,6 @@ cross-table derivations) and falls back to typed tables otherwise.
 
 ### 1. Pydantic Models (`models.py`) - API/Domain Layer
 
-- `NumericCorrelation` - Pearson/Spearman correlations
 - `DerivedColumn` - Derived/computed columns
 - `CorrelationAnalysisResult` - Per-table analysis result
 
@@ -23,7 +22,6 @@ cross-table derivations) and falls back to typed tables otherwise.
 ### 3. Algorithms (`algorithms/`) - Pure Computation (Internal)
 
 Pure functions operating on numpy arrays:
-- `compute_pairwise_correlations()` - Pearson/Spearman
 - `compute_cramers_v()` - Chi-square based association
 - `compute_multicollinearity()` - VDP analysis
 

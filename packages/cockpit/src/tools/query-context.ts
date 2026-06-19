@@ -31,7 +31,9 @@ import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
+	currentDimensionHierarchies,
 	currentSemanticAnnotations,
+	currentSliceDefinitions,
 	sources,
 	tables,
 } from "../db/metadata/schema";
@@ -289,5 +291,186 @@ export async function buildSchemaBlock(): Promise<string> {
 			temporalBehavior: c.temporalBehavior ?? null,
 			temporalBehaviorContested: c.temporalBehaviorContested ?? null,
 		})),
+	);
+}
+
+// --- Dimension catalog (DAT-538) -------------------------------------------------
+//
+// The slice catalog (DAT-536 `current_slice_definitions`) + hierarchies (DAT-537
+// `current_dimension_hierarchies`) tell the answer sub-agent which columns are
+// catalogued ANALYSIS AXES and which are GRAIN-SAFE to GROUP BY. The deterministic
+// grain-safety guard (run_steps, DAT-538 P2) is the enforcement; this block is the
+// up-front context so the agent groups correctly in the first place. Axes are
+// surfaced by their column name (the enriched view exposes the same dim columns), so
+// the agent maps a "by region by month" question onto the grain-safe axes. Curation
+// (add/suppress an axis, fix a hierarchy) is a Stage-chat teach, not done here.
+
+/** One catalogued slice axis (a candidate GROUP BY dimension). */
+export interface CatalogAxisRow {
+	tableId: string;
+	columnName: string;
+	grainSafe: boolean;
+}
+
+/** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
+ * drill-down chain. `members` is the engine's JSON array of `{column_name}`. */
+export interface CatalogHierarchyRow {
+	tableId: string;
+	kind: string;
+	members: Array<{ column_name?: string | null }>;
+	canonicalLabel: string | null;
+}
+
+function hierarchyLine(h: CatalogHierarchyRow): string | null {
+	const names = h.members
+		.map((m) => m.column_name)
+		.filter((n): n is string => typeof n === "string" && n.length > 0);
+	if (names.length < 2) return null;
+	if (h.kind === "alias") {
+		const canonical = h.canonicalLabel ?? names[0];
+		const others = names.filter((n) => n !== canonical);
+		if (others.length === 0) return null;
+		return `  alias: "${canonical}" ≡ ${others.map((n) => `"${n}"`).join(", ")} (group by the canonical only)`;
+	}
+	// Drill-down / FD chain — members are ordered coarse→fine by the engine.
+	return `  drill-down: ${names.map((n) => `"${n}"`).join(" → ")}`;
+}
+
+/**
+ * Format the dimension catalog as the sub-agent's `<dimensions>` block (pure).
+ * Grouped by table (sorted by address), grain-safe axes first. Empty catalog → a
+ * one-line note. ``tableAddressById`` maps a catalog ``table_id`` to its
+ * ``lake.<layer>.<name>`` address (the same address the `<schema>` block uses).
+ */
+export function formatCatalog(
+	axisRows: CatalogAxisRow[],
+	hierarchyRows: CatalogHierarchyRow[],
+	tableAddressById: Map<string, string>,
+): string {
+	if (axisRows.length === 0) {
+		return "<dimensions>\n(No catalogued dimensions yet — group only by columns you can justify as grain-safe.)\n</dimensions>";
+	}
+
+	const byTable = new Map<
+		string,
+		{ safe: string[]; unsafe: string[]; hierarchies: string[] }
+	>();
+	const bucket = (tableId: string) => {
+		let b = byTable.get(tableId);
+		if (!b) {
+			b = { safe: [], unsafe: [], hierarchies: [] };
+			byTable.set(tableId, b);
+		}
+		return b;
+	};
+	for (const a of axisRows) {
+		(a.grainSafe ? bucket(a.tableId).safe : bucket(a.tableId).unsafe).push(
+			a.columnName,
+		);
+	}
+	for (const h of hierarchyRows) {
+		const line = hierarchyLine(h);
+		if (line) bucket(h.tableId).hierarchies.push(line);
+	}
+
+	const addressOf = (tableId: string) =>
+		tableAddressById.get(tableId) ?? tableId;
+	const tableBlocks = [...byTable.entries()]
+		.sort((a, b) => addressOf(a[0]).localeCompare(addressOf(b[0])))
+		.map(([tableId, b]) => {
+			const lines: string[] = [`Table ${addressOf(tableId)}:`];
+			if (b.safe.length)
+				lines.push(
+					`  grain-safe axes: ${[...b.safe]
+						.sort()
+						.map((n) => `"${n}"`)
+						.join(", ")}`,
+				);
+			if (b.unsafe.length)
+				lines.push(
+					`  NOT grain-safe (do NOT GROUP BY — fans out the grain): ${[
+						...b.unsafe,
+					]
+						.sort()
+						.map((n) => `"${n}"`)
+						.join(", ")}`,
+				);
+			lines.push(...b.hierarchies.sort());
+			return lines.join("\n");
+		});
+
+	return (
+		"<dimensions>\n" +
+		"Catalogued analysis axes per table. GROUP BY ONLY grain-safe axes — grouping " +
+		"by a non-grain-safe column fans out the fact grain and the query is refused. " +
+		"For an alias group, group by the canonical column; drill down along a " +
+		"hierarchy's listed order.\n\n" +
+		`${tableBlocks.join("\n\n")}\n` +
+		"</dimensions>"
+	);
+}
+
+/**
+ * Read the dimension catalog for the active workspace's promoted head and format it
+ * as the sub-agent's `<dimensions>` block. Addresses mirror the `<schema>` block:
+ * the catalog is keyed to the typed fact tables; their grain-safe axes also surface
+ * on any enriched view built from them (same column names).
+ */
+export async function buildCatalogBlock(): Promise<string> {
+	const [axisRows, hierarchyRows, tableRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: currentSliceDefinitions.tableId,
+				columnName: currentSliceDefinitions.columnName,
+				grainSafe: currentSliceDefinitions.grainSafe,
+			})
+			.from(currentSliceDefinitions),
+		metadataDb
+			.select({
+				tableId: currentDimensionHierarchies.tableId,
+				kind: currentDimensionHierarchies.kind,
+				members: currentDimensionHierarchies.members,
+				canonicalLabel: currentDimensionHierarchies.canonicalLabel,
+			})
+			.from(currentDimensionHierarchies),
+		metadataDb
+			.select({
+				tableId: tables.tableId,
+				physicalName: tables.tableName,
+				layer: tables.layer,
+			})
+			.from(tables)
+			.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
+			.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER))),
+	]);
+
+	const tableAddressById = new Map<string, string>(
+		tableRows
+			.filter((t) => t.tableId)
+			.map((t) => [
+				t.tableId as string,
+				`${LAKE_ALIAS}.${schemaForLayer(t.layer ?? TYPED_LAYER)}.${t.physicalName}`,
+			]),
+	);
+
+	return formatCatalog(
+		axisRows
+			.filter((a) => a.tableId && a.columnName)
+			.map((a) => ({
+				tableId: a.tableId as string,
+				columnName: a.columnName as string,
+				grainSafe: a.grainSafe ?? false,
+			})),
+		hierarchyRows
+			.filter((h) => h.tableId)
+			.map((h) => ({
+				tableId: h.tableId as string,
+				kind: h.kind ?? "",
+				members: Array.isArray(h.members)
+					? (h.members as Array<{ column_name?: string | null }>)
+					: [],
+				canonicalLabel: h.canonicalLabel ?? null,
+			})),
+		tableAddressById,
 	);
 }

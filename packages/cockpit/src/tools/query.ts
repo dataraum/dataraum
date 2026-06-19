@@ -50,7 +50,7 @@ import {
 import { getQueryInstructions } from "../prompts";
 import { asAgentError, withAgentError } from "./agent-error";
 import { listTables } from "./list-tables";
-import { buildSchemaBlock } from "./query-context";
+import { buildCatalogBlock, buildSchemaBlock } from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
 
 // The three readiness bands the engine emits, worst-first ranked.
@@ -435,12 +435,13 @@ export async function querySubAgent(
 	question: string,
 	signal?: AbortSignal,
 ): Promise<AnswerResult> {
-	const [schemaBlock, vocabularyBlock] = await Promise.all([
+	const [schemaBlock, catalogBlock, vocabularyBlock] = await Promise.all([
 		buildSchemaBlock(),
+		buildCatalogBlock(),
 		buildVocabularyBlock(),
 	]);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${vocabularyBlock}`;
+	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${vocabularyBlock}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
 	// validation here, so it's isolated across concurrent answer calls.

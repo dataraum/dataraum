@@ -475,6 +475,9 @@ export async function buildCatalogBlock(): Promise<string> {
 
 /** Cap the per-measure slice list so the block stays a hint, not a data dump. */
 const MAX_SLICES_PER_MEASURE = 3;
+/** Cap other-grain drivers too — bounds the block on a workspace with many
+ * identity columns (the engine doesn't cap secondary families before persisting). */
+const MAX_SECONDARY_PER_MEASURE = 5;
 
 /** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
 function grainLabel(grain: string, entity: string | null): string {
@@ -529,6 +532,7 @@ export function formatDrivers(rankings: DriverRanking[]): string {
 		if (r.secondary_dimensions.length)
 			lines.push(
 				`  other-grain drivers: ${r.secondary_dimensions
+					.slice(0, MAX_SECONDARY_PER_MEASURE)
 					.map(
 						(s) =>
 							`"${s.dimension}" (${grainLabel(s.grain, s.entity)}, ${g(s.gain)})`,
@@ -559,6 +563,16 @@ export function formatDrivers(rankings: DriverRanking[]): string {
  * context and an explicit look_drivers call never drift.
  */
 export async function buildDriversBlock(): Promise<string> {
-	const { rankings } = await lookDrivers({});
-	return formatDrivers(rankings);
+	// Soft-fail: driver grounding is degradable context (the agent still writes valid
+	// SQL without it), so a metadata read failure must not fail the whole answer —
+	// honor inform-don't-block. Mirrors describeEnrichedViews' fallback above.
+	try {
+		const { rankings } = await lookDrivers({});
+		return formatDrivers(rankings);
+	} catch (err) {
+		console.warn(
+			`[cockpit] buildDriversBlock failed — omitting drivers context: ${err}`,
+		);
+		return "<drivers>\n(No driver rankings yet.)\n</drivers>";
+	}
 }

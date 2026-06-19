@@ -275,7 +275,9 @@ describe("formatDrivers", () => {
 		expect(block).toContain('top drivers: "region" (0.42), "channel" (0.18)');
 		// Multi-col path joined coarse→fine; single-col path kept.
 		expect(block).toContain('drill paths: "region" → "channel"; "segment"');
-		expect(block).toContain('notable slices: "region"=EMEA (effect 0.30, support 1200)');
+		expect(block).toContain(
+			'notable slices: "region"=EMEA (effect 0.30, support 1200)',
+		);
 	});
 
 	it("labels an entity grain as 'within <identity>' and keeps secondary drivers separate", () => {
@@ -285,11 +287,18 @@ describe("formatDrivers", () => {
 				grain: "entity",
 				entity: "customer_id",
 				secondary_dimensions: [
-					{ dimension: "tenure", gain: 0.22, grain: "entity", entity: "customer_id" },
+					{
+						dimension: "tenure",
+						gain: 0.22,
+						grain: "entity",
+						entity: "customer_id",
+					},
 				],
 			}),
 		]);
-		expect(block).toContain('Measure "ltv" (flow, within customer_id, n=12000):');
+		expect(block).toContain(
+			'Measure "ltv" (flow, within customer_id, n=12000):',
+		);
 		expect(block).toContain(
 			'other-grain drivers: "tenure" (within customer_id, 0.22)',
 		);
@@ -312,6 +321,8 @@ describe("formatDrivers", () => {
 	it("drops a measure with no significant driver; all-empty → a note", () => {
 		const block = formatDrivers([
 			ranking({ measure: "kept" }),
+			// barren keeps the base fixture's slice but has no ranked dims/paths —
+			// still dropped (the filter gates on a driver, not on slices).
 			ranking({
 				measure: "barren",
 				ranked_dimensions: [],

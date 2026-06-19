@@ -128,10 +128,16 @@ export function ProbeWidget({
 					<Text size="sm" c="dimmed">
 						Importing {run.source_names.length} source
 						{run.source_names.length === 1 ? "" : "s"}:{" "}
-						{run.source_names.join(", ")}. You'll be told in the chat when it's
-						done.
+						{run.source_names.join(", ")}.
+						{conversationId
+							? " You'll be told in the chat when it's done."
+							: ""}
 					</Text>
+					{/* Keyed by workflow id so a second import (a new run id under the same
+					    per-workspace workflow id) remounts cleanly rather than reusing a
+					    stale node — forward-compat if the id ever becomes per-run. */}
 					<MeasureProgressWidget
+						key={run.workflow_id}
 						state={{
 							kind: "add-source-progress",
 							workflowId: run.workflow_id,
@@ -189,8 +195,11 @@ function ProbePanel({
 	};
 
 	const nameValid = SOURCE_NAME_RE.test(importAs);
+	// Re-using a staged name UPDATES that query's SQL (addToSet replaces by name) —
+	// a valid edit, not a duplicate. So the gate ALLOWS it; only the button label
+	// flips to "Update" so the action is unambiguous.
 	const nameStaged = stagedNames.includes(importAs);
-	const canAdd = selectedSource !== null && hasSql && nameValid && !nameStaged;
+	const canAdd = selectedSource !== null && hasSql && nameValid;
 
 	const add = () => {
 		if (!selectedSource || !hasSql || !nameValid) return;
@@ -282,9 +291,7 @@ function ProbePanel({
 					error={
 						importAs.length > 0 && !nameValid
 							? "lowercase, start with a letter, [a-z0-9_], 2–49 chars"
-							: nameStaged
-								? "already in the import set"
-								: undefined
+							: undefined
 					}
 					data-testid="probe-import-name"
 				/>
@@ -294,7 +301,7 @@ function ProbePanel({
 					disabled={!canAdd}
 					data-testid="probe-add-to-set"
 				>
-					Add to import set
+					{nameStaged ? "Update query" : "Add to import set"}
 				</Button>
 			</Group>
 

@@ -91,6 +91,15 @@ function validateSpec(spec: RecipeSourceSpec): void {
  * Fails loud (before any write) on an empty batch or a duplicate source name in
  * the batch — two queries sharing a name would UPSERT the same row, silently
  * dropping one.
+ *
+ * The write loop is NOT a single transaction (matching the sibling file-source
+ * loop in `tools/select.ts`): a transient mid-loop failure can leave the earlier
+ * sources upserted while the trigger never fires. That's recoverable, not
+ * corrupting — every upsert is idempotent (name UNIQUE + the `recipe_hash`
+ * witness), and the caller (`server/import-sources.ts` via the widget's mutation)
+ * keeps the import set on error, so re-running the same batch re-upserts the
+ * already-written rows and starts the run. The orphaned rows sit at
+ * `status=configured` until that retry imports them.
  */
 export async function persistRecipeSources(
 	specs: RecipeSourceSpec[],

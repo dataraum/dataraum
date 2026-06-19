@@ -226,4 +226,58 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		).toBe("addsource-ws");
 		expect(screen.queryByTestId("probe-import-set")).toBeNull();
 	});
+
+	it("re-adding a staged name updates its SQL rather than duplicating", async () => {
+		getConfiguredDatabasesMock.mockResolvedValue([
+			{ name: "wwi", backend: "mssql" },
+		]);
+		renderProbe(seededState);
+		await waitFor(() => expect(getConfiguredDatabasesMock).toHaveBeenCalled());
+
+		// Stage wwi_orders with the seeded SQL.
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		await waitFor(() => expect(addBtn().disabled).toBe(false));
+		fireEvent.click(addBtn());
+
+		// Edit the SQL, re-stage under the SAME name (the button now reads "Update").
+		fireEvent.change(screen.getByTestId("sql-editor"), {
+			target: { value: "SELECT 99 AS x" },
+		});
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		await waitFor(() => expect(addBtn().textContent).toContain("Update"));
+		expect(addBtn().disabled).toBe(false);
+		fireEvent.click(addBtn());
+
+		// One entry, updated SQL — not a duplicate.
+		const setPanel = screen.getByTestId("probe-import-set");
+		expect(setPanel.textContent).toContain("SELECT 99 AS x");
+		expect(setPanel.textContent).not.toContain("SELECT * FROM Sales.Orders");
+		expect(screen.getAllByText("wwi_orders")).toHaveLength(1);
+	});
+
+	it("surfaces an import error and preserves the set for retry", async () => {
+		getConfiguredDatabasesMock.mockResolvedValue([
+			{ name: "wwi", backend: "mssql" },
+		]);
+		importSourcesMock.mockRejectedValue(new Error("Temporal not configured"));
+		renderProbe(seededState);
+		await waitFor(() => expect(getConfiguredDatabasesMock).toHaveBeenCalled());
+
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		await waitFor(() => expect(addBtn().disabled).toBe(false));
+		fireEvent.click(addBtn());
+		fireEvent.click(screen.getByTestId("probe-import-run"));
+
+		// The error surfaces and the set is NOT cleared — the user can retry.
+		const err = await screen.findByTestId("probe-import-error");
+		expect(err.textContent).toContain("Temporal not configured");
+		expect(screen.getByTestId("probe-import-set")).toBeTruthy();
+		expect(screen.queryByTestId("probe-import-progress")).toBeNull();
+	});
 });

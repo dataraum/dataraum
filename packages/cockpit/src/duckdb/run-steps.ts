@@ -229,7 +229,19 @@ export async function runSteps(
 			truncated: overRowCap || byteTruncated,
 		};
 	} catch (err) {
-		return { error: err instanceof Error ? err.message : String(err) };
+		const message = err instanceof Error ? err.message : String(err);
+		// The { error } goes to the agent for in-loop repair, but a validation
+		// failure must NOT be silent server-side — log the real DuckDB/ATTACH error
+		// (and the offending SQL) so a no-grid answer is debuggable. Aborts are
+		// expected control-flow, not failures, so log them at debug volume.
+		if (signal?.aborted) {
+			console.debug(`[run-steps] aborted: ${message}`);
+		} else {
+			console.error(
+				`[run-steps] SQL validation failed: ${message}\nSQL: ${sql}`,
+			);
+		}
+		return { error: message };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		close();

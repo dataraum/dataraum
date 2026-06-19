@@ -3,7 +3,6 @@
 This module contains all Pydantic models for the correlation analysis module.
 
 Within-Table Analysis:
-- NumericCorrelation: Pearson and Spearman correlations
 - DerivedColumn: Detected derived columns
 
 Result Containers:
@@ -20,33 +19,6 @@ from pydantic import BaseModel, Field
 # =============================================================================
 # Within-Table Analysis Models
 # =============================================================================
-
-
-class NumericCorrelation(BaseModel):
-    """Pearson and Spearman correlation between two numeric columns."""
-
-    correlation_id: str
-    table_id: str
-    column1_id: str
-    column2_id: str
-    column1_name: str
-    column2_name: str
-
-    # Pearson (linear relationship)
-    pearson_r: float | None = None
-    pearson_p_value: float | None = None
-
-    # Spearman (monotonic relationship)
-    spearman_rho: float | None = None
-    spearman_p_value: float | None = None
-
-    # Metadata
-    sample_size: int
-    computed_at: datetime
-
-    # Interpretation
-    correlation_strength: str  # 'none', 'weak', 'moderate', 'strong', 'very_strong'
-    is_significant: bool  # p_value < 0.05
 
 
 class DerivedColumn(BaseModel):
@@ -89,9 +61,6 @@ class CorrelationAnalysisResult(BaseModel):
 
     table_id: str
     table_name: str
-
-    # Numeric correlations
-    numeric_correlations: list[NumericCorrelation] = Field(default_factory=list)
 
     # Derived columns
     derived_columns: list[DerivedColumn] = Field(default_factory=list)

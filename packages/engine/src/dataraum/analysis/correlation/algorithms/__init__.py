@@ -13,15 +13,8 @@ from dataraum.analysis.correlation.algorithms.multicollinearity import (
     MulticollinearityResult,
     compute_multicollinearity,
 )
-from dataraum.analysis.correlation.algorithms.numeric import (
-    CorrelationResult,
-    compute_pairwise_correlations,
-)
 
 __all__ = [
-    # Numeric
-    "CorrelationResult",
-    "compute_pairwise_correlations",
     # Categorical
     "AssociationResult",
     "compute_cramers_v",

@@ -16,7 +16,7 @@ Domain models live in their respective packages:
 Import domain models directly from their packages:
     from dataraum.analysis.statistics.models import ColumnProfile, NumericStats
     from dataraum.analysis.statistics import BenfordAnalysis, StatisticalQualityResult
-    from dataraum.analysis.correlation.models import NumericCorrelation
+    from dataraum.analysis.correlation.models import DerivedColumn
     from dataraum.analysis.validation import ValidationAgent
     from dataraum.sources.csv.models import StagedTable
 """

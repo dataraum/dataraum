@@ -19,7 +19,6 @@ from dataraum.analysis.correlation.db_models import (
 from dataraum.analysis.correlation.models import (
     CorrelationAnalysisResult,
     DerivedColumn,
-    NumericCorrelation,
 )
 from dataraum.analysis.correlation.processor import (
     analyze_correlations,
@@ -28,7 +27,6 @@ from dataraum.analysis.correlation.processor import (
 
 # Within-table functions (for direct access)
 from dataraum.analysis.correlation.within_table import (
-    compute_numeric_correlations,
     detect_derived_columns,
     detect_enriched_derived_columns,
 )
@@ -38,13 +36,11 @@ __all__ = [
     "analyze_correlations",
     "analyze_enriched_correlations",
     # Within-table functions
-    "compute_numeric_correlations",
     "detect_derived_columns",
     "detect_enriched_derived_columns",
     # DB Models
     "DBDerivedColumn",
     # Pydantic Models
-    "NumericCorrelation",
     "DerivedColumn",
     "CorrelationAnalysisResult",
 ]

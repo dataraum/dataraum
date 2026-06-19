@@ -49,6 +49,7 @@ import {
 } from "../llm";
 import { getQueryInstructions } from "../prompts";
 import { asAgentError, withAgentError } from "./agent-error";
+import { checkGrainSafety, loadUnsafeAxes } from "./grain-guard";
 import { listTables } from "./list-tables";
 import { buildCatalogBlock, buildSchemaBlock } from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
@@ -244,7 +245,10 @@ export async function classifyComponents(
  * model sees only the validator status; the composed SQL + components stay
  * server-side, so the grid is provably the validated query — not a re-emission.
  */
-function makeRunStepsTool(captured: { value: ValidatedRun | null }) {
+function makeRunStepsTool(
+	captured: { value: ValidatedRun | null },
+	unsafeAxes: Set<string>,
+) {
 	return toolDefinition({
 		name: "run_steps",
 		description:
@@ -283,6 +287,10 @@ function makeRunStepsTool(captured: { value: ValidatedRun | null }) {
 			components.map((c) => ({ name: c.name, sql: c.sql })),
 			input.final_sql,
 		);
+		// Grain-safety teeth (DAT-538 P2): refuse a GROUP BY over a catalogued
+		// non-grain-safe axis BEFORE executing — deterministic, agent-fixable.
+		const grainError = await checkGrainSafety(composed, unsafeAxes);
+		if (grainError) return { error: grainError };
 		const result = await runSteps(composed, ctx?.abortSignal);
 		if ("ok" in result) captured.value = { composedSql: composed, components };
 		return result;
@@ -435,11 +443,13 @@ export async function querySubAgent(
 	question: string,
 	signal?: AbortSignal,
 ): Promise<AnswerResult> {
-	const [schemaBlock, catalogBlock, vocabularyBlock] = await Promise.all([
-		buildSchemaBlock(),
-		buildCatalogBlock(),
-		buildVocabularyBlock(),
-	]);
+	const [schemaBlock, catalogBlock, vocabularyBlock, unsafeAxes] =
+		await Promise.all([
+			buildSchemaBlock(),
+			buildCatalogBlock(),
+			buildVocabularyBlock(),
+			loadUnsafeAxes(),
+		]);
 
 	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${vocabularyBlock}`;
 
@@ -457,7 +467,7 @@ export async function querySubAgent(
 		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
 		systemPrompts: [getQueryInstructions()],
 		messages: [{ role: "user", content: userMessage }],
-		tools: [snippetSearchTool, makeRunStepsTool(captured)],
+		tools: [snippetSearchTool, makeRunStepsTool(captured, unsafeAxes)],
 		outputSchema: QueryDraftSchema,
 	});
 

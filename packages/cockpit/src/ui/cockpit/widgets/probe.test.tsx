@@ -102,7 +102,7 @@ const seededState: Extract<CanvasState, { kind: "probe" }> = {
 };
 
 // Default: a framed workspace, so the import-set gate is open. Tests that exercise
-// the unframed gate override this. (afterEach clears mocks; this re-seeds the default.)
+// the unframed gate override this per-test (a later mockResolvedValue wins).
 beforeEach(() => {
 	getActiveVerticalStatusMock.mockResolvedValue({
 		vertical: "retail",

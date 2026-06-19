@@ -188,6 +188,9 @@ function ProbePanel({
 	const frameStatus = useQuery({
 		queryKey: ["active-vertical-status"],
 		queryFn: () => getActiveVerticalStatus(),
+		// Session-stable — only the `frame`/`use_vertical` flow changes it — so don't
+		// re-hit the server on every window focus.
+		staleTime: 5 * 60 * 1000,
 	});
 	const framed = frameStatus.data?.framed === true;
 	const unframed = frameStatus.isSuccess && !framed;
@@ -234,7 +237,9 @@ function ProbePanel({
 	const canAdd = selectedSource !== null && hasSql && nameValid && framed;
 
 	const add = () => {
-		if (!selectedSource || !hasSql || !nameValid) return;
+		// `framed` is guarded here too, not only via the disabled button — HTML
+		// `disabled` is a UI-only barrier; the handler must hold the invariant.
+		if (!selectedSource || !hasSql || !nameValid || !framed) return;
 		onAdd({
 			source_name: importAs,
 			// The picked source IS the connection the query reads through; the engine
@@ -285,13 +290,21 @@ function ProbePanel({
 
 			{unframed && (
 				<Alert color="yellow" data-testid="probe-unframed">
-					No business model yet — the workspace vertical{" "}
-					<Text span ff="monospace" size="xs">
-						{frameStatus.data?.vertical}
-					</Text>{" "}
-					has no concepts, so an imported source has nothing to ground against.
-					Frame a vertical (or pick one) in the chat before importing — probing
-					here still works.
+					No business model yet —{" "}
+					{frameStatus.data?.vertical === "_adhoc" ? (
+						"this workspace hasn't been framed"
+					) : (
+						<>
+							the vertical{" "}
+							<Text span ff="monospace" size="xs">
+								{frameStatus.data?.vertical}
+							</Text>{" "}
+							has no concepts
+						</>
+					)}
+					, so an imported source has nothing to ground against. Frame a
+					vertical (or pick one) in the chat before importing — probing here
+					still works.
 				</Alert>
 			)}
 

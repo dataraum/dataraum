@@ -80,6 +80,7 @@ const TOOL_LABELS: Record<string, string> = {
 	begin_session: "Starting session",
 	run_sql: "Query",
 	probe: "Data check",
+	open_probe: "Probe editor",
 	teach: "Teaching",
 	teach_validation: "Declaring validation",
 	teach_cycle: "Declaring cycle",
@@ -363,6 +364,8 @@ export function toolChipSummary(
 		}
 		case "upload":
 			return "drop files to import";
+		case "open_probe":
+			return "write SQL to probe a source";
 		default:
 			// Never surface a raw snake_case verb as the summary — humanize unmapped
 			// tools the same way the title does (look_relationships → "Look relationships").

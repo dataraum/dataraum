@@ -11,7 +11,7 @@
 // and DETACHes/closes in a finally. It never touches the long-lived lake reader
 // connection, so an external ATTACH can't leak into lake-catalog state.
 
-import { DuckDBInstance } from "@duckdb/node-api";
+import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
 import { resolveCredential } from "./credentials";
@@ -67,18 +67,33 @@ export interface ProbeInput {
 	limit?: number;
 }
 
+/** An open probe connection: a throwaway in-memory DuckDB with the source
+ * ATTACHed READ_ONLY and its default schema selected. The caller MUST `dispose()`
+ * it — the materialize path ({@link probe}) in a `finally`, the streaming path
+ * (`/api/probe-sql`) when the stream ends or is cancelled. */
+export interface ProbeConnection {
+	/** Ready for a read-only query against the attached source (`src.*`). */
+	readonly conn: DuckDBConnection;
+	/** Close the connection + its throwaway instance (releases the ATTACH). */
+	readonly dispose: () => void;
+	/** Strip the resolved source URL from a message before it leaves the process
+	 * — a driver error can echo the credential-bearing DSN (the agent result + the
+	 * persisted transcript must never carry it). */
+	readonly redact: (message: string) => string;
+}
+
 /**
- * Run read-only SQL against an external database source.
- *
- * Resolves credentials by source name, ATTACHes the source READ_ONLY in a
- * throwaway connection, `USE`s the backend's default schema, runs the SQL
- * (wrapped in a `LIMIT`), and DETACHes. Fails loud — unknown backend, missing
- * credential, or a failed ATTACH/SELECT all throw with an actionable message.
- *
- * The returned {@link QueryResult} contains only column metadata + JSON-safe
- * rows; the connection URL is never included.
+ * Open a throwaway in-memory DuckDB connection with the source ATTACHed READ_ONLY
+ * and the backend's default schema selected — the shared setup behind BOTH the
+ * agent's materialized {@link probe} (a bounded sample) and the human grid's
+ * streaming `/api/probe-sql` (the full result). Fails loud with a
+ * CREDENTIAL-REDACTED message on unknown backend, missing credential, or a failed
+ * ATTACH; on a setup failure the connection is disposed before throwing.
  */
-export async function probe(input: ProbeInput): Promise<QueryResult> {
+export async function openProbeConnection(input: {
+	source_name: string;
+	backend: string;
+}): Promise<ProbeConnection> {
 	const backend = input.backend.toLowerCase();
 	if (!(backend in BACKEND_EXTENSIONS)) {
 		throw new Error(
@@ -97,15 +112,27 @@ export async function probe(input: ProbeInput): Promise<QueryResult> {
 	const extension = BACKEND_EXTENSIONS[backend];
 	const attachType = BACKEND_ATTACH_TYPES[backend];
 	const defaultSchema = BACKEND_DEFAULT_SCHEMA[backend];
-	const limit = clampRowLimit(input.limit);
 
 	const instance = await DuckDBInstance.create(":memory:");
 	const conn = await instance.connect();
+	// Closing the throwaway instance releases the ATTACH — no explicit DETACH.
+	const dispose = () => {
+		conn.closeSync();
+		instance.closeSync();
+	};
+	// SECURITY: a failed ATTACH/query can echo the connection DSN (which carries
+	// the credential) in the driver message; redact the resolved URL before it
+	// leaves the process.
+	const redact = (message: string): string =>
+		credential.url
+			? message.split(credential.url).join("<source url redacted>")
+			: message;
+
 	try {
 		// Same extension-cache contract as the lake reader (lake.ts): the image
-		// pre-bakes all four backend extensions and sets DUCKLAKE_SKIP_INSTALL=1,
-		// so a probe never hits extensions.duckdb.org at runtime. Host dev has
-		// neither var set and installs on demand into ~/.duckdb.
+		// pre-bakes all four backend extensions and sets DUCKLAKE_SKIP_INSTALL=1, so
+		// a probe never hits extensions.duckdb.org at runtime. Host dev has neither
+		// var set and installs on demand into ~/.duckdb.
 		if (config.duckdbExtensionDirectory) {
 			await conn.run(
 				`SET extension_directory = '${escapeSqlLiteral(config.duckdbExtensionDirectory)}'`,
@@ -119,41 +146,48 @@ export async function probe(input: ProbeInput): Promise<QueryResult> {
 			}
 		}
 		await conn.run(`LOAD ${extension}`);
-
-		const safeUrl = escapeSqlLiteral(credential.url);
 		await conn.run(
-			`ATTACH '${safeUrl}' AS ${ATTACH_ALIAS} (TYPE ${attachType}, READ_ONLY)`,
+			`ATTACH '${escapeSqlLiteral(credential.url)}' AS ${ATTACH_ALIAS} (TYPE ${attachType}, READ_ONLY)`,
 		);
-		try {
-			await conn.run(`USE ${ATTACH_ALIAS}.${defaultSchema}`);
-			// Wrap the user SQL in a subquery + LIMIT so a probe can never pull an
-			// unbounded result into the chat context. READ_ONLY already blocks
-			// writes at the engine level.
-			const reader = await conn.runAndReadAll(
-				`SELECT * FROM (${input.sql}) AS _probe LIMIT ${limit}`,
-			);
-			return readerToResult(reader);
-		} finally {
-			try {
-				await conn.run(`DETACH ${ATTACH_ALIAS}`);
-			} catch {
-				// Best-effort cleanup; the connection is closed below regardless.
-			}
-		}
+		// USE the default schema so user SQL referencing `schema.table` resolves
+		// without the `src.` alias prefix (mirrors the engine's map).
+		await conn.run(`USE ${ATTACH_ALIAS}.${defaultSchema}`);
 	} catch (err) {
-		// SECURITY: a failed ATTACH can echo the connection DSN (which carries the
-		// credential) in the driver message. Redact the resolved URL before the
-		// message leaves this function — it reaches the agent (now as a `{ error }`
-		// result) and the persisted transcript.
 		const raw = err instanceof Error ? err.message : String(err);
-		const safe = credential.url
-			? raw.split(credential.url).join("<source url redacted>")
-			: raw;
+		dispose();
 		throw new Error(
-			`Probe of source '${input.source_name}' (${backend}) failed: ${safe}`,
+			`Probe of source '${input.source_name}' (${backend}) failed: ${redact(raw)}`,
+		);
+	}
+
+	return { conn, dispose, redact };
+}
+
+/**
+ * Run read-only SQL against an external database source and MATERIALIZE a bounded
+ * sample — the AGENT path (the LLM must never get an unbounded result dumped into
+ * context; the full result for the human grid streams via `/api/probe-sql`).
+ *
+ * The returned {@link QueryResult} contains only column metadata + JSON-safe rows;
+ * the connection URL is never included.
+ */
+export async function probe(input: ProbeInput): Promise<QueryResult> {
+	const { conn, dispose, redact } = await openProbeConnection(input);
+	const limit = clampRowLimit(input.limit);
+	try {
+		// Wrap the user SQL in a subquery + LIMIT so a probe can never pull an
+		// unbounded result into the chat context. READ_ONLY already blocks writes
+		// at the engine level.
+		const reader = await conn.runAndReadAll(
+			`SELECT * FROM (${input.sql}) AS _probe LIMIT ${limit}`,
+		);
+		return readerToResult(reader);
+	} catch (err) {
+		const raw = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`Probe of source '${input.source_name}' (${input.backend.toLowerCase()}) failed: ${redact(raw)}`,
 		);
 	} finally {
-		conn.closeSync();
-		instance.closeSync();
+		dispose();
 	}
 }

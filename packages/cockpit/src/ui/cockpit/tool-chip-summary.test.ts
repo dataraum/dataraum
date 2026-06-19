@@ -49,8 +49,8 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 24 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(24);
+	it("marks the 26 canvas-producing tools clickable", () => {
+		expect(CANVAS_TOOLS.size).toBe(26);
 		for (const name of [
 			"list_sources",
 			"list_tables",
@@ -78,12 +78,15 @@ describe("isCanvasTool", () => {
 			"answer",
 			"replay",
 			"upload",
+			// probe SEEDS the editable probe canvas + open_probe opens it empty (DAT-576).
+			"probe",
+			"open_probe",
 		]) {
 			expect(isCanvasTool(name)).toBe(true);
 		}
 	});
 
-	it("marks probe / teach / teach_validation / teach_cycle display-only", () => {
+	it("marks teach / teach_validation / teach_cycle display-only", () => {
 		// These return no renderable surface — their chips must not be clickable.
 		// (operating_model LEFT this list with the DAT-435 follow-on: its driver
 		// projects the live progress canvas, like begin_session.) teach_validation
@@ -92,7 +95,7 @@ describe("isCanvasTool", () => {
 		// teach_metric LEFT this list (DAT-482): an OVERRIDE projects the shipped
 		// DAG it replaces (metric-shadow), so its chip is clickable.
 		for (const name of [
-			"probe",
+			// probe LEFT this list (DAT-576): it now seeds the editable probe canvas.
 			"teach",
 			"teach_validation",
 			"teach_cycle",

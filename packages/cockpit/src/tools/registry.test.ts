@@ -82,6 +82,7 @@ describe("tool registry (DAT-353)", () => {
 				"look_drivers",
 				"replay",
 				"upload",
+				"open_probe",
 			]),
 		);
 	});

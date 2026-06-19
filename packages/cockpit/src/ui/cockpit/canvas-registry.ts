@@ -20,6 +20,7 @@ import { MetricShadowWidget } from "#/ui/cockpit/widgets/metric-shadow";
 import { MetricWhyWidget } from "#/ui/cockpit/widgets/metric-why";
 import { ModelFrameWidget } from "#/ui/cockpit/widgets/model-frame";
 import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
+import { ProbeWidget } from "#/ui/cockpit/widgets/probe";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
@@ -65,4 +66,5 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "operating-model-progress",
 		component: OperatingModelProgressWidget,
 	})
-	.register({ kind: "upload-area", component: UploadAreaWidget });
+	.register({ kind: "upload-area", component: UploadAreaWidget })
+	.register({ kind: "probe", component: ProbeWidget });

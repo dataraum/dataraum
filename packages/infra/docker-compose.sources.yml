@@ -14,9 +14,11 @@
 #                  --profile mssql up -d --wait
 #
 # Then point the cockpit at it (host dev, `bun --bun run dev`) by setting in the
-# cockpit .env:
-#   DATARAUM_WWI_URL=Server=localhost,1433;Database=WideWorldImporters;UID=sa;PWD=Dataraum!Dev1;TrustServerCertificate=true
-# An in-container cockpit would use Server=mssql,1433 instead.
+# cockpit .env (a `scheme://` URL — the backend is inferred from the scheme, so the
+# source appears in the probe picker; a bare `Server=…` DSN attaches but isn't
+# classifiable — DAT-576 smoke):
+#   DATARAUM_WWI_URL=mssql://sa:Dataraum!Dev1@localhost:1433/WideWorldImporters?TrustServerCertificate=true
+# An in-container cockpit would use @mssql:1433 instead of @localhost:1433.
 #
 # Apple Silicon: SQL Server images are amd64-only — `platform: linux/amd64` runs them
 # under Rosetta (verified on SQL Server 2025). The self-signed cert is why the

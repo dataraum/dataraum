@@ -126,6 +126,41 @@ const ConceptPropertyPayload = z
 	})
 	.passthrough();
 
+// `rebind` re-grounds a single COLUMN onto a different concept (DAT-517): the
+// engine (_apply_rebind, core/overlay.py) appends the column NAME to the target
+// concept's `indicators`, so the next run's grounding prompt re-grounds it. It's
+// the column-grain sibling of concept_property (which patches the concept itself):
+// concept_property fixes a concept's attribute for ALL its columns; rebind moves
+// ONE column to the right concept. It's the lever for the `temporal_behavior`
+// detector's ignorance branch (it emits a `rebind` suggestion when a column is
+// bound to the wrong concept). The applier keys on {column, concept} (last rebind
+// per column wins); `vertical` scopes the row to the loading vertical; `table` is
+// advisory context only (the merge key is the column name).
+const RebindPayload = z
+	.object({
+		vertical: z
+			.string()
+			.min(1)
+			.describe(
+				"The vertical the target concept lives in, e.g. 'finance' or '_adhoc'.",
+			),
+		concept: z
+			.string()
+			.min(1)
+			.describe("The concept to re-ground the column onto, e.g. 'revenue'."),
+		column: z
+			.string()
+			.min(1)
+			.describe("The column NAME to re-ground (not a column id)."),
+		table: z
+			.string()
+			.optional()
+			.describe(
+				"Advisory context — the table the column lives in (not used as a key).",
+			),
+	})
+	.passthrough();
+
 // Mirrors OntologyConcept (packages/engine/.../analysis/semantic/ontology.py).
 // Used both by user teach AND by the engine's cold-start _adhoc induction
 // (DAT-371), which inserts one `concept` row per induced concept instead of
@@ -273,6 +308,7 @@ const TYPE_SCHEMAS = {
 	unit: UnitPayload,
 	concept: ConceptPayload,
 	concept_property: ConceptPropertyPayload,
+	rebind: RebindPayload,
 	relationship: RelationshipPayload,
 	hierarchy: HierarchyPayload,
 	// validation/cycle/metric are NOT advertised to the agent (see
@@ -302,6 +338,7 @@ export const AGENT_TEACH_TYPES = [
 	"unit",
 	"concept",
 	"concept_property",
+	"rebind",
 	"relationship",
 	"hierarchy",
 ] as const satisfies readonly TeachType[];
@@ -342,6 +379,7 @@ export const TeachPayloadSchema = z
 		UnitPayload,
 		ConceptPayload,
 		ConceptPropertyPayload,
+		RebindPayload,
 		RelationshipPayload,
 		HierarchyPayload,
 	])
@@ -352,6 +390,8 @@ export const TeachPayloadSchema = z
 			"unit: {table, column, unit} (column identified by NAME); " +
 			"concept: {vertical, name, indicators?, …}; " +
 			"concept_property: {vertical, concept, property, value}; " +
+			"rebind: {vertical, concept, column, table?} (re-ground ONE column onto a " +
+			"different concept, by column NAME); " +
 			"relationship: {action: confirm|reject|add, from_column_id, to_column_id} " +
 			"(keep is engine-internal, not a user action); " +
 			"hierarchy: {action: add|reject|alias, table_id, members}.",

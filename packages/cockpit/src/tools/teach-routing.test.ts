@@ -3,13 +3,14 @@ import { TEACH_TYPES } from "#/tools/teach.validation";
 import { affectedStage } from "#/tools/teach-routing";
 
 describe("affectedStage (DAT-531 teach → stage map)", () => {
-	it("routes grounding teaches (incl. concept_property) to add_source", () => {
+	it("routes grounding teaches (incl. concept_property + rebind) to add_source", () => {
 		for (const t of [
 			"type_pattern",
 			"null_value",
 			"unit",
 			"concept",
 			"concept_property",
+			"rebind",
 		]) {
 			expect(affectedStage(t)).toBe("add_source");
 		}

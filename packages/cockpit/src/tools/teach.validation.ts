@@ -133,9 +133,9 @@ const ConceptPropertyPayload = z
 // concept_property fixes a concept's attribute for ALL its columns; rebind moves
 // ONE column to the right concept. It's the lever for the `temporal_behavior`
 // detector's ignorance branch (it emits a `rebind` suggestion when a column is
-// bound to the wrong concept). The applier keys on {column, concept} (last rebind
-// per column wins); `vertical` scopes the row to the loading vertical; `table` is
-// advisory context only (the merge key is the column name).
+// bound to the wrong concept). The merge key is the column NAME: last rebind per
+// column wins, so a re-taught column lands only on its newest target concept.
+// `vertical` scopes the row to the loading vertical; `table` is advisory only.
 const RebindPayload = z
 	.object({
 		vertical: z

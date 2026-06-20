@@ -311,6 +311,15 @@ describe("validateTeach", () => {
 				}),
 			).toThrow(TeachValidationError);
 		});
+
+		it("rejects a missing vertical", () => {
+			expect(() =>
+				validateTeach({
+					type: "rebind",
+					payload: { concept: "revenue", column: "net_sales" },
+				}),
+			).toThrow(TeachValidationError);
+		});
 	});
 
 	describe("relationship", () => {

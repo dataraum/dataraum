@@ -265,6 +265,63 @@ describe("validateTeach", () => {
 		});
 	});
 
+	describe("rebind", () => {
+		it("accepts {vertical, concept, column} (DAT-517 column re-grounding)", () => {
+			// Engine consumer: _apply_rebind keys on {column, concept} and appends
+			// the column to the target concept's indicators (last rebind per column wins).
+			const out = validateTeach({
+				type: "rebind",
+				payload: {
+					vertical: "finance",
+					concept: "revenue",
+					column: "net_sales",
+				},
+			});
+			expect(out.concept).toBe("revenue");
+			expect(out.column).toBe("net_sales");
+		});
+
+		it("accepts an optional advisory table", () => {
+			const out = validateTeach({
+				type: "rebind",
+				payload: {
+					vertical: "finance",
+					concept: "revenue",
+					column: "net_sales",
+					table: "income_statement",
+				},
+			});
+			expect(out.table).toBe("income_statement");
+		});
+
+		it("rejects a missing column", () => {
+			expect(() =>
+				validateTeach({
+					type: "rebind",
+					payload: { vertical: "finance", concept: "revenue" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects a missing concept", () => {
+			expect(() =>
+				validateTeach({
+					type: "rebind",
+					payload: { vertical: "finance", column: "net_sales" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects a missing vertical", () => {
+			expect(() =>
+				validateTeach({
+					type: "rebind",
+					payload: { concept: "revenue", column: "net_sales" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+	});
+
 	describe("relationship", () => {
 		it("accepts {action, from_column_id, to_column_id} (DAT-409 directional pair)", () => {
 			// Engine consumer: load_suppressed_relationship_pairs +
@@ -377,6 +434,7 @@ describe("validateTeach", () => {
 					"null_value",
 					"unit",
 					"concept_property",
+					"rebind",
 					"relationship",
 					"hierarchy",
 					"concept",
@@ -398,6 +456,7 @@ describe("validateTeach", () => {
 					"unit",
 					"concept",
 					"concept_property",
+					"rebind",
 					"relationship",
 					"hierarchy",
 				]),
@@ -422,6 +481,7 @@ describe("validateTeach", () => {
 			for (const t of [
 				"concept",
 				"concept_property",
+				"rebind",
 				"relationship",
 				"hierarchy",
 			]) {

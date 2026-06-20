@@ -26,6 +26,9 @@ const TEACH_STAGE: Record<TeachType, RunStage> = {
 	// A concept-property patch re-grounds the semantic binding too (add_source);
 	// operating_model going stale off a concept change derives downstream.
 	concept_property: "add_source",
+	// A rebind appends the column to the target concept's indicators → it only
+	// takes effect through the next run's grounding prompt (add_source).
+	rebind: "add_source",
 	// Relationships + dimension hierarchies are begin_session products
 	// (`run_relationships` / `run_dimension_hierarchies`).
 	relationship: "begin_session",

@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-// Behavior tests for ProbeWidget (DAT-576 + DAT-592). The boundaries are stubbed —
-// they are external systems verified elsewhere: the server fns (env/RPC), the
-// CodeMirror editor (a DOM widget, smoke-verified), the streaming grid (network
-// I/O), the progress widget (Temporal polling), and the router. What we assert is
-// the widget's OWN logic: the no-sources state, run-gating, the probe-sql request
-// body, the import-set add/gate flow, and that Import calls importSources with the
-// staged specs + conversationId then shows progress.
+// Behavior tests for ProbeWidget → STAGING HUB (DAT-576 + DAT-592 + DAT-594). The
+// boundaries are stubbed — they are external systems verified elsewhere: the server
+// fns (env/RPC), the CodeMirror editor (a DOM widget, smoke-verified), the streaming
+// grid (network I/O), the progress widget (Temporal polling), the upload dropzone,
+// the model modal, and the router. What we assert is the widget's OWN logic: the
+// no-sources state, run-gating, the probe-sql request body, the staging add flow,
+// the MOVED gate (Add is free; Start gates on framed + non-empty set), and that
+// Start calls importSources with the staged set + conversationId then shows progress.
 
 import { MantineProvider } from "@mantine/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -30,6 +31,36 @@ vi.mock("#/server/active-vertical", () => ({
 const importSourcesMock = vi.fn();
 vi.mock("#/server/import-sources", () => ({
 	importSources: (args: unknown) => importSourcesMock(args),
+}));
+// The model modal pulls #/server/stage-frame; stub the modal itself (its own
+// behavior isn't under test here) but expose its props so we can drive the
+// model-declared callback that flips the gate.
+let modelModalProps: {
+	opened: boolean;
+	onModelDeclared: () => void;
+} | null = null;
+vi.mock("#/ui/cockpit/widgets/model-modal", () => ({
+	ModelModal: (props: { opened: boolean; onModelDeclared: () => void }) => {
+		modelModalProps = props;
+		return props.opened ? <div data-testid="model-modal" /> : null;
+	},
+}));
+vi.mock("#/ui/cockpit/upload-dropzone", () => ({
+	UploadDropzone: ({
+		onUploaded,
+	}: {
+		onUploaded: (uris: string[]) => void;
+	}) => (
+		<button
+			type="button"
+			data-testid="upload-dropzone"
+			onClick={() =>
+				onUploaded(["s3://dataraum-lake/ws/uploads/aaa111/orders.csv"])
+			}
+		>
+			upload
+		</button>
+	),
 }));
 // Route param the widget reads to record the run against the chat.
 vi.mock("@tanstack/react-router", () => ({
@@ -95,15 +126,17 @@ function renderProbe(
 const runBtn = () => screen.getByTestId("probe-run") as HTMLButtonElement;
 const addBtn = () =>
 	screen.getByTestId("probe-add-to-set") as HTMLButtonElement;
+const startBtn = () => screen.getByTestId("probe-start") as HTMLButtonElement;
 const seededState: Extract<CanvasState, { kind: "probe" }> = {
 	kind: "probe",
 	source: { name: "wwi", backend: "mssql" },
 	sql: "SELECT * FROM Sales.Orders",
 };
 
-// Default: a framed workspace, so the import-set gate is open. Tests that exercise
-// the unframed gate override this per-test (a later mockResolvedValue wins).
+// Default: a framed workspace, so the Start gate is open. Tests that exercise the
+// unframed gate override this per-test (a later mockResolvedValue wins).
 beforeEach(() => {
+	modelModalProps = null;
 	getActiveVerticalStatusMock.mockResolvedValue({
 		vertical: "retail",
 		framed: true,
@@ -162,16 +195,21 @@ describe("ProbeWidget (DAT-576)", () => {
 	});
 });
 
-describe("ProbeWidget import set (DAT-592)", () => {
+describe("ProbeWidget staging hub (DAT-592 + DAT-594)", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
 	});
 
-	it("gates Add to import set on a source, non-empty SQL, and a valid name", async () => {
+	it("gates Add to import set on a source, non-empty SQL, and a valid name — NOT on framing", async () => {
 		getConfiguredDatabasesMock.mockResolvedValue([
 			{ name: "wwi", backend: "mssql" },
 		]);
+		// Unframed: Add must STILL be reachable (the gate moved to Start, DAT-594).
+		getActiveVerticalStatusMock.mockResolvedValue({
+			vertical: "_adhoc",
+			framed: false,
+		});
 		renderProbe(seededState);
 		await waitFor(() => expect(getConfiguredDatabasesMock).toHaveBeenCalled());
 		// Source + sql are seeded, but no name yet → disabled.
@@ -183,14 +221,14 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		});
 		expect(addBtn().disabled).toBe(true);
 
-		// A valid name enables it.
+		// A valid name enables it EVEN THOUGH the workspace is unframed.
 		fireEvent.change(screen.getByTestId("probe-import-name"), {
 			target: { value: "wwi_orders" },
 		});
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 	});
 
-	it("blocks Add when the workspace is unframed (no business model)", async () => {
+	it("gates START on a framed workspace (the moved gate) and shows why when blocked", async () => {
 		getConfiguredDatabasesMock.mockResolvedValue([
 			{ name: "wwi", backend: "mssql" },
 		]);
@@ -199,17 +237,33 @@ describe("ProbeWidget import set (DAT-592)", () => {
 			framed: false,
 		});
 		renderProbe(seededState);
-		// The unframed banner shows; Add stays disabled even with a valid name + sql.
 		await waitFor(() =>
 			expect(screen.getByTestId("probe-unframed")).toBeTruthy(),
 		);
+
+		// Stage a query — Start is still blocked because the workspace is unframed.
 		fireEvent.change(screen.getByTestId("probe-import-name"), {
 			target: { value: "wwi_orders" },
 		});
-		expect(addBtn().disabled).toBe(true);
+		await waitFor(() => expect(addBtn().disabled).toBe(false));
+		fireEvent.click(addBtn());
+
+		expect(startBtn().disabled).toBe(true);
+		expect(screen.getByTestId("probe-start-blocked").textContent).toContain(
+			"business model",
+		);
+
+		// The model modal flipping framed → true opens the Start gate (the
+		// invalidation path is exercised by re-resolving the status query).
+		getActiveVerticalStatusMock.mockResolvedValue({
+			vertical: "retail",
+			framed: true,
+		});
+		modelModalProps?.onModelDeclared();
+		await waitFor(() => expect(startBtn().disabled).toBe(false));
 	});
 
-	it("stages a query, imports the set, and shows progress", async () => {
+	it("stages a query, starts the import, and shows progress", async () => {
 		getConfiguredDatabasesMock.mockResolvedValue([
 			{ name: "wwi", backend: "mssql" },
 		]);
@@ -228,20 +282,18 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 		fireEvent.click(addBtn());
 
-		// The set lives behind a count symbol; open the modal to see it.
+		// The set lives behind a count symbol; the framed workspace opens Start.
 		const indicator = await screen.findByTestId("probe-import-indicator");
 		expect(indicator.textContent).toContain("1");
-		fireEvent.click(indicator);
-		const setPanel = await screen.findByTestId("probe-import-set");
-		expect(setPanel.textContent).toContain("wwi_orders");
+		await waitFor(() => expect(startBtn().disabled).toBe(false));
+		fireEvent.click(startBtn());
 
-		fireEvent.click(screen.getByTestId("probe-import-run"));
-
-		// importSources is called with the staged spec + the conversationId.
+		// importSources is called with the staged query + the conversationId, in the
+		// heterogeneous { queries, files } shape (DAT-594).
 		await waitFor(() => expect(importSourcesMock).toHaveBeenCalledTimes(1));
 		expect(importSourcesMock).toHaveBeenCalledWith({
 			data: {
-				sources: [
+				queries: [
 					{
 						source_name: "wwi_orders",
 						credential_source: "wwi",
@@ -249,6 +301,7 @@ describe("ProbeWidget import set (DAT-592)", () => {
 						sql: "SELECT * FROM Sales.Orders",
 					},
 				],
+				files: [],
 				conversationId: "conv-1",
 			},
 		});
@@ -261,6 +314,58 @@ describe("ProbeWidget import set (DAT-592)", () => {
 			screen.getByTestId("measure-progress").getAttribute("data-workflow"),
 		).toBe("addsource-ws");
 		expect(screen.queryByTestId("probe-import-indicator")).toBeNull();
+	});
+
+	it("stages an uploaded FILE into the set (mixed with queries)", async () => {
+		getConfiguredDatabasesMock.mockResolvedValue([
+			{ name: "wwi", backend: "mssql" },
+		]);
+		importSourcesMock.mockResolvedValue({
+			workflow_id: "addsource-ws",
+			run_id: "addsource-ws",
+			sources: ["sid-1", "sid-2"],
+			source_names: ["wwi_orders", "src_aaa111"],
+		});
+		renderProbe(seededState);
+		await waitFor(() => expect(getConfiguredDatabasesMock).toHaveBeenCalled());
+
+		// Stage a query.
+		fireEvent.change(screen.getByTestId("probe-import-name"), {
+			target: { value: "wwi_orders" },
+		});
+		await waitFor(() => expect(addBtn().disabled).toBe(false));
+		fireEvent.click(addBtn());
+
+		// Open the upload modal and "upload" a file (the stub fires onUploaded).
+		fireEvent.click(screen.getByTestId("probe-upload-open"));
+		fireEvent.click(await screen.findByTestId("upload-dropzone"));
+
+		// Set now holds 2 items (a query + a file).
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("probe-import-indicator").textContent,
+			).toContain("2"),
+		);
+		await waitFor(() => expect(startBtn().disabled).toBe(false));
+		fireEvent.click(startBtn());
+
+		await waitFor(() => expect(importSourcesMock).toHaveBeenCalledTimes(1));
+		expect(importSourcesMock).toHaveBeenCalledWith({
+			data: {
+				queries: [
+					{
+						source_name: "wwi_orders",
+						credential_source: "wwi",
+						backend: "mssql",
+						sql: "SELECT * FROM Sales.Orders",
+					},
+				],
+				files: [
+					{ file_uri: "s3://dataraum-lake/ws/uploads/aaa111/orders.csv" },
+				],
+				conversationId: "conv-1",
+			},
+		});
 	});
 
 	it("re-adding a staged name updates its SQL rather than duplicating", async () => {
@@ -311,8 +416,8 @@ describe("ProbeWidget import set (DAT-592)", () => {
 		});
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 		fireEvent.click(addBtn());
-		fireEvent.click(await screen.findByTestId("probe-import-indicator"));
-		fireEvent.click(await screen.findByTestId("probe-import-run"));
+		await waitFor(() => expect(startBtn().disabled).toBe(false));
+		fireEvent.click(startBtn());
 
 		// The error surfaces and the set is NOT cleared — the symbol persists for retry.
 		const err = await screen.findByTestId("probe-import-error");

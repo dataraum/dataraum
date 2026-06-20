@@ -380,6 +380,14 @@ async function connectDatabase(
 	};
 }
 
+/**
+ * Sniff a single `s3://` file's schema (DESCRIBE + a bounded sample) into one
+ * `ConnectSchema`. Exported so the probe staging hub (DAT-594) can assemble a
+ * file's schema for `frame` directly — the same sniff the `connect` tool's file
+ * branch uses, with the same `s3://<bucket>/<key>` security gate.
+ */
+export { connectFile as sniffFileSchema };
+
 async function connectFile(path: string): Promise<ConnectSchema> {
 	// Defense in depth (the tool's zod superRefine already gated this pre-SQL):
 	// re-validate the single allowed shape `s3://<bucket>/<key>` BEFORE any SQL

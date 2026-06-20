@@ -1,23 +1,26 @@
-// Probe widget (DAT-576 + DAT-592) — the editable Connect-phase surface: pick a
-// configured DB source, write/edit read-only SQL, run it against the external DB
-// BEFORE ingest, and (DAT-592) stage queries into an IMPORT SET that imports each
-// as its own single-statement `db_recipe` source.
+// Probe widget → STAGING HUB (DAT-576 + DAT-592 + DAT-594) — the unified Connect
+// surface: assemble a HETEROGENEOUS import set (uploaded FILES and probed SQL
+// QUERIES), declare a business model over it (FRAME a new vertical or adopt a
+// builtin), then click START to import the whole set in ONE batched
+// addSourceWorkflow run.
 //
-// Runs stream through /api/probe-sql into the SAME virtualized result grid the lake
-// uses (StreamingGrid), so a large external result never floods the DOM. The agent
-// only SEEDS this surface: a `probe` tool call projects its source + sql into the
-// editor (out of CHIP_ONLY) for the user to edit and re-run. The run itself is a
-// direct fetch — no agent round-trip.
+// Runs (probing) stream through /api/probe-sql into the SAME virtualized result
+// grid the lake uses (StreamingGrid), so a large external result never floods the
+// DOM. The agent only SEEDS this surface: a `probe` tool call projects its source +
+// sql into the editor (out of CHIP_ONLY) for the user to edit and re-run. The run
+// itself is a direct fetch — no agent round-trip.
 //
-// Import set (DAT-592): "Add to import set" stages {import-as name, backend, sql}.
-// The set lives behind a COUNT SYMBOL in the panel header (always visible, never
-// pushed below the tall result grid); clicking it opens a centered MODAL listing
-// the staged queries with remove + "Import N sources". Import calls the
+// Staging set (DAT-594): "Add to import set" stages a query, the 📤 Upload modal
+// stages files; both live behind a COUNT SYMBOL in the panel header (always
+// visible, never pushed below the tall result grid). The 🎯 Frame/Vertical modal
+// declares the model (seeded from the staged set's schemas, or pick a builtin). The
+// frame-before-import gate moved from "can't Add" to "can't START": staging is FREE,
+// Start is gated on a non-empty set AND a framed workspace. Import calls the
 // `importSources` server fn — deterministic, no LLM round-trip — which persists one
-// source per query and starts ONE batched addSourceWorkflow run. The run's progress
-// renders INLINE at the top here (the canvas is message-derived, so a direct action
-// can't project a canvas member), while the background completion-watcher narrates
-// completion into the chat (the run is recorded against the conversationId we pass).
+// source per item and starts ONE batched run. The run's progress renders INLINE at
+// the top here (the canvas is message-derived, so a direct action can't project a
+// canvas member), while the background completion-watcher narrates completion into
+// the chat (the run is recorded against the conversationId we pass).
 
 import {
 	ActionIcon,
@@ -34,28 +37,49 @@ import {
 	TextInput,
 	Tooltip,
 } from "@mantine/core";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { Layers, X } from "lucide-react";
+import {
+	FileText,
+	Layers,
+	Target,
+	Upload as UploadIcon,
+	X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { getActiveVerticalStatus } from "#/server/active-vertical";
 import { getConfiguredDatabases } from "#/server/configured-databases";
 import { importSources } from "#/server/import-sources";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { UploadDropzone } from "#/ui/cockpit/upload-dropzone";
 import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
+import { ModelModal } from "#/ui/cockpit/widgets/model-modal";
 import { StreamingGrid } from "#/ui/cockpit/widgets/result-grid";
 import { SqlEditor } from "#/ui/cockpit/widgets/sql-editor";
 
-/** One staged query — becomes one single-statement `db_recipe` source on import.
- * A `type` (not `interface`) so it's assignable to the server fn's input shape.
+/** One staged QUERY — becomes one single-statement `db_recipe` source on import.
  * `credential_source` is the configured connection the query reads through (the
  * probed source) — distinct from `source_name`, the new source's own name. */
-type ImportSpec = {
+type QueryItem = {
+	kind: "query";
 	source_name: string;
 	credential_source: string;
 	backend: string;
 	sql: string;
 };
+
+/** One staged FILE — becomes one content-keyed `src_<digest>` source on import.
+ * `file_uri` is the staged `s3://…/<digest>/<filename>` upload handle; `filename`
+ * is its display leaf (the set lists files by original name, keyed by digest). */
+type FileItem = {
+	kind: "file";
+	file_uri: string;
+	filename: string;
+	source_type: string;
+};
+
+/** One staged item in the heterogeneous import set. */
+type ImportItem = QueryItem | FileItem;
 
 /** The probe-sql request a Run submits — mirrors the /api/probe-sql body. */
 type ProbeRun = {
@@ -69,6 +93,20 @@ type ProbeRun = {
 // of the client bundle (the upload/policy split precedent). Gates the "Add" button
 // for fast feedback only.
 const SOURCE_NAME_RE = /^[a-z][a-z0-9_]{1,48}$/;
+
+/** The display leaf (filename) of a staged `s3://…/<digest>/<filename>` URI. */
+function uploadFilename(uri: string): string {
+	return uri.split("/").filter(Boolean).at(-1) ?? uri;
+}
+
+/** The engine `source_type` from a URI suffix — a client-side mirror (the server
+ * re-derives via select/mappers; this is just for the set's display badge). */
+function sourceTypeForUriClient(uri: string): string {
+	const lower = uri.toLowerCase();
+	if (/\.(parquet|pq)$/.test(lower)) return "parquet";
+	if (/\.(json|ndjson|jsonl)$/.test(lower)) return "json";
+	return "csv";
+}
 
 export function ProbeWidget({
 	state,
@@ -87,19 +125,62 @@ export function ProbeWidget({
 	const params = useParams({ strict: false }) as { conversationId?: string };
 	const conversationId = params.conversationId ?? null;
 
-	const [importSet, setImportSet] = useState<ImportSpec[]>([]);
-	// Re-adding a name re-points its SQL (an edit), never a silent duplicate.
-	const addToSet = (spec: ImportSpec) =>
+	const [importSet, setImportSet] = useState<ImportItem[]>([]);
+	// Re-adding a query name re-points its SQL (an edit), never a silent duplicate;
+	// re-adding a file URI (same digest) is a no-op (dedup by digest, like the
+	// server). Queries key on source_name, files on file_uri.
+	const addQuery = (item: QueryItem) =>
 		setImportSet((s) => [
-			...s.filter((x) => x.source_name !== spec.source_name),
-			spec,
+			...s.filter(
+				(x) => !(x.kind === "query" && x.source_name === item.source_name),
+			),
+			item,
 		]);
-	const removeFromSet = (name: string) =>
-		setImportSet((s) => s.filter((x) => x.source_name !== name));
+	const addFiles = (uris: string[]) =>
+		setImportSet((s) => {
+			const have = new Set(
+				s
+					.filter((x): x is FileItem => x.kind === "file")
+					.map((x) => x.file_uri),
+			);
+			const fresh: FileItem[] = uris
+				.filter((uri) => !have.has(uri))
+				.map((uri) => ({
+					kind: "file",
+					file_uri: uri,
+					filename: uploadFilename(uri),
+					source_type: sourceTypeForUriClient(uri),
+				}));
+			return [...s, ...fresh];
+		});
+	// Remove by stable identity (query → source_name, file → file_uri).
+	const removeItem = (id: string) =>
+		setImportSet((s) =>
+			s.filter((x) =>
+				x.kind === "query" ? x.source_name !== id : x.file_uri !== id,
+			),
+		);
+
+	const queryCount = importSet.filter((x) => x.kind === "query").length;
 
 	const importMutation = useMutation({
-		mutationFn: (specs: ImportSpec[]) =>
-			importSources({ data: { sources: specs, conversationId } }),
+		mutationFn: (items: ImportItem[]) =>
+			importSources({
+				data: {
+					queries: items
+						.filter((x): x is QueryItem => x.kind === "query")
+						.map(({ source_name, credential_source, backend, sql }) => ({
+							source_name,
+							credential_source,
+							backend,
+							sql,
+						})),
+					files: items
+						.filter((x): x is FileItem => x.kind === "file")
+						.map((x) => ({ file_uri: x.file_uri })),
+					conversationId,
+				},
+			}),
 		// Clear the staged set on a successful start — the run is now live (its
 		// progress renders at the top); the set is free to build the next batch.
 		onSuccess: () => setImportSet([]),
@@ -151,8 +232,10 @@ export function ProbeWidget({
 				key={seedKey}
 				state={state}
 				importSet={importSet}
-				onAdd={addToSet}
-				onRemove={removeFromSet}
+				queryCount={queryCount}
+				onAddQuery={addQuery}
+				onAddFiles={addFiles}
+				onRemove={removeItem}
 				onImport={() => importMutation.mutate(importSet)}
 				pending={importMutation.isPending}
 			/>
@@ -163,18 +246,23 @@ export function ProbeWidget({
 function ProbePanel({
 	state,
 	importSet,
-	onAdd,
+	queryCount,
+	onAddQuery,
+	onAddFiles,
 	onRemove,
 	onImport,
 	pending,
 }: {
 	state: Extract<CanvasState, { kind: "probe" }>;
-	importSet: ImportSpec[];
-	onAdd: (spec: ImportSpec) => void;
-	onRemove: (name: string) => void;
+	importSet: ImportItem[];
+	queryCount: number;
+	onAddQuery: (item: QueryItem) => void;
+	onAddFiles: (uris: string[]) => void;
+	onRemove: (id: string) => void;
 	onImport: () => void;
 	pending: boolean;
 }) {
+	const queryClient = useQueryClient();
 	const sources = useQuery({
 		queryKey: ["configured-databases"],
 		queryFn: () => getConfiguredDatabases(),
@@ -182,14 +270,16 @@ function ProbePanel({
 	const list = useMemo(() => sources.data ?? [], [sources.data]);
 
 	// Is the workspace framed? Importing grounds against the vertical's concepts and
-	// fails loud if there are none, so the import set is gated on this (DAT-592
-	// follow-up). Probing (Run) stays open — read-only exploration is how you decide
-	// the frame. `framed` only when CONFIRMED true (loading/error → gated, safe).
+	// fails loud if there are none, so the import START is gated on this (DAT-594:
+	// the gate moved from Add to Start). Probing (Run) and staging stay open —
+	// read-only exploration + set-building is how you decide the frame. `framed`
+	// only when CONFIRMED true (loading/error → gated, safe).
 	const frameStatus = useQuery({
 		queryKey: ["active-vertical-status"],
 		queryFn: () => getActiveVerticalStatus(),
 		// Session-stable — only the `frame`/`use_vertical` flow changes it — so don't
-		// re-hit the server on every window focus.
+		// re-hit the server on every window focus. The frame/vertical modal
+		// invalidates this key on success so the Start gate flips immediately.
 		staleTime: 5 * 60 * 1000,
 	});
 	const framed = frameStatus.data?.framed === true;
@@ -206,9 +296,11 @@ function ProbePanel({
 	// Bumped per Run so an identical re-run still remounts StreamingGrid (fresh
 	// stream + sort reset), not just a different query.
 	const [runId, setRunId] = useState(0);
-	// The import-set modal — pure view state, fine to reset on re-seed (the SET
+	// View state for the three modals — pure UI, fine to reset on re-seed (the SET
 	// itself lives in ProbeWidget and survives).
 	const [setOpen, setSetOpen] = useState(false);
+	const [uploadOpen, setUploadOpen] = useState(false);
+	const [modelOpen, setModelOpen] = useState(false);
 
 	const selectedSource = useMemo(
 		() => list.find((s) => s.name === selected) ?? null,
@@ -228,19 +320,20 @@ function ProbePanel({
 	};
 
 	const nameValid = SOURCE_NAME_RE.test(importAs);
-	// Re-using a staged name UPDATES that query's SQL (addToSet replaces by name) —
+	// Re-using a staged name UPDATES that query's SQL (addQuery replaces by name) —
 	// a valid edit, not a duplicate. So the gate ALLOWS it; only the button label
 	// flips to "Update" so the action is unambiguous.
-	const nameStaged = importSet.some((s) => s.source_name === importAs);
-	// `framed` is the load-bearing gate (DAT-592 follow-up): no business model →
-	// the import would die at grounding, so staging is blocked until one exists.
-	const canAdd = selectedSource !== null && hasSql && nameValid && framed;
+	const nameStaged = importSet.some(
+		(s) => s.kind === "query" && s.source_name === importAs,
+	);
+	// Staging is FREE now (DAT-594): no `framed` gate on Add — the frame-before-
+	// import gate moved to START. Add only needs a source, SQL, and a valid name.
+	const canAdd = selectedSource !== null && hasSql && nameValid;
 
 	const add = () => {
-		// `framed` is guarded here too, not only via the disabled button — HTML
-		// `disabled` is a UI-only barrier; the handler must hold the invariant.
-		if (!selectedSource || !hasSql || !nameValid || !framed) return;
-		onAdd({
+		if (!selectedSource || !hasSql || !nameValid) return;
+		onAddQuery({
+			kind: "query",
 			source_name: importAs,
 			// The picked source IS the connection the query reads through; the engine
 			// resolves credentials from it, so the new source can be named freely.
@@ -252,12 +345,21 @@ function ProbePanel({
 	};
 
 	const noSources = !sources.isLoading && list.length === 0;
+	// The Start gate (DAT-594): a non-empty set AND a framed workspace. Disabled
+	// Start tells the user WHICH precondition is missing.
+	const canStart = importSet.length > 0 && framed;
+	const startBlockedReason =
+		importSet.length === 0
+			? "Stage a query or upload a file first."
+			: !framed
+				? "Declare a business model (Frame / Vertical) before importing."
+				: undefined;
 
 	return (
 		<Stack gap="sm" data-testid="probe-explore">
 			<Group justify="space-between" wrap="nowrap">
 				<Text size="sm" fw={600}>
-					Probe a database source
+					Assemble an import set
 				</Text>
 				<Group gap="xs" wrap="nowrap">
 					{selectedSource && (
@@ -265,8 +367,30 @@ function ProbePanel({
 							{selectedSource.backend}
 						</Badge>
 					)}
-					{/* The import-set count symbol — always here in the header (not pushed
-					    below the result grid), opens the staged-queries modal. */}
+					{/* Header toolbar (DAT-594): Upload files, declare the model, and the
+					    set count symbol — always here (not pushed below the result grid). */}
+					<Tooltip label="Upload files">
+						<Button
+							size="compact-xs"
+							variant="light"
+							leftSection={<UploadIcon size={14} />}
+							onClick={() => setUploadOpen(true)}
+							data-testid="probe-upload-open"
+						>
+							Upload
+						</Button>
+					</Tooltip>
+					<Tooltip label="Frame a model or pick a vertical">
+						<Button
+							size="compact-xs"
+							variant="light"
+							leftSection={<Target size={14} />}
+							onClick={() => setModelOpen(true)}
+							data-testid="probe-model-open"
+						>
+							{framed ? "Model ✓" : "Frame / Vertical"}
+						</Button>
+					</Tooltip>
 					{importSet.length > 0 && (
 						<Tooltip label="View import set">
 							<Button
@@ -283,9 +407,9 @@ function ProbePanel({
 				</Group>
 			</Group>
 			<Text size="xs" c="dimmed">
-				Read-only DuckDB SQL against a configured source (use LIMIT, not TOP) —
-				no data is imported until you add a query to the import set.
-				⌘/Ctrl+Enter to run.
+				Probe a database with read-only DuckDB SQL (use LIMIT, not TOP) and
+				stage queries, or upload files — then declare a model and Start the
+				import. ⌘/Ctrl+Enter to run.
 			</Text>
 
 			{unframed && (
@@ -302,9 +426,8 @@ function ProbePanel({
 							has no concepts
 						</>
 					)}
-					, so an imported source has nothing to ground against. Frame a
-					vertical (or pick one) in the chat before importing — probing here
-					still works.
+					. Stage your set, then declare a model (Frame / Vertical) before you
+					Start — an imported source has nothing to ground against without one.
 				</Alert>
 			)}
 
@@ -337,7 +460,7 @@ function ProbePanel({
 					<Text span ff="monospace" size="xs">
 						docker-compose.sources.yml
 					</Text>
-					).
+					), or upload files instead.
 				</Alert>
 			)}
 
@@ -382,9 +505,62 @@ function ProbePanel({
 				</Button>
 			</Group>
 
+			{/* The primary action: import the whole staged set in one run. Gated on a
+			    framed workspace (DAT-594) — disabled tells the user why. */}
+			<Group justify="flex-end" gap="sm" wrap="nowrap">
+				{startBlockedReason && (
+					<Text size="xs" c="dimmed" data-testid="probe-start-blocked">
+						{startBlockedReason}
+					</Text>
+				)}
+				<Button
+					size="sm"
+					onClick={onImport}
+					disabled={!canStart}
+					loading={pending}
+					data-testid="probe-start"
+				>
+					Start import
+					{importSet.length > 0
+						? ` (${importSet.length} source${importSet.length === 1 ? "" : "s"})`
+						: ""}
+				</Button>
+			</Group>
+
 			{submitted && (
 				<StreamingGrid key={runId} endpoint="/api/probe-sql" body={submitted} />
 			)}
+
+			{/* Upload modal — reuses the standalone dropzone; staged files join the set. */}
+			<Modal
+				opened={uploadOpen}
+				onClose={() => setUploadOpen(false)}
+				centered
+				size="lg"
+				title="Upload files to the import set"
+			>
+				<UploadDropzone
+					onUploaded={(uris) => {
+						onAddFiles(uris);
+						setUploadOpen(false);
+					}}
+				/>
+			</Modal>
+
+			{/* Frame / Vertical modal — declares the model from the staged set's schemas
+			    (frame a new vertical) or adopts a builtin; invalidates the status query
+			    on success so the Start gate flips. */}
+			<ModelModal
+				opened={modelOpen}
+				onClose={() => setModelOpen(false)}
+				importSet={importSet}
+				onModelDeclared={() => {
+					queryClient.invalidateQueries({
+						queryKey: ["active-vertical-status"],
+					});
+					setModelOpen(false);
+				}}
+			/>
 
 			<Modal
 				opened={setOpen}
@@ -395,39 +571,73 @@ function ProbePanel({
 			>
 				<Stack gap="sm">
 					<Text size="xs" c="dimmed">
-						Each query imports as its own source. They import together as one
-						run.
+						{queryCount} quer{queryCount === 1 ? "y" : "ies"} and{" "}
+						{importSet.length - queryCount} file
+						{importSet.length - queryCount === 1 ? "" : "s"}. Each imports as
+						its own source; they import together as one run.
 					</Text>
 					{importSet.length === 0 ? (
 						<Text size="sm" c="dimmed">
-							No queries staged yet.
+							No queries or files staged yet.
 						</Text>
 					) : (
 						<Stack gap="xs" data-testid="probe-import-set">
-							{importSet.map((spec) => (
-								<Group
-									key={spec.source_name}
-									justify="space-between"
-									wrap="nowrap"
-									align="flex-start"
-								>
-									<Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
-										<Badge variant="light" size="sm" tt="none">
-											{spec.source_name}
-										</Badge>
-										<Code block>{spec.sql}</Code>
-									</Stack>
-									<ActionIcon
-										variant="subtle"
-										color="gray"
-										size="sm"
-										aria-label={`Remove ${spec.source_name}`}
-										onClick={() => onRemove(spec.source_name)}
+							{importSet.map((item) =>
+								item.kind === "query" ? (
+									<Group
+										key={`q:${item.source_name}`}
+										justify="space-between"
+										wrap="nowrap"
+										align="flex-start"
 									>
-										<X size={14} />
-									</ActionIcon>
-								</Group>
-							))}
+										<Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+											<Badge variant="light" size="sm" tt="none">
+												{item.source_name}
+											</Badge>
+											<Code block>{item.sql}</Code>
+										</Stack>
+										<ActionIcon
+											variant="subtle"
+											color="gray"
+											size="sm"
+											aria-label={`Remove ${item.source_name}`}
+											onClick={() => onRemove(item.source_name)}
+										>
+											<X size={14} />
+										</ActionIcon>
+									</Group>
+								) : (
+									<Group
+										key={`f:${item.file_uri}`}
+										justify="space-between"
+										wrap="nowrap"
+										align="center"
+									>
+										<Group
+											gap="xs"
+											style={{ minWidth: 0, flex: 1 }}
+											wrap="nowrap"
+										>
+											<FileText size={14} aria-hidden />
+											<Text size="sm" truncate>
+												{item.filename}
+											</Text>
+											<Badge variant="light" size="xs" tt="none">
+												{item.source_type}
+											</Badge>
+										</Group>
+										<ActionIcon
+											variant="subtle"
+											color="gray"
+											size="sm"
+											aria-label={`Remove ${item.filename}`}
+											onClick={() => onRemove(item.file_uri)}
+										>
+											<X size={14} />
+										</ActionIcon>
+									</Group>
+								),
+							)}
 						</Stack>
 					)}
 					<Group justify="flex-end">
@@ -441,8 +651,8 @@ function ProbePanel({
 							}}
 							data-testid="probe-import-run"
 						>
-							Import {importSet.length} source
-							{importSet.length === 1 ? "" : "s"}
+							Start import ({importSet.length} source
+							{importSet.length === 1 ? "" : "s"})
 						</Button>
 					</Group>
 				</Stack>

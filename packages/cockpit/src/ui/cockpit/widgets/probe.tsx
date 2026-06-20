@@ -640,21 +640,8 @@ function ProbePanel({
 							)}
 						</Stack>
 					)}
-					<Group justify="flex-end">
-						<Button
-							size="xs"
-							disabled={importSet.length === 0 || !framed}
-							loading={pending}
-							onClick={() => {
-								onImport();
-								setSetOpen(false);
-							}}
-							data-testid="probe-import-run"
-						>
-							Start import ({importSet.length} source
-							{importSet.length === 1 ? "" : "s"})
-						</Button>
-					</Group>
+					{/* Review/remove only — Start funnels through the single panel-level
+					    button (probe-start) so the framed-gate lives in one place. */}
 				</Stack>
 			</Modal>
 		</Stack>

@@ -5,7 +5,7 @@
 //     staged set's UNIONED schemas (frameStagingSet sniffs each item server-side),
 //     under a user-named vertical.
 //   - USE an existing vertical: adopt a builtin (or already-framed) onto the
-//     workspace (useVerticalForStaging) — a builtin ships its own concepts.
+//     workspace (adoptVerticalForStaging) — a builtin ships its own concepts.
 //
 // Either path writes the workspace's vertical; on success the caller invalidates
 // the active-vertical-status query so the Start gate flips immediately. Frame is an
@@ -42,6 +42,9 @@ export interface StagedForFrame {
 	file_uri?: string;
 }
 
+// Client-side mirror of `frame.ts`'s VERTICAL_NAME_PATTERN (the authority — frame
+// re-validates server-side). Duplicated, like probe.tsx's SOURCE_NAME_RE, to keep
+// the server-only frame module out of the client bundle.
 const VERTICAL_NAME_RE = /^[a-z][a-z0-9_]{1,48}$/;
 
 export function ModelModal({
@@ -66,6 +69,9 @@ export function ModelModal({
 		queryFn: () => listAdoptableVerticals(),
 		// Only fetched while the modal is open (it offers the adopt list).
 		enabled: opened,
+		// Builtins are static; framed verticals change only when frame runs — so
+		// don't re-fetch the list on every modal open (matches active-vertical-status).
+		staleTime: 5 * 60 * 1000,
 	});
 
 	const frameMutation = useMutation({

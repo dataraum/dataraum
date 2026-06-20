@@ -24,22 +24,32 @@ import type { UseVerticalResult } from "#/tools/use-vertical";
 // The staging set to seed induction from — the same query/file shapes the import
 // uses, minus what frame doesn't need (file_uri carries the schema; a query's SQL
 // + connection sniff its schema).
-const StageFrameInput = z.object({
-	queries: z
-		.array(
-			z.object({
-				source_name: z.string(),
-				credential_source: z.string(),
-				backend: z.string(),
-				sql: z.string(),
-			}),
-		)
-		.default([]),
-	files: z.array(z.object({ file_uri: z.string() })).default([]),
-	// The new vertical to declare the induced model under (the user can rename in
-	// the modal). Omitted → `_adhoc` (the cold-start fallback), per frame's default.
-	vertical_name: z.string().nullish(),
-});
+const StageFrameInput = z
+	.object({
+		queries: z
+			.array(
+				z.object({
+					source_name: z.string(),
+					credential_source: z.string(),
+					backend: z.string(),
+					// `.min(1)` closes the empty-SQL fragility: a blank query would reach
+					// `probeDescribe` as `DESCRIBE SELECT * FROM ()` (a syntax error). The
+					// modal caller always passes complete queries; this guards direct calls.
+					sql: z.string().min(1),
+				}),
+			)
+			.default([]),
+		files: z.array(z.object({ file_uri: z.string() })).default([]),
+		// The new vertical to declare the induced model under (the user can rename in
+		// the modal). Omitted → `_adhoc` (the cold-start fallback), per frame's default.
+		vertical_name: z.string().nullish(),
+	})
+	// Reject an empty staging set up front (mirrors ImportSourcesInput) — without
+	// this, `assembleStagingSchema` throws inside the handler and surfaces as a 500
+	// rather than a structured validation error.
+	.refine((v) => v.queries.length + v.files.length > 0, {
+		message: "The staging set is empty — stage a query or file before framing.",
+	});
 
 /** The frame outcome the staging modal needs — a SERIALIZABLE summary (counts +
  * the vertical it landed under), NOT the full `FrameResult` (whose validation
@@ -77,6 +87,8 @@ export const frameStagingSet = createServerFn({ method: "POST" })
 			Promise.all(
 				data.queries.map(async (q) => ({
 					source_name: q.source_name,
+					// probeDescribe samples at its DEFAULT_ROW_LIMIT (1000 rows) — sized for
+					// induction context; a deliberate default, not an oversight.
 					schema: await probeDescribe({
 						source_name: q.credential_source,
 						backend: q.backend,

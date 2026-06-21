@@ -4,6 +4,36 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-21: DAT-580 — driver engine ported pandas → DuckDB arrow→polars + int codes
+
+The driver-discovery engine (`analysis/drivers/`) no longer uses pandas. The enriched
+view is loaded via DuckDB `to_arrow_table()` → `pl.from_arrow` (zero-copy); dimensions
+are factorized to physical int codes + label lists (no resident Python `str` objects);
+the measure is cast to `DOUBLE` and read as a float view; all entity-grain aggregation
+(`_collapse_to_entity`, `_within_entity_residual`, ICC factorize,
+`_partition_by_entity_constancy`) is numpy `bincount` over physical entity codes. The
+`criterion.build_codes`/`tree` contract now takes int codes instead of object arrays.
+`DEFAULT_MAX_ROWS` raised 800k → 2.4M (the arrow load cut peak RSS ~67% at 1M×15, so
+the DAT-571 bottom-k-by-hash subsampling is now a rare fallback). `targets.py`,
+`models.py`, `persistence.py`, `db_models.py` are unchanged.
+
+### dataraum-eval
+- **Output is behavior-equivalent — not a detector change.** A committed golden
+  (`tests/unit/analysis/drivers/test_golden_equivalence.py`, 6 scenarios) pins
+  `DriverRanking` across the port: structural fields exact, gains/effects within
+  `atol=1e-7`, p-values within one permutation quantum. **Driver calibration recall/FDR
+  should be unaffected** — run the driver-ranking calibration to confirm, but no
+  re-pinning of golden gain values is expected beyond float-ε.
+- **Watch for ε-level shifts only at decision boundaries**: polars/bincount summation
+  can differ from pandas at ~1e-15, which *could* flip a single near-`icc_threshold`
+  (0.10) routing or near-α significance call. Per polars#5325 polars summation is often
+  the more accurate one; treat any such flip as a possible correction, not a regression.
+- If `dataraum-eval` carries its own committed driver golden built on the pandas output,
+  it may need regenerating for float-ε — same structural result expected.
+- **New engine deps**: `polars`, `pyarrow` (pyarrow already transitive via pandas 3.0
+  in some envs, now explicit). pandas remains a dep (relationships/temporal still use it).
+- **Status**: pending
+
 ## 2026-06-19: DAT-538 — `slice_definitions.grain_safe` removed
 
 The `grain_safe` boolean column on `slice_definitions` (the dimension catalog,

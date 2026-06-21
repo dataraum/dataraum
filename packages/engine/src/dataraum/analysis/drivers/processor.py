@@ -69,11 +69,13 @@ DEFAULT_ICC_THRESHOLD = 0.10
 # (the min_support analogue — power scales with entity count, not rows).
 DEFAULT_MIN_ENTITIES = 10
 # Above this row count the enriched view is sub-sampled before the in-memory load
-# (DAT-571). The bound is the pandas frame, NOT DuckDB's scan (which is memory_limit-
-# capped): ``.df()`` materializes string dims as Python objects (~50–80 B/value), so
-# ~800k rows × the (already pruned) candidate dims is the comfortable per-frame size
-# under the worker's concurrent activities. DAT-580 (arrow-backed load) will raise it.
-DEFAULT_MAX_ROWS = 800_000
+# (DAT-571). The bound is the in-memory working set, NOT DuckDB's scan (which is
+# memory_limit-capped). DAT-580 made the load arrow-backed: dims are arrow strings then
+# physical int codes (no ~50–80 B/value Python str objects) and the measure a float view,
+# so the same per-activity byte budget that held ~800k pandas-frame rows now holds ~3×
+# (the spike measured −67% peak RSS at 1M×15). 2.4M keeps sampling a rare fallback while
+# staying conservative under the worker's concurrent activities.
+DEFAULT_MAX_ROWS = 2_400_000
 
 _TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
 
@@ -335,9 +337,10 @@ def discover_drivers(
     (``measure − entity_mean``); ratio de-means the per-row ratio by its entity's
     volume-weighted mean (its pooled ``Σnum/Σden``).
 
-    **Bounded load (DAT-571):** the ``(present_dims + measure)`` columns are read into
-    memory at row grain in one pass — at ~1M rows × ~15 dims that pandas frame is several
-    hundred MB. Above ``max_rows`` the view is deterministically sub-sampled to ``max_rows``
+    **Bounded load (DAT-571 / DAT-580):** the ``(present_dims + measure)`` columns are read
+    into memory at row grain in one arrow→polars pass, then factorized to int codes + a
+    float measure view (the spike measured −67% peak RSS vs the old pandas frame at 1M×15).
+    Above ``max_rows`` the view is deterministically sub-sampled to ``max_rows``
     rows via a bottom-k-by-hash sketch (the N smallest row-hashes are a uniform sample
     without replacement) rather than dropping the analysis: large finance/logistics facts
     are exactly where drivers matter most. The sketch is deterministic regardless of DuckDB

@@ -78,6 +78,12 @@ def build_codes(
         codes = np.where(present, phys, n_phys)
         return codes, n_phys + (1 if has_null else 0)
 
+    if n_phys == 0:
+        # Every row is dim-null (e.g. an entity-constant dim null for all kept entities):
+        # all rows gated out, no groups — matches the old pd.unique-of-empty path and keeps
+        # the bincount/remap below (which assume ≥1 physical code) from indexing empty.
+        return np.full(len(phys), _DIM_NULL_CODE, dtype=int), 0
+
     # (A) dim-present: only rows with a slice label participate (null → -1, below).
     baseline = measure_observed[present].mean() if present.any() else 0.0
     total = np.bincount(phys[present], minlength=n_phys)

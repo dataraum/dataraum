@@ -54,6 +54,15 @@ class TestNullGates:
         assert np.all(codes[dim_null] == -1)
         assert np.any(codes[~dim_null] >= 0)
 
+    def test_all_null_dimension_is_fully_gated(self) -> None:
+        # An entirely dim-null column (n_phys == 0) — e.g. an entity-constant dim null for
+        # every kept entity — must gate every row out, not crash on an empty remap.
+        phys = np.full(100, -1, dtype=np.int64)
+        measure = np.ones(100)
+        codes, n = build_codes(phys, measure, handle_nulls=True)
+        assert n == 0
+        assert np.all(codes == -1)
+
     def test_missingness_gate_closes_measure_missing_leak(self) -> None:
         # (B): N_measure_missing concentrates measure-missingness in one slice value.
         # WITHOUT handling it manufactures a spurious gain; WITH the (B) gate the

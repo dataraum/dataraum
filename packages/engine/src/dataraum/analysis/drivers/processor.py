@@ -538,6 +538,8 @@ def _partition_by_entity_constancy(
     # ``nunique``), so ``<= 1`` also catches an all-null dim (0) as entity-constant —
     # harmless: it contributes nothing (every row gated out by the (A) gate) wherever it
     # lands, exactly as on the old row-wise path.
+    if not dims:
+        return [], []
     # Prefix the aggregate aliases so a candidate dim that IS the cluster_key (constant
     # within its own group → nunique 1) doesn't collide with the group-key column.
     agg = frame.group_by(cluster_key).agg(

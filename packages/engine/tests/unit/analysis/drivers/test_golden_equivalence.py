@@ -21,7 +21,9 @@ bitwise equality with pandas is the wrong bar):
     flip a single ``>=`` in the null; benign unless it crosses α, which the structural
     ``ranked_dimensions`` assertion catches.
 
-Regenerate (only on the pandas baseline, or a deliberate behavior change) with
+The committed golden was captured on the pandas baseline (P1, before the port) and has
+NOT been regenerated since — the arrow→polars code passing against it is the equivalence
+proof. Only regenerate on a deliberate, reviewed behavior change, with
 ``DAT580_REGEN=1 uv run pytest .../test_golden_equivalence.py``.
 """
 
@@ -30,8 +32,9 @@ from __future__ import annotations
 import json
 import os
 
-# Deterministic polars summation post-port (no-op on the pandas baseline). Must precede
-# any polars import the engine triggers.
+# Precautionary: all float aggregation in the port goes through numpy bincount (thread-
+# independent), so this isn't strictly required — but it pins any future polars-side
+# reduction to a single thread. Must precede the engine's first polars import.
 os.environ.setdefault("POLARS_MAX_THREADS", "1")
 
 from pathlib import Path  # noqa: E402

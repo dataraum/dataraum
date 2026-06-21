@@ -149,9 +149,8 @@ class TestWithinEntityDemean:
         df = make_clustered_two_driver_corpus(np.random.default_rng(0))
         measure = df["measure"].to_numpy(dtype=float)
         residual = _within_entity_residual(df, CL_ENTITY, "measure")
-        codes, n = build_codes(
-            df[CL_ROW_DRIVER].astype(object).to_numpy(), measure, handle_nulls=True
-        )
+        phys, _ = pd.factorize(df[CL_ROW_DRIVER].astype(object).to_numpy())
+        codes, n = build_codes(phys.astype(int), measure, handle_nulls=True)
         raw_gain = variance_reduction(codes, n, measure, min_support=2)
         residual_gain = variance_reduction(codes, n, residual, min_support=2)
         # The between-entity variance dilutes the row driver in the raw measure; the
@@ -165,9 +164,8 @@ class TestWithinEntityDemean:
         den = df["denominator"].to_numpy(dtype=float)
         ratio = num / den
         residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
-        codes, n = build_codes(
-            df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy(), ratio, handle_nulls=True
-        )
+        phys, _ = pd.factorize(df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy())
+        codes, n = build_codes(phys.astype(int), ratio, handle_nulls=True)
         # Both gains are volume-weighted (weight = denominator); only the de-mean differs.
         raw_gain = weighted_variance_reduction(codes, n, ratio, den, min_support=2)
         residual_gain = weighted_variance_reduction(codes, n, residual, weight, min_support=2)

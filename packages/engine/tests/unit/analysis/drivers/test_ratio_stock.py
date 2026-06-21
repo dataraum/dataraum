@@ -18,6 +18,8 @@ from .conftest import (
     ALL_DIMS,
     RATIO_DIMS,
     RATIO_NULLS,
+    columns,
+    factorize_columns,
     make_corpus,
     make_ratio_corpus,
 )
@@ -60,12 +62,15 @@ class TestRatioTarget:
         for seed in range(seeds):
             rng = np.random.default_rng(seed)
             df = make_ratio_corpus(rng)
-            values_by_dim = {d: df[d].astype(object).to_numpy() for d in RATIO_DIMS}
+            codes_by_dim, labels_by_dim = factorize_columns(
+                {d: df[d].astype(object).to_numpy() for d in RATIO_DIMS}
+            )
             target = RatioTarget(
                 df["numerator"].to_numpy(dtype=float), df["denominator"].to_numpy(dtype=float)
             )
             rank = discover_tree(
-                values_by_dim,
+                codes_by_dim,
+                labels_by_dim,
                 target,
                 measure_label="margin",
                 dims=RATIO_DIMS,
@@ -97,10 +102,13 @@ class TestStockTarget:
         # variance reduction as flow, only the target_type label differs.
         rng = np.random.default_rng(0)
         df = make_corpus(rng)
-        values_by_dim = {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
+        codes_by_dim, labels_by_dim = factorize_columns(
+            {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
+        )
         target = FlowTarget(df["measure"].to_numpy(dtype=float), target_type="stock")
         rank = discover_tree(
-            values_by_dim,
+            codes_by_dim,
+            labels_by_dim,
             target,
             measure_label="balance",
             dims=ALL_DIMS,
@@ -117,7 +125,7 @@ class TestStockTarget:
         # for a stock measure as a flow one.
         rng = np.random.default_rng(0)
         df = make_corpus(rng)
-        values = df["D_e60"].astype(object).to_numpy()
+        phys, _ = columns(df, "D_e60")
         target = FlowTarget(df["measure"].to_numpy(dtype=float), target_type="stock")
-        codes, n_codes = build_codes(values, target.observed, handle_nulls=True)
+        codes, n_codes = build_codes(phys, target.observed, handle_nulls=True)
         assert n_codes >= 2

@@ -216,6 +216,23 @@ def _resolve_cluster_keys(
     return verified
 
 
+def _factorize_dims(
+    values_by_dim: dict[str, np.ndarray],
+) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
+    """Physical int codes (-1 = null) + label-per-code per dim — the tree's input (DAT-580).
+
+    Keeps string values out of the permutation-null working set: the tree reasons over
+    int codes, resolving labels only for the few surfaced slices.
+    """
+    codes_by_dim: dict[str, np.ndarray] = {}
+    labels_by_dim: dict[str, list[str]] = {}
+    for d, values in values_by_dim.items():
+        codes, uniques = pd.factorize(values)
+        codes_by_dim[d] = codes.astype(int)
+        labels_by_dim[d] = [str(u) for u in uniques]
+    return codes_by_dim, labels_by_dim
+
+
 def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
     """Build the row-aligned target from the measure's columns in ``frame``."""
     if measure.target_type in ("flow", "stock"):
@@ -673,8 +690,10 @@ def _row_wise_ranking(
     else:
         target = _make_target(measure, frame)
     values_by_dim = {d: frame[d].astype(object).to_numpy() for d in dims}
+    codes_by_dim, labels_by_dim = _factorize_dims(values_by_dim)
     return discover_tree(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         target,
         measure_label=measure.label,
         dims=dims,
@@ -715,9 +734,11 @@ def _entity_grain_ranking(
     if values.size == 0:  # every entity has no usable measure — nothing to rank
         return empty
 
+    codes_by_dim, labels_by_dim = _factorize_dims(values_by_dim)
     target = EntityMeanTarget(values, sizes, target_type=measure.target_type)
     return discover_tree(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         target,
         measure_label=measure.label,
         dims=entity_dims,

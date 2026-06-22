@@ -48,7 +48,11 @@ import {
 	QUERY_SUBAGENT_MAX_ITERATIONS,
 } from "../llm";
 import { getQueryInstructions } from "../prompts";
-import { asAgentError, withAgentError } from "./agent-error";
+import {
+	AgentActionableError,
+	asAgentError,
+	withAgentError,
+} from "./agent-error";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
 import {
@@ -186,6 +190,22 @@ interface ValidatedRun {
 	grainNote: string | null;
 }
 
+/** The last run_steps FAILURE (DAT-608) — captured so a sub-agent that exhausts
+ * its step budget can return a diagnostic (which query failed, and why) instead of
+ * an opaque "missing structured result". */
+export interface RunStepsFailure {
+	message: string;
+	sql: string | null;
+	steps: string[];
+}
+
+/** The per-invocation capture cell: the last successful validation (for the grid)
+ * AND the last failure (for the exhaustion diagnostic). */
+interface RunStepsCapture {
+	value: ValidatedRun | null;
+	lastError: RunStepsFailure | null;
+}
+
 // --- Reuse classification (CLASSIFY-don't-substitute; informed by the engine's
 // agent.py `_resolve_snippet_references`).
 
@@ -257,7 +277,7 @@ export async function classifyComponents(
  * server-side, so the grid is provably the validated query — not a re-emission.
  */
 function makeRunStepsTool(
-	captured: { value: ValidatedRun | null },
+	captured: RunStepsCapture,
 	nearUniqueColumns: Set<string>,
 ) {
 	return toolDefinition({
@@ -291,15 +311,27 @@ function makeRunStepsTool(
 		}),
 		outputSchema: withAgentError(RunStepsOk),
 	}).server(async (input, ctx) => {
+		const stepNames = input.steps.map((s) => s.name);
 		const nameError = validateStepNames(input.steps);
-		if (nameError) return { error: nameError };
+		if (nameError) {
+			// Record the failure (DAT-608) so an exhausted loop can diagnose it.
+			captured.lastError = { message: nameError, sql: null, steps: stepNames };
+			return { error: nameError };
+		}
 		const components = await classifyComponents(input.steps);
 		const composed = composeStandalone(
 			components.map((c) => ({ name: c.name, sql: c.sql })),
 			input.final_sql,
 		);
 		const result = await runSteps(composed, ctx?.abortSignal);
-		if (!("ok" in result)) return result;
+		if (!("ok" in result)) {
+			captured.lastError = {
+				message: result.error,
+				sql: composed,
+				steps: stepNames,
+			};
+			return result;
+		}
 		// Grain caveat (DAT-538): inform-don't-block. A GROUP BY over a near-unique
 		// column STILL runs — we attach a note (the agent reflects it to the user)
 		// so an ambiguous "per X" question that meant a summary is caught. Computed
@@ -451,12 +483,75 @@ export async function persistLearnedSnippets(
 	}
 }
 
+// --- Exhaustion handling (DAT-608): the agent loop can end without the model
+// emitting the final structured answer (it hit the step limit, often after
+// repeatedly mis-grounding columns). `chat()` then throws a finalization error
+// (code `structured-output-missing-result`). Rather than let that surface as an
+// opaque "missing structured result", salvage a validated query if one exists, or
+// return an actionable diagnostic so the OUTER agent retries with a concrete hint.
+
+/** True when a thrown error is `chat()`'s "loop ended without a structured output"
+ * finalization error (vs an infra error / abort, which must propagate). Keys on the
+ * stable `code`, set by @tanstack/ai's chat finalizer. */
+export function isMissingStructuredResult(err: unknown): boolean {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "structured-output-missing-result"
+	);
+}
+
+/** Synthesize a draft from a validated-but-unfinalized run: the model proved a
+ * query via run_steps but ran out of steps before writing the summary. The grid
+ * (the captured validated SQL) IS the answer — surface it honestly rather than
+ * failing the turn. Pure; unit-tested. */
+export function salvageDraft(validated: ValidatedRun): QueryDraft {
+	return {
+		answer:
+			"I validated a query for this question but reached my step limit before " +
+			"writing a summary — the full result is in the grid below.",
+		assumptions: [
+			"Returned the last validated query without a written summary (the agent " +
+				"reached its step limit).",
+		],
+		concepts_used: validated.components.map((c) => c.name),
+		tables_touched: [],
+	};
+}
+
+/** Build the agent-actionable diagnostic for a sub-agent that exhausted its budget
+ * without ever validating a query — the last failure + what it tried, so the OUTER
+ * agent retries with a concrete hint instead of an opaque "missing structured
+ * result". Pure; unit-tested. */
+export function exhaustionDiagnostic(
+	lastError: RunStepsFailure | null,
+): string {
+	if (!lastError)
+		return (
+			"I couldn't compose a query that validates against the schema within my " +
+			"step limit, and no validation error was captured. Re-check the table and " +
+			"column names in the schema, then retry with a simpler query."
+		);
+	const steps = lastError.steps.length
+		? ` Steps attempted: ${lastError.steps.join(", ")}.`
+		: "";
+	const sql = lastError.sql
+		? ` Last SQL: ${lastError.sql.length > 300 ? `${lastError.sql.slice(0, 299)}…` : lastError.sql}`
+		: "";
+	return (
+		"I couldn't compose a query that validates against the schema within my step " +
+		`limit. Last validation error: ${lastError.message}.${steps}${sql} Check those ` +
+		"names against the schema and retry with corrected SQL."
+	);
+}
+
 /**
  * The query sub-agent: ONE nested chat() over [snippet_search, run_steps] with the
  * concrete `QueryDraftSchema`, then deterministic post-processing (the grid +
  * components come from the captured validated run; the data-quality band is read).
  * `signal` forwards the outer run's abort into the nested call and the run_steps
- * validator.
+ * validator. On step-budget exhaustion (DAT-608) it salvages a validated query or
+ * returns an actionable diagnostic instead of an opaque "missing structured result".
  */
 export async function querySubAgent(
 	question: string,
@@ -481,22 +576,43 @@ export async function querySubAgent(
 	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
-	// validation here, so it's isolated across concurrent answer calls.
-	const captured: { value: ValidatedRun | null } = { value: null };
+	// validation (and the last failure) here, so it's isolated across concurrent
+	// answer calls.
+	const captured: RunStepsCapture = { value: null, lastError: null };
 
 	// Combined tools + outputSchema is native for claude-sonnet-4-6 — one call
 	// runs the tool loop and returns the validated structured draft (no separate
 	// finalize round-trip). The concrete schema gives a typed result.
-	const draft = await chat({
-		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		abortController: linkedAbortController(signal),
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
-		agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
-		systemPrompts: [getQueryInstructions()],
-		messages: [{ role: "user", content: userMessage }],
-		tools: [snippetSearchTool, makeRunStepsTool(captured, nearUniqueColumns)],
-		outputSchema: QueryDraftSchema,
-	});
+	let draft: QueryDraft;
+	try {
+		draft = await chat({
+			adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+			abortController: linkedAbortController(signal),
+			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
+			systemPrompts: [getQueryInstructions()],
+			messages: [{ role: "user", content: userMessage }],
+			tools: [snippetSearchTool, makeRunStepsTool(captured, nearUniqueColumns)],
+			outputSchema: QueryDraftSchema,
+		});
+	} catch (err) {
+		// Anything other than "loop ended without a structured answer" is infra /
+		// abort — let it propagate (the outer asAgentError / abort handles it).
+		if (!isMissingStructuredResult(err)) throw err;
+		// DAT-608: the agent loop exhausted its step budget without finalizing.
+		if (captured.value) {
+			// A query DID validate — salvage it as the answer (grid + components),
+			// so a near-miss returns the real result instead of failing the turn.
+			const salvaged = salvageDraft(captured.value);
+			const dq = await readDataQuality(salvaged.tables_touched);
+			void persistLearnedSnippets(captured.value);
+			return assembleAnswer(salvaged, captured.value, dq);
+		}
+		// Nothing validated — surface an actionable diagnostic (last error + what it
+		// tried) so the outer agent retries with a concrete hint, not on the opaque
+		// "missing structured result".
+		throw new AgentActionableError(exhaustionDiagnostic(captured.lastError));
+	}
 
 	const dataQuality = await readDataQuality(draft.tables_touched);
 	// Save-on-clean (P2a): grow the snippet library from this answer's fresh/

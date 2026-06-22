@@ -6,10 +6,8 @@ Main entry point for temporal profiling, following the same pattern as statistic
 This analyzes temporal characteristics like:
 - Granularity (daily, hourly, etc.)
 - Completeness and gaps
-- Seasonality patterns
-- Trends
-- Change points
 - Update frequency and staleness
+- Fiscal calendar alignment
 
 Uses parallel processing for large tables to speed up profiling.
 """
@@ -17,7 +15,6 @@ Uses parallel processing for large tables to speed up profiling.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
@@ -42,11 +39,7 @@ from dataraum.analysis.temporal.models import (
     TemporalTableSummary,
 )
 from dataraum.analysis.temporal.patterns import (
-    analyze_distribution_stability,
-    analyze_seasonality,
-    analyze_trend,
     analyze_update_frequency,
-    detect_change_points,
     detect_fiscal_calendar,
 )
 from dataraum.core.config import load_yaml_config
@@ -108,24 +101,13 @@ def _profile_temporal_column_parallel(
 
             metric_id = str(uuid4())
 
-            # Run pattern analyses
-            seasonality_result = analyze_seasonality(time_series, config=config)
-            seasonality = seasonality_result.value if seasonality_result.success else None
-
-            trend_result = analyze_trend(time_series, config=config)
-            trend = trend_result.value if trend_result.success else None
-
-            changes_result = detect_change_points(time_series, config=config)
-            change_points = changes_result.unwrap() if changes_result.success else []
-
+            # Index-derived pattern analyses (the value-series analyzers were removed in
+            # DAT-524 — they ran on a constant series and produced foregone conclusions).
             frequency_result = analyze_update_frequency(time_series, config=config)
             update_frequency = frequency_result.value if frequency_result.success else None
 
             fiscal_result = detect_fiscal_calendar(time_series, config=config)
             fiscal_calendar = fiscal_result.value if fiscal_result.success else None
-
-            stability_result = analyze_distribution_stability(time_series, config=config)
-            distribution_stability = stability_result.value if stability_result.success else None
 
             # Run basic temporal analysis for completeness
             basic_result = analyze_basic_temporal(
@@ -141,8 +123,6 @@ def _profile_temporal_column_parallel(
             issues = _detect_quality_issues(
                 completeness=completeness,
                 update_frequency=update_frequency,
-                change_points=change_points,
-                distribution_stability=distribution_stability,
                 profiled_at=profiled_at,
                 config=config,
             )
@@ -167,12 +147,8 @@ def _profile_temporal_column_parallel(
                 detected_granularity=granularity,
                 granularity_confidence=confidence,
                 completeness=completeness,
-                seasonality=seasonality,
-                trend=trend,
-                change_points=change_points,
                 update_frequency=update_frequency,
                 fiscal_calendar=fiscal_calendar,
-                distribution_stability=distribution_stability,
                 quality_issues=issues,
                 has_issues=len(issues) > 0,
             )
@@ -300,10 +276,6 @@ def profile_temporal(
                                 if profile.completeness
                                 else None
                             ),
-                            "has_seasonality": profile.seasonality.has_seasonality
-                            if profile.seasonality
-                            else False,
-                            "has_trend": profile.trend.has_trend if profile.trend else False,
                             "is_stale": profile.update_frequency.is_stale
                             if profile.update_frequency
                             else False,
@@ -424,19 +396,19 @@ def _load_time_series(
 def _detect_quality_issues(
     completeness: object | None,
     update_frequency: object | None,
-    change_points: Sequence[object],
-    distribution_stability: object | None,
     profiled_at: datetime,
     config: dict[str, Any],
 ) -> list[TemporalQualityIssue]:
-    """Detect quality issues from analysis results."""
+    """Detect quality issues from the index-derived analyses (completeness + freshness).
+
+    The change-point and distribution-stability issues were removed in DAT-524 (they were
+    derived from the degenerate constant-series analyzers).
+    """
     qi = config["quality_issues"]
     low_completeness = qi["low_completeness"]
     very_low_completeness = qi["very_low_completeness"]
     large_gap_days = qi["large_gap_days"]
     severe_gap_days = qi["severe_gap_days"]
-    many_cp = qi["many_change_points"]
-    unstable_dist = qi["unstable_distribution"]
 
     issues = []
 
@@ -484,34 +456,6 @@ def _detect_quality_issues(
                 )
             )
 
-    if len(change_points) > many_cp:
-        issues.append(
-            TemporalQualityIssue(
-                issue_type="many_change_points",
-                severity="medium",
-                description=f"{len(change_points)} change points detected (unstable pattern)",
-                evidence={"change_point_count": len(change_points)},
-                detected_at=profiled_at,
-            )
-        )
-
-    if (
-        distribution_stability
-        and hasattr(distribution_stability, "stability_score")
-        and distribution_stability.stability_score < unstable_dist
-    ):
-        issues.append(
-            TemporalQualityIssue(
-                issue_type="unstable_distribution",
-                severity="medium",
-                description=(
-                    f"Distribution stability score: {distribution_stability.stability_score:.2f}"
-                ),
-                evidence={"stability_score": distribution_stability.stability_score},
-                detected_at=profiled_at,
-            )
-        )
-
     return issues
 
 
@@ -522,11 +466,6 @@ def _compute_table_summary(
 ) -> TemporalTableSummary:
     """Compute table-level summary from column profiles."""
     total_issues = sum(len(p.quality_issues) for p in profiles)
-    columns_with_seasonality = sum(
-        1 for p in profiles if p.seasonality and p.seasonality.has_seasonality
-    )
-    columns_with_trends = sum(1 for p in profiles if p.trend and p.trend.has_trend)
-    columns_with_change_points = sum(1 for p in profiles if p.change_points)
     columns_with_fiscal_alignment = sum(
         1 for p in profiles if p.fiscal_calendar and p.fiscal_calendar.fiscal_alignment_detected
     )
@@ -546,9 +485,6 @@ def _compute_table_summary(
         table_name=table.table_name,
         temporal_column_count=len(profiles),
         total_issues=total_issues,
-        columns_with_seasonality=columns_with_seasonality,
-        columns_with_trends=columns_with_trends,
-        columns_with_change_points=columns_with_change_points,
         columns_with_fiscal_alignment=columns_with_fiscal_alignment,
         stalest_column_days=stalest_column_days if stalest_column_days > 0 else None,
         has_stale_columns=has_stale_columns,

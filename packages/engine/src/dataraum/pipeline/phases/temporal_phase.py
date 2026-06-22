@@ -111,8 +111,6 @@ class TemporalPhase(BasePhase):
         # Profile each table
         profiled_tables = []
         total_profiles = 0
-        seasonality_count = 0
-        trend_count = 0
         stale_count = 0
         warnings = []
 
@@ -140,10 +138,6 @@ class TemporalPhase(BasePhase):
 
                 # Count findings
                 for profile in result_data.column_profiles:
-                    if profile.seasonality and profile.seasonality.has_seasonality:
-                        seasonality_count += 1
-                    if profile.trend and profile.trend.has_trend:
-                        trend_count += 1
                     if profile.update_frequency and profile.update_frequency.is_stale:
                         stale_count += 1
 
@@ -151,12 +145,10 @@ class TemporalPhase(BasePhase):
             outputs={
                 "temporal_profiles": profiled_tables,
                 "total_profiles": total_profiles,
-                "with_seasonality": seasonality_count,
-                "with_trend": trend_count,
                 "stale_columns": stale_count,
             },
             records_processed=len(temporal_columns),
             records_created=total_profiles,
             warnings=warnings if warnings else None,
-            summary=f"{total_profiles} profiles ({seasonality_count} seasonal, {trend_count} trending)",
+            summary=f"{total_profiles} temporal profiles ({stale_count} stale)",
         )

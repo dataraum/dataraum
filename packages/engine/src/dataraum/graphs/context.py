@@ -58,7 +58,6 @@ class ColumnContext:
     # Temporal metrics
     is_stale: bool | None = None
     detected_granularity: str | None = None
-    has_trend: bool | None = None
 
     # Business metadata (from SemanticAnnotation)
     business_name: str | None = None
@@ -860,7 +859,6 @@ def build_execution_context(
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
                     else None,
-                    has_trend=temp_profile.has_trend if temp_profile else None,
                     min_timestamp=str(temp_profile.min_timestamp)
                     if temp_profile and temp_profile.min_timestamp
                     else None,
@@ -1329,9 +1327,6 @@ def _build_column_notes(col: ColumnContext) -> str:
 
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
-
-    if col.has_trend:
-        notes.append("Trending over time.")
 
     # Entropy readiness indicator
     if col.entropy_scores:

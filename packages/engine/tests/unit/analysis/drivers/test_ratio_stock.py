@@ -62,11 +62,10 @@ class TestRatioTarget:
         for seed in range(seeds):
             rng = np.random.default_rng(seed)
             df = make_ratio_corpus(rng)
-            codes_by_dim, labels_by_dim = factorize_columns(
-                {d: df[d].astype(object).to_numpy() for d in RATIO_DIMS}
-            )
+            codes_by_dim, labels_by_dim = factorize_columns({d: df[d] for d in RATIO_DIMS})
             target = RatioTarget(
-                df["numerator"].to_numpy(dtype=float), df["denominator"].to_numpy(dtype=float)
+                df["numerator"].to_numpy().astype(float),
+                df["denominator"].to_numpy().astype(float),
             )
             rank = discover_tree(
                 codes_by_dim,
@@ -102,10 +101,8 @@ class TestStockTarget:
         # variance reduction as flow, only the target_type label differs.
         rng = np.random.default_rng(0)
         df = make_corpus(rng)
-        codes_by_dim, labels_by_dim = factorize_columns(
-            {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
-        )
-        target = FlowTarget(df["measure"].to_numpy(dtype=float), target_type="stock")
+        codes_by_dim, labels_by_dim = factorize_columns({d: df[d] for d in ALL_DIMS})
+        target = FlowTarget(df["measure"].to_numpy().astype(float), target_type="stock")
         rank = discover_tree(
             codes_by_dim,
             labels_by_dim,
@@ -126,6 +123,6 @@ class TestStockTarget:
         rng = np.random.default_rng(0)
         df = make_corpus(rng)
         phys, _ = columns(df, "D_e60")
-        target = FlowTarget(df["measure"].to_numpy(dtype=float), target_type="stock")
+        target = FlowTarget(df["measure"].to_numpy().astype(float), target_type="stock")
         codes, n_codes = build_codes(phys, target.observed, handle_nulls=True)
         assert n_codes >= 2

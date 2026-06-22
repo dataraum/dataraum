@@ -31,7 +31,7 @@ Usage:
 
     with manager.duckdb_cursor() as cursor:
         # Unqualified reads resolve against lake.typed:
-        result = cursor.execute('SELECT * FROM "src__orders"').fetchdf()
+        result = cursor.execute('SELECT * FROM "src__orders"').pl()
 
     manager.close()  # closes this manager's DuckDB conn; anchor persists
 """
@@ -148,7 +148,7 @@ class _LakeScopedConnection:
     def __getattr__(self, name: str) -> Any:
         # Falls through for everything except ``cursor`` and the two stored
         # attributes — duckdb.DuckDBPyConnection methods (execute, close,
-        # commit, rollback, fetchdf, fetchall, register, sql, ...) all reach
+        # commit, rollback, pl, fetchall, register, sql, ...) all reach
         # the underlying connection.
         return getattr(self._conn, name)
 
@@ -240,7 +240,7 @@ class ConnectionManager:
             # SQLAlchemy operations...
 
         with manager.duckdb_cursor() as cursor:
-            df = cursor.execute("SELECT ...").fetchdf()
+            df = cursor.execute("SELECT ...").pl()
 
         manager.close()
     """
@@ -504,7 +504,7 @@ class ConnectionManager:
 
         Example:
             with manager.duckdb_cursor() as cursor:
-                df = cursor.execute("SELECT * FROM raw_orders").fetchdf()
+                df = cursor.execute("SELECT * FROM raw_orders").pl()
         """
         self._ensure_initialized()
         if self._duckdb_conn is None:

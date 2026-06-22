@@ -26,10 +26,8 @@ N_PERM = 300
 def _run(seed: int, *, max_depth: int) -> DriverRanking:
     rng = np.random.default_rng(seed)
     df = make_corpus(rng)
-    codes_by_dim, labels_by_dim = factorize_columns(
-        {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
-    )
-    measure = df["measure"].to_numpy(dtype=float)
+    codes_by_dim, labels_by_dim = factorize_columns({d: df[d] for d in ALL_DIMS})
+    measure = df["measure"].to_numpy().astype(float)
     return discover_tree(
         codes_by_dim,
         labels_by_dim,

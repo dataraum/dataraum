@@ -67,13 +67,13 @@ class JsonLoader(LoaderBase):
                 sample_df = conn.execute(f"""
                     SELECT * FROM read_json_auto('{safe_path}')
                     LIMIT 10
-                """).df()
+                """).pl()  # polars — no pandas (DAT-580)
             finally:
                 conn.close()
 
             columns = []
             for idx, col_name in enumerate(sample_df.columns):
-                sample_values = sample_df[col_name].astype(str).head(5).tolist()
+                sample_values = [str(v) for v in sample_df[col_name].head(5).to_list()]
                 columns.append(
                     ColumnInfo(
                         name=col_name,

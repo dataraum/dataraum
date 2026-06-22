@@ -54,6 +54,7 @@ import { listTables } from "./list-tables";
 import {
 	buildCatalogBlock,
 	buildDriversBlock,
+	buildEntitiesBlock,
 	buildSchemaBlock,
 } from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
@@ -463,19 +464,21 @@ export async function querySubAgent(
 ): Promise<AnswerResult> {
 	const [
 		schemaBlock,
+		entitiesBlock,
 		catalogBlock,
 		driversBlock,
 		vocabularyBlock,
 		nearUniqueColumns,
 	] = await Promise.all([
 		buildSchemaBlock(),
+		buildEntitiesBlock(),
 		buildCatalogBlock(),
 		buildDriversBlock(),
 		buildVocabularyBlock(),
 		loadNearUniqueColumns(),
 	]);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${catalogBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
+	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
 	// validation here, so it's isolated across concurrent answer calls.

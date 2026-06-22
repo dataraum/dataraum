@@ -11,11 +11,14 @@ vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import type { DriverRanking } from "./look-drivers";
+import type { TableEntity } from "./look-table";
 import {
 	type CatalogAxisRow,
 	type CatalogHierarchyRow,
+	type EntityBlockRow,
 	formatCatalog,
 	formatDrivers,
+	formatEntities,
 	formatSchema,
 	preferEnriched,
 	type SchemaColumnRow,
@@ -343,5 +346,159 @@ describe("formatDrivers", () => {
 		const block = formatDrivers([ranking()]);
 		expect(block).toContain("you still author the SQL");
 		expect(block).toContain("top-ranked dimension is the sensible default");
+	});
+});
+
+// --- <entities> block (DAT-607) --------------------------------------------------
+
+function entity(overrides: Partial<TableEntity> = {}): TableEntity {
+	return {
+		entity_type: "transaction",
+		is_fact_table: true,
+		is_dimension_table: false,
+		grain: ["OrderID"],
+		time_columns: [{ column: "OrderDate", aspect: "order", note: "Placed." }],
+		identity_columns: [
+			{ column: "CustomerID", note: "Recurring customer identity." },
+		],
+		description: "One row per order.",
+		...overrides,
+	};
+}
+
+const entAddr = (name: string) => `lake.typed.${name}`;
+
+describe("formatEntities (DAT-607)", () => {
+	it("renders grain, time, and identities per table with the entity head", () => {
+		const out = formatEntities([
+			{ address: entAddr("wwi_recent_orders"), entity: entity() },
+		]);
+		expect(out).toContain("<entities>");
+		expect(out).toContain(
+			"Table lake.typed.wwi_recent_orders — transaction (fact):",
+		);
+		expect(out).toContain("  grain: OrderID");
+		expect(out).toContain("  time: OrderDate (order)");
+		expect(out).toContain(
+			"  identities: CustomerID — Recurring customer identity.",
+		);
+	});
+
+	it("labels a dimension table and omits the kind when neither flag is set", () => {
+		const dim = formatEntities([
+			{
+				address: entAddr("wwi_suppliers"),
+				entity: entity({
+					entity_type: "suppliers",
+					is_fact_table: false,
+					is_dimension_table: true,
+					grain: ["SupplierID"],
+					time_columns: [],
+					identity_columns: [],
+				}),
+			},
+		]);
+		expect(dim).toContain(
+			"Table lake.typed.wwi_suppliers — suppliers (dimension):",
+		);
+		expect(dim).toContain("  grain: SupplierID");
+		expect(dim).not.toContain("  time:");
+		expect(dim).not.toContain("  identities:");
+
+		const noKind = formatEntities([
+			{
+				address: entAddr("t"),
+				entity: entity({
+					entity_type: "thing",
+					is_fact_table: false,
+					is_dimension_table: false,
+					time_columns: [],
+					identity_columns: [],
+				}),
+			},
+		]);
+		expect(noKind).toContain("Table lake.typed.t — thing:");
+	});
+
+	it("drops a table with no grain/time/identity signal", () => {
+		const out = formatEntities([
+			{
+				address: entAddr("empty"),
+				entity: entity({
+					entity_type: "thing",
+					grain: [],
+					time_columns: [],
+					identity_columns: [],
+				}),
+			},
+		]);
+		expect(out).toBe(
+			"<entities>\n(No table entities detected yet.)\n</entities>",
+		);
+	});
+
+	it("returns the one-line note for an empty entity set", () => {
+		expect(formatEntities([])).toBe(
+			"<entities>\n(No table entities detected yet.)\n</entities>",
+		);
+	});
+
+	it("sorts stanzas by address (deterministic prompt)", () => {
+		const out = formatEntities([
+			{ address: entAddr("zebra"), entity: entity({ grain: ["z"] }) },
+			{ address: entAddr("alpha"), entity: entity({ grain: ["a"] }) },
+		]);
+		expect(out.indexOf("lake.typed.alpha")).toBeLessThan(
+			out.indexOf("lake.typed.zebra"),
+		);
+	});
+
+	it("caps identities per table and clamps a long note", () => {
+		const many: EntityBlockRow[] = [
+			{
+				address: entAddr("wide"),
+				entity: entity({
+					identity_columns: Array.from({ length: 12 }, (_, i) => ({
+						column: `id_${i}`,
+						note: "",
+					})),
+				}),
+			},
+		];
+		const capped = formatEntities(many);
+		expect(capped).toContain("id_7"); // 8th (index 7) kept
+		expect(capped).not.toContain("id_8"); // 9th dropped by the cap
+
+		const longNote = "x".repeat(300);
+		const clamped = formatEntities([
+			{
+				address: entAddr("n"),
+				entity: entity({
+					identity_columns: [{ column: "CustomerID", note: longNote }],
+				}),
+			},
+		]);
+		expect(clamped).toContain("…");
+		expect(clamped).not.toContain(longNote);
+	});
+
+	it("caps the table count and summarizes the overflow in a tail note", () => {
+		const rows: EntityBlockRow[] = Array.from({ length: 30 }, (_, i) => ({
+			// zero-pad so address sort matches numeric order — the first 25 are kept.
+			address: entAddr(`t_${String(i).padStart(2, "0")}`),
+			entity: entity({ grain: [`g_${i}`] }),
+		}));
+		const out = formatEntities(rows);
+		expect(out).toContain("lake.typed.t_00");
+		expect(out).toContain("lake.typed.t_24"); // 25th kept
+		expect(out).not.toContain("lake.typed.t_25"); // 26th dropped by the cap
+		expect(out).toContain("(… 5 more tables omitted.)");
+	});
+
+	it("tells the agent the columns also apply to the enriched view (prefer-enriched reconciliation)", () => {
+		const out = formatEntities([
+			{ address: entAddr("wwi_recent_orders"), entity: entity() },
+		]);
+		expect(out).toContain("When the <schema> block shows an enriched view");
 	});
 });

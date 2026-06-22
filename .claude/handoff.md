@@ -4,6 +4,34 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: DAT-516 — enriched-view shape is now sticky (deterministic across re-runs)
+
+The enriched-view shape (which `fk__attr` dimension columns a fact exposes) no longer
+drifts across begin_session re-runs. Previously `enriched_views_phase` re-judged the shape
+with a per-run LLM (`_get_llm_recommendations`/`EnrichmentAgent`), so the same session could
+expose `account_id__account_type` one run and a `passthrough_enriched_view` (0 columns) the
+next. Now the shape is decided once and inherited (silent-accept, mirroring the Layer-A
+relationship catalog DAT-409).
+
+### dataraum-eval
+- **Behavior change (stabilizing, not a detector change):** re-running begin_session over an
+  unchanged confirmed-relationship set yields the **identical** enriched-view shape and makes
+  **no enrichment LLM call**. The shape changes only on: a newly-confirmed relationship (a
+  column is added) or a user reject (a column is removed) — monotonic. A fresh contradictory
+  LLM verdict is **ignored**. Any calibration that depended on the shape being re-derived each
+  run should expect it stable now.
+- **`column_id` stability:** enriched-dimension `column_id`s are now **preserved** across
+  re-runs (reconcile-don't-replace), and a kept column keeps its `StatisticalProfile` (same
+  run_id as when first computed). Eval assertions that expected fresh column_ids/profiles per
+  run must drop that expectation.
+- **New persisted fields** on `enriched_views`: `considered_relationship_pairs` (judged FK
+  column-pairs) + `exposed_dimension_joins` (serialized exposed joins). `dimension_coverage`
+  and slicing read the enriched columns and benefit from the now-stable shape; no read-shape
+  change for them.
+- Affected: `pipeline/phases/enriched_views_phase.py`, `analysis/views/db_models.py`,
+  `graphs/context.py` consumers of enriched columns (unchanged behavior, stabler input).
+- **Status**: pending
+
 ## 2026-06-22: DAT-524 — temporal value-analysis cut (seasonality/trend/change-points/stability removed)
 
 The degenerate value-analysis half of the temporal phase is gone (it ran on a constant

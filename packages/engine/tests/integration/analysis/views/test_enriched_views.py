@@ -307,6 +307,57 @@ class TestEnrichedViewsPhaseDuckLake:
         )
         session.flush()
 
+    @staticmethod
+    def _seed_relationship(
+        session, *, from_table_id: str, from_col: str, to_table_id: str, to_col: str, run_id: str
+    ) -> None:
+        """Run-stamped confirmed relationship, as relationship_discovery mints each run.
+
+        Each begin_session run re-creates relationships with a fresh ``relationship_id``
+        (per-run uuid4) but the SAME column pair — so seeding per run exercises DAT-516's
+        cross-run-stable ``(from_column_id, to_column_id)`` key. Idempotent per run_id.
+        """
+        from uuid import uuid4
+
+        from sqlalchemy import delete, select
+
+        from dataraum.analysis.relationships.db_models import Relationship
+        from dataraum.storage import Column
+
+        fk_id = session.execute(
+            select(Column.column_id).where(
+                Column.table_id == from_table_id, Column.column_name == from_col
+            )
+        ).scalar_one()
+        pk_id = session.execute(
+            select(Column.column_id).where(
+                Column.table_id == to_table_id, Column.column_name == to_col
+            )
+        ).scalar_one()
+        session.execute(
+            delete(Relationship).where(
+                Relationship.run_id == run_id,
+                Relationship.from_column_id == fk_id,
+                Relationship.to_column_id == pk_id,
+            )
+        )
+        session.add(
+            Relationship(
+                relationship_id=str(uuid4()),
+                run_id=run_id,
+                from_table_id=from_table_id,
+                to_table_id=to_table_id,
+                from_column_id=fk_id,
+                to_column_id=pk_id,
+                relationship_type="foreign_key",
+                cardinality="many_to_one",
+                confidence=0.9,
+                detection_method="llm",
+                is_confirmed=True,
+            )
+        )
+        session.flush()
+
     def test_phase_materializes_versioned_view(self, session, duckdb_conn, monkeypatch):
         from sqlalchemy import select
 
@@ -317,14 +368,27 @@ class TestEnrichedViewsPhaseDuckLake:
 
         fact_id, dim_id, canned = self._seed(session, duckdb_conn)
         rec = {"current": canned}
-        monkeypatch.setattr(
-            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: rec["current"]
-        )
+        calls = {"n": 0}
+
+        def _stub(self, **kw):
+            calls["n"] += 1
+            return rec["current"]
+
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", _stub)
 
         def run(run_id: str) -> None:
-            # Each run re-detects its entities (run-scoped), as semantic_per_table
-            # does in begin_session — prior runs' rows coexist.
+            # Each run re-detects its entities + re-mints its relationships (run-scoped),
+            # as semantic_per_table + relationship_discovery do in begin_session — prior
+            # runs' rows coexist; the relationship_id changes but the column pair doesn't.
             self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            self._seed_relationship(
+                session,
+                from_table_id=fact_id,
+                from_col="customer_id",
+                to_table_id=dim_id,
+                to_col="id",
+                run_id=run_id,
+            )
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=duckdb_conn,
@@ -388,12 +452,15 @@ class TestEnrichedViewsPhaseDuckLake:
         )
         assert len(enriched_tables) == 1
 
+        assert calls["n"] == 1, "run 1 judged the one undecided relationship"
+
         # --- Run 1 retry: same run_id is idempotent (no duplicate rows) ----
         run("run-1")
         assert len(enriched_views()) == 1, "a same-run retry must not duplicate the view definition"
         assert {r.run_id for r in enriched_recipes()} == {"run-1"}
+        assert calls["n"] == 1, "the retry inherits the shape — no second LLM call"
 
-        # --- Run 2 (identical SQL): definition is latest-only, recipe gated -
+        # --- Run 2 (relationship already considered): LLM SKIPPED, shape inherited ---
         run("run-2")
         views = enriched_views()
         assert len(views) == 1, "EnrichedView is latest-only — one row per fact"
@@ -401,8 +468,18 @@ class TestEnrichedViewsPhaseDuckLake:
         assert {r.run_id for r in enriched_recipes()} == {"run-1"}, (
             "unchanged canonical SQL adds no new recipe version (sqlglot-gated)"
         )
+        assert calls["n"] == 1, "run 2 inherits the shape — the LLM is not consulted again"
+        # The inherited shape still exposes BOTH columns (name + country).
+        assert sorted(views[0].dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+        ]
 
-        # --- Run 3 (changed joins): a new recipe version is stamped --------
+        # --- Run 3 (DAT-516 determinism): a CONTRADICTORY re-judgment is ignored ----
+        # The relationship is already in considered, so the enrichment LLM is never asked
+        # again — even though this stub drops "country", the sticky shape is unchanged and
+        # no new recipe version is stamped. (Under the old re-judge-every-run model this
+        # would have shrunk the view + stamped a new recipe.)
         from dataraum.analysis.views.builder import DimensionJoin
         from dataraum.analysis.views.enrichment_models import (
             EnrichmentAnalysisResult,
@@ -420,13 +497,13 @@ class TestEnrichedViewsPhaseDuckLake:
                             dim_duckdb_path="(rewritten)",
                             fact_fk_column="customer_id",
                             dim_pk_column="id",
-                            include_columns=["name"],  # dropped "country" → DDL changes
+                            include_columns=["name"],  # would drop "country" — but is ignored
                             relationship_id="rel-1",
                         )
                     ],
                     dimension_type="reference",
                     confidence=0.9,
-                    reasoning="narrower enrichment",
+                    reasoning="contradictory re-judgment",
                     enrichment_columns=["name"],
                 )
             ],
@@ -436,9 +513,14 @@ class TestEnrichedViewsPhaseDuckLake:
         run("run-3")
         views = enriched_views()
         assert len(views) == 1 and views[0].run_id == "run-3"
-        assert {r.run_id for r in enriched_recipes()} == {"run-1", "run-3"}, (
-            "a changed view definition stamps a new recipe version"
+        assert sorted(views[0].dimension_columns or []) == [
+            "customer_id__country",
+            "customer_id__name",
+        ], "the contradictory re-judgment was ignored — shape is sticky"
+        assert {r.run_id for r in enriched_recipes()} == {"run-1"}, (
+            "no shape change → no new recipe version (the re-judgment was never applied)"
         )
+        assert calls["n"] == 1, "run 3's contradictory stub was never consulted (sticky shape)"
         # Substrate stays latest-only across every run.
         assert (
             len(session.execute(select(Table).where(Table.layer == "enriched")).scalars().all())
@@ -471,6 +553,15 @@ class TestEnrichedViewsPhaseDuckLake:
         # Two coexisting run-scoped fact entities — as if begin_session ran twice.
         self._seed_fact_entity(session, table_id=fact_id, run_id="run-1")
         self._seed_fact_entity(session, table_id=fact_id, run_id="run-2")
+        # This run's confirmed relationship (so the enrichment LLM has a candidate to judge).
+        self._seed_relationship(
+            session,
+            from_table_id=fact_id,
+            from_col="customer_id",
+            to_table_id=dim_id,
+            to_col="id",
+            run_id="run-2",
+        )
 
         ctx = PhaseContext(
             session=session,
@@ -492,23 +583,14 @@ class TestEnrichedViewsPhaseDuckLake:
         assert view is not None
         assert view.run_id == "run-2"
 
-    def test_rerun_refreshes_dim_columns_despite_prior_profiles(
-        self, session, duckdb_conn, monkeypatch
-    ):
-        """Re-running over a view that ALREADY has dim columns + profiles must
-        refresh them, not FK-violate (C1, DAT-506).
+    def test_rerun_preserves_dim_column_ids_and_profiles(self, session, duckdb_conn, monkeypatch):
+        """A re-run with an UNCHANGED shape preserves dim ``column_id``s + profiles (DAT-516).
 
-        The enriched ``Table`` is reused across runs; its prior ``Column``s are
-        deleted and re-minted. Since the FK children of ``columns`` no longer
-        ``ON DELETE CASCADE``, the prior run's ``StatisticalProfile``s would block
-        the ``delete(Column)`` with an ``IntegrityError`` — and the old code
-        swallowed that (``warning`` + ``return None``), so the dimension columns
-        were silently never refreshed. This test exercises that exact re-run.
-
-        Fails on the pre-fix code: under SQLite's FK enforcement the column delete
-        raises, and the swallow (now removed) hid it while leaving stale columns.
-        Passes after ``delete_column_dependents`` clears the prior profiles first
-        and the IntegrityError is no longer swallowed.
+        Reconcile-don't-replace: the enriched ``Table`` is reused, and columns whose name
+        survives keep their ``column_id`` AND their ``StatisticalProfile`` (same join → same
+        data). A consumer holding a ``column_id`` — or the profiles those columns carry — is
+        not silently invalidated by an unchanged re-run. (The old code delete+reinserted
+        every run, minting fresh ``column_id``s and re-profiling under the new run.)
         """
         from sqlalchemy import select
 
@@ -523,6 +605,14 @@ class TestEnrichedViewsPhaseDuckLake:
 
         def run(run_id: str) -> PhaseStatus:
             self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            self._seed_relationship(
+                session,
+                from_table_id=fact_id,
+                from_col="customer_id",
+                to_table_id=dim_id,
+                to_col="id",
+                run_id=run_id,
+            )
             ctx = PhaseContext(
                 session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
             )
@@ -533,54 +623,114 @@ class TestEnrichedViewsPhaseDuckLake:
         def view_table() -> Table:
             return session.execute(select(Table).where(Table.layer == "enriched")).scalar_one()
 
-        def dim_profiles(view_table_id: str) -> list[StatisticalProfile]:
-            col_ids = [
-                cid
-                for (cid,) in session.execute(
-                    select(Column.column_id).where(Column.table_id == view_table_id)
+        def cols_by_name(view_table_id: str) -> dict[str, str]:
+            return {
+                name: cid
+                for (cid, name) in session.execute(
+                    select(Column.column_id, Column.column_name).where(
+                        Column.table_id == view_table_id
+                    )
                 ).all()
-            ]
-            return (
+            }
+
+        def profile_run_ids(view_table_id: str) -> set[str]:
+            return set(
                 session.execute(
-                    select(StatisticalProfile).where(StatisticalProfile.column_id.in_(col_ids))
-                )
-                .scalars()
-                .all()
+                    select(StatisticalProfile.run_id)
+                    .join(Column, StatisticalProfile.column_id == Column.column_id)
+                    .where(Column.table_id == view_table_id)
+                ).scalars()
             )
 
         # Run 1 seeds the enriched Table + dim columns + their profiles.
         assert run("run-1") == PhaseStatus.COMPLETED
         vt = view_table()
-        run1_cols = [
-            cid
-            for (cid,) in session.execute(
-                select(Column.column_id).where(Column.table_id == vt.table_id)
-            ).all()
-        ]
+        run1_cols = cols_by_name(vt.table_id)
         assert run1_cols, "run-1 must register dimension columns"
-        run1_profiles = dim_profiles(vt.table_id)
-        assert run1_profiles, "run-1 must profile the dimension columns"
-        assert {p.run_id for p in run1_profiles} == {"run-1"}
+        assert profile_run_ids(vt.table_id) == {"run-1"}
 
-        # Run 2 over the SAME view: the prior run's columns (and the profiles that
-        # FK-reference them) must be cleared and re-minted under run-2 — NOT a
-        # swallowed FK violation that leaves the run-1 columns stale.
+        # Run 2 over the SAME unchanged shape: the inherited columns keep their column_id
+        # AND their run-1 profiles — reconciled in place, not delete+reinserted.
         assert run("run-2") == PhaseStatus.COMPLETED
         vt2 = view_table()
         assert vt2.table_id == vt.table_id, "the enriched Table row is reused across runs"
-        run2_cols = [
-            cid
-            for (cid,) in session.execute(
-                select(Column.column_id).where(Column.table_id == vt2.table_id)
-            ).all()
-        ]
-        # The columns were refreshed: brand-new ids, none of the run-1 set survive.
-        assert run2_cols, "run-2 must re-register dimension columns"
-        assert not (set(run1_cols) & set(run2_cols)), "prior run's columns must be replaced"
-        # And the stale run-1 profiles are gone — only run-2's profiles remain.
-        run2_profiles = dim_profiles(vt2.table_id)
-        assert run2_profiles, "run-2 must re-profile the dimension columns"
-        assert {p.run_id for p in run2_profiles} == {"run-2"}
+        assert cols_by_name(vt2.table_id) == run1_cols, (
+            "an unchanged shape preserves every column_id (no churn)"
+        )
+        assert profile_run_ids(vt2.table_id) == {"run-1"}, (
+            "kept columns keep their original profile — not re-minted under run-2"
+        )
+
+    def test_shape_grows_on_new_relationship_and_shrinks_on_reject(
+        self, session, duckdb_conn, monkeypatch
+    ):
+        """Monotonic shape: a newly-confirmed relationship ADDS its dimension columns; a
+        user reject REMOVES them — the only two signals that move a sticky shape (DAT-516)."""
+        from uuid import uuid4
+
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from dataraum.storage import Column
+        from dataraum.storage.overlay_models import ConfigOverlay
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+
+        def run(run_id: str, *, with_rel: bool) -> None:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            if with_rel:
+                self._seed_relationship(
+                    session,
+                    from_table_id=fact_id,
+                    from_col="customer_id",
+                    to_table_id=dim_id,
+                    to_col="id",
+                    run_id=run_id,
+                )
+            ctx = PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
+            )
+            assert EnrichedViewsPhase().run(ctx).status == PhaseStatus.COMPLETED
+            session.flush()
+
+        def dim_cols() -> list[str]:
+            v = session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+            ).scalar_one()
+            return sorted(v.dimension_columns or [])
+
+        # Run 1: no relationship yet → passthrough view, zero dimension columns.
+        run("run-1", with_rel=False)
+        assert dim_cols() == []
+
+        # Run 2: a newly-confirmed relationship is judged in → its columns are ADDED.
+        run("run-2", with_rel=True)
+        assert dim_cols() == ["customer_id__country", "customer_id__name"], "grow on new confirm"
+
+        # Run 3: the user rejects the relationship → its columns DROP (shrink), even though
+        # the relationship is still structurally confirmed and already in `considered`.
+        fk_id = session.execute(
+            select(Column.column_id).where(
+                Column.table_id == fact_id, Column.column_name == "customer_id"
+            )
+        ).scalar_one()
+        pk_id = session.execute(
+            select(Column.column_id).where(Column.table_id == dim_id, Column.column_name == "id")
+        ).scalar_one()
+        session.add(
+            ConfigOverlay(
+                overlay_id=str(uuid4()),
+                type="relationship",
+                payload={"action": "reject", "from_column_id": fk_id, "to_column_id": pk_id},
+            )
+        )
+        session.flush()
+        run("run-3", with_rel=True)
+        assert dim_cols() == [], "shrink on explicit reject"
 
 
 class TestVersionedGrainConstraints:

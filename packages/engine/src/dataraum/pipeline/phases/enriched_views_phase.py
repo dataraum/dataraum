@@ -25,7 +25,10 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 
 from dataraum.analysis.relationships.db_models import Relationship
-from dataraum.analysis.relationships.utils import load_defined_relationships
+from dataraum.analysis.relationships.utils import (
+    load_defined_relationships,
+    load_suppressed_relationship_pairs,
+)
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
@@ -167,28 +170,79 @@ class EnrichedViewsPhase(BasePhase):
         for col in all_columns:
             columns_by_table.setdefault(col.table_id, []).append(col)
 
-        # Get LLM recommendations for valuable enrichments. RuntimeError
-        # signals an attempted LLM call that failed (transient/permanent);
-        # None signals LLM intentionally unavailable (config-disabled).
-        try:
-            llm_recommendations = self._get_llm_recommendations(
-                ctx=ctx,
-                typed_tables=typed_tables,
-                fact_entities=fact_entities,
-                all_relationships=all_relationships,
-                columns_by_table=columns_by_table,
-                tables_by_id=tables_by_id,
-            )
-        except RuntimeError as exc:
-            return PhaseResult.failed(str(exc))
+        # DAT-516 — sticky enriched-view shape. The shape (which fk__attr columns a fact
+        # exposes) is decided once and inherited, not re-judged every run. Load each fact's
+        # prior decided shape (EnrichedView is latest-only — one row per fact), the reject
+        # overlay, and a (table_id, column_name) → column_id map to resolve the enrichment
+        # LLM's name-based joins back to the stable column-pair key.
+        prior_views = {
+            v.fact_table_id: v
+            for v in ctx.session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
+            ).scalars()
+        }
+        suppressed = load_suppressed_relationship_pairs(ctx.session)
+        col_id_by_name: dict[tuple[str, str], str] = {
+            (c.table_id, c.column_name): c.column_id for c in all_columns
+        }
+        # Per fact: the relationships touching it, keyed by directional column pair (the
+        # cross-run-stable identity; relationship_id is a per-run uuid4).
+        rels_touching: dict[str, dict[tuple[str, str], Relationship]] = {}
+        for r in all_relationships:
+            pair = (r.from_column_id, r.to_column_id)
+            for tid in (r.from_table_id, r.to_table_id):
+                if tid in tables_by_id:
+                    rels_touching.setdefault(tid, {})[pair] = r
 
-        if not llm_recommendations:
-            return PhaseResult.success(
-                outputs={"enriched_views": 0, "message": "LLM unavailable, skipping enrichment"},
-                records_processed=0,
-                records_created=0,
-                summary="skipped (LLM unavailable)",
-            )
+        def considered_pairs(fact_id: str) -> set[tuple[str, str]]:
+            pv = prior_views.get(fact_id)
+            return {(a, b) for a, b in (pv.considered_relationship_pairs or [])} if pv else set()
+
+        # Feed the enrichment LLM ONLY the undecided relationships (candidates not yet
+        # judged for their fact), and skip the call entirely when none are undecided — the
+        # shape is then fully inherited (the DAT-516 stickiness + a re-run latency win).
+        undecided_rels: list[Relationship] = []
+        seen: set[str] = set()
+        for fact_entity in fact_entities:
+            done = considered_pairs(fact_entity.table_id)
+            for pair, r in rels_touching.get(fact_entity.table_id, {}).items():
+                if pair not in done and r.relationship_id not in seen:
+                    undecided_rels.append(r)
+                    seen.add(r.relationship_id)
+
+        has_inherited = any(pv.exposed_dimension_joins for pv in prior_views.values())
+        llm_recommendations: EnrichmentAnalysisResult | None = None
+        if undecided_rels:
+            # RuntimeError = an attempted LLM call that failed; None = LLM config-disabled.
+            try:
+                llm_recommendations = self._get_llm_recommendations(
+                    ctx=ctx,
+                    typed_tables=typed_tables,
+                    fact_entities=fact_entities,
+                    all_relationships=undecided_rels,
+                    columns_by_table=columns_by_table,
+                    tables_by_id=tables_by_id,
+                )
+            except RuntimeError as exc:
+                return PhaseResult.failed(str(exc))
+            if llm_recommendations is None and not has_inherited:
+                # Nothing decided yet and the LLM can't decide it → skip (as before).
+                return PhaseResult.success(
+                    outputs={
+                        "enriched_views": 0,
+                        "message": "LLM unavailable, skipping enrichment",
+                    },
+                    records_processed=0,
+                    records_created=0,
+                    summary="skipped (LLM unavailable)",
+                )
+            if llm_recommendations is None:
+                # Inherit the prior shape; leave the undecided pairs unjudged (retried when
+                # the LLM returns) rather than losing the already-decided views.
+                logger.info(
+                    "enrichment_llm_unavailable_inherit_only", undecided=len(undecided_rels)
+                )
+        judged = llm_recommendations is not None
 
         views_created = 0
         views_dropped = 0
@@ -198,13 +252,60 @@ class EnrichedViewsPhase(BasePhase):
             if not fact_table or not fact_table.duckdb_path:
                 continue
 
-            # Get dimension joins from LLM recommendations
-            dimension_joins: list[DimensionJoin] = []
+            # Assemble the dimension joins: inherit the prior exposed shape + add only the
+            # newly-judged joins (DAT-516). Each join is paired with its stable
+            # (from_column_id, to_column_id) for persistence + the candidacy check.
+            fact_id = fact_table.table_id
+            cand_by_pair = rels_touching.get(fact_id, {})
+            joins_with_ids: list[tuple[DimensionJoin, tuple[str, str]]] = []
 
+            # Inherit: a prior exposed join survives iff Layer A still confirms its
+            # relationship (pair ∈ candidates) and the user hasn't rejected it. Monotonic —
+            # the shape shrinks only on those explicit signals, never on a fresh re-judgment.
+            prior_view = prior_views.get(fact_id)
+            for spec in (prior_view.exposed_dimension_joins if prior_view else None) or []:
+                pair = (spec["from_column_id"], spec["to_column_id"])
+                if pair not in cand_by_pair or pair in suppressed:
+                    continue
+                joins_with_ids.append(
+                    (
+                        DimensionJoin(
+                            dim_table_name=spec["dim_table_name"],
+                            dim_duckdb_path="",  # resolved to a FQN below
+                            fact_fk_column=spec["fact_fk_column"],
+                            dim_pk_column=spec["dim_pk_column"],
+                            include_columns=list(spec["include_columns"]),
+                            relationship_id=cand_by_pair[pair].relationship_id,
+                        ),
+                        pair,
+                    )
+                )
+
+            # New: joins the enrichment LLM judged this run (it only saw undecided pairs).
+            inherited_pairs = {pair for _, pair in joins_with_ids}
             if llm_recommendations:
                 for rec in llm_recommendations.recommendations:
-                    if rec.fact_table_id == fact_table.table_id:
-                        dimension_joins.extend(rec.dimension_joins)
+                    if rec.fact_table_id != fact_id:
+                        continue
+                    for join in rec.dimension_joins:
+                        new_pair = self._join_pair(
+                            join, fact_id, tables_by_name, col_id_by_name, cand_by_pair
+                        )
+                        if new_pair is None or new_pair in suppressed:
+                            continue
+                        if new_pair in inherited_pairs:
+                            continue  # already inherited — never double-add a pair
+                        inherited_pairs.add(new_pair)
+                        joins_with_ids.append(
+                            (
+                                replace(
+                                    join, relationship_id=cand_by_pair[new_pair].relationship_id
+                                ),
+                                new_pair,
+                            )
+                        )
+
+            dimension_joins: list[DimensionJoin] = [j for j, _ in joins_with_ids]
 
             if not dimension_joins:
                 logger.info(
@@ -340,6 +441,27 @@ class EnrichedViewsPhase(BasePhase):
                 }
             )
             view_record.dimension_columns = dim_columns
+            # DAT-516 sticky shape: every candidate fed to the LLM this run is now decided
+            # (judged → considered); the exposed joins are persisted in full so a future
+            # re-run inherits the shape without re-judging. When the LLM was unavailable we
+            # didn't judge the undecided pairs, so they stay out of ``considered`` (retried).
+            view_record.considered_relationship_pairs = [
+                [a, b]
+                for (a, b) in sorted(
+                    considered_pairs(fact_id) | (set(cand_by_pair) if judged else set())
+                )
+            ]
+            view_record.exposed_dimension_joins = [
+                {
+                    "from_column_id": pair[0],
+                    "to_column_id": pair[1],
+                    "fact_fk_column": j.fact_fk_column,
+                    "dim_pk_column": j.dim_pk_column,
+                    "dim_table_name": j.dim_table_name,
+                    "include_columns": list(j.include_columns),
+                }
+                for j, pair in joins_with_ids
+            ]
             view_record.is_grain_verified = is_grain_verified
             view_record.evidence = evidence if evidence else None
             view_record.view_table_id = view_table.table_id if view_table else None
@@ -371,6 +493,33 @@ class EnrichedViewsPhase(BasePhase):
             records_created=views_created,
             summary=f"{views_created} enriched views created ({len(fact_entities)} fact tables)",
         )
+
+    @staticmethod
+    def _join_pair(
+        join: DimensionJoin,
+        fact_id: str,
+        tables_by_name: dict[str, Table],
+        col_id_by_name: dict[tuple[str, str], str],
+        cand_by_pair: dict[tuple[str, str], Relationship],
+    ) -> tuple[str, str] | None:
+        """Resolve a name-based enrichment join to its relationship column-pair (DAT-516).
+
+        Returns the relationship's directional ``(from_column_id, to_column_id)``, or
+        ``None`` if the join doesn't map to a confirmed relationship. The agent emits join
+        column NAMES; map them to ``column_id``s and match either orientation against the
+        fact's candidate relationships (the stored direction wins).
+        """
+        dim = tables_by_name.get(join.dim_table_name)
+        if dim is None:
+            return None
+        fk_id = col_id_by_name.get((fact_id, join.fact_fk_column))
+        pk_id = col_id_by_name.get((dim.table_id, join.dim_pk_column))
+        if fk_id is None or pk_id is None:
+            return None
+        for cand in ((fk_id, pk_id), (pk_id, fk_id)):
+            if cand in cand_by_pair:
+                return cand
+        return None
 
     def _register_and_profile_dim_columns(
         self,
@@ -412,6 +561,7 @@ class EnrichedViewsPhase(BasePhase):
                 Table.layer == "enriched",
             )
         ).scalar_one_or_none()
+        existing: dict[str, Column] = {}
         if view_table is None:
             view_table = Table(
                 table_id=str(uuid4()),
@@ -424,30 +574,43 @@ class EnrichedViewsPhase(BasePhase):
             ctx.session.add(view_table)
             ctx.session.flush()
         else:
-            # Reuse the row; drop its prior columns so the latest run's dimension
-            # set replaces the last one's. The FK children of ``columns`` no
-            # longer ``ON DELETE CASCADE`` (DAT-506 torn-window cut), so the prior
-            # run's statistical_profiles (and every other child) must be deleted
-            # explicitly first — otherwise the ``delete(Column)`` FK-violates and
-            # the dimension columns are never refreshed.
+            # Reconcile, don't replace (DAT-516): keep each dimension column (with its
+            # ``column_id`` AND its ``StatisticalProfile``) whose name survives in the new
+            # set, drop only columns whose join left the shape, add only genuinely-new ones.
+            # This preserves ``column_id`` across re-runs, so a consumer holding one (and the
+            # profiles those columns carry) is not silently invalidated by an unchanged shape.
+            # Dropped columns' FK children are cleared first (``columns`` no longer
+            # ``ON DELETE CASCADE`` — DAT-506) so the ``delete(Column)`` can't FK-violate.
             view_table.duckdb_path = view_name
             view_table.row_count = fact_table.row_count
-            old_col_ids = [
-                cid
-                for (cid,) in ctx.session.execute(
-                    select(Column.column_id).where(Column.table_id == view_table.table_id)
-                ).all()
-            ]
-            delete_column_dependents(ctx, old_col_ids)
-            ctx.session.execute(delete(Column).where(Column.table_id == view_table.table_id))
-            ctx.session.flush()
+            existing = {
+                c.column_name: c
+                for c in ctx.session.execute(
+                    select(Column).where(Column.table_id == view_table.table_id)
+                ).scalars()
+            }
+            wanted = set(dim_columns)
+            removed = [c for name, c in existing.items() if name not in wanted]
+            if removed:
+                delete_column_dependents(ctx, [c.column_id for c in removed])
+                ctx.session.execute(
+                    delete(Column).where(Column.column_id.in_([c.column_id for c in removed]))
+                )
+                ctx.session.flush()
+                for c in removed:
+                    existing.pop(c.column_name)
 
         # Get DuckDB types for dimension columns
         duckdb_cols = ctx.duckdb_conn.execute(f"DESCRIBE {view_fqn}").fetchall()
         type_by_name = {row[0]: row[1] for row in duckdb_cols}
 
-        registered_columns: list[Column] = []
+        # Keep + reposition existing columns; mint only genuinely-new ones (DAT-516).
+        new_columns: list[Column] = []
         for pos, col_name in enumerate(dim_columns):
+            kept = existing.get(col_name)
+            if kept is not None:
+                kept.column_position = pos  # keep column_id + its profile; refresh order only
+                continue
             col_type = type_by_name.get(col_name, "VARCHAR")
             col = Column(
                 column_id=str(uuid4()),
@@ -458,16 +621,17 @@ class EnrichedViewsPhase(BasePhase):
                 resolved_type=col_type,
             )
             ctx.session.add(col)
-            registered_columns.append(col)
+            new_columns.append(col)
+        ctx.session.flush()
 
-        # Profile each dimension column inline. Per-column profiling failures are
-        # absorbed inside ``_profile_column_stats_parallel`` (returns None →
-        # skipped here); a genuine DB / IntegrityError on the column-set
-        # delete/registration above is NOT swallowed — it propagates and fails the
-        # activity loud, rather than silently leaving stale dimension columns.
+        # Profile ONLY the new columns. A kept column's join is unchanged, so its data —
+        # and thus its existing profile — is stable; re-profiling would just churn it.
+        # Per-column profiling failures are absorbed inside ``_profile_column_stats_parallel``
+        # (returns None → skipped); a genuine DB / IntegrityError on the column-set
+        # reconcile above is NOT swallowed — it propagates and fails the activity loud.
         profiled_at = datetime.now(UTC)
         profiled_count = 0
-        for col in registered_columns:
+        for col in new_columns:
             # Bare name, NOT view_fqn: the profiler interpolates the path as
             # ONE quoted identifier, so a pre-quoted catalog.schema."name"
             # FQN parses as a zero-length identifier and every dim-column
@@ -508,7 +672,8 @@ class EnrichedViewsPhase(BasePhase):
         logger.info(
             "dim_columns_profiled",
             view_name=view_name,
-            columns=len(registered_columns),
+            columns=len(dim_columns),
+            new_columns=len(new_columns),
             profiles=profiled_count,
         )
         return view_table

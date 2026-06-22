@@ -363,26 +363,6 @@ export function ColumnProfileWidget({
 						<Field label="granularity" value={temporal.granularity ?? "—"} />
 						<Field label="completeness" value={pct(temporal.completeness)} />
 						<Field
-							label="seasonality"
-							value={
-								temporal.has_seasonality === null
-									? "—"
-									: temporal.has_seasonality
-										? "yes"
-										: "no"
-							}
-						/>
-						<Field
-							label="trend"
-							value={
-								temporal.has_trend === null
-									? "—"
-									: temporal.has_trend
-										? "yes"
-										: "no"
-							}
-						/>
-						<Field
 							label="stale"
 							value={
 								temporal.is_stale === null

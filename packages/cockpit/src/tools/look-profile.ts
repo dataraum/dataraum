@@ -214,8 +214,6 @@ const Temporal = z.object({
 	max_timestamp: z.string().nullable(),
 	granularity: z.string().nullable(),
 	completeness: z.number().nullable(),
-	has_seasonality: z.boolean().nullable(),
-	has_trend: z.boolean().nullable(),
 	is_stale: z.boolean().nullable(),
 });
 
@@ -299,8 +297,6 @@ export interface TemporalRow {
 	maxTimestamp: Date | string | null;
 	detectedGranularity: string | null;
 	completenessRatio: number | null;
-	hasSeasonality: boolean | null;
-	hasTrend: boolean | null;
 	isStale: boolean | null;
 }
 
@@ -469,8 +465,6 @@ function projectTemporal(
 		max_timestamp: toIso(row.maxTimestamp),
 		granularity: row.detectedGranularity ?? null,
 		completeness: row.completenessRatio ?? null,
-		has_seasonality: row.hasSeasonality ?? null,
-		has_trend: row.hasTrend ?? null,
 		is_stale: row.isStale ?? null,
 	};
 }
@@ -692,8 +686,6 @@ async function loadTemporal(columnId: string): Promise<TemporalRow | null> {
 			maxTimestamp: currentTemporalColumnProfiles.maxTimestamp,
 			detectedGranularity: currentTemporalColumnProfiles.detectedGranularity,
 			completenessRatio: currentTemporalColumnProfiles.completenessRatio,
-			hasSeasonality: currentTemporalColumnProfiles.hasSeasonality,
-			hasTrend: currentTemporalColumnProfiles.hasTrend,
 			isStale: currentTemporalColumnProfiles.isStale,
 		})
 		.from(currentTemporalColumnProfiles)

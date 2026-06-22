@@ -107,8 +107,6 @@ const full: LookProfileResult = {
 		max_timestamp: "2021-12-31T00:00:00.000Z",
 		granularity: "day",
 		completeness: 0.97,
-		has_seasonality: true,
-		has_trend: false,
 		is_stale: false,
 	},
 	derived: [

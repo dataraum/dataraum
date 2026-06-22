@@ -60,14 +60,13 @@ import { config } from "../config";
 import { ConnectSchema } from "../duckdb/connect";
 import { SUPPORTED_BACKENDS } from "../duckdb/probe";
 import { enumeratePrefixUris } from "../select/enumerate";
+import { persistFileSources } from "../select/file-source";
 import {
 	connectTablesToRecipeTables,
-	contentKeyedSourceName,
 	RESERVED_SOURCE_NAME_PREFIXES,
 	recipeContentHash,
 	reservedSourceNamePrefix,
 	SOURCE_NAME_PATTERN,
-	sourceTypeForUri,
 } from "../select/mappers";
 import {
 	importedRecipeHash,
@@ -193,35 +192,17 @@ export async function persistSelection(
 			{ fileUris: input.file_uris, prefix: input.prefix },
 			enumerate,
 		);
-		// One content-keyed source per file (DAT-422). Dedup by content key so a
-		// repeated URI UPSERTs once; `contentKeyedSourceName` fails loud on a
-		// non-upload URI (content identity requires the upload digest).
-		const byName = new Map<string, { uri: string; sourceType: string }>();
-		for (const uri of uris) {
-			const name = contentKeyedSourceName(uri);
-			if (!byName.has(name)) {
-				byName.set(name, { uri, sourceType: sourceTypeForUri(uri) });
-			}
-		}
+		// One content-keyed source per file (DAT-422) — the shared persist seam
+		// (DAT-594, select/file-source.ts) the probe staging hub reuses. Dedups by
+		// content key and fails loud on a non-upload URI.
+		const persisted = await persistFileSources(
+			uris.map((file_uri) => ({ file_uri })),
+		);
 
-		const persisted = [...byName.entries()];
-		const sourceIdSet: string[] = [];
-		for (const [name, { uri, sourceType }] of persisted) {
-			sourceIdSet.push(
-				await upsertSource({
-					name,
-					sourceType,
-					backend: null,
-					// DISTINCT key from the db_recipe `tables` key — never folded together.
-					connectionConfig: { file_uris: [uri] },
-					now,
-				}),
-			);
-		}
-
-		const fileUris = persisted.map(([, p]) => p.uri);
+		const sourceIdSet = persisted.map((p) => p.source_id);
+		const fileUris = persisted.map((p) => p.file_uri);
 		const distinctTypes = [
-			...new Set(persisted.map(([, p]) => p.sourceType)),
+			...new Set(persisted.map((p) => p.source_type)),
 		].sort();
 		return {
 			sources: sourceIdSet,

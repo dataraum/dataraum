@@ -163,6 +163,57 @@ export async function openProbeConnection(input: {
 	return { conn, dispose, redact };
 }
 
+/** A probed query's schema — its DESCRIBEd columns + a bounded sample of rows,
+ * the input to building a synthetic `ConnectSchema` for `frame` (DAT-594). */
+export interface ProbeSchema {
+	/** One row per output column: name + DuckDB column type. */
+	columns: { name: string; type: string }[];
+	/** A bounded sample of result rows (≤ `clampRowLimit`) for sample-value
+	 * induction quality — JSON-safe, the connection URL never included. */
+	sampleRows: Record<string, unknown>[];
+}
+
+/**
+ * Describe a probed query WITHOUT materializing the full result — run
+ * `DESCRIBE SELECT * FROM (<sql>)` (unwrapped, so DESCRIBE can introspect the
+ * query) plus a bounded sample, on the raw probe connection. This is the
+ * query analog of the file path's `DESCRIBE SELECT * FROM read_*(...)` sniff
+ * (connect.ts), the schema source for staging a probed query into `frame`
+ * (DAT-594). `probe()` wraps SQL in a `LIMIT` subquery so it cannot DESCRIBE,
+ * so this opens its own connection and runs DESCRIBE directly.
+ *
+ * Columns + rows only; the credential-bearing URL is redacted from any error.
+ */
+export async function probeDescribe(input: ProbeInput): Promise<ProbeSchema> {
+	const { conn, dispose, redact } = await openProbeConnection(input);
+	const limit = clampRowLimit(input.limit);
+	try {
+		// DESCRIBE the UNWRAPPED query — DuckDB returns one row per output column
+		// (column_name, column_type, null, …). Unlike probe(), no LIMIT subquery:
+		// DESCRIBE needs the bare SELECT to introspect its projection.
+		const describe = readerToResult(
+			await conn.runAndReadAll(`DESCRIBE SELECT * FROM (${input.sql})`),
+		);
+		const columns = (
+			describe.rows as { column_name: string; column_type: string }[]
+		).map((r) => ({ name: r.column_name, type: r.column_type }));
+		// A bounded sample feeds sample-value induction (the file sniff samples too).
+		const sample = readerToResult(
+			await conn.runAndReadAll(
+				`SELECT * FROM (${input.sql}) AS _probe LIMIT ${limit}`,
+			),
+		);
+		return { columns, sampleRows: sample.rows };
+	} catch (err) {
+		const raw = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`Describe of source '${input.source_name}' (${input.backend.toLowerCase()}) failed: ${redact(raw)}`,
+		);
+	} finally {
+		dispose();
+	}
+}
+
 /**
  * Run read-only SQL against an external database source and MATERIALIZE a bounded
  * sample — the AGENT path (the LLM must never get an unbounded result dumped into

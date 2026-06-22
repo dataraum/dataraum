@@ -4,6 +4,64 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: fix — driver_rankings no longer crashes on a VARCHAR measure (TRY_CAST)
+
+The driver-discovery load (`analysis/drivers/processor.py`) projected measure columns
+with a hard `"{col}"::DOUBLE`, which throws `ConversionException` → `PhaseFailed` (non-
+retryable) → the whole `beginSessionWorkflow` fails when a measure column the typing left
+VARCHAR carries a non-numeric value. Now `TRY_CAST({col} AS DOUBLE)`: unparseable values
+load as NULL→NaN, which the numpy core already treats as missing (`_floats` nulls→NaN;
+ICC/targets mask `~isnan`). Behaviour-equivalent on clean numeric data (golden equivalence
++ grain suites green); only the crash path changes.
+
+### dataraum-eval
+- **Fixes a begin_session crash, NOT a detector change.** Surfaced by the DAT-540 queue:
+  `detection-null-v1` (null_tokens family injects `~~~~~` sentinels into `debit`/`amount`
+  at severity high → typing leaves the column VARCHAR) crashed at `driver_rankings`
+  (`PhaseFailed: Could not convert string '~~~~~' to DOUBLE ... "debit"::DOUBLE`). With the
+  fix the run completes; the dirty-measure rows just read as NaN in driver discovery.
+- Recall/precision unaffected; no schema change. Regression pinned by
+  `tests/unit/analysis/drivers/test_processor.py::TestDiscoverDrivers::test_dirty_varchar_measure_does_not_crash`.
+- **Status**: pending
+
+## 2026-06-22: DAT-540 — slice_conditional_null DEMOTED off the loss path (informative DirectSignal)
+
+`slice_conditional_null` (bias-corrected Cramér's V of is-null × slice) was removed from
+`loss.yaml` (it had `query 0.4 / aggregation 0.7 / reporting 0.6`). It now falls through
+`assemble_readiness_context` to a **DirectSignal** — the benford/dimensional_entropy lane:
+the Cramér's V score + `expected_dependency`/`documented_dependency` teach still compute as
+context, but no longer drive intent readiness bands. The detector still runs (`statistics`
+phase, add_source detect) and still emits its column-scoped `value.nulls.slice_conditional_null`
+EntropyObject; only its loss row is gone.
+
+**Why** (eval band-impact ablation, DAT-540 P5 / ADR-0013, `dataraum-eval`
+`scripts/probes/dat540` — the {score}-detector analogue of the structural ablation):
+(1) its only OBSERVABLE band move is a **false positive on benign structural conditionality** —
+`bank_transactions.payment_id` (an optional FK, null-by-design when a transaction is not a
+payment, which the column's OWN `business_meaning` documents) scored V=0.97 on slice
+`counterparty` → blocked aggregation; optional FKs are ubiquitous, so the untaught default is
+to block them. (2) On its INJECTED columns (`credit`/`debit`) the aggregation band is already
+set by `cross_table_consistency` (0.80), so ablating slice_conditional_null moved NO band — its
+marginal loss value is unproven on the existing slice corpus (confounded). A loss signal whose
+only visible band move is a false block on a benign-by-default pattern is anti-predictive — the
+benford/DEMOTE signature. Recorded: eval `entropy_eval_architecture.md`.
+
+### dataraum-eval
+- **Changed (engine)**: `loss.yaml` (row removed + rationale comment),
+  `tests/unit/entropy/views/test_readiness_context.py` (added
+  `test_slice_conditional_null_is_a_direct_signal_not_a_band_driver`). No detector/registry/phase
+  change — the detector still exists and runs.
+- **Affects**: any column×intent band driven *only* by slice_conditional_null now drops one band
+  (it contributed agg 0.7·V / reporting 0.6·V / query 0.4·V). The `bank_transactions.payment_id`
+  false `blocked` aggregation clears. A column whose only object is slice_conditional_null is no
+  longer in `readiness.columns` — it's a `direct_signal`.
+- **Calibrate (eval-side, NOT in this engine branch)**: `detector_coverage.yaml` disposition flips
+  to `informative` (mirrors benford/dimensional_entropy); `intent_readiness.yaml` /
+  `test_intent_readiness.py` clean-readiness expectations for payment_id drop the slice block;
+  recall/teach for slice_conditional_null move to the DirectSignal grammar. The Cramér's V
+  statistic is unchanged, so its SCORE (and the precision/recall score-separation) is unchanged.
+- **Status**: pending
+
 ## 2026-06-22: DAT-566 — `identity_columns` now in the answer-agent metadata document
 
 `semantic_per_table` has produced+persisted `TableEntity.identity_columns` since DAT-565
@@ -21,6 +79,7 @@ clause on a table's meta line, right after the time-column clause, sourced from
   no identities render nothing (unchanged output).
 - Affected: `graphs/context.py` (`TableContext.identity_columns` + render). Cockpit-side
   surfacing (`look_table`, table-readiness widget) is out of eval scope.
+
 
 ## 2026-06-22: DAT-516 — enriched-view shape is now sticky (deterministic across re-runs)
 

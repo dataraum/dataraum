@@ -398,9 +398,14 @@ def discover_drivers(
     # Cast measure columns to DOUBLE in the projection so the polars→numpy handoff is a
     # clean float view (no int/decimal→float null-upcast copy, DAT-580); dims/identities
     # stay raw for categorical factorization. The hash sketch hashes the RAW columns so
-    # the DAT-571 cutoff is unchanged byte-for-byte.
+    # the DAT-571 cutoff is unchanged byte-for-byte. TRY_CAST (not ::DOUBLE): a measure the
+    # typing left VARCHAR — e.g. a column carrying null sentinels ('~~~~~') from a
+    # null_tokens injection, or any not-cleanly-numeric measure — yields NULL→NaN, which
+    # the numpy core already treats as missing (_floats nulls→NaN; ICC/targets mask
+    # ~isnan), instead of a hard ConversionException that fails the whole begin_session
+    # (the engine's "failed casts → null, never pipeline failure" rule).
     def project(c: str) -> str:
-        return f"{quote(c)}::DOUBLE AS {quote(c)}" if c in measure_cols else quote(c)
+        return f"TRY_CAST({quote(c)} AS DOUBLE) AS {quote(c)}" if c in measure_cols else quote(c)
 
     select_proj = ", ".join(project(c) for c in select_cols)
     hash_cols = ", ".join(quote(c) for c in select_cols)

@@ -160,6 +160,33 @@ class TestDiscoverDrivers:
         assert ALIAS not in sig  # the collapsed alias never even competed
         assert ranking.driver_paths and ranking.driver_paths[0][0] == ranking.root.dimension
 
+    def test_dirty_varchar_measure_does_not_crash(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A measure the typing left VARCHAR (e.g. carrying null sentinels like '~~~~~'
+        from a null_tokens injection) must NOT crash driver discovery. The projection
+        TRY_CASTs measures, so unparseable values load as NaN (treated as missing by the
+        numpy core), not a hard ConversionException → PhaseFailed. Regression: the
+        detection-null-v1 begin_session crashed here (driver_rankings, '::DOUBLE')."""
+        tid = _seed(real_session, duck)
+        # Re-cast the measure to VARCHAR with a deterministic sentinel in ~1/137 of rows,
+        # mirroring a null_tokens injection the typing left as a string column.
+        duck.execute(
+            f'CREATE OR REPLACE TABLE "{VIEW}" AS '
+            f"SELECT * REPLACE (CASE WHEN rowid % 137 = 0 THEN '~~~~~' "
+            f'ELSE CAST(measure AS VARCHAR) END AS measure) FROM "{VIEW}"'
+        )
+        ranking = discover_drivers(
+            real_session,
+            duckdb_conn=duck,
+            fact_table_id=tid,
+            run_id=RUN,
+            measure=Measure(target_type="flow", column="measure"),
+            n_perm=50,
+        )
+        # No raise; the sentinel rows are kept as NaN (n_rows == full frame length).
+        assert ranking.n_rows == 20_000
+
     def test_no_enriched_view_returns_empty(
         self, real_session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:

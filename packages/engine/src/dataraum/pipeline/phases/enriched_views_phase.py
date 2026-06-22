@@ -445,11 +445,16 @@ class EnrichedViewsPhase(BasePhase):
             # (judged → considered); the exposed joins are persisted in full so a future
             # re-run inherits the shape without re-judging. When the LLM was unavailable we
             # didn't judge the undecided pairs, so they stay out of ``considered`` (retried).
+            # Keep prior verdicts only for pairs Layer A STILL confirms (prune stale), plus
+            # every candidate judged this run. A relationship that genuinely left Layer A and
+            # later returns is thus re-judged, not stuck invisible — and since Layer A's
+            # silent-accept keeps the confirmed SET stable across runs, this prune only fires
+            # on a real drop+re-add, never on LLM re-judgment (the determinism the ticket wants).
+            considered_now = considered_pairs(fact_id) & set(cand_by_pair)
+            if judged:
+                considered_now |= set(cand_by_pair)
             view_record.considered_relationship_pairs = [
-                [a, b]
-                for (a, b) in sorted(
-                    considered_pairs(fact_id) | (set(cand_by_pair) if judged else set())
-                )
+                [a, b] for (a, b) in sorted(considered_now)
             ]
             view_record.exposed_dimension_joins = [
                 {

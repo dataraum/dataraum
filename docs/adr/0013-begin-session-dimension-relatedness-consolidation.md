@@ -77,7 +77,7 @@ the enriched-view shape:
   **only the undecided relationships** (candidates confirmed since the shape was last decided), and is
   **skipped entirely** when none are. The first run is unchanged (everything is undecided).
 - **Persist the verdict, inherit on re-run.** `EnrichedView` already stores the *exposed* joins
-  (`relationship_ids`); add `considered_relationship_ids` (the candidates already judged, exposed or
+  (`relationship_ids`); add `considered_relationship_pairs` (the candidates already judged, exposed or
   not) so an already-rejected-by-LLM relationship is not re-asked. The shape is read from the stored
   spec, not re-derived.
 - **The shape is monotonic.** Columns are *added* when a new confirmed relationship is judged in, and
@@ -98,10 +98,17 @@ auto-re-evaluated if its underlying dimension table later changes — re-decidin
 (a teach/reject), exactly as a relationship is. "Decide once, keep unless told otherwise" is the
 contract, mirroring Layer A.
 
-Net change: Layer B is **kept but made incremental + sticky**; one new persisted field
-(`considered_relationship_ids`); the column write reconciles instead of replacing. `build_enriched_view_sql`,
-`_verify_grain`, the recipe substrate, and the atomic `CHECKPOINT` — the stable core — are untouched.
-Plan: DAT-516.
+Net change: Layer B is **kept but made incremental + sticky**; the column write reconciles
+instead of replacing. `build_enriched_view_sql`, `_verify_grain`, the recipe substrate, and
+the atomic `CHECKPOINT` — the stable core — are untouched. Plan: DAT-516.
+
+**Implemented (DAT-516):** the sticky key is the **column pair** `(from_column_id, to_column_id)`,
+NOT `relationship_id` — `relationship_id` is a per-run `uuid4`, so it can't carry a verdict across
+runs; `column_id` is stable (typed columns are minted at add_source, not begin_session). Two
+persisted fields, not one: `considered_relationship_pairs` (all judged pairs) **and**
+`exposed_dimension_joins` (the full exposed-join specs incl. `include_columns` — itself LLM-judged,
+so the pair alone can't rebuild the shape). `considered` is pruned to Layer A's current confirmed
+set, so a relationship that genuinely drops out and is re-confirmed is re-judged (not stuck).
 
 ## Context
 

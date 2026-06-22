@@ -34,9 +34,12 @@ deterministic builder (tried; column selection is genuine judgement) and we do *
 ## Phases (each leaves the tree green)
 
 ### P1 — Persist the considered set
-- Add `considered_relationship_ids: list[str] | None` (JSON) to `EnrichedView` — the candidate
-  relationships already judged this fact (exposed **or** rejected-by-LLM), distinct from
-  `relationship_ids` (the exposed subset).
+> Implemented with the column-PAIR key (not `relationship_id`, which is a per-run uuid4) and a
+> SECOND field, since `include_columns` is itself LLM-judged and the pair can't rebuild the shape.
+- Add `considered_relationship_pairs: list[list[str]] | None` (JSON `[[from_column_id, to_column_id]]`)
+  — the candidate FK column-pairs already judged this fact (exposed **or** rejected-by-LLM) — AND
+  `exposed_dimension_joins: list[dict] | None` (the full exposed-join specs incl. `include_columns`),
+  distinct from `relationship_ids` (the per-run-id exposed subset).
 - `uv run python -m dataraum.storage.dump_ddl` → regenerate `schema.sql`; `bun run db:pull:metadata` in
   the cockpit; confirm the `schema-drift` CI gate is green.
 - **AC:** the field exists, defaults null (first run / legacy rows read as "nothing decided yet").
@@ -45,14 +48,14 @@ deterministic builder (tried; column selection is genuine judgement) and we do *
 - In `_run`, before the enrichment call, load each fact's prior `EnrichedView`. Per fact compute:
   - `candidates` = the fact's defined relationships ≥ `_MIN_CONFIDENCE` (already loaded as
     `all_relationships`).
-  - `undecided` = `candidates − considered_relationship_ids`.
+  - `undecided` = `candidates − considered_relationship_pairs`.
   - `rejected` = relationships dropped from the catalog or suppressed via the relationship reject overlay
     (`load_suppressed_relationship_pairs`).
 - Call `_get_llm_recommendations` **only for `undecided`** (and skip the call entirely when every fact's
   `undecided` is empty). First run: `considered` is null → all candidates undecided → unchanged behaviour.
 - Assemble `dimension_joins = inherited_exposed_joins + new_LLM_joins − rejected`, where
   `inherited_exposed_joins` is rebuilt from the prior `relationship_ids`.
-- Persist on the `EnrichedView` upsert: `relationship_ids` = exposed set; `considered_relationship_ids` =
+- Persist on the `EnrichedView` upsert: `relationship_ids` = exposed set; `considered_relationship_pairs` =
   `prior_considered ∪ undecided`.
 - **AC:** re-running a session with an unchanged catalog makes **no** enrichment LLM call and yields the
   identical join set; a newly-confirmed relationship is the only thing that triggers the LLM, and only for
@@ -86,7 +89,7 @@ deterministic builder (tried; column selection is genuine judgement) and we do *
 
 ## Risks / watch
 
-- **First-run / legacy rows:** null `considered_relationship_ids` must read as "decide everything," so the
+- **First-run / legacy rows:** null `considered_relationship_pairs` must read as "decide everything," so the
   first run after deploy re-establishes the shape exactly as today (no surprise wipe).
 - **Reject path:** confirm the relationship reject/teach signal reaches this phase as a removal, so a
   user-rejected dimension actually drops its column (monotonic-down on explicit signal).

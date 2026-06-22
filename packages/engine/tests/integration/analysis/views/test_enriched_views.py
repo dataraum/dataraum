@@ -732,6 +732,61 @@ class TestEnrichedViewsPhaseDuckLake:
         run("run-3", with_rel=True)
         assert dim_cols() == [], "shrink on explicit reject"
 
+    def test_dropped_then_reconfirmed_relationship_is_rejudged(
+        self, session, duckdb_conn, monkeypatch
+    ):
+        """A relationship that leaves Layer A and returns is RE-judged, not stuck invisible.
+
+        Stickiness must not outlive the relationship: ``considered`` is pruned to what Layer A
+        currently confirms, so a genuine drop + re-confirm re-asks the LLM (vs the determinism
+        case, where Layer A keeps the set stable and the LLM is never re-asked). Distinguished
+        by the LLM call count.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        calls = {"n": 0}
+
+        def _stub(self, **kw):
+            calls["n"] += 1
+            return canned
+
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", _stub)
+
+        def run(run_id: str, *, with_rel: bool) -> None:
+            self._seed_fact_entity(session, table_id=fact_id, run_id=run_id)
+            if with_rel:
+                self._seed_relationship(
+                    session,
+                    from_table_id=fact_id,
+                    from_col="customer_id",
+                    to_table_id=dim_id,
+                    to_col="id",
+                    run_id=run_id,
+                )
+            ctx = PhaseContext(
+                session=session, duckdb_conn=duckdb_conn, table_ids=[fact_id, dim_id], run_id=run_id
+            )
+            assert EnrichedViewsPhase().run(ctx).status == PhaseStatus.COMPLETED
+            session.flush()
+
+        def dim_cols() -> list[str]:
+            v = session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+            ).scalar_one()
+            return sorted(v.dimension_columns or [])
+
+        run("run-1", with_rel=True)  # judged → exposed
+        assert dim_cols() and calls["n"] == 1
+        run("run-2", with_rel=False)  # Layer A no longer confirms it → dropped, considered pruned
+        assert dim_cols() == [] and calls["n"] == 1  # no candidate → LLM not called
+        run("run-3", with_rel=True)  # re-confirmed → RE-judged (not stuck), exposed again
+        assert dim_cols() == ["customer_id__country", "customer_id__name"]
+        assert calls["n"] == 2, "a genuinely re-confirmed relationship is re-judged, not inherited"
+
 
 class TestVersionedGrainConstraints:
     """The latest-only / run-grain invariants are DB-enforced, not app-level only.

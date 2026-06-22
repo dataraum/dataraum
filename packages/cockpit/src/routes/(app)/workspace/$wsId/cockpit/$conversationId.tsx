@@ -185,6 +185,7 @@ function CockpitChat() {
 		<CockpitProvider
 			key={conversationId}
 			conversationId={conversationId}
+			conversationKind={kind}
 			initialMessages={initialMessages}
 			initialUiState={uiState}
 			seedMessage={seedMessage}

@@ -38,6 +38,15 @@ function wrapper({ children }: { children: React.ReactNode }) {
 	);
 }
 
+// A `connect` chat — its canvas defaults to the staging hub (DAT-597).
+function connectWrapper({ children }: { children: React.ReactNode }) {
+	return (
+		<TestQueryProvider>
+			<CockpitProvider conversationKind="connect">{children}</CockpitProvider>
+		</TestQueryProvider>
+	);
+}
+
 // A single completed list_sources call → source-list canvas (the simplest live
 // projection the derivation can produce).
 function sourcesCall(id: string) {
@@ -72,6 +81,21 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		const { result } = renderHook(() => useCockpit(), { wrapper });
 		expect(result.current.canvas).toEqual({ kind: "empty" });
 		expect(result.current.pinnedCallId).toBeNull();
+	});
+
+	it("a connect chat defaults its canvas to the staging hub (DAT-597)", () => {
+		const { result } = renderHook(() => useCockpit(), {
+			wrapper: connectWrapper,
+		});
+		expect(result.current.canvas).toEqual({ kind: "probe" });
+	});
+
+	it("a live projection still wins over the connect hub default (DAT-597)", () => {
+		h.messages = [sourcesCall("c1")];
+		const { result } = renderHook(() => useCockpit(), {
+			wrapper: connectWrapper,
+		});
+		expect(result.current.canvas.kind).toBe("source-list");
 	});
 
 	it("throws when useCockpit is read outside a provider", () => {

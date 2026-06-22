@@ -25,6 +25,7 @@ import {
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { getActiveVerticalStatus } from "#/server/active-vertical";
 import {
 	adoptVerticalForStaging,
 	frameStagingSet,
@@ -74,6 +75,19 @@ export function ModelModal({
 		staleTime: 5 * 60 * 1000,
 	});
 
+	// The workspace's CURRENT model (DAT-594 follow-up). One vertical per workspace,
+	// so when one is already set this modal CHANGES it — not a from-scratch pick; the
+	// banner says so. Shares the ["active-vertical-status"] cache + post-declare
+	// invalidation with the probe widget, so it reflects the latest state.
+	const activeVertical = useQuery({
+		queryKey: ["active-vertical-status"],
+		queryFn: () => getActiveVerticalStatus(),
+		enabled: opened,
+		staleTime: 5 * 60 * 1000,
+	});
+	const currentModel =
+		activeVertical.data?.framed === true ? activeVertical.data.vertical : null;
+
 	const frameMutation = useMutation({
 		mutationFn: () =>
 			frameStagingSet({
@@ -121,10 +135,21 @@ export function ModelModal({
 			data-testid="model-modal"
 		>
 			<Stack gap="md">
-				<Text size="xs" c="dimmed">
-					An imported source grounds against the workspace's business model.
-					Frame a new one from your staged set, or adopt an existing vertical.
-				</Text>
+				{currentModel ? (
+					<Alert color="green" variant="light" data-testid="model-current">
+						Current model:{" "}
+						<Text span fw={600}>
+							{currentModel}
+						</Text>
+						. Your imports ground against it. One model per workspace — frame a
+						new vertical or adopt a different one below only to change it.
+					</Alert>
+				) : (
+					<Text size="xs" c="dimmed">
+						An imported source grounds against the workspace's business model.
+						Frame a new one from your staged set, or adopt an existing vertical.
+					</Text>
+				)}
 
 				{error && (
 					<Alert color="red" data-testid="model-error">

@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
-import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -64,8 +63,8 @@ def detect_relationships(
     )
 
     try:
-        # Load tables with paths and sampled data
-        tables_data = _load_tables(session, duckdb_conn, table_ids, sample_percent)
+        # Load table paths + column metadata (no row data — uniqueness is computed in SQL)
+        tables_data = _load_tables(session, table_ids)
 
         if len(tables_data) < 2:
             return Result.ok(
@@ -78,7 +77,9 @@ def detect_relationships(
             )
 
         # Find relationships via value overlap
-        raw_results = find_relationships(duckdb_conn, tables_data, min_confidence)
+        raw_results = find_relationships(
+            duckdb_conn, tables_data, min_confidence, sample_percent=sample_percent
+        )
 
         # Convert to typed models
         candidates = [
@@ -104,7 +105,7 @@ def detect_relationships(
 
         # Evaluate candidates with quality metrics (referential integrity, etc.)
         if evaluate and candidates:
-            table_paths = {name: path for name, (path, _df, _types) in tables_data.items()}
+            table_paths = {name: path for name, (path, _cols, _types) in tables_data.items()}
             candidates = evaluate_candidates(candidates, table_paths, duckdb_conn)
 
         # Store candidates in database
@@ -235,15 +236,13 @@ def _store_candidates(
 
 def _load_tables(
     session: Session,
-    duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
-    sample_percent: float,
-) -> dict[str, tuple[str, pd.DataFrame, dict[str, str | None]]]:
-    """Load table data from DuckDB with column type information.
+) -> dict[str, tuple[str, list[str], dict[str, str | None]]]:
+    """Load each table's ``(duckdb_path, column_names, column_types)`` from the catalog.
 
-    Returns duckdb_path for join detection via SQL,
-    sampled DataFrame for uniqueness calculation,
-    and column types for type-aware comparison.
+    No row data is materialized: join detection and the uniqueness ratio both run in SQL
+    over ``duckdb_path``. ``column_names`` are the catalog columns (ordered by position);
+    ``column_types`` maps column_name → resolved_type for type-aware comparison.
     """
     from dataraum.storage import Column
 
@@ -251,37 +250,26 @@ def _load_tables(
     stmt = select(Table.table_id, Table.table_name, Table.duckdb_path).where(
         Table.table_id.in_(table_ids)
     )
-    result = session.execute(stmt)
-    table_rows = result.all()
+    table_rows = session.execute(stmt).all()
+    table_info: dict[str, tuple[str, str]] = {
+        table_id: (table_name, duckdb_path) for table_id, table_name, duckdb_path in table_rows
+    }
 
-    # Build a map of table_id -> table info
-    table_info: dict[str, tuple[str, str]] = {}  # table_id -> (table_name, duckdb_path)
-    for table_id, table_name, duckdb_path in table_rows:
-        table_info[table_id] = (table_name, duckdb_path)
-
-    # Load column types for all tables
-    col_stmt = select(Column.table_id, Column.column_name, Column.resolved_type).where(
-        Column.table_id.in_(table_ids)
+    # Load column names + types per table (ordered so the candidate column list is stable)
+    col_stmt = (
+        select(Column.table_id, Column.column_name, Column.resolved_type)
+        .where(Column.table_id.in_(table_ids))
+        .order_by(Column.column_position)
     )
-    col_result = session.execute(col_stmt)
-
-    # Build column type maps per table
     column_types_by_table: dict[str, dict[str, str | None]] = {tid: {} for tid in table_ids}
-    for table_id, column_name, resolved_type in col_result.all():
+    for table_id, column_name, resolved_type in session.execute(col_stmt).all():
         column_types_by_table[table_id][column_name] = resolved_type
 
-    # Load sampled data from DuckDB
-    tables_data: dict[str, tuple[str, pd.DataFrame, dict[str, str | None]]] = {}
-    for table_id, (table_name, duckdb_path) in table_info.items():
-        try:
-            # Sample for uniqueness calculation (join detection uses full data via SQL)
-            df = duckdb_conn.execute(
-                f"SELECT * FROM {duckdb_path} USING SAMPLE {sample_percent}%"
-            ).df()
-            column_types = column_types_by_table.get(table_id, {})
-            tables_data[table_name] = (duckdb_path, df, column_types)
-        except Exception as e:
-            logger.warning("table_load_failed", table=table_name, error=str(e))
-            continue
-
-    return tables_data
+    return {
+        table_name: (
+            duckdb_path,
+            list(column_types_by_table.get(table_id, {}).keys()),
+            column_types_by_table.get(table_id, {}),
+        )
+        for table_id, (table_name, duckdb_path) in table_info.items()
+    }

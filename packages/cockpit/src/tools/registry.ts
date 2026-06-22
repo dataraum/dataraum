@@ -25,6 +25,7 @@ import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
+import { openStagingHubTool } from "./open-staging-hub";
 import { operatingModelTool } from "./operating-model";
 import { answerTool } from "./query";
 import { replayTool } from "./replay";
@@ -74,6 +75,7 @@ const inspectTools = [
  */
 export const toolsByKind = {
 	connect: [
+		openStagingHubTool,
 		listSourcesTool,
 		listTablesTool,
 		connectTeachTool,

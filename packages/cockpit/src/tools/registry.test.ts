@@ -53,6 +53,7 @@ describe("tool registry (DAT-353)", () => {
 		expect(names).toHaveLength(new Set(names).size); // no dupes
 		expect(new Set(names)).toEqual(
 			new Set([
+				"open_staging_hub",
 				"list_sources",
 				"list_tables",
 				"look_table",
@@ -126,9 +127,17 @@ describe("tool registry (DAT-353)", () => {
 
 		// Connect is the TEACH surface (DAT-597): teach + look_table/why_column to
 		// inspect + replay to re-ground + list_sources/list_tables for context.
-		// Acquisition (assemble/frame/import) is the staging hub widget, so the chat
-		// has NO acquisition tools.
-		for (const t of ["teach", "look_table", "why_column", "replay"]) {
+		// Acquisition (assemble/frame/import) is the staging hub widget — but the chat
+		// keeps ONE opener (open_staging_hub) to re-mount that hub after an inspect
+		// view replaced the canvas (DAT-597 follow-up). It still has NO acquisition
+		// LOGIC tools.
+		for (const t of [
+			"open_staging_hub",
+			"teach",
+			"look_table",
+			"why_column",
+			"replay",
+		]) {
 			expect(connect.has(t)).toBe(true);
 		}
 		for (const t of [

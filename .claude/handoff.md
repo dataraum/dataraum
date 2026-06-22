@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: fix — driver_rankings no longer crashes on a VARCHAR measure (TRY_CAST)
+
+The driver-discovery load (`analysis/drivers/processor.py`) projected measure columns
+with a hard `"{col}"::DOUBLE`, which throws `ConversionException` → `PhaseFailed` (non-
+retryable) → the whole `beginSessionWorkflow` fails when a measure column the typing left
+VARCHAR carries a non-numeric value. Now `TRY_CAST({col} AS DOUBLE)`: unparseable values
+load as NULL→NaN, which the numpy core already treats as missing (`_floats` nulls→NaN;
+ICC/targets mask `~isnan`). Behaviour-equivalent on clean numeric data (golden equivalence
++ grain suites green); only the crash path changes.
+
+### dataraum-eval
+- **Fixes a begin_session crash, NOT a detector change.** Surfaced by the DAT-540 queue:
+  `detection-null-v1` (null_tokens family injects `~~~~~` sentinels into `debit`/`amount`
+  at severity high → typing leaves the column VARCHAR) crashed at `driver_rankings`
+  (`PhaseFailed: Could not convert string '~~~~~' to DOUBLE ... "debit"::DOUBLE`). With the
+  fix the run completes; the dirty-measure rows just read as NaN in driver discovery.
+- Recall/precision unaffected; no schema change. Regression pinned by
+  `tests/unit/analysis/drivers/test_processor.py::TestDiscoverDrivers::test_dirty_varchar_measure_does_not_crash`.
+- **Status**: pending
+
 ## 2026-06-22: DAT-540 — slice_conditional_null DEMOTED off the loss path (informative DirectSignal)
 
 `slice_conditional_null` (bias-corrected Cramér's V of is-null × slice) was removed from

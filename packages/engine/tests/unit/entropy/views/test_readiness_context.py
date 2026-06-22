@@ -275,6 +275,22 @@ class TestPerColumnAssembly:
             for ds in result.direct_signals
         )
 
+    def test_slice_conditional_null_is_a_direct_signal_not_a_band_driver(self):
+        """Demoted (2026-06-22, DAT-540): slice_conditional_null is informative — excluded
+        from the loss rollup, surfaced as a DirectSignal, never banding a column. A column
+        whose ONLY object is slice_conditional_null has no loss row → nothing to band."""
+        objects = [
+            make_entropy_object(
+                detector_id="slice_conditional_null", score=0.97, target="column:bank.payment_id"
+            ),
+        ]
+        result = assemble_readiness_context(objects)
+        assert "column:bank.payment_id" not in result.columns  # no loss row → nothing to band
+        assert any(
+            ds.target == "column:bank.payment_id" and ds.detector_id == "slice_conditional_null"
+            for ds in result.direct_signals
+        )
+
     def test_node_evidence_carries_raw_data(self):
         """ColumnNodeEvidence carries score, evidence, detector_id from the object."""
         evidence_data = [{"metric": "null_fraction", "value": 0.75}]

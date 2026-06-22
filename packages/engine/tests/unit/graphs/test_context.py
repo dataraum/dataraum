@@ -247,6 +247,7 @@ class TestFormatMetadataDocument:
             time_columns=[
                 {"column": "created_at", "aspect": "created", "note": "When the row was created."}
             ],
+            identity_columns=[{"column": "customer_id", "note": "Recurring customer identity."}],
             columns=[
                 ColumnContext(
                     column_id="col-1",
@@ -273,6 +274,10 @@ class TestFormatMetadataDocument:
         assert "by created" in result
         assert "2024-01-01 to 2024-12-31" in result
         assert "When the row was created." in result
+        # DAT-566: recurring identities surface with their note for "per <entity>".
+        assert "Identity columns" in result
+        assert "customer_id" in result
+        assert "Recurring customer identity" in result
 
     def test_column_table_format(self) -> None:
         """Columns are formatted in a table with business metadata."""

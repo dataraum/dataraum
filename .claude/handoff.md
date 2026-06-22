@@ -4,6 +4,24 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: DAT-566 — `identity_columns` now in the answer-agent metadata document
+
+`semantic_per_table` has produced+persisted `TableEntity.identity_columns` since DAT-565
+(recurring real-world identities / would-be FKs, distinct from `grain`), but it was
+write-only on the answer-agent surface. The metadata document (`graphs/context.py`,
+`format_metadata_document`) now renders an **`**Identity columns**: <col> (<note>), …`**
+clause on a table's meta line, right after the time-column clause, sourced from
+`TableContext.identity_columns` (new dataclass field, populated from `TableEntity`).
+
+### dataraum-eval
+- **Prompt-surface change only** (no detector, no threshold, no response-schema change): the
+  SQL-gen context the GraphAgent/answer agent sees now lists each table's recurring identities,
+  so it can ground "per &lt;entity&gt;" groupings (e.g. "per customer") on the real cluster key.
+  Calibrations that snapshot/diff the metadata document will see the added clause; tables with
+  no identities render nothing (unchanged output).
+- Affected: `graphs/context.py` (`TableContext.identity_columns` + render). Cockpit-side
+  surfacing (`look_table`, table-readiness widget) is out of eval scope.
+
 ## 2026-06-22: DAT-516 — enriched-view shape is now sticky (deterministic across re-runs)
 
 The enriched-view shape (which `fk__attr` dimension columns a fact exposes) no longer

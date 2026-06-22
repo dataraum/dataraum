@@ -101,7 +101,7 @@ export type TableReadiness = z.infer<typeof TableReadiness>;
 
 // The table descriptive header (DAT-476) — the cockpit analog of MCP
 // `look(target="table")`'s entity block: what kind of table this is (fact /
-// dimension), its grain, its time column, and a short description.
+// dimension), its grain, its time/identity columns, and a short description.
 // begin_session's `detect` writes it; `current_table_entities` head-resolves to
 // the promoted run. Null when no detect run has promoted (pre-session).
 // One event-time axis (DAT-565): a denormalized table commonly has several
@@ -109,6 +109,14 @@ export type TableReadiness = z.infer<typeof TableReadiness>;
 const TimeColumn = z.object({
 	column: z.string(),
 	aspect: z.string(),
+	note: z.string(),
+});
+
+// A recurring real-world identity (DAT-565): a would-be foreign key —
+// high-cardinality, recurs across rows, functionally determines other columns —
+// distinct from `grain`. Each carries a one-line note explaining the identity.
+const IdentityColumn = z.object({
+	column: z.string(),
 	note: z.string(),
 });
 
@@ -120,6 +128,8 @@ const TableEntity = z.object({
 	grain: z.array(z.string()),
 	// Every event-time axis the table records, each labelled + described.
 	time_columns: z.array(TimeColumn),
+	// Every recurring identity (would-be FK) the table records, each with a note.
+	identity_columns: z.array(IdentityColumn),
 	description: z.string().nullable(),
 });
 export type TableEntity = z.infer<typeof TableEntity>;
@@ -297,6 +307,7 @@ export interface TableEntityRow {
 	isDimensionTable: boolean | null;
 	grainColumns: unknown;
 	timeColumns: unknown;
+	identityColumns: unknown;
 	description: string | null;
 }
 
@@ -305,6 +316,13 @@ export interface TableEntityRow {
 // degrades to []. Anything else is dropped rather than thrown.
 const TimeColumns = z.array(
 	z.object({ column: z.string(), aspect: z.string(), note: z.string() }),
+);
+
+// The persisted identity shape (DAT-565): the engine writes a JSON list of
+// `{column, note}` (`analysis/semantic/processor.py`); null/malformed degrades
+// to []. Anything else is dropped rather than thrown.
+const IdentityColumns = z.array(
+	z.object({ column: z.string(), note: z.string() }),
 );
 
 // The persisted grain shape. The engine ALWAYS writes the dict form
@@ -330,6 +348,7 @@ const GrainColumns = z.union([
 export function projectTableEntity(row: TableEntityRow): TableEntity {
 	const grain = GrainColumns.safeParse(row.grainColumns);
 	const times = TimeColumns.safeParse(row.timeColumns);
+	const identities = IdentityColumns.safeParse(row.identityColumns);
 	return {
 		entity_type: row.detectedEntityType ?? null,
 		is_fact_table: row.isFactTable ?? null,
@@ -338,6 +357,13 @@ export function projectTableEntity(row: TableEntityRow): TableEntity {
 		// Strip src_<digest> from each axis column; aspect/note pass through.
 		time_columns: times.success
 			? times.data.map((tc) => ({ ...tc, column: stripSrcDigests(tc.column) }))
+			: [],
+		// Strip src_<digest> from each identity column; note passes through.
+		identity_columns: identities.success
+			? identities.data.map((ic) => ({
+					...ic,
+					column: stripSrcDigests(ic.column),
+				}))
 			: [],
 		description:
 			row.description == null ? null : stripSrcDigests(row.description),
@@ -506,7 +532,7 @@ export function tableEntityWhere(tableId: string) {
 }
 
 /** Resolve a table's descriptive header (DAT-476) — entity type / fact-dimension
- * / grain / time column / description from `current_table_entities`. The view
+ * / grain / time + identity columns / description from `current_table_entities`. The view
  * resolves at the workspace catalog head (DAT-506), one row per table_id, so the
  * {@link tableEntityWhere} filter is exact; the `detected_at desc` order is the
  * defensive tiebreak. Null when no begin_session catalog run has promoted yet. */
@@ -519,6 +545,7 @@ async function loadTableEntity(tableId: string): Promise<TableEntity | null> {
 			isDimensionTable: currentTableEntities.isDimensionTable,
 			grainColumns: currentTableEntities.grainColumns,
 			timeColumns: currentTableEntities.timeColumns,
+			identityColumns: currentTableEntities.identityColumns,
 			description: currentTableEntities.description,
 		})
 		.from(currentTableEntities)

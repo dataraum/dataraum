@@ -124,7 +124,7 @@ class TestImportDispatch:
         phase = ImportPhase()
         session = MagicMock()
         session.get.return_value = MagicMock()  # Source row present
-        # No existing raw tables for this source (the re-import guard reads []).
+        # No existing tables for this source (the teardown enumeration reads []).
         session.execute.return_value.scalars.return_value.all.return_value = []
         ctx = PhaseContext(
             session=session,

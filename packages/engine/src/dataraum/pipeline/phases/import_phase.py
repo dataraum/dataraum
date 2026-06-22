@@ -31,11 +31,13 @@ Source shapes — both written by the cockpit ``select`` tool, the only producer
   success this phase copies the hash to ``imported_recipe_hash`` — the
   materialization witness ``select`` preserves across re-selects.
   ``should_skip`` skips only while the two match (idempotent re-select / teach
-  re-run); a changed recipe falls through to a loud failure instead of
-  silently serving the stale raw tables. Real re-import-with-replace is the
-  deferred GC feature, not this phase's job. The engine never recomputes the
-  hash — both values are opaque tokens minted by one writer (``select``), so
-  no cross-language canonicalization contract exists.
+  re-run); a changed recipe falls through to an in-place
+  re-import-with-replace (DAT-596) — the source's existing tables across every
+  layer (DuckDB tables, ``Table``/``Column`` rows, all run-versioned metadata
+  children, the per-table snapshot heads) are torn down, then the new recipe is
+  rematerialized — instead of silently serving the stale raw tables. The engine
+  never recomputes the hash — both values are opaque tokens minted by one writer
+  (``select``), so no cross-language canonicalization contract exists.
 
 Per DAT-389 the source path is an ``s3://<lake-bucket>/<key>`` URI handed
 verbatim to DuckDB's ``read_*_auto`` over httpfs — never to ``pathlib``. Because
@@ -345,14 +347,17 @@ class ImportPhase(BasePhase):
     ) -> PhaseResult:
         """Materialize a recipe-driven database source.
 
-        Guards the name-keyed staleness hole first (DAT-430): a db source that
-        already has raw tables only gets here when ``should_skip`` found the
-        current ``recipe_hash`` differing from the ``imported_recipe_hash``
-        witness (or either missing) — re-extracting would orphan the old raw
-        tables and clobber overlapping names, so fail loud instead; re-import
-        with replace is the deferred GC feature. A fresh import requires the
-        ``select``-stamped ``recipe_hash`` and copies it to
-        ``imported_recipe_hash`` on success, completing the witness pair.
+        Re-import-with-replace (DAT-596): a db source that already has raw tables
+        only reaches here when ``should_skip`` found the current ``recipe_hash``
+        differing from the ``imported_recipe_hash`` witness (or either missing) —
+        i.e. the recipe was re-pointed under the SAME source name. Rather than
+        fail loud (the old deferred-GC stance), tear the source's existing tables
+        down across ALL layers (raw/typed/quarantine/enriched) — DuckDB tables,
+        ``Table``/``Column`` rows, every run-versioned metadata child, and the
+        per-table snapshot heads — then rematerialize the new recipe in place.
+        Name-keyed teardown is unambiguous: table names are unique per workspace.
+        A fresh import requires the ``select``-stamped ``recipe_hash`` and copies
+        it to ``imported_recipe_hash`` on success, completing the witness pair.
 
         Then resolves credentials via ``CredentialChain`` keyed by source name
         (``DATARAUM_{NAME}_URL``) and delegates to ``extract_backend`` to
@@ -363,24 +368,19 @@ class ImportPhase(BasePhase):
         from uuid import uuid4
 
         from dataraum.core.credentials import CredentialChain
+        from dataraum.pipeline.phases._source_teardown import teardown_source_tables
         from dataraum.sources.backends import extract_backend
         from dataraum.sources.db_recipe import RecipeTable
 
-        existing = (
-            ctx.session.execute(
-                select(Table).where(Table.source_id == source.source_id, Table.layer == "raw")
-            )
-            .scalars()
-            .all()
-        )
-        if existing:
-            return PhaseResult.failed(
-                f"Recipe for database source '{source_name}' changed since its raw "
-                f"tables were imported (or that import predates recipe hashing) — "
-                "re-import is not yet supported. Re-select the new pick under a NEW "
-                "source name to import it fresh; re-import in place lands with the "
-                "deferred GC work."
-            )
+        # The recipe was re-pointed under the same source name (``should_skip``
+        # declined on a hash mismatch / missing witness, DAT-430). Replace in
+        # place: drop the old tables + every metadata child before extracting the
+        # new recipe, so no orphaned rows or dangling snapshot heads survive and
+        # the re-extract can't collide with the prior run's overlapping names.
+        # The phase runner rolls the session back on a FAILED result (DAT-502),
+        # so a mid-replace failure leaves the prior state intact. (Files never
+        # reach this branch — content-keyed sources mint a new id on change.)
+        teardown_source_tables(ctx, source.source_id)
 
         recipe_hash = connection_config.get("recipe_hash")
         if not isinstance(recipe_hash, str) or not recipe_hash:

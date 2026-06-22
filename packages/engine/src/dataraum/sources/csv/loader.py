@@ -125,7 +125,8 @@ class CSVLoader(LoaderBase):
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
             null_config: Null value configuration
-            junk_columns: Column names to drop after loading (e.g., pandas index columns)
+            junk_columns: Column names to drop after loading (e.g. an unwanted index
+                column written by a prior export tool)
 
         Returns:
             Result containing StagedTable

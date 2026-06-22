@@ -70,6 +70,24 @@ class TestGetSchema:
         assert "city" in names
         assert "pop" in names
 
+    def test_sample_values_populated_and_null_safe(
+        self, loader: JsonLoader, tmp_path: Path
+    ) -> None:
+        # DAT-580: schema sniff is polars (.pl()), not pandas (.df()). A null in the
+        # sample must not crash and must render as "None" (matching the old astype(str)),
+        # and the per-column sample must be capped at 5.
+        data = [{"id": i, "note": None if i == 0 else f"n{i}"} for i in range(8)]
+        path = tmp_path / "with_null.json"
+        path.write_text(json.dumps(data))
+        config = SourceConfig(name="test", source_type="json", path=str(path))
+
+        result = loader.get_schema(config)
+
+        assert result.success
+        by_name = {c.name: c for c in result.unwrap()}
+        assert 0 < len(by_name["note"].sample_values) <= 5
+        assert "None" in by_name["note"].sample_values  # null → "None", no crash
+
     def test_missing_path(self, loader: JsonLoader) -> None:
         config = SourceConfig(name="test", source_type="json")
         result = loader.get_schema(config)

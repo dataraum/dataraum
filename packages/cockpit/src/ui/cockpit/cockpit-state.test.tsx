@@ -166,23 +166,22 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		expect(result.current.pinnedCallId).toBeNull();
 	});
 
-	it("a completed select result derives the add-source-progress canvas (DAT-436)", () => {
-		// Calling select starts the run; the result's ids key the progress poll.
+	it("a completed replay result derives the add-source-progress canvas (DAT-352)", () => {
+		// A replay starts an addSourceWorkflow run; the result's ids key the poll.
 		h.messages = [
 			{
-				id: "m-sel",
+				id: "m-rep",
 				role: "assistant",
 				parts: [
 					{
 						type: "tool-call",
-						id: "sel-1",
-						name: "select",
+						id: "rep-1",
+						name: "replay",
 						state: "complete",
 						output: {
-							sources: ["s1"],
+							source_id: "s1",
 							workflow_id: "wf1",
 							run_id: "run1",
-							session_id: "sess1",
 						},
 					},
 				],

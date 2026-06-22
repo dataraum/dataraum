@@ -1,5 +1,8 @@
-// list_verticals tool (DAT-411) — the analytical verticals available to `frame`
-// a workspace with, unified across the two places a vertical can live.
+// vertical listing (DAT-411) — the analytical verticals available to `frame` a
+// workspace with, unified across the two places a vertical can live. The agent
+// `list_verticals` TOOL was removed by DAT-597 (acquisition moved to the staging
+// hub); this is now a shared helper that `server/stage-frame.ts`,
+// `server/active-vertical.ts`, and `tools/use-vertical.ts` call directly.
 //
 // A "vertical" is a domain ontology the engine resolves phase config against
 // (its concepts, and for the curated ones the richer cycles/validations/metrics).
@@ -20,7 +23,6 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { toolDefinition } from "@tanstack/ai";
 import { and, count, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -176,18 +178,3 @@ export async function listVerticals(): Promise<Vertical[]> {
 	const byName = (a: Vertical, b: Vertical) => a.name.localeCompare(b.name);
 	return [...builtins.sort(byName), ...framed.sort(byName)];
 }
-
-export const listVerticalsTool = toolDefinition({
-	name: "list_verticals",
-	description:
-		"List the analytical verticals (domain ontologies) available to `frame` a " +
-		"workspace with. Each entry has a `name` (pass it to `frame`), a `kind` " +
-		"(builtin = ships with DataRaum, e.g. finance; framed = declared here via " +
-		"`frame`), a `description`, the `concept_count`, and whether it ships the " +
-		"richer operating-model objects (cycles / validations / metrics). Call it " +
-		"BEFORE `frame` to pick an existing vertical that matches the data (e.g. " +
-		"finance for invoices / ledgers / statements) instead of inducing concepts " +
-		"from scratch.",
-	inputSchema: z.object({}),
-	outputSchema: z.array(Vertical),
-}).server(() => listVerticals());

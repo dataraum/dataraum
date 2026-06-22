@@ -1,4 +1,7 @@
-// use_vertical tool (DAT-523) — adopt an EXISTING vertical onto the workspace.
+// adopt-vertical helper (DAT-523) — adopt an EXISTING vertical onto the workspace.
+// The agent `use_vertical` TOOL was removed by DAT-597 (acquisition moved to the
+// staging hub); this is now the shared adopt-vertical helper `server/stage-frame.ts`
+// (adoptVerticalForStaging) calls directly.
 //
 // The acting counterpart to `list_verticals`: the agent calls this to ADOPT a
 // builtin (e.g. finance) or an already-framed vertical onto the workspace,
@@ -18,15 +21,10 @@
 // adoptable, so a typo can't silently pin a non-resolving vertical that
 // add_source then fails on with a misleading message.
 
-import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
 import { setActiveWorkspaceVertical } from "#/db/cockpit/registry";
-import {
-	AgentActionableError,
-	catchActionable,
-	withAgentError,
-} from "./agent-error";
+import { AgentActionableError } from "./agent-error";
 import { listVerticals } from "./list-verticals";
 
 export const UseVerticalResult = z.object({
@@ -70,31 +68,3 @@ export async function useVertical(
 	await setActiveWorkspaceVertical(name);
 	return { vertical: name, kind: match.kind };
 }
-
-/**
- * The `use_vertical` tool for the agent loop. An acting tool: it sets the
- * workspace's vertical (control-plane state), so it runs on the user's explicit
- * instruction — no approval gate, like `frame`/`select`. Adopt path for builtins
- * and re-adopting a framed vertical; to declare a NEW vertical from scratch, the
- * agent uses `frame` instead.
- */
-export const useVerticalTool = toolDefinition({
-	name: "use_vertical",
-	description:
-		"Adopt an EXISTING vertical (domain ontology) onto the workspace — a builtin " +
-		"(e.g. finance) or one already framed here. Call this after `list_verticals` " +
-		"when a vertical already fits the data, INSTEAD of `frame`: a builtin ships its " +
-		"own concepts, so there is nothing to induce. It sets the workspace's vertical " +
-		"so the next add_source / begin_session / operating_model resolves against it. " +
-		"To declare a NEW vertical's model from scratch (no builtin fits), use `frame`.",
-	inputSchema: z.object({
-		name: z
-			.string()
-			.describe(
-				"The vertical to adopt — a `name` from `list_verticals` (builtin or framed).",
-			),
-	}),
-	// Success OR `{ error }`: an unknown vertical name is the agent's to fix (pick
-	// one list_verticals returns, or frame), so it's returned as data, not a throw.
-	outputSchema: withAgentError(UseVerticalResult),
-}).server((input) => catchActionable(() => useVertical(input.name)));

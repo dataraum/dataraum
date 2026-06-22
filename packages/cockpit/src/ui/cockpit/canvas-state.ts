@@ -5,8 +5,6 @@
 // tool→canvas mapper case — they never touch the canvas/stream/shell plumbing.
 // Keep the union sorted baseline-first so the extension point is obvious.
 
-import type { ConnectSchema } from "#/duckdb/connect";
-import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
@@ -35,12 +33,6 @@ export type CanvasState =
 	// provenance + a rolled-up readiness band. Carries the (enriched) list_tables
 	// result; the widget derives the per-source SourceCard drill-in locally.
 	| { kind: "workspace-inventory"; tables: InventoryTable[] }
-	| { kind: "schema-preview"; schema: ConnectSchema }
-	// DAT-382/DAT-469/DAT-471: the frame-stage co-design surface — the user's
-	// framed model (business concepts + the validations AND metric DAGs over them).
-	// Carries the frame tool result; the widget renders every family read-only for
-	// accept/edit.
-	| { kind: "model-frame"; frame: FrameResult }
 	// DAT-350: per-table readiness traffic-light grid. Carries the look_table
 	// tool result (calibrated bands per column × intent, read from the persisted
 	// entropy_readiness rows — the cockpit never re-derives the band).
@@ -121,15 +113,10 @@ export type CanvasState =
 	// projector surfaces it here instead of dropping it. The grid streams via the
 	// same result-grid path (the table is unchanged; confidence rides on top).
 	| { kind: "answer-result"; sql: string; confidence: AnswerConfidence }
-	// A file-upload area (redesign) — projected by the `upload` UI tool so the user
-	// can drop local files; NOT a permanent chat fixture. Carries nothing; the
-	// widget owns the dropzone + drives connect on upload.
-	| { kind: "upload-area" }
-	// DAT-576: the editable probe surface — the user picks a configured DB source,
-	// writes/edits read-only SQL, and runs it against the external DB BEFORE ingest
-	// (streamed via /api/probe-sql into the same result grid). Projected EMPTY by the
-	// `open_probe` UI tool, or SEEDED with the agent's `probe` call input (source +
-	// sql) so a generated query lands in the editor for the user to edit + re-run.
+	// DAT-576/DAT-597: the editable probe surface — the staging hub default. The user
+	// picks a configured DB source, writes/edits read-only SQL, and runs it against
+	// the external DB BEFORE ingest (streamed via /api/probe-sql into the same result
+	// grid), then assembles the import set. Carries an optional seeded (source + sql).
 	| {
 			kind: "probe";
 			source?: { name: string; backend: string };

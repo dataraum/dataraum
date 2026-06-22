@@ -207,82 +207,6 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("look_validation", null)).toBeNull();
 	});
 
-	it("maps connect to a schema-preview canvas", () => {
-		const schema = {
-			sourceKind: "file" as const,
-			source: "/data/people.csv",
-			tables: [
-				{
-					name: "people.csv",
-					rowCountEstimate: 3,
-					columns: [
-						{
-							name: "id",
-							position: 1,
-							sourceType: "BIGINT",
-							nullable: false,
-							sampleValues: [1, 2, 3],
-						},
-					],
-				},
-			],
-		};
-		expect(toolResultToCanvas("connect", schema)).toEqual({
-			kind: "schema-preview",
-			schema,
-		});
-	});
-
-	it("returns null for a missing connect result (canvas unchanged)", () => {
-		expect(toolResultToCanvas("connect", null)).toBeNull();
-	});
-
-	it("returns null for a PARTIAL connect result (no tables array — no SchemaPreview crash)", () => {
-		// A truthy-but-partial/streaming or errored connect output has no `tables`
-		// array; projecting it crashed SchemaPreview on `schema.tables.length` (the
-		// multi-file drag-drop crash). Leave the canvas unchanged until complete.
-		expect(toolResultToCanvas("connect", { source: "people.csv" })).toBeNull();
-		expect(toolResultToCanvas("connect", {})).toBeNull();
-	});
-
-	it("maps frame to a model-frame canvas (DAT-382, DAT-469)", () => {
-		const frame = {
-			vertical: "_adhoc",
-			concepts: [
-				{
-					name: "revenue",
-					description: "Total income",
-					indicators: ["revenue", "sales"],
-					typical_role: "measure",
-					overlay_id: "o1",
-				},
-			],
-			validations: [
-				{
-					validation_id: "non_negative_amounts",
-					name: "Non-negative amounts",
-					description: "Every amount must be >= 0.",
-					category: "data_quality",
-					severity: "error",
-					check_type: "constraint",
-					overlay_id: "v1",
-				},
-			],
-		};
-		expect(toolResultToCanvas("frame", frame)).toEqual({
-			kind: "model-frame",
-			frame,
-		});
-	});
-
-	it("returns null for a missing frame result (canvas unchanged)", () => {
-		expect(toolResultToCanvas("frame", null)).toBeNull();
-	});
-
-	it("returns null for a PARTIAL frame result (no concepts array)", () => {
-		expect(toolResultToCanvas("frame", { vertical: "finance" })).toBeNull();
-	});
-
 	it("maps run_sql to a result-grid from the CALL INPUT (sql + params)", () => {
 		// The grid re-issues the query, so it reads the input, not the result.
 		const result = { columns: ["n"], rows: [{ n: 1 }], rowCount: 1 };
@@ -423,78 +347,6 @@ describe("toolResultToCanvas", () => {
 		expect(
 			toolResultToCanvas("teach_metric", { error: "DB write failed" }),
 		).toBeNull();
-	});
-
-	it("maps upload to the upload-area canvas (the UI tool just opens it)", () => {
-		expect(toolResultToCanvas("upload", { ready: true })).toEqual({
-			kind: "upload-area",
-		});
-	});
-
-	it("maps open_probe to an empty probe canvas (the UI tool just opens the editor)", () => {
-		expect(toolResultToCanvas("open_probe", { ready: true })).toEqual({
-			kind: "probe",
-		});
-	});
-
-	it("seeds the probe canvas from the probe call arguments (source + sql)", () => {
-		expect(
-			toolResultToCanvas(
-				"probe",
-				{ columns: [], rows: [], rowCount: 0 },
-				{
-					source_name: "wwi",
-					backend: "mssql",
-					sql: "SELECT TOP 10 * FROM Sales.Orders",
-				},
-			),
-		).toEqual({
-			kind: "probe",
-			source: { name: "wwi", backend: "mssql" },
-			sql: "SELECT TOP 10 * FROM Sales.Orders",
-		});
-	});
-
-	it("returns null for probe with no sql/source on the wire, or an agent error", () => {
-		expect(
-			toolResultToCanvas("probe", {}, { source_name: "wwi", backend: "mssql" }),
-		).toBeNull();
-		expect(toolResultToCanvas("probe", {}, { sql: "SELECT 1" })).toBeNull();
-		expect(
-			toolResultToCanvas(
-				"probe",
-				{ error: "bad SQL" },
-				{ source_name: "wwi", backend: "mssql", sql: "SELECT 1" },
-			),
-		).toBeNull();
-	});
-
-	it("maps select to the add-source-progress canvas (DAT-436: calling select starts the import)", () => {
-		const selection = {
-			sources: ["s1"],
-			name: "orders.csv",
-			source_type: "csv",
-			backend: null,
-			stage: "add_source",
-			vertical: "finance",
-			file_uris: ["s3://dataraum-lake/uploads/aaa111/orders.csv"],
-			recipe_tables: null,
-			workflow_id: "addsource-ws-sess",
-			run_id: "run-1",
-			session_id: "sess-1",
-		};
-		expect(toolResultToCanvas("select", selection)).toEqual({
-			kind: "add-source-progress",
-			workflowId: "addsource-ws-sess",
-			runId: "run-1",
-		});
-	});
-
-	it("returns null for a missing/refused select result (canvas unchanged)", () => {
-		expect(toolResultToCanvas("select", null)).toBeNull();
-		// A refused select (NoConceptsError — no run ids) projects nothing; the
-		// last good canvas stays and the error surfaces in the chat rail.
-		expect(toolResultToCanvas("select", { error: "no concepts" })).toBeNull();
 	});
 
 	it("returns null for write/compute tools (canvas unchanged)", () => {
@@ -675,32 +527,32 @@ describe("canvasFromMessages", () => {
 	});
 
 	it("does not let a trailing non-canvas tool shadow the last canvas result", () => {
-		// connect (maps to schema-preview) then list_verticals (no canvas projector).
-		// The canvas must STAY on the connect result, not collapse to null because a
-		// non-canvas tool completed last. This is the substrate of the refused-select
-		// stuck-spinner fix: that turn ends on a non-canvas list_verticals, yet the
-		// canvas must still reconcile to a real result instead of spinning forever.
+		// list_tables (maps to workspace-inventory) then teach (no canvas projector).
+		// The canvas must STAY on the list_tables result, not collapse to null because
+		// a non-canvas tool completed last — the substrate of the stuck-spinner fix:
+		// a turn must reconcile to a real result instead of spinning forever even when
+		// its last call is a non-canvas tool.
 		const messages = [
 			msg([
 				{
 					type: "tool-call",
 					id: "c1",
-					name: "connect",
+					name: "list_tables",
 					arguments: "{}",
 					state: "complete",
-					output: { tables: [{ name: "t", columns: [] }] },
+					output: [{ table_id: "t1" }],
 				},
 				{
 					type: "tool-call",
 					id: "c2",
-					name: "list_verticals",
+					name: "teach",
 					arguments: "{}",
 					state: "complete",
-					output: [{ name: "finance" }],
+					output: { overlay_id: "o1" },
 				},
 			]),
 		];
-		expect(canvasFromMessages(messages)?.kind).toBe("schema-preview");
+		expect(canvasFromMessages(messages)?.kind).toBe("workspace-inventory");
 	});
 });
 

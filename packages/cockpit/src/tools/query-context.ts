@@ -26,7 +26,7 @@
 // + `preferEnriched` are unit-tested; the Drizzle reads + the DESCRIBE are
 // smoke/integration-covered.
 
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import { metadataDb } from "../db/metadata/client";
 import {
@@ -34,12 +34,14 @@ import {
 	currentDimensionHierarchies,
 	currentSemanticAnnotations,
 	currentSliceDefinitions,
+	currentTableEntities,
 	sources,
 	tables,
 } from "../db/metadata/schema";
 import { getLakeConnection, LAKE_ALIAS } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
 import { type DriverRanking, lookDrivers } from "./look-drivers";
+import { projectTableEntity, type TableEntity } from "./look-table";
 
 /** The clean, analysis-ready layer a question is answered over. */
 const TYPED_LAYER = "typed";
@@ -461,6 +463,141 @@ export async function buildCatalogBlock(): Promise<string> {
 			})),
 		tableAddressById,
 	);
+}
+
+// --- Table entities (DAT-607) ----------------------------------------------------
+//
+// Per-table entity grounding (DAT-565/566): what each table represents, its grain
+// (one row per …), event-time axes, and recurring identities (would-be FKs). The
+// prefer-enriched `<schema>` block is column-grain and, when enriched views exist,
+// surfaces ONLY those views — hiding the typed facts AND every dimension table. This
+// block is table-grain over the typed facts/dims (where `TableEntity` lives), giving
+// the agent the natural grouping keys ("per <entity>" → an identity column) and a
+// reminder that the hidden dimension tables exist. Same projection the look_table
+// tool uses (`projectTableEntity`: `src_<digest>` strip, degrade-to-empty).
+// Informational (inform-don't-block). Empty (no promoted catalog run) → a one-line note.
+
+/** One typed table's entity header, addressed for the prompt. */
+export interface EntityBlockRow {
+	address: string;
+	entity: TableEntity;
+}
+
+/** Cap a single table's identity list — bounds the block on a wide entity. */
+const MAX_IDENTITIES_PER_TABLE = 8;
+/** Clamp an LLM-authored identity note — keeps one stanza to a readable line. */
+const MAX_NOTE_CHARS = 140;
+
+function clampNote(note: string): string {
+	const n = note.trim();
+	return n.length > MAX_NOTE_CHARS
+		? `${n.slice(0, MAX_NOTE_CHARS - 1).trimEnd()}…`
+		: n;
+}
+
+/**
+ * Format the table entities as the sub-agent's `<entities>` block (pure). One stanza
+ * per table that carries an entity signal (grain / time / identity), sorted by
+ * address; a table with no signal is dropped (a bare entity_type is noise for SQL
+ * grounding). Identity notes are clamped and the per-table identity list capped.
+ * Empty input → a one-line note.
+ */
+export function formatEntities(rows: EntityBlockRow[]): string {
+	const stanzas: string[] = [];
+	for (const { address, entity } of [...rows].sort((a, b) =>
+		a.address.localeCompare(b.address),
+	)) {
+		const lines: string[] = [];
+		if (entity.grain.length) lines.push(`  grain: ${entity.grain.join(", ")}`);
+		if (entity.time_columns.length)
+			lines.push(
+				`  time: ${entity.time_columns
+					.map((t) => (t.aspect ? `${t.column} (${t.aspect})` : t.column))
+					.join(", ")}`,
+			);
+		if (entity.identity_columns.length)
+			lines.push(
+				`  identities: ${entity.identity_columns
+					.slice(0, MAX_IDENTITIES_PER_TABLE)
+					.map((i) =>
+						i.note ? `${i.column} — ${clampNote(i.note)}` : i.column,
+					)
+					.join("; ")}`,
+			);
+		// A table with no grain/time/identity is noise for SQL grounding — drop it.
+		if (lines.length === 0) continue;
+		const kind = entity.is_fact_table
+			? "fact"
+			: entity.is_dimension_table
+				? "dimension"
+				: null;
+		const head = entity.entity_type
+			? `Table ${address} — ${entity.entity_type}${kind ? ` (${kind})` : ""}:`
+			: `Table ${address}${kind ? ` (${kind})` : ""}:`;
+		stanzas.push(`${head}\n${lines.join("\n")}`);
+	}
+	if (stanzas.length === 0)
+		return "<entities>\n(No table entities detected yet.)\n</entities>";
+	return (
+		"<entities>\n" +
+		"What each table represents and its natural keys. Grain is the table's unit " +
+		"(one row per these columns). Identities are recurring real-world keys (would-be " +
+		'foreign keys) — to answer "per <entity>", group by the matching identity ' +
+		"column. Time columns are the event-time axes. These columns are present on the " +
+		"table and on any enriched view built from it.\n\n" +
+		`${stanzas.join("\n\n")}\n` +
+		"</entities>"
+	);
+}
+
+/**
+ * Read the table entities for the active workspace's promoted catalog head and format
+ * them as the sub-agent's `<entities>` block. Joined to the typed tables for their
+ * `lake.typed.<name>` address. The view is head-resolved (one row per table_id); the
+ * `detected_at desc` order makes the first-seen row the deterministic pick for any
+ * defensive duplicate (session-grain contract, DAT-474).
+ */
+export async function buildEntitiesBlock(): Promise<string> {
+	const rows = await metadataDb
+		.select({
+			tableId: currentTableEntities.tableId,
+			physicalName: tables.tableName,
+			layer: tables.layer,
+			detectedEntityType: currentTableEntities.detectedEntityType,
+			isFactTable: currentTableEntities.isFactTable,
+			isDimensionTable: currentTableEntities.isDimensionTable,
+			grainColumns: currentTableEntities.grainColumns,
+			timeColumns: currentTableEntities.timeColumns,
+			identityColumns: currentTableEntities.identityColumns,
+			description: currentTableEntities.description,
+		})
+		.from(currentTableEntities)
+		.innerJoin(tables, eq(tables.tableId, currentTableEntities.tableId))
+		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
+		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)))
+		.orderBy(desc(currentTableEntities.detectedAt));
+
+	const seen = new Set<string>();
+	const blockRows: EntityBlockRow[] = [];
+	for (const r of rows) {
+		const tableId = r.tableId ?? "";
+		if (!tableId || seen.has(tableId)) continue;
+		seen.add(tableId);
+		const address = `${LAKE_ALIAS}.${schemaForLayer(r.layer ?? TYPED_LAYER)}.${r.physicalName}`;
+		blockRows.push({
+			address,
+			entity: projectTableEntity({
+				detectedEntityType: r.detectedEntityType ?? null,
+				isFactTable: r.isFactTable ?? null,
+				isDimensionTable: r.isDimensionTable ?? null,
+				grainColumns: r.grainColumns,
+				timeColumns: r.timeColumns,
+				identityColumns: r.identityColumns,
+				description: r.description ?? null,
+			}),
+		});
+	}
+	return formatEntities(blockRows);
 }
 
 // --- Driver rankings (DAT-548) ---------------------------------------------------

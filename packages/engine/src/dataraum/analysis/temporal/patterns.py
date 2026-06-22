@@ -1,6 +1,6 @@
 """Index-derived temporal pattern analysis.
 
-Analyzes the timestamp index of a temporal column:
+Analyzes the timestamp series of a temporal column:
 
 - Update frequency and staleness (interval statistics)
 - Fiscal calendar alignment and period-end effects (month/day-of-month activity)
@@ -9,15 +9,17 @@ The value-series analyzers (seasonality via statsmodels, change points via ruptu
 trend/distribution-stability via scipy) were removed in DAT-524: they ran on a constant
 ``Series(1)`` and produced data-independent, foregone-conclusion output that nobody read.
 Both heavy native deps (``statsmodels``, ``ruptures``) went with them.
+
+``time_series`` is a polars ``Datetime`` Series of the column's timestamps, **sorted
+ascending** (the loader's ``ORDER BY``) — no pandas (DAT-580 migration).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 from dataraum.analysis.temporal.models import (
     FiscalCalendarAnalysis,
@@ -35,14 +37,14 @@ logger = get_logger(__name__)
 
 
 def analyze_update_frequency(
-    time_series: pd.Series,
+    time_series: pl.Series,
     *,
     config: dict[str, Any],
 ) -> Result[UpdateFrequencyAnalysis]:
     """Analyze update frequency and regularity.
 
     Args:
-        time_series: Time series data
+        time_series: Sorted-ascending polars Datetime series of the column's timestamps
         config: Temporal config dict (from config/phases/temporal.yaml)
 
     Returns:
@@ -53,32 +55,27 @@ def analyze_update_frequency(
         if len(time_series) < 2:
             return Result.fail("Insufficient data for update frequency analysis")
 
-        timestamps = time_series.index
-        intervals_seconds = timestamps.to_series().diff().dt.total_seconds().dropna()  # type: ignore[arg-type]
-
+        # Consecutive interval seconds (the series is sorted): diff() drops the leading null.
+        intervals_seconds = time_series.diff().drop_nulls().dt.total_seconds()
         if len(intervals_seconds) == 0:
             return Result.fail("No intervals found")
 
-        median_interval = float(intervals_seconds.median())
-        # A single interval (a 2-row column) has no sample std — pandas returns
-        # NaN (ddof=1). NaN can't be serialized into the JSON profile_data column
-        # (Postgres rejects the literal `NaN`), and a lone interval is trivially
-        # regular, so a zero spread is the correct reading.
-        interval_std = float(intervals_seconds.std())
-        if np.isnan(interval_std):
-            interval_std = 0.0
+        median_interval = float(cast(float, intervals_seconds.median()))
+        # A single interval (a 2-row column) has no sample std — polars returns None
+        # (ddof=1). None/NaN can't be serialized into the JSON profile_data column
+        # (Postgres rejects the literal `NaN`), and a lone interval is trivially regular,
+        # so a zero spread is the correct reading.
+        std = intervals_seconds.std()
+        interval_std = float(cast(float, std)) if std is not None else 0.0
 
         # Coefficient of variation (lower = more regular)
-        if median_interval > 0:
-            interval_cv = interval_std / median_interval
-        else:
-            interval_cv = 0.0
+        interval_cv = interval_std / median_interval if median_interval > 0 else 0.0
 
         # Regularity score (0-1, higher = more regular)
         regularity_score = max(0.0, 1.0 - min(interval_cv, 1.0))
 
-        # Data freshness
-        last_update = timestamps[-1].to_pydatetime()
+        # Data freshness (the series is sorted, so the last element is the max timestamp)
+        last_update = time_series[-1]
         if last_update.tzinfo is None:
             last_update = last_update.replace(tzinfo=UTC)
         now = datetime.now(UTC)
@@ -110,14 +107,14 @@ def analyze_update_frequency(
 
 
 def detect_fiscal_calendar(
-    time_series: pd.Series,
+    time_series: pl.Series,
     *,
     config: dict[str, Any],
 ) -> Result[FiscalCalendarAnalysis]:
     """Detect fiscal calendar alignment and period-end effects.
 
     Args:
-        time_series: Time series data
+        time_series: Sorted-ascending polars Datetime series of the column's timestamps
         config: Temporal config dict (from config/phases/temporal.yaml)
 
     Returns:
@@ -130,25 +127,20 @@ def detect_fiscal_calendar(
         period_end_spike_mult = cfg["period_end_spike_multiplier"]
         expected_eom_ratio = cfg["expected_end_of_month_ratio"]
 
-        if len(time_series) < min_points:
-            return Result.ok(
-                FiscalCalendarAnalysis(
-                    fiscal_alignment_detected=False,
-                )
-            )
+        total_count = len(time_series)
+        if total_count < min_points:
+            return Result.ok(FiscalCalendarAnalysis(fiscal_alignment_detected=False))
 
-        timestamps = time_series.index
-        month_counts = pd.Series([ts.month for ts in timestamps]).value_counts()
+        # Per-month activity counts (sorted by count desc → row 0 is the busiest month).
+        month_counts = time_series.dt.month().alias("month").value_counts(sort=True)
 
-        # Check for anomalous month (potential fiscal year end)
-        if len(month_counts) > 0:
-            max_month = month_counts.idxmax()
-            max_count = month_counts.max()
-            mean_count = month_counts.mean()
-
+        if month_counts.height > 0:
+            max_month = int(month_counts["month"][0])
+            max_count = int(cast(int, month_counts["count"].max()))
+            mean_count = float(cast(float, month_counts["count"].mean()))
             # Fiscal year end typically has more activity
             if max_count > mean_count * activity_spike_mult:
-                fiscal_year_end = int(max_month)
+                fiscal_year_end: int | None = max_month
                 fiscal_detected = True
                 confidence = min(0.9, (max_count / mean_count - 1.0) / 2.0)
             else:
@@ -160,14 +152,9 @@ def detect_fiscal_calendar(
             fiscal_detected = False
             confidence = 0.0
 
-        # Detect period-end effects (spikes at month/quarter end)
-        day_of_month_counts = pd.Series([ts.day for ts in timestamps]).value_counts()
-
-        # Days 28-31 are end of month
-        end_of_month_count = sum(day_of_month_counts.get(d, 0) for d in range(28, 32))
-        total_count = len(timestamps)
-
-        actual_ratio = end_of_month_count / total_count if total_count > 0 else 0
+        # Period-end effects: rows landing on days 28-31 (inclusive).
+        end_of_month_count = int(time_series.dt.day().is_between(28, 31).sum())
+        actual_ratio = end_of_month_count / total_count if total_count > 0 else 0.0
 
         has_period_end_effects = actual_ratio > expected_eom_ratio * period_end_spike_mult
         period_end_spike_ratio = (

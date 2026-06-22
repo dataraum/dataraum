@@ -8,7 +8,6 @@ ENTITIES (not rows). The end-to-end ICC-switch lives in test_grain_e2e (P2).
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import polars as pl
 
 from dataraum.analysis.drivers.criterion import (
@@ -38,6 +37,7 @@ from .conftest import (
     TE_PROD_DRIVER,
     TE_PROD_NULL,
     TE_ROW_NULL,
+    _physical,
     make_clustered_corpus,
     make_clustered_ratio_two_driver_corpus,
     make_clustered_two_driver_corpus,
@@ -45,9 +45,9 @@ from .conftest import (
 )
 
 
-def _codes(series: pd.Series) -> tuple[np.ndarray, int]:
-    codes, uniques = pd.factorize(series)
-    return codes.astype(int), len(uniques)
+def _codes(series: object) -> tuple[np.ndarray, int]:
+    codes, labels = _physical(series)
+    return codes, len(labels)
 
 
 class TestHomeGrainPartition:
@@ -55,7 +55,7 @@ class TestHomeGrainPartition:
 
     def test_each_dim_homes_at_one_grain(self) -> None:
         df = make_two_entity_corpus(np.random.default_rng(0))
-        home, row = _home_grain_partition(pl.from_pandas(df), [TE_CUST, TE_PROD], TE_DIMS)
+        home, row = _home_grain_partition(df, [TE_CUST, TE_PROD], TE_DIMS)
         # Customer attrs are constant within customer; product attrs within product.
         assert set(home[TE_CUST]) == {TE_CUST_DRIVER, TE_CUST_NULL}
         assert set(home[TE_PROD]) == {TE_PROD_DRIVER, TE_PROD_NULL}
@@ -67,14 +67,14 @@ class TestHomeGrainPartition:
     def test_constant_within_two_homes_at_the_finer_entity(self) -> None:
         # ``region`` is constant within BOTH store and chain (a store sits in one region,
         # a chain spans one region here) → it must home at the FINER (higher-card) entity.
-        df = pd.DataFrame(
+        df = pl.DataFrame(
             {
                 "chain": [0, 0, 1, 1, 2, 2],  # 3 chains
                 "store": [0, 1, 2, 3, 4, 5],  # 6 stores (finer)
                 "region": ["W", "W", "E", "E", "S", "S"],  # constant within store AND chain
             }
         )
-        home, row = _home_grain_partition(pl.from_pandas(df), ["chain", "store"], ["region"])
+        home, row = _home_grain_partition(df, ["chain", "store"], ["region"])
         assert home == {"store": ["region"]}  # finer entity wins the tiebreak
         assert row == []
 
@@ -83,7 +83,7 @@ class TestICC:
     def test_high_on_clustered_measure(self) -> None:
         df = make_clustered_corpus(np.random.default_rng(0))
         ent_codes, n = _codes(df[CL_ENTITY])
-        measure = df["measure"].to_numpy(dtype=float)
+        measure = df["measure"].to_numpy().astype(float)
         icc = intraclass_correlation(ent_codes, n, measure)
         assert icc > 0.3, f"clustered measure should have high ICC, got {icc:.3f}"
 
@@ -92,21 +92,21 @@ class TestICC:
         df = make_clustered_corpus(np.random.default_rng(0))
         rng = np.random.default_rng(1)
         fake_entity = rng.integers(0, 200, len(df))
-        codes, n = _codes(pd.Series(fake_entity))
-        icc = intraclass_correlation(codes, n, df["measure"].to_numpy(dtype=float))
+        codes, n = _codes(fake_entity)
+        icc = intraclass_correlation(codes, n, df["measure"].to_numpy().astype(float))
         assert icc < 0.05, f"random grouping should have ~0 ICC, got {icc:.3f}"
 
 
 class TestEntityMeanTarget:
-    def _collapse(self, df: pd.DataFrame):
-        g = df.groupby(CL_ENTITY, sort=False).agg(
-            m=("measure", "mean"),
-            w=("measure", "size"),
-            drv=(CL_DRIVER, "first"),
-            nul=(CL_ENTITY_NULLS[0], "first"),
+    def _collapse(self, df: pl.DataFrame):
+        g = df.group_by(CL_ENTITY, maintain_order=True).agg(
+            pl.col("measure").mean().alias("m"),
+            pl.col("measure").len().alias("w"),
+            pl.col(CL_DRIVER).first().alias("drv"),
+            pl.col(CL_ENTITY_NULLS[0]).first().alias("nul"),
         )
-        means = g["m"].to_numpy(dtype=float)
-        sizes = g["w"].to_numpy(dtype=float)
+        means = g["m"].to_numpy().astype(float)
+        sizes = g["w"].to_numpy().astype(float)
         return g, means, sizes
 
     def test_driver_outranks_null_at_entity_grain(self) -> None:
@@ -148,10 +148,10 @@ class TestWithinEntityDemean:
 
     def test_demean_recovers_within_entity_driver_signal(self) -> None:
         df = make_clustered_two_driver_corpus(np.random.default_rng(0))
-        measure = df["measure"].to_numpy(dtype=float)
-        residual = _within_entity_residual(pl.from_pandas(df), CL_ENTITY, "measure")
-        phys, _ = pd.factorize(df[CL_ROW_DRIVER].astype(object).to_numpy())
-        codes, n = build_codes(phys.astype(int), measure, handle_nulls=True)
+        measure = df["measure"].to_numpy().astype(float)
+        residual = _within_entity_residual(df, CL_ENTITY, "measure")
+        phys, _ = _physical(df[CL_ROW_DRIVER])
+        codes, n = build_codes(phys, measure, handle_nulls=True)
         raw_gain = variance_reduction(codes, n, measure, min_support=2)
         residual_gain = variance_reduction(codes, n, residual, min_support=2)
         # The between-entity variance dilutes the row driver in the raw measure; the
@@ -161,14 +161,12 @@ class TestWithinEntityDemean:
 
     def test_demean_recovers_within_entity_ratio_signal(self) -> None:
         df = make_clustered_ratio_two_driver_corpus(np.random.default_rng(0))
-        num = df["numerator"].to_numpy(dtype=float)
-        den = df["denominator"].to_numpy(dtype=float)
+        num = df["numerator"].to_numpy().astype(float)
+        den = df["denominator"].to_numpy().astype(float)
         ratio = num / den
-        residual, weight = _within_entity_ratio_residual(
-            pl.from_pandas(df), CL_ENTITY, "numerator", "denominator"
-        )
-        phys, _ = pd.factorize(df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy())
-        codes, n = build_codes(phys.astype(int), ratio, handle_nulls=True)
+        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
+        phys, _ = _physical(df[CL_RATIO_ROW_DRIVER])
+        codes, n = build_codes(phys, ratio, handle_nulls=True)
         # Both gains are volume-weighted (weight = denominator); only the de-mean differs.
         raw_gain = weighted_variance_reduction(codes, n, ratio, den, min_support=2)
         residual_gain = weighted_variance_reduction(codes, n, residual, weight, min_support=2)
@@ -179,11 +177,10 @@ class TestWithinEntityDemean:
         # A NaN cluster key factorizes to code -1; the residual must not crash (bincount
         # rejects negatives) and the row must be excluded (NaN residual, 0 weight).
         df = make_clustered_ratio_two_driver_corpus(np.random.default_rng(0))
-        df[CL_ENTITY] = df[CL_ENTITY].astype("float")
-        df.loc[0, CL_ENTITY] = np.nan  # one row with no entity
-        residual, weight = _within_entity_ratio_residual(
-            pl.from_pandas(df), CL_ENTITY, "numerator", "denominator"
-        )
+        ent = df[CL_ENTITY].to_list()
+        ent[0] = None  # one row with no entity (null cluster key)
+        df = df.with_columns(pl.Series(CL_ENTITY, ent))
+        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
         assert np.isnan(residual[0]) and weight[0] == 0.0
         # the rest are unaffected (still produce finite residuals somewhere)
         assert np.isfinite(residual[1:]).any()

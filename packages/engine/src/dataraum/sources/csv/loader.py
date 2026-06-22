@@ -72,18 +72,18 @@ class CSVLoader(LoaderBase):
                 # sniff connection (after httpfs loads) so a URI that slipped past
                 # validation cannot read a local file.
                 apply_s3_secret(conn, disable_local_fs=True)
-                # Read first few rows to get schema
+                # Read first few rows to get schema (polars — no pandas, DAT-580)
                 sample_df = conn.execute(f"""
                     SELECT * FROM read_csv_auto('{safe_path}')
                     LIMIT 10
-                """).df()
+                """).pl()
             finally:
                 conn.close()
 
             columns = []
             for idx, col_name in enumerate(sample_df.columns):
                 # Get sample values (as strings)
-                sample_values = sample_df[col_name].astype(str).head(5).tolist()
+                sample_values = [str(v) for v in sample_df[col_name].head(5).to_list()]
 
                 columns.append(
                     ColumnInfo(
@@ -125,7 +125,8 @@ class CSVLoader(LoaderBase):
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
             null_config: Null value configuration
-            junk_columns: Column names to drop after loading (e.g., pandas index columns)
+            junk_columns: Column names to drop after loading (e.g. an unwanted index
+                column written by a prior export tool)
 
         Returns:
             Result containing StagedTable

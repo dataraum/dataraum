@@ -45,7 +45,7 @@ def _seed(
 ) -> str:
     """Seed the fact, enriched view (DuckDB), catalog, alias group, and annotation."""
     df = make_corpus(np.random.default_rng(0))
-    df[ALIAS] = df["D_e25"]  # 1:1 alias of a driver
+    df = df.with_columns(df["D_e25"].alias(ALIAS))  # 1:1 alias of a driver
 
     fact = Table(
         table_id=str(uuid4()),

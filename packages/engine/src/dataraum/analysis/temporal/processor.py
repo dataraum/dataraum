@@ -17,11 +17,11 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import duckdb
-import pandas as pd
+import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -83,19 +83,14 @@ def _profile_temporal_column_parallel(
 
             time_series = ts_result.unwrap()
 
-            # Basic temporal info
-            min_timestamp = time_series.index.min().to_pydatetime()
-            max_timestamp = time_series.index.max().to_pydatetime()
+            # Basic temporal info (the series is sorted ascending — loader ORDER BY)
+            min_timestamp = time_series[0]
+            max_timestamp = time_series[-1]
             span_days = (max_timestamp - min_timestamp).total_seconds() / 86400
 
-            # Infer granularity
-            interval: pd.Series = time_series.index.to_series().diff()
-            median_interval = interval.median()
-
-            if isinstance(median_interval, (int, float)):
-                interval_seconds = float(median_interval)
-            else:
-                interval_seconds = median_interval.total_seconds()
+            # Infer granularity from the median consecutive interval (seconds)
+            intervals = time_series.diff().drop_nulls().dt.total_seconds()
+            interval_seconds = float(cast(float, intervals.median())) if len(intervals) else 0.0
 
             granularity, confidence = infer_granularity(interval_seconds, config=config)
 
@@ -316,8 +311,8 @@ def _load_time_series(
     column_name: str,
     sample_percent: float = 20.0,
     min_rows: int = 1000,
-) -> Result[pd.Series]:
-    """Load time series data from DuckDB using Bernoulli sampling.
+) -> Result[pl.Series]:
+    """Load a column's timestamps from DuckDB using Bernoulli sampling.
 
     Uses DuckDB's Bernoulli sampling to get a random sample distributed across
     the full time range, then orders by timestamp for temporal analysis.
@@ -330,13 +325,12 @@ def _load_time_series(
         min_rows: Minimum rows to return (uses higher sample if needed)
 
     Returns:
-        Result containing pandas Series indexed by datetime
+        Result containing a polars Datetime Series, sorted ascending (DAT-580).
 
     TODO: Revisit sampling strategy for temporal analysis:
         - Bernoulli sampling creates artificial gaps that affect:
           - Granularity detection (sees sampled intervals, not true intervals)
           - Completeness analysis (artificial gaps mask real gaps)
-          - Seasonality detection (sparse data may miss patterns)
         - Consider stratified sampling (equal samples from time segments)
         - Consider adaptive sampling based on detected granularity
         - For now, use generous 20% sample which balances coverage vs speed
@@ -379,15 +373,13 @@ def _load_time_series(
             ORDER BY "{column_name}"
             """
 
-        df = duckdb_conn.execute(query).fetchdf()
+        df = duckdb_conn.execute(query).pl()
 
-        if df.empty:
+        if df.is_empty():
             return Result.fail("No data found after sampling")
 
-        ts = pd.Series(1, index=pd.to_datetime(df["ts"]))
-        ts = ts.sort_index()
-
-        return Result.ok(ts)
+        # The query ORDER BYs the column, so the Series is already sorted ascending.
+        return Result.ok(df["ts"])
 
     except Exception as e:
         return Result.fail(f"Failed to load time series: {e}")

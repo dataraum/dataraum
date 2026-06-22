@@ -5,6 +5,10 @@ a known effect size, ``N_*`` = nulls that must stay gated) and a generic
 multiplicative ``measure`` — nothing finance-specific. This is the same generative
 family the spike's GREEN verdict rests on, so the engine's recall/FDR tests inherit
 that calibration. The real-fixture transfer check lives in dataraum-eval (handoff).
+
+Corpora are polars DataFrames (DAT-580 — engine is pandas-free). The numpy draw order
+is unchanged from the pandas original, so the generated data — and the DAT-580 golden —
+are byte-identical; only the container differs.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from collections.abc import Iterator
 
 import duckdb
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
@@ -58,6 +62,18 @@ def duck() -> Iterator[duckdb.DuckDBPyConnection]:
         conn.close()
 
 
+def _physical(values: object) -> tuple[np.ndarray, list[str]]:
+    """Physical int codes (-1 = null) + label-per-code — the criterion/tree encoding.
+
+    Accepts a polars Series, numpy array, or list; matches the engine's arrow→polars
+    factorization (``cast(String).cast(Categorical).to_physical()``) so test inputs line
+    up with production (DAT-580).
+    """
+    cat = pl.Series(values).cast(pl.String).cast(pl.Categorical)
+    codes = cat.to_physical().cast(pl.Int64).fill_null(-1).to_numpy()
+    return np.ascontiguousarray(codes), [str(x) for x in cat.cat.get_categories().to_list()]
+
+
 # Planted drivers: name → multiplicative effect size on the measure.
 EFFECTS = {"D_e60": 0.60, "D_e25": 0.25, "D_e15": 0.15, "D_e08": 0.08, "D_e04": 0.04}
 DRIVERS = list(EFFECTS)
@@ -69,7 +85,7 @@ PROXY = "N_proxy"
 ALL_DIMS = DRIVERS + INDEPENDENT_NULLS + [PROXY]
 
 
-def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
+def make_corpus(rng: np.random.Generator) -> pl.DataFrame:
     """One synthetic dataset: planted drivers + independent nulls + a confounded proxy.
 
     ``N_mnar`` is missing-dimension on half the rows (exercises the (A) gate);
@@ -78,7 +94,7 @@ def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
     """
     n = N_ROWS
     measure = rng.lognormal(mean=6.0, sigma=1.1, size=n)
-    df = pd.DataFrame(index=np.arange(n))
+    cols: dict[str, object] = {}
 
     v_e60 = None
     for name, eps in EFFECTS.items():
@@ -86,52 +102,51 @@ def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
         if name == "D_e60":
             v_e60 = v
         measure *= 1.0 + eps * (v - 1.5) / 1.5
-        df[name] = [f"{name}:{x}" for x in v]
+        cols[name] = [f"{name}:{x}" for x in v]
 
     proxy_v = np.where(rng.random(n) < 0.8, v_e60, rng.integers(0, 4, n))
-    df[PROXY] = [f"px{x}" for x in proxy_v]
+    cols[PROXY] = [f"px{x}" for x in proxy_v]
 
-    df["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
-    df["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]  # participates (inflation test)
-    df["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]  # excised by min-support
+    cols["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
+    cols["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]  # participates (inflation test)
+    cols["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]  # excised by min-support
 
     present = rng.random(n) < 0.5
-    df["N_mnar"] = np.where(present, [f"p{v}" for v in rng.integers(0, 5, n)], None)
+    mnar_v = rng.integers(0, 5, n)
+    cols["N_mnar"] = [f"p{v}" if p else None for p, v in zip(present, mnar_v, strict=True)]
     measure[~present] *= 1.5
 
-    df["measure"] = measure
+    cols["measure"] = measure  # reference; mutated in place below before the frame is built
 
     # Measure-conditional missingness: in slice value 0 the measure is 85% dropped
     # (and 3× inflated where present) — a flat null-ratio hides it; the (B) gate closes it.
     n_mm = rng.integers(0, 5, n)
-    df["N_measure_missing"] = [f"x{v}" for v in n_mm]
+    cols["N_measure_missing"] = [f"x{v}" for v in n_mm]
     bias = n_mm == 0
     drop = bias & (rng.random(n) < 0.85)
-    df.loc[drop, "measure"] = np.nan
-    df.loc[bias & ~drop, "measure"] *= 3.0
-    return df
+    measure[drop] = np.nan
+    measure[bias & ~drop] *= 3.0
+    return pl.DataFrame(cols)
 
 
-def columns(df: pd.DataFrame, dim: str) -> tuple[np.ndarray, np.ndarray]:
+def columns(df: pl.DataFrame, dim: str) -> tuple[np.ndarray, np.ndarray]:
     """``(physical codes, measure)`` for one dimension — the criterion's int-code inputs.
 
-    Codes are ``pd.factorize`` physical codes (``-1`` = null), matching the arrow→polars
-    load's per-dim encoding (DAT-580).
+    Codes are physical category codes (``-1`` = null), matching the arrow→polars load's
+    per-dim encoding (DAT-580).
     """
-    codes, _uniques = pd.factorize(df[dim].astype(object).to_numpy())
-    return codes.astype(np.int64), df["measure"].to_numpy(dtype=float)
+    codes, _labels = _physical(df[dim])
+    return codes, df["measure"].to_numpy().astype(np.float64)
 
 
 def factorize_columns(
-    values_by_dim: dict[str, np.ndarray],
+    values_by_dim: dict[str, object],
 ) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
     """``(codes_by_dim, labels_by_dim)`` for the tree — physical codes + label-per-code."""
     codes_by_dim: dict[str, np.ndarray] = {}
     labels_by_dim: dict[str, list[str]] = {}
     for d, values in values_by_dim.items():
-        codes, uniques = pd.factorize(values)
-        codes_by_dim[d] = codes.astype(np.int64)
-        labels_by_dim[d] = [str(u) for u in uniques]
+        codes_by_dim[d], labels_by_dim[d] = _physical(values)
     return codes_by_dim, labels_by_dim
 
 
@@ -144,23 +159,23 @@ RATIO_NULLS = ["N_lowcard", "N_midcard", "N_highcard"]
 RATIO_DIMS = RATIO_DRIVERS + RATIO_NULLS
 
 
-def make_ratio_corpus(rng: np.random.Generator) -> pd.DataFrame:
+def make_ratio_corpus(rng: np.random.Generator) -> pl.DataFrame:
     """A ratio (numerator/denominator) whose VALUE depends on the driver dims."""
     n = N_ROWS
-    df = pd.DataFrame(index=np.arange(n))
+    cols: dict[str, object] = {}
     denominator = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
     log_ratio = np.full(n, np.log(0.2))  # base ratio 0.2
     for name, eps in RATIO_EFFECTS.items():
         v = rng.integers(0, 4, n)
-        df[name] = [f"{name}:{x}" for x in v]
+        cols[name] = [f"{name}:{x}" for x in v]
         log_ratio += np.log1p(eps * (v - 1.5) / 1.5)
     ratio = np.exp(log_ratio + rng.normal(0.0, 0.1, n))  # + per-row noise
-    df["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
-    df["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]
-    df["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]
-    df["numerator"] = denominator * ratio
-    df["denominator"] = denominator
-    return df
+    cols["N_lowcard"] = [f"l{v}" for v in rng.integers(0, 6, n)]
+    cols["N_midcard"] = [f"d{v}" for v in rng.integers(0, 90, n)]
+    cols["N_highcard"] = [f"h{v}" for v in rng.integers(0, 400, n)]
+    cols["numerator"] = denominator * ratio
+    cols["denominator"] = denominator
+    return pl.DataFrame(cols)
 
 
 # Clustered corpus (DAT-552, ported from DAT-544 E1): repeated entities with a
@@ -180,7 +195,7 @@ CL_ENTITY = "entity"
 
 def make_clustered_corpus(
     rng: np.random.Generator, *, row_sigma: float = CL_ROW_SIGMA
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """200 entities × 100 rows; measure carries a per-entity random effect (high ICC).
 
     The row-wise permutation null is INVALID here (the entity is the exchangeable
@@ -195,14 +210,16 @@ def make_clustered_corpus(
     ent_effect = drv_shift + rng.normal(0, CL_ENT_SIGMA, CL_N_ENTITIES)
     row_noise = rng.normal(0, row_sigma, CL_N_ENTITIES * CL_PER_ENTITY)
 
-    df = pd.DataFrame(index=np.arange(CL_N_ENTITIES * CL_PER_ENTITY))
-    df[CL_ENTITY] = ent
-    df["measure"] = np.exp(6.0 + ent_effect[ent] + row_noise)
-    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
-    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
-    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
-    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, CL_N_ENTITIES * CL_PER_ENTITY)]
-    return df
+    return pl.DataFrame(
+        {
+            CL_ENTITY: ent,
+            "measure": np.exp(6.0 + ent_effect[ent] + row_noise),
+            CL_DRIVER: [f"d{g}" for g in drv_grp[ent]],
+            CL_ENTITY_NULLS[0]: [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]],
+            CL_ENTITY_NULLS[1]: [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]],
+            CL_ROW_NULL: [f"r{g}" for g in rng.integers(0, 6, CL_N_ENTITIES * CL_PER_ENTITY)],
+        }
+    )
 
 
 # Two-driver clustered corpus (DAT-561): a HIGH-ICC measure carrying BOTH a
@@ -217,7 +234,7 @@ TWO_DRIVER_DIMS = [CL_DRIVER, CL_ROW_DRIVER, CL_ENTITY_NULLS[1], CL_ROW_NULL]
 
 def make_clustered_two_driver_corpus(
     rng: np.random.Generator, *, ent_scale: float = 1.0
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """200 entities × 100 rows, with an entity-level AND a within-entity row-level driver.
 
     ``ent_scale`` knobs the between-entity variance: ``1.0`` → high ICC (≈0.86, the
@@ -236,14 +253,16 @@ def make_clustered_two_driver_corpus(
     row_grp = rng.integers(0, 4, n)
     row_shift = np.array([-1.5, -0.5, 0.5, 1.5])[row_grp]
 
-    df = pd.DataFrame(index=np.arange(n))
-    df[CL_ENTITY] = ent
-    df["measure"] = 100.0 + ent_effect[ent] + row_shift + rng.normal(0, 1.0, n)
-    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]  # entity-level driver
-    df[CL_ROW_DRIVER] = [f"w{g}" for g in row_grp]  # row-level driver
-    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]  # ent null
-    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
-    return df
+    return pl.DataFrame(
+        {
+            CL_ENTITY: ent,
+            "measure": 100.0 + ent_effect[ent] + row_shift + rng.normal(0, 1.0, n),
+            CL_DRIVER: [f"d{g}" for g in drv_grp[ent]],  # entity-level driver
+            CL_ROW_DRIVER: [f"w{g}" for g in row_grp],  # row-level driver
+            CL_ENTITY_NULLS[1]: [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]],
+            CL_ROW_NULL: [f"r{g}" for g in rng.integers(0, 6, n)],  # row-level null
+        }
+    )
 
 
 # Two-ENTITY corpus (DAT-563): rows cross TWO recurring identities (customer, product),
@@ -266,7 +285,7 @@ TE_DIMS = [TE_CUST_DRIVER, TE_PROD_DRIVER, TE_CUST_NULL, TE_PROD_NULL, TE_ROW_NU
 TE_ENTITIES = [TE_CUST, TE_PROD]
 
 
-def make_two_entity_corpus(rng: np.random.Generator) -> pd.DataFrame:
+def make_two_entity_corpus(rng: np.random.Generator) -> pl.DataFrame:
     """24k rows over 120 customers × 40 products; measure clusters within BOTH (customer > product)."""
     n = TE_N_ROWS
     cust = rng.integers(0, TE_N_CUST, n)
@@ -282,16 +301,18 @@ def make_two_entity_corpus(rng: np.random.Generator) -> pd.DataFrame:
     prod_drv = rng.integers(0, 4, TE_N_PROD)
     prod_effect = np.array([-2.5, -0.8, 0.8, 2.5])[prod_drv] + rng.normal(0, 1.0, TE_N_PROD)
 
-    df = pd.DataFrame(index=np.arange(n))
-    df[TE_CUST] = cust
-    df[TE_PROD] = prod
-    df["measure"] = 100.0 + cust_effect[cust] + prod_effect[prod] + rng.normal(0, 1.0, n)
-    df[TE_CUST_DRIVER] = [f"cd{g}" for g in cust_drv[cust]]  # constant within customer
-    df[TE_PROD_DRIVER] = [f"pd{g}" for g in prod_drv[prod]]  # constant within product
-    df[TE_CUST_NULL] = [f"cn{g}" for g in rng.integers(0, 6, TE_N_CUST)[cust]]  # cust-level null
-    df[TE_PROD_NULL] = [f"pn{g}" for g in rng.integers(0, 6, TE_N_PROD)[prod]]  # prod-level null
-    df[TE_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
-    return df
+    return pl.DataFrame(
+        {
+            TE_CUST: cust,
+            TE_PROD: prod,
+            "measure": 100.0 + cust_effect[cust] + prod_effect[prod] + rng.normal(0, 1.0, n),
+            TE_CUST_DRIVER: [f"cd{g}" for g in cust_drv[cust]],  # constant within customer
+            TE_PROD_DRIVER: [f"pd{g}" for g in prod_drv[prod]],  # constant within product
+            TE_CUST_NULL: [f"cn{g}" for g in rng.integers(0, 6, TE_N_CUST)[cust]],
+            TE_PROD_NULL: [f"pn{g}" for g in rng.integers(0, 6, TE_N_PROD)[prod]],
+            TE_ROW_NULL: [f"r{g}" for g in rng.integers(0, 6, n)],  # row-level null
+        }
+    )
 
 
 # Clustered RATIO corpus (DAT-552 #321 fold): the per-row ratio (num/den) carries a
@@ -302,7 +323,7 @@ CL_RATIO_DIMS = [CL_DRIVER, *CL_ENTITY_NULLS]  # all entity-level
 
 def make_clustered_ratio_corpus(
     rng: np.random.Generator, *, ent_ratio_sigma: float = 0.05, row_sigma: float = 0.02
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """200 entities × 100 rows; the RATIO num/den clusters within entity (high ICC)."""
     ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
     drv_grp = rng.integers(0, 4, CL_N_ENTITIES)
@@ -312,14 +333,16 @@ def make_clustered_ratio_corpus(
     den = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
     row_ratio = ent_ratio[ent] + rng.normal(0, row_sigma, n)
 
-    df = pd.DataFrame(index=np.arange(n))
-    df[CL_ENTITY] = ent
-    df["numerator"] = den * row_ratio
-    df["denominator"] = den
-    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]
-    df[CL_ENTITY_NULLS[0]] = [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]]
-    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]
-    return df
+    return pl.DataFrame(
+        {
+            CL_ENTITY: ent,
+            "numerator": den * row_ratio,
+            "denominator": den,
+            CL_DRIVER: [f"d{g}" for g in drv_grp[ent]],
+            CL_ENTITY_NULLS[0]: [f"a{g}" for g in rng.integers(0, 6, CL_N_ENTITIES)[ent]],
+            CL_ENTITY_NULLS[1]: [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]],
+        }
+    )
 
 
 # Two-driver clustered RATIO corpus (DAT-561): a HIGH-ICC ratio carrying BOTH a
@@ -331,7 +354,7 @@ CL_RATIO_ROW_DRIVER = "D_row_ratio"  # within-entity (row-level) ratio driver
 RATIO_TWO_DRIVER_DIMS = [CL_DRIVER, CL_RATIO_ROW_DRIVER, CL_ENTITY_NULLS[1], CL_ROW_NULL]
 
 
-def make_clustered_ratio_two_driver_corpus(rng: np.random.Generator) -> pd.DataFrame:
+def make_clustered_ratio_two_driver_corpus(rng: np.random.Generator) -> pl.DataFrame:
     """200 entities × 100 rows; high-ICC ratio with an entity-level AND a row-level driver."""
     ent = np.repeat(np.arange(CL_N_ENTITIES), CL_PER_ENTITY)
     n = CL_N_ENTITIES * CL_PER_ENTITY
@@ -346,12 +369,14 @@ def make_clustered_ratio_two_driver_corpus(rng: np.random.Generator) -> pd.DataF
     den = rng.lognormal(mean=5.0, sigma=0.8, size=n)  # volume, varies independently
     row_ratio = ent_ratio[ent] + row_shift + rng.normal(0, 0.01, n)
 
-    df = pd.DataFrame(index=np.arange(n))
-    df[CL_ENTITY] = ent
-    df["numerator"] = den * row_ratio
-    df["denominator"] = den
-    df[CL_DRIVER] = [f"d{g}" for g in drv_grp[ent]]  # entity-level ratio driver
-    df[CL_RATIO_ROW_DRIVER] = [f"w{g}" for g in row_grp]  # within-entity ratio driver
-    df[CL_ENTITY_NULLS[1]] = [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]]  # ent null
-    df[CL_ROW_NULL] = [f"r{g}" for g in rng.integers(0, 6, n)]  # row-level null
-    return df
+    return pl.DataFrame(
+        {
+            CL_ENTITY: ent,
+            "numerator": den * row_ratio,
+            "denominator": den,
+            CL_DRIVER: [f"d{g}" for g in drv_grp[ent]],  # entity-level ratio driver
+            CL_RATIO_ROW_DRIVER: [f"w{g}" for g in row_grp],  # within-entity ratio driver
+            CL_ENTITY_NULLS[1]: [f"b{g}" for g in rng.integers(0, 30, CL_N_ENTITIES)[ent]],
+            CL_ROW_NULL: [f"r{g}" for g in rng.integers(0, 6, n)],  # row-level null
+        }
+    )

@@ -41,8 +41,8 @@ class TestExportSql:
         assert path.suffix == ".parquet"
 
         # Verify parquet is readable
-        df = duckdb.execute(f"SELECT * FROM '{path}'").fetchdf()
-        assert len(df) == 2
+        rows = duckdb.execute(f"SELECT * FROM '{path}'").fetchall()
+        assert len(rows) == 2
 
         conn.close()
 

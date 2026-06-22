@@ -243,6 +243,12 @@ def _load_tables(
     No row data is materialized: join detection and the uniqueness ratio both run in SQL
     over ``duckdb_path``. ``column_names`` are the catalog columns (ordered by position);
     ``column_types`` maps column_name → resolved_type for type-aware comparison.
+
+    Catalog-only — this never touches DuckDB, so it can't fail on a stale ``duckdb_path``.
+    A bad path now surfaces later, in the SQL join/uniqueness step, and fails the whole
+    detection via the caller's ``except`` (fail-loud). This replaces the old per-table
+    try/except that materialized each table and skipped a failing one — there is no longer
+    a partial-results path: every table's ``duckdb_path`` must be readable.
     """
     from dataraum.storage import Column
 

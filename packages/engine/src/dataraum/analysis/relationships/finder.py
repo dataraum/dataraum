@@ -115,6 +115,8 @@ def _uniqueness_ratio(
         f"SELECT COUNT(DISTINCT {quoted})::DOUBLE / NULLIF(COUNT(*), 0) "  # noqa: S608 — catalog identifiers
         f"FROM (SELECT {quoted} FROM {duckdb_path} USING SAMPLE {sample_percent}% (bernoulli))"
     ).fetchone()
+    # fetchone() on a bare aggregate always returns one row; row[0] is None only when
+    # NULLIF zeroes an empty sample.
     ratio = round(row[0], 4) if row and row[0] is not None else 0.0
     cache[key] = ratio
     return ratio

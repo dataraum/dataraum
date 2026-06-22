@@ -199,7 +199,7 @@ def _profile_column_stats_parallel(
                     FROM "{table_duckdb_path}"
                     WHERE "{column_name}" IS NOT NULL
                     GROUP BY "{column_name}"
-                    ORDER BY count DESC
+                    ORDER BY count DESC, "{column_name}"
                     LIMIT {top_k}
                 """
                 top_values_rows = cursor.execute(top_values_query).fetchall()

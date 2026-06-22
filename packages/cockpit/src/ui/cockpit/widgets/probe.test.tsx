@@ -248,10 +248,9 @@ describe("ProbeWidget staging hub (DAT-592 + DAT-594)", () => {
 		await waitFor(() => expect(addBtn().disabled).toBe(false));
 		fireEvent.click(addBtn());
 
+		// Start (the toolbar Import button) is gated; the reason now lives in its
+		// hover tooltip, so we assert the disabled gate itself.
 		expect(startBtn().disabled).toBe(true);
-		expect(screen.getByTestId("probe-start-blocked").textContent).toContain(
-			"business model",
-		);
 
 		// The model modal flipping framed → true opens the Start gate (the
 		// invalidation path is exercised by re-resolving the status query).

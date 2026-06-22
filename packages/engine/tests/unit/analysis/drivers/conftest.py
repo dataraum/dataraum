@@ -113,8 +113,26 @@ def make_corpus(rng: np.random.Generator) -> pd.DataFrame:
 
 
 def columns(df: pd.DataFrame, dim: str) -> tuple[np.ndarray, np.ndarray]:
-    """``(values, measure)`` numpy arrays for one dimension — the criterion's inputs."""
-    return df[dim].astype(object).to_numpy(), df["measure"].to_numpy(dtype=float)
+    """``(physical codes, measure)`` for one dimension — the criterion's int-code inputs.
+
+    Codes are ``pd.factorize`` physical codes (``-1`` = null), matching the arrow→polars
+    load's per-dim encoding (DAT-580).
+    """
+    codes, _uniques = pd.factorize(df[dim].astype(object).to_numpy())
+    return codes.astype(np.int64), df["measure"].to_numpy(dtype=float)
+
+
+def factorize_columns(
+    values_by_dim: dict[str, np.ndarray],
+) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
+    """``(codes_by_dim, labels_by_dim)`` for the tree — physical codes + label-per-code."""
+    codes_by_dim: dict[str, np.ndarray] = {}
+    labels_by_dim: dict[str, list[str]] = {}
+    for d, values in values_by_dim.items():
+        codes, uniques = pd.factorize(values)
+        codes_by_dim[d] = codes.astype(np.int64)
+        labels_by_dim[d] = [str(u) for u in uniques]
+    return codes_by_dim, labels_by_dim
 
 
 # Ratio corpus (DAT-545 P4): the RATIO numerator/denominator depends on the driver

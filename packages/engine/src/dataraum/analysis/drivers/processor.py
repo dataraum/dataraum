@@ -22,7 +22,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sqlalchemy import select
 
 from dataraum.analysis.drivers.criterion import (
@@ -69,11 +69,13 @@ DEFAULT_ICC_THRESHOLD = 0.10
 # (the min_support analogue — power scales with entity count, not rows).
 DEFAULT_MIN_ENTITIES = 10
 # Above this row count the enriched view is sub-sampled before the in-memory load
-# (DAT-571). The bound is the pandas frame, NOT DuckDB's scan (which is memory_limit-
-# capped): ``.df()`` materializes string dims as Python objects (~50–80 B/value), so
-# ~800k rows × the (already pruned) candidate dims is the comfortable per-frame size
-# under the worker's concurrent activities. DAT-580 (arrow-backed load) will raise it.
-DEFAULT_MAX_ROWS = 800_000
+# (DAT-571). The bound is the in-memory working set, NOT DuckDB's scan (which is
+# memory_limit-capped). DAT-580 made the load arrow-backed: dims are arrow strings then
+# physical int codes (no ~50–80 B/value Python str objects) and the measure a float view,
+# so the same per-activity byte budget that held ~800k pandas-frame rows now holds ~3×
+# (the spike measured −67% peak RSS at 1M×15). 2.4M keeps sampling a rare fallback while
+# staying conservative under the worker's concurrent activities.
+DEFAULT_MAX_ROWS = 2_400_000
 
 _TEMPORAL_TO_TARGET = {"additive": "flow", "point_in_time": "stock"}
 
@@ -166,7 +168,31 @@ def _measure_columns(measure: Measure) -> list[str]:
     return [measure.numerator, measure.denominator]
 
 
-def _icc_measure(frame: pd.DataFrame, measure: Measure) -> np.ndarray:
+def _floats(frame: pl.DataFrame, col: str) -> np.ndarray:
+    """A column as a C-contiguous float64 array (nulls → NaN); the numpy core's input.
+
+    The measure columns are cast to ``DOUBLE`` at load, so this is a clean float view
+    with no int→float null-upcast copy (DAT-580); ``ascontiguousarray`` keeps the
+    permutation/bincount math stride-free.
+    """
+    return np.ascontiguousarray(frame[col].cast(pl.Float64).to_numpy(), dtype=np.float64)
+
+
+def _physical_codes(col: pl.Series) -> tuple[np.ndarray, int]:
+    """Physical int codes (``-1`` = null) + distinct-value count for one column (DAT-580).
+
+    The arrow→polars categorical encoding assigns each distinct value a contiguous code;
+    NULL becomes ``-1`` (the criterion's dim-null sentinel). Deterministic for a given
+    column, so downstream bincount aggregation is rerun-stable.
+    """
+    cat = col.cast(pl.String).cast(
+        pl.Categorical
+    )  # String first: ints/floats aren't castable direct
+    codes = np.ascontiguousarray(cat.to_physical().cast(pl.Int64).fill_null(-1).to_numpy())
+    return codes, len(cat.cat.get_categories())
+
+
+def _icc_measure(frame: pl.DataFrame, measure: Measure) -> np.ndarray:
     """The per-row scalar the ICC is computed on.
 
     The column itself (flow/stock) or the per-row ratio num/den (ratio; NaN where
@@ -174,23 +200,23 @@ def _icc_measure(frame: pd.DataFrame, measure: Measure) -> np.ndarray:
     """
     if measure.target_type in ("flow", "stock"):
         assert measure.column is not None
-        return frame[measure.column].to_numpy(dtype=float)
+        return _floats(frame, measure.column)
     assert measure.numerator and measure.denominator
-    num = frame[measure.numerator].to_numpy(dtype=float)
-    den = frame[measure.denominator].to_numpy(dtype=float)
+    num = _floats(frame, measure.numerator)
+    den = _floats(frame, measure.denominator)
     valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(valid, num / np.where(valid, den, 1.0), np.nan)
 
 
-def _entity_icc(frame: pd.DataFrame, entity: str, measure: Measure) -> float:
+def _entity_icc(frame: pl.DataFrame, entity: str, measure: Measure) -> float:
     """The measure's ICC (η² between entities) for one identity column (DAT-563)."""
-    codes, uniques = pd.factorize(frame[entity])
-    return intraclass_correlation(codes.astype(int), len(uniques), _icc_measure(frame, measure))
+    codes, n = _physical_codes(frame[entity])
+    return intraclass_correlation(codes, n, _icc_measure(frame, measure))
 
 
 def _resolve_cluster_keys(
-    frame: pd.DataFrame, proposed: list[str], measure: Measure, *, icc_threshold: float
+    frame: pl.DataFrame, proposed: list[str], measure: Measure, *, icc_threshold: float
 ) -> list[str]:
     """ICC-verify the proposed identities — keep those the measure actually clusters within.
 
@@ -216,18 +242,33 @@ def _resolve_cluster_keys(
     return verified
 
 
-def _make_target(measure: Measure, frame: pd.DataFrame) -> Target:
+def _factorize_dims(
+    frame: pl.DataFrame, dims: list[str]
+) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
+    """Physical int codes (-1 = null) + label-per-code per dim — the tree's input (DAT-580).
+
+    Factorizes straight from the polars frame, so dim strings never materialize as Python
+    objects: the tree reasons over int codes, resolving labels only for the few surfaced
+    slices. ``labels_by_dim[d][code]`` is the raw value of physical ``code``.
+    """
+    codes_by_dim: dict[str, np.ndarray] = {}
+    labels_by_dim: dict[str, list[str]] = {}
+    for d in dims:
+        cat = frame[d].cast(pl.String).cast(pl.Categorical)  # String first (ints/floats)
+        codes_by_dim[d] = np.ascontiguousarray(
+            cat.to_physical().cast(pl.Int64).fill_null(-1).to_numpy()
+        )
+        labels_by_dim[d] = [str(x) for x in cat.cat.get_categories().to_list()]
+    return codes_by_dim, labels_by_dim
+
+
+def _make_target(measure: Measure, frame: pl.DataFrame) -> Target:
     """Build the row-aligned target from the measure's columns in ``frame``."""
     if measure.target_type in ("flow", "stock"):
         assert measure.column  # guaranteed by Measure.__post_init__
-        return FlowTarget(
-            frame[measure.column].to_numpy(dtype=float), target_type=measure.target_type
-        )
+        return FlowTarget(_floats(frame, measure.column), target_type=measure.target_type)
     assert measure.numerator and measure.denominator  # guaranteed by Measure.__post_init__
-    return RatioTarget(
-        frame[measure.numerator].to_numpy(dtype=float),
-        frame[measure.denominator].to_numpy(dtype=float),
-    )
+    return RatioTarget(_floats(frame, measure.numerator), _floats(frame, measure.denominator))
 
 
 def discover_drivers(
@@ -296,9 +337,10 @@ def discover_drivers(
     (``measure − entity_mean``); ratio de-means the per-row ratio by its entity's
     volume-weighted mean (its pooled ``Σnum/Σden``).
 
-    **Bounded load (DAT-571):** the ``(present_dims + measure)`` columns are read into
-    memory at row grain in one pass — at ~1M rows × ~15 dims that pandas frame is several
-    hundred MB. Above ``max_rows`` the view is deterministically sub-sampled to ``max_rows``
+    **Bounded load (DAT-571 / DAT-580):** the ``(present_dims + measure)`` columns are read
+    into memory at row grain in one arrow→polars pass, then factorized to int codes + a
+    float measure view (the spike measured −67% peak RSS vs the old pandas frame at 1M×15).
+    Above ``max_rows`` the view is deterministically sub-sampled to ``max_rows``
     rows via a bottom-k-by-hash sketch (the N smallest row-hashes are a uniform sample
     without replacement) rather than dropping the analysis: large finance/logistics facts
     are exactly where drivers matter most. The sketch is deterministic regardless of DuckDB
@@ -326,7 +368,9 @@ def discover_drivers(
     # Probe the view's columns first (LIMIT 0 — no scan) so a catalog/view skew is a
     # logged empty result, not a DuckDB BinderException, AND we still read only the
     # columns we need (no SELECT *). The measure columns must exist; dims intersect.
-    view_cols = set(duckdb_conn.execute(f"SELECT * FROM {quote(view)} LIMIT 0").df().columns)  # noqa: S608
+    view_cols = {
+        c[0] for c in duckdb_conn.execute(f"SELECT * FROM {quote(view)} LIMIT 0").description
+    }  # noqa: S608
     present_dims = [d for d in dims if d in view_cols]
     measure_cols = _measure_columns(measure)
     if len(present_dims) < 2 or any(c not in view_cols for c in measure_cols):
@@ -350,7 +394,16 @@ def discover_drivers(
         if col not in view_cols:
             logger.info("driver_identity_not_in_view", identity=col, view=view)
     select_cols = list(dict.fromkeys(present_dims + measure_cols + present_proposed))
-    cols_sql = ", ".join(quote(c) for c in select_cols)
+
+    # Cast measure columns to DOUBLE in the projection so the polars→numpy handoff is a
+    # clean float view (no int/decimal→float null-upcast copy, DAT-580); dims/identities
+    # stay raw for categorical factorization. The hash sketch hashes the RAW columns so
+    # the DAT-571 cutoff is unchanged byte-for-byte.
+    def project(c: str) -> str:
+        return f"{quote(c)}::DOUBLE AS {quote(c)}" if c in measure_cols else quote(c)
+
+    select_proj = ", ".join(project(c) for c in select_cols)
+    hash_cols = ", ".join(quote(c) for c in select_cols)
     # Bound the in-memory frame (DAT-571): a COUNT(*) keeps normal-size views — the common
     # case — on the validated full-load path byte-for-byte (a single plain SELECT); above
     # max_rows, deterministically sub-sample to max_rows rows via a bottom-k-by-hash sketch
@@ -364,10 +417,11 @@ def discover_drivers(
     n_full = int(count_row[0])
     if n_full > max_rows:
         logger.info("driver_rankings_view_sampled", view=view, full_n=n_full, sample_n=max_rows)
-        sql = f"SELECT {cols_sql} FROM {quote(view)} ORDER BY hash({cols_sql}) LIMIT {max_rows}"  # noqa: S608 — catalog identifiers
+        sql = f"SELECT {select_proj} FROM {quote(view)} ORDER BY hash({hash_cols}) LIMIT {max_rows}"  # noqa: S608 — catalog identifiers
     else:
-        sql = f"SELECT {cols_sql} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
-    frame = duckdb_conn.execute(sql).df()
+        sql = f"SELECT {select_proj} FROM {quote(view)}"  # noqa: S608 — catalog identifiers
+    frame = pl.from_arrow(duckdb_conn.execute(sql).to_arrow_table())
+    assert isinstance(frame, pl.DataFrame)  # from_arrow on a Table is always a DataFrame
 
     # The resolver path ICC-verifies the persisted identities (drop those the measure does
     # not cluster within — no heuristic); an explicit override is asserted by the caller.
@@ -413,44 +467,66 @@ def discover_drivers(
     )
 
 
+def _entity_first_codes(ent_codes: np.ndarray, dim_codes: np.ndarray, n_ent: int) -> np.ndarray:
+    """First NON-null physical code of a dim per entity (``-1`` if all-null), code-indexed.
+
+    Matches pandas ``groupby.first()`` (which skips nulls): for an entity-constant dim the
+    single value is returned regardless of where a stray null sits. Indexed by entity
+    physical code ``0..n_ent-1`` (DAT-580).
+    """
+    out = np.full(n_ent, -1, dtype=np.int64)
+    ok = (dim_codes >= 0) & (ent_codes >= 0)
+    if ok.any():
+        ent_ok = ent_codes[ok]
+        uniq, first = np.unique(ent_ok, return_index=True)  # first occurrence per entity
+        out[uniq] = dim_codes[ok][first]
+    return out
+
+
 def _collapse_to_entity(
-    frame: pd.DataFrame, cluster_key: str, measure: Measure, entity_dims: list[str]
-) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    """One row per entity: (statistic, weight, entity-level dim values), row-aligned.
+    frame: pl.DataFrame, cluster_key: str, measure: Measure, entity_dims: list[str]
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray], dict[str, list[str]]]:
+    """One row per entity: (statistic, weight, entity-level dim codes, labels), aligned.
 
     flow/stock → (mean measure, observed-row count); ratio → (Σnum/Σden, Σden), the
-    support-correct entity ratio weighted by its denominator mass. Entities with no
-    usable measure are dropped; the dim values come from the SAME grouping so they
-    stay aligned with the kept entities.
+    support-correct entity ratio weighted by its denominator mass. Entities with no usable
+    measure are dropped; the dim codes are the entity's representative value (constant
+    within entity), kept-aligned. Aggregation is numpy ``bincount`` over the entity's
+    physical codes — deterministic across runs/threads (the rerun-determinism contract),
+    unlike a threaded polars group-sum (DAT-580).
     """
+    ent_codes, n_ent = _physical_codes(frame[cluster_key])
     if measure.target_type == "ratio":
         assert measure.numerator and measure.denominator
-        valid = (
-            frame[measure.numerator].notna()
-            & frame[measure.denominator].notna()
-            & (frame[measure.denominator] > 0)
-        )
-        grouped = frame[valid].groupby(cluster_key, sort=False)
-        sum_num = grouped[measure.numerator].sum().to_numpy(dtype=float)
-        sum_den = grouped[measure.denominator].sum().to_numpy(dtype=float)
+        num = _floats(frame, measure.numerator)
+        den = _floats(frame, measure.denominator)
+        valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0) & (ent_codes >= 0)
+        sum_num = np.bincount(ent_codes[valid], weights=num[valid], minlength=n_ent)
+        sum_den = np.bincount(ent_codes[valid], weights=den[valid], minlength=n_ent)
         keep = sum_den > 0
         with np.errstate(divide="ignore", invalid="ignore"):
-            values = (sum_num / sum_den)[keep]
+            values = (sum_num / np.where(sum_den > 0, sum_den, 1.0))[keep]
         sizes = sum_den[keep]  # weight = denominator mass
     else:
         assert measure.column is not None
-        grouped = frame.groupby(cluster_key, sort=False)
-        agg = grouped[measure.column].agg(["mean", "count"])
-        keep = agg["count"].to_numpy() > 0
-        values = agg["mean"].to_numpy(dtype=float)[keep]
-        sizes = agg["count"].to_numpy(dtype=float)[keep]
+        m = _floats(frame, measure.column)
+        obs = ~np.isnan(m) & (ent_codes >= 0)
+        count = np.bincount(ent_codes[obs], minlength=n_ent)
+        total = np.bincount(ent_codes[obs], weights=m[obs], minlength=n_ent)
+        keep = count > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            values = (total / np.where(count > 0, count, 1))[keep]
+        sizes = count[keep].astype(float)
 
-    values_by_dim = {d: grouped[d].first().to_numpy()[keep].astype(object) for d in entity_dims}
-    return values, sizes, values_by_dim
+    codes_by_dim, labels_by_dim = _factorize_dims(frame, entity_dims)
+    entity_codes_by_dim = {
+        d: _entity_first_codes(ent_codes, codes_by_dim[d], n_ent)[keep] for d in entity_dims
+    }
+    return values, sizes, entity_codes_by_dim, labels_by_dim
 
 
 def _partition_by_entity_constancy(
-    frame: pd.DataFrame, cluster_key: str, dims: list[str]
+    frame: pl.DataFrame, cluster_key: str, dims: list[str]
 ) -> tuple[list[str], list[str]]:
     """Split candidates into ``(entity_constant, row_level)`` by within-entity nunique.
 
@@ -458,30 +534,45 @@ def _partition_by_entity_constancy(
     everything else varies within entity → the row-wise null (DAT-561). This is the
     routing decision: it is per-candidate, independent of the measure's global ICC.
     """
-    # ``nunique`` counts non-null distinct values, so ``<= 1`` also catches an all-null
-    # dim (nunique 0) as entity-constant — harmless: it contributes nothing (every row
-    # gated out by the (A) gate) wherever it lands, exactly as on the old row-wise path.
-    nunique = frame.groupby(cluster_key)[dims].nunique().max()
-    entity_constant = [d for d in dims if int(nunique[d]) <= 1]
+    # ``drop_nulls().n_unique()`` counts non-null distinct values (matching pandas
+    # ``nunique``), so ``<= 1`` also catches an all-null dim (0) as entity-constant —
+    # harmless: it contributes nothing (every row gated out by the (A) gate) wherever it
+    # lands, exactly as on the old row-wise path.
+    if not dims:
+        return [], []
+    # Prefix the aggregate aliases so a candidate dim that IS the cluster_key (constant
+    # within its own group → nunique 1) doesn't collide with the group-key column.
+    agg = frame.group_by(cluster_key).agg(
+        [pl.col(d).drop_nulls().n_unique().alias(f"__nu__{i}") for i, d in enumerate(dims)]
+    )
+    maxes = agg.select([f"__nu__{i}" for i in range(len(dims))]).max().row(0)
+    entity_constant = [d for d, m in zip(dims, maxes, strict=True) if int(m) <= 1]
     row_level = [d for d in dims if d not in entity_constant]
     return entity_constant, row_level
 
 
-def _within_entity_residual(frame: pd.DataFrame, cluster_key: str, column: str) -> np.ndarray:
+def _within_entity_residual(frame: pl.DataFrame, cluster_key: str, column: str) -> np.ndarray:
     """The fixed-effects "within" transform: ``measure − entity_mean`` (DAT-561).
 
     Removes the between-entity level so the row-wise null on the residual is both valid
     (residuals are row-exchangeable within entity) and powered for a within-entity
     row-level driver — the entity-mean subtraction strips the clustered variance that
-    would otherwise swamp it. NaN measure rows stay NaN (the (B) gate handles them).
+    would otherwise swamp it. NaN measure rows (and null-entity rows) stay NaN. The
+    entity mean is a deterministic numpy ``bincount`` (DAT-580).
     """
-    measure = frame[column].to_numpy(dtype=float)
-    entity_mean = frame.groupby(cluster_key)[column].transform("mean").to_numpy(dtype=float)
-    return np.asarray(measure - entity_mean, dtype=float)
+    measure = _floats(frame, column)
+    ent_codes, n_ent = _physical_codes(frame[cluster_key])
+    obs = ~np.isnan(measure) & (ent_codes >= 0)
+    count = np.bincount(ent_codes[obs], minlength=n_ent)
+    total = np.bincount(ent_codes[obs], weights=measure[obs], minlength=n_ent)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        entity_mean = np.where(count > 0, total / np.where(count > 0, count, 1), np.nan)
+    gather = np.where(ent_codes >= 0, ent_codes, 0)  # safe index; null-entity rows → NaN below
+    return np.where(ent_codes >= 0, measure - entity_mean[gather], np.nan)
 
 
 def _within_entity_ratio_residual(
-    frame: pd.DataFrame, cluster_key: str, numerator: str, denominator: str
+    frame: pl.DataFrame, cluster_key: str, numerator: str, denominator: str
 ) -> tuple[np.ndarray, np.ndarray]:
     """``(residual_ratio, weight)`` for the within-entity de-meaned RATIO (DAT-561).
 
@@ -491,11 +582,9 @@ def _within_entity_ratio_residual(
     is valid + powered for a within-entity ratio driver. NaN where the row has no usable
     ratio (missing/≤0 denominator); ``weight`` is the denominator mass (0 where invalid).
     """
-    num = frame[numerator].to_numpy(dtype=float)
-    den = frame[denominator].to_numpy(dtype=float)
-    codes, uniques = pd.factorize(frame[cluster_key])
-    codes = codes.astype(int)
-    n_ent = len(uniques)
+    num = _floats(frame, numerator)
+    den = _floats(frame, denominator)
+    codes, n_ent = _physical_codes(frame[cluster_key])
     # A NaN cluster key factorizes to code -1 (no entity to de-mean against): exclude it
     # — bincount rejects negative codes, and a -1 gather would wrap to the last entity.
     valid = ~np.isnan(num) & ~np.isnan(den) & (den > 0) & (codes >= 0)
@@ -511,7 +600,7 @@ def _within_entity_ratio_residual(
 
 
 def _home_grain_partition(
-    frame: pd.DataFrame, cluster_keys: list[str], dims: list[str]
+    frame: pl.DataFrame, cluster_keys: list[str], dims: list[str]
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Assign each candidate its HOME grain — the entity it is constant within (DAT-563).
 
@@ -521,7 +610,7 @@ def _home_grain_partition(
     most specific grain — with a deterministic name tiebreak; a dim constant within none
     is row-level. Returns ``({entity: [home dims]}, row_dims)`` with empty entities dropped.
     """
-    card = {e: int(frame[e].nunique()) for e in cluster_keys}
+    card = {e: int(frame[e].drop_nulls().n_unique()) for e in cluster_keys}
     constant_within = {
         e: set(_partition_by_entity_constancy(frame, e, dims)[0]) for e in cluster_keys
     }
@@ -537,7 +626,7 @@ def _home_grain_partition(
 
 
 def _routed_ranking(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     dims: list[str],
     measure: Measure,
     cluster_keys: list[str],
@@ -569,7 +658,7 @@ def _routed_ranking(
         "driver_home_grain_routing",
         cluster_keys=cluster_keys,
         icc={e: round(v, 3) for e, v in icc_by_entity.items()},
-        n_entities={e: int(frame[e].nunique()) for e in cluster_keys},
+        n_entities={e: int(frame[e].drop_nulls().n_unique()) for e in cluster_keys},
         primary=f"entity:{top_entity}" if high_icc else "row",
         home_dims=home_by_entity,
         row_level=row_dims,
@@ -638,7 +727,7 @@ def _routed_ranking(
 
 
 def _row_wise_ranking(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     dims: list[str],
     measure: Measure,
     *,
@@ -672,9 +761,10 @@ def _row_wise_ranking(
             target = EntityDemeanedRatioTarget(res_ratio, weight)
     else:
         target = _make_target(measure, frame)
-    values_by_dim = {d: frame[d].astype(object).to_numpy() for d in dims}
+    codes_by_dim, labels_by_dim = _factorize_dims(frame, dims)
     return discover_tree(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         target,
         measure_label=measure.label,
         dims=dims,
@@ -689,7 +779,7 @@ def _row_wise_ranking(
 
 
 def _entity_grain_ranking(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     entity_dims: list[str],
     measure: Measure,
     cluster_key: str,
@@ -711,13 +801,16 @@ def _entity_grain_ranking(
     empty = DriverRanking(
         measure=measure.label, target_type=measure.target_type, n_rows=0, grain="entity"
     )
-    values, sizes, values_by_dim = _collapse_to_entity(frame, cluster_key, measure, entity_dims)
+    values, sizes, codes_by_dim, labels_by_dim = _collapse_to_entity(
+        frame, cluster_key, measure, entity_dims
+    )
     if values.size == 0:  # every entity has no usable measure — nothing to rank
         return empty
 
     target = EntityMeanTarget(values, sizes, target_type=measure.target_type)
     return discover_tree(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         target,
         measure_label=measure.label,
         dims=entity_dims,

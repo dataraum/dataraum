@@ -26,7 +26,6 @@ gates significance with a within-dataset permutation null (see ``tree.py``).
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 # A group must clear this row count to enter the variance computation — both the
 # determinant subset and each retained group. The spike calibrated it against
@@ -42,53 +41,63 @@ _DIM_NULL_CODE = -1
 
 
 def build_codes(
-    values: np.ndarray,
+    phys: np.ndarray,
     measure: np.ndarray,
     *,
     handle_nulls: bool,
     missingness_gate: float = DEFAULT_MISSINGNESS_GATE,
 ) -> tuple[np.ndarray, int]:
-    """Encode a dimension's values as integer group codes, applying the null gates.
+    """Encode a dimension's PHYSICAL codes as gated group codes, applying the null gates.
+
+    The dimension arrives pre-factorized to physical integer codes (DAT-580): the
+    arrow→polars load assigns each distinct value a code ``0..k-1`` and ``-1`` to NULL,
+    so the (A)/(B) gates are vectorized over integers — no per-label Python scan, and no
+    string objects resident through the permutation null.
 
     Args:
-        values: object array of the dimension's raw values (``None``/NaN = missing).
-        measure: float array of the measure, row-aligned with ``values`` (NaN = missing).
+        phys: int array of the dimension's physical category codes; ``-1`` = dim-null.
+        measure: float array of the measure, row-aligned with ``phys`` (NaN = missing).
         handle_nulls: when True, apply (A) dim-present + (B) missingness gates; when
-            False, the ablation baseline — dim-NULL becomes its own ``"__NULL__"``
-            category and no missingness gate runs (this is what LEAKS, by design).
+            False, the ablation baseline — dim-NULL becomes its own category and no
+            missingness gate runs (this is what LEAKS, by design).
         missingness_gate: the (B) threshold (fraction of the dim-present baseline).
 
     Returns:
-        ``(codes, n_codes)`` — ``codes[i]`` is the group of row ``i`` or
-        ``_DIM_NULL_CODE`` (-1) if the row is gated out; ``n_codes`` is the number
-        of retained groups (the max code + 1).
+        ``(codes, n_codes)`` — ``codes[i]`` is the contiguous group of row ``i`` or
+        ``_DIM_NULL_CODE`` (-1) if the row is gated out; ``n_codes`` is the number of
+        retained groups. Code numbering is in physical order; gains are group-set
+        invariant, so the numbering never matters (labels resolve via ``tree._code_labels``).
     """
-    dim_null = pd.isna(values)
+    present = phys >= 0
+    n_phys = int(phys[present].max()) + 1 if present.any() else 0
     measure_observed = ~np.isnan(measure)
-    codes = np.full(len(values), _DIM_NULL_CODE, dtype=int)
 
     if not handle_nulls:
-        # Ablation: dim-null is its own category, no missingness gate.
-        labelled = np.where(dim_null, "__NULL__", values)
-        uniq = pd.unique(labelled)
-        for i, label in enumerate(uniq):
-            codes[labelled == label] = i
-        return codes, len(uniq)
+        # Ablation: dim-null is its own category (code n_phys), no missingness gate.
+        has_null = bool((~present).any())
+        codes = np.where(present, phys, n_phys)
+        return codes, n_phys + (1 if has_null else 0)
 
-    # (A) dim-present: only rows that carry a slice label participate.
-    present = ~dim_null
+    if n_phys == 0:
+        # Every row is dim-null (e.g. an entity-constant dim null for all kept entities):
+        # all rows gated out, no groups — matches the old pd.unique-of-empty path and keeps
+        # the bincount/remap below (which assume ≥1 physical code) from indexing empty.
+        return np.full(len(phys), _DIM_NULL_CODE, dtype=int), 0
+
+    # (A) dim-present: only rows with a slice label participate (null → -1, below).
     baseline = measure_observed[present].mean() if present.any() else 0.0
-    next_code = 0
-    for label in pd.unique(values[present]):
-        in_slice = present & (values == label)
-        rate = measure_observed[in_slice].mean() if in_slice.any() else 0.0
-        # (B) missingness-concentration: drop a slice where the measure is
-        # disproportionately missing — its aggregate would be silently biased.
-        if rate < missingness_gate * baseline:
-            continue
-        codes[in_slice] = next_code
-        next_code += 1
-    return codes, next_code
+    total = np.bincount(phys[present], minlength=n_phys)
+    observed = np.bincount(phys[present & measure_observed], minlength=n_phys)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rate = np.where(total > 0, observed / np.maximum(total, 1), 0.0)
+    # (B) missingness-concentration: drop a slice where the measure is disproportionately
+    # missing — its aggregate would be silently biased. Surviving codes are renumbered
+    # contiguously (bincount needs 0..n_codes-1); dropped + null rows go to -1.
+    kept = (total > 0) & (rate >= missingness_gate * baseline)
+    remap = np.full(n_phys, _DIM_NULL_CODE, dtype=int)
+    remap[kept] = np.arange(int(kept.sum()))
+    codes = np.where(present, remap[np.where(present, phys, 0)], _DIM_NULL_CODE)
+    return codes, int(kept.sum())
 
 
 def variance_reduction(

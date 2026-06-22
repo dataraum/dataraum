@@ -49,7 +49,7 @@ _Coded = tuple[np.ndarray, int]
 
 
 def _gate(
-    values_by_dim: Mapping[str, np.ndarray],
+    codes_by_dim: Mapping[str, np.ndarray],
     target: Target,
     *,
     dims: list[str],
@@ -61,7 +61,7 @@ def _gate(
     """Return per-dim ``(codes, n_codes)``, real gain, and permutation-null p-value."""
     coded: dict[str, _Coded] = {
         d: build_codes(
-            values_by_dim[d], target.observed, handle_nulls=True, missingness_gate=missingness_gate
+            codes_by_dim[d], target.observed, handle_nulls=True, missingness_gate=missingness_gate
         )
         for d in dims
     }
@@ -76,19 +76,28 @@ def _gate(
     return coded, real, p
 
 
-def _code_labels(values: np.ndarray, codes: np.ndarray, n_codes: int) -> list[str]:
-    """The representative raw label of each group code (one label per code)."""
+def _code_labels(
+    phys: np.ndarray, dim_labels: list[str], codes: np.ndarray, n_codes: int
+) -> list[str]:
+    """The representative raw label of each group code (one label per code).
+
+    ``phys`` are the dim's physical codes (row-aligned with ``codes``); ``dim_labels``
+    maps a physical code to its string. The first row in group ``c`` gives the physical
+    code, which indexes ``dim_labels`` — every row in a group shares the value, so the
+    representative is exact regardless of physical→group renumbering (DAT-580).
+    """
     labels = [""] * n_codes
     for c in range(n_codes):
         idx = np.flatnonzero(codes == c)
         if idx.size:
-            labels[c] = str(values[idx[0]])
+            labels[c] = dim_labels[phys[idx[0]]]
     return labels
 
 
 def _slices(
     dimension: str,
-    values: np.ndarray,
+    phys: np.ndarray,
+    dim_labels: list[str],
     target: Target,
     coded: _Coded,
     *,
@@ -97,7 +106,7 @@ def _slices(
 ) -> tuple[DriverSlice, ...]:
     """The supported slice values whose target deviates most from the node baseline."""
     codes, n_codes = coded
-    labels = _code_labels(values, codes, n_codes)
+    labels = _code_labels(phys, dim_labels, codes, n_codes)
     out = [
         DriverSlice(dimension, labels[code], effect, support)
         for code, effect, support in target.group_effects(codes, n_codes, min_support=min_support)
@@ -107,7 +116,8 @@ def _slices(
 
 
 def _build_node(
-    values_by_dim: Mapping[str, np.ndarray],
+    codes_by_dim: Mapping[str, np.ndarray],
+    labels_by_dim: Mapping[str, list[str]],
     target: Target,
     *,
     dims: list[str],
@@ -123,10 +133,12 @@ def _build_node(
     """Build the best split for this subset; recurse into its slice values.
 
     Returns ``(node, real_gain, p_value)`` — the gain/p maps are this node's gate
-    result (the caller uses the root's to rank dimensions).
+    result (the caller uses the root's to rank dimensions). ``codes_by_dim`` carries the
+    dims' physical codes (sliced per node); ``labels_by_dim`` maps physical code → label
+    and is row-independent, so it passes through recursion unmasked (DAT-580).
     """
     coded, real, p = _gate(
-        values_by_dim,
+        codes_by_dim,
         target,
         dims=dims,
         rng=rng,
@@ -143,20 +155,27 @@ def _build_node(
     codes, n_codes = coded[best]
     support = int((codes >= 0).sum())
     slices = _slices(
-        best, values_by_dim[best], target, coded[best], min_support=min_support, top_k=top_k
+        best,
+        codes_by_dim[best],
+        labels_by_dim[best],
+        target,
+        coded[best],
+        min_support=min_support,
+        top_k=top_k,
     )
 
     children: list[tuple[str, DriverNode]] = []
     if depth + 1 < max_depth and len(dims) > 1:
-        labels = _code_labels(values_by_dim[best], codes, n_codes)
+        labels = _code_labels(codes_by_dim[best], labels_by_dim[best], codes, n_codes)
         remaining = [d for d in dims if d != best]
         for c in range(n_codes):
             mask = codes == c
             if int(mask.sum()) < _RECURSE_SUPPORT_MULTIPLE * min_support:
                 continue
-            sub_values = {d: values_by_dim[d][mask] for d in remaining}
+            sub_codes = {d: codes_by_dim[d][mask] for d in remaining}
             child, _, _ = _build_node(
-                sub_values,
+                sub_codes,
+                labels_by_dim,
                 target.subset(mask),
                 dims=remaining,
                 depth=depth + 1,
@@ -193,7 +212,8 @@ def _all_slices(node: DriverNode) -> list[DriverSlice]:
 
 
 def discover_tree(
-    values_by_dim: Mapping[str, np.ndarray],
+    codes_by_dim: Mapping[str, np.ndarray],
+    labels_by_dim: Mapping[str, list[str]],
     target: Target,
     *,
     measure_label: str,
@@ -208,12 +228,14 @@ def discover_tree(
 ) -> DriverRanking:
     """Rank ``dims`` by their permutation-gated gain on ``target`` and build the tree.
 
-    Each array in ``values_by_dim`` is row-aligned with the target. Returns a
-    :class:`DriverRanking`; ``root`` is ``None`` when no dimension clears the null (a
-    clean "no significant driver" answer, not an error).
+    Each array in ``codes_by_dim`` carries a dim's physical category codes (``-1`` =
+    null), row-aligned with the target; ``labels_by_dim`` maps a physical code to its
+    string label (DAT-580). Returns a :class:`DriverRanking`; ``root`` is ``None`` when
+    no dimension clears the null (a clean "no significant driver" answer, not an error).
     """
     root, real, p = _build_node(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         target,
         dims=dims,
         depth=0,

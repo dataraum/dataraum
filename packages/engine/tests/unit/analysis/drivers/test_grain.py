@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 from dataraum.analysis.drivers.criterion import (
     build_codes,
@@ -54,7 +55,7 @@ class TestHomeGrainPartition:
 
     def test_each_dim_homes_at_one_grain(self) -> None:
         df = make_two_entity_corpus(np.random.default_rng(0))
-        home, row = _home_grain_partition(df, [TE_CUST, TE_PROD], TE_DIMS)
+        home, row = _home_grain_partition(pl.from_pandas(df), [TE_CUST, TE_PROD], TE_DIMS)
         # Customer attrs are constant within customer; product attrs within product.
         assert set(home[TE_CUST]) == {TE_CUST_DRIVER, TE_CUST_NULL}
         assert set(home[TE_PROD]) == {TE_PROD_DRIVER, TE_PROD_NULL}
@@ -73,7 +74,7 @@ class TestHomeGrainPartition:
                 "region": ["W", "W", "E", "E", "S", "S"],  # constant within store AND chain
             }
         )
-        home, row = _home_grain_partition(df, ["chain", "store"], ["region"])
+        home, row = _home_grain_partition(pl.from_pandas(df), ["chain", "store"], ["region"])
         assert home == {"store": ["region"]}  # finer entity wins the tiebreak
         assert row == []
 
@@ -148,10 +149,9 @@ class TestWithinEntityDemean:
     def test_demean_recovers_within_entity_driver_signal(self) -> None:
         df = make_clustered_two_driver_corpus(np.random.default_rng(0))
         measure = df["measure"].to_numpy(dtype=float)
-        residual = _within_entity_residual(df, CL_ENTITY, "measure")
-        codes, n = build_codes(
-            df[CL_ROW_DRIVER].astype(object).to_numpy(), measure, handle_nulls=True
-        )
+        residual = _within_entity_residual(pl.from_pandas(df), CL_ENTITY, "measure")
+        phys, _ = pd.factorize(df[CL_ROW_DRIVER].astype(object).to_numpy())
+        codes, n = build_codes(phys.astype(int), measure, handle_nulls=True)
         raw_gain = variance_reduction(codes, n, measure, min_support=2)
         residual_gain = variance_reduction(codes, n, residual, min_support=2)
         # The between-entity variance dilutes the row driver in the raw measure; the
@@ -164,10 +164,11 @@ class TestWithinEntityDemean:
         num = df["numerator"].to_numpy(dtype=float)
         den = df["denominator"].to_numpy(dtype=float)
         ratio = num / den
-        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
-        codes, n = build_codes(
-            df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy(), ratio, handle_nulls=True
+        residual, weight = _within_entity_ratio_residual(
+            pl.from_pandas(df), CL_ENTITY, "numerator", "denominator"
         )
+        phys, _ = pd.factorize(df[CL_RATIO_ROW_DRIVER].astype(object).to_numpy())
+        codes, n = build_codes(phys.astype(int), ratio, handle_nulls=True)
         # Both gains are volume-weighted (weight = denominator); only the de-mean differs.
         raw_gain = weighted_variance_reduction(codes, n, ratio, den, min_support=2)
         residual_gain = weighted_variance_reduction(codes, n, residual, weight, min_support=2)
@@ -180,7 +181,9 @@ class TestWithinEntityDemean:
         df = make_clustered_ratio_two_driver_corpus(np.random.default_rng(0))
         df[CL_ENTITY] = df[CL_ENTITY].astype("float")
         df.loc[0, CL_ENTITY] = np.nan  # one row with no entity
-        residual, weight = _within_entity_ratio_residual(df, CL_ENTITY, "numerator", "denominator")
+        residual, weight = _within_entity_ratio_residual(
+            pl.from_pandas(df), CL_ENTITY, "numerator", "denominator"
+        )
         assert np.isnan(residual[0]) and weight[0] == 0.0
         # the rest are unaffected (still produce finite residuals somewhere)
         assert np.isfinite(residual[1:]).any()

@@ -45,6 +45,8 @@ dependencies = [
     # SQL parsing
     "sqlglot>=26.0.0",
     "temporalio>=1.27",
+    "polars>=1.41.2",
+    "pyarrow>=24.0.0",
 ]
 
 [project.urls]

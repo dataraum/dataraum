@@ -16,8 +16,8 @@ from .conftest import columns, make_corpus
 
 
 def _gain(df, dim: str, *, handle_nulls: bool) -> float:
-    values, measure = columns(df, dim)
-    codes, n_codes = build_codes(values, measure, handle_nulls=handle_nulls)
+    phys, measure = columns(df, dim)
+    codes, n_codes = build_codes(phys, measure, handle_nulls=handle_nulls)
     return variance_reduction(codes, n_codes, measure)
 
 
@@ -38,8 +38,8 @@ class TestVarianceReduction:
     def test_min_support_threshold_is_honoured(self) -> None:
         # Two clean groups below threshold → 0.0; above → positive.
         measure = np.concatenate([np.zeros(150), np.ones(150)])
-        values = np.array(["a"] * 150 + ["b"] * 150, dtype=object)
-        codes, n = build_codes(values, measure, handle_nulls=True)
+        phys = np.array([0] * 150 + [1] * 150)
+        codes, n = build_codes(phys, measure, handle_nulls=True)
         assert variance_reduction(codes, n, measure, min_support=200) == 0.0
         assert variance_reduction(codes, n, measure, min_support=100) > 0.9
 
@@ -48,13 +48,20 @@ class TestNullGates:
     def test_dim_present_gate_drops_null_rows(self) -> None:
         # (A): N_mnar is dim-null on ~half the rows — those must get code -1.
         df = make_corpus(np.random.default_rng(0))
-        values, measure = columns(df, "N_mnar")
-        codes, _ = build_codes(values, measure, handle_nulls=True)
-        import pandas as pd
-
-        dim_null = pd.isna(values)
+        phys, measure = columns(df, "N_mnar")
+        codes, _ = build_codes(phys, measure, handle_nulls=True)
+        dim_null = phys == -1
         assert np.all(codes[dim_null] == -1)
         assert np.any(codes[~dim_null] >= 0)
+
+    def test_all_null_dimension_is_fully_gated(self) -> None:
+        # An entirely dim-null column (n_phys == 0) — e.g. an entity-constant dim null for
+        # every kept entity — must gate every row out, not crash on an empty remap.
+        phys = np.full(100, -1, dtype=np.int64)
+        measure = np.ones(100)
+        codes, n = build_codes(phys, measure, handle_nulls=True)
+        assert n == 0
+        assert np.all(codes == -1)
 
     def test_missingness_gate_closes_measure_missing_leak(self) -> None:
         # (B): N_measure_missing concentrates measure-missingness in one slice value.
@@ -67,7 +74,7 @@ class TestNullGates:
         assert leaked > gated
         # The gate drops at least the offending slice value (fewer retained codes
         # than distinct present values).
-        values, measure = columns(df, "N_measure_missing")
-        _, n_handled = build_codes(values, measure, handle_nulls=True)
-        _, n_raw = build_codes(values, measure, handle_nulls=False)
+        phys, measure = columns(df, "N_measure_missing")
+        _, n_handled = build_codes(phys, measure, handle_nulls=True)
+        _, n_raw = build_codes(phys, measure, handle_nulls=False)
         assert n_handled < n_raw

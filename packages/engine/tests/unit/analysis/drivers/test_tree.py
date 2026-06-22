@@ -16,7 +16,7 @@ from dataraum.analysis.drivers.models import DriverRanking
 from dataraum.analysis.drivers.targets import FlowTarget
 from dataraum.analysis.drivers.tree import discover_tree
 
-from .conftest import ALL_DIMS, INDEPENDENT_NULLS, PROXY, make_corpus
+from .conftest import ALL_DIMS, INDEPENDENT_NULLS, PROXY, factorize_columns, make_corpus
 
 ALPHA = 0.05
 FDR_BAR = 2 * ALPHA
@@ -26,10 +26,13 @@ N_PERM = 300
 def _run(seed: int, *, max_depth: int) -> DriverRanking:
     rng = np.random.default_rng(seed)
     df = make_corpus(rng)
-    values_by_dim = {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
+    codes_by_dim, labels_by_dim = factorize_columns(
+        {d: df[d].astype(object).to_numpy() for d in ALL_DIMS}
+    )
     measure = df["measure"].to_numpy(dtype=float)
     return discover_tree(
-        values_by_dim,
+        codes_by_dim,
+        labels_by_dim,
         FlowTarget(measure),
         measure_label="measure",
         dims=ALL_DIMS,
@@ -120,15 +123,16 @@ class TestTreeOutputs:
         # Pure noise: measure independent of every dim → root None, empty ranking.
         rng = np.random.default_rng(7)
         n = 5_000
-        values_by_dim = {
-            f"N{i}": np.array([f"v{v}" for v in rng.integers(0, 5, n)]) for i in range(4)
-        }
+        codes_by_dim, labels_by_dim = factorize_columns(
+            {f"N{i}": np.array([f"v{v}" for v in rng.integers(0, 5, n)]) for i in range(4)}
+        )
         measure = rng.normal(size=n)
         rank = discover_tree(
-            values_by_dim,
+            codes_by_dim,
+            labels_by_dim,
             FlowTarget(measure),
             measure_label="m",
-            dims=list(values_by_dim),
+            dims=list(codes_by_dim),
             rng=rng,
             n_perm=N_PERM,
         )

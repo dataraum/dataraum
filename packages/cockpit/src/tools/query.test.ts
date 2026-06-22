@@ -39,9 +39,12 @@ import {
 	type Component,
 	classifyComponents,
 	componentsToSave,
+	exhaustionDiagnostic,
+	isMissingStructuredResult,
 	persistLearnedSnippets,
 	type QueryDraft,
 	readDataQuality,
+	salvageDraft,
 } from "./query";
 
 type InvRow = {
@@ -346,5 +349,83 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 		expect(warnSpy).toHaveBeenCalled();
 
 		warnSpy.mockRestore();
+	});
+});
+
+// --- Exhaustion handling (DAT-608) -----------------------------------------------
+
+describe("isMissingStructuredResult", () => {
+	it("is true for chat()'s finalization error code", () => {
+		const err = Object.assign(new Error("missing structured result"), {
+			code: "structured-output-missing-result",
+		});
+		expect(isMissingStructuredResult(err)).toBe(true);
+		// A bare object carrying the code also matches (defensive).
+		expect(
+			isMissingStructuredResult({ code: "structured-output-missing-result" }),
+		).toBe(true);
+	});
+
+	it("is false for infra errors, aborts, and non-errors (they must propagate)", () => {
+		expect(isMissingStructuredResult(new Error("ECONNREFUSED"))).toBe(false);
+		expect(isMissingStructuredResult({ code: "something-else" })).toBe(false);
+		expect(isMissingStructuredResult(null)).toBe(false);
+		expect(isMissingStructuredResult(undefined)).toBe(false);
+		expect(isMissingStructuredResult("missing structured result")).toBe(false);
+	});
+});
+
+describe("salvageDraft (validated-but-unfinalized run)", () => {
+	it("turns the last validated run into a draft: concepts from components, no guessed tables", () => {
+		const components: Component[] = [
+			{ name: "revenue", sql: "SELECT 1", snippet_id: null, usage: "fresh" },
+			{
+				name: "by_region",
+				sql: "SELECT 2",
+				snippet_id: "s1",
+				usage: "adapted",
+			},
+		];
+		const out = salvageDraft({
+			composedSql: "WITH revenue AS (…) SELECT *",
+			components,
+			grainNote: null,
+		});
+		expect(out.concepts_used).toEqual(["revenue", "by_region"]);
+		// No hallucinated tables — the salvage doesn't invent tables_touched.
+		expect(out.tables_touched).toEqual([]);
+		expect(out.answer.length).toBeGreaterThan(0);
+		expect(out.assumptions.length).toBeGreaterThan(0);
+	});
+});
+
+describe("exhaustionDiagnostic (no query ever validated)", () => {
+	it("surfaces the last validation error, the steps, and the SQL", () => {
+		const msg = exhaustionDiagnostic({
+			message: 'Binder Error: column "discount_pct" not found',
+			sql: "SELECT discount_pct FROM lake.typed.orders",
+			steps: ["discount", "by_customer"],
+		});
+		expect(msg).toContain('Binder Error: column "discount_pct" not found');
+		expect(msg).toContain("discount, by_customer");
+		expect(msg).toContain("SELECT discount_pct FROM lake.typed.orders");
+	});
+
+	it("truncates a very long SQL", () => {
+		const longSql = `SELECT ${"x".repeat(400)}`;
+		const msg = exhaustionDiagnostic({
+			message: "boom",
+			sql: longSql,
+			steps: [],
+		});
+		expect(msg).toContain("…");
+		expect(msg).not.toContain(longSql);
+	});
+
+	it("falls back to a generic hint when no failure was captured (no 'undefined')", () => {
+		const msg = exhaustionDiagnostic(null);
+		expect(msg.length).toBeGreaterThan(0);
+		expect(msg).not.toContain("undefined");
+		expect(msg).not.toContain("null");
 	});
 });

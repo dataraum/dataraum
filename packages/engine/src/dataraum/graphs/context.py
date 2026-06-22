@@ -100,6 +100,8 @@ class TableContext:
     grain_columns: list[str] = field(default_factory=list)
     # DAT-565: all event-time axes — [{"column", "aspect", "note"}, ...].
     time_columns: list[dict[str, Any]] = field(default_factory=list)
+    # DAT-565: recurring identities (would-be FKs) — [{"column", "note"}, ...].
+    identity_columns: list[dict[str, Any]] = field(default_factory=list)
 
     # Columns
     columns: list[ColumnContext] = field(default_factory=list)
@@ -910,6 +912,7 @@ def build_execution_context(
                 table_description=table_entity.description if table_entity else None,
                 grain_columns=grain_cols,
                 time_columns=(table_entity.time_columns or []) if table_entity else [],
+                identity_columns=((table_entity.identity_columns or []) if table_entity else []),
                 columns=column_contexts,
                 flags=table_flags,
                 table_entropy=tbl_entropy,
@@ -1150,6 +1153,19 @@ def format_metadata_document(
             if tc.get("note"):
                 time_info += f". {tc['note']}"
             meta_parts.append(time_info.rstrip(".") + ".")
+        # Recurring identities (DAT-565): would-be foreign keys / cluster keys —
+        # the agent uses these for "per <entity>" grouping when writing queries.
+        identity_parts = []
+        for ic in table.identity_columns:
+            name = ic.get("column")
+            if not name:
+                continue
+            entry = name
+            if ic.get("note"):
+                entry += f" ({ic['note'].rstrip('.')})"
+            identity_parts.append(entry)
+        if identity_parts:
+            meta_parts.append(f"**Identity columns**: {', '.join(identity_parts)}.")
         if meta_parts:
             lines.append(" ".join(meta_parts))
 

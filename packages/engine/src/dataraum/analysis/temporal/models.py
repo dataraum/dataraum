@@ -40,75 +40,6 @@ class TemporalCompletenessAnalysis(BaseModel):
 
 
 # =============================================================================
-# Seasonality Models
-# =============================================================================
-
-
-class SeasonalDecompositionResult(BaseModel):
-    """Seasonal decomposition results (additive or multiplicative)."""
-
-    seasonal_component: list[float] = Field(default_factory=list)
-    trend_component: list[float] = Field(default_factory=list)
-    residual_component: list[float] = Field(default_factory=list)
-    model_type: str = "additive"  # 'additive' or 'multiplicative'
-
-    # Strength metrics
-    seasonality_strength: float | None = None  # 1 - Var(resid) / Var(detrended)
-    trend_strength: float | None = None  # 1 - Var(resid) / Var(deseasonalized)
-    seasonal_pattern_summary: dict[str, Any] | None = None
-    period: int | None = None
-
-
-class SeasonalityAnalysis(BaseModel):
-    """Seasonality detection results."""
-
-    has_seasonality: bool
-    strength: float  # 0-1, how strong the seasonal component is
-    period: str | None = None  # 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
-    period_length: int | None = None  # Number of observations in a period
-    peaks: dict[str, int | float] = Field(
-        default_factory=dict
-    )  # e.g., {"month": 12, "day_of_week": 5}
-    model_type: str | None = None  # 'additive' or 'multiplicative'
-    decomposition: SeasonalDecompositionResult | None = None
-
-
-# =============================================================================
-# Trend Models
-# =============================================================================
-
-
-class TrendAnalysis(BaseModel):
-    """Trend detection results."""
-
-    has_trend: bool
-    strength: float  # 0-1
-    direction: str  # 'increasing', 'decreasing', 'stable'
-    slope: float | None = None
-    autocorrelation_lag1: float | None = None
-
-
-class ChangePointResult(BaseModel):
-    """A detected change point in the time series."""
-
-    change_point_id: str
-    detected_at: datetime
-    index_position: int | None = None
-
-    # Change characteristics
-    change_type: str  # 'trend_break', 'level_shift', 'variance_change'
-    magnitude: float | None = None
-    confidence: float  # 0-1
-
-    # Before/after statistics
-    mean_before: float | None = None
-    mean_after: float | None = None
-    variance_before: float | None = None
-    variance_after: float | None = None
-    detection_method: str  # 'pelt', 'cusum', etc.
-
-
-# =============================================================================
 # Update Frequency Models
 # =============================================================================
 
@@ -143,50 +74,6 @@ class FiscalCalendarAnalysis(BaseModel):
     has_period_end_effects: bool = False
     period_end_spike_ratio: float | None = None
     detected_periods: list[str] = Field(default_factory=list)
-
-
-# =============================================================================
-# Distribution Stability Models
-# =============================================================================
-
-
-class DistributionShiftResult(BaseModel):
-    """Distribution shift detected between two periods."""
-
-    shift_id: str
-
-    # Time periods
-    period1_start: datetime
-    period1_end: datetime
-    period2_start: datetime
-    period2_end: datetime
-
-    # Test results
-    test_statistic: float  # KS statistic
-    p_value: float
-    is_significant: bool
-
-    # Distribution characteristics
-    period1_mean: float | None = None
-    period2_mean: float | None = None
-    period1_std: float | None = None
-    period2_std: float | None = None
-
-    # Interpretation
-    shift_direction: str | None = None
-    shift_magnitude: float | None = None
-
-
-class DistributionStabilityAnalysis(BaseModel):
-    """Distribution stability across time periods."""
-
-    stability_score: float  # 0-1
-    shift_count: int
-    shifts: list[DistributionShiftResult] = Field(default_factory=list)
-
-    # Overall statistics
-    mean_ks_statistic: float | None = None
-    max_ks_statistic: float | None = None
 
 
 # =============================================================================
@@ -232,21 +119,11 @@ class TemporalAnalysisResult(BaseModel):
     # Completeness
     completeness: TemporalCompletenessAnalysis | None = None
 
-    # Seasonality
-    seasonality: SeasonalityAnalysis | None = None
-
-    # Trend
-    trend: TrendAnalysis | None = None
-    change_points: list[ChangePointResult] = Field(default_factory=list)
-
     # Update frequency
     update_frequency: UpdateFrequencyAnalysis | None = None
 
     # Fiscal calendar
     fiscal_calendar: FiscalCalendarAnalysis | None = None
-
-    # Distribution stability
-    distribution_stability: DistributionStabilityAnalysis | None = None
 
     # Quality issues
     quality_issues: list[TemporalQualityIssue] = Field(default_factory=list)
@@ -262,9 +139,6 @@ class TemporalTableSummary(BaseModel):
     total_issues: int
 
     # Counts of columns with specific patterns
-    columns_with_seasonality: int = 0
-    columns_with_trends: int = 0
-    columns_with_change_points: int = 0
     columns_with_fiscal_alignment: int = 0
 
     # Overall freshness
@@ -295,19 +169,10 @@ __all__ = [
     # Basic detection
     "TemporalGapInfo",
     "TemporalCompletenessAnalysis",
-    # Seasonality
-    "SeasonalDecompositionResult",
-    "SeasonalityAnalysis",
-    # Trend
-    "TrendAnalysis",
-    "ChangePointResult",
     # Update frequency
     "UpdateFrequencyAnalysis",
     # Fiscal calendar
     "FiscalCalendarAnalysis",
-    # Distribution stability
-    "DistributionShiftResult",
-    "DistributionStabilityAnalysis",
     # Quality issues
     "TemporalQualityIssue",
     # Main results

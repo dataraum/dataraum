@@ -424,13 +424,11 @@ export const currentTemporalColumnProfiles = metadataSchema
 		maxTimestamp: timestamp("max_timestamp"),
 		detectedGranularity: varchar("detected_granularity"),
 		completenessRatio: doublePrecision("completeness_ratio"),
-		hasSeasonality: boolean("has_seasonality"),
-		hasTrend: boolean("has_trend"),
 		isStale: boolean("is_stale"),
 		profileData: json("profile_data"),
 	})
 	.as(
-		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, has_seasonality, has_trend, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT profile_id, column_id, run_id, profiled_at, min_timestamp, max_timestamp, detected_granularity, completeness_ratio, is_stale, profile_data FROM ws_00000000_0000_0000_0000_000000000001.temporal_column_profiles r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentTypeCandidates = metadataSchema

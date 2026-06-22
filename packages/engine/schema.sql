@@ -616,8 +616,6 @@ CREATE TABLE temporal_column_profiles (
 	max_timestamp TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	detected_granularity VARCHAR NOT NULL, 
 	completeness_ratio FLOAT, 
-	has_seasonality BOOLEAN, 
-	has_trend BOOLEAN, 
 	is_stale BOOLEAN, 
 	profile_data JSON NOT NULL, 
 	CONSTRAINT pk_temporal_column_profiles PRIMARY KEY (profile_id), 

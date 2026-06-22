@@ -3,9 +3,8 @@
 Provides temporal analysis for time columns including:
 - Granularity detection (day, week, month, etc.)
 - Completeness and gap analysis
-- Seasonality and trend detection
-- Change point detection
-- Staleness assessment
+- Update frequency + staleness assessment
+- Fiscal calendar alignment
 
 Main Entry Point:
     profile_temporal(table_id, duckdb_conn, session) -> Result[TemporalProfileResult]

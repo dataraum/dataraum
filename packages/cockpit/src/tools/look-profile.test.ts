@@ -383,8 +383,6 @@ describe("projectColumnProfile — temporal + derived", () => {
 				maxTimestamp: max,
 				detectedGranularity: "day",
 				completenessRatio: 0.97,
-				hasSeasonality: true,
-				hasTrend: false,
 				isStale: false,
 			},
 		});
@@ -392,7 +390,7 @@ describe("projectColumnProfile — temporal + derived", () => {
 		expect(out.temporal?.max_timestamp).toBe("2021-12-31T00:00:00.000Z");
 		expect(out.temporal?.granularity).toBe("day");
 		expect(out.temporal?.completeness).toBe(0.97);
-		expect(out.temporal?.has_seasonality).toBe(true);
+		expect(out.temporal?.is_stale).toBe(false);
 	});
 
 	it("tolerates a null timestamp", () => {
@@ -403,8 +401,6 @@ describe("projectColumnProfile — temporal + derived", () => {
 				maxTimestamp: null,
 				detectedGranularity: null,
 				completenessRatio: null,
-				hasSeasonality: null,
-				hasTrend: null,
 				isStale: null,
 			},
 		});

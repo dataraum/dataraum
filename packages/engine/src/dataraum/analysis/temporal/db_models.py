@@ -67,9 +67,9 @@ class TemporalColumnProfile(Base):
     detected_granularity: Mapped[str] = mapped_column(String, nullable=False)
     completeness_ratio: Mapped[float | None] = mapped_column(Float)
 
-    # Flags for filtering (fast queries)
-    has_seasonality: Mapped[bool | None] = mapped_column(Boolean)
-    has_trend: Mapped[bool | None] = mapped_column(Boolean)
+    # Flag for filtering (fast queries). Seasonality/trend flags were removed in DAT-524
+    # (they were computed from a degenerate constant series); ``is_stale`` is real — it
+    # comes from the timestamp-interval analysis, not the value series.
     is_stale: Mapped[bool | None] = mapped_column(Boolean)
 
     # JSONB: Full TemporalAnalysisResult model

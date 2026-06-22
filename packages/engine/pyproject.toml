@@ -34,9 +34,6 @@ dependencies = [
     "pyyaml>=6.0.0",
     # Scientific computing
     "scipy>=1.11.0",
-    # Time Series Analysis
-    "statsmodels>=0.14.0",
-    "ruptures>=1.1.0",
     # Utilities
     "structlog>=24.1.0",
     "python-dotenv>=1.0.0",
@@ -168,8 +165,6 @@ module = [
     "duckdb.*",
     "anthropic.*",
     "scipy.*",
-    "statsmodels.*",
-    "ruptures.*",
     "networkx.*",
     "sqlglot.*",
 ]

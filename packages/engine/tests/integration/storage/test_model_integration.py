@@ -300,15 +300,11 @@ class TestTemporalModels:
             max_timestamp=datetime(2024, 12, 31),
             detected_granularity="day",
             completeness_ratio=0.96,
-            has_seasonality=True,
-            has_trend=True,
             is_stale=False,
             profile_data={
                 "span_days": 364.0,
                 "granularity_confidence": 0.98,
                 "gap_count": 5,
-                "seasonality_period": "quarterly",
-                "trend_direction": "increasing",
             },
         )
         session.add(temporal)
@@ -319,4 +315,4 @@ class TestTemporalModels:
 
         assert saved.detected_granularity == "day"
         assert saved.completeness_ratio == 0.96
-        assert saved.has_seasonality is True
+        assert saved.is_stale is False

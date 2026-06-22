@@ -308,6 +308,8 @@ class TestFormatMetadataDocument:
         assert "Invoice Amount" in result
         assert "currency_code" in result
         assert "qty * price" in result
+        # DAT-566: a table with no identity_columns renders no identity clause.
+        assert "Identity columns" not in result
 
     def test_entropy_scores_per_column(self) -> None:
         """Entropy scores shown per column in data quality notes."""

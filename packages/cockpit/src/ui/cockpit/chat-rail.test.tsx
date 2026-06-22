@@ -263,28 +263,6 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 			summary: "amount (orders) — ready",
 		},
 		{
-			name: "connect",
-			state: "complete",
-			output: {
-				sourceKind: "file",
-				source: "people.csv",
-				tables: [{ name: "people" }],
-			},
-			summary: "people.csv — 1 table",
-		},
-		{
-			name: "frame",
-			state: "complete",
-			output: { vertical: "ecommerce", concepts: [{}, {}, {}] },
-			summary: "ecommerce — 3 concepts",
-		},
-		{
-			name: "select",
-			state: "complete",
-			output: { sources: ["s1"], name: "orders", source_type: "file" },
-			summary: "orders (file)",
-		},
-		{
 			name: "run_sql",
 			state: "complete",
 			arguments: JSON.stringify({ sql: "SELECT * FROM lake.typed.orders" }),
@@ -347,7 +325,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 		// A tool-call id can recur across messages (an in-flight occurrence plus a
 		// later completion in a teed turn — different messages, shared id). The rail
 		// must collapse them to one chip (at the completed occurrence), not render
-		// the select twice.
+		// the list_tables twice.
 		h.messages = [
 			{
 				id: "m1",
@@ -356,7 +334,7 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 					{
 						type: "tool-call",
 						id: "c1",
-						name: "select",
+						name: "list_tables",
 						state: "input-complete",
 						arguments: "{}",
 					},
@@ -369,14 +347,10 @@ describe("ChatRail tool-result chips (DAT-354)", () => {
 					{
 						type: "tool-call",
 						id: "c1",
-						name: "select",
+						name: "list_tables",
 						state: "complete",
 						arguments: "{}",
-						output: {
-							sources: ["s1"],
-							name: "fx_rates",
-							source_type: "csv",
-						},
+						output: [{ table_id: "t1" }],
 					},
 				],
 			},

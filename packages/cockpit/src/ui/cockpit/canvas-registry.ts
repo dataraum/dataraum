@@ -18,18 +18,15 @@ import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
 import { MetricListWidget } from "#/ui/cockpit/widgets/metric-list";
 import { MetricShadowWidget } from "#/ui/cockpit/widgets/metric-shadow";
 import { MetricWhyWidget } from "#/ui/cockpit/widgets/metric-why";
-import { ModelFrameWidget } from "#/ui/cockpit/widgets/model-frame";
 import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
 import { ProbeWidget } from "#/ui/cockpit/widgets/probe";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
-import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SessionProgressWidget } from "#/ui/cockpit/widgets/session-progress";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { TableWhyWidget } from "#/ui/cockpit/widgets/table-why";
-import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 import { ValidationListWidget } from "#/ui/cockpit/widgets/validation-list";
 import { ValidationWhyWidget } from "#/ui/cockpit/widgets/validation-why";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
@@ -43,8 +40,6 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "workspace-inventory",
 		component: WorkspaceInventoryWidget,
 	})
-	.register({ kind: "schema-preview", component: SchemaPreviewWidget })
-	.register({ kind: "model-frame", component: ModelFrameWidget })
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "answer-result", component: AnswerResultWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
@@ -66,5 +61,4 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "operating-model-progress",
 		component: OperatingModelProgressWidget,
 	})
-	.register({ kind: "upload-area", component: UploadAreaWidget })
 	.register({ kind: "probe", component: ProbeWidget });

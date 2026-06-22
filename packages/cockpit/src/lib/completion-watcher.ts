@@ -188,6 +188,13 @@ export async function pollOnce(
 
 		tracked.delete(key);
 		await markRunStatus(run.workflowId, run.runId, terminalRunStatus(progress));
+		// Import (onboarding add_source) is NOT narrated into the chat (DAT-597):
+		// its progress + outcome live in the staging hub widget (Connect's canvas)
+		// + the "Needs you" inbox, so a chat echo would be a SECOND progress surface.
+		// The live progress push above still fires (the widget needs it); we only
+		// skip the agent-turn narration. A `replay` (teach→re-ground) DOES narrate —
+		// that's the teach surface verifying the teach helped.
+		if (run.stage === "add_source" && run.kind === "onboarding") continue;
 		// The atomic claim is the once-only guard across a chat's tabs.
 		if (await claimRunNarration(run.workflowId, run.runId)) {
 			await narrateCompletion(conversationId, run, progress, signal).catch(

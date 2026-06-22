@@ -38,6 +38,15 @@ function wrapper({ children }: { children: React.ReactNode }) {
 	);
 }
 
+// A `connect` chat — its canvas defaults to the staging hub (DAT-597).
+function connectWrapper({ children }: { children: React.ReactNode }) {
+	return (
+		<TestQueryProvider>
+			<CockpitProvider conversationKind="connect">{children}</CockpitProvider>
+		</TestQueryProvider>
+	);
+}
+
 // A single completed list_sources call → source-list canvas (the simplest live
 // projection the derivation can produce).
 function sourcesCall(id: string) {
@@ -72,6 +81,21 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		const { result } = renderHook(() => useCockpit(), { wrapper });
 		expect(result.current.canvas).toEqual({ kind: "empty" });
 		expect(result.current.pinnedCallId).toBeNull();
+	});
+
+	it("a connect chat defaults its canvas to the staging hub (DAT-597)", () => {
+		const { result } = renderHook(() => useCockpit(), {
+			wrapper: connectWrapper,
+		});
+		expect(result.current.canvas).toEqual({ kind: "probe" });
+	});
+
+	it("a live projection still wins over the connect hub default (DAT-597)", () => {
+		h.messages = [sourcesCall("c1")];
+		const { result } = renderHook(() => useCockpit(), {
+			wrapper: connectWrapper,
+		});
+		expect(result.current.canvas.kind).toBe("source-list");
 	});
 
 	it("throws when useCockpit is read outside a provider", () => {
@@ -142,23 +166,22 @@ describe("cockpit-state — view + chat (DAT-347 / DAT-353)", () => {
 		expect(result.current.pinnedCallId).toBeNull();
 	});
 
-	it("a completed select result derives the add-source-progress canvas (DAT-436)", () => {
-		// Calling select starts the run; the result's ids key the progress poll.
+	it("a completed replay result derives the add-source-progress canvas (DAT-352)", () => {
+		// A replay starts an addSourceWorkflow run; the result's ids key the poll.
 		h.messages = [
 			{
-				id: "m-sel",
+				id: "m-rep",
 				role: "assistant",
 				parts: [
 					{
 						type: "tool-call",
-						id: "sel-1",
-						name: "select",
+						id: "rep-1",
+						name: "replay",
 						state: "complete",
 						output: {
-							sources: ["s1"],
+							source_id: "s1",
 							workflow_id: "wf1",
 							run_id: "run1",
-							session_id: "sess1",
 						},
 					},
 				],

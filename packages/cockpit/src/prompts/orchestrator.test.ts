@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationKind } from "#/db/cockpit/conversations";
-import { JOURNEY_STAGES } from "#/journey/stages";
 import { getInstructions } from "#/prompts/orchestrator";
 
 const KINDS: ReadonlyArray<ConversationKind> = ["connect", "stage", "analyse"];
@@ -33,30 +32,35 @@ describe("per-type instructions (DAT-532)", () => {
 		}
 	});
 
-	it("names every journey stage across the kinds; each kind names its own arc", () => {
-		const union = KINDS.map(getInstructions).join("\n");
-		for (const stage of JOURNEY_STAGES) {
-			expect(union).toContain(stage.id);
-		}
-		// Each kind owns its stages and not the others' acting stages.
-		expect(getInstructions("connect")).toContain("add_source");
+	it("each kind names the stages it drives (DAT-597: onboarding is hub-driven, not chat-narrated)", () => {
+		// The onboarding stages (connect/frame/select/add_source) are driven by the
+		// staging-hub widget, not narrated as chat stages — so each chat kind names
+		// only the stages IT drives. Stage owns begin_session + operating_model;
+		// Analyse owns answer; Connect is the teach surface (teach + replay).
+		expect(getInstructions("stage")).toContain("begin_session");
 		expect(getInstructions("stage")).toContain("operating_model");
 		expect(getInstructions("analyse")).toContain("answer");
+		const connect = getInstructions("connect");
+		expect(connect).toContain("teach");
+		expect(connect).toContain("replay");
 	});
 
 	it("fences the toolstack per kind in the prompt (journey/tools differ)", () => {
-		// Connect drives select/import but not the session; Analyse is answer-only,
-		// no raw run_sql; Stage owns begin_session + run_sql, not answer/select.
+		// Connect is the TEACH surface (DAT-597) — teach + replay, no acquisition
+		// tools, no session; Analyse is answer-only, no raw run_sql; Stage owns
+		// begin_session + run_sql, not answer.
 		const connect = getInstructions("connect");
 		const stage = getInstructions("stage");
 		const analyse = getInstructions("analyse");
 
-		expect(connect).toContain("Calling select STARTS the import");
+		expect(connect).toContain("teach");
+		expect(connect).toContain("replay");
 		expect(connect).not.toContain("begin_session");
-		// One-step select: no retired "Add source" button, no approval/confirm step.
-		expect(connect).not.toContain("Add source button");
-		expect(connect).not.toContain('"Add source"');
-		expect(connect).not.toContain("wait for confirmation");
+		// The removed acquisition surface must not be advertised any more.
+		expect(connect).not.toContain("Calling select STARTS the import");
+		for (const removed of ["use_vertical", "list_verticals", "open_probe"]) {
+			expect(connect).not.toContain(removed);
+		}
 
 		expect(stage).toContain("begin_session");
 		expect(stage).toContain("run_sql");

@@ -1,8 +1,9 @@
 // Unit tests for the generic frame-a-family core (DAT-469) — the pure helpers
 // that don't need the LLM or the DB: the library-as-seed formatting + the
-// nearest-shipped-vertical resolution + the payload sanitizer. The induce call
-// (`induceStructured`) and the write loop (`frameFamily`) are exercised through
-// frame.test.ts against the mocked chat() + metadata client.
+// nearest-shipped-vertical resolution + the payload sanitizer. `induceStructured`
+// (the forced-tool LLM call) and the `frameFamily` write loop are an LLM/DB
+// boundary that a mock can only fake — they're verified by the live frame→import
+// smoke (DAT-597) + a per-family live-API check, not unit tests.
 
 import { describe, expect, it, vi } from "vitest";
 

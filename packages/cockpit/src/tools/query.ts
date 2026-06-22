@@ -504,7 +504,10 @@ export function isMissingStructuredResult(err: unknown): boolean {
 /** Synthesize a draft from a validated-but-unfinalized run: the model proved a
  * query via run_steps but ran out of steps before writing the summary. The grid
  * (the captured validated SQL) IS the answer — surface it honestly rather than
- * failing the turn. Pure; unit-tested. */
+ * failing the turn. `tables_touched` is left empty because the model never emitted
+ * the structured answer that declares it (inferring it would mean re-parsing the
+ * composed SQL); the assembled result's `data_quality` is therefore null — accurate
+ * (no band to report), not a guess. Pure; unit-tested. */
 export function salvageDraft(validated: ValidatedRun): QueryDraft {
 	return {
 		answer:
@@ -596,8 +599,11 @@ export async function querySubAgent(
 			outputSchema: QueryDraftSchema,
 		});
 	} catch (err) {
-		// Anything other than "loop ended without a structured answer" is infra /
-		// abort — let it propagate (the outer asAgentError / abort handles it).
+		// Re-throw everything that ISN'T "loop ended without a structured answer":
+		// infra (network/DB), aborts (DOMException `AbortError` — no `code` prop), AND
+		// `structured-output-validation-failed` (Zod rejected a syntactically valid
+		// model response — rare on the native-combined path). The outer asAgentError
+		// converts these to `{ error }`; only the exhaustion case is handled below.
 		if (!isMissingStructuredResult(err)) throw err;
 		// DAT-608: the agent loop exhausted its step budget without finalizing.
 		if (captured.value) {
@@ -605,6 +611,8 @@ export async function querySubAgent(
 			// so a near-miss returns the real result instead of failing the turn.
 			const salvaged = salvageDraft(captured.value);
 			const dq = await readDataQuality(salvaged.tables_touched);
+			// Save-on-clean for the salvage path; the success path below is not reached
+			// (this returns), so captured.value is never double-saved.
 			void persistLearnedSnippets(captured.value);
 			return assembleAnswer(salvaged, captured.value, dq);
 		}

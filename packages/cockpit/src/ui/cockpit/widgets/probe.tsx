@@ -40,6 +40,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import {
+	Download as DownloadIcon,
 	FileText,
 	Layers,
 	Target,
@@ -404,6 +405,30 @@ function ProbePanel({
 							</Button>
 						</Tooltip>
 					)}
+					{/* The primary action lives here, last in the toolbar — gated on a
+					    non-empty set AND a framed workspace. The reason it's disabled
+					    shows on hover (the <span> wrapper is the tooltip target so it
+					    still fires while the Button has pointer-events:none). */}
+					<Tooltip
+						label={
+							startBlockedReason ??
+							`Import ${importSet.length} source${importSet.length === 1 ? "" : "s"} in one run`
+						}
+					>
+						<span>
+							<Button
+								size="compact-xs"
+								variant="filled"
+								leftSection={<DownloadIcon size={14} />}
+								onClick={onImport}
+								disabled={!canStart}
+								loading={pending}
+								data-testid="probe-start"
+							>
+								Import
+							</Button>
+						</span>
+					</Tooltip>
 				</Group>
 			</Group>
 			<Text size="xs" c="dimmed">
@@ -502,28 +527,6 @@ function ProbePanel({
 					data-testid="probe-add-to-set"
 				>
 					{nameStaged ? "Update query" : "Add to import set"}
-				</Button>
-			</Group>
-
-			{/* The primary action: import the whole staged set in one run. Gated on a
-			    framed workspace (DAT-594) — disabled tells the user why. */}
-			<Group justify="flex-end" gap="sm" wrap="nowrap">
-				{startBlockedReason && (
-					<Text size="xs" c="dimmed" data-testid="probe-start-blocked">
-						{startBlockedReason}
-					</Text>
-				)}
-				<Button
-					size="sm"
-					onClick={onImport}
-					disabled={!canStart}
-					loading={pending}
-					data-testid="probe-start"
-				>
-					Start import
-					{importSet.length > 0
-						? ` (${importSet.length} source${importSet.length === 1 ? "" : "s"})`
-						: ""}
 				</Button>
 			</Group>
 

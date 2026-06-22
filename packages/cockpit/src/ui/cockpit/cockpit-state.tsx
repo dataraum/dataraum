@@ -34,6 +34,7 @@ import {
 } from "react";
 // Type-only: erased at build, so the cockpit_db (bun:sql) client never enters
 // the client bundle — only the UiState shape rides along.
+import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { UiState } from "#/db/cockpit/ui-state";
 import {
 	asWorkflowProgressEvent,
@@ -130,6 +131,7 @@ function useStableValue<T>(value: T): T {
 export function CockpitProvider({
 	children,
 	conversationId,
+	conversationKind,
 	initialMessages,
 	initialUiState,
 	onPersistPin,
@@ -137,6 +139,11 @@ export function CockpitProvider({
 	typeNav,
 }: {
 	children: ReactNode;
+	/** The chat's kind (DAT-597): a `connect` chat is an ACQUISITION surface, so its
+	 * canvas defaults to the staging hub (`probe`) instead of empty — the hub is
+	 * Connect's persistent home, the one way to assemble/frame/import. `stage`/
+	 * `analyse` keep the empty default. Null on the degraded (unhydrated) path. */
+	conversationKind?: ConversationKind | null;
 	// Server-owned conversation hydration (DAT-462): the persisted thread id +
 	// its display transcript + restored UI state, from the route loader. Optional
 	// so the provider still mounts (a fresh, unhydrated chat) without a loader —
@@ -267,13 +274,19 @@ export function CockpitProvider({
 	const live = canvasFromMessages(messages);
 	const pinned =
 		pinnedCallId !== null ? canvasFromCallId(messages, pinnedCallId) : null;
-	const canvas = useStableValue<CanvasState>(
-		pinned ??
-			live ??
-			(isLoading
+	// A `connect` chat's canvas DEFAULTS to the staging hub (DAT-597): Connect is an
+	// acquisition surface, so the hub is its persistent home — pinned-top, always the
+	// fallback when nothing live/pinned. A teach inspection (look_table/why_column)
+	// still takes the canvas as `live`; the hub returns underneath. The hub wins over
+	// `loading` too — it's always useful, and acquisition + teaching are sequential so
+	// there is no half-built import set to hide behind a spinner.
+	const fallback: CanvasState =
+		conversationKind === "connect"
+			? { kind: "probe" }
+			: isLoading
 				? { kind: "loading", label: pendingLabel }
-				: { kind: "empty" }),
-	);
+				: { kind: "empty" };
+	const canvas = useStableValue<CanvasState>(pinned ?? live ?? fallback);
 
 	// Reactive state — recreated each streaming tick (messages/canvas change).
 	const state = useMemo<CockpitState>(

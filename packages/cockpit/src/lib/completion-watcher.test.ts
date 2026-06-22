@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
 		workflowId: "wf-A",
 		runId: "r-A",
 		stage: "begin_session" as const,
+		kind: "begin_session" as const,
 	},
 	narrated: [] as string[],
 }));
@@ -126,6 +127,7 @@ describe("placeholder runs are skipped until attachRunId finalizes the real id (
 				workflowId: "addsource-ws",
 				runId: "addsource-ws",
 				stage: "add_source",
+				kind: "onboarding",
 			},
 		]);
 		const tracked = new Map<string, WatchableRun>();
@@ -133,5 +135,43 @@ describe("placeholder runs are skipped until attachRunId finalizes the real id (
 		expect(tracked.size).toBe(0);
 		expect(getWorkflowProgress).not.toHaveBeenCalled();
 		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+	});
+});
+
+describe("import vs teach→replay narration (DAT-597)", () => {
+	it("does NOT narrate an onboarding add_source run — the hub owns import progress", async () => {
+		// Real id (runId != workflowId) so it clears the DAT-595 placeholder skip;
+		// the DAT-597 gate then suppresses the chat echo of an import.
+		vi.mocked(listWatchableRuns).mockResolvedValueOnce([
+			{
+				workflowId: "addsource-ws",
+				runId: "real-run",
+				stage: "add_source",
+				kind: "onboarding",
+			},
+		]);
+		await pollOnce(
+			"A",
+			new Map<string, WatchableRun>(),
+			new AbortController().signal,
+		);
+		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+	});
+
+	it("DOES narrate a replay add_source run — the teach→re-ground verification", async () => {
+		vi.mocked(listWatchableRuns).mockResolvedValueOnce([
+			{
+				workflowId: "addsource-ws",
+				runId: "real-run",
+				stage: "add_source",
+				kind: "replay",
+			},
+		]);
+		await pollOnce(
+			"A",
+			new Map<string, WatchableRun>(),
+			new AbortController().signal,
+		);
+		expect(streamAgentTurnToBus).toHaveBeenCalledTimes(1);
 	});
 });

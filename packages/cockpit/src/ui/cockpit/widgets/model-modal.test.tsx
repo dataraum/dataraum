@@ -24,6 +24,10 @@ vi.mock("#/server/stage-frame", () => ({
 	adoptVerticalForStaging: (args: unknown) => adoptVerticalForStagingMock(args),
 	listAdoptableVerticals: () => listAdoptableVerticalsMock(),
 }));
+const getActiveVerticalStatusMock = vi.fn();
+vi.mock("#/server/active-vertical", () => ({
+	getActiveVerticalStatus: () => getActiveVerticalStatusMock(),
+}));
 
 import {
 	ModelModal,
@@ -70,6 +74,12 @@ beforeEach(() => {
 			concept_count: 12,
 		},
 	]);
+	// Default: unframed workspace (no current-model banner) — the banner tests
+	// override this.
+	getActiveVerticalStatusMock.mockResolvedValue({
+		vertical: "_adhoc",
+		framed: false,
+	});
 });
 
 afterEach(() => {
@@ -125,6 +135,26 @@ describe("ModelModal frame path (DAT-594)", () => {
 		fireEvent.click(screen.getByTestId("model-frame-run"));
 		const err = await screen.findByTestId("model-error");
 		expect(err.textContent).toContain("induction returned none");
+	});
+});
+
+describe("ModelModal current-model banner (DAT-594 follow-up)", () => {
+	it("reflects the active model when one is set (not a from-scratch pick)", async () => {
+		getActiveVerticalStatusMock.mockResolvedValue({
+			vertical: "finance",
+			framed: true,
+		});
+		renderModal(STAGED);
+		const banner = await screen.findByTestId("model-current");
+		expect(banner.textContent).toContain("finance");
+		// The from-scratch declare intro is replaced by the current-model banner.
+		expect(screen.queryByText(/An imported source grounds against/)).toBeNull();
+	});
+
+	it("shows the declare intro (no banner) when the workspace is unframed", async () => {
+		renderModal(STAGED);
+		await waitFor(() => expect(getActiveVerticalStatusMock).toHaveBeenCalled());
+		expect(screen.queryByTestId("model-current")).toBeNull();
 	});
 });
 

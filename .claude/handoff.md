@@ -4,6 +4,30 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: DAT-524 — temporal value-analysis cut (seasonality/trend/change-points/stability removed)
+
+The degenerate value-analysis half of the temporal phase is gone (it ran on a constant
+`Series(1)` and produced foregone-conclusion output). `statsmodels` + `ruptures` dropped;
+`scipy` stays.
+
+### dataraum-eval
+- **Dropped fields — any fixture/assertion that seeds OR reads these will break:**
+  `temporal_column_profiles.has_seasonality` and `.has_trend` (columns gone);
+  the `SeasonalityAnalysis` / `TrendAnalysis` / `ChangePointResult` /
+  `DistributionStabilityAnalysis` models and the `TemporalAnalysisResult` fields
+  `seasonality` / `trend` / `change_points` / `distribution_stability`; the
+  `TemporalTableSummary` scalars `columns_with_seasonality` / `columns_with_trends` /
+  `columns_with_change_points`; the `many_change_points` + `unstable_distribution`
+  quality issues; the `temporal_phase` outputs `with_seasonality` / `with_trend`.
+- **Kept (real, index-derived):** `detected_granularity`, `update_frequency`/`is_stale`,
+  `fiscal_calendar`, `completeness`.
+- **LLM-facing:** `graphs/context` no longer emits the per-column **"Trending over time."**
+  note (the DAT-284 `has_trend` surface). The metadata document loses that line — any
+  golden/snapshot asserting it must update. No other context-doc field changed.
+- **Config:** `config/phases/temporal.yaml` lost the `seasonality` / `trend` /
+  `change_points` / `distribution_stability` blocks + two `quality_issues` keys.
+- **Status**: pending
+
 ## 2026-06-21: DAT-580 — driver engine ported pandas → DuckDB arrow→polars + int codes
 
 The driver-discovery engine (`analysis/drivers/`) no longer uses pandas. The enriched

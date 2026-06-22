@@ -1,10 +1,10 @@
 // Shared source-row write primitives (DAT-592) — the cross-schema UPSERT into
-// the engine-owned `ws_<id>.sources` table + the import-witness read, extracted
-// from `tools/select.ts` so BOTH the agent `select` tool (table-pick / file
-// selections) AND the UI import-set (`server/import-sources.ts`, one source per
-// probed query) write rows the same way.
+// the engine-owned `ws_<id>.sources` table + the import-witness read. The sole
+// caller is the staging hub's import server fn (`server/import-sources.ts`, one
+// source per probed query / uploaded file); the agent `select` tool that used to
+// share this was removed when acquisition moved fully to the hub (DAT-597).
 //
-// `select` OWNS the INSERT (the documented metadata-client policy break — the
+// The cockpit OWNS the INSERT (the documented metadata-client policy break — the
 // engine's import phase assumes the cockpit wrote the source row before
 // triggering addSourceWorkflow). These two helpers ARE that write seam; nothing
 // here decides the row SHAPE (that's `select/mappers.ts`), only how it lands.
@@ -16,9 +16,9 @@ import { metadataDb } from "../db/metadata/client";
 import { sources } from "../db/metadata/schema";
 import { sourcesWrite } from "../db/metadata/write-surface";
 
-// The onboarding stage a freshly registered source sits at. The cockpit drives
-// `connect → frame → select → add_source`; the row is written already at
-// `add_source`, the cursor the journey readiness reads.
+// The onboarding stage a freshly registered source sits at. The staging hub
+// assembles → frames → imports; the row is written already at `add_source`, the
+// cursor the journey readiness reads.
 export const STAGE_AFTER_SELECT = "add_source";
 
 // Initial source status — registered by the cockpit but not yet imported reads

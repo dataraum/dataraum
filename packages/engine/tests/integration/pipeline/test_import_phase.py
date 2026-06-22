@@ -357,13 +357,13 @@ class TestImportPhase:
         recipe_hash: str | None,
         imported_hash: str | None,
     ):
-        """A db source whose hashes don't BOTH match never skips — and fails loud.
+        """A db source whose hashes don't BOTH match never skips (DAT-430).
 
-        This is the DAT-430 staleness kill: re-selecting the same source name
-        with a changed pick used to presence-skip forever, silently 'succeeding'
-        over the old raw tables. Now ``should_skip`` declines and the db load
-        path refuses to re-extract (re-import-with-replace is deferred), naming
-        the source.
+        The DAT-430 staleness kill: re-selecting the same source name with a
+        changed pick used to presence-skip forever, silently 'succeeding' over
+        the old raw tables. ``should_skip`` must keep declining on any
+        non-matching hash pair so the db load path runs the re-import-with-replace
+        (DAT-596) instead of serving stale tables.
         """
         cc: dict[str, Any] = {"tables": [{"name": "t1", "sql": "SELECT 1"}]}
         if recipe_hash:
@@ -381,10 +381,187 @@ class TestImportPhase:
 
         assert phase.should_skip(ctx) is None  # never a silent skip
 
-        result = phase._load_database_source(ctx, source, "warehouse", cc, "mssql")
-        assert result.status == PhaseStatus.FAILED
-        assert "warehouse" in (result.error or "")
-        assert "re-import is not yet supported" in (result.error or "")
+    def test_db_recipe_repointed_recipe_replaces_in_place(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A re-pointed recipe (changed pick, same name) replaces in place (DAT-596).
+
+        Import recipe v1 (columns a, b) so a raw + typed table and their metadata
+        children + a per-table snapshot head all exist; then re-import a re-pointed
+        v2 (columns b, c). The v1 tables (raw + typed) and their Table/Column rows,
+        the column-keyed metadata, and the per-table snapshot head must all be
+        GONE; only the v2 shape survives; ``imported_recipe_hash`` is re-stamped to
+        v2. Extraction + credentials are faked — the teardown+rematerialize
+        lifecycle, not the backend, is under test.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.core.models import Result
+        from dataraum.sources.backends import BackendExtractionResult, ExtractedTable
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
+
+        source_id = str(uuid4())
+        _seed_db_source(
+            session,
+            source_id,
+            "warehouse",
+            {"tables": [{"name": "t1", "sql": "SELECT a, b FROM x"}], "recipe_hash": "hash-A"},
+            with_raw_table=False,
+        )
+        source = session.get(Source, source_id)
+        assert source is not None
+        phase = ImportPhase()
+        ctx = PhaseContext(
+            session=session, duckdb_conn=duckdb_conn, config={"source_id": source_id}
+        )
+
+        chain = MagicMock()
+        chain.resolve.return_value = MagicMock(url="mssql://ignored")
+
+        # --- v1 import: raw table warehouse__t1 with columns a, b ---
+        v1 = BackendExtractionResult(
+            tables=[
+                ExtractedTable(
+                    name="t1",
+                    duckdb_table="warehouse__t1",
+                    row_count=2,
+                    columns=[("a", "VARCHAR"), ("b", "VARCHAR")],
+                )
+            ]
+        )
+        with (
+            patch("dataraum.core.credentials.CredentialChain", return_value=chain),
+            patch("dataraum.sources.backends.extract_backend", return_value=Result.ok(v1)),
+        ):
+            cc_v1 = {
+                "tables": [{"name": "t1", "sql": "SELECT a, b FROM x"}],
+                "recipe_hash": "hash-A",
+            }
+            r1 = phase._load_database_source(ctx, source, "warehouse", cc_v1, "mssql")
+        assert r1.status == PhaseStatus.COMPLETED, r1.error
+        v1_raw_id = r1.outputs["raw_tables"][0]
+
+        # Add the surrounding state a real run would: a typed Table (sharing the
+        # source_id + bare name), a statistical_profiles row on a v1 column, and
+        # the per-table snapshot head add_source promotes.
+        v1_cols = (
+            session.execute(select(Column).where(Column.table_id == v1_raw_id)).scalars().all()
+        )
+        assert {c.column_name for c in v1_cols} == {"a", "b"}
+        typed_id = str(uuid4())
+        session.add(
+            Table(
+                table_id=typed_id,
+                source_id=source_id,
+                table_name="t1",
+                layer="typed",
+                duckdb_path="warehouse__t1",
+                row_count=2,
+            )
+        )
+        typed_col_id = str(uuid4())
+        session.add(
+            Column(
+                table_id=typed_id,
+                column_id=typed_col_id,
+                column_name="a",
+                column_position=0,
+                raw_type="VARCHAR",
+                resolved_type="VARCHAR",
+            )
+        )
+        session.flush()
+        session.add(
+            StatisticalProfile(
+                column_id=typed_col_id,
+                run_id="run-v1",
+                total_count=2,
+                null_count=0,
+                profile_data={},
+            )
+        )
+        session.add(
+            MetadataSnapshotHead(
+                target=f"table:{v1_raw_id}", stage=GENERATION_STAGE, run_id="run-v1"
+            )
+        )
+        session.add(
+            MetadataSnapshotHead(
+                target=f"table:{typed_id}", stage=GENERATION_STAGE, run_id="run-v1"
+            )
+        )
+        session.flush()
+        session.expire_all()
+
+        # --- v2 re-import: re-pointed recipe, columns b, c ---
+        source = session.get(Source, source_id)
+        assert source is not None
+        # The cockpit's re-select re-pointed the row's recipe; witness still hash-A.
+        source.connection_config = {
+            "tables": [{"name": "t1", "sql": "SELECT b, c FROM x"}],
+            "recipe_hash": "hash-B",
+            "imported_recipe_hash": "hash-A",
+        }
+        session.flush()
+        assert phase.should_skip(ctx) is None  # mismatch → replace, never skip
+
+        v2 = BackendExtractionResult(
+            tables=[
+                ExtractedTable(
+                    name="t1",
+                    duckdb_table="warehouse__t1",
+                    row_count=3,
+                    columns=[("b", "VARCHAR"), ("c", "VARCHAR")],
+                )
+            ]
+        )
+        cc_v2 = {
+            "tables": [{"name": "t1", "sql": "SELECT b, c FROM x"}],
+            "recipe_hash": "hash-B",
+        }
+        with (
+            patch("dataraum.core.credentials.CredentialChain", return_value=chain),
+            patch("dataraum.sources.backends.extract_backend", return_value=Result.ok(v2)),
+        ):
+            r2 = phase._load_database_source(ctx, source, "warehouse", cc_v2, "mssql")
+        assert r2.status == PhaseStatus.COMPLETED, r2.error
+        v2_raw_id = r2.outputs["raw_tables"][0]
+
+        session.flush()
+        session.expire_all()
+
+        # The old raw + typed Table rows are gone; only the v2 raw table remains.
+        remaining = (
+            session.execute(select(Table).where(Table.source_id == source_id)).scalars().all()
+        )
+        assert [t.table_id for t in remaining] == [v2_raw_id]
+        assert v1_raw_id != v2_raw_id
+
+        # The v1 columns are gone; the v2 raw table has the new shape (b, c).
+        assert session.get(Column, typed_col_id) is None
+        v2_cols = (
+            session.execute(select(Column).where(Column.table_id == v2_raw_id)).scalars().all()
+        )
+        assert {c.column_name for c in v2_cols} == {"b", "c"}
+
+        # No orphaned metadata children, no dangling snapshot heads.
+        assert (
+            session.execute(
+                select(StatisticalProfile).where(StatisticalProfile.column_id == typed_col_id)
+            ).scalar_one_or_none()
+            is None
+        )
+        heads = session.execute(select(MetadataSnapshotHead)).scalars().all()
+        stale = {f"table:{v1_raw_id}", f"table:{typed_id}"}
+        assert not ({h.target for h in heads} & stale)
+
+        # The witness is re-stamped to the v2 recipe.
+        source = session.get(Source, source_id)
+        assert source is not None
+        assert source.connection_config is not None
+        assert source.connection_config["imported_recipe_hash"] == "hash-B"
+        assert phase.should_skip(ctx) is not None  # now matches → clean skip
 
     def test_db_recipe_import_requires_recipe_hash(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

@@ -4,6 +4,27 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: DAT-596 — in-place re-import-with-replace for db_recipe sources
+
+Re-importing a `db_recipe` source under the SAME user-chosen name with a CHANGED recipe
+(re-pointed SQL) no longer **fails loud**. The import phase
+(`pipeline/phases/import_phase.py::_load_database_source`) now tears the source's existing
+tables down across all layers (DuckDB tables, `Table`/`Column` rows, every run-versioned
+metadata child, the per-table `metadata_snapshot_head` rows) and rematerializes the new
+recipe in place, re-stamping `imported_recipe_hash`. New helper:
+`pipeline/phases/_source_teardown.py::teardown_source_tables`.
+
+### dataraum-eval
+- **Lifecycle change, NOT a detector / response-shape change** — no DB schema change, no
+  detector retuning expected; calibration recall should be unaffected. Flagged so eval is
+  aware re-import is no longer an error.
+- **Behavior delta to any harness that asserted the old guard:** the message
+  `"…re-import is not yet supported. Re-select … under a NEW source name…"` is GONE. A
+  re-pointed db_recipe import now SUCCEEDS (replaces the old tables) instead of returning a
+  FAILED `PhaseResult`. Scope is db_recipe ONLY (files are content-keyed → a new source on
+  change, never this path). Same-recipe retry still skips via `should_skip` (unchanged).
+- **Status**: pending
+
 ## 2026-06-22: DAT-524 — temporal value-analysis cut (seasonality/trend/change-points/stability removed)
 
 The degenerate value-analysis half of the temporal phase is gone (it ran on a constant

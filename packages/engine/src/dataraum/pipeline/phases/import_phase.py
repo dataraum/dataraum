@@ -31,11 +31,13 @@ Source shapes — both written by the cockpit ``select`` tool, the only producer
   success this phase copies the hash to ``imported_recipe_hash`` — the
   materialization witness ``select`` preserves across re-selects.
   ``should_skip`` skips only while the two match (idempotent re-select / teach
-  re-run); a changed recipe falls through to a loud failure instead of
-  silently serving the stale raw tables. Real re-import-with-replace is the
-  deferred GC feature, not this phase's job. The engine never recomputes the
-  hash — both values are opaque tokens minted by one writer (``select``), so
-  no cross-language canonicalization contract exists.
+  re-run); a changed recipe falls through to an in-place
+  re-import-with-replace (DAT-596) — the source's existing tables across every
+  layer (DuckDB tables, ``Table``/``Column`` rows, all run-versioned metadata
+  children, the per-table snapshot heads) are torn down, then the new recipe is
+  rematerialized — instead of silently serving the stale raw tables. The engine
+  never recomputes the hash — both values are opaque tokens minted by one writer
+  (``select``), so no cross-language canonicalization contract exists.
 
 Per DAT-389 the source path is an ``s3://<lake-bucket>/<key>`` URI handed
 verbatim to DuckDB's ``read_*_auto`` over httpfs — never to ``pathlib``. Because
@@ -107,8 +109,8 @@ class ImportPhase(BasePhase):
         so its raw tables only justify a skip while the current ``recipe_hash``
         equals the ``imported_recipe_hash`` witness stamped at import. On a
         mismatch (or a missing hash) this returns ``None`` and ``_run``'s db
-        path fails loud before touching the backend — never a silent skip over
-        stale raw tables, never a silent re-materialization either.
+        path tears down the old tables and re-imports the re-pointed recipe in
+        place (DAT-596) — never a silent skip over stale raw tables.
         """
         source_id = ctx.config.get("source_id")
         stmt = select(Table).where(Table.source_id == source_id, Table.layer == "raw")
@@ -122,7 +124,7 @@ class ImportPhase(BasePhase):
             stored = config.get("recipe_hash")
             imported = config.get("imported_recipe_hash")
             if not (stored and imported and stored == imported):
-                return None  # → _run fails loud (recipe changed / unhashed import)
+                return None  # → _run tears down + re-imports (recipe changed / unhashed, DAT-596)
             return (
                 f"Source already has {len(existing_tables)} raw tables "
                 "(recipe unchanged since import)"
@@ -345,14 +347,17 @@ class ImportPhase(BasePhase):
     ) -> PhaseResult:
         """Materialize a recipe-driven database source.
 
-        Guards the name-keyed staleness hole first (DAT-430): a db source that
-        already has raw tables only gets here when ``should_skip`` found the
-        current ``recipe_hash`` differing from the ``imported_recipe_hash``
-        witness (or either missing) — re-extracting would orphan the old raw
-        tables and clobber overlapping names, so fail loud instead; re-import
-        with replace is the deferred GC feature. A fresh import requires the
-        ``select``-stamped ``recipe_hash`` and copies it to
-        ``imported_recipe_hash`` on success, completing the witness pair.
+        Re-import-with-replace (DAT-596): a db source that already has raw tables
+        only reaches here when ``should_skip`` found the current ``recipe_hash``
+        differing from the ``imported_recipe_hash`` witness (or either missing) —
+        i.e. the recipe was re-pointed under the SAME source name. Rather than
+        fail loud (the old deferred-GC stance), tear the source's existing tables
+        down across ALL layers (raw/typed/quarantine/enriched) — DuckDB tables,
+        ``Table``/``Column`` rows, every run-versioned metadata child, and the
+        per-table snapshot heads — then rematerialize the new recipe in place.
+        Name-keyed teardown is unambiguous: table names are unique per workspace.
+        A fresh import requires the ``select``-stamped ``recipe_hash`` and copies
+        it to ``imported_recipe_hash`` on success, completing the witness pair.
 
         Then resolves credentials via ``CredentialChain`` keyed by source name
         (``DATARAUM_{NAME}_URL``) and delegates to ``extract_backend`` to
@@ -363,24 +368,19 @@ class ImportPhase(BasePhase):
         from uuid import uuid4
 
         from dataraum.core.credentials import CredentialChain
+        from dataraum.pipeline.phases._source_teardown import teardown_source_tables
         from dataraum.sources.backends import extract_backend
         from dataraum.sources.db_recipe import RecipeTable
 
-        existing = (
-            ctx.session.execute(
-                select(Table).where(Table.source_id == source.source_id, Table.layer == "raw")
-            )
-            .scalars()
-            .all()
-        )
-        if existing:
-            return PhaseResult.failed(
-                f"Recipe for database source '{source_name}' changed since its raw "
-                f"tables were imported (or that import predates recipe hashing) — "
-                "re-import is not yet supported. Re-select the new pick under a NEW "
-                "source name to import it fresh; re-import in place lands with the "
-                "deferred GC work."
-            )
+        # The recipe was re-pointed under the same source name (``should_skip``
+        # declined on a hash mismatch / missing witness, DAT-430). Replace in
+        # place: drop the old tables + every metadata child before extracting the
+        # new recipe, so no orphaned rows or dangling snapshot heads survive and
+        # the re-extract can't collide with the prior run's overlapping names.
+        # The phase runner rolls the session back on a FAILED result (DAT-502),
+        # so a mid-replace failure leaves the prior state intact. (Files never
+        # reach this branch — content-keyed sources mint a new id on change.)
+        teardown_source_tables(ctx, source.source_id)
 
         recipe_hash = connection_config.get("recipe_hash")
         if not isinstance(recipe_hash, str) or not recipe_hash:
@@ -482,17 +482,18 @@ class ImportPhase(BasePhase):
 
         # Stamp the materialization witness (DAT-430): record WHICH recipe these
         # raw tables came from, so a later run can tell an idempotent re-select
-        # (hashes match → skip) from a re-pointed recipe (mismatch → loud
-        # failure). Merge into the ROW's current config, not the phase-start
-        # ``connection_config`` snapshot from ctx.config: if a re-select commits
-        # mid-import and the engine commits last, stamping the snapshot would
-        # silently REVERT the user's new recipe — merging the row value keeps it
-        # (the witness is still THIS import's ``recipe_hash``, so the next run's
-        # compare fails loud against the re-pointed recipe). The other wedge arm
-        # — select commits AFTER this stamp — replaces the JSON without the
-        # witness (select read the row pre-stamp), so the next run sees no
-        # witness and also fails loud; acceptable (loud-fail direction), full
-        # select/import serialization is deferred. A fresh dict, not in-place
+        # (hashes match → skip) from a re-pointed recipe (mismatch → teardown +
+        # re-import in place, DAT-596). Merge into the ROW's current config, not
+        # the phase-start ``connection_config`` snapshot from ctx.config: if a
+        # re-select commits mid-import and the engine commits last, stamping the
+        # snapshot would silently REVERT the user's new recipe — merging the row
+        # value keeps it (the witness is still THIS import's ``recipe_hash``, so
+        # the next run's compare mismatches the re-pointed recipe → replace). The
+        # other wedge arm — select commits AFTER this stamp — replaces the JSON
+        # without the witness (select read the row pre-stamp), so the next run
+        # sees no witness and also replaces; correct now (it re-imports the
+        # current recipe), full select/import serialization is still deferred.
+        # A fresh dict, not in-place
         # mutation — SQLAlchemy's plain JSON column only change-tracks on
         # reassignment. ``select`` carries this key forward when it re-points
         # the config (its upsert replaces the JSON).

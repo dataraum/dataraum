@@ -262,6 +262,10 @@ export interface WatchableRun {
 	workflowId: string;
 	runId: string;
 	stage: RunStage;
+	/** The run's origin (DAT-597): the completion-watcher narrates a `replay`
+	 * (teach→re-ground, the verification message) but NOT an `onboarding` import —
+	 * import progress + outcome live in the staging hub widget, not a chat echo. */
+	kind: RunKind;
 }
 
 /**
@@ -285,6 +289,7 @@ export async function listWatchableRuns(
 			workflowId: runs.workflowId,
 			runId: runs.runId,
 			stage: runs.stage,
+			kind: runs.kind,
 		})
 		.from(runs)
 		.where(
@@ -296,7 +301,11 @@ export async function listWatchableRuns(
 		)
 		.orderBy(desc(runs.startedAt))
 		.limit(limit);
-	return rows.map((r) => ({ ...r, stage: r.stage as RunStage }));
+	return rows.map((r) => ({
+		...r,
+		stage: r.stage as RunStage,
+		kind: r.kind as RunKind,
+	}));
 }
 
 /**

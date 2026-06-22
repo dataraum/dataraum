@@ -62,8 +62,11 @@ function requireTemporalConfig(): void {
  * Signal the workspace's JourneyWorkflow to run an add_source stage (DAT-551).
  * Returns the deterministic workflow + minted session id immediately; the journey
  * records the run (authoritative, before start) and starts + awaits the engine
- * child, narrating completion into the originating chat. The caller does NOT poll a
- * run id — progress resolves the latest execution by workflow id.
+ * child, narrating completion into the originating chat. Returns the workflowId as
+ * a PLACEHOLDER run_id — the real Temporal execution id is minted by the journey
+ * post-start and rewritten via `attachRunId` (DAT-595). The widget seed + reconcile
+ * use the placeholder (latest-execution fallback in getWorkflowProgress); the
+ * completion-watcher waits for the real id, then PINS it.
  *
  * No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
  * by `run_id`), and the `vertical` is the workspace property from the registry.
@@ -96,9 +99,11 @@ export async function triggerAddSource(
 	});
 
 	return {
-		// The deterministic workflow id; run_id mirrors it (the journey owns the real
-		// execution id — progress resolves the latest run by workflow_id, DAT-530).
 		workflow_id: workflowId,
+		// PLACEHOLDER run_id (DAT-595): the journey mints the real Temporal execution
+		// id post-start and rewrites it via `attachRunId`. The widget seed + reconcile
+		// take getWorkflowProgress's latest-execution fallback until then; the
+		// completion-watcher SKIPS the placeholder and pins the real id once attached.
 		run_id: workflowId,
 		sources: input.sources,
 	};

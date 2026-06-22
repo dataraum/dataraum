@@ -69,8 +69,9 @@ vi.mock("#/temporal/progress", () => ({
 	terminalRunStatus: () => "completed",
 }));
 
-import type { WatchableRun } from "#/db/cockpit/runs";
+import { listWatchableRuns, type WatchableRun } from "#/db/cockpit/runs";
 import { streamAgentTurnToBus } from "#/lib/agent-turn";
+import { getWorkflowProgress } from "#/temporal/progress";
 import { pollOnce } from "./completion-watcher";
 
 beforeEach(() => {
@@ -111,5 +112,26 @@ describe("run-routing (DAT-528): a run narrates only into its own conversation",
 		]);
 		expect(h.narrated).toEqual(["A"]);
 		expect(trackedB.size).toBe(0);
+	});
+});
+
+describe("placeholder runs are skipped until attachRunId finalizes the real id (DAT-595)", () => {
+	it("does NOT track, poll, or narrate a run whose runId still equals its workflowId", async () => {
+		// A just-recorded run carries the workflowId PLACEHOLDER until attachRunId
+		// rewrites it post-start. getWorkflowProgress can only PIN a real id, so the
+		// watcher must skip the placeholder — otherwise a reused workflow id would
+		// resolve a PRIOR run's terminal state and mark this one done off it (DAT-595).
+		vi.mocked(listWatchableRuns).mockResolvedValueOnce([
+			{
+				workflowId: "addsource-ws",
+				runId: "addsource-ws",
+				stage: "add_source",
+			},
+		]);
+		const tracked = new Map<string, WatchableRun>();
+		await pollOnce("A", tracked, new AbortController().signal);
+		expect(tracked.size).toBe(0);
+		expect(getWorkflowProgress).not.toHaveBeenCalled();
+		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
 	});
 });

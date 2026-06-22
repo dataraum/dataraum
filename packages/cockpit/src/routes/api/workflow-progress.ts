@@ -41,6 +41,12 @@ export const Route = createFileRoute("/api/workflow-progress")({
 				}
 
 				try {
+					// The widget seed posts the PLACEHOLDER run_id (=== workflow_id), so
+					// getWorkflowProgress takes the latest-execution fallback here; the
+					// watcher is the path that pins a real id (DAT-595). markRunStatus below
+					// targets the (workflowId, run_id) row — for the placeholder that's the
+					// pre-attach row, harmless (the watcher's claimRunNarration is the
+					// once-only narration guard regardless).
 					const result = await getWorkflowProgress(parsed.data);
 					// The poll is the observation point for run completion — mark the
 					// recorded session_run terminal so the reload-recovery substrate

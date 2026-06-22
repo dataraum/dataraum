@@ -37,6 +37,9 @@ export async function reconcileActiveRuns(
 
 async function reconcileOne(run: ActiveRun): Promise<void> {
 	try {
+		// A placeholder runId (=== workflowId, pre-attachRunId) takes
+		// getWorkflowProgress's latest-execution fallback — correct for a reconcile
+		// that fires during the attach window; a real id pins the exact run (DAT-595).
 		const progress = await getWorkflowProgress({
 			workflow_id: run.workflowId,
 			run_id: run.runId,

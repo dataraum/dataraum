@@ -3,10 +3,8 @@
 Analyzes temporal columns for:
 - Granularity detection (daily, weekly, monthly, etc.)
 - Completeness and gap analysis
-- Seasonality patterns
-- Trend detection
-- Change point detection
-- Staleness assessment
+- Update frequency + staleness assessment
+- Fiscal calendar alignment
 """
 
 from __future__ import annotations

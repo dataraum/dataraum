@@ -188,6 +188,9 @@ function entityRow(overrides: Partial<TableEntityRow> = {}): TableEntityRow {
 				note: "When the order was placed.",
 			},
 		],
+		identityColumns: [
+			{ column: "order_id", note: "Recurring order identity (would-be FK)." },
+		],
 		description: "One row per order line item.",
 		...overrides,
 	};
@@ -207,6 +210,9 @@ describe("projectTableEntity (DAT-476)", () => {
 					note: "When the order was placed.",
 				},
 			],
+			identity_columns: [
+				{ column: "order_id", note: "Recurring order identity (would-be FK)." },
+			],
 			description: "One row per order line item.",
 		});
 	});
@@ -217,6 +223,16 @@ describe("projectTableEntity (DAT-476)", () => {
 		).toEqual([]);
 		expect(
 			projectTableEntity(entityRow({ timeColumns: "nope" })).time_columns,
+		).toEqual([]);
+	});
+
+	it("tolerates a null/malformed identity_columns blob (degrades to [])", () => {
+		expect(
+			projectTableEntity(entityRow({ identityColumns: null })).identity_columns,
+		).toEqual([]);
+		expect(
+			projectTableEntity(entityRow({ identityColumns: "nope" }))
+				.identity_columns,
 		).toEqual([]);
 	});
 
@@ -251,11 +267,15 @@ describe("projectTableEntity (DAT-476)", () => {
 				timeColumns: [
 					{ column: `src_${D}__order_date`, aspect: "order", note: "Placed." },
 				],
+				identityColumns: [
+					{ column: `src_${D}__order_id`, note: "Recurring identity." },
+				],
 				description: `One row per line in src_${D}__orders.`,
 			}),
 		);
 		expect(out.grain).toEqual(["order_id", "line_no"]);
 		expect(out.time_columns[0].column).toBe("order_date");
+		expect(out.identity_columns[0].column).toBe("order_id");
 		// The 40-hex digest is gone from every projected field.
 		expect(JSON.stringify(out)).not.toMatch(/src_[0-9a-f]{40}/);
 	});

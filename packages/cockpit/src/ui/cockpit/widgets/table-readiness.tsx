@@ -111,6 +111,19 @@ function TableEntityHeader({ entity }: { entity: TableEntity }) {
 							.join(", ")}
 					</Text>
 				)}
+				{entity.identity_columns.length > 0 && (
+					<Text
+						span
+						size="xs"
+						c="dimmed"
+						title={entity.identity_columns
+							.map((ic) => `${ic.column}: ${ic.note}`)
+							.join("\n")}
+					>
+						Identity:{" "}
+						{entity.identity_columns.map((ic) => ic.column).join(", ")}
+					</Text>
+				)}
 			</Group>
 			{entity.description && (
 				<Text size="sm" c="dimmed">

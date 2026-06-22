@@ -46,11 +46,14 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 20 canvas-producing tools clickable", () => {
+	it("marks the 21 canvas-producing tools clickable", () => {
 		// DAT-597 removed the acquisition tools (connect, frame, select, upload,
-		// open_probe, probe) — acquisition is now the staging hub, not agent tools.
-		expect(CANVAS_TOOLS.size).toBe(20);
+		// probe) — acquisition is now the staging hub, not agent tools. ONE opener is
+		// kept: open_staging_hub re-mounts that hub on the canvas (DAT-597 follow-up).
+		expect(CANVAS_TOOLS.size).toBe(21);
 		for (const name of [
+			// The retained hub opener — projects the `probe` (staging-hub) canvas.
+			"open_staging_hub",
 			"list_sources",
 			"list_tables",
 			"look_table",

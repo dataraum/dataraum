@@ -26,7 +26,8 @@ in FK-safe order:
 4. the per-table ``metadata_snapshot_head`` rows (``table:{id}`` /
    ``GENERATION_STAGE``) so no head dangles at a deleted target,
 5. the ``tables`` rows (DB-cascades their ``columns``),
-6. the underlying DuckDB tables (``DROP TABLE IF EXISTS lake.<layer>.<name>``).
+6. the underlying DuckDB objects (``DROP TABLE`` for raw/typed/quarantine,
+   ``DROP VIEW`` for the ``enriched`` layer — it's a view, not a table).
 
 It runs inside the import activity's session (the phase runner rolls back on a
 FAILED result, DAT-502), so a mid-teardown failure leaves the prior state intact.
@@ -100,15 +101,19 @@ def teardown_source_tables(ctx: PhaseContext, source_id: str) -> int:
     ctx.session.execute(delete(Table).where(Table.table_id.in_(table_ids)))
     ctx.session.flush()
 
-    # 5. The underlying DuckDB tables, one per (layer, bare-name). Raw/typed/
-    #    quarantine share the bare ``duckdb_path``; the schema discriminates.
+    # 5. The underlying DuckDB objects, one per (layer, bare-name). Raw/typed/
+    #    quarantine share the bare ``duckdb_path``; the schema discriminates. The
+    #    ``enriched`` layer is a DuckDB VIEW (enriched_views_phase builds it with
+    #    CREATE OR REPLACE VIEW), so DROP TABLE would silently no-op and leave the
+    #    view dangling over the deleted typed tables — drop it as a VIEW.
     for table in tables:
         bare = table.duckdb_path
         if not bare:
             continue
         schema = schema_for_layer(table.layer)
         fqn = f'{LAKE_CATALOG_ALIAS}.{schema}."{bare}"'
-        ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
+        kind = "VIEW" if table.layer == "enriched" else "TABLE"
+        ctx.duckdb_conn.execute(f"DROP {kind} IF EXISTS {fqn}")
 
     return len(tables)
 

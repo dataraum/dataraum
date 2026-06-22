@@ -109,8 +109,8 @@ class ImportPhase(BasePhase):
         so its raw tables only justify a skip while the current ``recipe_hash``
         equals the ``imported_recipe_hash`` witness stamped at import. On a
         mismatch (or a missing hash) this returns ``None`` and ``_run``'s db
-        path fails loud before touching the backend — never a silent skip over
-        stale raw tables, never a silent re-materialization either.
+        path tears down the old tables and re-imports the re-pointed recipe in
+        place (DAT-596) — never a silent skip over stale raw tables.
         """
         source_id = ctx.config.get("source_id")
         stmt = select(Table).where(Table.source_id == source_id, Table.layer == "raw")
@@ -124,7 +124,7 @@ class ImportPhase(BasePhase):
             stored = config.get("recipe_hash")
             imported = config.get("imported_recipe_hash")
             if not (stored and imported and stored == imported):
-                return None  # → _run fails loud (recipe changed / unhashed import)
+                return None  # → _run tears down + re-imports (recipe changed / unhashed, DAT-596)
             return (
                 f"Source already has {len(existing_tables)} raw tables "
                 "(recipe unchanged since import)"
@@ -482,17 +482,18 @@ class ImportPhase(BasePhase):
 
         # Stamp the materialization witness (DAT-430): record WHICH recipe these
         # raw tables came from, so a later run can tell an idempotent re-select
-        # (hashes match → skip) from a re-pointed recipe (mismatch → loud
-        # failure). Merge into the ROW's current config, not the phase-start
-        # ``connection_config`` snapshot from ctx.config: if a re-select commits
-        # mid-import and the engine commits last, stamping the snapshot would
-        # silently REVERT the user's new recipe — merging the row value keeps it
-        # (the witness is still THIS import's ``recipe_hash``, so the next run's
-        # compare fails loud against the re-pointed recipe). The other wedge arm
-        # — select commits AFTER this stamp — replaces the JSON without the
-        # witness (select read the row pre-stamp), so the next run sees no
-        # witness and also fails loud; acceptable (loud-fail direction), full
-        # select/import serialization is deferred. A fresh dict, not in-place
+        # (hashes match → skip) from a re-pointed recipe (mismatch → teardown +
+        # re-import in place, DAT-596). Merge into the ROW's current config, not
+        # the phase-start ``connection_config`` snapshot from ctx.config: if a
+        # re-select commits mid-import and the engine commits last, stamping the
+        # snapshot would silently REVERT the user's new recipe — merging the row
+        # value keeps it (the witness is still THIS import's ``recipe_hash``, so
+        # the next run's compare mismatches the re-pointed recipe → replace). The
+        # other wedge arm — select commits AFTER this stamp — replaces the JSON
+        # without the witness (select read the row pre-stamp), so the next run
+        # sees no witness and also replaces; correct now (it re-imports the
+        # current recipe), full select/import serialization is still deferred.
+        # A fresh dict, not in-place
         # mutation — SQLAlchemy's plain JSON column only change-tracks on
         # reassignment. ``select`` carries this key forward when it re-points
         # the config (its upsert replaces the JSON).

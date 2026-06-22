@@ -53,8 +53,6 @@ describe("tool registry (DAT-353)", () => {
 			new Set([
 				"list_sources",
 				"list_tables",
-				"list_verticals",
-				"use_vertical",
 				"look_table",
 				"look_profile",
 				"why_column",
@@ -63,10 +61,6 @@ describe("tool registry (DAT-353)", () => {
 				"why_relationship",
 				"run_sql",
 				"answer",
-				"probe",
-				"connect",
-				"frame",
-				"select",
 				"teach",
 				"teach_validation",
 				"teach_cycle",
@@ -81,8 +75,6 @@ describe("tool registry (DAT-353)", () => {
 				"why_metric",
 				"look_drivers",
 				"replay",
-				"upload",
-				"open_probe",
 			]),
 		);
 	});
@@ -123,19 +115,31 @@ describe("tool registry (DAT-353)", () => {
 		expect(analyse.has("begin_session")).toBe(false);
 
 		// answer is the Analyse surface; raw run_sql is Stage-only (answer replaces
-		// it for analysis — run_sql overflows context). probe is Connect-only.
+		// it for analysis — run_sql overflows context).
 		expect(analyse.has("answer")).toBe(true);
 		expect(stage.has("answer")).toBe(false);
 		expect(connect.has("answer")).toBe(false);
 		expect(stage.has("run_sql")).toBe(true);
 		expect(analyse.has("run_sql")).toBe(false);
-		expect(connect.has("probe")).toBe(true);
-		expect(analyse.has("probe")).toBe(false);
 
-		// select/frame/use_vertical are Connect's acquisition tools.
-		for (const t of ["select", "frame", "use_vertical", "upload"]) {
+		// Connect is the TEACH surface (DAT-597): teach + look_table/why_column to
+		// inspect + replay to re-ground + list_sources/list_tables for context.
+		// Acquisition (assemble/frame/import) is the staging hub widget, so the chat
+		// has NO acquisition tools.
+		for (const t of ["teach", "look_table", "why_column", "replay"]) {
 			expect(connect.has(t)).toBe(true);
-			expect(stage.has(t)).toBe(false);
+		}
+		for (const t of [
+			"select",
+			"frame",
+			"use_vertical",
+			"upload",
+			"open_probe",
+			"probe",
+			"connect",
+			"list_verticals",
+		]) {
+			expect(connect.has(t)).toBe(false);
 		}
 
 		// The read+explain set overlaps Stage and Analyse (overlap is by design).

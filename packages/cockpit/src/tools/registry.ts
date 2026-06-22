@@ -16,11 +16,8 @@
 
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import { beginSessionTool } from "./begin-session";
-import { connectTool } from "./connect";
-import { frameTool } from "./frame";
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
-import { listVerticalsTool } from "./list-verticals";
 import { lookCycleTool } from "./look-cycle";
 import { lookDriversTool } from "./look-drivers";
 import { lookMetricTool } from "./look-metric";
@@ -28,19 +25,14 @@ import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
-import { openProbeTool } from "./open-probe";
 import { operatingModelTool } from "./operating-model";
-import { probeTool } from "./probe";
 import { answerTool } from "./query";
 import { replayTool } from "./replay";
 import { runSqlTool } from "./run_sql";
-import { selectTool } from "./select";
-import { teachTool } from "./teach";
+import { connectTeachTool, teachTool } from "./teach";
 import { teachCycleTool } from "./teach-cycle";
 import { teachMetricTool } from "./teach-metric";
 import { teachValidationTool } from "./teach-validation";
-import { uploadTool } from "./upload";
-import { useVerticalTool } from "./use-vertical";
 import { whyColumnTool } from "./why-column";
 import { whyCycleTool } from "./why-cycle";
 import { whyMetricTool } from "./why-metric";
@@ -67,26 +59,27 @@ const inspectTools = [
 ] as const;
 
 /**
- * The fenced toolstack per chat kind (DAT-532). `connect` acquires data (peek /
- * vertical / select / upload); `stage` teaches + runs the session over typed
- * tables (the inspect set + teach* + begin_session/operating_model/replay + a raw
- * run_sql peek); `analyse` answers questions — `answer` is the analytical surface
- * (grounded SQL + validated snippets), NOT raw run_sql — plus the inspect set to
- * explain a result or a quality band. `satisfies` enforces all three kinds are
- * present without widening the precise tuple types chat() needs.
+ * The fenced toolstack per chat kind (DAT-532, DAT-597). `connect` is the TEACH
+ * surface: acquisition (assemble / frame / import / progress) is the staging hub
+ * widget — Connect's default canvas — so the chat has no acquisition tools; its
+ * job is to teach the add_source grounding gaps the autonomous loop parks
+ * (scoped `teach` + look_table/why_column to inspect + `replay` to re-ground),
+ * with list_sources/list_tables for read context. `stage` teaches topology + runs
+ * the session over typed tables (the inspect set + teach* + begin_session/
+ * operating_model/replay + a raw run_sql peek); `analyse` answers questions —
+ * `answer` is the analytical surface (grounded SQL + validated snippets), NOT raw
+ * run_sql — plus the inspect set to explain a result or a quality band.
+ * `satisfies` enforces all three kinds are present without widening the precise
+ * tuple types chat() needs.
  */
 export const toolsByKind = {
 	connect: [
 		listSourcesTool,
 		listTablesTool,
-		listVerticalsTool,
-		connectTool,
-		probeTool,
-		openProbeTool,
-		useVerticalTool,
-		frameTool,
-		selectTool,
-		uploadTool,
+		connectTeachTool,
+		lookTableTool,
+		whyColumnTool,
+		replayTool,
 	],
 	stage: [
 		listTablesTool,

@@ -21,6 +21,7 @@ import { metadataDb } from "../db/metadata/client";
 import { configOverlayWrite } from "../db/metadata/write-surface";
 import {
 	AGENT_TEACH_TYPES,
+	CONNECT_TEACH_TYPES,
 	type TeachInput,
 	TeachPayloadSchema,
 	type TeachType,
@@ -86,37 +87,57 @@ export async function undoTeach(overlayId: string): Promise<void> {
 }
 
 /**
- * The `teach` tool for the agent loop. An acting tool: a teach mutates the
- * workspace, so it runs on the user's explicit instruction — there is no
- * approval gate. Coarse input schema (type + payload object); the per-type deep
- * validation runs inside `teach()` via `validateTeach`.
+ * Build a `teach` tool advertising a SCOPED set of teach types (DAT-597). Two
+ * call sites: STAGE (AGENT_TEACH_TYPES — topology + grounding) and CONNECT
+ * (CONNECT_TEACH_TYPES — the add_source grounding layer only). Same name + server
+ * handler; the `type` enum is what fences which families each chat offers (the
+ * payload union + `validateTeach` enforce per-type shape regardless). An acting
+ * tool: a teach mutates the workspace, so it runs on the user's explicit
+ * instruction — no approval gate. Success OR a structured validation error:
+ * `validateTeach` rejects a malformed payload by throwing `TeachValidationError`,
+ * returned as data so the agent can read it and retry (DB errors still throw).
  */
-export const teachTool = toolDefinition({
-	name: "teach",
-	description:
-		"Record a grounding-layer correction about the data — a typing pattern, " +
+function makeTeachTool(types: readonly TeachType[], description: string) {
+	return toolDefinition({
+		name: "teach",
+		description,
+		inputSchema: z.object({
+			type: z
+				.enum(types as readonly [TeachType, ...TeachType[]])
+				.describe(
+					"The kind of grounding-layer correction to record; it determines which payload fields are required (see payload).",
+				),
+			payload: TeachPayloadSchema,
+		}),
+		outputSchema: z.union([
+			z.object({ overlay_id: z.string(), type: z.string() }),
+			z.object({ error: z.string() }),
+		]),
+	}).server(runTeachTool);
+}
+
+/** STAGE's teach: topology (relationship/hierarchy) + the grounding families. */
+export const teachTool = makeTeachTool(
+	AGENT_TEACH_TYPES,
+	"Record a grounding-layer correction about the data — a typing pattern, " +
 		"null token, column unit, ontology concept/property, or a column " +
 		"relationship. Writes a config_overlay row; follow with `replay` to apply " +
 		"it to the source. For operating-model declarations use the dedicated tools " +
 		"instead: teach_validation, teach_cycle, teach_metric.",
-	inputSchema: z.object({
-		type: z
-			.enum(AGENT_TEACH_TYPES as readonly [TeachType, ...TeachType[]])
-			.describe(
-				"The kind of grounding-layer correction to record; it determines which payload fields are required (see payload).",
-			),
-		payload: TeachPayloadSchema,
-	}),
-	// Success OR a structured validation error: the per-type `validateTeach`
-	// rejects a malformed payload by throwing `TeachValidationError`. Surfacing
-	// that as a raw thrown Error kills the agent turn; returning it as data lets
-	// the agent read the message and retry. Non-validation errors (DB, etc.)
-	// still throw — those are not the agent's to fix.
-	outputSchema: z.union([
-		z.object({ overlay_id: z.string(), type: z.string() }),
-		z.object({ error: z.string() }),
-	]),
-}).server(runTeachTool);
+);
+
+/** CONNECT's teach (DAT-597): the add_source grounding layer ONLY — typing
+ * pattern, null token, column unit, the ontology concept/property a column means,
+ * or rebinding a column to a different concept. Topology (relationship/hierarchy)
+ * and the operating model are taught in the Stage chat — no overlap. */
+export const connectTeachTool = makeTeachTool(
+	CONNECT_TEACH_TYPES,
+	"Record an add_source grounding correction the import got wrong — a typing " +
+		"pattern, null token, column unit, or the ontology concept/property a " +
+		"column means (or rebind a column to a different concept). Writes a " +
+		"config_overlay row; follow with `replay` to re-ground the source. " +
+		"Relationships, hierarchies, and validations are taught in the Stage chat.",
+);
 
 /**
  * The `teach` tool's server handler, extracted so its error surface is

@@ -362,8 +362,6 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
  * guardrail for the DAT-526 P1 registry split. Disjoint from `CANVAS_TOOLS`.
  */
 export const CHIP_ONLY: ReadonlySet<string> = new Set([
-	"list_verticals", // catalogue → chip summary, no widget
-	"use_vertical", // adopt = control-plane write, no renderable surface (DAT-523)
 	"look_drivers", // driver rankings → chip summary; a dedicated widget is a fast-follow (DAT-546)
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
 	"teach_validation",

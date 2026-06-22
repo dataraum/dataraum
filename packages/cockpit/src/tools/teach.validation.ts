@@ -343,6 +343,21 @@ export const AGENT_TEACH_TYPES = [
 	"hierarchy",
 ] as const satisfies readonly TeachType[];
 
+// What CONNECT advertises (DAT-597): the add_source grounding layer ONLY —
+// AGENT_TEACH_TYPES minus the stage-owned `relationship`/`hierarchy`. Connect
+// teaches what add_source grounds (mechanical type_pattern/null_value/unit + the
+// judgement concept/concept_property/rebind the grounding loop PARKS for a human);
+// Stage owns topology + the operating model. Non-overlapping — one surface per
+// teach family, so a teach is never offered on two chats.
+export const CONNECT_TEACH_TYPES = [
+	"type_pattern",
+	"null_value",
+	"unit",
+	"concept",
+	"concept_property",
+	"rebind",
+] as const satisfies readonly TeachType[];
+
 // The teach types an AGENT may AUTO-APPLY unattended (DAT-551 P3c — the grounding
 // loop). The authoritative, single source of truth for "the agent can fix this
 // without a human", NOT derived from the engine's loss table: by that definition

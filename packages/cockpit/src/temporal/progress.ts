@@ -10,9 +10,11 @@
 // branch); a workflow without the query (none today; forward-compat) degrades to
 // describe()-only.
 //
-// Targets the PRECISE run_id: the workflow id is reused per session under
-// ALLOW_DUPLICATE across replays, so getHandle(id, runId) pins the iteration the
-// TRIGGER returned. NON-mutating (query + describe) → safe to poll on an interval.
+// Targets the PRECISE run when given a real Temporal run id (the workflow id is
+// REUSED across runs — `addsource-<ws>` — so getHandle(id, runId) pins the exact
+// execution); falls back to the LATEST execution only for the pre-attach
+// placeholder (run_id === workflow_id). See getWorkflowProgress for the two-caller
+// rationale (DAT-595). NON-mutating (query + describe) → safe to poll on an interval.
 
 import { Client, Connection } from "@temporalio/client";
 import { inArray } from "drizzle-orm";
@@ -198,12 +200,30 @@ export async function getWorkflowProgress(
 	input: WorkflowProgressInput,
 ): Promise<WorkflowProgress> {
 	const client = await getTemporalClient();
-	// Resolve the LATEST execution of the workflow id (DAT-530): a journey-started
-	// stage's runId isn't known to the caller, and progress always reflects the
-	// current run, so we key on the workflow id and let getHandle pick the latest
-	// execution. `run_id` is still accepted in the input (the poll body sends it)
-	// but no longer pins the iteration.
-	const handle = client.workflow.getHandle(input.workflow_id);
+	// Pin the PRECISE execution when we hold a real Temporal run id; resolve the
+	// LATEST execution only for the pre-attach PLACEHOLDER (DAT-595).
+	//
+	// Run-id semantics (cockpit_db.runs): a run row's `runId` IS Temporal's
+	// execution id (firstExecutionRunId) — but it is recorded as the workflowId
+	// PLACEHOLDER until `attachRunId` rewrites it just after start. So this has two
+	// callers with two different ids, and must treat them differently:
+	//   • the COMPLETION WATCHER passes the real, attached run id → we PIN it
+	//     (getHandle(workflowId, runId)). A workspace's workflow id is REUSED across
+	//     runs (`addsource-<ws>`), so resolving "latest" here let a PRIOR run's
+	//     terminal state be read for the run actually being watched — which marked a
+	//     2nd import done off the 1st's snapshot and stranded it (DAT-595). Pinning
+	//     reads exactly the watched execution.
+	//   • the widget SEED passes the placeholder (`run_id === workflow_id` — the
+	//     trigger returns it before the journey knows the execution id), where the
+	//     precise run isn't knowable, so we take the latest execution. That also
+	//     gives a reload-pinned widget its terminal state; a placeholder PIN would
+	//     404 → PENDING forever on a completed run.
+	// The watcher SKIPS placeholder rows (completion-watcher.ts) so its path ALWAYS
+	// pins — only the seed ever takes the latest-execution fallback.
+	const handle =
+		input.run_id === input.workflow_id
+			? client.workflow.getHandle(input.workflow_id)
+			: client.workflow.getHandle(input.workflow_id, input.run_id);
 
 	// describe() throws WorkflowNotFoundError when the workflow id has no execution
 	// yet — the poll-race the trigger opens (DAT-570). Report PENDING (not a 500) so

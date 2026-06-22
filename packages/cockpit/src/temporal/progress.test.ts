@@ -130,7 +130,7 @@ beforeEach(() => {
 });
 
 describe("getWorkflowProgress (DAT-352)", () => {
-	it("queries get_progress on the latest execution by workflowId and maps the shape (DAT-530)", async () => {
+	it("PINS the precise (workflowId, runId) execution and maps the shape (DAT-595)", async () => {
 		h.snapshot = {
 			phase: "processing_tables",
 			tables_total: 4,
@@ -141,7 +141,9 @@ describe("getWorkflowProgress (DAT-352)", () => {
 			run_id: "run-1",
 		});
 
-		expect(getHandleMock).toHaveBeenCalledWith("addsource-ws-src");
+		// A real run id pins the exact execution — a reused workflow id can't read a
+		// prior run's snapshot for the run being watched (DAT-595).
+		expect(getHandleMock).toHaveBeenCalledWith("addsource-ws-src", "run-1");
 		expect(h.queryName).toBe("get_progress");
 		expect(result).toEqual({
 			phase: "processing_tables",
@@ -152,6 +154,27 @@ describe("getWorkflowProgress (DAT-352)", () => {
 			status: "RUNNING",
 			done: false,
 		});
+	});
+
+	it("falls back to the LATEST execution for the pre-attach placeholder (run_id === workflow_id)", async () => {
+		// The widget seed passes the placeholder (the trigger returns it before the
+		// journey knows the execution id) — there's no precise run to pin, so we
+		// resolve the latest execution (also gives a reload-pinned widget its terminal
+		// state). DAT-595.
+		h.snapshot = {
+			phase: "processing_tables",
+			tables_total: 1,
+			tables_completed: 0,
+		};
+		await getWorkflowProgress({
+			workflow_id: "addsource-ws",
+			run_id: "addsource-ws",
+		});
+		expect(getHandleMock).toHaveBeenCalledWith("addsource-ws");
+		expect(getHandleMock).not.toHaveBeenCalledWith(
+			"addsource-ws",
+			"addsource-ws",
+		);
 	});
 
 	it("resolves per-table ids to names and passes the failure through", async () => {

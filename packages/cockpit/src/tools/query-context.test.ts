@@ -481,4 +481,24 @@ describe("formatEntities (DAT-607)", () => {
 		expect(clamped).toContain("…");
 		expect(clamped).not.toContain(longNote);
 	});
+
+	it("caps the table count and summarizes the overflow in a tail note", () => {
+		const rows: EntityBlockRow[] = Array.from({ length: 30 }, (_, i) => ({
+			// zero-pad so address sort matches numeric order — the first 25 are kept.
+			address: entAddr(`t_${String(i).padStart(2, "0")}`),
+			entity: entity({ grain: [`g_${i}`] }),
+		}));
+		const out = formatEntities(rows);
+		expect(out).toContain("lake.typed.t_00");
+		expect(out).toContain("lake.typed.t_24"); // 25th kept
+		expect(out).not.toContain("lake.typed.t_25"); // 26th dropped by the cap
+		expect(out).toContain("(… 5 more tables omitted.)");
+	});
+
+	it("tells the agent the columns also apply to the enriched view (prefer-enriched reconciliation)", () => {
+		const out = formatEntities([
+			{ address: entAddr("wwi_recent_orders"), entity: entity() },
+		]);
+		expect(out).toContain("When the <schema> block shows an enriched view");
+	});
 });

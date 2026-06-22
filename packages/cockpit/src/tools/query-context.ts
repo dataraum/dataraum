@@ -487,6 +487,9 @@ export interface EntityBlockRow {
 const MAX_IDENTITIES_PER_TABLE = 8;
 /** Clamp an LLM-authored identity note — keeps one stanza to a readable line. */
 const MAX_NOTE_CHARS = 140;
+/** Cap the number of table stanzas — bounds the block on a wide workspace; the
+ * overflow is summarized in a tail note rather than silently dropped. */
+const MAX_ENTITY_TABLES = 25;
 
 function clampNote(note: string): string {
 	const n = note.trim();
@@ -538,14 +541,20 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 	}
 	if (stanzas.length === 0)
 		return "<entities>\n(No table entities detected yet.)\n</entities>";
+	// Bound the block on a wide workspace — keep the first N (already address-sorted)
+	// and summarize the rest rather than bloat the prompt or silently truncate.
+	const overflow = stanzas.length - MAX_ENTITY_TABLES;
+	const kept = overflow > 0 ? stanzas.slice(0, MAX_ENTITY_TABLES) : stanzas;
+	const tail = overflow > 0 ? `\n\n(… ${overflow} more tables omitted.)` : "";
 	return (
 		"<entities>\n" +
 		"What each table represents and its natural keys. Grain is the table's unit " +
 		"(one row per these columns). Identities are recurring real-world keys (would-be " +
 		'foreign keys) — to answer "per <entity>", group by the matching identity ' +
-		"column. Time columns are the event-time axes. These columns are present on the " +
-		"table and on any enriched view built from it.\n\n" +
-		`${stanzas.join("\n\n")}\n` +
+		"column. Time columns are the event-time axes. When the <schema> block shows an " +
+		"enriched view instead of the typed table below, these columns apply to that view " +
+		"too — an enriched view includes every column of the typed table it's built from.\n\n" +
+		`${kept.join("\n\n")}${tail}\n` +
 		"</entities>"
 	);
 }
@@ -553,9 +562,9 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 /**
  * Read the table entities for the active workspace's promoted catalog head and format
  * them as the sub-agent's `<entities>` block. Joined to the typed tables for their
- * `lake.typed.<name>` address. The view is head-resolved (one row per table_id); the
- * `detected_at desc` order makes the first-seen row the deterministic pick for any
- * defensive duplicate (session-grain contract, DAT-474).
+ * `lake.typed.<name>` address. The view is head-resolved to one row per table_id; the
+ * `detected_at desc` order + first-seen-wins dedup is the deterministic tiebreak the
+ * session-grain contract (DAT-474) requires for a multi-row read.
  */
 export async function buildEntitiesBlock(): Promise<string> {
 	const rows = await metadataDb
@@ -581,9 +590,10 @@ export async function buildEntitiesBlock(): Promise<string> {
 	const blockRows: EntityBlockRow[] = [];
 	for (const r of rows) {
 		const tableId = r.tableId ?? "";
-		if (!tableId || seen.has(tableId)) continue;
+		const physicalName = r.physicalName ?? "";
+		if (!tableId || !physicalName || seen.has(tableId)) continue;
 		seen.add(tableId);
-		const address = `${LAKE_ALIAS}.${schemaForLayer(r.layer ?? TYPED_LAYER)}.${r.physicalName}`;
+		const address = `${LAKE_ALIAS}.${schemaForLayer(r.layer ?? TYPED_LAYER)}.${physicalName}`;
 		blockRows.push({
 			address,
 			entity: projectTableEntity({

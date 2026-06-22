@@ -4,6 +4,18 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-22: fix — deterministic `top_values` ordering (profiling reproducibility)
+
+`StatisticalProfile.top_values` is now ordered `count DESC, value` (was `count DESC` only),
+so equal-frequency values no longer come back in arbitrary order across runs. The sampled
+values that feed the LLM semantic prompts (`DataSampler.prepare_samples` reads `top_values`)
+are therefore reproducible run-to-run for the same data.
+
+### dataraum-eval
+- **Reproducibility, not a detector change** — recall/precision unaffected; profiles +
+  LLM prompts are just stable across re-runs now. No schema change.
+- **Status**: pending
+
 ## 2026-06-22: fix — driver_rankings no longer crashes on a VARCHAR measure (TRY_CAST)
 
 The driver-discovery load (`analysis/drivers/processor.py`) projected measure columns

@@ -1,8 +1,8 @@
 # ADR-0013 — Consolidate begin_session's dimension & relatedness output (DAT-514)
 
-- **Status:** Accepted; **amended 2026-06-17** (one-view model — see Amendment)
+- **Status:** Accepted; **amended 2026-06-17** (one-view model) and **2026-06-20** (enriched-view shape stability — see Amendments)
 - **Date:** 2026-06-16
-- **Ticket:** DAT-514 (epic "Stabilise relationships and slices discovery"); spike DAT-535
+- **Ticket:** DAT-514 (epic "Stabilise relationships and slices discovery"); spike DAT-535; enriched-view stability DAT-516
 - **Design doc:** Confluence DD/36798466
 
 ## Amendment (2026-06-17): one-view model — the aggregation-view substrate is dropped
@@ -46,6 +46,69 @@ Net change to the model below: **one-view** (`enriched_view`) + inline witness a
 **not** a two-view (`enriched_view` + `aggregation_view`) model. Everything else in this ADR —
 the catalog promotion, `grain_safe`-is-free, the g3 FD/hierarchy pass, the `dimensional_entropy`
 cut, the dead-correlation cut, the slice-sprawl removal list — stands unchanged.
+
+## Amendment (2026-06-20): the enriched-view shape is sticky, not re-judged (DAT-516)
+
+The enriched view's **shape** — which `<fk>__<attr>` dimension columns a fact exposes — is the
+output of two LLM judgments: (A) `relationship_discovery` confirms the FK is genuine, and (B) the
+`enriched_views` phase runs a *second* LLM (`_get_llm_recommendations` → `EnrichmentAgent`) that, of
+the already-confirmed relationships, judges which "add analytical value" as dimension joins. **Layer
+B re-judges from scratch every run.** Combined with the latest-only lake grain (DAT-415 — the enriched
+`Table`/`Column`s are reconciled in place, prior columns deleted), a re-run of the *same session* can
+silently change or erase the columns downstream SQL depends on. DAT-516's observation: `journal_lines`
+exposed `account_id__account_type` one run and produced a `passthrough_enriched_view` (0 dimension
+columns) the next. The phase's own `sql_equivalent` no-op (it skips a redundant recipe version when
+"temp-0 LLM → same joins") rests on a **false premise** — LLMs are not deterministic even at
+temperature 0.
+
+The asymmetry is the bug: **Layer A (the relationship catalog) has silent-accept durability**
+(DAT-409 — an `llm` relationship the prior promoted run found, that this run didn't reproduce and the
+user didn't reject, is lifted to a `keep`→`keeper` overlay; existing relationships are not removed
+unless the user rejects them). **Layer B has no such memory** — it re-litigates which durable
+relationships count, throwing away the durability Layer A established.
+
+We **do not** make Layer B deterministic — column selection is genuine judgement (a rules-based
+builder was tried and is hard), and the broader call already stands that determinism is not the goal
+for this part of the pipeline. Instead we extend Layer A's silent-accept pattern **one layer up**, to
+the enriched-view shape:
+
+**Revised decision — the enriched-view shape is decided once and inherited:**
+- **Keep Layer B's intelligence, run it incrementally.** On a re-run the enrichment LLM is fed
+  **only the undecided relationships** (candidates confirmed since the shape was last decided), and is
+  **skipped entirely** when none are. The first run is unchanged (everything is undecided).
+- **Persist the verdict, inherit on re-run.** `EnrichedView` already stores the *exposed* joins
+  (`relationship_ids`); add `considered_relationship_pairs` (the candidates already judged, exposed or
+  not) so an already-rejected-by-LLM relationship is not re-asked. The shape is read from the stored
+  spec, not re-derived.
+- **The shape is monotonic.** Columns are *added* when a new confirmed relationship is judged in, and
+  *removed only* on an explicit teach/reject (or a relationship the user rejected) — **never** flipped
+  by a fresh re-judgment. This is precisely what keeps a named view's column set stable across runs so
+  saved/downstream SQL stays valid. (Within a run, the atomic `CHECKPOINT` already prevents torn
+  mid-materialize reads; this closes the cross-run half — the silent column-vanish.)
+- **Materialization is unchanged and already deterministic.** The DuckDB enriched view is a
+  `CREATE OR REPLACE VIEW` rebuilt from the durable spec each run; the recipe substrate
+  (DAT-414/415) stores and replays that DDL. Replaying a stored join list is deterministic by
+  construction — only the *decision* was ever the non-deterministic part, and it is now made once.
+- **Reconcile, don't replace, at the lake grain.** `_register_and_profile_dim_columns` adds new
+  dimension columns and keeps existing ones rather than delete-all-then-reinsert, so an unchanged
+  shape does not churn the columns (or their `StatisticalProfile`s) consumers read.
+
+Caveat (consistent with the silent-accept contract): an already-exposed column is **not**
+auto-re-evaluated if its underlying dimension table later changes — re-deciding is an explicit signal
+(a teach/reject), exactly as a relationship is. "Decide once, keep unless told otherwise" is the
+contract, mirroring Layer A.
+
+Net change: Layer B is **kept but made incremental + sticky**; the column write reconciles
+instead of replacing. `build_enriched_view_sql`, `_verify_grain`, the recipe substrate, and
+the atomic `CHECKPOINT` — the stable core — are untouched. Plan: DAT-516.
+
+**Implemented (DAT-516):** the sticky key is the **column pair** `(from_column_id, to_column_id)`,
+NOT `relationship_id` — `relationship_id` is a per-run `uuid4`, so it can't carry a verdict across
+runs; `column_id` is stable (typed columns are minted at add_source, not begin_session). Two
+persisted fields, not one: `considered_relationship_pairs` (all judged pairs) **and**
+`exposed_dimension_joins` (the full exposed-join specs incl. `include_columns` — itself LLM-judged,
+so the pair alone can't rebuild the shape). `considered` is pruned to Layer A's current confirmed
+set, so a relationship that genuinely drops out and is re-confirmed is re-judged (not stuck).
 
 ## Context
 

@@ -176,6 +176,8 @@ export const currentEnrichedViews = metadataSchema
 		viewName: varchar("view_name"),
 		runId: varchar("run_id"),
 		relationshipIds: json("relationship_ids"),
+		consideredRelationshipPairs: json("considered_relationship_pairs"),
+		exposedDimensionJoins: json("exposed_dimension_joins"),
 		dimensionTableIds: json("dimension_table_ids"),
 		dimensionColumns: json("dimension_columns"),
 		isGrainVerified: boolean("is_grain_verified"),
@@ -183,7 +185,7 @@ export const currentEnrichedViews = metadataSchema
 		createdAt: timestamp("created_at"),
 	})
 	.as(
-		sql`SELECT view_id, fact_table_id, view_table_id, view_name, run_id, relationship_ids, dimension_table_ids, dimension_columns, is_grain_verified, evidence, created_at FROM ws_00000000_0000_0000_0000_000000000001.enriched_views r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT view_id, fact_table_id, view_table_id, view_name, run_id, relationship_ids, considered_relationship_pairs, exposed_dimension_joins, dimension_table_ids, dimension_columns, is_grain_verified, evidence, created_at FROM ws_00000000_0000_0000_0000_000000000001.enriched_views r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentEntropyObjects = metadataSchema

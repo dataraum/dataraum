@@ -60,8 +60,30 @@ class EnrichedView(Base):
     # materialized this view definition.
     run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
-    # Which relationships were used to build this view
+    # Which relationships were used to build this view (the EXPOSED subset). These are
+    # per-run ``relationship_id``s (run-stamped uuid4); the cross-run-stable identity is
+    # the column pair below, not these ids.
     relationship_ids: Mapped[list[str] | None] = mapped_column(JSON)
+
+    # The candidate FK column-pairs already JUDGED for this fact — exposed OR
+    # rejected-by-the-enrichment-LLM — as ``[[from_column_id, to_column_id], ...]``
+    # (DAT-516). The enriched-view shape is sticky: a re-run feeds the LLM only the
+    # *undecided* pairs (candidates not in this set) and inherits the rest, so the shape
+    # is monotonic (grows on a newly-confirmed relationship, shrinks only on an explicit
+    # reject). Keyed on ``column_id`` — stable across begin_session re-runs (typed-table
+    # columns are minted at add_source, not re-run) — NOT ``relationship_id`` (per-run).
+    # ``None`` = first run / legacy row: nothing decided yet → judge every candidate.
+    considered_relationship_pairs: Mapped[list[list[str]] | None] = mapped_column(JSON)
+
+    # The EXPOSED joins, serialized so a re-run rebuilds the shape WITHOUT re-judging
+    # (DAT-516). One entry per exposed dimension join:
+    # ``{"from_column_id","to_column_id","fact_fk_column","dim_pk_column",
+    #    "dim_table_name","include_columns"}``. ``include_columns`` is itself LLM-judged
+    # (the agent rates each dim attr high/medium/low and keeps high+medium), so the pair
+    # alone can't reconstruct the shape — the whole spec is inherited. ``from/to_column_id``
+    # (the stable key) lets a re-run drop a join whose relationship Layer A no longer
+    # confirms. ``None`` = first run / legacy → built fresh from the LLM.
+    exposed_dimension_joins: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
 
     # Which dimension tables are joined
     dimension_table_ids: Mapped[list[str] | None] = mapped_column(JSON)

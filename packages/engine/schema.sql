@@ -267,6 +267,8 @@ CREATE TABLE enriched_views (
 	view_name VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	relationship_ids JSON, 
+	considered_relationship_pairs JSON, 
+	exposed_dimension_joins JSON, 
 	dimension_table_ids JSON, 
 	dimension_columns JSON, 
 	is_grain_verified BOOLEAN NOT NULL, 

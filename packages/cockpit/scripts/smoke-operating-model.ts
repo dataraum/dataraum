@@ -37,15 +37,17 @@ import {
 	currentValidationResults,
 } from "#/db/metadata/schema";
 import { sourcesWrite } from "#/db/metadata/write-surface";
-import { beginSession } from "#/tools/begin-session";
 import type {
 	AddSourceInput,
 	AddSourceResult,
+	BeginSessionInput,
+	BeginSessionResult,
 	OperatingModelInput,
 	OperatingModelResult,
 } from "#/temporal/types";
 import {
 	addSourceWorkflowId,
+	beginSessionWorkflowId,
 	operatingModelWorkflowId,
 } from "#/temporal/workflow-id";
 
@@ -87,7 +89,13 @@ async function ingest(client: Client): Promise<string[]> {
 			engineSchema: `ws_${env.DATARAUM_WORKSPACE_ID.replaceAll("-", "_")}`,
 			vertical: VERTICAL,
 		})
-		.onConflictDoNothing();
+		// A workspace row may already exist from a prior smoke with a DIFFERENT
+		// vertical — onConflictDoNothing would leave it stale and the journey path
+		// would ground the wrong ontology. Force the vertical to this smoke's.
+		.onConflictDoUpdate({
+			target: workspaces.id,
+			set: { vertical: VERTICAL },
+		});
 
 	await metadataDb
 		.insert(sourcesWrite)
@@ -146,13 +154,28 @@ async function main(): Promise<void> {
 		const tableIds = await ingest(client);
 
 		// ---- begin_session: compose the workspace ---------------------------------
-		// Vertical is the workspace property (seeded = finance); the driver sources it.
-		const begun = await beginSession({ table_ids: tableIds });
-		// beginSession now returns a born-loud {error} when the workspace has no
-		// typed tables (DAT-534); the smoke ingested above, so it must have started.
-		if ("error" in begun) throw new Error(`begin_session refused: ${begun.error}`);
-		await client.workflow.getHandle(begun.workflow_id, begun.run_id).result();
-		console.log(`✓ begin_session completed: workflow=${begun.workflow_id}`);
+		// Drive the engine `beginSessionWorkflow` DIRECTLY on the workspace queue,
+		// mirroring add_source / operating_model above. The cockpit `beginSession`
+		// TOOL is a journey SIGNAL (DAT-530) — it returns the deterministic workflow
+		// id with `run_id == workflow_id` (a placeholder; the journey owns the real
+		// run id), so building a client handle from it fails with `Invalid RunId`.
+		// This is an integration smoke of the engine contract, not the journey, so we
+		// start + await the workflow ourselves with the real handle. Verticals are
+		// passed EXPLICITLY (= finance) — not read from the workspace row.
+		const beginInput: BeginSessionInput = {
+			workspace_id: env.DATARAUM_WORKSPACE_ID,
+			tables: tableIds,
+			verticals: [VERTICAL],
+		};
+		const beginHandle = await client.workflow.start<
+			(p: BeginSessionInput) => Promise<BeginSessionResult>
+		>("beginSessionWorkflow", {
+			taskQueue: env.TEMPORAL_TASK_QUEUE,
+			workflowId: beginSessionWorkflowId(env.DATARAUM_WORKSPACE_ID),
+			args: [beginInput],
+		});
+		const beginResult = (await beginHandle.result()) as BeginSessionResult;
+		console.log(`✓ begin_session completed: run_id=${beginResult.run_id}`);
 
 		// ---- operatingModelWorkflow: flat input (DAT-438, DAT-506) ----------------
 		// The stage re-reads the session's table set from the catalog head's

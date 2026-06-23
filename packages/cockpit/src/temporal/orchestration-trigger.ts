@@ -150,8 +150,9 @@ export interface DirectRunSpec {
  * nothing on a conflict/failure — the run never started, so there's no row to clean up.
  * `recordRun` omits `conversationId` ⇒ it falls back to the request-scoped ALS (these
  * run inside the chat turn, unlike the worker) so the completion still narrates into
- * THIS chat. The tiny start→record window is orphan-safe enough: the re-trigger is
- * idempotent and the reconcile/monitor read by workspace.
+ * THIS chat. Orphan-safety differs from the durable `runStage` path: this is a request
+ * handler, so a crash in the tiny start→record window fails the HTTP request and the
+ * user re-triggers — idempotent via recordRun's `onConflictDoNothing`.
  */
 export async function startDirectRun(spec: DirectRunSpec): Promise<void> {
 	let runId: string;

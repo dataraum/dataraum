@@ -17,6 +17,12 @@ describe("toolLabel", () => {
 		expect(toolLabel("run_sql")).toBe("Query");
 		expect(toolLabel("why_column")).toBe("Column detail");
 		expect(toolLabel("look_table")).toBe("Table readiness");
+		// DAT-579: cycle / metric / drivers titles (were falling through to the verb).
+		expect(toolLabel("look_cycle")).toBe("Business cycles");
+		expect(toolLabel("why_cycle")).toBe("Cycle detail");
+		expect(toolLabel("look_metric")).toBe("Metrics");
+		expect(toolLabel("why_metric")).toBe("Metric detail");
+		expect(toolLabel("look_drivers")).toBe("Drivers");
 	});
 
 	it("humanizes an unmapped tool instead of leaking snake_case", () => {
@@ -301,6 +307,106 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 				{},
 				{ analyzed: false, validations: [] },
 			),
+		).toBe("not yet run");
+	});
+
+	// DAT-579: the cycle / metric / drivers tools were missing from the mapper, so
+	// their chips fell through to the humanized verb as BOTH title and summary
+	// ("Look cycle / Look cycle"). These mirror the validation family.
+	it("look_cycle counts cycles + executed (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_cycle",
+				{},
+				{
+					analyzed: true,
+					cycles: [{ state: "executed" }, { state: "declared" }],
+				},
+			),
+		).toBe("2 cycles (1 executed)");
+		expect(
+			toolChipSummary("look_cycle", {}, { analyzed: true, cycles: [] }),
+		).toBe("no cycles declared");
+		expect(
+			toolChipSummary("look_cycle", {}, { analyzed: false, cycles: [] }),
+		).toBe("not yet run");
+	});
+
+	it("why_cycle names the cycle + lifecycle state (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"why_cycle",
+				{},
+				{ found: true, cycle_name: "Accounts Payable", state: "executed" },
+			),
+		).toBe("Accounts Payable — executed");
+		expect(
+			toolChipSummary(
+				"why_cycle",
+				{},
+				{ found: false, cycle_name: null, state: null },
+			),
+		).toBe("cycle not found");
+	});
+
+	it("look_metric counts metrics + executed (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_metric",
+				{},
+				{
+					analyzed: true,
+					metrics: [
+						{ state: "executed" },
+						{ state: "grounded" },
+						{ state: "executed" },
+					],
+				},
+			),
+		).toBe("3 metrics (2 executed)");
+		expect(
+			toolChipSummary("look_metric", {}, { analyzed: true, metrics: [] }),
+		).toBe("no metrics declared");
+		expect(
+			toolChipSummary("look_metric", {}, { analyzed: false, metrics: [] }),
+		).toBe("not yet run");
+	});
+
+	it("why_metric humanizes the graph_id + lifecycle state — never snake_case (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "gross_margin", found: true, state: "executed" },
+			),
+		).toBe("Gross margin — executed");
+		// A grounded-but-failed metric reads its lifecycle state, not a verdict.
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "ebitda", found: true, state: "grounded" },
+			),
+		).toBe("Ebitda — grounded");
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "ebitda", found: false, state: null },
+			),
+		).toBe("metric not found");
+	});
+
+	it("look_drivers counts the driver rankings (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_drivers",
+				{},
+				{ analyzed: true, rankings: [{}, {}, {}] },
+			),
+		).toBe("3 drivers");
+		expect(
+			toolChipSummary("look_drivers", {}, { analyzed: false, rankings: [] }),
 		).toBe("not yet run");
 	});
 

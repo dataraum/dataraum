@@ -21,6 +21,9 @@ import { humanizeIdentifier } from "#/lib/display-names";
 import { isAgentError } from "#/tools/agent-error";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
+import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
+import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
@@ -30,6 +33,8 @@ import type { TeachCycleResult } from "#/tools/teach-cycle";
 import type { TeachMetricResult } from "#/tools/teach-metric";
 import type { TeachValidationResult } from "#/tools/teach-validation";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyCycleResult } from "#/tools/why-cycle";
+import type { WhyMetricResult } from "#/tools/why-metric";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -65,6 +70,11 @@ const TOOL_LABELS: Record<string, string> = {
 	look_relationships: "Relationships",
 	look_validation: "Validations",
 	why_validation: "Validation detail",
+	look_cycle: "Business cycles",
+	why_cycle: "Cycle detail",
+	look_metric: "Metrics",
+	why_metric: "Metric detail",
+	look_drivers: "Drivers",
 	operating_model: "Starting validation run",
 	begin_session: "Starting session",
 	run_sql: "Query",
@@ -248,6 +258,46 @@ export function toolChipSummary(
 						? "passed"
 						: "failed";
 			return `${label} — ${verdict}`;
+		}
+		case "look_cycle": {
+			const r = output as LookCycleResult | undefined;
+			if (!r || !Array.isArray(r.cycles)) return "reading business cycles…";
+			if (!r.analyzed) return "not yet run";
+			if (r.cycles.length === 0) return "no cycles declared";
+			const executed = r.cycles.filter((c) => c.state === "executed").length;
+			return `${plural(r.cycles.length, "cycle")} (${executed} executed)`;
+		}
+		case "why_cycle": {
+			const r = output as WhyCycleResult | undefined;
+			if (!r) return "explaining cycle…";
+			if (!r.found) return "cycle not found";
+			// A cycle is keyed by its name (which may already be display-form);
+			// humanize, then fall back to the raw name before the generic word.
+			const label =
+				humanizeIdentifier(r.cycle_name ?? "") || r.cycle_name || "cycle";
+			return `${label} — ${r.state ?? "not run"}`;
+		}
+		case "look_metric": {
+			const r = output as LookMetricResult | undefined;
+			if (!r || !Array.isArray(r.metrics)) return "reading metrics…";
+			if (!r.analyzed) return "not yet run";
+			if (r.metrics.length === 0) return "no metrics declared";
+			const executed = r.metrics.filter((m) => m.state === "executed").length;
+			return `${plural(r.metrics.length, "metric")} (${executed} executed)`;
+		}
+		case "why_metric": {
+			const r = output as WhyMetricResult | undefined;
+			if (!r) return "explaining metric…";
+			if (!r.found) return "metric not found";
+			// graph_id is a snake_case key (e.g. gross_margin) — humanize it.
+			const label = humanizeIdentifier(r.graph_id) || "metric";
+			return `${label} — ${r.state ?? "not run"}`;
+		}
+		case "look_drivers": {
+			const r = output as LookDriversResult | undefined;
+			if (!r || !Array.isArray(r.rankings)) return "reading drivers…";
+			if (!r.analyzed) return "not yet run";
+			return plural(r.rankings.length, "driver");
 		}
 		case "operating_model": {
 			// Non-blocking driver: done = the durable run STARTED (ids in the

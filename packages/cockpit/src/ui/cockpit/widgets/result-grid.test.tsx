@@ -158,6 +158,10 @@ describe("GridSqlDisclosure (DAT-577)", () => {
 	it("starts collapsed and toggles open on click", () => {
 		renderDisclosure("SELECT 1 FROM lake.typed.t");
 		const toggle = screen.getByRole("button");
+		// aria-expanded is the robust open/closed contract. (We don't assert DOM
+		// absence when collapsed: Mantine Collapse only unmounts AFTER its exit
+		// animation, which never fires in jsdom — so the content stays mounted here
+		// regardless. Real visual collapse is smoke-verified.)
 		expect(toggle.getAttribute("aria-expanded")).toBe("false");
 		fireEvent.click(toggle);
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");

@@ -280,6 +280,9 @@ export function GridSqlDisclosure({
 	sql: string;
 	params?: (string | number | boolean | null)[];
 }) {
+	// Open-state is intentionally NOT reset on a new query: only StreamingGrid is
+	// keyed (to reset sort). If the user opened the SQL and a new query streams in,
+	// the disclosure stays open showing the new query's SQL — the prop updates.
 	const [open, setOpen] = useState(false);
 	if (!sql) return null;
 	return (
@@ -287,6 +290,7 @@ export function GridSqlDisclosure({
 			<UnstyledButton
 				onClick={() => setOpen((o) => !o)}
 				aria-expanded={open}
+				aria-label="Toggle SQL"
 				mb={open ? "xs" : 0}
 			>
 				<Text size="xs" c="dimmed" fw={500}>

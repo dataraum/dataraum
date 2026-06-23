@@ -26,7 +26,6 @@ vi.mock("#/db/cockpit/registry", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: async () => {},
-	attachRunId: async () => {},
 	hasRunningRun: async () => false,
 }));
 

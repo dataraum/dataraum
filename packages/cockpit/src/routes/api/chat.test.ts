@@ -40,7 +40,6 @@ vi.mock("#/db/cockpit/registry", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: async () => {},
-	attachRunId: async () => {},
 	hasRunningRun: async () => false,
 }));
 // The server-owned chat loop (DAT-462) persists via the conversations seam —

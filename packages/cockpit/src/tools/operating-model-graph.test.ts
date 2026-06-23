@@ -68,7 +68,9 @@ const base = (): OperatingModelGraphInput => ({
 		{ columnId: "c3", tableId: "t1", columnName: "unused" },
 	],
 	tables: [
-		{ tableId: "t1", tableName: "sales" },
+		// Content-keyed physical name: the validation→column match must resolve via the
+		// DISPLAY name ("sales"), since columns_used arrives digest-stripped.
+		{ tableId: "t1", tableName: "src_abcd1234__sales" },
 		{ tableId: "t2", tableName: "customers" },
 	],
 });

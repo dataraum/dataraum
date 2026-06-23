@@ -35,6 +35,7 @@ import {
 	sqlSnippets,
 	tables as tablesView,
 } from "../db/metadata/schema";
+import { displayTableName } from "../lib/display-names";
 import { lookCycle } from "./look-cycle";
 import { type DriverRankingRow, projectDriverRanking } from "./look-drivers";
 import { lookMetric } from "./look-metric";
@@ -314,10 +315,20 @@ export function buildOperatingModelGraph(
 	}
 
 	// Validations: node + best-effort validation → column via "table.column" names.
+	// `columns_used` arrives digest-stripped (lookValidation runs stripSrcDigests), so
+	// the key must use the DISPLAY table name too — otherwise content-keyed sources
+	// (`src_<digest>__orders`) never match and the linkage is silently empty. Two
+	// same-stem tables from different sources can collide here; acceptable for a
+	// best-effort edge.
 	const columnIdByName = new Map<string, string>();
 	for (const c of input.columns) {
 		const t = tableByIdMap.get(c.tableId);
-		if (t) columnIdByName.set(`${t.tableName}.${c.columnName}`, c.columnId);
+		if (t) {
+			columnIdByName.set(
+				`${displayTableName(t.tableName)}.${c.columnName}`,
+				c.columnId,
+			);
+		}
 	}
 	for (const v of input.validations) {
 		addNode({

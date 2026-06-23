@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Shell smoke: the AppShell renders all six section rail items, a workspace
+// Shell smoke: the AppShell renders every section rail item, a workspace
 // section route resolves under the shell, and — even on a global route with no
 // wsId — the rail's workspace links still target the active workspace (the
 // /settings → cockpit nav bug).

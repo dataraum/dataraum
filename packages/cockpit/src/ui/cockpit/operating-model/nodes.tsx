@@ -113,7 +113,7 @@ function OperatingModelNodeImpl({ data, selected }: NodeProps<OMRfNode>) {
 						style={{ flexShrink: 0, marginTop: 2 }}
 					/>
 					<Stack gap={0} style={{ minWidth: 0, flex: 1 }}>
-						<Text size="9px" c="dimmed" tt="uppercase" fw={600}>
+						<Text size="xs" c="dimmed" tt="uppercase" fw={600}>
 							{om.kind}
 							{isTable ? (expanded ? " ▾" : " ▸") : ""}
 						</Text>

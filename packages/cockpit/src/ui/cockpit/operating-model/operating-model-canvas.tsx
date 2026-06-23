@@ -28,9 +28,10 @@ import {
 	type Node,
 	type NodeMouseHandler,
 	ReactFlow,
+	useReactFlow,
 } from "@xyflow/react";
 import { X } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
 	computeVisibleGraph,
@@ -85,6 +86,8 @@ export function OperatingModelCanvas({
 			});
 			return;
 		}
+		// Columns are leaf grounding nodes — nothing to detail; ignore the click.
+		if (om.kind === "column") return;
 		setSelected(om);
 	}, []);
 
@@ -107,12 +110,26 @@ export function OperatingModelCanvas({
 				<Background />
 				<Controls showInteractive={false} />
 				<MiniMap pannable zoomable />
+				{/* Re-fit when a table expand/collapse re-lays-out the graph (the
+				    fitView prop only fires on mount). Must be a ReactFlow child to
+				    reach useReactFlow(). */}
+				<FitOnLayout layout={nodes} />
 			</ReactFlow>
 			{selected ? (
 				<NodeDetail node={selected} onClose={() => setSelected(null)} />
 			) : null}
 		</Box>
 	);
+}
+
+/** Refits the viewport whenever the laid-out node set changes (expand/collapse). */
+function FitOnLayout({ layout }: { layout: Node[] }) {
+	const { fitView } = useReactFlow();
+	useEffect(() => {
+		if (layout.length === 0) return;
+		void fitView({ duration: 200 });
+	}, [layout, fitView]);
+	return null;
 }
 
 /** Read-only detail for the selected node — the "expand to read the SQL" surface. */

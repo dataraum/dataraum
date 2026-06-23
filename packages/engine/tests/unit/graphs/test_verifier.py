@@ -88,6 +88,22 @@ class TestSupportGate:
 
         assert verify_execution(graph, execution).success
 
+    def test_null_formula_step_reads_as_degenerate_not_unfiltered(self) -> None:
+        """A NULL non-extract step is 'degenerate', not 'filter matched no rows'."""
+        graph = _graph(
+            {
+                "revenue": _extract("revenue"),
+                "ratio": GraphStep(step_id="ratio", step_type=StepType.FORMULA, expression="x"),
+            }
+        )
+        execution = _execution({"revenue": 1000.0, "ratio": None}, output_value=None)
+
+        result = verify_execution(graph, execution)
+        assert not result.success
+        assert "ratio" in result.error
+        assert "degenerate" in result.error
+        assert "filter matched no rows" not in result.error
+
     def test_null_output_value_is_inconclusive(self) -> None:
         """Even with supported steps, a NULL composed value is degenerate."""
         graph = _graph({"revenue": _extract("revenue")})
@@ -127,9 +143,7 @@ class TestDeclaredConditions:
     def test_satisfied_condition_passes(self) -> None:
         graph = _graph(
             {
-                "revenue": _extract(
-                    "revenue", validations=[StepValidation(condition="value > 0")]
-                ),
+                "revenue": _extract("revenue", validations=[StepValidation(condition="value > 0")]),
                 "cogs": _extract("cogs", validations=[StepValidation(condition="value >= 0")]),
             }
         )
@@ -141,25 +155,32 @@ class TestDeclaredConditions:
         """A condition whose step_id has no executed step is skipped, not failed —
         the support gate already guards the real risk; DAT-619 hardens binding."""
         graph = _graph(
-            {
-                "revenue": _extract(
-                    "revenue", validations=[StepValidation(condition="value > 0")]
-                )
-            }
+            {"revenue": _extract("revenue", validations=[StepValidation(condition="value > 0")])}
         )
         # The executed step is named differently (LLM renamed it) — no binding.
         execution = _execution({"total_revenue": 1000.0}, output_value=1000.0)
 
         assert verify_execution(graph, execution).success
 
-    def test_decimal_value_is_comparable(self) -> None:
-        """Currency sums arrive as Decimal in production — conditions still hold."""
+    def test_malformed_condition_fails_loud_not_raises(self) -> None:
+        """A malformed catalogue condition becomes a clean Result.fail, not a raise."""
         graph = _graph(
             {
                 "revenue": _extract(
-                    "revenue", validations=[StepValidation(condition="value > 0")]
+                    "revenue", validations=[StepValidation(condition="value.__class__")]
                 )
             }
+        )
+        execution = _execution({"revenue": 1000.0}, output_value=1000.0)
+
+        result = verify_execution(graph, execution)
+        assert not result.success
+        assert "malformed" in result.error
+
+    def test_decimal_value_is_comparable(self) -> None:
+        """Currency sums arrive as Decimal in production — conditions still hold."""
+        graph = _graph(
+            {"revenue": _extract("revenue", validations=[StepValidation(condition="value > 0")])}
         )
         ex = GraphExecution(execution_id="e", graph_id="gross_margin", source=GraphSource.SYSTEM)
         sr = StepResult(step_id="revenue")

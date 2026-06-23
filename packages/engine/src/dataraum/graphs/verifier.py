@@ -29,6 +29,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from dataraum.core.models.base import Result
+from dataraum.graphs.models import StepType
 
 if TYPE_CHECKING:
     from dataraum.graphs.models import GraphExecution, TransformationGraph
@@ -60,12 +61,19 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
 
     # 1. Support: an extract whose aggregate is NULL matched no rows. With the
     #    COALESCE mask removed from the prompt, an empty filter surfaces as NULL
-    #    here — no support, so the metric is inconclusive (not a real value).
+    #    here — no support, so the metric is inconclusive (not a real value). A
+    #    non-extract step (formula/constant) that is NULL is degenerate, not
+    #    "unfiltered" — word the reason for what the step actually is.
     for sr in execution.step_results:
         if sr.value is None:
+            step = graph.steps.get(sr.step_id)
+            if step is None or step.step_type == StepType.EXTRACT:
+                return Result.fail(
+                    f"extract '{sr.step_id}' has no support: its filter matched no rows "
+                    f"(aggregated to NULL) — metric inconclusive, not a real value"
+                )
             return Result.fail(
-                f"extract '{sr.step_id}' has no support: its filter matched no rows "
-                f"(aggregated to NULL) — metric inconclusive, not a real value"
+                f"step '{sr.step_id}' computed to NULL (degenerate) — metric inconclusive"
             )
 
     # 2. Non-degeneracy of the composed value. A NULL output means a contributing
@@ -84,7 +92,17 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
         if bound is None or bound.value is None:
             continue
         for check in step.validations:
-            if not _condition_holds(check.condition, bound.value):
+            try:
+                holds = _condition_holds(check.condition, bound.value)
+            except ValueError as exc:
+                # A malformed catalogue condition fails loud HERE as a clean
+                # Result.fail (routed through the caller's snippet-failure path),
+                # not as a ValueError escaping to the blanket worker handler.
+                return Result.fail(
+                    f"catalogue validation condition for '{step_id}' is malformed "
+                    f"({check.condition!r}): {exc}"
+                )
+            if not holds:
                 reason = check.message or check.condition
                 return Result.fail(
                     f"declared validation failed for '{step_id}': {reason} (value={bound.value})"
@@ -110,7 +128,9 @@ def _truth(node: ast.expr, value: Any) -> bool:
         for op, comparator in zip(node.ops, node.comparators, strict=True):
             comparator_fn = _COMPARATORS.get(type(op))
             if comparator_fn is None:
-                raise ValueError(f"unsupported comparison operator in condition: {type(op).__name__}")
+                raise ValueError(
+                    f"unsupported comparison operator in condition: {type(op).__name__}"
+                )
             right = _term(comparator, value)
             if not comparator_fn(left, right):
                 return False
@@ -125,8 +145,10 @@ def _truth(node: ast.expr, value: Any) -> bool:
 def _term(node: ast.expr, value: Any) -> Any:
     if isinstance(node, ast.Name) and node.id == "value":
         return value
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(
-        node.value, bool
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, (int, float))
+        and not isinstance(node.value, bool)
     ):
         return node.value
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):

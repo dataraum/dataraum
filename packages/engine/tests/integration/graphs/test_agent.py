@@ -348,9 +348,7 @@ class TestGraphAgentVerifier:
         snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
         assert snippets == []
 
-    def test_genuine_zero_metric_executes(
-        self, session: Session, duckdb_with_data, sample_graph
-    ):
+    def test_genuine_zero_metric_executes(self, session: Session, duckdb_with_data, sample_graph):
         """A metric that genuinely computes 0 (rows matched, summing to 0) passes.
 
         `id = 1` matches a row; `amount * 0` sums to a real 0 — support exists, so

@@ -1,21 +1,19 @@
-"""Post-execution verifier for metric graphs (DAT-616).
+"""Post-execution SANITY floor for metric graphs (DAT-616).
 
-Execution-pass is *not* validation. A metric whose SQL ran cleanly can still be
-silently wrong: when an extract's filter matched no rows the aggregate is NULL
-("no support"), and when the prompt masks that NULL with ``COALESCE(col, 0)`` it
-reads as a real ``0`` — so a long-format finance metric (no ``revenue`` column,
-"revenue" is a row filter the agent improvises) reaches ``executed``/green with a
-fabricated value (the canonical case: ``gross_margin = 100%`` because cogs
-matched nothing).
+This is a *cheap value-space sanity check*, NOT the grounding fix. It keeps a
+metric ``grounded``/inconclusive (never silently ``executed``/green) when:
+- an extract aggregated to NULL — its filter matched no rows ("no support");
+- the composed value is NULL (a contributing extract had no support);
+- a catalogue-declared per-extract ``validation:`` bound is violated (e.g. revenue
+  ``value > 0``) — a one-number comparison on the step's executed scalar.
 
-This verifier converts that into an honest *inconclusive*: a metric with an
-unsupported extract, a degenerate (NULL) composed value, or a violated
-catalogue-declared condition stays ``grounded`` with a stated reason — it is
-never reported as ``executed``. It mirrors the ``ValidationAgent``'s
-``row_count == 0 -> ERROR`` gate (``analysis/validation/agent.py``), the part the
-metric path lacked, and is the seed of the DAT-619 snippet-library verifier
-(nothing enters the reuse cache until it passed here — the caller gates
-``_save_snippets`` on this verdict).
+**It is structurally blind to the real bug** (DAT-616): a *wrong-but-non-empty*
+filter (the agent improvises ``WHERE account_type ILIKE '%cost%'`` and matches the
+wrong rows) returns a well-typed, in-range value that passes every check here. The
+grounding fix lives elsewhere — feed the agent the real value distribution + a
+teach-confirmed concept→value-set binding (DAT-620) so it stops improvising the
+predicate (design: ``docs/dat543-construct-dont-improvise.md``). Keep this as the
+cheap floor; do not mistake it for the fix.
 
 The signal is **support, not magnitude**: a genuine ``0`` (a filter that matched
 rows summing to zero) passes; only a NULL (nothing aggregated) fails.

@@ -156,6 +156,9 @@ export interface DirectRunSpec {
  * can't linger as a phantom in-flight run.
  */
 export async function startDirectRun(spec: DirectRunSpec): Promise<void> {
+	// Guard config BEFORE recording — an unconfigured start must not leave a phantom
+	// `running` placeholder row to clean up. (withClient re-checks; cheap.)
+	requireTemporalConfig();
 	await recordRun({
 		workspaceId: spec.workspaceId,
 		kind: spec.kind,

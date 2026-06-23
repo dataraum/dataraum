@@ -100,7 +100,13 @@ export async function runStage(spec: StageSpec): Promise<StageOutcome> {
 			err: String(err),
 		});
 		// Mark failed best-effort (markRunStatus is a no-op if the run wasn't recorded).
-		await markRunStatus(spec.workflowId, runId, "failed").catch(() => {});
+		// If even this write fails, log it — else the run lingers as phantom `running`.
+		await markRunStatus(spec.workflowId, runId, "failed").catch((markErr) => {
+			log.warn("orchestration stage mark-failed write failed", {
+				workflowId: spec.workflowId,
+				err: String(markErr),
+			});
+		});
 		return { ok: false, result: null };
 	}
 }

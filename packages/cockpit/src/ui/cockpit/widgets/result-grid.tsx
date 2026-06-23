@@ -20,7 +20,15 @@
 // load-bearing for the 50k streaming cap, not optional.
 
 import type { Json } from "@duckdb/node-api";
-import { Alert, Badge, Group, Table, Text } from "@mantine/core";
+import {
+	Alert,
+	Badge,
+	Collapse,
+	Group,
+	Table,
+	Text,
+	UnstyledButton,
+} from "@mantine/core";
 import {
 	type ColumnDef,
 	flexRender,
@@ -34,6 +42,7 @@ import { cellAlign, formatCell } from "#/duckdb/cell-format";
 import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
 import type { GridSort } from "#/duckdb/stream-sql";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 
 // §7.3 hook: carry the neo column type metadata on each TanStack column. The
 // type-driven cell formatting (right-align numerics, render timestamps) lives in
@@ -275,6 +284,43 @@ export function ResultGridView({
 }
 
 /**
+ * A collapsible "SQL" disclosure for a grid (DAT-577): the literal query behind
+ * the result, plus its bind params when present. Read-only — Analyse never edits
+ * SQL (editing is a probe-only capability). Pure (local open-state only), so it's
+ * unit-testable without the streaming grid. No SQL → nothing renders.
+ */
+export function GridSqlDisclosure({
+	sql,
+	params,
+}: {
+	sql: string;
+	params?: (string | number | boolean | null)[];
+}) {
+	// Open-state is intentionally NOT reset on a new query: only StreamingGrid is
+	// keyed (to reset sort). If the user opened the SQL and a new query streams in,
+	// the disclosure stays open showing the new query's SQL — the prop updates.
+	const [open, setOpen] = useState(false);
+	if (!sql) return null;
+	return (
+		<div data-testid="canvas-result-grid-sql">
+			<UnstyledButton
+				onClick={() => setOpen((o) => !o)}
+				aria-expanded={open}
+				aria-label="Toggle SQL"
+				mb={open ? "xs" : 0}
+			>
+				<Text size="xs" c="dimmed" fw={500}>
+					{open ? "▾" : "▸"} SQL
+				</Text>
+			</UnstyledButton>
+			<Collapse expanded={open}>
+				<SqlBlock sql={sql} params={params} maxHeight={200} />
+			</Collapse>
+		</div>
+	);
+}
+
+/**
  * The registered widget. Owns the BASE query (the agent's `run_sql` call) and
  * remounts the inner grid whenever that query changes, via a value-stable `key`.
  *
@@ -283,6 +329,10 @@ export function ResultGridView({
  * reset effect (which would fire a redundant second stream). The agent's
  * `state.sql`/`params` stay immutable — sort is a VIEW concern, never written
  * back to the canvas state.
+ *
+ * The SQL disclosure sits above the grid so it covers BOTH `run_sql` grids and
+ * `answer` grids (AnswerResultWidget composes this widget with the composed
+ * final SQL) in one place.
  */
 export function ResultGridWidget({
 	state,
@@ -297,11 +347,14 @@ export function ResultGridWidget({
 		[state.sql, state.params],
 	);
 	return (
-		<StreamingGrid
-			key={baseKey}
-			endpoint="/api/run-sql"
-			body={{ sql: state.sql, params: state.params }}
-		/>
+		<div>
+			<GridSqlDisclosure sql={state.sql} params={state.params} />
+			<StreamingGrid
+				key={baseKey}
+				endpoint="/api/run-sql"
+				body={{ sql: state.sql, params: state.params }}
+			/>
+		</div>
 	);
 }
 

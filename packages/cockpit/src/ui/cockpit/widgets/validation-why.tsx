@@ -9,11 +9,12 @@
 // formatter (bounded arrays, truncated leaves); the relationship-why /
 // why-detail blocks are the structural precedent.
 
-import { Alert, Code, Group, ScrollArea, Stack, Text } from "@mantine/core";
+import { Alert, Group, Stack, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
 import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 import { ValidationVerdictBadge } from "#/ui/cockpit/widgets/validation-badges";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
@@ -114,14 +115,12 @@ export function ValidationWhyWidget({
 			)}
 
 			{why.sql_used && (
-				<Stack gap={4} data-testid="canvas-validation-why-sql">
-					<Text size="xs" fw={500}>
-						SQL executed
-					</Text>
-					<ScrollArea.Autosize mah={SQL_MAX_HEIGHT}>
-						<Code block>{why.sql_used}</Code>
-					</ScrollArea.Autosize>
-				</Stack>
+				<SqlBlock
+					sql={why.sql_used}
+					label="SQL executed"
+					maxHeight={SQL_MAX_HEIGHT}
+					data-testid="canvas-validation-why-sql"
+				/>
 			)}
 
 			{why.details !== "" && (

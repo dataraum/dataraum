@@ -11,6 +11,7 @@ import { ColumnProfileWidget } from "#/ui/cockpit/widgets/column-profile";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
 import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
+import { DriverListWidget } from "#/ui/cockpit/widgets/driver-list";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
@@ -54,6 +55,7 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "cycle-why", component: CycleWhyWidget })
 	.register({ kind: "metric-list", component: MetricListWidget })
 	.register({ kind: "metric-why", component: MetricWhyWidget })
+	.register({ kind: "driver-list", component: DriverListWidget })
 	.register({ kind: "metric-shadow", component: MetricShadowWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "session-progress", component: SessionProgressWidget })

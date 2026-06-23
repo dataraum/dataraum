@@ -8,6 +8,7 @@
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
 import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
@@ -77,6 +78,11 @@ export type CanvasState =
 	// first-class + the per-step SQL fragments (how it computes). Carries the
 	// why_metric result.
 	| { kind: "metric-why"; why: WhyMetricResult }
+	// DAT-546/DAT-579: the begin_session driver rankings — one row per ranked
+	// measure with its target type, grain, effective sample, and the dimensions
+	// that best explain its variation. Read-only (no per-row drill tool). Carries
+	// the look_drivers result.
+	| { kind: "driver-list"; look: LookDriversResult }
 	// DAT-482: the shipped metric DAG a teach OVERRIDE replaces. Carries ONLY the
 	// (vertical, graph_id) key — the widget RE-FETCHES the shipped output +
 	// dependencies via getShippedMetricDag, so the heavy graph never rides the lean

@@ -40,6 +40,12 @@ export function LifecycleStateBadge({
 			variant="light"
 			size="sm"
 			tt="none"
+			// The lifecycle state is a short closed-enum word (declared / grounded /
+			// executed). Mantine's Badge label clips with an ellipsis by default, so in
+			// a starved table column it rendered "Executed" → "Exec…" (DAT-579). Let the
+			// label show in full and the badge size to its content — these labels are
+			// never long enough to need truncation.
+			styles={{ label: { overflow: "visible" } }}
 		>
 			{state.charAt(0).toUpperCase() + state.slice(1)}
 		</Badge>

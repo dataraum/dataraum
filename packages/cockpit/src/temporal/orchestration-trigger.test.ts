@@ -187,7 +187,7 @@ describe("startDirectRun (DAT-609 — replay / manual operating_model)", () => {
 	it("fails loud when Temporal isn't configured — BEFORE recording the run", async () => {
 		h.config = {};
 		await expect(startDirectRun(spec)).rejects.toThrow(/not configured/);
-		// The config guard runs first, so no phantom placeholder row is recorded.
+		// The config guard runs first, so recording happens only after a real start.
 		expect(h.recordRun).not.toHaveBeenCalled();
 		expect(h.start).not.toHaveBeenCalled();
 	});

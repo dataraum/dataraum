@@ -1,7 +1,10 @@
-// Operating-model canvas data layer (DAT-591 Phase 1) — assembles the workspace's
-// concept-spine DAG for the Model page. The operating model (ontology concepts,
-// metrics, cycles, validations) plus the driver rankings are persisted but only
-// reachable through chat today; this builds the graph a standing xyflow page renders.
+// Operating-model canvas graph model + assembly (DAT-591 Phase 1) — the PURE,
+// client-safe half. The concept-spine DAG for the Model page is built here from
+// already-fetched plain rows; the server IO that fetches them lives in
+// `operating-model-load.ts` (server-only — it imports the metadata DB client).
+// Keeping this module free of the DB/config imports is load-bearing: the xyflow
+// canvas (a client component) imports the types + `computeVisibleGraph` from here,
+// so any server-only import would trip TanStack's client/server import protection.
 //
 // THE SHAPE: concepts are the hub. The real, queryable edges are artifact → concept
 // → column (NOT artifact → artifact, which doesn't exist in the data):
@@ -15,31 +18,8 @@
 // A metric and its driver meet at the shared measure-column node — so the metric×driver
 // drill (DAT-611) is spatial. The metric→column edge is drawn THROUGH the concept hub;
 // the direct `column_mappings`/SQL path (the pre-grounding hint trap) is Phase 2.
-//
-// `buildOperatingModelGraph` is pure (no DB) so the assembly is unit-tested;
-// `loadOperatingModelGraph` does the IO (reuses lookMetric/lookCycle/lookValidation,
-// reads the views directly where those projections drop columns we need —
-// measure_column_id, sql_used). Only columns that participate in an edge are emitted,
-// so the graph stays focused (and legible) rather than dumping every raw column.
 
-import { and, eq, isNotNull, like } from "drizzle-orm";
-
-import { config } from "../config";
-import { metadataDb } from "../db/metadata/client";
-import {
-	columns as columnsView,
-	currentDriverRankings,
-	currentRelationships,
-	currentSemanticAnnotations,
-	currentValidationResults,
-	sqlSnippets,
-	tables as tablesView,
-} from "../db/metadata/schema";
-import { displayTableName } from "../lib/display-names";
-import { lookCycle } from "./look-cycle";
-import { type DriverRankingRow, projectDriverRanking } from "./look-drivers";
-import { lookMetric } from "./look-metric";
-import { lookValidation } from "./look-validation";
+import { displayTableName, stripSrcDigests } from "../lib/display-names";
 
 // --- Graph model -----------------------------------------------------------
 
@@ -162,6 +142,18 @@ export interface ValidationInput {
 	/** "table.column" strings the validation SQL touched (best-effort linkage). */
 	columnsUsed: string[];
 }
+/** A persisted `current_driver_rankings` row (JSON columns are `unknown`). */
+export interface DriverRankingRow {
+	measureLabel: string | null;
+	targetType: string | null;
+	grain: string | null;
+	entity: string | null;
+	nRows: number | null;
+	rankedDimensions: unknown;
+	driverPaths: unknown;
+	interestingSlices: unknown;
+	secondaryDimensions: unknown;
+}
 export interface DriverInput {
 	measureColumnId: string;
 	ranking: DriverRankingRow;
@@ -206,6 +198,22 @@ const cycleNodeId = (canonical: string) => `cycle:${canonical}`;
 const tableNodeId = (id: string) => `table:${id}`;
 const columnNodeId = (id: string) => `column:${id}`;
 const driverNodeId = (measureColumnId: string) => `driver:${measureColumnId}`;
+
+/** The strongest driver dimensions' names (digest-stripped), defensively narrowed. */
+function topDimensionNames(rankedDimensions: unknown): string[] {
+	if (!Array.isArray(rankedDimensions)) return [];
+	const names: string[] = [];
+	for (const r of rankedDimensions) {
+		if (
+			r &&
+			typeof r === "object" &&
+			typeof (r as { dimension?: unknown }).dimension === "string"
+		) {
+			names.push(stripSrcDigests((r as { dimension: string }).dimension));
+		}
+	}
+	return names;
+}
 
 /**
  * Assemble the concept-spine DAG from already-fetched rows. Pure: no DB, no IO —
@@ -283,16 +291,15 @@ export function buildOperatingModelGraph(
 
 	// Drivers: one node per measure column; driver → its measure column.
 	for (const d of input.drivers) {
-		const projected = projectDriverRanking(d.ranking);
 		addNode({
 			id: driverNodeId(d.measureColumnId),
 			kind: "driver",
-			label: projected.measure || "driver",
+			label: stripSrcDigests(d.ranking.measureLabel ?? "") || "driver",
 			data: {
 				kind: "driver",
-				targetType: projected.target_type,
-				grain: projected.grain,
-				topDimensions: projected.ranked_dimensions.map((r) => r.dimension),
+				targetType: d.ranking.targetType ?? "",
+				grain: d.ranking.grain ?? "row",
+				topDimensions: topDimensionNames(d.ranking.rankedDimensions),
 			},
 		});
 		if (markColumn(d.measureColumnId)) {
@@ -439,219 +446,4 @@ export function computeVisibleGraph(
 		if (!edges.has(id)) edges.set(id, { id, source, target, kind: e.kind });
 	}
 	return { nodes, edges: [...edges.values()] };
-}
-
-// --- IO loader -------------------------------------------------------------
-
-export interface LoadOperatingModelResult {
-	/** False until the operating_model stage has a promoted run (page shows "not run"). */
-	analyzed: boolean;
-	graph: OperatingModelGraph;
-}
-
-const EMPTY_GRAPH: OperatingModelGraph = { nodes: [], edges: [] };
-
-/**
- * Fetch every input the concept-spine graph needs and assemble it. Reuses the
- * look_* read contracts for metric/cycle/validation lifecycle state; reads the
- * views directly for the columns those projections drop (measure_column_id,
- * sql_used) and for the concept/grounding/relationship/column substrate.
- */
-export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResult> {
-	const metricResult = await lookMetric();
-	// Gate on the operating_model head: with no promoted run there are no metrics to
-	// anchor the model — the page shows "run the operating model first".
-	if (!metricResult.analyzed) return { analyzed: false, graph: EMPTY_GRAPH };
-
-	const [cycleResult, validationResult] = await Promise.all([
-		lookCycle(),
-		lookValidation(),
-	]);
-
-	const [
-		conceptSnippetRows,
-		conceptColumnRows,
-		driverRows,
-		relationshipRows,
-		columnRows,
-		tableRows,
-		validationSqlRows,
-	] = await Promise.all([
-		// All graph snippets (NOT filtered on standard_field) — the rows feed BOTH the
-		// concept edges (steps that carry a standard_field) and the per-metric SQL
-		// (every step's validated body, incl. compute steps with no standard_field).
-		metadataDb
-			.select({
-				source: sqlSnippets.source,
-				standardField: sqlSnippets.standardField,
-				sql: sqlSnippets.sql,
-			})
-			.from(sqlSnippets)
-			.where(
-				and(
-					eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
-					like(sqlSnippets.source, "graph:%"),
-				),
-			),
-		metadataDb
-			.select({
-				concept: currentSemanticAnnotations.businessConcept,
-				columnId: currentSemanticAnnotations.columnId,
-			})
-			.from(currentSemanticAnnotations)
-			.where(isNotNull(currentSemanticAnnotations.businessConcept)),
-		metadataDb
-			.select({
-				measureColumnId: currentDriverRankings.measureColumnId,
-				measureLabel: currentDriverRankings.measureLabel,
-				targetType: currentDriverRankings.targetType,
-				grain: currentDriverRankings.grain,
-				entity: currentDriverRankings.entity,
-				nRows: currentDriverRankings.nRows,
-				rankedDimensions: currentDriverRankings.rankedDimensions,
-				driverPaths: currentDriverRankings.driverPaths,
-				interestingSlices: currentDriverRankings.interestingSlices,
-				secondaryDimensions: currentDriverRankings.secondaryDimensions,
-			})
-			.from(currentDriverRankings),
-		metadataDb
-			.select({
-				fromColumnId: currentRelationships.fromColumnId,
-				toColumnId: currentRelationships.toColumnId,
-			})
-			.from(currentRelationships),
-		metadataDb
-			.select({
-				columnId: columnsView.columnId,
-				tableId: columnsView.tableId,
-				columnName: columnsView.columnName,
-			})
-			.from(columnsView),
-		metadataDb
-			.select({ tableId: tablesView.tableId, tableName: tablesView.tableName })
-			.from(tablesView),
-		metadataDb
-			.select({
-				validationId: currentValidationResults.validationId,
-				sqlUsed: currentValidationResults.sqlUsed,
-			})
-			.from(currentValidationResults),
-	]);
-
-	const graphIdOf = (source: string) => {
-		const idx = source.indexOf(":");
-		return idx === -1 ? source : source.slice(idx + 1);
-	};
-	const metricConcepts: MetricConceptInput[] = [];
-	const sqlByMetric = new Map<string, string[]>();
-	for (const r of conceptSnippetRows) {
-		if (!r.source) continue;
-		const graphId = graphIdOf(r.source);
-		if (r.standardField)
-			metricConcepts.push({ graphId, concept: r.standardField });
-		if (r.sql) {
-			const steps = sqlByMetric.get(graphId) ?? [];
-			steps.push(r.sql);
-			sqlByMetric.set(graphId, steps);
-		}
-	}
-
-	const conceptColumns: ConceptColumnInput[] = conceptColumnRows
-		.filter((r): r is { concept: string; columnId: string } =>
-			Boolean(r.concept && r.columnId),
-		)
-		.map((r) => ({ concept: r.concept, columnId: r.columnId }));
-
-	const drivers: DriverInput[] = driverRows
-		.filter((r): r is typeof r & { measureColumnId: string } =>
-			Boolean(r.measureColumnId),
-		)
-		.map((r) => ({
-			measureColumnId: r.measureColumnId,
-			ranking: {
-				measureLabel: r.measureLabel,
-				targetType: r.targetType,
-				grain: r.grain,
-				entity: r.entity,
-				nRows: r.nRows,
-				rankedDimensions: r.rankedDimensions,
-				driverPaths: r.driverPaths,
-				interestingSlices: r.interestingSlices,
-				secondaryDimensions: r.secondaryDimensions,
-			},
-		}));
-
-	const relationships: RelationshipInput[] = relationshipRows
-		.filter((r): r is { fromColumnId: string; toColumnId: string } =>
-			Boolean(r.fromColumnId && r.toColumnId),
-		)
-		.map((r) => ({ fromColumnId: r.fromColumnId, toColumnId: r.toColumnId }));
-
-	const columns: ColumnInput[] = columnRows
-		.filter(
-			(r): r is { columnId: string; tableId: string; columnName: string } =>
-				Boolean(r.columnId && r.tableId && r.columnName),
-		)
-		.map((r) => ({
-			columnId: r.columnId,
-			tableId: r.tableId,
-			columnName: r.columnName,
-		}));
-
-	const tables: TableInput[] = tableRows
-		.filter((r): r is { tableId: string; tableName: string } =>
-			Boolean(r.tableId && r.tableName),
-		)
-		.map((r) => ({ tableId: r.tableId, tableName: r.tableName }));
-
-	const sqlByValidation = new Map<string, string | null>();
-	for (const r of validationSqlRows) {
-		if (r.validationId) sqlByValidation.set(r.validationId, r.sqlUsed ?? null);
-	}
-
-	const metrics: MetricInput[] = metricResult.metrics.map((m) => {
-		const steps = sqlByMetric.get(m.graph_id);
-		return {
-			graphId: m.graph_id,
-			state: m.state,
-			stateReason: m.state_reason,
-			snippetCount: m.snippet_count,
-			sql: steps?.length ? steps.join("\n\n-- ── next step ──\n\n") : null,
-		};
-	});
-
-	const cycles: CycleInput[] = cycleResult.cycles.map((c) => ({
-		canonicalType: c.canonical_type,
-		cycleName: c.cycle_name,
-		state: c.state,
-		completionRate: c.completion_rate,
-		completedCycles: c.completed_cycles,
-		totalRecords: c.total_records,
-	}));
-
-	const validations: ValidationInput[] = validationResult.validations.map(
-		(v) => ({
-			validationId: v.validation_id,
-			state: v.state,
-			passed: v.passed,
-			severity: v.severity,
-			status: v.status,
-			sqlUsed: sqlByValidation.get(v.validation_id) ?? null,
-			columnsUsed: v.columns_used,
-		}),
-	);
-
-	const graph = buildOperatingModelGraph({
-		metrics,
-		metricConcepts,
-		cycles,
-		validations,
-		drivers,
-		conceptColumns,
-		relationships,
-		columns,
-		tables,
-	});
-
-	return { analyzed: true, graph };
 }

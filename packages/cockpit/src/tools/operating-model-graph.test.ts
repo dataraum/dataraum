@@ -1,10 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-// The module imports the metadata client + config at top level (for the IO loader);
-// the pure builder under test touches neither. Mock them so the import is DB-free.
-vi.mock("#/config", () => ({ config: { dataraumWorkspaceId: "ws" } }));
-vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
-
+// The module under test is now PURE (no DB/config imports) — the IO loader lives in
+// operating-model-load.ts — so no mocks are needed to import it.
 import {
 	buildOperatingModelGraph,
 	computeVisibleGraph,

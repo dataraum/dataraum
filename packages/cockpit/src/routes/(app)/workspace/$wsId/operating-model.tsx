@@ -7,7 +7,7 @@ import { Box, Center, Stack, Text } from "@mantine/core";
 import { ClientOnly, createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 
-import { loadOperatingModelGraph } from "#/tools/operating-model-graph";
+import { loadOperatingModelGraph } from "#/tools/operating-model-load";
 import { ModelIcon } from "#/ui/cockpit/operating-model/nodes";
 import { OperatingModelCanvas } from "#/ui/cockpit/operating-model/operating-model-canvas";
 

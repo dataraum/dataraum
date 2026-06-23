@@ -1,6 +1,6 @@
-// begin_session tool (DAT-409; routed through the JourneyWorkflow in DAT-530 P3b)
-// — start an analytical session over a selected set of typed tables, so the agent
-// can compose a workspace and then look / why / teach over its relationships.
+// begin_session tool (DAT-409; DAT-609) — start an analytical session over a
+// selected set of typed tables, so the agent can compose a workspace and then
+// look / why / teach over its relationships.
 //
 // begin_session is source-free (DAT-401): it operates on an array of already-typed
 // table ids (from `list_tables`), which may span sources. The engine's
@@ -8,19 +8,18 @@
 // teaches → detect → keepers → promote (semantic_per_table makes real Anthropic
 // calls), so this is a compute kick on the user's explicit instruction.
 //
-// DAT-530: this tool no longer starts the workflow directly. It is the INTENTIONAL
-// trigger — it signals the per-workspace JourneyWorkflow (`runBeginSession`), and
-// the journey starts `beginSessionWorkflow` as a cross-language CHILD on the
-// workspace's `engine-<id>` queue, records the run in cockpit_db (authoritative,
-// before start), and — when it completes — auto-runs operating_model (the cascade,
-// Phase 2). The journey advances tab-independently. The tool captures the current
-// conversationId and passes it through, so the run still narrates into THIS chat
-// (the journey has no request ALS — DAT-528).
+// DAT-609: this tool starts the per-workspace `sessionCascadeWorkflow` (id
+// `session-<ws>`) on the cockpit-orchestration queue. That workflow records the run in
+// cockpit_db (authoritative, before start), starts `beginSessionWorkflow` as a
+// cross-language CHILD on the workspace's `engine-<id>` queue, and — on a clean result
+// — auto-cascades into operating_model. It advances tab-independently. The tool
+// captures the current conversationId and passes it through so both children's
+// completions narrate into THIS chat (the worker has no request ALS — DAT-528).
 //
 // The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
-// progress by workflow id — the latest execution; the real Temporal run id is
-// owned by the journey). The workflow id is `beginsession-<workspace_id>` — one per
-// workspace (DAT-562) so teach re-runs group under one id.
+// progress by workflow id — the latest execution; the real Temporal run id is owned by
+// the workflow). The workflow id is `beginsession-<workspace_id>` — one per workspace
+// (DAT-562) so teach re-runs group under one id.
 
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
@@ -29,9 +28,13 @@ import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { hasImportedTables } from "../db/metadata/workspace-state";
 import { currentConversationId } from "../lib/run-context";
-import { signalRunBeginSession } from "../temporal/journey-trigger";
+import { startSessionCascade } from "../temporal/orchestration-trigger";
 import { beginSessionWorkflowId } from "../temporal/workflow-id";
-import { type AgentError, withAgentError } from "./agent-error";
+import {
+	type AgentError,
+	catchActionable,
+	withAgentError,
+} from "./agent-error";
 
 export interface BeginSessionToolInput {
 	table_ids: string[];
@@ -39,10 +42,10 @@ export interface BeginSessionToolInput {
 
 export interface BeginSessionToolResult {
 	// The deterministic engine workflow id (`beginsession-<ws>`). Progress is polled
-	// by this id (the latest execution); the journey owns the real run id. One id per
+	// by this id (the latest execution); the workflow owns the real run id. One id per
 	// workspace (DAT-562) — re-running begin_session after a teach reuses it.
 	workflow_id: string;
-	// Kept for the result contract; equals workflow_id (the journey starts the run,
+	// Kept for the result contract; equals workflow_id (the workflow starts the run,
 	// so no Temporal execution id is known at tool-return time — progress resolves
 	// the latest run by workflow_id, DAT-530).
 	run_id: string;
@@ -50,10 +53,10 @@ export interface BeginSessionToolResult {
 }
 
 /**
- * Signal the workspace's JourneyWorkflow to run a begin_session stage. Returns the
- * deterministic workflow + session id immediately; the journey records the run
- * (authoritative) and starts + awaits the engine child, narrating completion into
- * this chat. The caller does NOT poll.
+ * Start the workspace's sessionCascadeWorkflow (DAT-609). Returns the deterministic
+ * begin_session workflow id immediately; the workflow records the run (authoritative)
+ * and starts + awaits the engine child, then auto-cascades into operating_model on a
+ * clean result. The caller does NOT poll; completion narrates via the watcher.
  */
 export async function beginSession(
 	input: BeginSessionToolInput,
@@ -83,11 +86,13 @@ export async function beginSession(
 	const workspace = await resolveActiveWorkspaceRow();
 	const workflowId = beginSessionWorkflowId(workspace.id);
 
-	// Signal the journey to run the stage. The tool passes the derived ids/queue +
-	// verticals + the originating conversationId (captured from the request-scoped
-	// ALS HERE, while we're still in the chat turn — the journey has none). The
-	// journey records the run authoritatively and starts the engine child.
-	await signalRunBeginSession(workspace.id, {
+	// Start the cascade workflow. The tool passes the derived ids/queue + verticals +
+	// the originating conversationId (captured from the request-scoped ALS HERE, while
+	// we're still in the chat turn — the worker has none). The workflow records the run
+	// authoritatively and starts the engine child; a concurrent begin_session raises
+	// RunAlreadyRunningError (an AgentActionableError → { error } via catchActionable).
+	await startSessionCascade({
+		workspaceId: workspace.id,
 		workflowId,
 		engineTaskQueue: workspace.taskQueue,
 		tables: input.table_ids,
@@ -134,4 +139,4 @@ export const beginSessionTool = toolDefinition({
 			table_ids: z.array(z.string()),
 		}),
 	),
-}).server((input) => beginSession(input));
+}).server((input) => catchActionable(() => beginSession(input)));

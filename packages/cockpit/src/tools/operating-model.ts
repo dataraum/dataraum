@@ -1,8 +1,7 @@
-// operating_model tool (DAT-440; routed through the JourneyWorkflow in DAT-530
-// P3b) — run the journey's third stage over an existing begin_session session:
-// take the vertical's declared validations through the typed lifecycle (declare →
-// ground/bind → execute) and promote the outcome under the workspace
-// `operating_model` catalog head.
+// operating_model tool (DAT-440; DAT-609) — run the third stage over an existing
+// begin_session session: take the vertical's declared validations through the typed
+// lifecycle (declare → ground/bind → execute) and promote the outcome under the
+// workspace `operating_model` catalog head.
 //
 // Identity + vertical (DAT-438, DAT-506): begin_session ESTABLISHES the table
 // set; the workflow's pre-flight resolve activity re-reads it from the catalog
@@ -11,17 +10,15 @@
 // cockpit session row already exists (begin_session recorded it), and the engine
 // fails loud when the catalog has no tables.
 //
-// DAT-530: the autonomous journey auto-runs operating_model right after a clean
-// begin_session (the cascade). This tool is kept as the MANUAL re-trigger (a teach
-// re-run, P3c) — it no longer starts the workflow directly; it signals the
-// per-workspace JourneyWorkflow (`runOperatingModel`), which records the run +
-// starts `operatingModelWorkflow` as a cross-language child on the workspace's
-// `engine-<id>` queue and narrates completion into THIS chat (the conversationId is
-// captured at the tool boundary — the journey has no request ALS, DAT-528). The
-// tool returns the deterministic workflow id immediately (progress polls by id —
-// the latest execution; the journey owns the real run id). Outcomes are read back
-// with `look_validation` / `why_validation` — the engine's persisted state/reason
-// verbatim, never re-derived here.
+// DAT-609: the autonomous cascade (`sessionCascadeWorkflow`) auto-runs operating_model
+// right after a clean begin_session. This tool is the MANUAL re-trigger (a teach
+// re-run) — a DIRECT single-shot engine start (no orchestration workflow, since there
+// is no follow-on stage): `startDirectRun` records the run + starts
+// `operatingModelWorkflow` on the workspace's `engine-<id>` queue, and the
+// completion-watcher narrates into THIS chat (conversationId from the request ALS,
+// DAT-528). The tool returns the deterministic workflow id immediately (progress polls
+// by id — the latest execution). Outcomes are read back with `look_validation` /
+// `why_validation` — the engine's persisted state/reason verbatim, never re-derived here.
 
 import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
@@ -29,10 +26,13 @@ import { z } from "zod";
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { hasRunningRun } from "../db/cockpit/runs";
-import { currentConversationId } from "../lib/run-context";
-import { signalRunOperatingModel } from "../temporal/journey-trigger";
+import { startDirectRun } from "../temporal/orchestration-trigger";
 import { operatingModelWorkflowId } from "../temporal/workflow-id";
-import { type AgentError, withAgentError } from "./agent-error";
+import {
+	type AgentError,
+	catchActionable,
+	withAgentError,
+} from "./agent-error";
 
 // No input: operating_model re-runs the WORKSPACE's begin_session result (DAT-562
 // retired the session id — the engine re-reads the table set from the catalog head's
@@ -42,20 +42,20 @@ export type OperatingModelToolInput = Record<string, never>;
 
 export interface OperatingModelToolResult {
 	// The deterministic engine workflow id (`operatingmodel-<ws>`). Progress is
-	// polled by this id (the latest execution); the journey owns the real run id.
+	// polled by this id (the latest execution); the engine owns the real run id.
 	workflow_id: string;
-	// Kept for the result contract; equals workflow_id (the journey starts the run,
-	// so no Temporal execution id is known at tool-return time — progress resolves
-	// the latest run by workflow_id, DAT-530).
+	// Kept for the result contract; equals workflow_id (no Temporal execution id is
+	// known at tool-return time — progress resolves the latest run by workflow_id,
+	// DAT-530).
 	run_id: string;
 }
 
 /**
- * Signal the workspace's JourneyWorkflow to run an operating_model stage (the
- * manual re-trigger). Returns the deterministic workflow id immediately;
- * the journey records the run (authoritative) and starts + awaits the engine child,
- * narrating completion into this chat. The caller does NOT poll. Read the outcome
- * via `look_validation`.
+ * Run the operating_model stage as a DIRECT single-shot engine start (the manual
+ * re-trigger; DAT-609 — there is no follow-on stage, so no orchestration workflow).
+ * `startDirectRun` records the run (authoritative, before start) and starts the engine
+ * workflow; completion narrates via the watcher. The caller does NOT poll. Read the
+ * outcome via `look_validation`.
  */
 export async function operatingModel(): Promise<
 	OperatingModelToolResult | AgentError
@@ -86,15 +86,23 @@ export async function operatingModel(): Promise<
 
 	const workflowId = operatingModelWorkflowId(workspace.id);
 
-	// Signal the journey to run the stage. The tool passes the derived ids/queue +
-	// verticals + the originating conversationId (captured from the request-scoped
-	// ALS HERE, while we're still in the chat turn — the journey has none). The
-	// journey records the run authoritatively and starts the engine child.
-	await signalRunOperatingModel(workspace.id, {
+	// Direct single-shot engine start (DAT-609). startDirectRun records the run
+	// authoritatively (conversationId from the request ALS — we're in the chat turn)
+	// and starts the engine workflow on the workspace's queue. operating_model
+	// re-reads the session's table set from the catalog head (DAT-506), so only the
+	// workspace + verticals go on the wire. A concurrent operating_model raises
+	// RunAlreadyRunningError (→ { error } via catchActionable).
+	await startDirectRun({
+		workspaceId: workspace.id,
+		kind: "begin_session",
+		stage: "operating_model",
+		workflowType: "operatingModelWorkflow",
 		workflowId,
-		engineTaskQueue: workspace.taskQueue,
-		verticals: [workspace.vertical],
-		conversationId: currentConversationId(),
+		taskQueue: workspace.taskQueue,
+		args: [{ workspace_id: workspace.id, verticals: [workspace.vertical] }],
+		busyMessage:
+			"operating_model is already running for this workspace — wait for it " +
+			"to finish, then re-run.",
 	});
 
 	return {
@@ -131,4 +139,4 @@ export const operatingModelTool = toolDefinition({
 			run_id: z.string(),
 		}),
 	),
-}).server(() => operatingModel());
+}).server(() => catchActionable(() => operatingModel()));

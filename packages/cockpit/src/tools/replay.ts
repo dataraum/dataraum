@@ -8,20 +8,20 @@
 // replay is always a full, non-destructive re-run that re-reads the durable teach
 // overlays.
 //
-// Pure compute kick (DAT-551: routed through the JourneyWorkflow — it SIGNALS the
-// per-workspace journey, which records the run + starts the child): it REUSES the
-// workspace's `addsource-<workspace_id>` workflow id (see workflow-id.ts — one id
-// per workspace) and returns the workflow id + run id immediately; the caller polls
-// / queries Temporal for progress. Reusing the id is what makes a replay that
-// resolves a parked grounding gap self-clear the "Needs you" inbox (the parked
-// run's workflow gets a newer run — see openAwaitingItem). End-to-end "replay
-// actually produces clean output" coverage lives in the integration smoke that
-// drives the running stack.
+// Pure compute kick (DAT-609: a DIRECT single-shot engine start — `startDirectRun`
+// records the run + starts `addSourceWorkflow` directly, NOT the grounding loop, since
+// a manual replay is the user doing teach+replay by hand): it REUSES the workspace's
+// `addsource-<workspace_id>` workflow id (see workflow-id.ts — one id per workspace)
+// and returns the workflow id + run id immediately; the caller polls / queries Temporal
+// for progress. Reusing the id is what makes a replay that resolves a parked grounding
+// gap self-clear the "Needs you" inbox (the parked run's workflow gets a newer run —
+// see openAwaitingItem). End-to-end "replay actually produces clean output" coverage
+// lives in the integration smoke that drives the running stack.
 //
 // No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
-// by `run_id`). The run is recorded by the JOURNEY in cockpit_db AUTHORITATIVELY
-// BEFORE the child starts (DAT-551). The `vertical` is the workspace property,
-// sourced from the registry (DAT-506 retired the per-session vertical pick).
+// by `run_id`). The run is recorded in cockpit_db AUTHORITATIVELY BEFORE the engine
+// workflow starts (DAT-609 — `startDirectRun`). The `vertical` is the workspace
+// property, sourced from the registry (DAT-506 retired the per-session vertical pick).
 
 import { toolDefinition } from "@tanstack/ai";
 import { eq } from "drizzle-orm";
@@ -32,8 +32,7 @@ import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import { metadataSnapshotHead, runTables, tables } from "../db/metadata/schema";
-import { currentConversationId } from "../lib/run-context";
-import { signalRunAddSource } from "../temporal/journey-trigger";
+import { startDirectRun } from "../temporal/orchestration-trigger";
 import { addSourceWorkflowId } from "../temporal/workflow-id";
 import {
 	AgentActionableError,
@@ -77,10 +76,12 @@ export interface ReplayResult {
 }
 
 /**
- * Signal the journey to run a fresh `addSourceWorkflow` that re-applies pending
- * teaches as a full re-run of the workspace's current sources (DAT-551). Returns
- * immediately with the workflow id; the journey records the run + starts the child,
- * and progress resolves the latest execution by workflow id (run_id mirrors it).
+ * Run a fresh `addSourceWorkflow` that re-applies pending teaches as a full re-run of
+ * the workspace's current sources — a DIRECT single-shot engine start (DAT-609). A
+ * manual replay is the user doing teach+replay by hand, so it must NOT re-enter the
+ * autonomous grounding loop; it just runs add_source. Returns immediately with the
+ * workflow id; `startDirectRun` records the run + starts the engine workflow, and
+ * progress resolves the latest execution by workflow id (run_id mirrors it).
  *
  * The run REUSES the workspace's `addsource-<ws>` workflow id (DAT-562) — so a
  * replay that resolves a parked grounding gap appends a newer run under the SAME id,
@@ -107,24 +108,34 @@ export async function replay(_input: ReplayInput): Promise<ReplayResult> {
 	const workspace = await resolveActiveWorkspaceRow();
 	const workflowId = addSourceWorkflowId(workspace.id);
 
-	// Signal the journey to run the stage (DAT-551). kind:"replay" marks the run
-	// origin; the journey records the run authoritatively + starts the engine child
-	// on the workspace's OWN queue (DAT-505), re-reading the durable teach overlays.
-	// The conversationId is captured HERE (request ALS) so the run narrates into THIS
-	// chat — the journey has none. `verticals` is the workspace ontology (born-loud
-	// on >1); the engine scopes each `import` to one source + resolves provenance
-	// relationally past import.
-	await signalRunAddSource(workspace.id, {
-		workflowId,
-		engineTaskQueue: workspace.taskQueue,
-		sources: replaySources,
-		verticals: [workspace.vertical],
+	// Direct single-shot engine start (DAT-609). kind:"replay" marks the run origin;
+	// startDirectRun records the run authoritatively (conversationId from the request
+	// ALS — so the run narrates into THIS chat) + starts the engine child on the
+	// workspace's OWN queue (DAT-505), re-reading the durable teach overlays. A replay
+	// while an import/replay is already in flight raises RunAlreadyRunningError
+	// (→ { error } via the tool's catchActionable wrapper). `verticals` is the
+	// workspace ontology (born-loud on >1).
+	await startDirectRun({
+		workspaceId: workspace.id,
 		kind: "replay",
-		conversationId: currentConversationId(),
+		stage: "add_source",
+		workflowType: "addSourceWorkflow",
+		workflowId,
+		taskQueue: workspace.taskQueue,
+		args: [
+			{
+				workspace_id: workspace.id,
+				sources: replaySources,
+				verticals: [workspace.vertical],
+			},
+		],
+		busyMessage:
+			"An import or replay is already running for this workspace — wait for " +
+			"it to finish, then replay.",
 	});
 
 	return {
-		// Deterministic workflow id; run_id mirrors it (the journey owns the real
+		// Deterministic workflow id; run_id mirrors it (the engine owns the real
 		// execution id — progress resolves the latest run by workflow_id, DAT-530).
 		workflow_id: workflowId,
 		run_id: workflowId,

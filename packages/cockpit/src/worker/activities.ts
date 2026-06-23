@@ -21,7 +21,6 @@
 // workflow's deterministic loop drives the replays around it.
 
 export {
-	attachRunId,
 	markRunAwaitingInput,
 	markRunStatus,
 	recordRun,

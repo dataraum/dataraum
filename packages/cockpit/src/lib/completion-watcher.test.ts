@@ -116,25 +116,26 @@ describe("run-routing (DAT-528): a run narrates only into its own conversation",
 	});
 });
 
-describe("placeholder runs are skipped until attachRunId finalizes the real id (DAT-595)", () => {
-	it("does NOT track, poll, or narrate a run whose runId still equals its workflowId", async () => {
-		// A just-recorded run carries the workflowId PLACEHOLDER until attachRunId
-		// rewrites it post-start. getWorkflowProgress can only PIN a real id, so the
-		// watcher must skip the placeholder — otherwise a reused workflow id would
-		// resolve a PRIOR run's terminal state and mark this one done off it (DAT-595).
+describe("tracks + pins a run by its real execution id (DAT-595)", () => {
+	it("tracks and polls a recorded run — every run carries its real runId (no placeholder phase)", async () => {
+		// Post-DAT-595 a recorded run always carries the real Temporal execution id
+		// (recorded post-start), never the workflowId placeholder, so getWorkflowProgress
+		// always PINS the exact (workflowId, runId) — a reused `addsource-<ws>` id can
+		// never resolve a sibling run's terminal state.
 		vi.mocked(listWatchableRuns).mockResolvedValueOnce([
 			{
 				workflowId: "addsource-ws",
-				runId: "addsource-ws",
-				stage: "add_source",
-				kind: "onboarding",
+				runId: "exec-real",
+				stage: "begin_session",
+				kind: "begin_session",
 			},
 		]);
 		const tracked = new Map<string, WatchableRun>();
 		await pollOnce("A", tracked, new AbortController().signal);
-		expect(tracked.size).toBe(0);
-		expect(getWorkflowProgress).not.toHaveBeenCalled();
-		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+		expect(getWorkflowProgress).toHaveBeenCalledWith({
+			workflow_id: "addsource-ws",
+			run_id: "exec-real",
+		});
 	});
 });
 

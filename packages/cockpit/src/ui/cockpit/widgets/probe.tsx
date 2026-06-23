@@ -48,6 +48,7 @@ import {
 	X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { progressQueryKey } from "#/lib/workflow-progress-event";
 import { getActiveVerticalStatus } from "#/server/active-vertical";
 import { getConfiguredDatabases } from "#/server/configured-databases";
 import { importSources } from "#/server/import-sources";
@@ -164,6 +165,12 @@ export function ProbeWidget({
 
 	const queryCount = importSet.filter((x) => x.kind === "query").length;
 
+	const queryClient = useQueryClient();
+	// Bumped per import so a SECOND import in this chat REMOUNTS the progress widget.
+	// The run's workflow id is the reused per-workspace `addsource-<ws>` (DAT-562), so
+	// without a per-import key the widget would keep the prior import's node (DAT-595).
+	const [importEpoch, setImportEpoch] = useState(0);
+
 	const importMutation = useMutation({
 		mutationFn: (items: ImportItem[]) =>
 			importSources({
@@ -182,9 +189,19 @@ export function ProbeWidget({
 					conversationId,
 				},
 			}),
-		// Clear the staged set on a successful start — the run is now live (its
-		// progress renders at the top); the set is free to build the next batch.
-		onSuccess: () => setImportSet([]),
+		onSuccess: (data) => {
+			// Clear the staged set — the run is now live (its progress renders at the
+			// top); the set is free to build the next batch.
+			setImportSet([]);
+			setImportEpoch((e) => e + 1);
+			// Reset the PRIOR import's cached (terminal) progress under the reused
+			// `addsource-<ws>` key so the widget re-seeds to THIS run's latest execution
+			// — the poll is `refetchInterval: false`, so a stale done-snapshot would
+			// otherwise linger and show the previous import's tables (DAT-595).
+			queryClient.resetQueries({
+				queryKey: progressQueryKey(data.workflow_id),
+			});
+		},
 	});
 
 	const run = importMutation.data;
@@ -215,11 +232,11 @@ export function ProbeWidget({
 							? " You'll be told in the chat when it's done."
 							: ""}
 					</Text>
-					{/* Keyed by workflow id so a second import (a new run id under the same
-					    per-workspace workflow id) remounts cleanly rather than reusing a
-					    stale node — forward-compat if the id ever becomes per-run. */}
+					{/* Keyed per IMPORT (workflow id + epoch), not just the reused
+					    per-workspace workflow id, so a second import remounts a fresh
+					    progress node instead of reusing the prior import's (DAT-595). */}
 					<MeasureProgressWidget
-						key={run.workflow_id}
+						key={`${run.workflow_id}:${importEpoch}`}
 						state={{
 							kind: "add-source-progress",
 							workflowId: run.workflow_id,

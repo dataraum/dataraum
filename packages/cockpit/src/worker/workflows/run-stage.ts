@@ -19,9 +19,7 @@ import type * as activities from "../activities";
 
 // The cockpit_db writers the stage brackets each child with. Short timeout — these
 // are quick local writes, not the (long) engine stage.
-const { recordRun, attachRunId, markRunStatus } = proxyActivities<
-	typeof activities
->({
+const { recordRun, markRunStatus } = proxyActivities<typeof activities>({
 	startToCloseTimeout: "1 minute",
 	retry: { maximumAttempts: 3 },
 });
@@ -57,26 +55,20 @@ export interface StageOutcome {
 }
 
 /**
- * Run one engine stage as a cross-language child. Records the run authoritatively
- * before start, attaches the child's real execution id, marks it terminal on
- * completion. Returns {ok, result}. A failure NEVER throws out of the workflow: the
- * run is marked failed and the caller decides whether to stop (it always does — a
- * failed stage has no clean follow-on).
+ * Run one engine stage as a cross-language child. Starts the child, records the run
+ * with the child's REAL execution id (DAT-595 — recording post-start under the reused
+ * `addsource-<ws>` id keeps every run a distinct `(workflowId, runId)` row, retiring
+ * the workflowId-placeholder + attachRunId swap that conflated runs), then marks it
+ * terminal on completion. Returns {ok, result}. A failure NEVER throws out of the
+ * workflow: the run is marked failed (if recorded) and the caller decides whether to
+ * stop (it always does — a failed stage has no clean follow-on).
+ *
+ * Recording post-start is orphan-safe HERE: recordRun is a durable activity, so a
+ * worker crash replays the workflow and re-runs it (the ABANDON child keeps going).
  */
 export async function runStage(spec: StageSpec): Promise<StageOutcome> {
-	// runId is the deterministic workflowId placeholder until the child mints its
-	// execution id (so a failure before start still has a key to mark).
-	let runId = spec.workflowId;
+	let runId: string | null = null;
 	try {
-		// Authoritative record BEFORE start (throws → caught below, child not started).
-		await recordRun({
-			workspaceId: spec.workspaceId,
-			kind: spec.kind,
-			stage: spec.stage,
-			workflowId: spec.workflowId,
-			conversationId: spec.conversationId,
-		});
-
 		const child = await startChild(spec.workflowType, {
 			taskQueue: spec.taskQueue,
 			workflowId: spec.workflowId,
@@ -88,7 +80,17 @@ export async function runStage(spec: StageSpec): Promise<StageOutcome> {
 			args: spec.args,
 		});
 		runId = child.firstExecutionRunId;
-		await attachRunId(spec.workflowId, runId);
+
+		// Record with the child's REAL execution id (DAT-595) — unique per run under
+		// the reused workflow id; no placeholder, no attachRunId, no cross-run conflation.
+		await recordRun({
+			workspaceId: spec.workspaceId,
+			kind: spec.kind,
+			stage: spec.stage,
+			workflowId: spec.workflowId,
+			runId,
+			conversationId: spec.conversationId,
+		});
 
 		const result = await child.result();
 		await markRunStatus(spec.workflowId, runId, "completed");
@@ -99,14 +101,16 @@ export async function runStage(spec: StageSpec): Promise<StageOutcome> {
 			workflowId: spec.workflowId,
 			err: String(err),
 		});
-		// Mark failed best-effort (markRunStatus is a no-op if the run wasn't recorded).
-		// If even this write fails, log it — else the run lingers as phantom `running`.
-		await markRunStatus(spec.workflowId, runId, "failed").catch((markErr) => {
-			log.warn("orchestration stage mark-failed write failed", {
-				workflowId: spec.workflowId,
-				err: String(markErr),
+		// Mark failed best-effort, but only if the child started (we have a real runId);
+		// a pre-start failure recorded nothing, so there is nothing to mark.
+		if (runId !== null) {
+			await markRunStatus(spec.workflowId, runId, "failed").catch((markErr) => {
+				log.warn("orchestration stage mark-failed write failed", {
+					workflowId: spec.workflowId,
+					err: String(markErr),
+				});
 			});
-		});
+		}
 		return { ok: false, result: null };
 	}
 }

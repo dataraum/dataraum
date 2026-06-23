@@ -148,14 +148,11 @@ export async function pollOnce(
 		() => [] as WatchableRun[],
 	);
 	for (const run of candidates) {
-		// Skip a run still at its pre-attach PLACEHOLDER id (runId === workflowId):
-		// getWorkflowProgress can only PIN a real execution id, and the placeholder
-		// would fall back to the latest execution — which, for a REUSED workflow id
-		// (`addsource-<ws>`), can read a PRIOR run's terminal state and mark THIS run
-		// done off the wrong snapshot (the DAT-595 conflation). `attachRunId`
-		// finalizes the real id moments after start, so the row is tracked on the
-		// next tick (sub-second) and then pinned precisely.
-		if (run.runId === run.workflowId) continue;
+		// Every recorded run carries its REAL Temporal execution id (DAT-595 — recorded
+		// post-start), so getWorkflowProgress always PINS the exact (workflowId, runId)
+		// and a reused workflow id (`addsource-<ws>`) can never read a PRIOR run's
+		// terminal state for the run being watched. (No pre-attach placeholder phase to
+		// skip anymore.)
 		tracked.set(runKey(run), run);
 	}
 

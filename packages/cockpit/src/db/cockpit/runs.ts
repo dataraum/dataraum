@@ -1,5 +1,6 @@
-// Control-plane run recording (DAT-461, DAT-506, DAT-562) — the driver tools call
-// this BEFORE a Temporal workflow starts to record the run in cockpit_db.
+// Control-plane run recording (DAT-461, DAT-506, DAT-562, DAT-595) — the driver
+// records the run in cockpit_db RIGHT AFTER `workflow.start`, keyed by the real
+// execution id.
 //
 // Runs group by WORKSPACE (DAT-562 retired the `sessions` table — a cockpit session
 // scoped nothing post-DAT-506 and minting one per import only fragmented grouping).
@@ -7,21 +8,18 @@
 // `(workflowId, runId)` the reload-recovery substrate (DAT-462) reads to re-attach
 // progress.
 //
-// AUTHORITATIVE, not best-effort (Q4 ruling, DAT-506): an unrecorded run is
-// orphaned — the reload-recovery substrate can't re-attach to it — so recordRun runs
-// BEFORE `workflow.start` and THROWS on failure, aborting the start. Idempotent so a
-// retried start is safe: `(workflowId, runId)` is UNIQUE so a repeated record is a
-// no-op. The COMPLETION-side writers (`markRunStatus` / `claimRunNarration`) stay
-// best-effort — by then the run is recorded and live.
-//
-// `runId` is Temporal's EXECUTION id (`firstExecutionRunId`, minted only at
-// `workflow.start`) — the poll/reconcile identity. The pre-start call records the
-// run keyed by its deterministic `workflowId` with `runId` left as the workflowId
-// placeholder; `attachRunId` rewrites it to the real execution id right after start.
-// That post-record writer is best-effort — the orphan-critical run row already
-// exists by then. The engine mints its own internal metadata `run_id` (the version
-// axis) and resolves replay from the generation heads, so the cockpit never stores
-// it (DAT-506: nothing reads it back).
+// `runId` is Temporal's EXECUTION id (`firstExecutionRunId`), minted at
+// `workflow.start` — so recordRun runs JUST AFTER start with the real id (DAT-595),
+// NOT before with a workflowId placeholder. Under the reused per-workspace workflow id
+// (`addsource-<ws>`, DAT-562) that real id is what makes `(workflowId, runId)` UNIQUE
+// per execution; recording it directly retired the old workflowId-placeholder +
+// `attachRunId` swap, whose shared placeholder key conflated a NEW run with a prior
+// run's stuck placeholder (a best-effort attachRunId that never persisted → the next
+// run skipped its own insert and hijacked the stale row). Recording post-start is
+// orphan-safe: the orchestration workflow records via a durable (retried) activity,
+// and the direct tool path records immediately after a synchronous start. The engine
+// mints its own internal metadata `run_id` (the version axis) and resolves replay from
+// the generation heads, so the cockpit never stores it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, gt, isNull, notExists } from "drizzle-orm";
@@ -41,9 +39,15 @@ export interface RecordRunInput {
 	// the run row itself; operating_model re-uses "begin_session", as before).
 	kind: RunKind;
 	stage: RunStage;
-	// The deterministic workflow id (known before start). The run row is keyed by
-	// it; `runId` is the workflowId placeholder until `attachRunId` finalizes it.
+	// The deterministic workflow id (`addsource-<ws>` etc.) — REUSED per workspace
+	// across runs (DAT-562), so it does NOT identify a run on its own.
 	workflowId: string;
+	// The Temporal EXECUTION id (`firstExecutionRunId`) — minted by `workflow.start`,
+	// so the run is recorded RIGHT AFTER start (DAT-595): this is what makes a run row
+	// unique (`(workflowId, runId)`) under the reused workflow id. Recording the real
+	// id directly retired the old workflowId-placeholder + `attachRunId` swap, whose
+	// shared placeholder key conflated a new run with a prior run's stuck placeholder.
+	runId: string;
 	// The originating chat (DAT-528) for run→chat narration routing. OMITTED by
 	// the in-request tool drivers — they fall back to the request-scoped ALS
 	// (`currentConversationId()`). Passed EXPLICITLY by the orchestration worker
@@ -54,10 +58,14 @@ export interface RecordRunInput {
 }
 
 /**
- * Record the run AUTHORITATIVELY, BEFORE `workflow.start`. Throws on failure (the
- * caller must not start an unrecorded — orphaned — run). The run row's `runId` is
- * the deterministic `workflowId` until `attachRunId` rewrites it to the Temporal
- * execution id post-start.
+ * Record the run with its REAL Temporal execution id, RIGHT AFTER `workflow.start`
+ * (DAT-595). Safe to record post-start: the orchestration workflow records via a
+ * durable activity (retried on crash), and the direct tool path records immediately
+ * after a synchronous `start` (negligible window, idempotent re-trigger recovers).
+ *
+ * Idempotent on `(workflowId, runId)` — UNIQUE per execution, so a retry is a no-op
+ * and two runs of the reused `addsource-<ws>` id never collide (the conflation the
+ * old workflowId-placeholder scheme allowed; DAT-595).
  */
 export async function recordRun(input: RecordRunInput): Promise<void> {
 	await cockpitDb
@@ -68,10 +76,8 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 			kind: input.kind,
 			stage: input.stage,
 			workflowId: input.workflowId,
-			// Provisional until attachRunId: the Temporal execution runId isn't known
-			// until after start. Keyed by the deterministic workflowId so the row is
-			// addressable now and the (workflowId, runId) UNIQUE upsert is idempotent.
-			runId: input.workflowId,
+			// The real Temporal execution id — unique per run under the reused workflow id.
+			runId: input.runId,
 			// The originating chat (DAT-528). An explicit value (incl. null) wins —
 			// the orchestration worker passes it, since it has no request ALS. When
 			// omitted (the in-request tool drivers), fall back to the ALS context the
@@ -83,37 +89,11 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 					: currentConversationId(),
 			status: "running",
 		})
-		// Idempotent on the deterministic (workflowId, runId=workflowId) key. Workflow
-		// ids are constant-per-workspace now (DAT-562), so this also guards a second
-		// trigger for the same stage — but single-flight (DAT-609: the workflow-id reuse
-		// policy, `ALLOW_DUPLICATE` + conflict `FAIL`) rejects a second start while one
-		// is running, and `attachRunId` rewrites the provisional runId off the
-		// placeholder right after start, so two adds never race for this one row.
+		// Idempotent on the UNIQUE (workflowId, real runId) — a retried record is a
+		// no-op; distinct executions of the reused workflow id are distinct rows.
 		.onConflictDoNothing({
 			target: [runs.workflowId, runs.runId],
 		});
-}
-
-/**
- * Rewrite a recorded run's provisional `runId` (the workflowId placeholder) to
- * the real Temporal execution id, right after `workflow.start`. Best-effort: the
- * orphan-critical run row already exists; this only refines the run's
- * Temporal identity for the progress poll / reload-recovery.
- */
-export async function attachRunId(
-	workflowId: string,
-	runId: string,
-): Promise<void> {
-	try {
-		await cockpitDb
-			.update(runs)
-			.set({ runId })
-			.where(and(eq(runs.workflowId, workflowId), eq(runs.runId, workflowId)));
-	} catch (err) {
-		console.warn(
-			`[cockpit] attachRunId failed for ${workflowId} (run ${runId}): ${err}`,
-		);
-	}
 }
 
 /**

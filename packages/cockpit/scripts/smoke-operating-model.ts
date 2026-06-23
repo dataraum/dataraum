@@ -102,15 +102,6 @@ async function ingest(client: Client): Promise<string[]> {
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
 
-	// Record the add_source run in cockpit_db (DAT-562 — runs group by workspace,
-	// no session row; keyed by the workspace's deterministic add_source workflow id).
-	await recordRun({
-		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		kind: "onboarding",
-		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
-	});
-
 	const input: AddSourceInput = {
 		// FLAT, source-free input (DAT-506): no identity, no session/source id.
 		workspace_id: env.DATARAUM_WORKSPACE_ID,
@@ -123,6 +114,15 @@ async function ingest(client: Client): Promise<string[]> {
 		taskQueue: env.TEMPORAL_TASK_QUEUE,
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
+	});
+	// Record the add_source run in cockpit_db AFTER start with the real execution id
+	// (DAT-562/DAT-595 — runs group by workspace; the row carries the Temporal exec id).
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
+		runId: handle.firstExecutionRunId,
 	});
 	const result = (await handle.result()) as AddSourceResult;
 	const typed = result.tables.map((t) => t.typed_table_id).filter(Boolean);

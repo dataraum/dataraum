@@ -90,6 +90,11 @@ function isWhyResult(result: unknown): boolean {
  * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
+	// The staging-hub opener (DAT-597 follow-up): re-mount the hub on the canvas.
+	// The hub is the Connect default canvas, but any projecting tool below replaces
+	// it; this brings it back. A bare `probe` kind (no seed — the user picks the
+	// source + writes SQL in the hub).
+	open_staging_hub: () => ({ kind: "probe" }),
 	// Project only a real array — a partial/streaming or errored output can be a
 	// truthy NON-array, and the SourceList/Inventory widgets call .filter/.reduce/
 	// .length on it ("e.filter is not a function"). Non-array → leave unchanged.

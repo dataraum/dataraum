@@ -55,6 +55,9 @@ describe("per-type instructions (DAT-532)", () => {
 
 		expect(connect).toContain("teach");
 		expect(connect).toContain("replay");
+		// The ONE retained opener — re-mounts the staging hub on the canvas (DAT-597
+		// follow-up); the acquisition LOGIC tools stay removed.
+		expect(connect).toContain("open_staging_hub");
 		expect(connect).not.toContain("begin_session");
 		// The removed acquisition surface must not be advertised any more.
 		expect(connect).not.toContain("Calling select STARTS the import");

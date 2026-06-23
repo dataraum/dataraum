@@ -16,6 +16,7 @@ import { isAgentError } from "#/tools/agent-error";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
 import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
@@ -186,6 +187,12 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		isWhyResult(result)
 			? { kind: "metric-why", why: result as WhyMetricResult }
 			: null,
+	// The begin_session driver rankings (DAT-546/DAT-579). Project only a complete
+	// result (a `rankings` array) — same partial/errored-output guard as look_metric.
+	look_drivers: (result) =>
+		Array.isArray((result as { rankings?: unknown } | null)?.rankings)
+			? { kind: "driver-list", look: result as LookDriversResult }
+			: null,
 	// DAT-482: a teach_metric OVERRIDE surfaces the shipped DAG it replaces. Unlike
 	// the other teach tools (rail-only), an override carries a renderable surface —
 	// but only an override: a fresh declaration (override:false) or an errored
@@ -303,7 +310,6 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
  * guardrail for the DAT-526 P1 registry split. Disjoint from `CANVAS_TOOLS`.
  */
 export const CHIP_ONLY: ReadonlySet<string> = new Set([
-	"look_drivers", // driver rankings → chip summary; a dedicated widget is a fast-follow (DAT-546)
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
 	"teach_validation",
 	"teach_cycle",
@@ -333,7 +339,7 @@ export function toolResultToCanvas(
  * shapes the SDK can emit: an `output` on the `tool-call` part, or a correlated
  * `tool-result` part (content is JSON; fall back to the raw string if it isn't).
  *
- * "Maps to a canvas" is the key word: a non-canvas tool (teach, look_drivers)
+ * "Maps to a canvas" is the key word: a non-canvas tool (teach, teach_cycle)
  * completing LAST must NOT shadow the last real canvas result — otherwise
  * `canvasFromMessages` returns null and the caller, which optimistically set the
  * canvas to "loading" on submit, has nothing to reconcile to (the stuck-spinner

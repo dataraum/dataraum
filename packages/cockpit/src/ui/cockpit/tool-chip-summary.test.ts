@@ -52,11 +52,12 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 21 canvas-producing tools clickable", () => {
+	it("marks the 22 canvas-producing tools clickable", () => {
 		// DAT-597 removed the acquisition tools (connect, frame, select, upload,
 		// probe) — acquisition is now the staging hub, not agent tools. ONE opener is
 		// kept: open_staging_hub re-mounts that hub on the canvas (DAT-597 follow-up).
-		expect(CANVAS_TOOLS.size).toBe(21);
+		// DAT-579 follow-up: look_drivers gained a canvas widget (driver-list).
+		expect(CANVAS_TOOLS.size).toBe(22);
 		for (const name of [
 			// The retained hub opener — projects the `probe` (staging-hub) canvas.
 			"open_staging_hub",
@@ -74,6 +75,7 @@ describe("isCanvasTool", () => {
 			"why_cycle",
 			"look_metric",
 			"why_metric",
+			"look_drivers",
 			// teach_metric: an OVERRIDE projects the metric-shadow canvas (DAT-482).
 			"teach_metric",
 			"begin_session",

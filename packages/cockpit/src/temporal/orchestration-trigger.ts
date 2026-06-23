@@ -18,13 +18,7 @@ import {
 } from "@temporalio/client";
 
 import { config } from "#/config";
-import {
-	attachRunId,
-	markRunStatus,
-	type RunKind,
-	type RunStage,
-	recordRun,
-} from "#/db/cockpit/runs";
+import { type RunKind, type RunStage, recordRun } from "#/db/cockpit/runs";
 import { AgentActionableError } from "#/tools/agent-error";
 import {
 	GROUNDING_LOOP_WORKFLOW_TYPE,
@@ -132,8 +126,8 @@ async function startOrchestration(
 
 /** A direct single-shot engine run (replay add_source, manual operating_model) — no
  * orchestration workflow, because there is no follow-on stage to await. The tool
- * brackets it exactly as the journey did: `recordRun` (authoritative, before start) →
- * start the engine workflow directly → `attachRunId` the real execution id. */
+ * starts the engine workflow, then records the run with its REAL execution id
+ * (DAT-595). */
 export interface DirectRunSpec {
 	workspaceId: string;
 	/** The run's origin for the run row (replay → "replay"; manual OM → "begin_session"). */
@@ -149,24 +143,21 @@ export interface DirectRunSpec {
 }
 
 /**
- * Run a direct single-shot engine workflow with the same run-recording bracket the orchestration workflows use.
- * `recordRun` omits `conversationId` ⇒ it falls back to the request-scoped ALS
- * (these run inside the chat turn, unlike the worker) so the completion still narrates
- * into THIS chat. On a start failure the placeholder run row is marked failed so it
- * can't linger as a phantom in-flight run.
+ * Run a direct single-shot engine workflow: start it, then record the run with the
+ * REAL execution id (DAT-595 — recording post-start with the real id keeps every run
+ * a distinct `(workflowId, runId)` row under the reused `addsource-<ws>` id, retiring
+ * the placeholder + attachRunId swap that conflated runs). Recording AFTER start drops
+ * nothing on a conflict/failure — the run never started, so there's no row to clean up.
+ * `recordRun` omits `conversationId` ⇒ it falls back to the request-scoped ALS (these
+ * run inside the chat turn, unlike the worker) so the completion still narrates into
+ * THIS chat. Orphan-safety differs from the durable `runStage` path: this is a request
+ * handler, so a crash in the tiny start→record window fails the HTTP request and the
+ * user re-triggers — idempotent via recordRun's `onConflictDoNothing`.
  */
 export async function startDirectRun(spec: DirectRunSpec): Promise<void> {
-	// Guard config BEFORE recording — an unconfigured start must not leave a phantom
-	// `running` placeholder row to clean up. (withClient re-checks; cheap.)
-	requireTemporalConfig();
-	await recordRun({
-		workspaceId: spec.workspaceId,
-		kind: spec.kind,
-		stage: spec.stage,
-		workflowId: spec.workflowId,
-	});
+	let runId: string;
 	try {
-		const runId = await withClient((client) =>
+		runId = await withClient((client) =>
 			client.workflow
 				.start(spec.workflowType, {
 					taskQueue: spec.taskQueue,
@@ -176,15 +167,18 @@ export async function startDirectRun(spec: DirectRunSpec): Promise<void> {
 				})
 				.then((handle) => handle.firstExecutionRunId),
 		);
-		await attachRunId(spec.workflowId, runId);
 	} catch (err) {
-		// The run never started — drop the placeholder out of `running` so it isn't a
-		// phantom in-flight run (the watcher already skips placeholders; this keeps
-		// hasRunningRun / the monitor honest).
-		await markRunStatus(spec.workflowId, spec.workflowId, "failed");
 		if (err instanceof WorkflowExecutionAlreadyStartedError) {
 			throw new RunAlreadyRunningError(spec.busyMessage);
 		}
 		throw err;
 	}
+	// Record with the real execution id, right after start.
+	await recordRun({
+		workspaceId: spec.workspaceId,
+		kind: spec.kind,
+		stage: spec.stage,
+		workflowId: spec.workflowId,
+		runId,
+	});
 }

@@ -58,16 +58,17 @@ function requireTemporalConfig(): void {
 
 /**
  * Start the workspace's groundingLoopWorkflow for an onboarding import (DAT-609).
- * Returns the deterministic engine workflow id immediately; the workflow records the
- * run (authoritative, before start) and starts + awaits the engine child, then runs
- * the autonomous teach loop. Returns the workflowId as a PLACEHOLDER run_id — the real
- * Temporal execution id is minted by the workflow post-start and rewritten via
- * `attachRunId` (DAT-595). The widget seed + reconcile use the placeholder
- * (latest-execution fallback in getWorkflowProgress); the completion-watcher waits for
- * the real id, then PINS it.
+ * Returns the deterministic engine workflow id immediately; the workflow starts the
+ * engine child, records the run with its real Temporal execution id (DAT-595), and
+ * runs the autonomous teach loop. The returned `run_id` is the deterministic
+ * `workflowId` because the engine execution id isn't knowable at trigger time — the
+ * widget seed polls `getWorkflowProgress`, which resolves the LATEST execution when
+ * `run_id === workflow_id` (correct for the seed; the watcher pins the real id it
+ * reads from the recorded run row).
  *
  * No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
- * by `run_id`), and the `vertical` is the workspace property from the registry.
+ * by the engine's metadata `run_id`), and the `vertical` is the workspace property
+ * from the registry.
  */
 export async function triggerAddSource(
 	input: TriggerAddSourceInput,
@@ -97,10 +98,11 @@ export async function triggerAddSource(
 
 	return {
 		workflow_id: workflowId,
-		// PLACEHOLDER run_id (DAT-595): the workflow mints the real Temporal execution
-		// id post-start and rewrites it via `attachRunId`. The widget seed + reconcile
-		// take getWorkflowProgress's latest-execution fallback until then; the
-		// completion-watcher SKIPS the placeholder and pins the real id once attached.
+		// run_id mirrors the deterministic workflowId: the engine execution id isn't
+		// knowable at trigger time, so the widget seed polls by workflowId and
+		// getWorkflowProgress resolves the LATEST execution (run_id === workflow_id).
+		// The recorded run row carries the real execution id (DAT-595), which the
+		// watcher/reconcile pin precisely.
 		run_id: workflowId,
 		sources: input.sources,
 	};

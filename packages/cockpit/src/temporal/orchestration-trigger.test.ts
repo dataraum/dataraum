@@ -23,8 +23,6 @@ const h = vi.hoisted(() => {
 		start: vi.fn(async () => ({ firstExecutionRunId: "exec-1" })),
 		close: vi.fn(async () => {}),
 		recordRun: vi.fn(async () => {}),
-		attachRunId: vi.fn(async () => {}),
-		markRunStatus: vi.fn(async () => {}),
 	};
 });
 
@@ -42,8 +40,6 @@ vi.mock("@temporalio/client", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: h.recordRun,
-	attachRunId: h.attachRunId,
-	markRunStatus: h.markRunStatus,
 }));
 
 import {
@@ -63,8 +59,6 @@ beforeEach(() => {
 	h.start.mockResolvedValue({ firstExecutionRunId: "exec-1" });
 	h.close.mockClear();
 	h.recordRun.mockClear();
-	h.attachRunId.mockClear();
-	h.markRunStatus.mockClear();
 });
 
 const SINGLE_FLIGHT = {
@@ -155,16 +149,8 @@ describe("startDirectRun (DAT-609 — replay / manual operating_model)", () => {
 		busyMessage: "already running",
 	};
 
-	it("records the run BEFORE start, then starts the engine workflow + attaches the real id", async () => {
+	it("starts the engine workflow, then records the run with the REAL execution id (DAT-595)", async () => {
 		await startDirectRun(spec);
-		// Authoritative record before start (conversationId omitted ⇒ recordRun's ALS
-		// fallback) — the engine workflow id + queue, not an orchestration id.
-		expect(h.recordRun).toHaveBeenCalledWith({
-			workspaceId: "ws-1",
-			kind: "replay",
-			stage: "add_source",
-			workflowId: "addsource-ws-1",
-		});
 		expect(h.start).toHaveBeenCalledWith(
 			"addSourceWorkflow",
 			expect.objectContaining({
@@ -174,24 +160,28 @@ describe("startDirectRun (DAT-609 — replay / manual operating_model)", () => {
 				...SINGLE_FLIGHT,
 			}),
 		);
-		expect(h.attachRunId).toHaveBeenCalledWith("addsource-ws-1", "exec-1");
-		// recordRun happened before start.
-		expect(h.recordRun.mock.invocationCallOrder[0]).toBeLessThan(
-			h.start.mock.invocationCallOrder[0],
+		// Recorded AFTER start with the child's real runId (the start handle's
+		// firstExecutionRunId = "exec-1") — no workflowId placeholder, no attachRunId.
+		// conversationId omitted ⇒ recordRun's request-ALS fallback.
+		expect(h.recordRun).toHaveBeenCalledWith({
+			workspaceId: "ws-1",
+			kind: "replay",
+			stage: "add_source",
+			workflowId: "addsource-ws-1",
+			runId: "exec-1",
+		});
+		// start happened before recordRun (we need the real runId first).
+		expect(h.start.mock.invocationCallOrder[0]).toBeLessThan(
+			h.recordRun.mock.invocationCallOrder[0],
 		);
 	});
 
-	it("marks the placeholder failed + translates a conflict to an actionable error", async () => {
+	it("translates a conflict to an actionable error and records NOTHING (run never started)", async () => {
 		h.start.mockRejectedValueOnce(new h.AlreadyStarted());
 		const err = await startDirectRun(spec).catch((e) => e);
 		expect(err).toBeInstanceOf(RunAlreadyRunningError);
-		// The recorded placeholder row (runId === workflowId) is dropped out of running.
-		expect(h.markRunStatus).toHaveBeenCalledWith(
-			"addsource-ws-1",
-			"addsource-ws-1",
-			"failed",
-		);
-		expect(h.attachRunId).not.toHaveBeenCalled();
+		// Recording is AFTER start, so a rejected start leaves no row to clean up.
+		expect(h.recordRun).not.toHaveBeenCalled();
 	});
 
 	it("fails loud when Temporal isn't configured — BEFORE recording the run", async () => {

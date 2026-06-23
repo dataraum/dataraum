@@ -22,12 +22,12 @@ import assert from "node:assert/strict";
 import { and, eq } from "drizzle-orm";
 import { cockpitDb } from "#/db/cockpit/client";
 import { DEFAULT_ACTOR_ID, resolveActiveWorkspace } from "#/db/cockpit/registry";
-import { attachRunId, markRunStatus, recordRun } from "#/db/cockpit/runs";
+import { markRunStatus, recordRun } from "#/db/cockpit/runs";
 import { actors, runs, workspaces } from "#/db/cockpit/schema";
 
-// DAT-562: a run is recorded keyed by its deterministic workflowId; runId is the
-// workflowId placeholder until attachRunId. Two stages on one workspace → two
-// distinct workflowIds (the begin_session run + the operating_model run).
+// DAT-562/DAT-595: a run is recorded keyed by (workflowId, REAL runId) — the run row
+// carries the Temporal execution id directly (recorded post-start), no placeholder.
+// Two stages on one workspace → two distinct workflowIds (begin_session + operating_model).
 const SUFFIX = crypto.randomUUID();
 const WF_1 = `beginsession-smoke-${SUFFIX}`;
 const WF_2 = `operatingmodel-smoke-${SUFFIX}`;
@@ -54,16 +54,17 @@ async function main(): Promise<void> {
 		.limit(1);
 	assert.equal(actor?.id, DEFAULT_ACTOR_ID, "default actor seeded");
 
-	// 2. recordRun: writes one `runs` row (DAT-562) keyed by (workflowId, runId);
+	// 2. recordRun: writes one `runs` row (DAT-562) keyed by (workflowId, real runId);
 	//    re-recording the same run is a UNIQUE no-op. The kind lives on the run row.
 	const base = {
 		workspaceId: wsId,
 		kind: "begin_session",
 		stage: "begin_session",
 		workflowId: WF_1,
+		runId: TEMPORAL_RUN,
 	} as const;
 	await recordRun(base);
-	await recordRun(base); // re-record same run → UNIQUE no-op (runId=WF_1 placeholder)
+	await recordRun(base); // re-record same (workflowId, runId) → UNIQUE no-op
 	const wf1Rows = await cockpitDb
 		.select({ runId: runs.runId, status: runs.status, kind: runs.kind })
 		.from(runs)
@@ -71,17 +72,8 @@ async function main(): Promise<void> {
 	assert.equal(wf1Rows.length, 1, "one run after idempotent re-record");
 	assert.equal(wf1Rows[0].kind, "begin_session", "run kind recorded on the row");
 	assert.equal(wf1Rows[0].status, "running", "run starts running");
-	// Provisional runId = the workflowId until attachRunId.
-	assert.equal(wf1Rows[0].runId, WF_1, "runId is the workflowId placeholder");
-
-	// attachRunId rewrites the provisional runId to the Temporal execution id.
-	await attachRunId(WF_1, TEMPORAL_RUN);
-	const [attached] = await cockpitDb
-		.select({ runId: runs.runId })
-		.from(runs)
-		.where(eq(runs.workflowId, WF_1))
-		.limit(1);
-	assert.equal(attached?.runId, TEMPORAL_RUN, "runId finalized to the exec id");
+	// runId is the REAL Temporal execution id, recorded directly (DAT-595).
+	assert.equal(wf1Rows[0].runId, TEMPORAL_RUN, "runId is the real execution id");
 
 	// A second stage with a DIFFERENT workflowId adds a second run row (same
 	// workspace) — runs group by workspace, not by a shared session.

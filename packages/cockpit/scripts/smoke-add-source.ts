@@ -80,14 +80,6 @@ async function seed(sourceId: string): Promise<void> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	// Record the cockpit run (DAT-562: runs group by workspace, no session row);
-	// the run is keyed by the workspace's deterministic add_source workflow id.
-	await recordRun({
-		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		kind: "onboarding",
-		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
-	});
 }
 
 async function countOverlays(): Promise<number> {
@@ -130,6 +122,15 @@ async function runInitial(
 		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
+	});
+	// Record the cockpit run AFTER start with the real execution id (DAT-562/DAT-595:
+	// runs group by workspace; the row carries the Temporal exec id directly).
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
+		runId: handle.firstExecutionRunId,
 	});
 	const result = (await handle.result()) as AddSourceResult;
 

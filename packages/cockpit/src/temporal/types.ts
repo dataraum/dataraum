@@ -60,7 +60,7 @@ export interface BeginSessionResult {
 	table_ids: string[];
 }
 
-// operating_model (DAT-438) — the journey's third stage: validations (and later
+// operating_model (DAT-438) — the third stage: validations (and later
 // cycles/metrics) through the typed artifact lifecycle. Mirrors
 // `worker.contracts.{OperatingModelInput,OperatingModelResult}`. Flat +
 // source-free (DAT-506): begin_session ESTABLISHES the table set; this stage

@@ -47,9 +47,9 @@ export interface RecordRunInput {
 	// The originating chat (DAT-528) for run→chat narration routing. OMITTED by
 	// the in-request tool drivers — they fall back to the request-scoped ALS
 	// (`currentConversationId()`). Passed EXPLICITLY by the orchestration worker
-	// (DAT-530): the journey runs outside any request, so it has no ALS and must
-	// thread the conversationId captured at the tool boundary, or narration would
-	// silently break. Pass `null` to deliberately record a non-narrating run.
+	// (DAT-530): the orchestration worker runs outside any request, so it has no ALS
+	// and must thread the conversationId captured at the tool boundary, or narration
+	// would silently break. Pass `null` to deliberately record a non-narrating run.
 	conversationId?: string | null;
 }
 
@@ -85,10 +85,10 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 		})
 		// Idempotent on the deterministic (workflowId, runId=workflowId) key. Workflow
 		// ids are constant-per-workspace now (DAT-562), so this also guards a second
-		// trigger for the same stage — but the per-workspace journey drains triggers
-		// SERIALLY (signal handling is FIFO; the next stage only starts after the
-		// prior child resolves + `attachRunId` has rewritten its provisional runId off
-		// the placeholder), so two adds never race for this one row in practice.
+		// trigger for the same stage — but single-flight (DAT-609: the workflow-id reuse
+		// policy, `ALLOW_DUPLICATE` + conflict `FAIL`) rejects a second start while one
+		// is running, and `attachRunId` rewrites the provisional runId off the
+		// placeholder right after start, so two adds never race for this one row.
 		.onConflictDoNothing({
 			target: [runs.workflowId, runs.runId],
 		});
@@ -146,7 +146,7 @@ export async function markRunStatus(
  * limit): the run isn't failed — it's waiting for a human teach. Targets the most
  * recent execution for the workflow id (the current state), since the workflow's
  * add_source has one run row per replay execution. Best-effort (mirrors
- * markRunStatus): a write error is logged, not thrown — the journey must not crash.
+ * markRunStatus): a write error is logged, not thrown — the workflow must not crash.
  */
 export async function markRunAwaitingInput(
 	workflowId: string,

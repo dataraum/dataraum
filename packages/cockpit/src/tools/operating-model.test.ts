@@ -1,10 +1,8 @@
-// Unit tests for the operating_model tool (DAT-440; routed through the journey in
-// DAT-530). The tool no longer starts the workflow directly — it signals the
-// per-workspace JourneyWorkflow (`runOperatingModel`), which records the run +
-// starts the engine child. So the unit asserts the SIGNAL payload, not a
-// workflow.start. Mocked seams: #/config, the registry (workspace + vertical +
-// queue), the journey trigger (signalRunOperatingModel), the ALS conversation
-// context, and the DAT-511 sequencing pre-check.
+// Unit tests for the operating_model tool (DAT-440; DAT-609). The tool runs a DIRECT
+// single-shot engine start (no orchestration workflow — there is no follow-on stage).
+// So the unit asserts the startDirectRun spec. Mocked seams: #/config, the registry
+// (workspace + vertical + queue), the orchestration trigger (startDirectRun), and the
+// DAT-511 sequencing pre-check (hasRunningRun).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,17 +15,10 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
-	conversationId: "conv-1" as string | null,
-	signalled: null as {
-		workspaceId: string;
-		req: Record<string, unknown>;
-	} | null,
-	signalRunOperatingModel: vi.fn(
-		async (workspaceId: string, req: Record<string, unknown>) => {
-			h.signalled = { workspaceId, req };
-			return req.workflowId as string;
-		},
-	),
+	started: null as Record<string, unknown> | null,
+	startDirectRun: vi.fn(async (spec: Record<string, unknown>) => {
+		h.started = spec;
+	}),
 	hasRunningRun: vi.fn(async () => false),
 }));
 
@@ -42,7 +33,7 @@ vi.mock("#/config", () => ({
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
-		// Per-workspace queue (DAT-505) — the journey runs the child here.
+		// Per-workspace queue (DAT-505) — the engine runs the stage here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
 		vertical: h.vertical,
 	})),
@@ -50,11 +41,8 @@ vi.mock("#/db/cockpit/registry", () => ({
 vi.mock("#/db/cockpit/runs", () => ({
 	hasRunningRun: h.hasRunningRun,
 }));
-vi.mock("#/temporal/journey-trigger", () => ({
-	signalRunOperatingModel: h.signalRunOperatingModel,
-}));
-vi.mock("#/lib/run-context", () => ({
-	currentConversationId: () => h.conversationId,
+vi.mock("#/temporal/orchestration-trigger", () => ({
+	startDirectRun: h.startDirectRun,
 }));
 
 import { operatingModel } from "./operating-model";
@@ -66,60 +54,55 @@ beforeEach(() => {
 		temporalNamespace: "default",
 	};
 	h.vertical = "_adhoc";
-	h.conversationId = "conv-1";
-	h.signalled = null;
-	h.signalRunOperatingModel.mockClear();
+	h.started = null;
+	h.startDirectRun.mockClear();
 	h.hasRunningRun.mockClear();
 	h.hasRunningRun.mockResolvedValue(false);
 });
 
-describe("operatingModel (DAT-440, routed via the journey — DAT-530)", () => {
-	it("signals the journey with the derived ids/queue + verticals", async () => {
+describe("operatingModel (DAT-440, direct single-shot — DAT-609)", () => {
+	it("starts the engine workflow directly with the derived ids/queue + verticals", async () => {
 		h.vertical = "finance";
 		const result = await operatingModel();
 		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
 
-		// One workflow id per workspace (DAT-562) — no session arg.
-		expect(h.signalled?.workspaceId).toBe(WS);
-		expect(h.signalled?.req).toEqual({
+		// One workflow id per workspace (DAT-562). kind "begin_session" mirrors the
+		// stage origin; the engine re-reads the table set from the catalog head (DAT-506).
+		expect(h.started).toMatchObject({
+			workspaceId: WS,
+			kind: "begin_session",
+			stage: "operating_model",
+			workflowType: "operatingModelWorkflow",
 			workflowId: `operatingmodel-${WS}`,
-			engineTaskQueue: `engine-${WS}`,
-			verticals: ["finance"],
-			conversationId: "conv-1",
+			taskQueue: `engine-${WS}`,
+			args: [{ workspace_id: WS, verticals: ["finance"] }],
 		});
-		// The tool returns the deterministic workflow id (run_id mirrors it — the
-		// journey owns the real execution id; progress resolves latest by id).
+		expect(typeof h.started?.busyMessage).toBe("string");
+		// The tool returns the deterministic workflow id (run_id mirrors it).
 		expect(result).toEqual({
 			workflow_id: `operatingmodel-${WS}`,
 			run_id: `operatingmodel-${WS}`,
 		});
 	});
 
-	it("threads a NULL conversationId when outside a chat turn (non-narrating run)", async () => {
-		h.conversationId = null;
-		const result = await operatingModel();
-		if ("error" in result) throw new Error(`unexpected: ${result.error}`);
-		expect(h.signalled?.req.conversationId).toBeNull();
-	});
-
-	it("throws when Temporal is unconfigured and signals nothing", async () => {
+	it("throws when Temporal is unconfigured and starts nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(operatingModel()).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
-		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
+		expect(h.startDirectRun).not.toHaveBeenCalled();
 	});
 
 	it("refuses with { error } while begin_session is still running (DAT-511)", async () => {
 		// The engine guards the same precondition born-loud; the tool turns the
 		// would-be workflow failure into an agent-actionable sentence — and must
-		// NOT signal the journey.
+		// NOT start the run.
 		h.hasRunningRun.mockResolvedValueOnce(true);
 		const result = await operatingModel();
 		expect(result).toMatchObject({
 			error: expect.stringContaining("begin_session is still running"),
 		});
-		expect(h.signalRunOperatingModel).not.toHaveBeenCalled();
+		expect(h.startDirectRun).not.toHaveBeenCalled();
 	});
 
 	it("checks the begin_session stage for the workspace", async () => {

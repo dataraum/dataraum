@@ -1,17 +1,15 @@
-// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422, DAT-506; routed
-// through the journey in DAT-551; session retired in DAT-562).
+// Unit tests for the replay tool (DAT-343, DAT-413, DAT-422, DAT-506; DAT-609).
 //
 // Replay takes NO input: it resolves the workspace's currently-imported sources and
-// re-runs add_source over them to apply pending teaches. DAT-551: it signals the
-// per-workspace JourneyWorkflow (`runAddSource`, kind "replay"), which records the
-// run + starts the engine child. DAT-562: the run REUSES the workspace's
+// re-runs add_source over them to apply pending teaches. DAT-609: it is a DIRECT
+// single-shot engine start (kind "replay") — NOT the autonomous grounding loop, since
+// the user is doing teach+replay by hand. DAT-562: the run REUSES the workspace's
 // `addsource-<ws>` workflow id (so a replay that resolves a parked grounding gap
-// self-clears the inbox). So the unit asserts the SIGNAL payload. The source
+// self-clears the inbox). So the unit asserts the startDirectRun spec. The source
 // resolution + "nothing to replay" guard stay request-side.
 //
 // Mocks: `#/config`, the cockpit registry, the Drizzle metadata client
-// (generation-head → source ids), the journey trigger (signalRunAddSource), and the
-// ALS conversation context.
+// (generation-head → source ids), and the orchestration trigger (startDirectRun).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,23 +22,16 @@ const h = vi.hoisted(() => ({
 		temporalNamespace: "default",
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
-	conversationId: "conv-1" as string | null,
-	// Records the order of side effects so we can assert resolve-then-signal.
+	// Records the order of side effects so we can assert resolve-then-start.
 	calls: [] as string[],
-	signalled: null as {
-		workspaceId: string;
-		req: Record<string, unknown>;
-	} | null,
+	started: null as Record<string, unknown> | null,
 	// Rows the generation-head → run_tables → tables source query returns
 	// (empty = nothing imported = nothing to replay).
 	sourceRows: [] as Array<{ sourceId: string | null }>,
-	signalRunAddSource: vi.fn(
-		async (workspaceId: string, req: Record<string, unknown>) => {
-			h.signalled = { workspaceId, req };
-			h.calls.push("signal");
-			return req.workflowId as string;
-		},
-	),
+	startDirectRun: vi.fn(async (spec: Record<string, unknown>) => {
+		h.started = spec;
+		h.calls.push("start");
+	}),
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -84,11 +75,8 @@ vi.mock("drizzle-orm", () => ({
 	eq: (...a: unknown[]) => a,
 }));
 
-vi.mock("#/temporal/journey-trigger", () => ({
-	signalRunAddSource: h.signalRunAddSource,
-}));
-vi.mock("#/lib/run-context", () => ({
-	currentConversationId: () => h.conversationId,
+vi.mock("#/temporal/orchestration-trigger", () => ({
+	startDirectRun: h.startDirectRun,
 }));
 
 import { replay } from "./replay";
@@ -100,39 +88,45 @@ beforeEach(() => {
 		temporalNamespace: "default",
 	};
 	h.vertical = "_adhoc";
-	h.conversationId = "conv-1";
 	h.calls = [];
-	h.signalled = null;
+	h.started = null;
 	h.sourceRows = [{ sourceId: "src-1" }];
-	h.signalRunAddSource.mockClear();
+	h.startDirectRun.mockClear();
 });
 
-describe("replay (DAT-422, routed via the journey — DAT-551, DAT-562)", () => {
-	it("resolves the workspace sources, then signals the journey", async () => {
+describe("replay (DAT-422, direct single-shot — DAT-609, DAT-562)", () => {
+	it("resolves the workspace sources, then starts the engine run", async () => {
 		const result = await replay({});
 
 		// Order: resolve the workspace's imported sources (generation heads), then
-		// signal the journey to run add_source.
-		expect(h.calls).toEqual(["resolveSources", "signal"]);
+		// start the direct add_source run.
+		expect(h.calls).toEqual(["resolveSources", "start"]);
 		expect(result.sources).toEqual(["src-1"]);
 	});
 
-	it("signals the journey with the resolved source SET + kind replay + verticals", async () => {
+	it("starts a direct add_source run with the resolved source SET + kind replay + verticals", async () => {
 		h.sourceRows = [{ sourceId: "src-1" }, { sourceId: "src-2" }];
 		h.vertical = "finance";
 		const result = await replay({});
 
 		// One workflow id per workspace (DAT-562) — reused across imports/replays so a
 		// replay that resolves a parked grounding gap self-clears the inbox.
-		expect(h.signalled?.workspaceId).toBe(WS);
-		expect(h.signalled?.req).toEqual({
-			workflowId: `addsource-${WS}`,
-			engineTaskQueue: `engine-${WS}`,
-			sources: ["src-1", "src-2"],
-			verticals: ["finance"],
+		expect(h.started).toMatchObject({
+			workspaceId: WS,
 			kind: "replay",
-			conversationId: "conv-1",
+			stage: "add_source",
+			workflowType: "addSourceWorkflow",
+			workflowId: `addsource-${WS}`,
+			taskQueue: `engine-${WS}`,
+			args: [
+				{
+					workspace_id: WS,
+					sources: ["src-1", "src-2"],
+					verticals: ["finance"],
+				},
+			],
 		});
+		expect(typeof h.started?.busyMessage).toBe("string");
 		expect(result).toEqual({
 			workflow_id: `addsource-${WS}`,
 			run_id: `addsource-${WS}`,
@@ -140,30 +134,26 @@ describe("replay (DAT-422, routed via the journey — DAT-551, DAT-562)", () => 
 		});
 	});
 
-	it("rejects when the workspace has no imported sources (nothing to replay) — no signal", async () => {
+	it("rejects when the workspace has no imported sources (nothing to replay) — no start", async () => {
 		h.sourceRows = [];
 		await expect(replay({})).rejects.toThrow(/no imported sources/);
-		expect(h.signalRunAddSource).not.toHaveBeenCalled();
+		expect(h.startDirectRun).not.toHaveBeenCalled();
 	});
 
-	it("throws when Temporal is unconfigured and does NOT read or signal", async () => {
+	it("throws when Temporal is unconfigured and does NOT read or start", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(replay({})).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
 		expect(h.calls).toEqual([]); // the guard is first — nothing ran
-		expect(h.signalRunAddSource).not.toHaveBeenCalled();
-	});
-
-	it("threads a NULL conversationId when outside a chat turn", async () => {
-		h.conversationId = null;
-		await replay({});
-		expect(h.signalled?.req.conversationId).toBeNull();
+		expect(h.startDirectRun).not.toHaveBeenCalled();
 	});
 
 	it("re-runs on the WORKSPACE vertical (from the registry) as a one-element array", async () => {
 		h.vertical = "marketing";
 		await replay({});
-		expect(h.signalled?.req.verticals).toEqual(["marketing"]);
+		expect(
+			(h.started?.args as Array<{ verticals: string[] }>)[0].verticals,
+		).toEqual(["marketing"]);
 	});
 });

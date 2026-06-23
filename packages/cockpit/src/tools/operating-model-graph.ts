@@ -67,6 +67,8 @@ interface MetricData {
 	state: string;
 	stateReason: string | null;
 	snippetCount: number;
+	/** The metric's validated snippet SQL bodies, joined as steps (null when none). */
+	sql: string | null;
 }
 interface ValidationData {
 	kind: "validation";
@@ -133,6 +135,8 @@ export interface MetricInput {
 	state: string;
 	stateReason: string | null;
 	snippetCount: number;
+	/** Joined snippet SQL bodies for the metric, or null when it has no snippets. */
+	sql: string | null;
 }
 /** One (metric, concept) pair from a `graph:<id>` snippet's `standard_field`. */
 export interface MetricConceptInput {
@@ -257,6 +261,7 @@ export function buildOperatingModelGraph(
 				state: m.state,
 				stateReason: m.stateReason,
 				snippetCount: m.snippetCount,
+				sql: m.sql,
 			},
 		});
 	}
@@ -386,6 +391,45 @@ export function buildOperatingModelGraph(
 	return { nodes: [...nodes.values()], edges: [...edges.values()] };
 }
 
+/**
+ * Progressive disclosure: collapse columns under their table unless the table is
+ * expanded. A hidden column's edges are RE-POINTED to its table node (so the
+ * grounding/driver/FK structure stays connected at the collapsed level — e.g. two
+ * columns' FK becomes a table→table edge, a concept→column becomes concept→table),
+ * then self-loops are dropped and edges deduped. Pure → unit-tested.
+ *
+ * `expandedTableIds` holds table NODE ids (`table:<id>`), matching `column.parent`.
+ */
+export function computeVisibleGraph(
+	graph: OperatingModelGraph,
+	expandedTableIds: ReadonlySet<string>,
+): OperatingModelGraph {
+	const parentOf = new Map<string, string | undefined>();
+	for (const n of graph.nodes) {
+		if (n.kind === "column") parentOf.set(n.id, n.parent);
+	}
+	const isHiddenColumn = (id: string): boolean => {
+		if (!parentOf.has(id)) return false; // not a column
+		const parent = parentOf.get(id);
+		return parent !== undefined && !expandedTableIds.has(parent);
+	};
+	const remap = (id: string): string | null => {
+		if (!isHiddenColumn(id)) return id;
+		return parentOf.get(id) ?? null; // collapse to the owning table
+	};
+
+	const nodes = graph.nodes.filter((n) => !isHiddenColumn(n.id));
+	const edges = new Map<string, OMEdge>();
+	for (const e of graph.edges) {
+		const source = remap(e.source);
+		const target = remap(e.target);
+		if (source === null || target === null || source === target) continue;
+		const id = `${source}->${target}:${e.kind}`;
+		if (!edges.has(id)) edges.set(id, { id, source, target, kind: e.kind });
+	}
+	return { nodes, edges: [...edges.values()] };
+}
+
 // --- IO loader -------------------------------------------------------------
 
 export interface LoadOperatingModelResult {
@@ -422,17 +466,20 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		tableRows,
 		validationSqlRows,
 	] = await Promise.all([
+		// All graph snippets (NOT filtered on standard_field) — the rows feed BOTH the
+		// concept edges (steps that carry a standard_field) and the per-metric SQL
+		// (every step's validated body, incl. compute steps with no standard_field).
 		metadataDb
 			.select({
 				source: sqlSnippets.source,
 				standardField: sqlSnippets.standardField,
+				sql: sqlSnippets.sql,
 			})
 			.from(sqlSnippets)
 			.where(
 				and(
 					eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
 					like(sqlSnippets.source, "graph:%"),
-					isNotNull(sqlSnippets.standardField),
 				),
 			),
 		metadataDb
@@ -480,12 +527,22 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			.from(currentValidationResults),
 	]);
 
+	const graphIdOf = (source: string) => {
+		const idx = source.indexOf(":");
+		return idx === -1 ? source : source.slice(idx + 1);
+	};
 	const metricConcepts: MetricConceptInput[] = [];
+	const sqlByMetric = new Map<string, string[]>();
 	for (const r of conceptSnippetRows) {
-		if (!r.source || !r.standardField) continue;
-		const idx = r.source.indexOf(":");
-		const graphId = idx === -1 ? r.source : r.source.slice(idx + 1);
-		metricConcepts.push({ graphId, concept: r.standardField });
+		if (!r.source) continue;
+		const graphId = graphIdOf(r.source);
+		if (r.standardField)
+			metricConcepts.push({ graphId, concept: r.standardField });
+		if (r.sql) {
+			const steps = sqlByMetric.get(graphId) ?? [];
+			steps.push(r.sql);
+			sqlByMetric.set(graphId, steps);
+		}
 	}
 
 	const conceptColumns: ConceptColumnInput[] = conceptColumnRows
@@ -541,12 +598,16 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 		if (r.validationId) sqlByValidation.set(r.validationId, r.sqlUsed ?? null);
 	}
 
-	const metrics: MetricInput[] = metricResult.metrics.map((m) => ({
-		graphId: m.graph_id,
-		state: m.state,
-		stateReason: m.state_reason,
-		snippetCount: m.snippet_count,
-	}));
+	const metrics: MetricInput[] = metricResult.metrics.map((m) => {
+		const steps = sqlByMetric.get(m.graph_id);
+		return {
+			graphId: m.graph_id,
+			state: m.state,
+			stateReason: m.state_reason,
+			snippetCount: m.snippet_count,
+			sql: steps?.length ? steps.join("\n\n-- ── next step ──\n\n") : null,
+		};
+	});
 
 	const cycles: CycleInput[] = cycleResult.cycles.map((c) => ({
 		canonicalType: c.canonical_type,

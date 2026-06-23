@@ -11,6 +11,7 @@ import {
 	LayoutDashboard,
 	Library,
 	type LucideIcon,
+	Network,
 	Settings,
 	ShieldCheck,
 	Workflow,
@@ -30,6 +31,7 @@ export interface Section {
 		| "/workspace/$wsId/library"
 		| "/workspace/$wsId/workflows"
 		| "/workspace/$wsId/metadata"
+		| "/workspace/$wsId/operating-model"
 		| "/workspace/$wsId/governance"
 		| "/settings";
 	/** Global sections live at a fixed path; workspace sections nest under wsId. */
@@ -62,6 +64,15 @@ export const sections: readonly Section[] = [
 		label: "Metadata",
 		icon: Database,
 		to: "/workspace/$wsId/metadata",
+	},
+	{
+		// The operating-model canvas (DAT-591): the workspace's concept-spine DAG —
+		// ontology concepts grounded into columns, with the metrics/cycles/validations
+		// /drivers built on them. A standing xyflow page, not a chat widget.
+		id: "operating-model",
+		label: "Model",
+		icon: Network,
+		to: "/workspace/$wsId/operating-model",
 	},
 	{
 		id: "governance",

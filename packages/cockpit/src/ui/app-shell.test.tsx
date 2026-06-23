@@ -71,7 +71,7 @@ function renderShellAt(path: string, activeWorkspaceId = "test-ws") {
 describe("CockpitShell (DAT-380)", () => {
 	afterEach(() => cleanup());
 
-	it("renders all six section rail items", async () => {
+	it("renders every section rail item", async () => {
 		renderShellAt("/workspace/test-ws/cockpit");
 
 		// Rail mounts.
@@ -80,7 +80,8 @@ describe("CockpitShell (DAT-380)", () => {
 		for (const section of sections) {
 			expect(screen.getByTestId(`rail-${section.id}`)).toBeTruthy();
 		}
-		expect(sections).toHaveLength(6);
+		// cockpit, library, runs, metadata, model (DAT-591), governance, settings.
+		expect(sections).toHaveLength(7);
 	});
 
 	it("resolves a workspace section route under the shell", async () => {

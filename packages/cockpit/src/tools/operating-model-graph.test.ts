@@ -7,6 +7,7 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import {
 	buildOperatingModelGraph,
+	computeVisibleGraph,
 	type DriverInput,
 	type OperatingModelGraphInput,
 } from "./operating-model-graph";
@@ -33,6 +34,7 @@ const base = (): OperatingModelGraphInput => ({
 			state: "executed",
 			stateReason: null,
 			snippetCount: 3,
+			sql: "SELECT sum(amount) FROM sales",
 		},
 	],
 	metricConcepts: [{ graphId: "gross_margin", concept: "revenue" }],
@@ -126,6 +128,7 @@ describe("buildOperatingModelGraph", () => {
 			state: "declared",
 			stateReason: "no fields mapped",
 			snippetCount: 0,
+			sql: null,
 		});
 		const g = buildOperatingModelGraph(input);
 		expect(ids(g)).toContain("metric:lonely");
@@ -142,5 +145,40 @@ describe("buildOperatingModelGraph", () => {
 			(e) => e.id === "metric:gross_margin->concept:revenue:references",
 		);
 		expect(metricConceptEdges).toHaveLength(1);
+	});
+});
+
+describe("computeVisibleGraph (progressive disclosure)", () => {
+	it("hides columns under collapsed tables and re-points their edges to the table", () => {
+		const full = buildOperatingModelGraph(base());
+		const visible = computeVisibleGraph(full, new Set());
+		const nodeIds = ids(visible);
+		// No column nodes when nothing is expanded; tables remain.
+		expect(nodeIds).not.toContain("column:c1");
+		expect(nodeIds).not.toContain("column:c2");
+		expect(nodeIds).toContain("table:t1");
+		expect(nodeIds).toContain("table:t2");
+		const edges = edgeKinds(visible);
+		// concept→column collapses to concept→table; FK c1→c2 becomes table t1→t2.
+		expect(edges).toContain("concept:revenue->table:t1:grounds");
+		expect(edges).toContain("driver:c1->table:t1:drives");
+		expect(edges).toContain("table:t1->table:t2:relates");
+		// The contains edge (table→its own hidden column) self-loops → dropped.
+		expect([...edges].some((e) => e === "table:t1->table:t1:contains")).toBe(
+			false,
+		);
+	});
+
+	it("reveals a table's columns and precise edges when it is expanded", () => {
+		const full = buildOperatingModelGraph(base());
+		const visible = computeVisibleGraph(full, new Set(["table:t1"]));
+		const nodeIds = ids(visible);
+		expect(nodeIds).toContain("column:c1"); // t1 expanded
+		expect(nodeIds).not.toContain("column:c2"); // t2 still collapsed
+		const edges = edgeKinds(visible);
+		expect(edges).toContain("concept:revenue->column:c1:grounds");
+		expect(edges).toContain("table:t1->column:c1:contains");
+		// c1→c2: c1 visible, c2 collapsed → c1 relates to table t2.
+		expect(edges).toContain("column:c1->table:t2:relates");
 	});
 });

@@ -23,6 +23,7 @@ import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-inpu
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
+import { Route as appWorkspaceWsIdOperatingModelRouteImport } from './routes/(app)/workspace/$wsId/operating-model'
 import { Route as appWorkspaceWsIdMetadataRouteImport } from './routes/(app)/workspace/$wsId/metadata'
 import { Route as appWorkspaceWsIdLibraryRouteImport } from './routes/(app)/workspace/$wsId/library'
 import { Route as appWorkspaceWsIdGovernanceRouteImport } from './routes/(app)/workspace/$wsId/governance'
@@ -100,6 +101,12 @@ const appWorkspaceWsIdWorkflowsRoute =
     path: '/workflows',
     getParentRoute: () => appWorkspaceWsIdRouteRoute,
   } as any)
+const appWorkspaceWsIdOperatingModelRoute =
+  appWorkspaceWsIdOperatingModelRouteImport.update({
+    id: '/operating-model',
+    path: '/operating-model',
+    getParentRoute: () => appWorkspaceWsIdRouteRoute,
+  } as any)
 const appWorkspaceWsIdMetadataRoute =
   appWorkspaceWsIdMetadataRouteImport.update({
     id: '/metadata',
@@ -153,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
   '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
   '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
   '/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
@@ -173,6 +181,7 @@ export interface FileRoutesByTo {
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
   '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
   '/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitIndexRoute
@@ -196,6 +205,7 @@ export interface FileRoutesById {
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/(app)/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
   '/(app)/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/(app)/workspace/$wsId/operating-model': typeof appWorkspaceWsIdOperatingModelRoute
   '/(app)/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
   '/(app)/workspace/$wsId/cockpit/$conversationId': typeof appWorkspaceWsIdCockpitConversationIdRoute
   '/(app)/workspace/$wsId/cockpit/': typeof appWorkspaceWsIdCockpitIndexRoute
@@ -219,6 +229,7 @@ export interface FileRouteTypes {
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
     | '/workspace/$wsId/metadata'
+    | '/workspace/$wsId/operating-model'
     | '/workspace/$wsId/workflows'
     | '/workspace/$wsId/cockpit/$conversationId'
     | '/workspace/$wsId/cockpit/'
@@ -239,6 +250,7 @@ export interface FileRouteTypes {
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
     | '/workspace/$wsId/metadata'
+    | '/workspace/$wsId/operating-model'
     | '/workspace/$wsId/workflows'
     | '/workspace/$wsId/cockpit/$conversationId'
     | '/workspace/$wsId/cockpit'
@@ -261,6 +273,7 @@ export interface FileRouteTypes {
     | '/(app)/workspace/$wsId/governance'
     | '/(app)/workspace/$wsId/library'
     | '/(app)/workspace/$wsId/metadata'
+    | '/(app)/workspace/$wsId/operating-model'
     | '/(app)/workspace/$wsId/workflows'
     | '/(app)/workspace/$wsId/cockpit/$conversationId'
     | '/(app)/workspace/$wsId/cockpit/'
@@ -380,6 +393,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof appWorkspaceWsIdWorkflowsRouteImport
       parentRoute: typeof appWorkspaceWsIdRouteRoute
     }
+    '/(app)/workspace/$wsId/operating-model': {
+      id: '/(app)/workspace/$wsId/operating-model'
+      path: '/operating-model'
+      fullPath: '/workspace/$wsId/operating-model'
+      preLoaderRoute: typeof appWorkspaceWsIdOperatingModelRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
     '/(app)/workspace/$wsId/metadata': {
       id: '/(app)/workspace/$wsId/metadata'
       path: '/metadata'
@@ -447,6 +467,7 @@ interface appWorkspaceWsIdRouteRouteChildren {
   appWorkspaceWsIdGovernanceRoute: typeof appWorkspaceWsIdGovernanceRoute
   appWorkspaceWsIdLibraryRoute: typeof appWorkspaceWsIdLibraryRoute
   appWorkspaceWsIdMetadataRoute: typeof appWorkspaceWsIdMetadataRoute
+  appWorkspaceWsIdOperatingModelRoute: typeof appWorkspaceWsIdOperatingModelRoute
   appWorkspaceWsIdWorkflowsRoute: typeof appWorkspaceWsIdWorkflowsRoute
 }
 
@@ -456,6 +477,7 @@ const appWorkspaceWsIdRouteRouteChildren: appWorkspaceWsIdRouteRouteChildren = {
   appWorkspaceWsIdGovernanceRoute: appWorkspaceWsIdGovernanceRoute,
   appWorkspaceWsIdLibraryRoute: appWorkspaceWsIdLibraryRoute,
   appWorkspaceWsIdMetadataRoute: appWorkspaceWsIdMetadataRoute,
+  appWorkspaceWsIdOperatingModelRoute: appWorkspaceWsIdOperatingModelRoute,
   appWorkspaceWsIdWorkflowsRoute: appWorkspaceWsIdWorkflowsRoute,
 }
 

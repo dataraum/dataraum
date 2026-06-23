@@ -116,12 +116,22 @@ def execute_sql_steps(
         return_table=return_table,
         display_limit=display_limit,
     )
-    if not final_result.success or not final_result.value:
+    # A clean execution returns its value faithfully — including a genuine 0 and a
+    # NULL (no-support) result. Degeneracy is judged downstream by the metric
+    # verifier (graphs.verifier), NOT conflated into a truthiness test here: the
+    # old `not final_result.value` rejected a real 0 and gave an empty-support
+    # result the generic reason "Final SQL failed". Only a thrown SQL error (after
+    # repair is exhausted) fails the run now. (DAT-616)
+    if not final_result.success:
         return Result.fail(final_result.error or "Final SQL failed")
 
     execution_result = ExecutionResult(step_results=step_results)
 
     if return_table:
+        # Table mode: _execute_final returns (columns, rows, total_count) on success
+        # (an empty table is an empty rows list, never None).
+        if final_result.value is None:
+            return Result.fail("Final SQL returned no result in table mode")
         columns, rows, total_count = final_result.value
         execution_result.columns = columns
         execution_result.rows = rows

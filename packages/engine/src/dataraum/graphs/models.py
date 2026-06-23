@@ -85,6 +85,22 @@ class StepSource:
 
 
 @dataclass
+class StepValidation:
+    """A declared post-execution check on a step's value (DAT-616).
+
+    From the catalogue's per-extract ``validation:`` block, e.g.
+    ``{condition: "value > 0", severity: "error", message: "Revenue must be positive"}``.
+    Enforced by :func:`dataraum.graphs.verifier.verify_execution` against the
+    executed value — execution-pass is not validation. Before DAT-616 the loader
+    dropped this block on the floor; it is now parsed into this model.
+    """
+
+    condition: str  # comparison over `value`, e.g. "value > 0" / "value >= 0"
+    severity: str = "error"
+    message: str = ""
+
+
+@dataclass
 class GraphStep:
     """A single step in a transformation graph."""
 
@@ -107,6 +123,9 @@ class GraphStep:
 
     # Output marker
     output_step: bool = False
+
+    # Declared post-execution checks (catalogue `validation:` block, DAT-616)
+    validations: list[StepValidation] = field(default_factory=list)
 
 
 @dataclass

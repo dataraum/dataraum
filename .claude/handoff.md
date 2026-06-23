@@ -4,6 +4,42 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-23: DAT-616 — metric honest-fail gate (silently-wrong metric SQL on long-format finance)
+
+The operating_model **metrics** phase no longer reports a silently-wrong metric as
+`executed`/green. A new post-execution verifier (`graphs/verifier.py`, run inside
+`GraphAgent.execute` before snippets are cached) keeps a metric **`grounded`/inconclusive
+with a stated reason** when:
+1. an extract aggregated to **NULL** (its filter matched no rows — "no support"); the
+   COALESCE-mask prompt rule (`graph_sql_generation.yaml` rule 7) was rewritten so an empty
+   `SUM/AVG` surfaces as NULL instead of a fabricated 0;
+2. the composed value is NULL (a contributing extract had no support);
+3. a catalogue-declared per-extract `validation:` condition is violated (e.g. revenue
+   `value > 0`, cogs `value >= 0`) — these were dead YAML before (the loader dropped them);
+   now parsed into `GraphStep.validations` and enforced.
+
+A **genuine 0** (filter matched rows summing to 0) still passes — the shared executor
+(`query/execution.py`) stopped conflating a real 0 with failure. Also fixed in the blast
+radius: `StepResult` building now handles `Decimal` (currency sums) — previously a Decimal
+extract value was read as NULL.
+
+### dataraum-eval
+- **This changes metric `executed` vs `grounded` outcomes** — a calibration that asserts
+  only `state == executed` will now (correctly) see `grounded` for an unsupported metric on
+  long/transactional finance data (no `revenue` column; "revenue" is a row filter). The
+  oracle that would have caught the original bug: **assert metric VALUES, not just
+  `executed`**, on a long-format fixture, plus a regression that an empty-filter extract
+  stays `grounded` with a `no support` reason.
+- No engine response-schema change; metric `output_value` semantics unchanged for a
+  supported metric. The new failure reason text is `"composed but not executed: …"`.
+- **Status**: pending
+
+### dataraum-testdata
+- Needs a **BookSQL-style long/transactional finance fixture** (one `Amount` column + an
+  `account_type` discriminator, no per-concept columns) with **ground-truth metric values**
+  for gross_margin / gross_profit — the fixture that reproduces the silent-wrong case and
+  would let eval assert real values.
+
 ## 2026-06-22: fix — deterministic `top_values` ordering (profiling reproducibility)
 
 `StatisticalProfile.top_values` is now ordered `count DESC, value` (was `count DESC` only),

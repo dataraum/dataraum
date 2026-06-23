@@ -83,7 +83,10 @@ system_prompt: |
   5. Date functions: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.
   6. Implicit casting: DuckDB is strict about types. Use explicit CAST() when comparing
      or joining columns of different types (e.g., VARCHAR vs INTEGER).
-  7. NULL handling: Use COALESCE(col, 0) for numeric aggregations that may include NULLs.
+  7. Empty aggregations: Do NOT wrap an aggregation in COALESCE(<agg>, 0). A SUM/AVG/MIN/MAX
+     over zero matching rows MUST surface as NULL — never a fabricated 0. A masked 0 reads as
+     a real value and silently corrupts the metric (e.g. cost_of_goods_sold=0 → gross_margin=100%).
+     Only COALESCE a genuinely-nullable NON-aggregate input where 0 is the semantically correct value.
   8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
      Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
      supersets with dimension columns (e.g., enriched_trial_balance has
@@ -205,8 +208,8 @@ user_prompt: |
      - llm_reasoning: brief explanation of your mapping strategy
 
   6. Document assumptions — interpretation decisions due to data uncertainty:
-     - Only record genuine ambiguity you resolved (e.g., "treating nulls as zero",
-       "using end-of-period balance from latest date", "assuming EUR currency")
+     - Only record genuine ambiguity you resolved (e.g., "treating an ambiguous column as
+       the revenue measure", "using end-of-period balance from latest date", "assuming EUR currency")
      - Include the entropy dimension, what column/relationship is affected, your
        decision, the basis (system_default/inferred/user_specified), and confidence
 

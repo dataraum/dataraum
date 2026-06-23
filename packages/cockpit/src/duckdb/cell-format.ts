@@ -100,6 +100,8 @@ function formatNumeric(value: unknown): string | null {
 	if (s === null) return null;
 	const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(s);
 	if (!m) return s; // e.g. "1e+21", "Infinity", "NaN" — show as-is, don't mangle
+	// `sign` is only ever non-empty for negative STRING inputs (big ints/decimals);
+	// for JS numbers it's always "" since String(-0) === "0" — i.e. -0 renders as 0.
 	const [, sign, intPart, frac] = m;
 	const grouped = new Intl.NumberFormat().format(BigInt(intPart));
 	return frac ? `${sign}${grouped}${DECIMAL_SEP}${frac}` : `${sign}${grouped}`;

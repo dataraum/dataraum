@@ -106,14 +106,19 @@ describe("formatCell — dates / timestamps", () => {
 	});
 
 	it("honors an offset-bearing TIMESTAMP_TZ via the engine parser", () => {
-		const out = formatCell("2024-01-15 13:45:30+00:00", TIMESTAMP_TZ);
+		// The driver emits a whole-hour offset as "+00" (no colon) — not "+00:00".
+		const out = formatCell("2024-01-15 13:45:30+00", TIMESTAMP_TZ);
 		expect(out).toContain("2024");
-		expect(out).not.toBe("2024-01-15 13:45:30+00:00");
+		expect(out).not.toBe("2024-01-15 13:45:30+00");
 	});
 
 	it("passes an unparseable date through raw — never 'Invalid Date'", () => {
 		expect(formatCell("not-a-date", DATE)).toBe("not-a-date");
 		expect(formatCell("garbage", TIMESTAMP)).toBe("garbage");
+		// The driver emits these sentinel strings for min/max timestamps; they
+		// must survive verbatim, not collapse to "Invalid Date".
+		expect(formatCell("infinity", TIMESTAMP)).toBe("infinity");
+		expect(formatCell("-infinity", TIMESTAMP_TZ)).toBe("-infinity");
 	});
 });
 
@@ -132,7 +137,14 @@ describe("cellAlign", () => {
 	});
 
 	it("left-aligns text, dates, booleans, and unknown/absent types", () => {
-		for (const t of [VARCHAR, DATE, TIMESTAMP, BOOLEAN, undefined]) {
+		for (const t of [
+			VARCHAR,
+			DATE,
+			TIMESTAMP,
+			TIMESTAMP_TZ,
+			BOOLEAN,
+			undefined,
+		]) {
 			expect(cellAlign(t)).toBe("left");
 		}
 	});

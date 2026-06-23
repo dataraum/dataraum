@@ -76,10 +76,10 @@ const ConfigSchema = z.object({
 	// docker-compose dev address (CORS already allows :3000).
 	temporalUiUrl: z.string().min(1).default("http://localhost:8080"),
 	// The task queue the co-located ORCHESTRATION worker polls (DAT-529). This is
-	// the cockpit's OWN queue for the TS `JourneyWorkflow` — distinct from the
-	// engine's per-workspace `engine-<id>` analysis queues (which the journey's
-	// activities target as a client). One fixed queue: the worker is a singleton
-	// and the journey is keyed per-workspace by workflow-id, not by queue.
+	// the cockpit's OWN queue for the TS orchestration workflows — distinct from the
+	// engine's per-workspace `engine-<id>` analysis queues (which those workflows
+	// start engine children on). One fixed queue: the worker is a process singleton
+	// and the workflows are keyed per-workspace by workflow-id, not by queue.
 	cockpitOrchestrationTaskQueue: z
 		.string()
 		.min(1)

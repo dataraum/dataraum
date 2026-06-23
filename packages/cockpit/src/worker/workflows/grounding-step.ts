@@ -1,12 +1,12 @@
 // Pure decision for one grounding-loop round (DAT-551 P3c).
 //
-// Pure + zero-import so it is (a) sandbox-safe to import into the journey workflow
+// Pure + zero-import so it is (a) sandbox-safe to import into the grounding-loop workflow
 // and (b) unit-testable WITHOUT a Temporal test server — the loop's control flow is
 // otherwise replay-fixture/smoke covered, like the breaker reducer. Given the
 // agent's verdict for a round and how many replay attempts remain, decide whether to
 // replay (re-measure after teaches), finish clean, or surface for a human.
 
-/** What the journey does after one assessAndGround round. */
+/** What the grounding-loop workflow does after one assessAndGround round. */
 export type GroundingStep =
 	| { action: "replay" }
 	| {

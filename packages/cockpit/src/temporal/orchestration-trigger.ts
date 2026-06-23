@@ -149,7 +149,7 @@ export interface DirectRunSpec {
 }
 
 /**
- * Run a direct single-shot engine workflow with the journey's run-recording bracket.
+ * Run a direct single-shot engine workflow with the same run-recording bracket the orchestration workflows use.
  * `recordRun` omits `conversationId` ⇒ it falls back to the request-scoped ALS
  * (these run inside the chat turn, unlike the worker) so the completion still narrates
  * into THIS chat. On a start failure the placeholder run row is marked failed so it

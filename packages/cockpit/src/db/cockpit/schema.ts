@@ -104,7 +104,7 @@ export const runs = pgTable(
 		// The completion-watcher + reconcile filter on it so a run narrates into the
 		// chat that triggered it, not whichever workspace watcher claims it first
 		// (the old order-dependent bug). NULLABLE by design: a legacy run (pre-528)
-		// or a future auto-orchestrated run (P3 JourneyWorkflow) has no originating
+		// or a future auto-orchestrated run has no originating
 		// chat — it simply doesn't narrate. Stamped in `recordRun` from the
 		// request-scoped ALS context (lib/run-context).
 		conversationId: varchar("conversation_id").references(
@@ -124,7 +124,7 @@ export const runs = pgTable(
 		// grounding-teach agent fixed what it mechanically could and a human-judgement
 		// gap remains (a concept/relationship the agent must not auto-apply), or it hit
 		// its attempt limit. One sentence the surface shows + deep-links a Stage chat
-		// from. NULL for every other run. Written by the journey's markRunAwaitingInput.
+		// from. NULL for every other run. Written by the grounding-loop workflow's markRunAwaitingInput.
 		awaitingNote: text("awaiting_note"),
 	},
 	(t) => [

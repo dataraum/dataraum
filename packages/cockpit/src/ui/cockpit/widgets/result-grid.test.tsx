@@ -18,7 +18,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ColumnStore } from "#/duckdb/ndjson-stream";
 import type { GridSort } from "#/duckdb/stream-sql";
-import { cycleSort, ResultGridView } from "#/ui/cockpit/widgets/result-grid";
+import {
+	cycleSort,
+	GridSqlDisclosure,
+	ResultGridView,
+} from "#/ui/cockpit/widgets/result-grid";
 import { theme } from "#/ui/theme";
 
 function seeded(): ColumnStore {
@@ -134,5 +138,42 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		// No sort indicators and no crash without the callback.
 		expect(screen.queryByLabelText("sorted ascending")).toBeNull();
 		expect(screen.queryByLabelText("sorted descending")).toBeNull();
+	});
+});
+
+describe("GridSqlDisclosure (DAT-577)", () => {
+	afterEach(() => cleanup());
+
+	function renderDisclosure(
+		sql: string,
+		params?: (string | number | boolean | null)[],
+	) {
+		render(
+			<MantineProvider theme={theme} env="test">
+				<GridSqlDisclosure sql={sql} params={params} />
+			</MantineProvider>,
+		);
+	}
+
+	it("starts collapsed and toggles open on click", () => {
+		renderDisclosure("SELECT 1 FROM lake.typed.t");
+		const toggle = screen.getByRole("button");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		fireEvent.click(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("SELECT 1 FROM lake.typed.t")).toBeTruthy();
+	});
+
+	it("shows bind params when present", () => {
+		renderDisclosure("SELECT * FROM t WHERE a = $1", [7]);
+		fireEvent.click(screen.getByRole("button"));
+		expect(screen.getByTestId("sql-block-params")).toBeTruthy();
+		expect(screen.getByText("7")).toBeTruthy();
+	});
+
+	it("renders nothing when there is no SQL", () => {
+		renderDisclosure("");
+		expect(screen.queryByTestId("canvas-result-grid-sql")).toBeNull();
+		expect(screen.queryByRole("button")).toBeNull();
 	});
 });

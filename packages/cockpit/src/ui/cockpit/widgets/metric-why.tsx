@@ -11,20 +11,13 @@
 // stored). grounded_against renders through the shared EvidenceDetail formatter;
 // the validation-why / cycle-why blocks are the structural precedent.
 
-import {
-	Alert,
-	Badge,
-	Code,
-	Group,
-	ScrollArea,
-	Stack,
-	Text,
-} from "@mantine/core";
+import { Alert, Badge, Group, Stack, Text } from "@mantine/core";
 import { humanizeIdentifier } from "#/lib/display-names";
 import type { MetricStep } from "#/tools/why-metric";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { EvidenceDetail } from "#/ui/cockpit/widgets/evidence-detail";
 import { LifecycleStateBadge } from "#/ui/cockpit/widgets/lifecycle-badges";
+import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 import { PendingTeachAlert } from "#/ui/cockpit/widgets/why-detail";
 
 // Bound each step's SQL surface — a generated fragment is normally short, but the
@@ -57,11 +50,7 @@ function StepBlock({ step }: { step: MetricStep }) {
 					{step.description}
 				</Text>
 			)}
-			{step.sql && (
-				<ScrollArea.Autosize mah={SQL_MAX_HEIGHT}>
-					<Code block>{step.sql}</Code>
-				</ScrollArea.Autosize>
-			)}
+			{step.sql && <SqlBlock sql={step.sql} maxHeight={SQL_MAX_HEIGHT} />}
 		</Stack>
 	);
 }

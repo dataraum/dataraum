@@ -121,3 +121,62 @@ export interface JourneyState {
 	autoMode: boolean;
 	consecutiveFailures: number;
 }
+
+// --- DAT-609: short-lived per-trigger orchestration workflows ---------------
+// These replace the singleton journey. Each is started (not signalled) by a
+// deterministic per-workspace id; state rides the START payload, not replayed
+// history. The client refers to them by these string type names (mirroring the
+// engine-workflow drivers), and the sandbox imports the payload TYPES.
+
+/** Registered type name of the onboarding import + grounding-teach loop workflow
+ * (matches the exported `groundingLoopWorkflow`). */
+export const GROUNDING_LOOP_WORKFLOW_TYPE = "groundingLoopWorkflow";
+
+/** Registered type name of the begin_session → operating_model cascade workflow
+ * (matches the exported `sessionCascadeWorkflow`). */
+export const SESSION_CASCADE_WORKFLOW_TYPE = "sessionCascadeWorkflow";
+
+/** Start payload of {@link GROUNDING_LOOP_WORKFLOW_TYPE}. The tool (which has the
+ * request context) computes the derived ids/queue and captures the conversationId,
+ * so the sandboxed workflow stays free of any workspace IO — it just runs the import
+ * child + the bounded teach loop. Triggered ONLY by the onboarding import (`select`);
+ * a manual `replay` is a DIRECT engine start, not this loop. */
+export interface GroundingLoopInput {
+	/** The workspace id — the routing key + the recordRun scope. */
+	workspaceId: string;
+	/** The deterministic ENGINE child id (`addsource-<ws>`) the import + its replays
+	 * run under (reused across attempts; the SDK groups the iterations). */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) the child runs on. */
+	engineTaskQueue: string;
+	/** The source ids this run imports — a run is over a SET of objects (DAT-422). */
+	sources: string[];
+	/** The workspace verticals (one today; born-loud on >1). */
+	verticals: string[];
+	/** The originating chat (DAT-528) for the import run's progress routing. The
+	 * onboarding import is recorded under this id (so the watcher tracks its progress)
+	 * but never narrated into chat (DAT-597). Null = none. */
+	conversationId: string | null;
+	/** How many grounding-teach replay attempts the loop may make (default 3). */
+	numberOfAttempts?: number;
+}
+
+/** Start payload of {@link SESSION_CASCADE_WORKFLOW_TYPE}. begin_session runs first;
+ * a clean result cascades into operating_model (the OM child id is derived inside the
+ * workflow via the pure `operatingModelWorkflowId` helper — it reuses the same queue +
+ * verticals + conversationId). */
+export interface SessionCascadeInput {
+	/** The workspace id — routing key + recordRun scope. */
+	workspaceId: string;
+	/** The deterministic ENGINE child id for begin_session (`beginsession-<ws>`). */
+	workflowId: string;
+	/** The workspace's engine task queue (`engine-<id>`) both children run on. */
+	engineTaskQueue: string;
+	/** The typed table ids to stage. */
+	tables: string[];
+	/** The workspace verticals (one today; born-loud on >1). */
+	verticals: string[];
+	/** The originating chat (DAT-528) — rides to BOTH children so the watcher narrates
+	 * each completion into the originating chat. Null = none. */
+	conversationId: string | null;
+}

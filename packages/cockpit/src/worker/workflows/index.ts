@@ -3,12 +3,15 @@
 // only (see ./journey).
 
 export type {
+	GroundingLoopInput,
 	JourneyState,
 	RunAddSource,
 	RunBeginSession,
 	RunOperatingModel,
+	SessionCascadeInput,
 	VerticalEstablished,
 } from "../contracts";
+export { groundingLoopWorkflow } from "./grounding-loop";
 export {
 	journeyState,
 	journeyWorkflow,
@@ -19,3 +22,4 @@ export {
 	runOperatingModel,
 	verticalEstablished,
 } from "./journey";
+export { sessionCascadeWorkflow } from "./session-cascade";

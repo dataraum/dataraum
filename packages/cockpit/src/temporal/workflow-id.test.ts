@@ -63,7 +63,9 @@ describe("orchestration workflow ids (DAT-609)", () => {
 	});
 
 	it("do not collide across workspaces", () => {
-		expect(groundingLoopWorkflowId(WS_A)).not.toBe(groundingLoopWorkflowId(WS_B));
+		expect(groundingLoopWorkflowId(WS_A)).not.toBe(
+			groundingLoopWorkflowId(WS_B),
+		);
 		expect(sessionCascadeWorkflowId(WS_A)).not.toBe(
 			sessionCascadeWorkflowId(WS_B),
 		);

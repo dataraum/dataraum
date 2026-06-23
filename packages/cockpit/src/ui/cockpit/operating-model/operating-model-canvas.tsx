@@ -10,15 +10,7 @@
 
 import "@xyflow/react/dist/style.css";
 
-import {
-	Badge,
-	Box,
-	Code,
-	Group,
-	ScrollArea,
-	Stack,
-	Text,
-} from "@mantine/core";
+import { Badge, Box, Group, ScrollArea, Stack, Text } from "@mantine/core";
 import {
 	Background,
 	Controls,
@@ -38,6 +30,7 @@ import {
 	type OMNode,
 	type OperatingModelGraph,
 } from "#/tools/operating-model-graph";
+import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 import { layoutGraph } from "./layout";
 import { type OMRfData, omNodeTypes } from "./nodes";
 
@@ -200,7 +193,7 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 					) : null}
 					<Field label="SQL steps" value={String(d.snippetCount)} />
 					{d.sql ? (
-						<Code block>{d.sql}</Code>
+						<SqlBlock sql={d.sql} maxHeight={300} />
 					) : (
 						<Text size="sm" c="dimmed">
 							No grounded SQL yet.
@@ -223,7 +216,7 @@ function NodeDetailBody({ node }: { node: OMNode }) {
 					/>
 					{d.severity ? <Field label="Severity" value={d.severity} /> : null}
 					{d.sqlUsed ? (
-						<Code block>{d.sqlUsed}</Code>
+						<SqlBlock sql={d.sqlUsed} maxHeight={300} />
 					) : (
 						<Text size="sm" c="dimmed">
 							No executed SQL.

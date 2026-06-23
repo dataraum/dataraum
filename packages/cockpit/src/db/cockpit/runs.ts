@@ -22,7 +22,7 @@
 // the generation heads, so the cockpit never stores it (DAT-506: nothing reads it back).
 
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, gt, isNull, notExists } from "drizzle-orm";
+import { and, count, desc, eq, gt, notExists } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { currentConversationId } from "#/lib/run-context";
 import { cockpitDb } from "./client";
@@ -97,10 +97,10 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 }
 
 /**
- * Mark a recorded run terminal (completed | failed) — called best-effort when a
- * run's completion is observed (the workflow-progress poll, DAT-461). The
- * reload-recovery reconcile (DAT-462) is the other writer. No-op if the run
- * isn't recorded (a run started before this feature shipped).
+ * Mark a recorded run terminal (completed | failed) — best-effort. Writers: the
+ * completion-watcher's `result()` awaiter (DAT-615, the primary path), the
+ * workflow-progress seed route (DAT-461), and the reload-recovery reconcile
+ * (DAT-462). No-op if the run isn't recorded.
  */
 export async function markRunStatus(
 	workflowId: string,
@@ -148,40 +148,6 @@ export async function markRunAwaitingInput(
 		console.warn(
 			`[cockpit] markRunAwaitingInput failed for ${workflowId}: ${err}`,
 		);
-	}
-}
-
-/**
- * Atomically claim a run's completion narration (Phase 2A). The conditional
- * UPDATE sets `completion_narrated_at` only when it's still NULL and RETURNs the
- * row — so the FIRST caller wins (returns true) and every later one (another
- * tab's watcher, a re-observation) gets false. This is what makes the agent
- * narrate a completed run EXACTLY once across the several watchers a multi-tab
- * conversation can have. Best-effort: a DB error returns false (skip the
- * narration) rather than risk a double-fire.
- */
-export async function claimRunNarration(
-	workflowId: string,
-	runId: string,
-): Promise<boolean> {
-	try {
-		const claimed = await cockpitDb
-			.update(runs)
-			.set({ completionNarratedAt: new Date() })
-			.where(
-				and(
-					eq(runs.workflowId, workflowId),
-					eq(runs.runId, runId),
-					isNull(runs.completionNarratedAt),
-				),
-			)
-			.returning({ id: runs.id });
-		return claimed.length > 0;
-	} catch (err) {
-		console.warn(
-			`[cockpit] claimRunNarration failed for run ${runId} (${workflowId}): ${err}`,
-		);
-		return false;
 	}
 }
 
@@ -235,9 +201,8 @@ export async function listRunningStages(
 	return rows.map((r) => r.stage as RunStage);
 }
 
-/** A run the completion-watcher should poll: in-flight (`running`) and not yet
- * narrated. Carries `stage` so the narration can name what finished ("the import"
- * vs "the session"). */
+/** A run the completion-watcher should track: in-flight (`running`). Carries `stage`
+ * so the narration can name what finished ("the import" vs "the session"). */
 export interface WatchableRun {
 	workflowId: string;
 	runId: string;
@@ -249,16 +214,13 @@ export interface WatchableRun {
 }
 
 /**
- * The CONVERSATION's runs the completion-watcher should track — in-flight AND not
- * yet narrated, newest first, bounded. THIS is the run-routing filter (DAT-528):
- * scoping by `conversationId` is what makes a run narrate into the chat that
- * STARTED it, not whichever workspace watcher claims it first (the old
- * order-dependent bug). The watcher captures these while `running`, then polls
- * each against Temporal directly (the source of truth for completion), so a run
- * the progress poll separately marks terminal is still narrated. The
- * `completion_narrated_at IS NULL` filter keeps already-narrated runs out; the
- * per-run claim (`claimRunNarration`) is the once-only guard across a chat's
- * tabs.
+ * The CONVERSATION's in-flight (`running`) runs, newest first, bounded. THIS is the
+ * run-routing filter (DAT-528): scoping by `conversationId` is what makes a run
+ * narrate into the chat that STARTED it, not whichever workspace watcher claims it
+ * first (the old order-dependent bug). The watcher tracks these while `running` and
+ * AWAITS each run's Temporal `result()` (DAT-615) — `markRunStatus` flips a finished
+ * run out of this `status='running'` set, so it's narrated exactly once (no
+ * `completion_narrated_at` claim needed; the chat-bus is single-instance).
  */
 export async function listWatchableRuns(
 	conversationId: string,
@@ -273,11 +235,7 @@ export async function listWatchableRuns(
 		})
 		.from(runs)
 		.where(
-			and(
-				eq(runs.conversationId, conversationId),
-				eq(runs.status, "running"),
-				isNull(runs.completionNarratedAt),
-			),
+			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
 		)
 		.orderBy(desc(runs.startedAt))
 		.limit(limit);

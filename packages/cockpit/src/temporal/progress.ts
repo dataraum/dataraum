@@ -117,7 +117,7 @@ function requireTemporalConfig(): { host: string; namespace: string } {
  */
 let temporalClientPromise: Promise<Client> | null = null;
 
-function getTemporalClient(): Promise<Client> {
+export function getTemporalClient(): Promise<Client> {
 	if (!temporalClientPromise) {
 		const { host, namespace } = requireTemporalConfig();
 		temporalClientPromise = Connection.connect({ address: host })

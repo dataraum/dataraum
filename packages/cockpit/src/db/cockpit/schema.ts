@@ -112,14 +112,6 @@ export const runs = pgTable(
 		),
 		status: varchar("status").notNull().default("running"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
-		// The atomic claim for the run-completion narration (Phase 2A): the server
-		// watcher sets this (conditional UPDATE … WHERE … IS NULL) the first time it
-		// narrates a run's completion, so the agent narrates EXACTLY once even with
-		// several watchers for one conversation (multi-tab — each open
-		// /api/chat-stream hosts its own watcher). Distinct from `status`: the
-		// terminal-status writers (the progress poll / reconcile) don't touch it, so
-		// the claim never races them. NULL = not yet narrated.
-		completionNarratedAt: timestamp("completion_narrated_at", { mode: "date" }),
 		// Why the run is parked in `status='awaiting_input'` (DAT-551 P3c): the
 		// grounding-teach agent fixed what it mechanically could and a human-judgement
 		// gap remains (a concept/relationship the agent must not auto-apply), or it hit

@@ -200,6 +200,10 @@ export async function awaitCompletion(
 		);
 		return;
 	}
+	// `result()` is not itself cancelled when the stream closes mid-run — the SDK
+	// long-poll runs until the workflow finishes, then we drop the post-completion
+	// work here. Accepted: Temporal reaps the server-side poll, and runs are
+	// seconds-to-minutes, so the dangling poll is bounded and cheap.
 	if (signal.aborted) return;
 
 	// Terminal snapshot for the pills' final state + the note's failure message.

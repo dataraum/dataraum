@@ -102,7 +102,12 @@ export async function runStage(spec: StageSpec): Promise<StageOutcome> {
 			err: String(err),
 		});
 		// Mark failed best-effort, but only if the child started (we have a real runId);
-		// a pre-start failure recorded nothing, so there is nothing to mark.
+		// a pre-start failure recorded nothing, so there is nothing to mark. One residual
+		// window: if `recordRun` itself threw AFTER startChild, runId is set but no row
+		// exists — the markRunStatus below is a harmless no-op, and the ABANDON'd child
+		// runs to completion INVISIBLY (the reconcile keys off recorded rows, so it can't
+		// see an unrecorded run). Accepted: recordRun is a durable activity that retries,
+		// so this needs a total activity-failure, and the engine work still completes.
 		if (runId !== null) {
 			await markRunStatus(spec.workflowId, runId, "failed").catch((markErr) => {
 				log.warn("orchestration stage mark-failed write failed", {

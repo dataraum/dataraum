@@ -12,7 +12,7 @@ jobs:
             run:
                 working-directory: packages/engine
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             # server.json (the MCP registry manifest) died with the MCP surface —
             # DAT-325 retired the transport, DAT-487 deleted the code.
@@ -44,7 +44,7 @@ jobs:
             id-token: write
             contents: read
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -70,7 +70,7 @@ jobs:
             contents: read
             packages: write
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Log in to GHCR
               uses: docker/login-action@v4

@@ -1,25 +1,7 @@
 // Workflow barrel — the entry module the worker hands to its bundler. Every
-// orchestration workflow the worker can run is re-exported here. Sandboxed code
-// only (see ./journey).
+// orchestration workflow the worker can run is re-exported here. Sandboxed code only
+// (the two short-lived per-trigger workflows; DAT-609).
 
-export type {
-	GroundingLoopInput,
-	JourneyState,
-	RunAddSource,
-	RunBeginSession,
-	RunOperatingModel,
-	SessionCascadeInput,
-	VerticalEstablished,
-} from "../contracts";
+export type { GroundingLoopInput, SessionCascadeInput } from "../contracts";
 export { groundingLoopWorkflow } from "./grounding-loop";
-export {
-	journeyState,
-	journeyWorkflow,
-	pauseAutoMode,
-	resumeAutoMode,
-	runAddSource,
-	runBeginSession,
-	runOperatingModel,
-	verticalEstablished,
-} from "./journey";
 export { sessionCascadeWorkflow } from "./session-cascade";

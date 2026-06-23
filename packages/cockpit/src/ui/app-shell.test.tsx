@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Shell smoke: the AppShell renders all six section rail items, a workspace
+// Shell smoke: the AppShell renders every section rail item, a workspace
 // section route resolves under the shell, and — even on a global route with no
 // wsId — the rail's workspace links still target the active workspace (the
 // /settings → cockpit nav bug).
@@ -71,7 +71,7 @@ function renderShellAt(path: string, activeWorkspaceId = "test-ws") {
 describe("CockpitShell (DAT-380)", () => {
 	afterEach(() => cleanup());
 
-	it("renders all six section rail items", async () => {
+	it("renders every section rail item", async () => {
 		renderShellAt("/workspace/test-ws/cockpit");
 
 		// Rail mounts.
@@ -80,7 +80,8 @@ describe("CockpitShell (DAT-380)", () => {
 		for (const section of sections) {
 			expect(screen.getByTestId(`rail-${section.id}`)).toBeTruthy();
 		}
-		expect(sections).toHaveLength(6);
+		// cockpit, library, runs, metadata, model (DAT-591), governance, settings.
+		expect(sections).toHaveLength(7);
 	});
 
 	it("resolves a workspace section route under the shell", async () => {

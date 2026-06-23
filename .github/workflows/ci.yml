@@ -18,7 +18,7 @@ jobs:
             matrix:
                 python-version: ["3.14"]
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -70,7 +70,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -114,7 +114,7 @@ jobs:
             run:
                 working-directory: packages/cockpit
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@v2
@@ -161,7 +161,7 @@ jobs:
             github.event_name == 'pull_request' ||
             (github.event_name == 'push' && github.ref == 'refs/heads/main')
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - uses: actions/setup-python@v6
               with:

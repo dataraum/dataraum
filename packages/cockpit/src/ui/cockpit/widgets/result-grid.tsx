@@ -30,27 +30,20 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cellAlign, formatCell } from "#/duckdb/cell-format";
 import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
 import type { GridSort } from "#/duckdb/stream-sql";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 
-// §7.3 hook: carry the neo column type metadata on each TanStack column. P2
-// does not consume it; P3 type-driven formatting (right-align numerics, render
-// timestamps) + sort/filter dispatch on `columnDef.meta.duckdbType`. Kept type-
-// only (Json) so the neo native driver never reaches the client bundle.
+// §7.3 hook: carry the neo column type metadata on each TanStack column. The
+// type-driven cell formatting (right-align numerics, render timestamps) lives in
+// cell-format.ts (DAT-575) and dispatches on `columnDef.meta.duckdbType`; sort/
+// filter will too. Kept type-only (Json) so the neo native driver never reaches
+// the client bundle.
 declare module "@tanstack/react-table" {
 	interface ColumnMeta<TData extends RowData, TValue> {
 		duckdbType?: Json;
 	}
-}
-
-/** JSON-safe cell → display string. Columnar values are already coerced
- * server-side (bigint→string, dates→ISO, nested→plain JSON); we only pick a
- * readable rendering: null as an em-dash, objects/arrays as compact JSON. */
-function formatCell(value: unknown): string {
-	if (value === null || value === undefined) return "—";
-	if (typeof value === "object") return JSON.stringify(value);
-	return String(value);
 }
 
 const STATUS_COLOR = {
@@ -183,18 +176,28 @@ export function ResultGridView({
 									const name = String(header.column.columnDef.header ?? "");
 									const active = sort?.column === name;
 									const clickable = onToggleSort !== undefined;
+									// Right-align numeric headers so they sit over their
+									// right-aligned cells (DAT-575).
+									const alignRight =
+										cellAlign(header.column.columnDef.meta?.duckdbType) ===
+										"right";
 									return (
 										<Table.Th
 											key={header.id}
 											onClick={clickable ? () => onToggleSort(name) : undefined}
-											style={
-												clickable
+											style={{
+												...(clickable
 													? { cursor: "pointer", userSelect: "none" }
-													: undefined
-											}
+													: {}),
+												...(alignRight ? { textAlign: "right" } : {}),
+											}}
 											data-testid={`canvas-result-grid-header-${name}`}
 										>
-											<Group gap={4} wrap="nowrap">
+											<Group
+												gap={4}
+												wrap="nowrap"
+												justify={alignRight ? "flex-end" : "flex-start"}
+											>
 												{flexRender(
 													header.column.columnDef.header,
 													header.getContext(),
@@ -234,11 +237,24 @@ export function ResultGridView({
 								const row = rows[vr.index];
 								return (
 									<Table.Tr key={row.id}>
-										{row.getVisibleCells().map((cell) => (
-											<Table.Td key={cell.id}>
-												{formatCell(cell.getValue())}
-											</Table.Td>
-										))}
+										{row.getVisibleCells().map((cell) => {
+											const type = cell.column.columnDef.meta?.duckdbType;
+											return (
+												<Table.Td
+													key={cell.id}
+													style={
+														cellAlign(type) === "right"
+															? {
+																	textAlign: "right",
+																	fontVariantNumeric: "tabular-nums",
+																}
+															: undefined
+													}
+												>
+													{formatCell(cell.getValue(), type)}
+												</Table.Td>
+											);
+										})}
 									</Table.Tr>
 								);
 							})}

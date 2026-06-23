@@ -135,4 +135,25 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		expect(screen.queryByLabelText("sorted ascending")).toBeNull();
 		expect(screen.queryByLabelText("sorted descending")).toBeNull();
 	});
+
+	it("right-aligns numeric column headers off duckdbType (DAT-575)", () => {
+		// The body is virtualized away in headless DOM (see file note); the header
+		// IS rendered, so it's the one observable type-driven path here. `amount` is
+		// a numeric column (INTEGER=4), `label` is text (VARCHAR=17).
+		const s = new ColumnStore();
+		s.apply({
+			t: "h",
+			columns: ["amount", "label"],
+			types: [{ typeId: 4 }, { typeId: 17 }],
+			queryId: "q_1",
+		});
+		s.apply({ t: "f", rows: 0 });
+		renderView(s);
+		expect(
+			screen.getByTestId("canvas-result-grid-header-amount").style.textAlign,
+		).toBe("right");
+		expect(
+			screen.getByTestId("canvas-result-grid-header-label").style.textAlign,
+		).toBe("");
+	});
 });

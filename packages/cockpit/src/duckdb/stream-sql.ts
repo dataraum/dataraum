@@ -76,24 +76,93 @@ export function quoteIdentifier(name: string): string {
 	return `"${name.replace(/"/g, '""')}"`;
 }
 
+// --- Windowed paging (DAT-613) ----------------------------------------------
+
+/** Default rows per scroll-window the grid fetches (Mosaic-style load-on-scroll). */
+export const GRID_PAGE_SIZE = 500;
+
+/** Hard ceiling on a single window so a client can't ask for a giant page. */
+export const GRID_MAX_PAGE = 5_000;
+
 /**
- * Wrap the user's `sql` as the grid's effective query, optionally appending a
- * server-side `ORDER BY`.
- *
- * Sort MUST be server-side, not client-side: the grid caps at
- * {@link GRID_DEFAULT_CAP} and can truncate, so sorting only the streamed window
- * would sort an arbitrary first-N slice of a larger result. Ordering the wrapped
- * query applies the sort BEFORE the cap, so the grid shows the true top-N.
- *
- * Sort carries NO bind values, so this never perturbs the caller's positional
- * `params` ($1, $2, …) — they bind against the inner `sql` exactly as before.
- * (Filter values, which WOULD need param renumbering, are a later phase.)
+ * A single scroll-window the grid asks the server for: `limit` rows starting at
+ * row `offset` (0-based). The grid pages forward by `offset += limit` until a
+ * short window signals the end (DAT-613). Both bound the LIMIT/OFFSET the server
+ * inlines, so neither can balloon the query.
  */
-export function buildGridQuery(sql: string, sort?: GridSort | null): string {
+export interface GridWindow {
+	limit: number;
+	offset: number;
+}
+
+/** Clamp a requested page `limit` to `[1, GRID_MAX_PAGE]`, defaulting to {@link GRID_PAGE_SIZE}. */
+export function clampPageLimit(limit?: number): number {
+	if (limit === undefined || !Number.isFinite(limit)) return GRID_PAGE_SIZE;
+	return Math.min(Math.max(1, Math.floor(limit)), GRID_MAX_PAGE);
+}
+
+/** Clamp a requested `offset` to a non-negative integer (defaults to 0). */
+export function clampOffset(offset?: number): number {
+	if (offset === undefined || !Number.isFinite(offset) || offset < 0) return 0;
+	return Math.floor(offset);
+}
+
+/**
+ * Wrap the user's `sql` as the grid's effective query: an optional server-side
+ * `ORDER BY` and, for the windowed grid (DAT-613), a `LIMIT/OFFSET` page.
+ *
+ * Sort MUST be server-side, not client-side: a window is only a slice of a
+ * larger result, so sorting just the streamed window would sort an arbitrary
+ * slice. Ordering the wrapped query applies the sort across the FULL result
+ * before the window is cut.
+ *
+ * Stable order is REQUIRED once windowing: each LIMIT/OFFSET page is its own
+ * execution, and a query with no total order can return rows in a different
+ * order per execution — dropping or duplicating rows at page boundaries. So when
+ * a `window` is present we always impose a deterministic total order:
+ *   - unsorted → `ORDER BY ALL` (orders by every output column left-to-right; a
+ *     total order with no knowledge of the column names).
+ *   - sorted   → the user column first, then `COLUMNS(*)` as a column-agnostic
+ *     tiebreaker so rows tied on the sort column keep a stable order across
+ *     pages.
+ * WITHOUT a window (the probe's one-shot grid) the order is unchanged: a bare
+ * `ORDER BY` for an explicit sort, none otherwise — so the natural scan order is
+ * preserved exactly as before.
+ *
+ * Sort and the window carry NO bind values (the column is quoted; LIMIT/OFFSET
+ * are validated integers inlined here), so this never perturbs the caller's
+ * positional `params` ($1, $2, …) — they bind against the inner `sql` exactly as
+ * before. (Filter values, which WOULD need param renumbering, are a later phase.)
+ */
+export function buildGridQuery(
+	sql: string,
+	sort?: GridSort | null,
+	window?: GridWindow | null,
+): string {
 	const base = `SELECT * FROM (${sql}) AS _run_sql`;
-	if (!sort) return base;
-	const dir = sort.dir === "desc" ? "DESC" : "ASC";
-	return `${base} ORDER BY ${quoteIdentifier(sort.column)} ${dir}`;
+
+	let order: string | null;
+	if (sort) {
+		const dir = sort.dir === "desc" ? "DESC" : "ASC";
+		order = window
+			? `ORDER BY ${quoteIdentifier(sort.column)} ${dir}, COLUMNS(*)`
+			: `ORDER BY ${quoteIdentifier(sort.column)} ${dir}`;
+	} else {
+		order = window ? "ORDER BY ALL" : null;
+	}
+
+	let query = order ? `${base} ${order}` : base;
+	if (window) {
+		// Over-fetch by exactly one row: the route streams with `cap = limit`, so
+		// the extra row is peeked (never emitted) and surfaces as footer.truncated
+		// — the has-more signal the grid pages on. Integers are validated
+		// (clampPageLimit/clampOffset) and inlined, leaving the caller's `$1..`
+		// positional params untouched.
+		const limit = Math.floor(window.limit) + 1;
+		const offset = Math.floor(window.offset);
+		query += ` LIMIT ${limit} OFFSET ${offset}`;
+	}
+	return query;
 }
 
 /**

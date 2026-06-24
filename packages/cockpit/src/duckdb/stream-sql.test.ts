@@ -8,8 +8,12 @@ import { HARD_ROW_CEILING } from "#/duckdb/limit";
 import {
 	buildGridQuery,
 	clampGridCap,
+	clampOffset,
+	clampPageLimit,
 	encodeFrame,
 	GRID_DEFAULT_CAP,
+	GRID_MAX_PAGE,
+	GRID_PAGE_SIZE,
 	quoteIdentifier,
 	type ResultFrame,
 	type StreamableChunk,
@@ -140,6 +144,100 @@ describe("buildGridQuery (design §7.3 — server-side sort)", () => {
 		expect(out).toBe(
 			'SELECT * FROM (SELECT * FROM t) AS _run_sql ORDER BY "x"" ; DROP TABLE t --" ASC',
 		);
+	});
+});
+
+describe("buildGridQuery windowing (DAT-613)", () => {
+	it("imposes ORDER BY ALL + LIMIT(limit+1)/OFFSET for an unsorted window", () => {
+		// A windowed grid MUST impose a deterministic total order or separate
+		// LIMIT/OFFSET pages can reorder rows across requests. Unsorted → ORDER BY
+		// ALL (every output column, column-agnostic). The +1 over-fetch is the
+		// has-more probe (route streams with cap = limit).
+		expect(
+			buildGridQuery("SELECT id FROM t", null, { limit: 500, offset: 0 }),
+		).toBe(
+			"SELECT * FROM (SELECT id FROM t) AS _run_sql ORDER BY ALL LIMIT 501 OFFSET 0",
+		);
+		expect(
+			buildGridQuery("SELECT id FROM t", null, { limit: 100, offset: 200 }),
+		).toBe(
+			"SELECT * FROM (SELECT id FROM t) AS _run_sql ORDER BY ALL LIMIT 101 OFFSET 200",
+		);
+	});
+
+	it("orders by the sort column then COLUMNS(*) as a stable tiebreaker when windowing", () => {
+		// Sorted window: the user column leads, then COLUMNS(*) breaks ties with a
+		// column-agnostic total order so rows tied on the sort column keep a stable
+		// order across page boundaries.
+		expect(
+			buildGridQuery(
+				"SELECT id, amount FROM t",
+				{ column: "amount", dir: "desc" },
+				{ limit: 50, offset: 50 },
+			),
+		).toBe(
+			'SELECT * FROM (SELECT id, amount FROM t) AS _run_sql ORDER BY "amount" DESC, COLUMNS(*) LIMIT 51 OFFSET 50',
+		);
+	});
+
+	it("still quotes the sort column under windowing", () => {
+		const out = buildGridQuery(
+			"SELECT * FROM t",
+			{ column: 'x" --', dir: "asc" },
+			{ limit: 10, offset: 0 },
+		);
+		expect(out).toBe(
+			'SELECT * FROM (SELECT * FROM t) AS _run_sql ORDER BY "x"" --" ASC, COLUMNS(*) LIMIT 11 OFFSET 0',
+		);
+	});
+
+	it("floors fractional window bounds into the inlined integers", () => {
+		expect(buildGridQuery("SELECT 1", null, { limit: 10.9, offset: 5.9 })).toBe(
+			"SELECT * FROM (SELECT 1) AS _run_sql ORDER BY ALL LIMIT 11 OFFSET 5",
+		);
+	});
+
+	it("imposes no ORDER BY and no LIMIT without a window (probe path unchanged)", () => {
+		// The non-windowed probe grid keeps its exact prior shape — no imposed total
+		// order, so the natural scan order is preserved.
+		expect(buildGridQuery("SELECT 1")).toBe(
+			"SELECT * FROM (SELECT 1) AS _run_sql",
+		);
+		expect(buildGridQuery("SELECT 1", { column: "x", dir: "asc" })).toBe(
+			'SELECT * FROM (SELECT 1) AS _run_sql ORDER BY "x" ASC',
+		);
+	});
+});
+
+describe("clampPageLimit (DAT-613)", () => {
+	it("defaults an absent/non-finite limit to the grid page size", () => {
+		expect(clampPageLimit()).toBe(GRID_PAGE_SIZE);
+		expect(clampPageLimit(Number.NaN)).toBe(GRID_PAGE_SIZE);
+		expect(clampPageLimit(Number.POSITIVE_INFINITY)).toBe(GRID_PAGE_SIZE);
+	});
+
+	it("passes a value within range and floors a fractional one", () => {
+		expect(clampPageLimit(250)).toBe(250);
+		expect(clampPageLimit(250.9)).toBe(250);
+	});
+
+	it("clamps above the max page and floors a non-positive to 1", () => {
+		expect(clampPageLimit(GRID_MAX_PAGE + 1)).toBe(GRID_MAX_PAGE);
+		expect(clampPageLimit(0)).toBe(1);
+		expect(clampPageLimit(-9)).toBe(1);
+	});
+});
+
+describe("clampOffset (DAT-613)", () => {
+	it("defaults an absent/negative/non-finite offset to 0", () => {
+		expect(clampOffset()).toBe(0);
+		expect(clampOffset(-5)).toBe(0);
+		expect(clampOffset(Number.NaN)).toBe(0);
+	});
+
+	it("passes a non-negative value and floors a fractional one", () => {
+		expect(clampOffset(1000)).toBe(1000);
+		expect(clampOffset(1000.7)).toBe(1000);
 	});
 });
 

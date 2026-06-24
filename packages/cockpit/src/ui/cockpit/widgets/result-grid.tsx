@@ -1,23 +1,29 @@
-// Result-grid widget (DAT-385 P2 grid + P3 server-side sort) — the human-facing
-// SQL result surface.
+// Result-grid widget (DAT-385 P2 grid + P3 server-side sort + DAT-613 windowed
+// paging) — the human-facing SQL result surface.
 //
-// Splits cleanly in three:
-//   - ResultGridView: PURE render of a ColumnStore via TanStack Table with
+// Splits cleanly in four:
+//   - ResultGridView: PURE render of a GridView via TanStack Table with
 //     index-rows + accessorFn (no row-object rematerialization). Headers are
-//     interactive when given `onToggleSort`. Trivially testable, no I/O.
+//     interactive when given `onToggleSort`; `onReachEnd` fires when the
+//     virtualized body nears its end (the windowed grid pages on it). Trivially
+//     testable, no I/O.
 //   - ResultGridWidget: the registered entry. Owns the BASE query (the agent's
 //     run_sql call) and `key`s the inner grid on it, so a new agent query
 //     remounts the grid and resets the sort cleanly.
-//   - StreamingGrid: owns the I/O + the grid-local sort. POSTs sql+params+sort
-//     to the P1 `/api/run-sql` NDJSON endpoint, folds frames into a ColumnStore
-//     as they arrive, and aborts the fetch on unmount/query-change/sort-change
-//     (the server then emits a `cancelled` footer).
+//   - WindowedGrid (lake, DAT-613): the human-facing lake grid. A Mosaic-style
+//     window onto a re-runnable query — `useInfiniteQuery` fetches one
+//     LIMIT/OFFSET page per scroll-window from `/api/run-sql`, each folded into
+//     its own ColumnStore, assembled into a PagedGridView. No 50k cap: only the
+//     loaded windows live in memory; the result set itself is unbounded.
+//   - StreamingGrid (probe): the one-shot grid the editable probe uses. POSTs
+//     sql+params+sort to an NDJSON endpoint and folds the WHOLE result into a
+//     single ColumnStore (capped). Kept for `/api/probe-sql`, whose per-request
+//     ATTACH can't yet back windowed paging (needs kept-alive sessions).
 //
-// Sort is SERVER-SIDE (re-issue with ORDER BY), not a client reorder: the grid
-// caps at 50k and can truncate, so the sort must run before the cap to show the
-// true top-N. Filter + keyset paging stay deferred (a connected, researched P3/P4
-// effort). The body IS virtualized (only the visible window hits the DOM) —
-// load-bearing for the 50k streaming cap, not optional.
+// Sort is SERVER-SIDE (re-issue with ORDER BY), not a client reorder: a window
+// is only a slice, so the sort must run across the full result before the slice
+// is cut to show the true order. The body IS virtualized (only the visible window
+// hits the DOM) — load-bearing for an unbounded result, not optional.
 
 import type { Json } from "@duckdb/node-api";
 import {
@@ -29,6 +35,7 @@ import {
 	Text,
 	UnstyledButton,
 } from "@mantine/core";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import {
 	type ColumnDef,
 	flexRender,
@@ -39,8 +46,15 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cellAlign, formatCell } from "#/duckdb/cell-format";
-import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
-import type { GridSort } from "#/duckdb/stream-sql";
+import {
+	ColumnStore,
+	type GridStatus,
+	type GridView,
+	PagedGridView,
+	readNdjsonIntoStore,
+	readNdjsonStream,
+} from "#/duckdb/ndjson-stream";
+import { GRID_PAGE_SIZE, type GridSort } from "#/duckdb/stream-sql";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 
@@ -77,23 +91,27 @@ export function cycleSort(
 	return null;
 }
 
-/** Pure presentation of a (possibly still-filling) ColumnStore.
+/** Pure presentation of a (possibly still-filling / still-paging) GridView.
  *
  * `sort` + `onToggleSort` make the column headers interactive (DAT-385 P3): a
  * click asks the OWNER to re-issue the query with a new server-side sort. The
- * view itself never reorders rows — sort runs before the cap, server-side, so a
- * truncated result still shows the true top-N. Omit `onToggleSort` (e.g. in a
- * pure-render test) and the headers stay static. */
+ * view itself never reorders rows — sort runs across the full result, server-
+ * side. `onReachEnd` (DAT-613) fires when the virtualized body scrolls within an
+ * overscan of the last loaded row, so the windowed owner can fetch the next page;
+ * omit it (probe, pure-render test) and the grid never asks for more. Omit
+ * `onToggleSort` and the headers stay static. */
 export function ResultGridView({
 	store,
 	fatal,
 	sort,
 	onToggleSort,
+	onReachEnd,
 }: {
-	store: ColumnStore;
+	store: GridView;
 	fatal?: string | null;
 	sort?: GridSort | null;
 	onToggleSort?: (column: string) => void;
+	onReachEnd?: () => void;
 }) {
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
@@ -106,10 +124,10 @@ export function ResultGridView({
 		return store.columns.map((name, c) => ({
 			id: `c${c}`,
 			header: name,
-			// accessorFn closes over `store` by REFERENCE and reads the column array
-			// lazily at render time (not at memo creation), so cells fill in as
-			// streamed batches grow store.cols — don't freeze or copy the store.
-			accessorFn: (rowIndex: number) => store.cols[c]?.[rowIndex] ?? null,
+			// accessorFn closes over `store` by REFERENCE and reads the cell lazily at
+			// render time (not at memo creation), so cells fill in as streamed batches
+			// grow the store / new pages append — don't freeze or copy the store.
+			accessorFn: (rowIndex: number) => store.cell(c, rowIndex),
 			meta: { duckdbType: typeList[c] },
 		}));
 	}, [store.columns, store]);
@@ -142,6 +160,22 @@ export function ResultGridView({
 			? totalSize - virtualRows[virtualRows.length - 1].end
 			: 0;
 	const colCount = store.columns.length;
+
+	// Load-on-scroll (DAT-613): when the virtualized body reaches within an
+	// overscan of the last loaded row, ask the owner for the next page. This is a
+	// scroll-driven side effect (a DOM/measurement signal), so it lives in an
+	// effect per React rule 2 — the third such effect in the cockpit, justified
+	// here. `lastIndex` is a scalar, so the effect re-fires only when the visible
+	// end actually moves; `onReachEnd` self-guards against re-fetching while a page
+	// is already in flight, and content shorter than the viewport keeps it firing
+	// until the window is filled or the result is exhausted.
+	const lastIndex =
+		virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].index : -1;
+	useEffect(() => {
+		if (onReachEnd && lastIndex >= 0 && lastIndex >= rows.length - 1 - 8) {
+			onReachEnd();
+		}
+	}, [onReachEnd, lastIndex, rows.length]);
 
 	const status = fatal ? "error" : store.status;
 
@@ -349,7 +383,7 @@ export function ResultGridWidget({
 	return (
 		<div>
 			<GridSqlDisclosure sql={state.sql} params={state.params} />
-			<StreamingGrid
+			<WindowedGrid
 				key={baseKey}
 				endpoint="/api/run-sql"
 				body={{ sql: state.sql, params: state.params }}
@@ -368,6 +402,112 @@ function extractError(text: string): string {
 		// not JSON — use the text as-is
 	}
 	return text;
+}
+
+/**
+ * The windowed lake grid (DAT-613). A Mosaic-style window onto a re-runnable
+ * query: `useInfiniteQuery` fetches one LIMIT/OFFSET page per scroll-window from
+ * the NDJSON endpoint, folds each into its own ColumnStore, and assembles the
+ * loaded pages into a PagedGridView the view renders. The 50k cap is gone — only
+ * the windows scrolled into ever live in memory, so the result set is unbounded.
+ *
+ * Paging goes through TanStack Query (`useInfiniteQuery`), not a hand-rolled
+ * effect (React rule 3): the query key carries the body + sort, so a sort change
+ * transparently re-pages from offset 0, and Query owns fetch dedup, cancellation
+ * of superseded windows, and the loading state. Sort is grid-local and reset by
+ * remounting on a new base query (ResultGridWidget's `key`).
+ */
+export function WindowedGrid({
+	endpoint,
+	body,
+}: {
+	endpoint: string;
+	/** The base request body (WITHOUT sort/limit/offset — the grid appends those). */
+	body: Record<string, unknown>;
+}) {
+	const [sort, setSort] = useState<GridSort | null>(null);
+	const toggleSort = useCallback((column: string) => {
+		setSort((cur) => cycleSort(cur, column));
+	}, []);
+
+	// Value-stable body identity so the query key doesn't churn on a fresh `body`
+	// object each parent render; parsed back inside the queryFn.
+	const bodyKey = useMemo(() => JSON.stringify(body), [body]);
+
+	const query = useInfiniteQuery({
+		queryKey: ["run-sql-grid", endpoint, bodyKey, sort],
+		initialPageParam: 0,
+		queryFn: async ({ pageParam, signal }) => {
+			const base = JSON.parse(bodyKey) as Record<string, unknown>;
+			const res = await fetch(endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					...base,
+					sort: sort ?? undefined,
+					limit: GRID_PAGE_SIZE,
+					offset: pageParam,
+				}),
+				signal,
+			});
+			if (!res.ok || !res.body) {
+				const detail = await res.text().catch(() => res.statusText);
+				throw new Error(
+					extractError(detail) || `request failed (${res.status})`,
+				);
+			}
+			// Each window is bounded (≤ GRID_PAGE_SIZE rows), so folding the whole
+			// page into one ColumnStore is fine — unboundedness is handled by paging,
+			// not by streaming one giant result.
+			return readNdjsonIntoStore(res.body);
+		},
+		// A full window (truncated = the route's +1 over-fetch saw more rows) means
+		// there's a next page; its offset = pages-so-far × page size.
+		getNextPageParam: (lastPage, allPages) =>
+			lastPage.truncated ? allPages.length * GRID_PAGE_SIZE : undefined,
+	});
+
+	const {
+		data,
+		error,
+		hasNextPage,
+		isFetchingNextPage,
+		fetchNextPage,
+		isFetching,
+	} = query;
+
+	const onReachEnd = useCallback(() => {
+		if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
+	}, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+	const view = useMemo<PagedGridView>(() => {
+		const pages = data?.pages ?? [];
+		// An in-band footer error on any page (e.g. a DuckDB binder error) is fatal
+		// for the whole grid, same as a failed fetch.
+		const inbandError = pages.find((p) => p.error)?.error;
+		const message = error
+			? error instanceof Error
+				? error.message
+				: String(error)
+			: inbandError;
+		const status: GridStatus = message
+			? "error"
+			: isFetching || isFetchingNextPage
+				? "streaming"
+				: "done";
+		return new PagedGridView(pages, GRID_PAGE_SIZE, status, message);
+	}, [data, error, isFetching, isFetchingNextPage]);
+
+	// PagedGridView carries status + error, so the view renders the badge and the
+	// error banner straight off `store` — no separate `fatal` needed here.
+	return (
+		<ResultGridView
+			store={view}
+			sort={sort}
+			onToggleSort={toggleSort}
+			onReachEnd={onReachEnd}
+		/>
+	);
 }
 
 /**

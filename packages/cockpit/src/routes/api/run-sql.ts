@@ -15,7 +15,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getLakeConnection } from "../../duckdb/lake";
 import {
 	buildGridQuery,
-	clampGridCap,
+	clampOffset,
+	clampPageLimit,
 	encodeFrame,
 	type GridSort,
 	parseSort,
@@ -24,7 +25,7 @@ import {
 } from "../../duckdb/stream-sql";
 import { disableBunIdleTimeout } from "../../lib/bun-request-timeout";
 
-/** Request body for `POST /api/run-sql`. */
+/** Request body for `POST /api/run-sql` — one windowed page of the lake grid (DAT-613). */
 interface RunSqlStreamBody {
 	/** DuckDB SQL to run over the lake (read-only). */
 	sql: string;
@@ -35,16 +36,20 @@ interface RunSqlStreamBody {
 	 */
 	params?: (string | number | boolean | null)[];
 	/**
-	 * Optional row cap. Clamped server-side to `[1, 200_000]`, defaulting to the
-	 * grid's 50_000 (clampGridCap) so a client can't request an unbounded
-	 * materialization.
+	 * Rows in this scroll-window. Clamped server-side to `[1, GRID_MAX_PAGE]`,
+	 * defaulting to `GRID_PAGE_SIZE`. The grid pages forward by `offset += limit`
+	 * until a short window signals the end; only this window ever materializes, so
+	 * the result set itself is unbounded (no 50k cap).
 	 */
-	cap?: number;
+	limit?: number;
+	/** 0-based row offset of this window. Clamped to a non-negative integer. */
+	offset?: number;
 	/**
 	 * Optional server-side single-column sort (DAT-385 P3). Applied to the wrapped
-	 * query so it orders the FULL result before the cap, not just the streamed
-	 * window. `column` must be an output column name of `sql`; the server quotes
-	 * it as an identifier, so a bad name yields a binder error, never injection.
+	 * query so it orders the FULL result before the window is cut, not just the
+	 * streamed rows. `column` must be an output column name of `sql`; the server
+	 * quotes it as an identifier, so a bad name yields a binder error, never
+	 * injection.
 	 */
 	sort?: GridSort;
 }
@@ -86,7 +91,8 @@ export const Route = createFileRoute("/api/run-sql")({
 				const sortResult = parseSort(body.sort);
 				if ("error" in sortResult) return badRequest(sortResult.error);
 
-				const cap = clampGridCap(body.cap);
+				const limit = clampPageLimit(body.limit);
+				const offset = clampOffset(body.offset);
 				const queryId = nextQueryId();
 				const params = body.params;
 
@@ -99,7 +105,10 @@ export const Route = createFileRoute("/api/run-sql")({
 				// SQL parse/bind error that surfaces here can still become a 400
 				// (e.g. malformed `sql`). Once the ReadableStream starts flushing the
 				// status is locked at 200 and mid-stream errors go in the footer.
-				const wrapped = buildGridQuery(body.sql, sortResult.sort);
+				const wrapped = buildGridQuery(body.sql, sortResult.sort, {
+					limit,
+					offset,
+				});
 				let result: StreamableResult;
 				try {
 					const conn = await getLakeConnection();
@@ -119,9 +128,12 @@ export const Route = createFileRoute("/api/run-sql")({
 				const stream = new ReadableStream<Uint8Array>({
 					async start(controller) {
 						try {
+							// Stream with cap = limit while the wrapped query fetched
+							// limit+1: the extra row is peeked, never emitted, and lands
+							// as footer.truncated — the has-more signal the grid pages on.
 							for await (const line of streamNdjson(
 								result,
-								cap,
+								limit,
 								queryId,
 								aborted,
 							)) {

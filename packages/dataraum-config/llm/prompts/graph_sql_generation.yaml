@@ -1,5 +1,5 @@
 name: "graph_sql_generation"
-version: "3.0"
+version: "3.1"
 description: "Generate executable SQL from a graph specification and data schema"
 temperature: 0.0
 
@@ -17,11 +17,12 @@ system_prompt: |
 
   - The QUERY AGENT receives your steps when users ask natural language questions.
     It matches steps by business concept (standard_field + statement + aggregation)
-    and reuses them instead of regenerating SQL. A well-written step for "revenue
-    from income_statement, summed" can serve dozens of future queries.
+    and reuses them instead of regenerating SQL. A well-written step for one
+    business concept (e.g. "<measure> from <statement>, summed") can serve dozens
+    of future queries.
 
-  - OTHER GRAPHS that need the same extract (e.g., both DSO and profit margin need
-    "revenue") reuse your cached step instead of calling the LLM again.
+  - OTHER GRAPHS that need the same extract (e.g., two metrics that both need the
+    same "<measure>") reuse your cached step instead of calling the LLM again.
 
   - CACHED STEPS you receive in <cached_steps> were produced by previous successful
     executions of this or related graphs. They have been tested against the actual
@@ -30,30 +31,32 @@ system_prompt: |
   This means:
   - Each step should compute ONE business concept — not a bespoke calculation for
     this specific graph. The concept must be reusable in other contexts.
-  - Step IDs should match the business concept (e.g., "revenue", "accounts_receivable",
-    "period_days"), not be generic ("step_1", "step_2").
+  - Step IDs should match the business concept (the standard_field name from the
+    active vertical, e.g. "<concept>" or "period_days"), not generic ("step_1", "step_2").
   - Filters specific to this graph belong in final_sql, not in the steps. A step
     that bakes in a time filter or region filter cannot be reused by other graphs.
   </why_your_output_matters>
 
   <field_resolution_strategy>
-  When a graph references a standard_field (e.g., "revenue", "accounts_receivable"):
+  When a graph references a standard_field (an abstract concept name from the active vertical):
 
-  IMPORTANT: Standard field names are ABSTRACT ontology vocabulary from config/verticals/.
-  They are NOT table names, column names, or SQL identifiers.
+  IMPORTANT: Standard field names are ABSTRACT ontology vocabulary from config/verticals/
+  — they belong to whatever vertical is active, NOT any one domain. They are NOT table
+  names, column names, or SQL identifiers.
   The semantic phase maps these abstract concepts to actual dataset columns.
 
   Resolution order:
   1. Use field_mappings — these contain the semantic phase's concept → column mappings.
      If a standard_field has a direct mapping, use the mapped table.column EXACTLY.
   1b. If no direct field mapping exists, check enriched view categorical dimensions.
-     For example, `revenue` may correspond to filtering `enriched_trial_balance`
-     WHERE `account_id__account_type = 'revenue'` (or ILIKE 'revenue').
+     A concept may correspond to filtering an enriched view on one of its categorical
+     dimensions (e.g. WHERE `<enriched_view>.<dimension>` = '<concept>' or ILIKE '<concept>').
   2. If not directly mapped, analyze the dataset_context to infer the calculation:
-     - Look for columns with related semantic_role (e.g., "measure", "amount")
+     - Look for columns with a related semantic_role (e.g., "measure", "amount")
      - Check business_concept annotations for clues
-     - Use transaction_type or similar columns to filter relevant rows
-     - Example: revenue = SUM(amount) WHERE transaction_type IN ('Invoice', 'Sale')
+     - Use a type/category column to filter to the relevant rows
+     - Example: a measure = SUM(`<amount_col>`) filtered via a categorical column
+       (e.g. WHERE `<type_col>` IN (<the relevant values>))
   3. Document your inference in the column_mappings with explanation
 
   NEVER use a standard_field name as a table name in SQL.
@@ -83,11 +86,14 @@ system_prompt: |
   5. Date functions: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.
   6. Implicit casting: DuckDB is strict about types. Use explicit CAST() when comparing
      or joining columns of different types (e.g., VARCHAR vs INTEGER).
-  7. NULL handling: Use COALESCE(col, 0) for numeric aggregations that may include NULLs.
+  7. Empty aggregations: Do NOT wrap an aggregation in COALESCE(<agg>, 0). A SUM/AVG/MIN/MAX
+     over zero matching rows MUST surface as NULL — never a fabricated 0. A masked 0 reads as
+     a real value and silently corrupts the metric (e.g. an empty filter → 0 → a fabricated 100% ratio).
+     Only COALESCE a genuinely-nullable NON-aggregate input where 0 is the semantically correct value.
   8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
      Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
-     supersets with dimension columns (e.g., enriched_trial_balance has
-     chart_of_accounts__account_type). Use categorical dimensions for row-level filtering.
+     supersets with dimension columns (joined dimensions are named `<dimension>__<attribute>`,
+     e.g. `<fact_view>.<dimension>__<attribute>`). Use categorical dimensions for row-level filtering.
   </duckdb_dialect>
 
   <step_execution_model>
@@ -100,7 +106,7 @@ system_prompt: |
   - Each step must be standalone SQL (executable independently)
   - Each step should compute one business concept and return a single value
   - final_sql combines step results — this is where graph-specific logic lives
-  - Step IDs should match the business concept (e.g., "revenue", not "step_1")
+  - Step IDs should match the business concept (the standard_field name, not "step_1")
   </step_execution_model>
 
   <aggregation_types>
@@ -125,12 +131,12 @@ system_prompt: |
 
   - `temporal_behavior: point_in_time` — stock measure (balance, count, level
     at a moment). DO NOT SUM across periods. Use the `end_of_period` pattern:
-    filter to the latest period first, then aggregate within it. Examples:
-    accounts_receivable, inventory_value, cash_balance, headcount.
+    filter to the latest period first, then aggregate within it. Examples (across
+    domains): inventory_level, account_balance, headcount, active_subscriptions.
 
   - `temporal_behavior: additive` — flow measure (activity within a period).
-    SUM across periods is correct. Examples: revenue, expenses, units_sold,
-    transactions_count.
+    SUM across periods is correct. Examples (across domains): units_sold, sessions,
+    expenses, events_logged.
 
   If the graph step's declared `aggregation` conflicts with the column's
   `temporal_behavior` (e.g. `aggregation: sum` on a `point_in_time` column),
@@ -190,7 +196,7 @@ user_prompt: |
 
   3. Generate each step as standalone SQL:
      - One business concept per step, returning a single scalar value
-     - Step IDs match the business concept (e.g., "total_revenue", not "step_1")
+     - Step IDs match the business concept (the standard_field name, e.g. "<measure>", not "step_1")
      - Use the aggregation type from the graph specification
 
   4. Write final_sql to combine step results:
@@ -205,21 +211,23 @@ user_prompt: |
      - llm_reasoning: brief explanation of your mapping strategy
 
   6. Document assumptions — interpretation decisions due to data uncertainty:
-     - Only record genuine ambiguity you resolved (e.g., "treating nulls as zero",
-       "using end-of-period balance from latest date", "assuming EUR currency")
+     - Only record genuine ambiguity you resolved (e.g., "treating an ambiguous column as
+       the intended measure", "using the latest period's value for a point-in-time measure",
+       "assuming a single unit/currency across rows")
      - Include the entropy dimension, what column/relationship is affected, your
        decision, the basis (system_default/inferred/user_specified), and confidence
 
-  EXAMPLE:
+  EXAMPLE (illustrates STRUCTURE only — the <…> tokens are placeholders; substitute the
+  active vertical's concepts, views, and columns from <field_mappings>/<data_schema>):
   steps:
-    - step_id: "total_revenue"
-      sql: "SELECT SUM(\"Amount\") as value FROM enriched_transactions WHERE \"Type\" ILIKE 'Sale'"
-    - step_id: "total_ar"
-      sql: "SELECT SUM(\"Balance\") as value FROM enriched_trial_balance WHERE account_id__account_type ILIKE 'receivable'"
+    - step_id: "<numerator_measure>"
+      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<category_col>\" ILIKE '<category>'"
+    - step_id: "<denominator_measure>"
+      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view>"
     - step_id: "period_days"
       sql: "SELECT 30 as value"
 
-  final_sql: "SELECT (SELECT value FROM total_ar) / (SELECT value FROM total_revenue) * (SELECT value FROM period_days) AS dso"
+  final_sql: "SELECT (SELECT value FROM <numerator_measure>) / (SELECT value FROM <denominator_measure>) * (SELECT value FROM period_days) AS <metric_id>"
   </instructions>
 
   Use the generate_sql tool to provide the SQL steps, final SQL, column mappings, provenance, and assumptions.

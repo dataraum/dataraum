@@ -4,6 +4,32 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-23: DAT-616 reworked + DAT-620 — metric grounding on long-format finance (REFRAMED)
+
+The silently-wrong metric bug is **context-engine starvation**, not a missing checker. Full
+reworked design: `docs/dat543-construct-dont-improvise.md` (this PR). The graph agent
+improvises the row filter because it is served `SELECT DISTINCT … LIMIT 5` (no counts) and no
+drivers. Fix = **FEED** it `top_values` + drivers + a teach-confirmed `concept→value-set`
+binding (new ticket **DAT-620**), and have it author SQL from a blueprint. The `verifier.py`
+in this PR stays as a cheap value-bound + NULL **sanity floor** — NOT the fix.
+
+### dataraum-eval
+- The real oracle is now **DAT-620's proposer**, not the metric value alone. Needs a
+  long-format fixture with **ground-truth `concept → value-set` labels** (which
+  `account_type` values ARE revenue / cost_of_goods_sold / opex / …) so the proposer's
+  **precision/recall** can be scored — that p/r is the acceptance gate on DAT-620.
+- Keep the prior regressions too: assert metric VALUES (not just `executed`) on the
+  long-format fixture; an empty-filter extract stays `grounded` with a reason (the sanity
+  floor).
+- **Status**: pending (supersedes the earlier 'assert metric values' framing — same
+  fixture, now ALSO needs the concept→value labels).
+
+### dataraum-testdata
+- A **BookSQL-style long/transactional finance fixture** (one `Amount` column + an
+  `account_type` discriminator, no per-concept columns) with TWO ground truths: (1) the
+  **`concept → value-set` labels** (the NEW requirement — for the DAT-620 proposer), and
+  (2) ground-truth metric values for gross_margin / gross_profit (the regression).
+
 ## 2026-06-22: fix — deterministic `top_values` ordering (profiling reproducibility)
 
 `StatisticalProfile.top_values` is now ordered `count DESC, value` (was `count DESC` only),

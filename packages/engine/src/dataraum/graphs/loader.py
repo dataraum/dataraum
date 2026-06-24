@@ -32,6 +32,7 @@ from .models import (
     ParameterDef,
     StepSource,
     StepType,
+    StepValidation,
     TransformationGraph,
 )
 
@@ -205,6 +206,19 @@ class GraphLoader:
                 statement=source_data.get("statement"),
             )
 
+        # Declared post-execution checks (DAT-616): the catalogue's per-extract
+        # `validation:` block was dropped on the floor before — now parsed and
+        # enforced by graphs.verifier against the executed value.
+        validations = [
+            StepValidation(
+                condition=v["condition"],
+                severity=v.get("severity", "error"),
+                message=v.get("message", ""),
+            )
+            for v in data.get("validation") or []
+            if isinstance(v, dict) and v.get("condition")
+        ]
+
         return GraphStep(
             step_id=step_id,
             step_type=step_type,
@@ -215,6 +229,7 @@ class GraphLoader:
             expression=data.get("expression"),
             depends_on=data.get("depends_on", []),
             output_step=data.get("output_step", False),
+            validations=validations,
         )
 
     def _parse_interpretation(self, data: dict[str, Any] | None) -> Interpretation | None:

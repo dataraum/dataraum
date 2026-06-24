@@ -15,6 +15,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +41,7 @@ from .models import (
     StepType,
     TransformationGraph,
 )
+from .verifier import verify_execution
 
 logger = get_logger(__name__)
 
@@ -270,8 +272,26 @@ class GraphAgent(LLMFeature):
 
         execution = exec_result.value
 
-        # Save snippets AFTER successful execution — includes repair info
-        # and only saves SQL that actually works.
+        # Verifier gate (DAT-616): execution-pass is NOT validation. A metric
+        # whose SQL ran cleanly is still inconclusive if an extract had no support
+        # (empty filter -> NULL), the composed value is degenerate (NULL), or a
+        # catalogue-declared condition is violated. Such a metric stays grounded
+        # with the reason — never executed-green — and its SQL is NOT cached (we
+        # return before _save_snippets). Reused cached snippets that produced the
+        # bad result are recorded failed so they self-heal on the next run.
+        verdict = verify_execution(graph, execution)
+        if not verdict.success:
+            if cached_snippets:
+                from dataraum.query.snippet_library import SnippetLibrary
+
+                failed_ids = [
+                    s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
+                ]
+                SnippetLibrary(session, workspace_id=workspace_id).record_failure(failed_ids)
+            return Result.fail(verdict.error or "metric verification failed")
+
+        # Save snippets AFTER successful execution AND verification — includes
+        # repair info and only saves SQL that actually works AND is trustworthy.
         self._save_snippets(
             session=session,
             graph=graph,
@@ -575,11 +595,15 @@ class GraphAgent(LLMFeature):
                     "repair_attempts": sr.repair_attempts,
                 },
             )
+            # bool BEFORE int (bool is an int subclass); Decimal IS the common
+            # currency type DuckDB returns for SUM over DECIMAL columns — it must
+            # land in value_scalar, else the verifier reads a real sum as NULL
+            # "no support" and false-fails every real metric (DAT-616).
             value = sr.value
-            if isinstance(value, (int, float)):
-                step_result.value_scalar = float(value)
-            elif isinstance(value, bool):
+            if isinstance(value, bool):
                 step_result.value_boolean = value
+            elif isinstance(value, (int, float, Decimal)):
+                step_result.value_scalar = float(value)
             elif isinstance(value, str):
                 step_result.value_string = value
 

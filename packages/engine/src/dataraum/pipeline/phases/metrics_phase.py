@@ -261,8 +261,10 @@ class MetricsPhase(BasePhase):
             )
             results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, schema_mapping_id)
 
-        # A composed metric that ran cleanly reaches executed; one whose SQL
-        # failed stays grounded with the reason (born loud, never silently absent).
+        # A composed metric that ran cleanly AND verified reaches executed; one
+        # whose SQL failed OR whose result was inconclusive (no support / a
+        # declared condition violated — DAT-616 verifier) stays grounded with the
+        # reason (born loud, never silently green).
         for graph_id, result, inspiration_id in results:
             artifact = artifacts[graph_id]
             if result.success:
@@ -276,8 +278,8 @@ class MetricsPhase(BasePhase):
                         ctx.session.delete(ad_hoc)
                         _log.info("snippet_promoted", graph_id=graph_id, snippet_id=inspiration_id)
             else:
-                artifact.state_reason = f"composed but execution failed: {result.error}"
-                _log.warning("metric_execution_failed", graph_id=graph_id, error=result.error)
+                artifact.state_reason = f"composed but not executed: {result.error}"
+                _log.warning("metric_not_executed", graph_id=graph_id, error=result.error)
 
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
@@ -306,7 +308,7 @@ class MetricsPhase(BasePhase):
             warnings=previews,
             summary=(
                 f"{executed}/{len(artifacts)} metrics executed; "
-                f"{declared_stuck} ungroundable, {grounded_stuck} composed but unexecutable"
+                f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed"
             ),
         )
 

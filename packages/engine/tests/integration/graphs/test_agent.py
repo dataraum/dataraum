@@ -286,6 +286,91 @@ class TestGraphAgentIntegration:
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
 
 
+def _agent_with_sql(steps: list[dict[str, str]], final_sql: str) -> GraphAgent:
+    """A GraphAgent whose mocked LLM emits the given steps + final SQL."""
+    mock_config = MagicMock()
+    mock_config.limits.max_output_tokens_per_request = 4000
+    mock_config.limits.cache_ttl_seconds = 3600
+    mock_renderer = MagicMock()
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+    agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
+    agent.provider.get_model_for_tier.return_value = "test-model"
+
+    tool_call = MagicMock()
+    tool_call.name = "generate_sql"
+    tool_call.input = {
+        "summary": "test",
+        "steps": steps,
+        "final_sql": final_sql,
+        "column_mappings": {"amount": "amount"},
+    }
+    response = MagicMock()
+    response.tool_calls = [tool_call]
+    response.content = None
+    agent.provider.converse = MagicMock(return_value=Result.ok(response))
+    return agent
+
+
+class TestGraphAgentVerifier:
+    """The post-execution verifier converts silently-wrong metrics into honest fails (DAT-616)."""
+
+    def test_empty_support_extract_fails_grounded_and_caches_nothing(
+        self, session: Session, duckdb_with_data, sample_graph
+    ):
+        """An extract whose filter matches no rows is inconclusive, not executed-green.
+
+        Reproduces the long-format finance bug: a SUM over an empty filter (no
+        COALESCE mask) yields NULL → the metric stays grounded with a 'no support'
+        reason and its SQL is NOT promoted into the reuse cache.
+        """
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        agent = _agent_with_sql(
+            steps=[
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount) AS value FROM test_data WHERE id = 999",
+                    "description": "empty filter",
+                }
+            ],
+            final_sql="SELECT * FROM value",
+        )
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+
+        assert not result.success
+        assert "no support" in result.error
+        # The bad SQL must NOT enter the shared snippet cache (the verifier gates it).
+        snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
+        assert snippets == []
+
+    def test_genuine_zero_metric_executes(self, session: Session, duckdb_with_data, sample_graph):
+        """A metric that genuinely computes 0 (rows matched, summing to 0) passes.
+
+        `id = 1` matches a row; `amount * 0` sums to a real 0 — support exists, so
+        the metric is executed with value 0, not rejected as degenerate."""
+        agent = _agent_with_sql(
+            steps=[
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount * 0) AS value FROM test_data WHERE id = 1",
+                    "description": "genuine zero with support",
+                }
+            ],
+            final_sql="SELECT * FROM value",
+        )
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+
+        assert result.success
+        assert result.value.output_value == 0
+
+
 class TestGraphAgentSnippets:
     """Tests for GraphAgent snippet lifecycle."""
 

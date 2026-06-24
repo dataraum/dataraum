@@ -682,3 +682,31 @@ class TestValueSetGrounding:
         """No vertical → no Business Concepts section (clean default)."""
         result = format_metadata_document(GraphExecutionContext(total_tables=0))
         assert "## Business Concepts" not in result
+
+
+class TestDriversRendering:
+    """The per-measure driver block served to the GraphAgent (DAT-616)."""
+
+    def test_drivers_block_renders_target_type_dims_and_slices(self) -> None:
+        from dataraum.graphs.context import DriverContext
+
+        d = DriverContext(
+            measure_label="amount",
+            target_type="flow",
+            grain="row",
+            ranked_dimensions=[{"dimension": "account_type", "gain": 0.42}],
+            interesting_slices=[
+                {"dimension": "account_type", "value": "COGS", "effect": -0.8, "support": 4120}
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(drivers=[d], total_tables=0))
+
+        assert "## Drivers" in result
+        assert "amount (flow" in result
+        assert "account_type (0.42)" in result
+        assert "account_type=COGS (effect -0.80, support 4120)" in result
+        assert "hint, NOT the value-set" in result
+
+    def test_no_drivers_section_when_empty(self) -> None:
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Drivers" not in result

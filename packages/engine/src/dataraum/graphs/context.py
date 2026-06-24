@@ -62,6 +62,11 @@ class ColumnContext:
     distinct_count: int | None = None
     top_values: list[dict[str, Any]] = field(default_factory=list)
 
+    # DAT-616: measure range/sign — grounds signed measures (a min < 0 tells the agent
+    # the column carries negatives, e.g. debit/credit, so a bare SUM may not be the metric).
+    numeric_min: float | None = None
+    numeric_max: float | None = None
+
     # Temporal metrics
     is_stale: bool | None = None
     detected_granularity: str | None = None
@@ -132,6 +137,10 @@ class RelationshipContext:
     relationship_type: str
     cardinality: str | None = None
     confidence: float = 0.0
+
+    # DAT-616: joining on this edge fans out (one row matches many) → SUMming an
+    # additive measure across the join double-counts. The second silent-wrong vector.
+    introduces_duplicates: bool | None = None
 
     # Entropy (from entropy layer)
     relationship_entropy: dict[str, Any] | None = None  # Join path entropy
@@ -537,6 +546,7 @@ def build_execution_context(
                         relationship_type=rel.relationship_type or "unknown",
                         cardinality=rel.cardinality,
                         confidence=rel.confidence,
+                        introduces_duplicates=(rel.evidence or {}).get("introduces_duplicates"),
                     )
                 )
                 rel_list_for_topology.append(
@@ -893,7 +903,11 @@ def build_execution_context(
             # assembler used to drop it. Lift it so format_metadata_document can serve
             # the complete enumeration for low-cardinality categoricals.
             distinct_count = stat_prof.distinct_count if stat_prof else None
-            top_values = (stat_prof.profile_data or {}).get("top_values", []) if stat_prof else []
+            profile_data = (stat_prof.profile_data or {}) if stat_prof else {}
+            top_values = profile_data.get("top_values", [])
+            numeric_stats = profile_data.get("numeric_stats") or {}
+            numeric_min = numeric_stats.get("min_value")
+            numeric_max = numeric_stats.get("max_value")
             outlier_ratio = None
             if quality:
                 outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
@@ -944,6 +958,8 @@ def build_execution_context(
                     outlier_ratio=outlier_ratio,
                     distinct_count=distinct_count,
                     top_values=top_values,
+                    numeric_min=numeric_min,
+                    numeric_max=numeric_max,
                     is_stale=temp_profile.is_stale if temp_profile else None,
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
@@ -1316,6 +1332,11 @@ def format_metadata_document(
                 "is_deterministic", True
             ):
                 warning = " ⚠ non-deterministic"
+            # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
+            # measure across this join double-counts. Tell the agent to aggregate
+            # before the join (or COUNT DISTINCT), not after.
+            if rel.introduces_duplicates:
+                warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(
                 f"| {rel.from_table}.{rel.from_column} | {rel.to_table}.{rel.to_column} "
                 f"| {rel.cardinality or '?'} | {rel.confidence:.2f}{warning} |"
@@ -1525,7 +1546,15 @@ def _build_column_notes(col: ColumnContext) -> str:
     notes = []
 
     if col.unit_source_column:
-        notes.append(f"Unit source: {col.unit_source_column}.")
+        notes.append(f"Unit source: {col.unit_source_column} (values may mix units — caveat).")
+
+    # DAT-616: measure range/sign — a negative min flags a signed measure (debit/credit),
+    # where a bare SUM may not be the intended metric (a signed/net expression might be).
+    if col.semantic_role == "measure" and col.numeric_min is not None:
+        rng = f"Range: {col.numeric_min:g}..{col.numeric_max:g}."
+        if col.numeric_min < 0:
+            rng += " Signed (has negatives) — SUM nets debits/credits."
+        notes.append(rng)
 
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")

@@ -748,3 +748,50 @@ class TestCycleConceptBindings:
             GraphExecutionContext(business_cycles=[c], total_tables=0)
         )
         assert "Concept bindings (confirmed" not in result
+
+
+class TestFanTrapAndSignedMeasure:
+    """Fan-trap caution + signed-measure range (DAT-616)."""
+
+    def test_fan_out_relationship_warned(self) -> None:
+        rel = RelationshipContext(
+            from_table="lines",
+            from_column="order_id",
+            to_table="orders",
+            to_column="id",
+            relationship_type="fk",
+            cardinality="many_to_one",
+            confidence=0.9,
+            introduces_duplicates=True,
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(relationships=[rel], total_tables=0)
+        )
+        assert "fan-out: SUM across this join double-counts" in result
+
+    def test_signed_measure_range_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            numeric_min=-500.0,
+            numeric_max=9000.0,
+        )
+        t = TableContext(table_id="t", table_name="ledger", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Range: -500..9000" in result
+        assert "Signed (has negatives)" in result
+
+    def test_unsigned_measure_no_signed_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="qty",
+            table_name="t",
+            semantic_role="measure",
+            numeric_min=1.0,
+            numeric_max=50.0,
+        )
+        t = TableContext(table_id="t", table_name="t", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Signed (has negatives)" not in result

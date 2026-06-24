@@ -32,6 +32,7 @@ import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
 	currentDimensionHierarchies,
+	currentRelationships,
 	currentSemanticAnnotations,
 	currentSliceDefinitions,
 	currentTableEntities,
@@ -488,6 +489,162 @@ export async function buildCatalogBlock(): Promise<string> {
 			})),
 		tableAddressById,
 	);
+}
+
+// --- Relationships (DAT-621) -----------------------------------------------------
+//
+// The confirmed join paths between tables — the JOIN-grounding analog of the
+// <dimensions> value-grounding block. The sub-agent gets NO look_relationships tool
+// (relationships are a small set needed by most multi-table queries → serve in
+// context, don't gate behind a per-query tool round-trip); high-card VALUES are the
+// opposite (large + per-query → look_values). Mirrors what the engine GraphAgent
+// already gets (graphs/context.py "## Relationships"): the directional column pair,
+// cardinality, and the fan-out caution. Only the DEFINED catalog is served
+// (detection_method != 'candidate') — a bare structural candidate the run never
+// confirmed is not a join path. Without this the sub-agent invents a join key
+// (the `t.account = coa.account_name` guess).
+
+/** One confirmed join edge, addressed for the prompt (the from/to lake addresses +
+ * the column on each side). `introducesDuplicates` is the engine's fan-trap signal
+ * (evidence.introduces_duplicates): joining here multiplies rows. */
+export interface RelationshipBlockRow {
+	fromAddress: string;
+	fromColumn: string;
+	toAddress: string;
+	toColumn: string;
+	cardinality: string | null;
+	relationshipType: string | null;
+	introducesDuplicates: boolean | null;
+}
+
+/**
+ * Format the confirmed relationships as the sub-agent's `<relationships>` block (pure).
+ * Each line is a directly usable JOIN predicate (`<from>."col" = <to>."col"`) plus the
+ * cardinality/type and, when the edge fans out, the SUM-double-counts caution. Empty →
+ * a one-line note.
+ */
+export function formatRelationships(rows: RelationshipBlockRow[]): string {
+	if (rows.length === 0) {
+		return "<relationships>\n(No confirmed relationships between tables.)\n</relationships>";
+	}
+	const lines = rows
+		.map((r) => {
+			const facts = [r.cardinality, r.relationshipType]
+				.filter((f): f is string => !!f)
+				.join("; ");
+			const factTag = facts ? ` (${facts})` : "";
+			const fanOut = r.introducesDuplicates
+				? " ⚠ fan-out: SUM across this join double-counts — pre-aggregate or COUNT DISTINCT"
+				: "";
+			return `- ${r.fromAddress}."${r.fromColumn}" = ${r.toAddress}."${r.toColumn}"${factTag}${fanOut}`;
+		})
+		.sort();
+	return (
+		"<relationships>\n" +
+		"The confirmed join paths between tables — JOIN ON the listed column pair, never " +
+		"a guessed key. A dimension table may be hidden from <schema> when enriched views " +
+		"are shown; these paths still reach it (join lake.typed.<dim>). Ground EVERY join " +
+		"on a pair listed here; if the join you need isn't listed, do not invent one — " +
+		"abstain or state the limitation.\n\n" +
+		`${lines.join("\n")}\n` +
+		"</relationships>"
+	);
+}
+
+/**
+ * Read the confirmed relationship catalog for the active workspace's promoted head and
+ * format it as the `<relationships>` block. Resolves each endpoint's lake address (the
+ * SAME `lake.<layer>.<name>` form the <schema> block uses) + column name. Only
+ * `detection_method != 'candidate'` (the defined catalog) is served.
+ */
+export async function buildRelationshipsBlock(): Promise<string> {
+	const rels = await metadataDb
+		.select({
+			fromTableId: currentRelationships.fromTableId,
+			fromColumnId: currentRelationships.fromColumnId,
+			toTableId: currentRelationships.toTableId,
+			toColumnId: currentRelationships.toColumnId,
+			relationshipType: currentRelationships.relationshipType,
+			cardinality: currentRelationships.cardinality,
+			detectionMethod: currentRelationships.detectionMethod,
+			evidence: currentRelationships.evidence,
+		})
+		.from(currentRelationships);
+
+	const defined = rels.filter(
+		(r) =>
+			r.detectionMethod !== "candidate" &&
+			r.fromTableId &&
+			r.fromColumnId &&
+			r.toTableId &&
+			r.toColumnId,
+	);
+	if (defined.length === 0) return formatRelationships([]);
+
+	// Resolve endpoint table addresses + column names in one pass each (no N+1).
+	const tableIds = new Set<string>();
+	const columnIds = new Set<string>();
+	for (const r of defined) {
+		tableIds.add(r.fromTableId as string);
+		tableIds.add(r.toTableId as string);
+		columnIds.add(r.fromColumnId as string);
+		columnIds.add(r.toColumnId as string);
+	}
+
+	const [tableRows, columnRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: tables.tableId,
+				physicalName: tables.tableName,
+				layer: tables.layer,
+			})
+			.from(tables)
+			.where(inArray(tables.tableId, [...tableIds])),
+		metadataDb
+			.select({ columnId: columns.columnId, columnName: columns.columnName })
+			.from(columns)
+			.where(inArray(columns.columnId, [...columnIds])),
+	]);
+
+	const addressById = new Map<string, string>(
+		tableRows
+			.filter((t) => t.tableId)
+			.map((t) => [
+				t.tableId as string,
+				`${LAKE_ALIAS}.${schemaForLayer(t.layer ?? TYPED_LAYER)}.${t.physicalName}`,
+			]),
+	);
+	const colNameById = new Map<string, string>(
+		columnRows
+			.filter((c) => c.columnId && c.columnName)
+			.map((c) => [c.columnId as string, c.columnName as string]),
+	);
+
+	const blockRows: RelationshipBlockRow[] = [];
+	for (const r of defined) {
+		const fromAddress = addressById.get(r.fromTableId as string);
+		const toAddress = addressById.get(r.toTableId as string);
+		const fromColumn = colNameById.get(r.fromColumnId as string);
+		const toColumn = colNameById.get(r.toColumnId as string);
+		// A dropped endpoint (stale id) can't form a usable JOIN predicate — skip it
+		// rather than render a half-resolved, un-runnable line.
+		if (!fromAddress || !toAddress || !fromColumn || !toColumn) continue;
+		blockRows.push({
+			fromAddress,
+			fromColumn,
+			toAddress,
+			toColumn,
+			cardinality: r.cardinality ?? null,
+			relationshipType: r.relationshipType ?? null,
+			introducesDuplicates:
+				typeof r.evidence === "object" && r.evidence !== null
+					? (((r.evidence as Record<string, unknown>).introduces_duplicates as
+							| boolean
+							| null) ?? null)
+					: null,
+		});
+	}
+	return formatRelationships(blockRows);
 }
 
 // --- Table entities (DAT-607) ----------------------------------------------------

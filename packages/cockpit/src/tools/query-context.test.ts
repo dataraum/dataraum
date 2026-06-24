@@ -19,8 +19,10 @@ import {
 	formatCatalog,
 	formatDrivers,
 	formatEntities,
+	formatRelationships,
 	formatSchema,
 	preferEnriched,
+	type RelationshipBlockRow,
 	type SchemaColumnRow,
 	type SchemaConceptRow,
 	type SchemaTableRow,
@@ -288,6 +290,51 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 			new Map(),
 		);
 		expect(block).toContain("Table orphan:");
+	});
+});
+
+describe("formatRelationships (DAT-621 join-grounding block)", () => {
+	const rel = (
+		over: Partial<RelationshipBlockRow> = {},
+	): RelationshipBlockRow => ({
+		fromAddress: "lake.typed.journal_lines",
+		fromColumn: "account",
+		toAddress: "lake.typed.chart_of_accounts",
+		toColumn: "account",
+		cardinality: "many-to-one",
+		relationshipType: "foreign_key",
+		introducesDuplicates: null,
+		...over,
+	});
+
+	it("renders each edge as a usable JOIN predicate with cardinality/type", () => {
+		const block = formatRelationships([rel()]);
+		expect(block).toContain(
+			'- lake.typed.journal_lines."account" = lake.typed.chart_of_accounts."account" (many-to-one; foreign_key)',
+		);
+		expect(block).toContain("JOIN ON the listed column pair");
+	});
+
+	it("flags a fan-out edge with the double-count caution", () => {
+		const block = formatRelationships([rel({ introducesDuplicates: true })]);
+		expect(block).toContain("⚠ fan-out");
+		expect(block).toContain("pre-aggregate");
+	});
+
+	it("omits the fact tag when cardinality and type are absent", () => {
+		const block = formatRelationships([
+			rel({ cardinality: null, relationshipType: null }),
+		]);
+		expect(block).toContain(
+			'- lake.typed.journal_lines."account" = lake.typed.chart_of_accounts."account"',
+		);
+		expect(block).not.toContain("()");
+	});
+
+	it("notes when there are no confirmed relationships", () => {
+		const block = formatRelationships([]);
+		expect(block).toContain("No confirmed relationships");
+		expect(block).toContain("<relationships>");
 	});
 });
 

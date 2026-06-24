@@ -352,6 +352,7 @@ class ValidationAgent(LLMFeature):
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_validation_sql"},
+            label="validation_sql",
             max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,

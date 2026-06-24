@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, cast
 
 import anthropic
@@ -174,7 +175,9 @@ class AnthropicProvider(LLMProvider):
             if request.tool_choice:
                 kwargs["tool_choice"] = request.tool_choice
 
+            start = time.perf_counter()
             response = self.client.messages.create(**kwargs)
+            elapsed_ms = round((time.perf_counter() - start) * 1000)
 
             # Extract content and tool calls from response
             text_content = ""
@@ -192,14 +195,45 @@ class AnthropicProvider(LLMProvider):
                         )
                     )
 
+            # Cache-usage fields are optional on the SDK Usage object (None when
+            # no cache_control is in play — the engine today, until DAT-601);
+            # coerce only None to 0 so telemetry stays numeric while preserving a
+            # genuine int(0) ("caching configured, nothing read") once 601 lands.
+            usage = response.usage
+            cache_read = (
+                usage.cache_read_input_tokens if usage.cache_read_input_tokens is not None else 0
+            )
+            cache_creation = (
+                usage.cache_creation_input_tokens
+                if usage.cache_creation_input_tokens is not None
+                else 0
+            )
+
+            # Per-call telemetry (DAT-600): elapsed + token usage, tagged by the
+            # caller's agent/phase label. Latency is output-decode-dominated, so
+            # output_tokens vs elapsed_ms is the wall-clock signal; the cache
+            # fields are the DAT-601 cost lever (zero until caching lands).
+            logger.info(
+                "llm_call",
+                label=request.label,
+                model=response.model,
+                elapsed_ms=elapsed_ms,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_creation,
+            )
+
             return Result.ok(
                 ConversationResponse(
                     content=text_content,
                     tool_calls=tool_calls,
                     stop_reason=response.stop_reason or "end_turn",
                     model=response.model,
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_input_tokens=cache_read,
+                    cache_creation_input_tokens=cache_creation,
                 )
             )
 

@@ -9,6 +9,7 @@ Result.error every intermediate layer would have to forward faithfully.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import anthropic
@@ -136,3 +137,94 @@ class TestConverseRaisesTypedError:
         with pytest.raises(TransientProviderError) as ei:
             provider.converse(_request())
         assert ei.value.__cause__ is original
+
+
+def _ok_response(
+    *,
+    input_tokens: int = 100,
+    output_tokens: int = 20,
+    cache_read: int | None = 0,
+    cache_creation: int | None = 0,
+) -> SimpleNamespace:
+    """A minimal stand-in for the SDK Message a successful create() returns.
+
+    ``cache_read``/``cache_creation`` default to 0 but accept ``None`` to mirror
+    the SDK, which leaves those Usage fields unset when no ``cache_control`` is
+    in play (the engine today, until DAT-601).
+    """
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="hello")],
+        stop_reason="end_turn",
+        model="claude-x",
+        usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_creation,
+        ),
+    )
+
+
+class TestConverseTelemetry:
+    """converse emits per-call latency + token telemetry (DAT-600) and surfaces
+    the cache-usage fields on the response."""
+
+    def test_logs_label_and_all_token_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = _provider()
+        monkeypatch.setattr(
+            provider.client.messages,
+            "create",
+            lambda **_: _ok_response(
+                input_tokens=512, output_tokens=64, cache_read=480, cache_creation=32
+            ),
+        )
+        log = MagicMock()
+        monkeypatch.setattr("dataraum.llm.providers.anthropic.logger", log)
+
+        request = ConversationRequest(
+            messages=[Message(role="user", content="hi")], label="graph_sql_generation"
+        )
+        provider.converse(request).unwrap()
+
+        log.info.assert_called_once()
+        event, kwargs = log.info.call_args.args[0], log.info.call_args.kwargs
+        assert event == "llm_call"
+        assert kwargs["label"] == "graph_sql_generation"
+        assert kwargs["model"] == "claude-x"
+        assert isinstance(kwargs["elapsed_ms"], int) and kwargs["elapsed_ms"] >= 0
+        assert kwargs["input_tokens"] == 512
+        assert kwargs["output_tokens"] == 64
+        assert kwargs["cache_read_input_tokens"] == 480
+        assert kwargs["cache_creation_input_tokens"] == 32
+
+    def test_response_carries_cache_usage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = _provider()
+        monkeypatch.setattr(
+            provider.client.messages,
+            "create",
+            lambda **_: _ok_response(cache_read=480, cache_creation=32),
+        )
+
+        resp = provider.converse(_request()).unwrap()
+
+        assert resp.cache_read_input_tokens == 480
+        assert resp.cache_creation_input_tokens == 32
+
+    def test_missing_cache_fields_coerce_to_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No cache_control today → SDK leaves the Usage cache fields as None;
+        # telemetry must stay numeric, not propagate None.
+        provider = _provider()
+        monkeypatch.setattr(
+            provider.client.messages,
+            "create",
+            lambda **_: _ok_response(cache_read=None, cache_creation=None),
+        )
+        log = MagicMock()
+        monkeypatch.setattr("dataraum.llm.providers.anthropic.logger", log)
+
+        resp = provider.converse(_request()).unwrap()
+
+        assert resp.cache_read_input_tokens == 0
+        assert resp.cache_creation_input_tokens == 0
+        assert log.info.call_args.kwargs["cache_read_input_tokens"] == 0
+        assert log.info.call_args.kwargs["cache_creation_input_tokens"] == 0

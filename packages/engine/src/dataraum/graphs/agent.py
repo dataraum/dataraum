@@ -462,6 +462,7 @@ class GraphAgent(LLMFeature):
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_sql"},
+            label="graph_sql_generation",
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
@@ -801,6 +802,7 @@ class GraphAgent(LLMFeature):
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=self.provider.get_model_for_tier(model_tier),
+            label="sql_repair",
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —

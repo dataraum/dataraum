@@ -1,12 +1,22 @@
 import { Card, Group, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
 import { Library } from "lucide-react";
-import { loadReports } from "#/server/reports";
+import { resolveActiveWorkspace } from "#/db/cockpit/registry";
+import { listReports } from "#/db/cockpit/reports";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
 
 // The reports gallery (DAT-624) — a workspace's library of minted widgets. Each
 // card links to the detail view, which re-runs the frozen SQL live. The list is
 // bounded server-side (REPORTS_LIMIT); cards are lightweight, so the page scrolls.
+//
+// The loader's server fn is defined inline (the cockpit route convention) so the
+// plugin strips its cockpit_db handler from the client bundle.
+
+const loadReports = createServerFn({ method: "GET" }).handler(async () => {
+	const workspaceId = await resolveActiveWorkspace();
+	return listReports(workspaceId);
+});
 
 export const Route = createFileRoute("/(app)/workspace/$wsId/reports/")({
 	loader: () => loadReports(),

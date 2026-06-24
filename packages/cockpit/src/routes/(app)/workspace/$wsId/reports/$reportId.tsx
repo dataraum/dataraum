@@ -13,10 +13,14 @@ import {
 	useNavigate,
 	useRouter,
 } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
+import { createServerFn, useServerFn } from "@tanstack/react-start";
 import { Check, Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
-import { deleteReportFn, loadReport, renameReportFn } from "#/server/reports";
+import {
+	getReport,
+	renameReport,
+	softDeleteReport,
+} from "#/db/cockpit/reports";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
@@ -24,6 +28,25 @@ import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 // re-run on every open through the same result-grid stream, so numbers stay current.
 // The title is the one editable field (inline); the SQL / summary / confidence are
 // immutable. Delete is soft (the row stays; children keep their lineage).
+//
+// The loader + action server fns are defined inline (the cockpit route convention)
+// so the plugin strips their cockpit_db handlers from the client bundle.
+
+const loadReport = createServerFn({ method: "GET" })
+	.inputValidator((reportId: string) => reportId)
+	.handler(async ({ data: reportId }) => getReport(reportId));
+
+const renameReportFn = createServerFn({ method: "POST" })
+	.inputValidator((data: { id: string; title: string }) => data)
+	.handler(async ({ data }) => {
+		await renameReport(data.id, data.title);
+	});
+
+const deleteReportFn = createServerFn({ method: "POST" })
+	.inputValidator((reportId: string) => reportId)
+	.handler(async ({ data: reportId }) => {
+		await softDeleteReport(reportId);
+	});
 
 export const Route = createFileRoute(
 	"/(app)/workspace/$wsId/reports/$reportId",

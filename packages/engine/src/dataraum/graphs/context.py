@@ -55,6 +55,13 @@ class ColumnContext:
     cardinality_ratio: float | None = None
     outlier_ratio: float | None = None
 
+    # Value enumeration (DAT-616): the freq-ordered value-set the SQL agent
+    # grounds metric predicates in, instead of improvising an ILIKE filter.
+    # `top_values` is [{value, count, percentage}] capped at the profiler's
+    # top_k; it is the COMPLETE enumeration iff `distinct_count <= len(top_values)`.
+    distinct_count: int | None = None
+    top_values: list[dict[str, Any]] = field(default_factory=list)
+
     # Temporal metrics
     is_stale: bool | None = None
     detected_granularity: str | None = None
@@ -288,6 +295,12 @@ class GraphExecutionContext:
 
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
+
+    # Ontology concept vocabulary (DAT-616): the vertical's concepts with their
+    # indicators/exclude_patterns, so the SQL agent can map discriminator VALUES
+    # (e.g. which account_type values ARE revenue) to a concept inline on
+    # long-format data where field_mappings is empty. None when no vertical.
+    concept_vocabulary: str | None = None
 
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -700,6 +713,20 @@ def build_execution_context(
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)
 
+    # 14b. Load the vertical's concept vocabulary (DAT-616). On long-format data the
+    # discriminating measure (`amount`) carries no business_concept, so field_mappings
+    # is empty for the P&L concepts; serving the ontology lets the agent ground which
+    # discriminator VALUES are revenue/cogs/opex from the value-sets it's now fed.
+    concept_vocabulary: str | None = None
+    if vertical:
+        try:
+            from dataraum.analysis.semantic.ontology import OntologyLoader
+
+            ontology = OntologyLoader().load(vertical)
+            concept_vocabulary = _format_concept_vocabulary(ontology)
+        except Exception as e:
+            logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
+
     # 15. Compute graph topology
     table_names = [t.table_name for t in tables]
     graph_structure = analyze_graph_topology(
@@ -809,6 +836,12 @@ def build_execution_context(
             # Extract metrics
             null_ratio = stat_prof.null_ratio if stat_prof else None
             cardinality_ratio = stat_prof.cardinality_ratio if stat_prof else None
+            # DAT-616: the value-set the agent needs to ground predicates lives in
+            # the profile (distinct_count column + top_values in profile_data); the
+            # assembler used to drop it. Lift it so format_metadata_document can serve
+            # the complete enumeration for low-cardinality categoricals.
+            distinct_count = stat_prof.distinct_count if stat_prof else None
+            top_values = (stat_prof.profile_data or {}).get("top_values", []) if stat_prof else []
             outlier_ratio = None
             if quality:
                 outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
@@ -857,6 +890,8 @@ def build_execution_context(
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
+                    distinct_count=distinct_count,
+                    top_values=top_values,
                     is_stale=temp_profile.is_stale if temp_profile else None,
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
@@ -944,6 +979,7 @@ def build_execution_context(
         validations=validation_contexts,
         enriched_views=enriched_view_contexts,
         field_mappings=field_mappings,
+        concept_vocabulary=concept_vocabulary,
     )
 
 
@@ -1106,6 +1142,21 @@ def format_metadata_document(
 
     lines.append("")
 
+    # --- Business Concepts (ontology vocabulary, DAT-616) ---
+    # The concept→value grounding surface for long-format data: the agent maps a
+    # discriminator's values (served per-table under "Value sets") to these concepts.
+    if context.concept_vocabulary:
+        lines.append("## Business Concepts")
+        lines.append("")
+        lines.append(
+            "Vertical vocabulary. Ground each metric concept in specific column values "
+            "from the **Value sets** below — match by meaning, honoring `exclude` patterns; "
+            "do not improvise a substring filter."
+        )
+        lines.append("")
+        lines.append(context.concept_vocabulary)
+        lines.append("")
+
     # --- Tables ---
     lines.append("## Tables")
 
@@ -1181,6 +1232,14 @@ def format_metadata_document(
             lines.append(
                 f"| {col.column_name} | {col_type} | {col_role} | {col_desc} | {col_notes} |"
             )
+
+        # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
+        # agent grounds metric predicates in real values rather than guessing a filter.
+        value_sets = _build_value_sets(table)
+        if value_sets:
+            lines.append("")
+            lines.append("**Value sets** (categorical columns — `value (count)`):")
+            lines.extend(value_sets)
 
         # Quality section (per-table)
         _append_table_quality(lines, table)
@@ -1318,6 +1377,77 @@ def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
     blocked_count = summary.get("critical_entropy_count", 0)
 
     return f"Data readiness: {readiness} ({blocked_count} blocked)."
+
+
+def _format_concept_vocabulary(ontology: Any) -> str | None:
+    """Format the vertical's ontology concepts for the SQL-grounding prompt (DAT-616).
+
+    Unlike ``OntologyLoader.format_concepts_for_prompt`` (semantic-phase use), this
+    also surfaces ``exclude_patterns`` — the agent needs them to resolve traps where a
+    value's surface form contradicts its concept (e.g. ``Cost Recovery Income`` is
+    revenue despite containing "cost"). Returns ``None`` when there is nothing to serve.
+
+    Args:
+        ontology: An ``OntologyDefinition`` (or None).
+
+    Returns:
+        Markdown bullet list of concepts, or None when no concepts are defined.
+    """
+    if ontology is None or not getattr(ontology, "concepts", None):
+        return None
+
+    lines: list[str] = []
+    for concept in ontology.concepts:
+        line = f"- **{concept.name}**"
+        if concept.description:
+            line += f": {concept.description}"
+        lines.append(line)
+        if concept.indicators:
+            lines.append(f"  - indicators: {', '.join(concept.indicators)}")
+        if concept.exclude_patterns:
+            lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
+    return "\n".join(lines) if lines else None
+
+
+# A categorical is renderable as a complete value-set when its distinct count is at or
+# below this gate (mirrors the slicing fan-out gate). Above it, enumeration is partial.
+_VALUE_SET_RENDER_MAX = 50
+# Roles whose values are never a metric-grounding predicate (keys fan out; measures are
+# aggregated, not filtered; time axes are handled by the temporal blueprints).
+_NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
+
+
+def _build_value_sets(table: TableContext) -> list[str]:
+    """Render the complete value enumeration for a table's low-card categoricals.
+
+    This is the DAT-616 grounding surface: the agent maps a concept to specific
+    discriminator VALUES from this enumeration instead of improvising an ILIKE. Each
+    line marks whether the set is the COMPLETE enumeration (distinct_count within the
+    served top_values) or a partial top-K — a partial set must not be treated as
+    exhaustive (the fall-loud cue for the agent).
+    """
+    out: list[str] = []
+    for col in table.columns:
+        if not col.top_values:
+            continue
+        if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
+            continue
+        if col.distinct_count is not None and col.distinct_count > _VALUE_SET_RENDER_MAX:
+            continue
+        rendered = ", ".join(
+            f"{tv.get('value')} ({tv.get('count')})"
+            for tv in col.top_values
+            if tv.get("value") is not None
+        )
+        if not rendered:
+            continue
+        served = len(col.top_values)
+        if col.distinct_count is not None and col.distinct_count > served:
+            completeness = f"top {served} of {col.distinct_count} (PARTIAL — not exhaustive)"
+        else:
+            completeness = "complete"
+        out.append(f"- **{col.column_name}** ({completeness}): {rendered}")
+    return out
 
 
 def _build_column_description(col: ColumnContext) -> str:

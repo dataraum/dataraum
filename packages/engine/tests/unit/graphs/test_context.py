@@ -599,3 +599,86 @@ class TestFormatMetadataDocument:
         result = format_metadata_document(ctx)
 
         assert "⚠" in result
+
+
+# =============================================================================
+# Tests for DAT-616 grounding surface (value sets + concept vocabulary)
+# =============================================================================
+
+
+def _categorical(name: str, distinct: int, values: list[tuple[str, int]]) -> ColumnContext:
+    return ColumnContext(
+        column_id=f"col-{name}",
+        column_name=name,
+        table_name="ledger",
+        semantic_role="dimension",
+        distinct_count=distinct,
+        top_values=[{"value": v, "count": c, "percentage": 0.0} for v, c in values],
+    )
+
+
+class TestValueSetGrounding:
+    """The complete value enumeration the SQL agent grounds predicates in (DAT-616)."""
+
+    def test_complete_value_set_rendered_with_counts(self) -> None:
+        """A low-card categorical renders every value with its count, marked complete."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[
+                _categorical(
+                    "account_type", 3, [("Sales Revenue", 120), ("COGS", 100), ("SG&A", 80)]
+                )
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" in result
+        assert "**account_type** (complete)" in result
+        assert "Sales Revenue (120)" in result
+        assert "COGS (100)" in result
+
+    def test_partial_value_set_flagged_not_exhaustive(self) -> None:
+        """When distinct_count exceeds the served top_values, the set is flagged PARTIAL."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[_categorical("cost_center", 30, [("North", 9), ("South", 7)])],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "PARTIAL — not exhaustive" in result
+        assert "top 2 of 30" in result
+
+    def test_measure_and_high_card_columns_have_no_value_set(self) -> None:
+        """Measures (aggregated, not filtered) and oversized categoricals are suppressed."""
+        measure = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            distinct_count=900,
+            top_values=[{"value": "1.0", "count": 1, "percentage": 0.0}],
+        )
+        huge = _categorical("txn_id", 9999, [("a", 1), ("b", 1)])  # > render gate
+        table = TableContext(table_id="t1", table_name="ledger", columns=[measure, huge])
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" not in result
+
+    def test_concept_vocabulary_section_rendered(self) -> None:
+        """The ontology vocabulary is served as a Business Concepts section."""
+        ctx = GraphExecutionContext(
+            total_tables=0,
+            concept_vocabulary="- **revenue**: income from sales\n  - exclude: cost",
+        )
+        result = format_metadata_document(ctx)
+
+        assert "## Business Concepts" in result
+        assert "**revenue**: income from sales" in result
+        assert "do not improvise a substring filter" in result
+
+    def test_no_concept_section_without_vocabulary(self) -> None:
+        """No vertical → no Business Concepts section (clean default)."""
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Business Concepts" not in result

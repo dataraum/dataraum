@@ -1,5 +1,5 @@
 name: "graph_sql_generation"
-version: "3.1"
+version: "4.0"
 description: "Generate executable SQL from a graph specification and data schema"
 temperature: 0.0
 
@@ -43,23 +43,44 @@ system_prompt: |
   IMPORTANT: Standard field names are ABSTRACT ontology vocabulary from config/verticals/
   — they belong to whatever vertical is active, NOT any one domain. They are NOT table
   names, column names, or SQL identifiers.
-  The semantic phase maps these abstract concepts to actual dataset columns.
+
+  You are GROUNDED, not guessing. Two surfaces in <dataset_context> give you exactly what
+  you need; use them, do not improvise a filter:
+  - **Field mappings** — the semantic phase's `concept → table.column` mappings. WIDE data
+    (one column per concept): use the mapped `table.column` EXACTLY. This is the strongest
+    signal — prefer it.
+  - **Value sets** + **Business Concepts** — LONG-FORMAT data (one `<measure>` column plus a
+    discriminator column whose values name the concept; no per-concept column). Here the
+    concept is not a column — it is a SET OF VALUES of the discriminator. The **Value sets**
+    block enumerates each categorical column's actual values (with counts); the **Business
+    Concepts** block defines each concept (with its `indicators` and `exclude` patterns).
+    Map the concept to the SPECIFIC discriminator values that mean it, then filter with an
+    explicit `IN (...)` list of those values.
 
   Resolution order:
-  1. Use field_mappings — these contain the semantic phase's concept → column mappings.
-     If a standard_field has a direct mapping, use the mapped table.column EXACTLY.
-  1b. If no direct field mapping exists, check enriched view categorical dimensions.
-     A concept may correspond to filtering an enriched view on one of its categorical
-     dimensions (e.g. WHERE `<enriched_view>.<dimension>` = '<concept>' or ILIKE '<concept>').
-  2. If not directly mapped, analyze the dataset_context to infer the calculation:
-     - Look for columns with a related semantic_role (e.g., "measure", "amount")
-     - Check business_concept annotations for clues
-     - Use a type/category column to filter to the relevant rows
-     - Example: a measure = SUM(`<amount_col>`) filtered via a categorical column
-       (e.g. WHERE `<type_col>` IN (<the relevant values>))
-  3. Document your inference in the column_mappings with explanation
+  1. If field_mappings has a direct `concept → column` mapping, use that column EXACTLY.
+  2. Otherwise ground via Value sets + Business Concepts: pick the discriminator column whose
+     values name the concept, select the values that ARE the concept (by MEANING — honor the
+     concept's `exclude` patterns; a value's surface string can contradict its concept, e.g. a
+     label may contain an `exclude` token yet still belong to the concept, or vice-versa), and
+     filter `WHERE <discriminator> IN ('<value1>', '<value2>', ...)` over THOSE EXACT
+     enumerated values.
+  3. Record the grounding in column_mappings (which values, which concept, why).
 
-  NEVER use a standard_field name as a table name in SQL.
+  HARD RULES:
+  - Filter on the EXACT values printed in a **Value sets** block. Never invent a value, and
+    never use a substring/`ILIKE '%<fragment>%'` guess in place of the enumerated values.
+  - A Value set marked PARTIAL is NOT exhaustive — do not assume it lists every value.
+  - NEVER use a standard_field name as a table name in SQL.
+
+  FALL LOUD — do not guess (this protects against a confidently-wrong number):
+  If you CANNOT confidently map the concept to specific values — the discriminator holds
+  opaque codes (e.g. `4000`, `5000`) with no semantic signal, the needed values are absent,
+  or the Value set is PARTIAL and may omit them — then do NOT fabricate a filter. Emit the
+  step's SQL as best you can but record an assumption with LOW confidence and basis
+  "inferred", naming the concept and why it is ungrounded (e.g. "<discriminator> holds opaque
+  codes; <concept> value-set not determinable from context"). A flagged inconclusive result
+  is correct; a confident wrong number is not.
   </field_resolution_strategy>
 
   <sql_guidelines>
@@ -93,7 +114,9 @@ system_prompt: |
   8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
      Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
      supersets with dimension columns (joined dimensions are named `<dimension>__<attribute>`,
-     e.g. `<fact_view>.<dimension>__<attribute>`). Use categorical dimensions for row-level filtering.
+     e.g. `<fact_view>.<dimension>__<attribute>`). Filter those categorical dimensions with an
+     explicit IN (...) list of the EXACT values from the column's **Value sets** block — not a
+     guessed substring/ILIKE.
   </duckdb_dialect>
 
   <step_execution_model>
@@ -159,7 +182,7 @@ user_prompt: |
   {graph_yaml}
   </graph_specification>
 
-  <data_schema description="All available tables and enriched views with column names, types, and sample values">
+  <data_schema description="All available tables and enriched views with column names, types, and a FEW non-exhaustive sample values. For grounding filters, use the COMPLETE Value sets in dataset_context, not these samples.">
   {table_schema}
   </data_schema>
 
@@ -167,7 +190,7 @@ user_prompt: |
   {parameters}
   </parameters>
 
-  <dataset_context description="Semantic annotations, relationships, quality, and entropy for understanding column meaning">
+  <dataset_context description="Semantic annotations, value sets, relationships, quality, and entropy for understanding column meaning">
   {rich_context}
   </dataset_context>
 
@@ -182,10 +205,14 @@ user_prompt: |
   <instructions>
   Generate SQL for the graph specification above.
 
-  1. Resolve abstract fields (standard_field references) to concrete columns:
-     - Use field_mappings for direct mappings
-     - Infer from dataset_context when no direct mapping exists
-     - Document inferences in column_mappings
+  1. Resolve abstract fields (standard_field references) to concrete columns/values:
+     - Use field_mappings for direct concept → column mappings (wide data)
+     - For long-format data, ground the concept in specific discriminator values from the
+       **Value sets** + **Business Concepts** blocks (see <field_resolution_strategy>);
+       filter with an explicit IN (...) list of those exact values — never a guessed filter
+     - If the concept cannot be grounded to specific values, FALL LOUD: record a low-confidence
+       assumption naming why, rather than fabricate a filter
+     - Document the grounding (values, concept, basis) in column_mappings
 
   2. Check <cached_steps> first:
      - Cached steps are previously validated SQL from the knowledge base
@@ -205,25 +232,29 @@ user_prompt: |
 
   5. Document provenance — how you grounded business concepts to columns:
      - field_resolution: "direct" if field_mappings gave you the column, "inferred" if you
-       reasoned from enriched views, sample values, or dataset_context
-     - column_mappings_basis: for each concept you mapped, record the column, any filter,
-       and whether the resolution was direct or inferred
+       grounded the concept in discriminator values (Value sets) or otherwise reasoned from
+       dataset_context
+     - column_mappings_basis: for each concept you mapped, record the column, any filter
+       (the exact values), and whether the resolution was direct or inferred
      - llm_reasoning: brief explanation of your mapping strategy
 
   6. Document assumptions — interpretation decisions due to data uncertainty:
      - Only record genuine ambiguity you resolved (e.g., "treating an ambiguous column as
        the intended measure", "using the latest period's value for a point-in-time measure",
        "assuming a single unit/currency across rows")
+     - ALWAYS record one here when a concept could not be grounded to specific values (the
+       FALL LOUD case), with LOW confidence
      - Include the entropy dimension, what column/relationship is affected, your
        decision, the basis (system_default/inferred/user_specified), and confidence
 
   EXAMPLE (illustrates STRUCTURE only — the <…> tokens are placeholders; substitute the
-  active vertical's concepts, views, and columns from <field_mappings>/<data_schema>):
+  active vertical's concepts, views, and the EXACT values from the **Value sets** block.
+  Note the predicate is an explicit IN-list of enumerated discriminator values, not a guess):
   steps:
     - step_id: "<numerator_measure>"
-      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<category_col>\" ILIKE '<category>'"
+      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<discriminator>\" IN ('<value_a>', '<value_b>')"
     - step_id: "<denominator_measure>"
-      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view>"
+      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<discriminator>\" IN ('<value_a>', '<value_b>', '<value_c>')"
     - step_id: "period_days"
       sql: "SELECT 30 as value"
 
@@ -252,7 +283,7 @@ inputs:
   rich_context:
     type: "string"
     required: true
-    description: "Metadata document with semantic annotations, relationships, quality, and entropy"
+    description: "Metadata document with semantic annotations, value sets, relationships, quality, and entropy"
 
   field_mappings:
     type: "string"

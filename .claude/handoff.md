@@ -4,6 +4,41 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-24: DAT-616 — feed value-sets + concept vocabulary into the GraphAgent (the feed lands)
+
+Implements the BUILD half of the 2026-06-24 verdict below. The metric SQL agent
+(`graphs/agent.py`, prompt `graph_sql_generation.yaml`) is no longer starved: the
+SQL-gen metadata document (`graphs/context.py::format_metadata_document`, fed as
+`<dataset_context>`) now carries two new surfaces, and the prompt grounds predicates in
+them instead of improvising an `ILIKE`.
+
+- **Value sets** (per table): the COMPLETE value enumeration of each low-cardinality
+  categorical (`value (count)`, freq-ordered), lifted from `StatisticalProfile.top_values`
+  + `distinct_count` (the assembler used to drop both). Marked `complete` vs
+  `PARTIAL — not exhaustive` (top-K of N, N>served) — the partial flag is the fall-loud
+  cue. Measures/keys/timestamps and categoricals with `distinct_count > 50` are suppressed.
+- **Business Concepts** (once): the active vertical's ontology vocabulary
+  (name + description + `indicators` + `exclude_patterns`) — so on long-format data, where
+  `field_mappings` is empty for the concept, the agent maps discriminator VALUES → concept
+  inline. Absent when no vertical.
+- **Prompt v3.1 → v4.0**: `field_resolution_strategy` rewritten from "filter a categorical
+  dimension … ILIKE '<concept>'" to "ground in the **Value sets** + **Business Concepts**;
+  filter `WHERE <discriminator> IN ('<exact values>')`", plus a FALL-LOUD rule (opaque codes
+  / absent / PARTIAL → record a low-confidence assumption, do not fabricate a filter).
+  Generic placeholders kept (de-finance v3.1 spirit). Pairs with the kept `verifier.py`
+  value-bound + NULL sanity floor (#369).
+
+### dataraum-eval
+- **Prompt-surface + metadata-document change (no detector / schema / response-shape
+  change).** Any calibration that snapshots/diffs the SQL-gen context (`format_metadata_document`
+  output) will see the new `## Business Concepts` section and per-table `**Value sets**`
+  blocks; tables with no vertical / no low-card categoricals render neither (unchanged output).
+- **The long-format regression should now PASS on semantic names:** with the value-sets +
+  concept vocabulary fed, the agent reconstructs gross_profit/gross_margin correctly on the
+  BookSQL-shaped fixture (the eval lane-1 finding: feed-only → rel.err 0 on names). Opaque-code
+  fixtures stay inconclusive-by-design (the fall-loud path + teach case), NOT a wrong number.
+- **Status**: pending.
+
 ## 2026-06-23: DAT-616 reworked + DAT-620 — metric grounding on long-format finance (REFRAMED)
 
 The silently-wrong metric bug is **context-engine starvation**, not a missing checker. Full

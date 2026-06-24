@@ -17,9 +17,12 @@ import { config } from "#/config";
 import type { QueryResult } from "#/duckdb/query-result";
 import { MAX_OUTPUT_TOKENS, SUMMARY_MODEL } from "#/llm";
 
-const SYSTEM = `You refresh the saved summary of a data report. The report's SQL is unchanged; only the underlying data has moved, so some numbers/claims in the old summary are now stale.
+const SYSTEM = `You refresh the saved summary of a data report. The report's SQL is unchanged; only the underlying data has moved, so the figures and comparative claims in the previous summary may now be wrong.
 
-Given the PREVIOUS summary and the CURRENT result, rewrite the summary so every figure and claim matches the current result. Preserve the original voice, structure, length, and level of detail — change the numbers and any claim they support, nothing else. Do not add commentary about the refresh, the data change, or the SQL. Output only the new summary prose.`;
+Rewrite the summary so it accurately describes the CURRENT result. Rules:
+- Derive EVERY claim from the current result, never from the previous summary's wording. This covers the numbers AND every comparative or superlative claim: which value is largest or smallest, the ranking/ordering of items, and words like "dominates", "leads", "top", "second", "negligible". Compare the actual current figures to decide these — do not assume the result rows are sorted by magnitude, and do not carry a ranking over from the old summary.
+- Keep the previous summary's voice, tone, length, and overall shape — but any claim the current data contradicts MUST change, even if that reshapes the sentence. Correctness outranks matching the old structure.
+- Do not mention the refresh, the data change, the SQL, or that you are an AI. Output only the new summary prose.`;
 
 /** How many headline rows of the fresh result to put in front of the model. The
  * result is already bounded to the fingerprint's headline rows; this caps the prompt

@@ -21,8 +21,16 @@ in this PR stays as a cheap value-bound + NULL **sanity floor** — NOT the fix.
 - Keep the prior regressions too: assert metric VALUES (not just `executed`) on the
   long-format fixture; an empty-filter extract stays `grounded` with a reason (the sanity
   floor).
-- **Status**: pending (supersedes the earlier 'assert metric values' framing — same
-  fixture, now ALSO needs the concept→value labels).
+- **Status**: GATE RAN (2026-06-24, eval `scripts/probes/dat620/`) — verdict shrinks
+  DAT-620. Feed-only (≈ DAT-616: `top_values` + ontology) grounds **semantic names
+  exactly** (gross_profit rel.err = 0.000, incl. synonyms + the exclude-trap); a dedicated
+  value-level labeler adds nothing there. Opaque **GL codes break it dangerously** — the
+  LLM never abstains, it *confidently mislabels* (≈57–81% gross-margin error), and a richer
+  prompt doesn't fix it. So: **BUILD** DAT-616's feed; **CUT** the standalone
+  lexicon-proposer (no signal on codes, redundant on names); **KEEP** teach as the
+  *code/unmappable* path (binding table = the teach target, not a guess-the-code proposer);
+  **MANDATORY** grounding-confidence fall-loud floor (the LLM won't self-report failure).
+  Codes = a teach case by design (a missing chart-of-accounts mapping is human error).
 
 ### dataraum-testdata
 - A **BookSQL-style long/transactional finance fixture** (one `Amount` column + an

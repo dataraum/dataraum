@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Badge,
 	Button,
 	Group,
 	Stack,
@@ -14,27 +15,62 @@ import {
 	useRouter,
 } from "@tanstack/react-router";
 import { createServerFn, useServerFn } from "@tanstack/react-start";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import {
+	Check,
+	Pencil,
+	RefreshCw,
+	Trash2,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import { useState } from "react";
 import {
 	getReport,
 	renameReport,
+	setReportFingerprint,
 	softDeleteReport,
+	updateReportSummary,
 } from "#/db/cockpit/reports";
+import { computeReportFingerprint } from "#/duckdb/report-fingerprint-read";
+import { regenerateSummary } from "#/lib/report-summary-agent";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
-// Report detail (DAT-624) — the frozen artifact rendered over LIVE data: the SQL is
-// re-run on every open through the same result-grid stream, so numbers stay current.
-// The title is the one editable field (inline); the SQL / summary / confidence are
-// immutable. Delete is soft (the row stays; children keep their lineage).
+// Report detail (DAT-624 / DAT-625) — the frozen artifact rendered over LIVE data:
+// the SQL is re-run on every open through the same result-grid stream, so numbers
+// stay current. The title is the one editable field (inline); the SQL / confidence
+// are immutable; the summary is frozen prose, refreshed only via regenerate. Delete
+// is soft (the row stays; children keep their lineage).
+//
+// On open we re-fingerprint the live result (DAT-625) and compare it to the stored
+// fingerprint: a mismatch means the frozen summary is talking about stale numbers, so
+// it's badged "outdated". A null stored fingerprint (pre-DAT-625 report, or a failed
+// mint-time fingerprint) is lazy-backfilled here — start tracking, show clean.
 //
 // The loader + action server fns are defined inline (the cockpit route convention)
-// so the plugin strips their cockpit_db handlers from the client bundle.
+// so the plugin strips their cockpit_db + lake handlers from the client bundle.
 
 const loadReport = createServerFn({ method: "GET" })
 	.inputValidator((reportId: string) => reportId)
-	.handler(async ({ data: reportId }) => getReport(reportId));
+	.handler(async ({ data: reportId }) => {
+		const report = await getReport(reportId);
+		if (!report) return null;
+		let outdated = false;
+		try {
+			const { fingerprint } = await computeReportFingerprint(report.sql);
+			if (report.summaryFingerprint === null) {
+				// First time we can fingerprint this report — backfill, don't badge.
+				await setReportFingerprint(report.id, fingerprint);
+			} else {
+				outdated = report.summaryFingerprint !== fingerprint;
+			}
+		} catch (err) {
+			// Best-effort: if the live result can't be fingerprinted (a since-broken
+			// SQL, a lake hiccup), don't badge — the grid surfaces the real error.
+			console.error("[reports] drift check failed — not flagging:", err);
+		}
+		return { report, outdated };
+	});
 
 const renameReportFn = createServerFn({ method: "POST" })
 	.inputValidator((data: { id: string; title: string }) => data)
@@ -48,24 +84,39 @@ const deleteReportFn = createServerFn({ method: "POST" })
 		await softDeleteReport(reportId);
 	});
 
+// Regenerate (DAT-625): re-run the SQL, hand the old summary + fresh result to Haiku,
+// and persist the new summary together with the fresh fingerprint — the one path that
+// mutates `summary`. A throw here (missing report, LLM failure) propagates to the
+// caller, which keeps the old summary + outdated badge rather than half-applying.
+const regenerateSummaryFn = createServerFn({ method: "POST" })
+	.inputValidator((reportId: string) => reportId)
+	.handler(async ({ data: reportId }) => {
+		const report = await getReport(reportId);
+		if (!report) throw notFound();
+		const { fingerprint, result } = await computeReportFingerprint(report.sql);
+		const summary = await regenerateSummary(report.summary, result);
+		await updateReportSummary(reportId, summary, fingerprint);
+	});
+
 export const Route = createFileRoute(
 	"/(app)/workspace/$wsId/reports/$reportId",
 )({
 	loader: async ({ params }) => {
-		const report = await loadReport({ data: params.reportId });
-		if (!report) throw notFound();
-		return report;
+		const data = await loadReport({ data: params.reportId });
+		if (!data) throw notFound();
+		return data;
 	},
 	component: ReportDetail,
 });
 
 function ReportDetail() {
-	const report = Route.useLoaderData();
+	const { report, outdated } = Route.useLoaderData();
 	const { wsId } = Route.useParams();
 	const router = useRouter();
 	const navigate = useNavigate();
 	const rename = useServerFn(renameReportFn);
 	const remove = useServerFn(deleteReportFn);
+	const regenerate = useServerFn(regenerateSummaryFn);
 
 	const [editing, setEditing] = useState(false);
 	// Seeded when the editor opens (below), NOT from useState(report.title): after a
@@ -73,6 +124,24 @@ function ReportDetail() {
 	// once-initialized draft would show the stale pre-rename title on the next open.
 	const [draft, setDraft] = useState("");
 	const [busy, setBusy] = useState(false);
+	const [regenerating, setRegenerating] = useState(false);
+	const [regenFailed, setRegenFailed] = useState(false);
+
+	// Refresh the stale summary: regenerate server-side, then re-load so the new prose
+	// + cleared badge render. On failure keep the old summary + badge and flag inline.
+	const refreshSummary = async () => {
+		setRegenerating(true);
+		setRegenFailed(false);
+		try {
+			await regenerate({ data: report.id });
+			await router.invalidate();
+		} catch (err) {
+			console.error("[reports] regenerate summary failed:", err);
+			setRegenFailed(true);
+		} finally {
+			setRegenerating(false);
+		}
+	};
 
 	// Mutations fired by user events live in handlers, not effects (React conv. 4).
 	const saveTitle = async () => {
@@ -165,7 +234,40 @@ function ReportDetail() {
 				</Button>
 			</Group>
 
-			{report.summary && <Text>{report.summary}</Text>}
+			{report.summary && (
+				<Stack gap="xs">
+					{outdated && (
+						<Group gap="xs">
+							<Badge
+								color="yellow"
+								variant="light"
+								leftSection={<TriangleAlert size={12} />}
+								tt="none"
+								data-testid="report-outdated"
+							>
+								Outdated — data changed since this summary
+							</Badge>
+							<Button
+								variant="light"
+								color="yellow"
+								size="compact-xs"
+								leftSection={<RefreshCw size={13} />}
+								onClick={refreshSummary}
+								loading={regenerating}
+								data-testid="report-regenerate"
+							>
+								Regenerate
+							</Button>
+						</Group>
+					)}
+					{regenFailed && (
+						<Text size="xs" c="red" data-testid="report-regenerate-error">
+							Couldn’t regenerate the summary — try again.
+						</Text>
+					)}
+					<Text>{report.summary}</Text>
+				</Stack>
+			)}
 			<ConfidenceStrip confidence={report.confidence} />
 			<ResultGridWidget state={{ kind: "result-grid", sql: report.sql }} />
 		</Stack>

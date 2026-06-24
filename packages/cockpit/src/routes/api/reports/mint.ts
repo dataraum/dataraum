@@ -9,6 +9,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { createReport } from "#/db/cockpit/reports";
+import { computeReportFingerprint } from "#/duckdb/report-fingerprint-read";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 interface MintBody {
@@ -25,6 +26,20 @@ export const Route = createFileRoute("/api/reports/mint")({
 			POST: async ({ request }) => {
 				const body = (await request.json()) as MintBody;
 				const workspaceId = await resolveActiveWorkspace();
+				// Fingerprint the result at mint so the summary can be flagged outdated
+				// when the live data drifts (DAT-625). Best-effort: a fingerprint failure
+				// must not block minting — null is lazy-backfilled on first open.
+				let summaryFingerprint: string | null = null;
+				try {
+					({ fingerprint: summaryFingerprint } = await computeReportFingerprint(
+						body.sql,
+					));
+				} catch (err) {
+					console.error(
+						"[reports] mint fingerprint failed — backfill on open:",
+						err,
+					);
+				}
 				const id = await createReport({
 					workspaceId,
 					conversationId: body.conversationId ?? null,
@@ -32,6 +47,7 @@ export const Route = createFileRoute("/api/reports/mint")({
 					summary: body.summary,
 					sql: body.sql,
 					confidence: body.confidence,
+					summaryFingerprint,
 				});
 				return Response.json({ id });
 			},

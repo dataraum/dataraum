@@ -21,6 +21,7 @@
 
 import type { UIMessage } from "@tanstack/ai-react";
 import {
+	type AnyPgColumn,
 	boolean,
 	index,
 	integer,
@@ -31,6 +32,7 @@ import {
 	uniqueIndex,
 	varchar,
 } from "drizzle-orm/pg-core";
+import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 /**
  * Who triggered control-plane work. A coarse identity seam (DAT-460): a single
@@ -208,3 +210,62 @@ export const uiState = pgTable("ui_state", {
 	pinnedCallId: varchar("pinned_call_id"),
 	updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
 });
+
+/**
+ * A minted report (DAT-624) — a frozen { SQL + summary (+ chart config) } widget
+ * over LIVE data. Created from an `answer`: the composed CTE, the answer narrative,
+ * and the confidence are captured at mint; the report RE-RUNS the SQL on every open
+ * (no result snapshot, no run_id / catalog pin — the standard BI model, so numbers
+ * stay current). Workspace-owned and session-independent: it outlives the chat it
+ * was minted from, which is why `conversationId` / `messageId` are NULLABLE
+ * provenance, not owners — deleting the chat must never orphan the report.
+ *
+ * `parentId` is the evolve-lineage self-reference (DAT-627): null for a freshly
+ * minted report, set when re-minted from a drilled-down answer. Deletion is SOFT
+ * (`deletedAt`) — a deleted parent keeps its children. `summaryFingerprint`
+ * (DAT-625 staleness) and `chartConfig` (DAT-626 charts) are reserved here so those
+ * phases need no migration; both stay null until then.
+ */
+export const reports = pgTable(
+	"reports",
+	{
+		id: varchar("id").primaryKey(),
+		workspaceId: varchar("workspace_id")
+			.notNull()
+			.references(() => workspaces.id),
+		// Provenance (nullable): the chat the report was minted from. Mirrors
+		// `runs.conversationId` — a report outlives the chat, so the chat doesn't own
+		// it. `messageId` is a plain pointer (no FK): pure provenance, and report
+		// lifetime must not couple to message-row lifetime.
+		conversationId: varchar("conversation_id").references(
+			() => conversations.id,
+		),
+		messageId: varchar("message_id"),
+		// Evolve lineage (DAT-627): the report this one was drilled-down from. Self-FK
+		// is safe under soft-delete (the parent row is never physically removed).
+		parentId: varchar("parent_id").references((): AnyPgColumn => reports.id),
+		// The ONLY editable field — a human label, defaulted from the answer at mint.
+		title: varchar("title").notNull(),
+		// The frozen answer narrative. Immutable text; the DAT-625 staleness pass
+		// regenerates it via Haiku when the result fingerprint drifts.
+		summary: text("summary").notNull(),
+		// Result fingerprint at last summary-gen — drives the DAT-625 outdated flag.
+		// Null until that phase populates it.
+		summaryFingerprint: varchar("summary_fingerprint"),
+		// The frozen composed CTE (stable lake names) — re-run live on every open.
+		sql: text("sql").notNull(),
+		// Frozen chart config (DAT-626) — null = table-only report (first-class).
+		chartConfig: jsonb("chart_config"),
+		// The answer's confidence at mint (band / grounded ratio / reuse) — colored
+		// in the gallery + detail, never recomputed.
+		confidence: jsonb("confidence").$type<AnswerConfidence>().notNull(),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		// Soft delete — a deleted report drops out of the gallery; its children
+		// (parentId) remain. Null = live.
+		deletedAt: timestamp("deleted_at", { mode: "date" }),
+	},
+	(t) => [
+		// The gallery list: a workspace's reports, newest first.
+		index("reports_workspace_idx").on(t.workspaceId, t.createdAt),
+	],
+);

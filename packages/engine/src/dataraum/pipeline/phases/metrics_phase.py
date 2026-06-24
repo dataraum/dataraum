@@ -73,6 +73,17 @@ _STAGE = "operating_model"
 # is ~10 RPS at peak — well under the limit.
 _MAX_CONCURRENT_METRICS = 10
 
+# The warming pre-pass (DAT-629) runs a SECOND wave of concurrent agent calls
+# at the START of the metrics activity — which overlaps the tail of the prior
+# operating_model activities (business_cycles, validation) on the SHARED
+# ConnectionManager pool (pool_size=5 + max_overflow=10 = 15). Each agent call
+# holds one pooled session for the whole LLM round-trip, so a 10-wide warming
+# wave colliding with a draining sibling activity exhausts the pool (QueuePool
+# timeout). Warming is a light, latency-tolerant dedup pre-pass — a small cap
+# keeps its peak connection demand well clear of that contention window while
+# still parallelizing; the (now cache-warm) execute wave keeps the full cap.
+_MAX_CONCURRENT_WARMING = 4
+
 if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
@@ -416,7 +427,7 @@ def _warm_generations_parallel(
     """
 
     async def _run_all() -> None:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_WARMING)
 
         async def _warm_one(key: tuple[str | None, ...]) -> None:
             async with sem:

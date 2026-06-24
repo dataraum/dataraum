@@ -476,7 +476,7 @@ describe("formatEntities (DAT-607)", () => {
 		);
 	});
 
-	it("caps identities per table and clamps a long note", () => {
+	it("renders ALL identities (no cap — DAT-621) and clamps a long note", () => {
 		const many: EntityBlockRow[] = [
 			{
 				address: entAddr("wide"),
@@ -489,8 +489,9 @@ describe("formatEntities (DAT-607)", () => {
 			},
 		];
 		const capped = formatEntities(many);
-		expect(capped).toContain("id_7"); // 8th (index 7) kept
-		expect(capped).not.toContain("id_8"); // 9th dropped by the cap
+		// No silent cut — every identity is served (was capped at 8).
+		expect(capped).toContain("id_7");
+		expect(capped).toContain("id_11");
 
 		const longNote = "x".repeat(300);
 		const clamped = formatEntities([

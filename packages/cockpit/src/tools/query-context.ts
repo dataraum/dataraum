@@ -504,8 +504,6 @@ export interface EntityBlockRow {
 	entity: TableEntity;
 }
 
-/** Cap a single table's identity list — bounds the block on a wide entity. */
-const MAX_IDENTITIES_PER_TABLE = 8;
 /** Clamp an LLM-authored identity note — keeps one stanza to a readable line. */
 const MAX_NOTE_CHARS = 140;
 /** Cap the number of table stanzas — bounds the block on a wide workspace; the
@@ -542,7 +540,6 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 		if (entity.identity_columns.length)
 			lines.push(
 				`  identities: ${entity.identity_columns
-					.slice(0, MAX_IDENTITIES_PER_TABLE)
 					.map((i) =>
 						i.note ? `${i.column} — ${clampNote(i.note)}` : i.column,
 					)
@@ -646,9 +643,6 @@ export async function buildEntitiesBlock(): Promise<string> {
 // curated list, not a dump. A second display cap (was 3) was a SILENT recall gate: on a
 // larger table it dropped most of the curated signal where neither the user nor the agent
 // could see the loss. Serve the full set (matching the engine GraphAgent's `## Drivers`).
-/** Cap other-grain drivers — this source IS genuinely uncapped at persist time (the engine
- * doesn't bound secondary families), so the block needs a real guard on wide workspaces. */
-const MAX_SECONDARY_PER_MEASURE = 5;
 
 /** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
 function grainLabel(grain: string, entity: string | null): string {
@@ -702,8 +696,8 @@ export function formatDrivers(rankings: DriverRanking[]): string {
 			);
 		if (r.secondary_dimensions.length)
 			lines.push(
+				// DAT-621: no cap — secondary families are naturally few; serve all (no silent cut).
 				`  other-grain drivers: ${r.secondary_dimensions
-					.slice(0, MAX_SECONDARY_PER_MEASURE)
 					.map(
 						(s) =>
 							`"${s.dimension}" (${grainLabel(s.grain, s.entity)}, ${g(s.gain)})`,

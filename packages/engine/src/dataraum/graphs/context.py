@@ -1721,7 +1721,8 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
 
         # Evidence
         if cycle.evidence:
-            evidence_str = "; ".join(cycle.evidence[:3])
+            # DAT-621: no silent [:3] cut — evidence is a short narrative list; serve all.
+            evidence_str = "; ".join(cycle.evidence)
             lines.append(f"Evidence: {evidence_str}")
 
         # Stages

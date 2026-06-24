@@ -115,6 +115,7 @@ export function ResultGridView({
 	onToggleSort,
 	onReachEnd,
 	onFilterCommit,
+	scrollResetKey,
 }: {
 	store: GridView;
 	fatal?: string | null;
@@ -122,12 +123,25 @@ export function ResultGridView({
 	onToggleSort?: (column: string) => void;
 	onReachEnd?: () => void;
 	onFilterCommit?: (column: string, raw: string) => void;
+	/** Changes when the owner re-pages from offset 0 (sort/filter change); the body
+	 * scrolls back to the top so the new top-N is visible, not a clamped middle. */
+	scrollResetKey?: string;
 }) {
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
+	//
+	// `store` is a dep, not just `store.rowCount`: a windowed re-sort/filter SWAPS
+	// the store for one with DIFFERENT values at the SAME row indices (e.g. row 0
+	// goes min→max). TanStack caches `row.getValue()` per Row, and Rows are
+	// memoized on this `data` array — so if its reference were stable across a
+	// store swap, the table would keep serving the OLD store's cached cell values
+	// even though the accessor now closes over the new store. Tying `data`'s
+	// identity to `store` rebuilds the row model on a swap, busting that cache.
+	// (The streaming/probe store mutates in place — stable ref — so this still
+	// only refreshes on rowCount growth there.)
 	const data = useMemo<number[]>(
 		() => Array.from({ length: store.rowCount }, (_, i) => i),
-		[store.rowCount],
+		[store.rowCount, store],
 	);
 	const columns = useMemo<ColumnDef<number>[]>(() => {
 		const typeList = Array.isArray(store.types) ? (store.types as Json[]) : [];
@@ -186,6 +200,15 @@ export function ResultGridView({
 			onReachEnd();
 		}
 	}, [onReachEnd, lastIndex, rows.length]);
+
+	// Re-page from 0 (sort/filter change) → scroll the body back to the top, so a
+	// deep-scrolled grid doesn't strand the user at a clamped offset of the new,
+	// shorter result. DOM scroll sync → an effect (React rule 2).
+	useEffect(() => {
+		if (scrollResetKey !== undefined && scrollRef.current) {
+			scrollRef.current.scrollTop = 0;
+		}
+	}, [scrollResetKey]);
 
 	const status = fatal ? "error" : store.status;
 
@@ -255,7 +278,7 @@ export function ResultGridView({
 													header.column.columnDef.header,
 													header.getContext(),
 												)}
-												{active && (
+												{active ? (
 													<Text
 														span
 														size="xs"
@@ -268,6 +291,20 @@ export function ResultGridView({
 													>
 														{sort.dir === "asc" ? "▲" : "▼"}
 													</Text>
+												) : (
+													clickable && (
+														// Faint neutral glyph so EVERY sortable column reads as
+														// clickable, not just the active one (DAT-613 review).
+														<Text
+															span
+															size="xs"
+															c="dimmed"
+															style={{ opacity: 0.3 }}
+															aria-hidden
+														>
+															↕
+														</Text>
+													)
 												)}
 											</Group>
 										</Table.Th>
@@ -288,11 +325,22 @@ export function ResultGridView({
 										return (
 											<Table.Th
 												key={`${header.id}-filter`}
-												style={{ padding: "2px 6px" }}
+												style={{
+													padding: "4px 6px 8px",
+													borderBottom:
+														"2px solid var(--mantine-color-default-border)",
+												}}
 											>
 												<TextInput
 													size="xs"
 													variant="default"
+													styles={{
+														input: {
+															height: 24,
+															minHeight: 24,
+															fontWeight: 400,
+														},
+													}}
 													placeholder={
 														kind === "text"
 															? "contains…"
@@ -594,6 +642,7 @@ export function WindowedGrid({
 			onToggleSort={toggleSort}
 			onReachEnd={onReachEnd}
 			onFilterCommit={onFilterCommit}
+			scrollResetKey={JSON.stringify([sort, filters])}
 		/>
 	);
 }

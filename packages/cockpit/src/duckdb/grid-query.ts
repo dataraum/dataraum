@@ -126,15 +126,21 @@ export function clampOffset(offset?: number): number {
  * would act on an arbitrary slice. Clause order is WHERE → ORDER BY → LIMIT.
  *
  * Stable order is REQUIRED once windowing: each LIMIT/OFFSET page is its own
- * execution, and a query with no total order can return rows in a different order
- * per execution — dropping or duplicating rows at page boundaries. So when a
- * `window` is present we always impose a deterministic total order:
- *   - unsorted → `ORDER BY ALL` (every output column left-to-right; a total order
- *     with no knowledge of the column names).
+ * execution, and a query with no imposed order can return rows in a different
+ * order per execution — dropping or duplicating rows at page boundaries. So when
+ * a `window` is present we order by EVERY output column:
+ *   - unsorted → `ORDER BY ALL` (all output columns, left-to-right).
  *   - sorted   → the user column first, then `COLUMNS(*)` as a column-agnostic
- *     tiebreaker so rows tied on the sort column keep a stable order across pages.
- * WITHOUT a window (the probe's one-shot grid) the order is unchanged: a bare
- * `ORDER BY` for an explicit sort, none otherwise — natural scan order preserved.
+ *     tiebreaker over the rest.
+ * This makes the ordered VALUE sequence deterministic across executions — the only
+ * rows it leaves un-ordered are those identical in EVERY column, and those are
+ * interchangeable, so a page boundary that splits a run of full-duplicate rows
+ * still yields the correct multiset (locked by the duplicate-heavy paging
+ * integration test). It is deliberately NOT a total order on row *identity*
+ * (that would need a synthetic key per row); pagination only needs the value
+ * sequence to be stable, which it is. WITHOUT a window (the probe's one-shot
+ * grid) the order is unchanged: a bare `ORDER BY` for an explicit sort, none
+ * otherwise — natural scan order preserved.
  *
  * `where` is an already-composed predicate fragment ({@link buildFilterClause})
  * whose bind values the caller appends to `params`; LIMIT/OFFSET are validated

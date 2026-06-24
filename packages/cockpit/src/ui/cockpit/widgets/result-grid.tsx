@@ -294,7 +294,11 @@ export function ResultGridView({
 													size="xs"
 													variant="default"
 													placeholder={
-														kind === "text" ? "contains…" : ">, <, ="
+														kind === "text"
+															? "contains…"
+															: kind === "temporal"
+																? ">2024-01-01"
+																: ">100"
 													}
 													aria-label={`Filter ${name}`}
 													data-testid={`canvas-result-grid-filter-${name}`}
@@ -517,18 +521,17 @@ export function WindowedGrid({
 			lastPage.truncated ? allPages.length * GRID_PAGE_SIZE : undefined,
 	});
 
-	const {
-		data,
-		error,
-		hasNextPage,
-		isFetchingNextPage,
-		fetchNextPage,
-		isFetching,
-	} = query;
+	const { data, error, isFetchingNextPage, fetchNextPage, isFetching } = query;
 
+	// `fetchNextPage` is stable (TanStack Query) and internally no-ops when there's
+	// no next page or one is already in flight — so the callback needs no volatile
+	// deps. Keeping its identity stable means the view's scroll effect re-fires only
+	// on actual scroll, not on every paging-state flip. The view gates WHEN to call
+	// this (only within an overscan of the loaded end), which also bounds eager
+	// auto-paging to filling the viewport.
 	const onReachEnd = useCallback(() => {
-		if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
-	}, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+		void fetchNextPage();
+	}, [fetchNextPage]);
 
 	const view = useMemo<PagedGridView>(() => {
 		const pages = data?.pages ?? [];

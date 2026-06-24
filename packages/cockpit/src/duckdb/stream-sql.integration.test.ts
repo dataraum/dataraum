@@ -403,6 +403,42 @@ describe("windowed paging over a real DuckLake lake (DAT-613)", () => {
 		expect(nums[4999]).toBe(4999);
 	});
 
+	it("pages a duplicate-heavy column with the correct multiset (full-dup safety)", async () => {
+		// `ORDER BY ALL` orders by VALUES, not row identity — rows identical in every
+		// column are interchangeable. A page boundary that splits a run of duplicates
+		// must still yield the correct multiset (no skip, no dup). bucket = n % 7 over
+		// 5000 rows → 7 distinct values, ~714 each, heavily duplicated.
+		const PAGE = 1000;
+		const counts = new Map<number, number>();
+		let offset = 0;
+		let guard = 0;
+		for (;;) {
+			if (++guard > 10) throw new Error("paging did not terminate");
+			const { rows, hasMore } = await streamWindow(
+				"SELECT n % 7 AS bucket FROM lake.typed.big",
+				PAGE,
+				offset,
+			);
+			for (const v of rows) {
+				const k = Number(v);
+				counts.set(k, (counts.get(k) ?? 0) + 1);
+			}
+			if (!hasMore) break;
+			offset += PAGE;
+		}
+		const total = [...counts.values()].reduce((a, b) => a + b, 0);
+		expect(total).toBe(5000);
+		// Reconstruct the expected multiset and compare exactly.
+		const expected = new Map<number, number>();
+		for (let i = 0; i < 5000; i++) {
+			const k = i % 7;
+			expected.set(k, (expected.get(k) ?? 0) + 1);
+		}
+		expect([...counts.entries()].sort()).toEqual(
+			[...expected.entries()].sort(),
+		);
+	});
+
 	it("does NOT flag has-more when the window exactly drains the result", async () => {
 		// 1000-row result, page of 1000: the +1 over-fetch finds nothing past it, so
 		// the last page reads as a clean finish — no spurious empty next page.

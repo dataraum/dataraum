@@ -653,3 +653,55 @@ class TestGraphAgentSnippets:
         newly_generated = [u for u in usages if u.usage_type == "newly_generated"]
         assert len(newly_generated) >= 1
         assert newly_generated[0].execution_type == "graph"
+
+
+class TestPriorContextFeedback:
+    """DAT-616 feedback loops: prior honest-fail reason + prior groundings."""
+
+    def _agent(self) -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+    def test_prior_groundings_from_cached_snippets(self) -> None:
+        """column_mappings_basis on a cached snippet is fed back as a prior grounding."""
+        session = MagicMock()
+        # No prior lifecycle reason.
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            None
+        )
+        graph = MagicMock()
+        graph.graph_id = "gross_margin"
+        cached = {
+            "revenue": {
+                "sql": "SELECT 1 AS value",
+                "column_mappings_basis": {
+                    "revenue": {"column": "account_type", "filter": "IN (...)"}
+                },
+            }
+        }
+        out = self._agent()._build_prior_context(session, graph, cached)
+        assert "Prior value→concept groundings" in out
+        assert "account_type" in out
+
+    def test_prior_reason_fed_back(self) -> None:
+        """A prior run's honest-fail state_reason is fed back with an abstain steer."""
+        session = MagicMock()
+        prior = MagicMock()
+        prior.state_reason = "cogs has no support: filter matched no rows"
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            prior
+        )
+        graph = MagicMock()
+        graph.graph_id = "gross_margin"
+        out = self._agent()._build_prior_context(session, graph, None)
+        assert "Last run this metric was inconclusive" in out
+        assert "cogs has no support" in out
+        assert "abstain" in out
+
+    def test_empty_when_nothing_prior(self) -> None:
+        session = MagicMock()
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            None
+        )
+        graph = MagicMock()
+        graph.graph_id = "g"
+        assert self._agent()._build_prior_context(session, graph, None) == ""

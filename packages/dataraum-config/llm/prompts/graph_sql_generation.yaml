@@ -251,6 +251,10 @@ user_prompt: |
   {cached_steps}
   </cached_steps>
 
+  <prior_context description="What prior runs already learned for THIS metric — an honest-fail reason to address/abstain on, and prior value→concept groundings to reuse. Empty on first run.">
+  {prior_context}
+  </prior_context>
+
   <instructions>
   Generate SQL for the graph specification above.
 
@@ -343,3 +347,8 @@ inputs:
     type: "string"
     required: true
     description: "JSON of previously validated SQL steps from the snippet knowledge base (empty string if none)"
+
+  prior_context:
+    type: "string"
+    required: true
+    description: "Prior-run honest-fail reason + prior value→concept groundings for this metric (empty string if none)"

@@ -66,7 +66,10 @@ function ReportsGallery() {
 									{r.summary}
 								</Text>
 								<Text size="xs" c="dimmed">
-									{new Date(r.createdAt).toLocaleDateString()}
+									{/* Deterministic UTC date — `toLocaleDateString()` differs between the
+									    server (container locale) and the browser, which trips React's
+									    hydration check (#418). */}
+									{new Date(r.createdAt).toISOString().slice(0, 10)}
 								</Text>
 							</Stack>
 						</Card>

@@ -27,6 +27,7 @@
 
 import type { Json } from "@duckdb/node-api";
 import {
+	ActionIcon,
 	Alert,
 	Badge,
 	Collapse,
@@ -45,6 +46,7 @@ import {
 	useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { ChevronDown, ChevronsUpDown, ChevronUp, Filter } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
 import {
@@ -115,6 +117,7 @@ export function ResultGridView({
 	onToggleSort,
 	onReachEnd,
 	onFilterCommit,
+	activeFilterCount = 0,
 	scrollResetKey,
 }: {
 	store: GridView;
@@ -123,10 +126,18 @@ export function ResultGridView({
 	onToggleSort?: (column: string) => void;
 	onReachEnd?: () => void;
 	onFilterCommit?: (column: string, raw: string) => void;
+	/** How many push-down filters are currently active (drives the funnel toggle's
+	 * active state + count). Owner-tracked; the view only renders the row. */
+	activeFilterCount?: number;
 	/** Changes when the owner re-pages from offset 0 (sort/filter change); the body
 	 * scrolls back to the top so the new top-N is visible, not a clamped middle. */
 	scrollResetKey?: string;
 }) {
+	// The filter row is hidden by default (a clean grid) and toggled by the funnel
+	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
+	// active + shows the count, so the user can re-open to edit it.
+	const [filtersOpen, setFiltersOpen] = useState(false);
+	const showFilterRow = onFilterCommit !== undefined && filtersOpen;
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
 	//
@@ -218,9 +229,36 @@ export function ResultGridView({
 				<Text size="sm" fw={500}>
 					{store.rowCount} row{store.rowCount === 1 ? "" : "s"}
 				</Text>
-				<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
-					{status}
-				</Badge>
+				<Group gap="xs">
+					{onFilterCommit && (
+						<ActionIcon
+							variant={
+								activeFilterCount > 0 || filtersOpen ? "light" : "subtle"
+							}
+							color={activeFilterCount > 0 ? "blue" : "gray"}
+							size="sm"
+							aria-label={filtersOpen ? "Hide filters" : "Show filters"}
+							aria-pressed={filtersOpen}
+							title={
+								activeFilterCount > 0
+									? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} active`
+									: "Filter rows"
+							}
+							data-testid="canvas-result-grid-filter-toggle"
+							onClick={() => setFiltersOpen((o) => !o)}
+						>
+							<Filter size={14} />
+						</ActionIcon>
+					)}
+					{activeFilterCount > 0 && (
+						<Text size="xs" c="blue" fw={600}>
+							{activeFilterCount}
+						</Text>
+					)}
+					<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
+						{status}
+					</Badge>
+				</Group>
 			</Group>
 
 			{(fatal || store.error) && (
@@ -279,31 +317,28 @@ export function ResultGridView({
 													header.getContext(),
 												)}
 												{active ? (
-													<Text
-														span
-														size="xs"
-														c="dimmed"
-														aria-label={
-															sort.dir === "asc"
-																? "sorted ascending"
-																: "sorted descending"
-														}
-													>
-														{sort.dir === "asc" ? "▲" : "▼"}
-													</Text>
+													sort.dir === "asc" ? (
+														<ChevronUp
+															size={14}
+															color="var(--mantine-color-gray-7)"
+															aria-label="sorted ascending"
+														/>
+													) : (
+														<ChevronDown
+															size={14}
+															color="var(--mantine-color-gray-7)"
+															aria-label="sorted descending"
+														/>
+													)
 												) : (
 													clickable && (
-														// Faint neutral glyph so EVERY sortable column reads as
+														// Neutral handle so EVERY sortable column reads as
 														// clickable, not just the active one (DAT-613 review).
-														<Text
-															span
-															size="xs"
-															c="dimmed"
-															style={{ opacity: 0.3 }}
+														<ChevronsUpDown
+															size={14}
+															color="var(--mantine-color-gray-5)"
 															aria-hidden
-														>
-															↕
-														</Text>
+														/>
 													)
 												)}
 											</Group>
@@ -311,11 +346,12 @@ export function ResultGridView({
 									);
 								})}
 							</Table.Tr>
-							{/* Filter row (DAT-613): one input per column. Text columns match
-							    a substring; numeric/temporal accept a leading comparison
-							    operator (>1000, >=2024-01-01). Uncontrolled — commit on
-							    Enter/blur so we re-page once, not per keystroke. */}
-							{onFilterCommit && (
+							{/* Filter row (DAT-613): one input per column, toggled by the
+							    toolbar funnel. Text columns match a substring; numeric/
+							    temporal accept a leading comparison operator (>1000,
+							    >=2024-01-01). Uncontrolled — commit on Enter/blur so we
+							    re-page once, not per keystroke. */}
+							{showFilterRow && (
 								<Table.Tr>
 									{table.getFlatHeaders().map((header) => {
 										const name = String(header.column.columnDef.header ?? "");
@@ -642,6 +678,7 @@ export function WindowedGrid({
 			onToggleSort={toggleSort}
 			onReachEnd={onReachEnd}
 			onFilterCommit={onFilterCommit}
+			activeFilterCount={filters.length}
 			scrollResetKey={JSON.stringify([sort, filters])}
 		/>
 	);

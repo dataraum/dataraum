@@ -162,6 +162,59 @@ describe("ResultGridView (DAT-385 P2)", () => {
 	});
 });
 
+describe("ResultGridView filter toggle (DAT-613)", () => {
+	afterEach(() => cleanup());
+
+	function renderFilterable(
+		onFilterCommit: (column: string, raw: string) => void,
+		activeFilterCount = 0,
+	) {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ResultGridView
+					store={store}
+					onFilterCommit={onFilterCommit}
+					activeFilterCount={activeFilterCount}
+				/>
+			</MantineProvider>,
+		);
+	}
+
+	it("hides the filter row by default and reveals it on the funnel toggle", () => {
+		renderFilterable(vi.fn());
+		// Filter row starts hidden — no per-column inputs in the DOM.
+		expect(screen.queryByTestId("canvas-result-grid-filter-id")).toBeNull();
+		// The funnel is present; clicking it reveals the inputs.
+		fireEvent.click(screen.getByTestId("canvas-result-grid-filter-toggle"));
+		expect(screen.getByTestId("canvas-result-grid-filter-id")).toBeTruthy();
+		expect(screen.getByTestId("canvas-result-grid-filter-name")).toBeTruthy();
+	});
+
+	it("commits a filter on Enter with the column name and typed value", () => {
+		const onFilterCommit = vi.fn();
+		renderFilterable(onFilterCommit);
+		fireEvent.click(screen.getByTestId("canvas-result-grid-filter-toggle"));
+		const input = screen.getByTestId("canvas-result-grid-filter-id");
+		fireEvent.change(input, { target: { value: ">100" } });
+		fireEvent.keyDown(input, { key: "Enter" });
+		expect(onFilterCommit).toHaveBeenCalledWith("id", ">100");
+	});
+
+	it("does not render the funnel or filter row when filtering is unsupported", () => {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ResultGridView store={store} />
+			</MantineProvider>,
+		);
+		expect(screen.queryByTestId("canvas-result-grid-filter-toggle")).toBeNull();
+		expect(screen.queryByTestId("canvas-result-grid-filter-id")).toBeNull();
+	});
+});
+
 describe("GridSqlDisclosure (DAT-577)", () => {
 	afterEach(() => cleanup());
 

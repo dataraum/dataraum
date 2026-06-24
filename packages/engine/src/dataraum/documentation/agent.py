@@ -117,6 +117,7 @@ class BatchPlanAgent:
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "batch_action_plan"},
+            label="config_fix",
             max_tokens=4096,
             temperature=temperature,
             model=self.model,

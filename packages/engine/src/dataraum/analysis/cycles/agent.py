@@ -134,6 +134,7 @@ class BusinessCycleAgent(LLMFeature):
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "submit_analysis"},
+            label="business_cycles",
             max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,

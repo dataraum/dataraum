@@ -641,10 +641,13 @@ export async function buildEntitiesBlock(): Promise<string> {
 // agent still authors the SQL. Empty (no promoted begin_session run, or no measures
 // with a significant driver) → a one-line note.
 
-/** Cap the per-measure slice list so the block stays a hint, not a data dump. */
-const MAX_SLICES_PER_MEASURE = 3;
-/** Cap other-grain drivers too — bounds the block on a workspace with many
- * identity columns (the engine doesn't cap secondary families before persisting). */
+// No cap on interesting_slices (DAT-616): the driver engine ALREADY bounds them —
+// FDR-gated, per-node top-5 by |effect|, effect-sorted — so the persisted set is a small
+// curated list, not a dump. A second display cap (was 3) was a SILENT recall gate: on a
+// larger table it dropped most of the curated signal where neither the user nor the agent
+// could see the loss. Serve the full set (matching the engine GraphAgent's `## Drivers`).
+/** Cap other-grain drivers — this source IS genuinely uncapped at persist time (the engine
+ * doesn't bound secondary families), so the block needs a real guard on wide workspaces. */
 const MAX_SECONDARY_PER_MEASURE = 5;
 
 /** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
@@ -687,7 +690,7 @@ export function formatDrivers(rankings: DriverRanking[]): string {
 					.map((p) => p.map((n) => `"${n}"`).join(" → "))
 					.join("; ")}`,
 			);
-		const slices = r.interesting_slices.slice(0, MAX_SLICES_PER_MEASURE);
+		const slices = r.interesting_slices;
 		if (slices.length)
 			lines.push(
 				`  notable slices: ${slices

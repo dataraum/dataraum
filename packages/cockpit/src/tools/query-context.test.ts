@@ -331,7 +331,7 @@ describe("formatDrivers", () => {
 		);
 	});
 
-	it("caps the slice list to keep the block a hint, not a dump", () => {
+	it("serves the full curated slice set (no display cap — DAT-616)", () => {
 		const slices = Array.from({ length: 6 }, (_, i) => ({
 			dimension: "region",
 			value: `R${i}`,
@@ -339,10 +339,9 @@ describe("formatDrivers", () => {
 			support: 10,
 		}));
 		const block = formatDrivers([ranking({ interesting_slices: slices })]);
-		expect(block).toContain('"region"=R0');
-		expect(block).toContain('"region"=R2');
-		// 4th+ slice dropped (MAX_SLICES_PER_MEASURE = 3).
-		expect(block).not.toContain('"region"=R3');
+		// The driver engine already FDR-bounds + caps slices; a second display cap was a
+		// silent recall gate. All persisted slices render now.
+		for (let i = 0; i < 6; i++) expect(block).toContain(`"region"=R${i}`);
 	});
 
 	it("drops a measure with no significant driver; all-empty → a note", () => {

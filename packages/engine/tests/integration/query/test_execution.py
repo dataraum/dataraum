@@ -175,13 +175,14 @@ class TestExecuteSqlSteps:
         # The per-step value is likewise None (no support) for the verifier to catch.
         assert result.value.step_results[0].value is None
 
-    def test_views_survive_for_export_reuse(self, duckdb_conn):
-        """Temp views survive after execution (cursor-scoped, not explicitly dropped)."""
+    def test_no_temp_views_leak_and_composed_cte_returned(self, duckdb_conn):
+        """DAT-616: execution composes ONE CTE — no temp view leaks onto the cursor,
+        and the composed statement is returned as the executable artifact."""
         steps = [
             SQLStep(
                 step_id="reuse_test",
                 sql="SELECT 42 AS val",
-                description="Test view survival",
+                description="Test no view leak",
             )
         ]
 
@@ -192,9 +193,15 @@ class TestExecuteSqlSteps:
         )
 
         assert result.success
-        # Views survive for export reuse — they die when the connection/cursor closes
-        row = duckdb_conn.execute("SELECT * FROM reuse_test").fetchone()
-        assert row is not None
+        # No temp view is created anymore — the step name is not a queryable relation.
+        with pytest.raises(Exception, match="reuse_test"):
+            duckdb_conn.execute("SELECT * FROM reuse_test").fetchone()
+        # The composed CTE (steps + final_sql, one statement) is the executable artifact.
+        composed = result.value.composed_sql
+        assert composed is not None
+        assert "WITH reuse_test AS" in composed
+        assert composed.rstrip().endswith("SELECT val FROM reuse_test")
+        assert result.value.final_value == 42
 
     def test_repair_function_called_on_failure(self, duckdb_conn):
         """Repair function is called when a step fails."""

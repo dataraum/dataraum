@@ -591,7 +591,7 @@ class GraphAgent(LLMFeature):
                 source_query=sr.sql_executed,
                 inputs_used={
                     "sql": sr.sql_executed,
-                    "view_name": sr.step_id,
+                    "step_id": sr.step_id,
                     "repair_attempts": sr.repair_attempts,
                 },
             )
@@ -610,6 +610,7 @@ class GraphAgent(LLMFeature):
             execution.step_results.append(step_result)
 
         execution.output_value = result.final_value
+        execution.composed_sql = result.composed_sql
 
         # Add interpretation if available
         if graph.interpretation and execution.output_value is not None:

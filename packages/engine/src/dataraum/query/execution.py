@@ -1,7 +1,12 @@
 """Shared SQL step execution logic.
 
-Extracts the common pattern of executing SQL steps as temp views,
-used by the GraphAgent.
+Used by the GraphAgent. DAT-616: the engine now MIRRORS the cockpit answer agent —
+steps + final_sql are folded into ONE standalone CTE (``compose_standalone``, the Python
+mirror of the cockpit ``composeStandalone``) and that single statement is the deterministic
+executable (validated == executed, no temp-view state). The per-step scalars the metric
+verifier's support gate needs are still fetched (steps are standalone SELECTs by prompt
+contract), so the cheap floor survives; the composed CTE is the executable artifact the
+metric carries alongside its snippet list.
 
 Usage:
     result = execute_sql_steps(
@@ -14,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -25,6 +31,27 @@ if TYPE_CHECKING:
     import duckdb
 
 logger = get_logger(__name__)
+
+_LEADING_WITH = re.compile(r"^\s*with\s+", re.IGNORECASE)
+
+
+def compose_standalone(steps: list[SQLStep], final_sql: str) -> str:
+    """Fold ``{steps, final_sql}`` into ONE standalone statement.
+
+    Each step becomes a CTE; ``final_sql`` references them by name. Python mirror of the
+    cockpit ``composeStandalone`` (``run-steps.ts``) — the EXACT statement that executes,
+    so there is no temp-view-vs-result divergence. No steps → ``final_sql`` verbatim.
+    A ``final_sql`` that brings its OWN leading ``WITH`` has its CTEs merged into the one
+    ``WITH`` (never the invalid ``WITH … WITH …``).
+    """
+    final = final_sql.strip().rstrip(";").strip()
+    if not steps:
+        return final
+    ctes = ",\n".join(f"{s.step_id} AS (\n{s.sql}\n)" for s in steps)
+    if _LEADING_WITH.match(final):
+        rest = _LEADING_WITH.sub("", final, count=1)
+        return f"WITH {ctes},\n{rest}"
+    return f"WITH {ctes}\n{final}"
 
 
 @dataclass
@@ -56,6 +83,9 @@ class ExecutionResult:
     rows: list[tuple[Any, ...]] | None = None
     total_count: int | None = None
     final_value: Any = None
+    # DAT-616: the single self-contained statement actually executed (steps as CTEs +
+    # final_sql) — the metric's executable artifact, alongside its per-step snippet list.
+    composed_sql: str | None = None
 
 
 # Type alias for the repair function signature
@@ -95,7 +125,10 @@ def execute_sql_steps(
     """
     step_results: list[StepExecutionResult] = []
 
-    # Execute each step as a temp view
+    # Execute each step standalone (NO temp view) — steps are standalone SELECTs by
+    # prompt contract; this fetches the per-step scalar the verifier's support gate
+    # needs and repairs the step in place. The (possibly repaired) SQL then composes
+    # into the single CTE below.
     for step in steps:
         step_result = _execute_step(
             step=step,
@@ -107,9 +140,16 @@ def execute_sql_steps(
             return Result.fail(step_result.error or f"Step '{step.step_id}' failed")
         step_results.append(step_result.value)
 
-    # Execute final SQL
+    # Compose the single standalone statement (steps as CTEs + final_sql), using each
+    # step's executed (post-repair) SQL — the deterministic executable, no temp views.
+    composed_sql = compose_standalone(
+        [SQLStep(step_id=sr.step_id, sql=sr.sql_executed, description="") for sr in step_results],
+        final_sql,
+    )
+
+    # Execute the composed statement ONCE.
     final_result = _execute_final(
-        final_sql=final_sql,
+        final_sql=composed_sql,
         duckdb_conn=duckdb_conn,
         max_repair_attempts=max_repair_attempts,
         repair_fn=repair_fn,
@@ -125,7 +165,7 @@ def execute_sql_steps(
     if not final_result.success:
         return Result.fail(final_result.error or "Final SQL failed")
 
-    execution_result = ExecutionResult(step_results=step_results)
+    execution_result = ExecutionResult(step_results=step_results, composed_sql=composed_sql)
 
     if return_table:
         # Table mode: _execute_final returns (columns, rows, total_count) on success
@@ -139,8 +179,6 @@ def execute_sql_steps(
     else:
         execution_result.final_value = final_result.value
 
-    # Temp views are NOT dropped — they die when the cursor closes.
-    # This allows callers (e.g. export) to reuse them on the same cursor.
     return Result.ok(execution_result)
 
 
@@ -150,18 +188,21 @@ def _execute_step(
     max_repair_attempts: int,
     repair_fn: RepairFn | None,
 ) -> Result[StepExecutionResult]:
-    """Execute a single step with retry/repair logic."""
+    """Execute a single step standalone with retry/repair logic.
+
+    DAT-616: no temp view — the step is a standalone SELECT (prompt contract), executed
+    directly to fetch its scalar (first column of the first row, matching the prior
+    `SELECT * FROM <view>` semantics). The (possibly repaired) SQL is then composed into
+    the single CTE statement; no view state leaks onto the cursor.
+    """
     original_sql = step.sql
     current_sql = step.sql
     last_error: str | None = None
 
     for attempt in range(max_repair_attempts + 1):
         try:
-            view_sql = f"CREATE OR REPLACE TEMP VIEW {step.step_id} AS {current_sql}"
-            duckdb_conn.execute(view_sql)
-
-            # Get the result value
-            result = duckdb_conn.execute(f"SELECT * FROM {step.step_id}").fetchone()
+            # Execute the step's standalone SQL; take the first column of the first row.
+            result = duckdb_conn.execute(current_sql).fetchone()
             value = result[0] if result else None
 
             return Result.ok(

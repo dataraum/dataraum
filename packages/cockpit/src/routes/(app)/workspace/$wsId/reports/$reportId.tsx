@@ -68,7 +68,10 @@ function ReportDetail() {
 	const remove = useServerFn(deleteReportFn);
 
 	const [editing, setEditing] = useState(false);
-	const [draft, setDraft] = useState(report.title);
+	// Seeded when the editor opens (below), NOT from useState(report.title): after a
+	// rename, router.invalidate() refreshes `report` WITHOUT remounting, so a
+	// once-initialized draft would show the stale pre-rename title on the next open.
+	const [draft, setDraft] = useState("");
 	const [busy, setBusy] = useState(false);
 
 	// Mutations fired by user events live in handlers, not effects (React conv. 4).
@@ -141,7 +144,10 @@ function ReportDetail() {
 						<Title order={3}>{report.title}</Title>
 						<ActionIcon
 							variant="subtle"
-							onClick={() => setEditing(true)}
+							onClick={() => {
+								setDraft(report.title);
+								setEditing(true);
+							}}
 							aria-label="Rename report"
 						>
 							<Pencil size={16} />

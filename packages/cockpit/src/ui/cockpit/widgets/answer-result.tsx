@@ -150,12 +150,14 @@ export function AnswerResultWidget({
 	const wsId = params.wsId;
 	const [saving, setSaving] = useState(false);
 	const [mintedId, setMintedId] = useState<string | null>(null);
+	const [mintFailed, setMintFailed] = useState(false);
 
 	// POST to the mint endpoint over fetch (not an imported server fn) so this
 	// canvas-registered widget never drags the cockpit_db client / config into the
 	// client bundle — the /api/run-sql + /api/upload convention.
 	const onMint = async () => {
 		setSaving(true);
+		setMintFailed(false);
 		try {
 			const res = await fetch("/api/reports/mint", {
 				method: "POST",
@@ -173,6 +175,7 @@ export function AnswerResultWidget({
 			setMintedId(id);
 		} catch (err) {
 			console.error("[cockpit] mint report failed:", err);
+			setMintFailed(true);
 		} finally {
 			setSaving(false);
 		}
@@ -211,6 +214,17 @@ export function AnswerResultWidget({
 					</Button>
 				)}
 			</Group>
+			{mintFailed && (
+				<Text
+					size="xs"
+					c="red"
+					ta="right"
+					mb="xs"
+					data-testid="report-mint-error"
+				>
+					Couldn’t save the report — try again.
+				</Text>
+			)}
 			<ResultGridWidget state={{ kind: "result-grid", sql: state.sql }} />
 		</div>
 	);

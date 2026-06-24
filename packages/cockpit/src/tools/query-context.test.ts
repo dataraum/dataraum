@@ -203,6 +203,30 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).not.toContain("GROUP BY");
 	});
 
+	it("renders the dimension's value-set inline (DAT-616 grounding)", () => {
+		const valued: CatalogAxisRow[] = [
+			{
+				tableId: "t1",
+				columnName: "account_type",
+				distinctValues: ["Sales Revenue", "COGS", "SG&A"],
+			},
+		];
+		const block = formatCatalog(valued, [], addr);
+		expect(block).toContain(
+			'dimensions: "account_type" [Sales Revenue, COGS, SG&A]',
+		);
+	});
+
+	it("caps an oversized value-set with an overflow tail", () => {
+		const many = Array.from({ length: 45 }, (_, i) => `v${i}`);
+		const block = formatCatalog(
+			[{ tableId: "t1", columnName: "code", distinctValues: many }],
+			[],
+			addr,
+		);
+		expect(block).toContain("+15 more");
+	});
+
 	it("renders an alias group as canonical ≡ others (group by canonical)", () => {
 		const hierarchies: CatalogHierarchyRow[] = [
 			{

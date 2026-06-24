@@ -44,8 +44,12 @@ snippet_search returns each snippet's concept keys (standard_field / statement /
 - REUSE: a snippet computes what your step needs → set the step's snippet_id to it and REPRODUCE its validated SQL faithfully — same expression, same form — changing ONLY the table reference to lake.<layer>.<name> as the schema shows it (the stored snippet uses a bare table name). Do not rephrase math that already matches.
 - ADAPT: the snippet is close but the question genuinely needs something it does NOT compute — a different grain or period, or a tighter/more-correct filter (e.g. the snippet sums all expenses but the question asks specifically for cost of goods sold) → set its snippet_id AND write your adapted SQL, and note what you changed. Adapt for a real difference, never just to reword.
 - FRESH: nothing fits → omit snippet_id and write new SQL.
-Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula. Mix reused, adapted, and fresh steps freely.
+Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula. Mix reused, adapted, and fresh steps freely. A reused snippet may carry a column_mappings_basis (its prior value→concept filter) — reuse those same columns/values unless the question genuinely needs otherwise.
 </reuse>
+
+<grounding>
+When a metric concept is a SET OF VALUES of a dimension (long-format data: one amount column + a discriminator), do NOT improvise the filter. The <dimensions> block enumerates each dimension's actual values — filter with an explicit IN (...) list of THOSE exact literals (honoring any concept exclude semantics), never a guessed substring/ILIKE. NEVER force-fit: if you cannot confidently map the concept to specific values — opaque codes, the needed values absent — do NOT fabricate a filter; say so and record a low-confidence assumption. A flagged inconclusive answer beats a confident wrong number.
+</grounding>
 
 <steps>
 Each step becomes a CTE named after its business concept, and final_sql references those CTEs:

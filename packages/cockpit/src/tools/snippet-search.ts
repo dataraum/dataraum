@@ -61,6 +61,9 @@ const SnippetMeta = z.object({
 	column_mappings: z.unknown(),
 	input_fields: z.unknown(),
 	parameter_value: z.string().nullable(),
+	// DAT-616: the prior value→concept FILTER decisions ({concept:{column,filter,
+	// resolution}}) — reuse the same grounding instead of re-inventing it.
+	column_mappings_basis: z.unknown(),
 });
 
 // One matched calculation graph (a `source` group) and its member snippets.
@@ -95,6 +98,10 @@ function projectSnippet(s: SnippetRow): z.infer<typeof SnippetMeta> {
 		column_mappings: s.columnMappings,
 		input_fields: s.inputFields,
 		parameter_value: s.parameterValue,
+		column_mappings_basis:
+			s.provenance && typeof s.provenance === "object"
+				? (s.provenance as Record<string, unknown>).column_mappings_basis
+				: undefined,
 	};
 }
 

@@ -36,14 +36,11 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from dataraum.core.logging import get_logger
 from dataraum.graphs.models import StepType
 from dataraum.query.snippet_utils import normalize_expression
 
 if TYPE_CHECKING:
     from dataraum.graphs.models import GraphStep, TransformationGraph
-
-_log = get_logger(__name__)
 
 # A node's global identity — a tuple mirroring the snippet cache key. Hashable,
 # so it doubles as the networkx node id.

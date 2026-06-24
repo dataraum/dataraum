@@ -120,16 +120,23 @@ system_prompt: |
   </duckdb_dialect>
 
   <step_execution_model>
-  How steps are executed:
-  1. Each step's SQL becomes a temp view: CREATE TEMP VIEW <step_id> AS <sql>
-  2. Steps execute sequentially, each creating a named view
-  3. Final SQL references these views by step_id
+  Your steps + final_sql are folded into ONE standalone statement and executed together:
+  each step becomes a CTE named after its concept, and final_sql references those CTEs by
+  name (e.g. `WITH <conceptA> AS (...), <conceptB> AS (...) SELECT (SELECT value FROM <conceptA>)
+  - (SELECT value FROM <conceptB>) AS <metric>`). It is the exact statement that runs — there
+  is no separate per-step materialization to diverge from.
 
   Therefore:
-  - Each step must be standalone SQL (executable independently)
-  - Each step should compute one business concept and return a single value
-  - final_sql combines step results — this is where graph-specific logic lives
-  - Step IDs should match the business concept (the standard_field name, not "step_1")
+  - Each step must be STANDALONE SQL (a single SELECT that does NOT reference another step's
+    CTE — keep joins/combining logic in final_sql).
+  - Alias each step's computed VALUE column `AS value` (the snippet-library convention: the
+    same computation is then recognised as the same reusable snippet). For a grouped step the
+    grouping column keeps its own name; only the aggregate/computed column is `value`.
+  - Each step computes ONE business concept and returns a single scalar (one row).
+  - final_sql references the step CTEs by name and holds the graph-specific logic (ratios,
+    formulas). It must not redefine a step or shadow a step's name.
+  - Step IDs should match the business concept (the standard_field name, not "step_1").
+  - A simple metric may need no steps — put it all in final_sql.
   </step_execution_model>
 
   <aggregation_types>
@@ -174,6 +181,48 @@ system_prompt: |
   deltas), this is the relevant time axis.
   </temporal_signals>
 
+  <channel_precedence>
+  <dataset_context> gives you several value signals — use them in this order, never
+  confuse one for another:
+  - **Business Concepts** (concept vocabulary) = MEANING: which values belong to a concept,
+    honoring `exclude` patterns. This decides WHICH values.
+  - **Value sets** = the COMPLETE enumeration of a column's values (when marked complete).
+    Your IN-list is drawn from here — the authoritative set.
+  - **Drivers → Notable slices** = a HINT (the values that carry data / move the measure),
+    NOT the value-set. The top slices are not "all the values for this concept" — never
+    build an IN-list from slices alone, or you will undercount.
+  - **Concept bindings** (under Business Processes) and a human/teach mapping, when present,
+    are confirmed — they OUTRANK driver hints and raw value frequency. Precedence on
+    conflict: human/teach > confirmed binding > drivers > Value-set frequency.
+  </channel_precedence>
+
+  <never_force_fit>
+  NEVER force-fit a value to a concept. If you cannot confidently map the required concept to
+  specific values — opaque codes with no semantic signal (e.g. `4000`, `5000`), the needed
+  values absent, or the Value set marked PARTIAL and possibly missing them — do NOT fabricate
+  a filter. Emit your best attempt but record an assumption with LOW confidence and basis
+  "inferred", naming the concept and why it is ungrounded. A flagged inconclusive result is
+  correct; a confident wrong number is the failure we are preventing.
+  </never_force_fit>
+
+  <blueprint_library>
+  Fill the right SHAPE for the metric (all examples are STRUCTURE — substitute the active
+  vertical's concepts, columns, and the EXACT values from Value sets):
+
+  - Simple aggregate: `SELECT SUM("<measure>") AS value FROM <view> WHERE <dim> IN ('<v1>','<v2>')`
+  - End-of-period (stock / point_in_time): aggregate only the latest period —
+    `SELECT SUM("<measure>") AS value FROM <view> WHERE <period> = (SELECT MAX(<period>) FROM <view>)`
+  - Window / period-comparison (growth, YoY): compute per period, then compare —
+    `WITH per AS (SELECT DATE_TRUNC('month', "<date>") AS m, SUM("<measure>") AS value FROM <view> GROUP BY 1)
+     SELECT (value - LAG(value) OVER (ORDER BY m)) / LAG(value) OVER (ORDER BY m) AS value FROM per`
+  - Multi-column conjunction: AND the grounded predicates —
+    `SELECT SUM("<measure>") AS value FROM <view> WHERE <dimA> IN ('<a>') AND <dimB> IN ('<b>')`
+  - Ratio / difference: two grounded extract steps composed in final_sql —
+    steps `<conceptA>`, `<conceptB>`; `final_sql: SELECT (SELECT value FROM <conceptA>) /
+    (SELECT value FROM <conceptB>) AS <metric>` (or a difference for a net). Each extract is
+    its own reusable step.
+  </blueprint_library>
+
   Use the generate_sql tool to provide your structured response.
 
 # User prompt - provides graph and schema context
@@ -182,7 +231,7 @@ user_prompt: |
   {graph_yaml}
   </graph_specification>
 
-  <data_schema description="All available tables and enriched views with column names, types, and a FEW non-exhaustive sample values. For grounding filters, use the COMPLETE Value sets in dataset_context, not these samples.">
+  <data_schema description="All available tables and enriched views with column names and types. For grounding filters, use the COMPLETE Value sets in dataset_context.">
   {table_schema}
   </data_schema>
 
@@ -273,7 +322,7 @@ inputs:
   table_schema:
     type: "string"
     required: true
-    description: "JSON with all available tables and enriched views, each with columns, types, and sample values"
+    description: "JSON with all available tables and enriched views, each with column names and types"
 
   parameters:
     type: "string"

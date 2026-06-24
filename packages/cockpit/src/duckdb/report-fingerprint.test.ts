@@ -23,7 +23,7 @@ describe("fingerprintRows — determinism", () => {
 		expect(fingerprintRows(rows({ v: 1 }))).toMatch(/^[0-9a-f]{64}$/);
 	});
 
-	it("distinguishes row order (the caller orders rows canonically before hashing)", () => {
+	it("is sensitive to row order (so the canonical ORDER BY ALL wrapping is load-bearing)", () => {
 		const ordered = rows({ k: "a", v: 1 }, { k: "b", v: 2 });
 		const swapped = rows({ k: "b", v: 2 }, { k: "a", v: 1 });
 		expect(fingerprintRows(ordered)).not.toBe(fingerprintRows(swapped));

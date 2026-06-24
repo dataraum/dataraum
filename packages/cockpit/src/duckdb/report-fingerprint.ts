@@ -46,9 +46,10 @@ export const FLOAT_SIG_DIGITS = 12;
 
 /** Recursively round binary floats in a JSON value to FLOAT_SIG_DIGITS, leaving
  * everything else (exact-string big numbers, booleans, null, text, nested keys)
- * byte-identical. Integer-valued numbers survive unchanged within the digit
- * budget; non-finite numbers (NaN/Infinity) round to themselves and serialize
- * deterministically. */
+ * byte-identical. Integer-valued numbers survive unchanged within the digit budget.
+ * The `Number.isFinite` guard is defensive: in practice getRowObjectsJson emits
+ * NaN/Infinity as the STRINGS "NaN"/"Infinity" (they pass through unchanged), but a
+ * non-finite JS number would still serialize deterministically rather than throw. */
 export function normalizeForFingerprint(value: Json): Json {
 	if (typeof value === "number") {
 		return Number.isFinite(value)

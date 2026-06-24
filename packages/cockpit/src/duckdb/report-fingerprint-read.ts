@@ -15,16 +15,17 @@ import { FINGERPRINT_ROW_LIMIT, fingerprintRows } from "./report-fingerprint";
  * LIMIT N` — the canonical grid order — so the same data fingerprints identically
  * regardless of the scan's physical row order. Read-only by construction (the lake
  * is ATTACHed READ_ONLY).
+ *
+ * No bind params: a report's `sql` is the LLM-authored composed query persisted as
+ * literal text (never a parameterized statement), so there is nothing to bind — and
+ * forwarding params here would bind them against the WRAPPED outer SELECT, shifting
+ * any positions in the inner SQL. Keep it literal.
  */
 export async function computeReportFingerprint(
 	sql: string,
-	params?: (string | number | boolean | null)[],
 ): Promise<{ fingerprint: string; result: QueryResult }> {
 	const conn = await getLakeConnection();
 	const wrapped = `SELECT * FROM (${sql}) AS _report ORDER BY ALL LIMIT ${FINGERPRINT_ROW_LIMIT}`;
-	const reader = params
-		? await conn.runAndReadAll(wrapped, params)
-		: await conn.runAndReadAll(wrapped);
-	const result = readerToResult(reader);
+	const result = readerToResult(await conn.runAndReadAll(wrapped));
 	return { fingerprint: fingerprintRows(result.rows), result };
 }

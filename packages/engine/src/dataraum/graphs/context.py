@@ -905,6 +905,24 @@ def build_execution_context(
             distinct_count = stat_prof.distinct_count if stat_prof else None
             profile_data = (stat_prof.profile_data or {}) if stat_prof else {}
             top_values = profile_data.get("top_values", [])
+            # DAT-621: the profiler stores only top-K (=20), incomplete for the median
+            # dimension. For a categorical whose distinct_count is within the reasonable-top
+            # but exceeds the stored set, fetch the COMPLETE value-set live so the agent
+            # grounds on the full IN-list. Role+cardinality-gated; high-card columns keep the
+            # stored top-K (rendered size+sample, never enumerated).
+            _role = (sem_ann.semantic_role if sem_ann else None) or ""
+            if (
+                duckdb_conn is not None
+                and table.duckdb_path
+                and _role.lower() not in _NON_CATEGORICAL_ROLES
+                and distinct_count is not None
+                and len(top_values) < distinct_count <= _VALUE_SET_COMPLETE_MAX
+            ):
+                complete = _fetch_complete_value_set(
+                    duckdb_conn, table.duckdb_path, col.column_name, _VALUE_SET_COMPLETE_MAX
+                )
+                if complete:
+                    top_values = complete
             numeric_stats = profile_data.get("numeric_stats") or {}
             numeric_min = numeric_stats.get("min_value")
             numeric_max = numeric_stats.get("max_value")
@@ -1486,30 +1504,58 @@ def _format_concept_vocabulary(ontology: Any) -> str | None:
     return "\n".join(lines) if lines else None
 
 
-# A categorical is renderable as a complete value-set when its distinct count is at or
-# below this gate (mirrors the slicing fan-out gate). Above it, enumeration is partial.
-_VALUE_SET_RENDER_MAX = 50
+# The "reasonable top" (DAT-621): a categorical dimension at/below this distinct count is
+# enumerated COMPLETELY (via a live DISTINCT at context-build, since the profiler only stores
+# the top-K); above it the column is not an aggregation partition (free-text / high-card id)
+# and is served size+sample, never enumerated. Set from the measured dimension distribution
+# (median 27, then a 40k tail; the number is insensitive in [100,500]).
+_VALUE_SET_COMPLETE_MAX = 200
 # Roles whose values are never a metric-grounding predicate (keys fan out; measures are
 # aggregated, not filtered; time axes are handled by the temporal blueprints).
 _NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
 
 
-def _build_value_sets(table: TableContext) -> list[str]:
-    """Render the complete value enumeration for a table's low-card categoricals.
+def _fetch_complete_value_set(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    duckdb_path: str,
+    column_name: str,
+    limit: int,
+) -> list[dict[str, Any]] | None:
+    """Live freq-ordered value-set for a low-card categorical (DAT-621).
 
-    This is the DAT-616 grounding surface: the agent maps a concept to specific
-    discriminator VALUES from this enumeration instead of improvising an ILIKE. Each
-    line marks whether the set is the COMPLETE enumeration (distinct_count within the
-    served top_values) or a partial top-K — a partial set must not be treated as
-    exhaustive (the fall-loud cue for the agent).
+    The profiler stores only the top-K (=20), which is incomplete for the median
+    dimension. When a categorical's `distinct_count` is within the reasonable-top, fetch
+    its COMPLETE `{value, count}` set here so the agent grounds on the full IN-list. Bounded
+    by `limit`; the assembled context is cacheable so the cost amortizes. Returns None on
+    any failure (caller keeps the stored top-K).
+    """
+    try:
+        rows = duckdb_conn.execute(
+            f'SELECT "{column_name}" AS value, COUNT(*) AS count '
+            f'FROM "{duckdb_path}" WHERE "{column_name}" IS NOT NULL '
+            f"GROUP BY 1 ORDER BY count DESC, value LIMIT {limit}"
+        ).fetchall()
+        return [{"value": v, "count": int(c)} for v, c in rows]
+    except Exception as e:  # pragma: no cover - best-effort; falls back to stored top-K
+        logger.debug("complete_value_set_failed", column=column_name, error=str(e))
+        return None
+
+
+def _build_value_sets(table: TableContext) -> list[str]:
+    """Render the value enumeration for a table's categorical columns (DAT-621).
+
+    The agent grounds a concept in specific discriminator VALUES from here instead of
+    improvising an ILIKE. NO distinct-count suppression — every categorical-role column is
+    served (silence is never an option): a low-card dimension shows its COMPLETE set (the
+    assembler fetched it live up to the reasonable-top), a high-card column shows a freq-
+    ordered SAMPLE + its size so the agent can recognise it (e.g. opaque codes → abstain)
+    and the cockpit/user can drill. Only key/measure/time roles are skipped (never partitions).
     """
     out: list[str] = []
     for col in table.columns:
         if not col.top_values:
             continue
         if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
-            continue
-        if col.distinct_count is not None and col.distinct_count > _VALUE_SET_RENDER_MAX:
             continue
         rendered = ", ".join(
             f"{tv.get('value')} ({tv.get('count')})"
@@ -1520,7 +1566,9 @@ def _build_value_sets(table: TableContext) -> list[str]:
             continue
         served = len(col.top_values)
         if col.distinct_count is not None and col.distinct_count > served:
-            completeness = f"top {served} of {col.distinct_count} (PARTIAL — not exhaustive)"
+            # High-card: not a complete set — a sample. Non-silent (size shown); the agent
+            # must not treat it as exhaustive (drill / fall loud).
+            completeness = f"SAMPLE — {served} of {col.distinct_count}, not exhaustive"
         else:
             completeness = "complete"
         out.append(f"- **{col.column_name}** ({completeness}): {rendered}")

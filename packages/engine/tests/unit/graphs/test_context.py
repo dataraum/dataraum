@@ -638,8 +638,9 @@ class TestValueSetGrounding:
         assert "Sales Revenue (120)" in result
         assert "COGS (100)" in result
 
-    def test_partial_value_set_flagged_not_exhaustive(self) -> None:
-        """When distinct_count exceeds the served top_values, the set is flagged PARTIAL."""
+    def test_high_card_categorical_rendered_as_sample_not_suppressed(self) -> None:
+        """DAT-621: a high-card categorical is NOT suppressed (no silent cut) — it renders a
+        freq-ordered SAMPLE + its size so the agent can recognise it / drill."""
         table = TableContext(
             table_id="t1",
             table_name="ledger",
@@ -647,11 +648,24 @@ class TestValueSetGrounding:
         )
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
-        assert "PARTIAL — not exhaustive" in result
-        assert "top 2 of 30" in result
+        assert "**cost_center** (SAMPLE — 2 of 30, not exhaustive)" in result
 
-    def test_measure_and_high_card_columns_have_no_value_set(self) -> None:
-        """Measures (aggregated, not filtered) and oversized categoricals are suppressed."""
+    def test_fetch_complete_value_set_is_freq_ordered_and_null_free(self) -> None:
+        """DAT-621: the live-DISTINCT helper returns the COMPLETE {value,count} set,
+        freq-ordered, NULLs excluded — the agent's full IN-list."""
+        import duckdb
+
+        from dataraum.graphs.context import _fetch_complete_value_set
+
+        conn = duckdb.connect()
+        conn.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES ('a'),('a'),('a'),('b'),(NULL)) v(cat)"
+        )
+        out = _fetch_complete_value_set(conn, "t", "cat", 200)
+        assert out == [{"value": "a", "count": 3}, {"value": "b", "count": 1}]
+
+    def test_measure_role_has_no_value_set(self) -> None:
+        """Only key/measure/time roles are skipped — they're never aggregation partitions."""
         measure = ColumnContext(
             column_id="m",
             column_name="amount",
@@ -660,8 +674,7 @@ class TestValueSetGrounding:
             distinct_count=900,
             top_values=[{"value": "1.0", "count": 1, "percentage": 0.0}],
         )
-        huge = _categorical("txn_id", 9999, [("a", 1), ("b", 1)])  # > render gate
-        table = TableContext(table_id="t1", table_name="ledger", columns=[measure, huge])
+        table = TableContext(table_id="t1", table_name="ledger", columns=[measure])
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
         assert "**Value sets**" not in result

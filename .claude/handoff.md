@@ -4,6 +4,38 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-24: DAT-621 — context model "don't cut, don't guess" (caps gone, complete value-sets, look_values)
+
+Follow-up to DAT-616. The principle: never cut grounding context blindly, never pre-guess
+relevance. Changes the SQL-gen context surface again — calibrations that snapshot
+`format_metadata_document` or the cockpit context blocks will see it.
+
+- **Complete categorical value-sets (engine):** `build_execution_context` now fetches the FULL
+  freq-ordered value-set live (`_fetch_complete_value_set`, a bounded `DISTINCT`) for a
+  categorical-role column whose `distinct_count` is within the reasonable-top (`_VALUE_SET_COMPLETE_MAX`
+  = 200) but exceeds the profiler's stored top-K (=20). So a genuine dimension's Value-set is now
+  COMPLETE, not a top-20 PARTIAL. (Spike: dim distinct median 27 → top-20 was incomplete for the
+  median dimension.)
+- **No silent suppression / caps:** the engine `_VALUE_SET_RENDER_MAX=50` suppression is GONE —
+  every categorical-role column renders (low-card = complete set; high-card = freq-ordered SAMPLE
+  with its size, marked `SAMPLE — N of M`). `cycle.evidence[:3]`, cockpit `MAX_SECONDARY_PER_MEASURE`,
+  `MAX_IDENTITIES_PER_TABLE` dropped (render all). Tail-bearing caps kept.
+- **`look_values([cols])` (cockpit):** new analyse/inspect drill tool — complete `{value,count}`
+  per column live from the lake, batched; `complete:false` flags >1000 distinct. Chip-only (no
+  canvas widget); the `<dimensions>` block points the agent to it when listed values are truncated.
+- **Cache-friendly prompt layout:** `graph_sql_generation` user prompt reordered — stable grounding
+  prefix, per-metric suffix (for DAT-599 caching). Pure layout; the metric `graph_specification` no
+  longer leads.
+
+### dataraum-eval
+- **Prompt-surface / metadata-document change only** (no detector / DB-schema / response-shape
+  change). Snapshots of the SQL-gen context will differ: Value-set lines now COMPLETE for genuine
+  dimensions (no top-20 truncation), high-card columns show `SAMPLE — N of M`, no suppressed
+  columns, no `[:3]`/secondary/identity caps; block ORDER changed (cache layout).
+- **The shape-varied eval (the DAT-616 open ask) still applies** — now run against complete
+  value-sets. Opaque-code fixtures still fall loud.
+- **Status**: pending.
+
 ## 2026-06-24: DAT-616 — feed BOTH SQL agents the full grounding + compose-CTE + feedback loops
 
 The full feed (the design in `plans/metric-grounding/dat-616.md`), not just the value-set

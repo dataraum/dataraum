@@ -183,6 +183,19 @@ export function toolChipSummary(
 				? `${r.table_name} — ${cols}`
 				: `${r.table_name} — ${cols}, not yet analyzed`;
 		}
+		case "look_values": {
+			if (!done) return "drilling value-sets…";
+			const cols = (output as { columns?: unknown } | undefined)?.columns;
+			const list = Array.isArray(cols)
+				? (cols as Array<{ column_name?: string | null; values?: unknown[] }>)
+				: [];
+			if (list.length === 0) return "no value-sets";
+			const total = list.reduce(
+				(n, c) => n + (Array.isArray(c.values) ? c.values.length : 0),
+				0,
+			);
+			return `${plural(list.length, "column")}, ${plural(total, "value")}`;
+		}
 		case "look_profile": {
 			const r = output as LookProfileResult | undefined;
 			if (!r) return "reading column profile…";

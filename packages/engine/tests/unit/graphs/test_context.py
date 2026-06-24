@@ -391,8 +391,10 @@ class TestFormatMetadataDocument:
         assert "## Enriched Views" in result
         assert "enriched_sales" in result
         assert "grain verified" in result
+        # DAT-621: slice dimension NAMES only here; values live in the Value sets block
+        # (no redundant capped sample re-rendered in the enriched-views block).
         assert "region" in result
-        assert "EMEA" in result
+        assert "see Value sets" in result
 
     def test_slice_filter_shown(self) -> None:
         """Active slice filter shown in overview."""
@@ -634,12 +636,15 @@ class TestValueSetGrounding:
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
         assert "**Value sets**" in result
-        assert "**account_type** (complete)" in result
+        assert "**account_type** (complete, 3 distinct)" in result
         assert "Sales Revenue (120)" in result
         assert "COGS (100)" in result
 
-    def test_partial_value_set_flagged_not_exhaustive(self) -> None:
-        """When distinct_count exceeds the served top_values, the set is flagged PARTIAL."""
+    def test_high_card_column_not_served_to_graph_agent(self) -> None:
+        """DAT-621: the one-shot GraphAgent gets the LOW-CARD BASELINE only. A high-card /
+        incompletely-fetched column (distinct > served) is NOT rendered at all — no size
+        line, no partial sample. High-card is the cockpit sub-agent's + user's drill lane;
+        dangling it here only invites the ILIKE-guess that is the root bug."""
         table = TableContext(
             table_id="t1",
             table_name="ledger",
@@ -647,11 +652,42 @@ class TestValueSetGrounding:
         )
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
-        assert "PARTIAL — not exhaustive" in result
-        assert "top 2 of 30" in result
+        # The column is still MENTIONED in the catalog, but carries NO value-set entry and
+        # no size-only/abstain line — high-card is simply not a groundable surface here.
+        assert "**cost_center**" not in result  # no value-set entry
+        assert "not inlined" not in result  # the old size-only branch is gone
+        assert "North (9)" not in result  # no partial value sample leaked
 
-    def test_measure_and_high_card_columns_have_no_value_set(self) -> None:
-        """Measures (aggregated, not filtered) and oversized categoricals are suppressed."""
+    def test_near_constant_column_flagged_not_served(self) -> None:
+        """A near-constant column (one value ≥90%) is flagged, never served as groundable —
+        the sale/purchase silent-wrong trap."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[_categorical("sale", 2, [("true", 4980), ("false", 20)])],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**sale**: near-constant" in result
+        assert "NOT a discriminator" in result
+        assert "true (4980)" not in result
+
+    def test_fetch_complete_value_set_is_freq_ordered_and_null_free(self) -> None:
+        """DAT-621: the live-DISTINCT helper returns the COMPLETE {value,count} set,
+        freq-ordered, NULLs excluded — the agent's full IN-list."""
+        import duckdb
+
+        from dataraum.graphs.context import _fetch_complete_value_set
+
+        conn = duckdb.connect()
+        conn.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES ('a'),('a'),('a'),('b'),(NULL)) v(cat)"
+        )
+        out = _fetch_complete_value_set(conn, "t", "cat", 200)
+        assert out == [{"value": "a", "count": 3}, {"value": "b", "count": 1}]
+
+    def test_measure_role_has_no_value_set(self) -> None:
+        """Only key/measure/time roles are skipped — they're never aggregation partitions."""
         measure = ColumnContext(
             column_id="m",
             column_name="amount",
@@ -660,8 +696,7 @@ class TestValueSetGrounding:
             distinct_count=900,
             top_values=[{"value": "1.0", "count": 1, "percentage": 0.0}],
         )
-        huge = _categorical("txn_id", 9999, [("a", 1), ("b", 1)])  # > render gate
-        table = TableContext(table_id="t1", table_name="ledger", columns=[measure, huge])
+        table = TableContext(table_id="t1", table_name="ledger", columns=[measure])
         result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
 
         assert "**Value sets**" not in result

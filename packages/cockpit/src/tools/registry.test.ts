@@ -57,6 +57,7 @@ describe("tool registry (DAT-353)", () => {
 				"list_tables",
 				"look_table",
 				"look_profile",
+				"look_values",
 				"why_column",
 				"why_table",
 				"look_relationships",

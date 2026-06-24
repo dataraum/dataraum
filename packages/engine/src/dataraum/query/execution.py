@@ -35,6 +35,17 @@ logger = get_logger(__name__)
 _LEADING_WITH = re.compile(r"^\s*with\s+", re.IGNORECASE)
 
 
+def _normalize_sql(sql: str) -> str:
+    r"""Repair literal escape sequences the LLM sometimes emits in SQL (DAT-621).
+
+    The model occasionally double-escapes whitespace — a literal backslash-n / backslash-t
+    instead of a real newline/tab — which DuckDB rejects with ``syntax error at or near
+    "\\"`` (seen on a multi-step `current_ratio`). Convert them back. Whitespace only;
+    metric SQL carries no real string literal whose content is a backslash-escape.
+    """
+    return sql.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "")
+
+
 def compose_standalone(steps: list[SQLStep], final_sql: str) -> str:
     """Fold ``{steps, final_sql}`` into ONE standalone statement.
 
@@ -124,6 +135,11 @@ def execute_sql_steps(
         Result with ExecutionResult on success
     """
     step_results: list[StepExecutionResult] = []
+
+    # DAT-621: repair literal backslash-escaped whitespace the LLM sometimes emits before
+    # anything runs (else DuckDB throws `syntax error at or near "\"`).
+    steps = [SQLStep(s.step_id, _normalize_sql(s.sql), s.description) for s in steps]
+    final_sql = _normalize_sql(final_sql)
 
     # Fetch each step's scalar for the verifier's support gate. A step MAY reference an
     # earlier step (the old temp-view model allowed it; formula steps with depends_on do),

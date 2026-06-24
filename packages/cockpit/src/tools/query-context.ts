@@ -32,6 +32,7 @@ import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
 	currentDimensionHierarchies,
+	currentRelationships,
 	currentSemanticAnnotations,
 	currentSliceDefinitions,
 	currentTableEntities,
@@ -313,16 +314,16 @@ export async function buildSchemaBlock(): Promise<string> {
 /** One catalogued slice axis (a natural analysis dimension). */
 export interface CatalogAxisRow {
 	tableId: string;
+	// DAT-621: the slice's real column_id — rendered so the sub-agent can pass it to
+	// look_values to DRILL the complete value-set on demand (it has no look_table to
+	// resolve ids from). The grounding path is by id, not by name.
+	columnId: string;
 	columnName: string;
-	// DAT-616: the dimension's actual values — the answer agent's grounding value-set.
-	// The slice catalog is low-card by construction, so this is naturally bounded
-	// (no fire-hose); a metric filter grounds in these literals, not a guessed ILIKE.
+	// DAT-621: the dimension's distinct VALUE COUNT only — the cardinality, not the
+	// values. No samples: a sample would bias the agent toward the shown subset (the
+	// silently-wrong trap). The agent drills the COMPLETE set via look_values(columnId).
 	distinctValues?: string[] | null;
 }
-
-// Cap rendered values per dimension — the catalog is already low-card, this just
-// guards a pathological row from bloating the prompt.
-const MAX_DIMENSION_VALUES = 30;
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
  * drill-down chain. `members` is the engine's JSON array of `{column_name}`. */
@@ -380,16 +381,15 @@ export function formatCatalog(
 		const values = Array.isArray(a.distinctValues)
 			? a.distinctValues.filter((v): v is string => v != null).map(String)
 			: [];
-		let line = `"${a.columnName}"`;
-		if (values.length) {
-			const shown = values.slice(0, MAX_DIMENSION_VALUES).join(", ");
-			const more =
-				values.length > MAX_DIMENSION_VALUES
-					? `, +${values.length - MAX_DIMENSION_VALUES} more`
-					: "";
-			line += ` [${shown}${more}]`;
-		}
-		bucket(a.tableId).dimensions.push(line);
+		// DAT-621: name + value-COUNT + the column_id — never the values themselves. NO
+		// samples: a sample biases the agent toward the shown subset (the silently-wrong
+		// trap). The sub-agent has look_values now, so it DRILLS the complete value-set on
+		// demand via the id and grounds an IN(...) over what comes back. value_count is the
+		// honest complete-set size (slice dims are low-card by construction).
+		const count = values.length ? ` (${values.length} values)` : "";
+		bucket(a.tableId).dimensions.push(
+			`"${a.columnName}"${count} [id: ${a.columnId}]`,
+		);
 	}
 	for (const h of hierarchyRows) {
 		const line = hierarchyLine(h);
@@ -413,7 +413,10 @@ export function formatCatalog(
 		"The workspace's natural analysis dimensions per table, and how they relate. " +
 		"For an alias group, group by the canonical column (don't double-count the " +
 		"same axis); to answer at a coarser level, roll a drill-down chain up along " +
-		"its listed order.\n\n" +
+		"its listed order. Each dimension shows its distinct-value COUNT and its [id: …] " +
+		"— not the values themselves. To ground a filter on one, call look_values with " +
+		"that id to fetch its exact values, then build an IN (...) over them. Never guess " +
+		"a value or match by substring.\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</dimensions>"
 	);
@@ -430,6 +433,7 @@ export async function buildCatalogBlock(): Promise<string> {
 		metadataDb
 			.select({
 				tableId: currentSliceDefinitions.tableId,
+				columnId: currentSliceDefinitions.columnId,
 				columnName: currentSliceDefinitions.columnName,
 				distinctValues: currentSliceDefinitions.distinctValues,
 			})
@@ -464,9 +468,10 @@ export async function buildCatalogBlock(): Promise<string> {
 
 	return formatCatalog(
 		axisRows
-			.filter((a) => a.tableId && a.columnName)
+			.filter((a) => a.tableId && a.columnId && a.columnName)
 			.map((a) => ({
 				tableId: a.tableId as string,
+				columnId: a.columnId as string,
 				columnName: a.columnName as string,
 				distinctValues: Array.isArray(a.distinctValues)
 					? (a.distinctValues as string[])
@@ -484,6 +489,166 @@ export async function buildCatalogBlock(): Promise<string> {
 			})),
 		tableAddressById,
 	);
+}
+
+// --- Relationships (DAT-621) -----------------------------------------------------
+//
+// The confirmed join paths between tables — the JOIN-grounding analog of the
+// <dimensions> value-grounding block. The sub-agent gets NO look_relationships tool
+// (relationships are a small set needed by most multi-table queries → serve in
+// context, don't gate behind a per-query tool round-trip); high-card VALUES are the
+// opposite (large + per-query → look_values). Mirrors what the engine GraphAgent
+// already gets (graphs/context.py "## Relationships"): the directional column pair,
+// cardinality, and the fan-out caution. Only the DEFINED catalog is served
+// (detection_method != 'candidate') — a bare structural candidate the run never
+// confirmed is not a join path. Without this the sub-agent invents a join key
+// (the `t.account = coa.account_name` guess).
+
+/** One confirmed join edge, addressed for the prompt (the from/to lake addresses +
+ * the column on each side). `introducesDuplicates` is the engine's fan-trap signal
+ * (evidence.introduces_duplicates): joining here multiplies rows. */
+export interface RelationshipBlockRow {
+	fromAddress: string;
+	fromColumn: string;
+	toAddress: string;
+	toColumn: string;
+	cardinality: string | null;
+	relationshipType: string | null;
+	introducesDuplicates: boolean | null;
+}
+
+/**
+ * Format the confirmed relationships as the sub-agent's `<relationships>` block (pure).
+ * Each line is a directly usable JOIN predicate (`<from>."col" = <to>."col"`) plus the
+ * cardinality/type and, when the edge fans out, the SUM-double-counts caution. Empty →
+ * a one-line note.
+ */
+export function formatRelationships(rows: RelationshipBlockRow[]): string {
+	if (rows.length === 0) {
+		return "<relationships>\n(No confirmed relationships between tables.)\n</relationships>";
+	}
+	const lines = rows
+		.map((r) => {
+			const facts = [r.cardinality, r.relationshipType]
+				.filter((f): f is string => !!f)
+				.join("; ");
+			const factTag = facts ? ` (${facts})` : "";
+			// Fan-out caution reads the engine's introduces_duplicates flag (the fan-trap
+			// check is the engine's job, not the consumer's — see DAT-628: the LLM
+			// synthesis path doesn't yet populate it). Null flag → no caution.
+			const fanOut =
+				r.introducesDuplicates === true
+					? " ⚠ fan-out: SUM across this join double-counts — pre-aggregate or COUNT DISTINCT"
+					: "";
+			return `- ${r.fromAddress}."${r.fromColumn}" = ${r.toAddress}."${r.toColumn}"${factTag}${fanOut}`;
+		})
+		.sort();
+	return (
+		"<relationships>\n" +
+		"The confirmed join paths between tables — JOIN ON the listed column pair, never " +
+		"a guessed key. A dimension table may be hidden from <schema> when enriched views " +
+		"are shown; these paths still reach it (join lake.typed.<dim>). Ground EVERY join " +
+		"on a pair listed here; if the join you need isn't listed, do not invent one — " +
+		"abstain or state the limitation.\n\n" +
+		`${lines.join("\n")}\n` +
+		"</relationships>"
+	);
+}
+
+/**
+ * Read the confirmed relationship catalog for the active workspace's promoted head and
+ * format it as the `<relationships>` block. Resolves each endpoint's lake address (the
+ * SAME `lake.<layer>.<name>` form the <schema> block uses) + column name. Only
+ * `detection_method != 'candidate'` (the defined catalog) is served.
+ */
+export async function buildRelationshipsBlock(): Promise<string> {
+	const rels = await metadataDb
+		.select({
+			fromTableId: currentRelationships.fromTableId,
+			fromColumnId: currentRelationships.fromColumnId,
+			toTableId: currentRelationships.toTableId,
+			toColumnId: currentRelationships.toColumnId,
+			relationshipType: currentRelationships.relationshipType,
+			cardinality: currentRelationships.cardinality,
+			detectionMethod: currentRelationships.detectionMethod,
+			evidence: currentRelationships.evidence,
+		})
+		.from(currentRelationships);
+
+	const defined = rels.filter(
+		(r) =>
+			r.detectionMethod !== "candidate" &&
+			r.fromTableId &&
+			r.fromColumnId &&
+			r.toTableId &&
+			r.toColumnId,
+	);
+	if (defined.length === 0) return formatRelationships([]);
+
+	// Resolve endpoint table addresses + column names in one pass each (no N+1).
+	const tableIds = new Set<string>();
+	const columnIds = new Set<string>();
+	for (const r of defined) {
+		tableIds.add(r.fromTableId as string);
+		tableIds.add(r.toTableId as string);
+		columnIds.add(r.fromColumnId as string);
+		columnIds.add(r.toColumnId as string);
+	}
+
+	const [tableRows, columnRows] = await Promise.all([
+		metadataDb
+			.select({
+				tableId: tables.tableId,
+				physicalName: tables.tableName,
+				layer: tables.layer,
+			})
+			.from(tables)
+			.where(inArray(tables.tableId, [...tableIds])),
+		metadataDb
+			.select({ columnId: columns.columnId, columnName: columns.columnName })
+			.from(columns)
+			.where(inArray(columns.columnId, [...columnIds])),
+	]);
+
+	const addressById = new Map<string, string>(
+		tableRows
+			.filter((t) => t.tableId)
+			.map((t) => [
+				t.tableId as string,
+				`${LAKE_ALIAS}.${schemaForLayer(t.layer ?? TYPED_LAYER)}.${t.physicalName}`,
+			]),
+	);
+	const colNameById = new Map<string, string>(
+		columnRows
+			.filter((c) => c.columnId && c.columnName)
+			.map((c) => [c.columnId as string, c.columnName as string]),
+	);
+
+	const blockRows: RelationshipBlockRow[] = [];
+	for (const r of defined) {
+		const fromAddress = addressById.get(r.fromTableId as string);
+		const toAddress = addressById.get(r.toTableId as string);
+		const fromColumn = colNameById.get(r.fromColumnId as string);
+		const toColumn = colNameById.get(r.toColumnId as string);
+		// A dropped endpoint (stale id) can't form a usable JOIN predicate — skip it
+		// rather than render a half-resolved, un-runnable line.
+		if (!fromAddress || !toAddress || !fromColumn || !toColumn) continue;
+		blockRows.push({
+			fromAddress,
+			fromColumn,
+			toAddress,
+			toColumn,
+			cardinality: r.cardinality ?? null,
+			relationshipType: r.relationshipType ?? null,
+			introducesDuplicates:
+				typeof r.evidence === "object" && r.evidence !== null
+					? (((r.evidence as Record<string, unknown>).introduces_duplicates as
+							| boolean
+							| null) ?? null)
+					: null,
+		});
+	}
+	return formatRelationships(blockRows);
 }
 
 // --- Table entities (DAT-607) ----------------------------------------------------
@@ -504,13 +669,8 @@ export interface EntityBlockRow {
 	entity: TableEntity;
 }
 
-/** Cap a single table's identity list — bounds the block on a wide entity. */
-const MAX_IDENTITIES_PER_TABLE = 8;
 /** Clamp an LLM-authored identity note — keeps one stanza to a readable line. */
 const MAX_NOTE_CHARS = 140;
-/** Cap the number of table stanzas — bounds the block on a wide workspace; the
- * overflow is summarized in a tail note rather than silently dropped. */
-const MAX_ENTITY_TABLES = 25;
 
 function clampNote(note: string): string {
 	const n = note.trim();
@@ -542,7 +702,6 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 		if (entity.identity_columns.length)
 			lines.push(
 				`  identities: ${entity.identity_columns
-					.slice(0, MAX_IDENTITIES_PER_TABLE)
 					.map((i) =>
 						i.note ? `${i.column} — ${clampNote(i.note)}` : i.column,
 					)
@@ -562,11 +721,8 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 	}
 	if (stanzas.length === 0)
 		return "<entities>\n(No table entities detected yet.)\n</entities>";
-	// Bound the block on a wide workspace — keep the first N (already address-sorted)
-	// and summarize the rest rather than bloat the prompt or silently truncate.
-	const overflow = stanzas.length - MAX_ENTITY_TABLES;
-	const kept = overflow > 0 ? stanzas.slice(0, MAX_ENTITY_TABLES) : stanzas;
-	const tail = overflow > 0 ? `\n\n(… ${overflow} more tables omitted.)` : "";
+	// DAT-621: no cap — every table (already address-sorted) is served; the workspace's
+	// table set is bounded and a truncation here is a silent grounding gap.
 	return (
 		"<entities>\n" +
 		"What each table represents and its natural keys. Grain is the table's unit " +
@@ -575,7 +731,7 @@ export function formatEntities(rows: EntityBlockRow[]): string {
 		"column. Time columns are the event-time axes. When the <schema> block shows an " +
 		"enriched view instead of the typed table below, these columns apply to that view " +
 		"too — an enriched view includes every column of the typed table it's built from.\n\n" +
-		`${kept.join("\n\n")}${tail}\n` +
+		`${stanzas.join("\n\n")}\n` +
 		"</entities>"
 	);
 }
@@ -646,9 +802,6 @@ export async function buildEntitiesBlock(): Promise<string> {
 // curated list, not a dump. A second display cap (was 3) was a SILENT recall gate: on a
 // larger table it dropped most of the curated signal where neither the user nor the agent
 // could see the loss. Serve the full set (matching the engine GraphAgent's `## Drivers`).
-/** Cap other-grain drivers — this source IS genuinely uncapped at persist time (the engine
- * doesn't bound secondary families), so the block needs a real guard on wide workspaces. */
-const MAX_SECONDARY_PER_MEASURE = 5;
 
 /** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
 function grainLabel(grain: string, entity: string | null): string {
@@ -702,8 +855,8 @@ export function formatDrivers(rankings: DriverRanking[]): string {
 			);
 		if (r.secondary_dimensions.length)
 			lines.push(
+				// DAT-621: no cap — secondary families are naturally few; serve all (no silent cut).
 				`  other-grain drivers: ${r.secondary_dimensions
-					.slice(0, MAX_SECONDARY_PER_MEASURE)
 					.map(
 						(s) =>
 							`"${s.dimension}" (${grainLabel(s.grain, s.entity)}, ${g(s.gain)})`,

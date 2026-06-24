@@ -905,6 +905,24 @@ def build_execution_context(
             distinct_count = stat_prof.distinct_count if stat_prof else None
             profile_data = (stat_prof.profile_data or {}) if stat_prof else {}
             top_values = profile_data.get("top_values", [])
+            # DAT-621: the profiler stores only top-K (=20), incomplete for the median
+            # dimension. For a categorical whose distinct_count is within the reasonable-top
+            # but exceeds the stored set, fetch the COMPLETE value-set live so the agent
+            # grounds on the full IN-list. Role+cardinality-gated; high-card columns keep the
+            # stored top-K (rendered size+sample, never enumerated).
+            _role = (sem_ann.semantic_role if sem_ann else None) or ""
+            if (
+                duckdb_conn is not None
+                and table.duckdb_path
+                and _role.lower() not in _NON_CATEGORICAL_ROLES
+                and distinct_count is not None
+                and len(top_values) < distinct_count <= _VALUE_SET_COMPLETE_MAX
+            ):
+                complete = _fetch_complete_value_set(
+                    duckdb_conn, table.duckdb_path, col.column_name, _VALUE_SET_COMPLETE_MAX
+                )
+                if complete:
+                    top_values = complete
             numeric_stats = profile_data.get("numeric_stats") or {}
             numeric_min = numeric_stats.get("min_value")
             numeric_max = numeric_stats.get("max_value")
@@ -1334,7 +1352,9 @@ def format_metadata_document(
                 warning = " ⚠ non-deterministic"
             # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
             # measure across this join double-counts. Tell the agent to aggregate
-            # before the join (or COUNT DISTINCT), not after.
+            # before the join (or COUNT DISTINCT), not after. Reads the engine's
+            # introduces_duplicates flag (the fan-trap check is the detector's job, not
+            # this renderer's — DAT-628: the LLM synthesis path doesn't yet populate it).
             if rel.introduces_duplicates:
                 warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(
@@ -1358,17 +1378,13 @@ def format_metadata_document(
             dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
             lines.append(f"Joined columns: {dims}.")
 
+            # DAT-621: list the slice dimension NAMES only — their value-sets are served
+            # COMPLETE (or size-stated) in the per-table Value sets block, so re-rendering a
+            # capped [:10] sample here was redundant duplication + a partial sample.
             view_slices = slices_by_table.get(ev.fact_table, [])
             if view_slices:
-                lines.append("Slice dimensions:")
-                for s in view_slices:
-                    vals_str = ""
-                    if s.distinct_values:
-                        vals = ", ".join(s.distinct_values[:10])
-                        if len(s.distinct_values) > 10:
-                            vals += f", +{len(s.distinct_values) - 10} more"
-                        vals_str = f": [{vals}]"
-                    lines.append(f"  - **{s.column_name}** ({s.value_count} values){vals_str}")
+                names = ", ".join(f"{s.column_name} ({s.value_count} values)" for s in view_slices)
+                lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
 
     # --- Business Processes ---
     if context.business_cycles:
@@ -1486,22 +1502,62 @@ def _format_concept_vocabulary(ontology: Any) -> str | None:
     return "\n".join(lines) if lines else None
 
 
-# A categorical is renderable as a complete value-set when its distinct count is at or
-# below this gate (mirrors the slicing fan-out gate). Above it, enumeration is partial.
-_VALUE_SET_RENDER_MAX = 50
+# The "reasonable top" (DAT-621): a categorical dimension at/below this distinct count is
+# enumerated COMPLETELY (via a live DISTINCT at context-build, since the profiler only stores
+# the top-K); above it the column is not an aggregation partition (free-text / high-card id)
+# and is served size+sample, never enumerated. Set from the measured dimension distribution
+# (median 27, then a 40k tail; the number is insensitive in [100,500]).
+_VALUE_SET_COMPLETE_MAX = 200
+# A column whose single most-frequent value covers more than this fraction is near-constant
+# — not a discriminator (e.g. a 99.6%-true `sale` boolean). Grounding a concept on it is
+# silently wrong, so it's flagged, never served as a groundable value-set.
+_NEAR_CONSTANT_FRAC = 0.9
 # Roles whose values are never a metric-grounding predicate (keys fan out; measures are
 # aggregated, not filtered; time axes are handled by the temporal blueprints).
 _NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
 
 
-def _build_value_sets(table: TableContext) -> list[str]:
-    """Render the complete value enumeration for a table's low-card categoricals.
+def _fetch_complete_value_set(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    duckdb_path: str,
+    column_name: str,
+    limit: int,
+) -> list[dict[str, Any]] | None:
+    """Live freq-ordered value-set for a low-card categorical (DAT-621).
 
-    This is the DAT-616 grounding surface: the agent maps a concept to specific
-    discriminator VALUES from this enumeration instead of improvising an ILIKE. Each
-    line marks whether the set is the COMPLETE enumeration (distinct_count within the
-    served top_values) or a partial top-K — a partial set must not be treated as
-    exhaustive (the fall-loud cue for the agent).
+    The profiler stores only the top-K (=20), which is incomplete for the median
+    dimension. When a categorical's `distinct_count` is within the reasonable-top, fetch
+    its COMPLETE `{value, count}` set here so the agent grounds on the full IN-list. Bounded
+    by `limit`; the assembled context is cacheable so the cost amortizes. Returns None on
+    any failure (caller keeps the stored top-K).
+    """
+    try:
+        rows = duckdb_conn.execute(
+            f'SELECT "{column_name}" AS value, COUNT(*) AS count '
+            f'FROM "{duckdb_path}" WHERE "{column_name}" IS NOT NULL '
+            f"GROUP BY 1 ORDER BY count DESC, value LIMIT {limit}"
+        ).fetchall()
+        return [{"value": v, "count": int(c)} for v, c in rows]
+    except Exception as e:  # pragma: no cover - best-effort; falls back to stored top-K
+        logger.debug("complete_value_set_failed", column=column_name, error=str(e))
+        return None
+
+
+def _build_value_sets(table: TableContext) -> list[str]:
+    """Render the value enumeration for a table's categorical columns (DAT-621).
+
+    The agent grounds a concept in the discriminator VALUES from here, never a guessed
+    ILIKE. The GraphAgent is ONE-SHOT with NO tools (it cannot drill), so it gets the
+    LOW-CARD BASELINE only — nothing it would be tempted to guess at:
+    - low-card (≤ reasonable-top) + non-degenerate → the COMPLETE value-set inline (the
+      assembler fetched it live);
+    - high-card (> reasonable-top) → NOT rendered at all. High-card discriminators are the
+      cockpit answer sub-agent's + user's lane (they have look_values to drill on demand);
+      dangling a high-card column here only invites the ILIKE-guess that is the root bug. A
+      metric that genuinely needs one falls loud (no value-set → no IN-list → abstain);
+    - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
+      on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
+    Only key/measure/time roles are skipped (never partitions).
     """
     out: list[str] = []
     for col in table.columns:
@@ -1509,7 +1565,22 @@ def _build_value_sets(table: TableContext) -> list[str]:
             continue
         if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
             continue
-        if col.distinct_count is not None and col.distinct_count > _VALUE_SET_RENDER_MAX:
+        served = len(col.top_values)
+        dc = col.distinct_count
+        # High-card / incomplete-fetch → NOT served to the one-shot GraphAgent at all (it
+        # can't drill; high-card is the cockpit/user lane). The served set must be the
+        # COMPLETE enumeration to render — a partial never becomes a value list here.
+        if dc is not None and dc > served:
+            continue
+        # Degenerate / near-constant → not a discriminator; flag, don't serve as groundable
+        # (grounding a concept on a ~constant flag is silently wrong).
+        counts = [tv.get("count") or 0 for tv in col.top_values]
+        total = sum(counts)
+        if total and max(counts) / total > _NEAR_CONSTANT_FRAC:
+            out.append(
+                f"- **{col.column_name}**: near-constant ({dc} distinct, one value ≥90%) — "
+                "NOT a discriminator, do not filter on it"
+            )
             continue
         rendered = ", ".join(
             f"{tv.get('value')} ({tv.get('count')})"
@@ -1518,12 +1589,9 @@ def _build_value_sets(table: TableContext) -> list[str]:
         )
         if not rendered:
             continue
-        served = len(col.top_values)
-        if col.distinct_count is not None and col.distinct_count > served:
-            completeness = f"top {served} of {col.distinct_count} (PARTIAL — not exhaustive)"
-        else:
-            completeness = "complete"
-        out.append(f"- **{col.column_name}** ({completeness}): {rendered}")
+        out.append(
+            f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}"
+        )
     return out
 
 
@@ -1673,7 +1741,8 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
 
         # Evidence
         if cycle.evidence:
-            evidence_str = "; ".join(cycle.evidence[:3])
+            # DAT-621: no silent [:3] cut — evidence is a short narrative list; serve all.
+            evidence_str = "; ".join(cycle.evidence)
             lines.append(f"Evidence: {evidence_str}")
 
         # Stages

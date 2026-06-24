@@ -55,10 +55,12 @@ import {
 } from "./agent-error";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
+import { lookValuesTool } from "./look-values";
 import {
 	buildCatalogBlock,
 	buildDriversBlock,
 	buildEntitiesBlock,
+	buildRelationshipsBlock,
 	buildSchemaBlock,
 } from "./query-context";
 import { buildVocabularyBlock, snippetSearchTool } from "./snippet-search";
@@ -564,6 +566,7 @@ export async function querySubAgent(
 		schemaBlock,
 		entitiesBlock,
 		catalogBlock,
+		relationshipsBlock,
 		driversBlock,
 		vocabularyBlock,
 		nearUniqueColumns,
@@ -571,12 +574,13 @@ export async function querySubAgent(
 		buildSchemaBlock(),
 		buildEntitiesBlock(),
 		buildCatalogBlock(),
+		buildRelationshipsBlock(),
 		buildDriversBlock(),
 		buildVocabularyBlock(),
 		loadNearUniqueColumns(),
 	]);
 
-	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
+	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}`;
 
 	// Per-invocation capture cell — the run_steps tool writes the last successful
 	// validation (and the last failure) here, so it's isolated across concurrent
@@ -595,7 +599,11 @@ export async function querySubAgent(
 			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
 			systemPrompts: [getQueryInstructions()],
 			messages: [{ role: "user", content: userMessage }],
-			tools: [snippetSearchTool, makeRunStepsTool(captured, nearUniqueColumns)],
+			tools: [
+				snippetSearchTool,
+				lookValuesTool,
+				makeRunStepsTool(captured, nearUniqueColumns),
+			],
 			outputSchema: QueryDraftSchema,
 		});
 	} catch (err) {

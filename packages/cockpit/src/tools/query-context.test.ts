@@ -19,8 +19,10 @@ import {
 	formatCatalog,
 	formatDrivers,
 	formatEntities,
+	formatRelationships,
 	formatSchema,
 	preferEnriched,
+	type RelationshipBlockRow,
 	type SchemaColumnRow,
 	type SchemaConceptRow,
 	type SchemaTableRow,
@@ -190,41 +192,59 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		["t2", "lake.typed.orders"],
 	]);
 	const axes: CatalogAxisRow[] = [
-		{ tableId: "t1", columnName: "region" },
-		{ tableId: "t1", columnName: "channel" },
+		{ tableId: "t1", columnId: "col-region", columnName: "region" },
+		{ tableId: "t1", columnId: "col-channel", columnName: "channel" },
 	];
 
 	it("lists the natural dimensions per table (sorted)", () => {
 		const block = formatCatalog(axes, [], addr);
 		expect(block).toContain("Table lake.typed.sales:");
-		expect(block).toContain('dimensions: "channel", "region"'); // sorted
+		// sorted; each carries its drill id for look_values
+		expect(block).toContain(
+			'dimensions: "channel" [id: col-channel], "region" [id: col-region]',
+		);
 		// No grain-safe / fan-out framing — this block is context, not a gate.
 		expect(block).not.toContain("grain-safe");
 		expect(block).not.toContain("GROUP BY");
 	});
 
-	it("renders the dimension's value-set inline (DAT-616 grounding)", () => {
+	it("renders each dimension as name + count + drill id, NOT the inline values (DAT-621)", () => {
 		const valued: CatalogAxisRow[] = [
 			{
 				tableId: "t1",
+				columnId: "col-acct",
 				columnName: "account_type",
 				distinctValues: ["Sales Revenue", "COGS", "SG&A"],
 			},
 		];
 		const block = formatCatalog(valued, [], addr);
+		// The sub-agent has look_values → the block carries the count + the [id:] to drill,
+		// never the values themselves (a sample would bias grounding toward the shown subset).
 		expect(block).toContain(
-			'dimensions: "account_type" [Sales Revenue, COGS, SG&A]',
+			'dimensions: "account_type" (3 values) [id: col-acct]',
 		);
+		expect(block).not.toContain("Sales Revenue");
 	});
 
-	it("caps an oversized value-set with an overflow tail", () => {
+	it("serves count + id only — never the value-set, regardless of size (DAT-621)", () => {
 		const many = Array.from({ length: 45 }, (_, i) => `v${i}`);
 		const block = formatCatalog(
-			[{ tableId: "t1", columnName: "code", distinctValues: many }],
+			[
+				{
+					tableId: "t1",
+					columnId: "col-code",
+					columnName: "code",
+					distinctValues: many,
+				},
+			],
 			[],
 			addr,
 		);
-		expect(block).toContain("+15 more");
+		// Honest count (value_count == complete set size, low-card by construction); the
+		// values themselves are drilled via look_values(col-code), never inlined here.
+		expect(block).toContain("(45 values) [id: col-code]");
+		expect(block).not.toContain("v44");
+		expect(block).not.toContain("more");
 	});
 
 	it("renders an alias group as canonical ≡ others (group by canonical)", () => {
@@ -265,11 +285,64 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 
 	it("falls back to the raw table_id when no address is known", () => {
 		const block = formatCatalog(
-			[{ tableId: "orphan", columnName: "x" }],
+			[{ tableId: "orphan", columnId: "col-x", columnName: "x" }],
 			[],
 			new Map(),
 		);
 		expect(block).toContain("Table orphan:");
+	});
+});
+
+describe("formatRelationships (DAT-621 join-grounding block)", () => {
+	const rel = (
+		over: Partial<RelationshipBlockRow> = {},
+	): RelationshipBlockRow => ({
+		fromAddress: "lake.typed.journal_lines",
+		fromColumn: "account",
+		toAddress: "lake.typed.chart_of_accounts",
+		toColumn: "account",
+		cardinality: "many-to-one",
+		relationshipType: "foreign_key",
+		introducesDuplicates: null,
+		...over,
+	});
+
+	it("renders each edge as a usable JOIN predicate with cardinality/type", () => {
+		const block = formatRelationships([rel()]);
+		expect(block).toContain(
+			'- lake.typed.journal_lines."account" = lake.typed.chart_of_accounts."account" (many-to-one; foreign_key)',
+		);
+		expect(block).toContain("JOIN ON the listed column pair");
+	});
+
+	it("flags a fan-out edge from the engine's introduces_duplicates flag", () => {
+		const block = formatRelationships([rel({ introducesDuplicates: true })]);
+		expect(block).toContain("⚠ fan-out");
+		expect(block).toContain("pre-aggregate");
+	});
+
+	it("does not flag when the flag is unset (no consumer-side derivation)", () => {
+		// The fan-trap check is the engine's job; a null flag means no caution here.
+		const block = formatRelationships([
+			rel({ cardinality: "many-to-many", introducesDuplicates: null }),
+		]);
+		expect(block).not.toContain("fan-out");
+	});
+
+	it("omits the fact tag when cardinality and type are absent", () => {
+		const block = formatRelationships([
+			rel({ cardinality: null, relationshipType: null }),
+		]);
+		expect(block).toContain(
+			'- lake.typed.journal_lines."account" = lake.typed.chart_of_accounts."account"',
+		);
+		expect(block).not.toContain("()");
+	});
+
+	it("notes when there are no confirmed relationships", () => {
+		const block = formatRelationships([]);
+		expect(block).toContain("No confirmed relationships");
+		expect(block).toContain("<relationships>");
 	});
 });
 
@@ -476,7 +549,7 @@ describe("formatEntities (DAT-607)", () => {
 		);
 	});
 
-	it("caps identities per table and clamps a long note", () => {
+	it("renders ALL identities (no cap — DAT-621) and clamps a long note", () => {
 		const many: EntityBlockRow[] = [
 			{
 				address: entAddr("wide"),
@@ -489,8 +562,9 @@ describe("formatEntities (DAT-607)", () => {
 			},
 		];
 		const capped = formatEntities(many);
-		expect(capped).toContain("id_7"); // 8th (index 7) kept
-		expect(capped).not.toContain("id_8"); // 9th dropped by the cap
+		// No silent cut — every identity is served (was capped at 8).
+		expect(capped).toContain("id_7");
+		expect(capped).toContain("id_11");
 
 		const longNote = "x".repeat(300);
 		const clamped = formatEntities([
@@ -505,17 +579,16 @@ describe("formatEntities (DAT-607)", () => {
 		expect(clamped).not.toContain(longNote);
 	});
 
-	it("caps the table count and summarizes the overflow in a tail note", () => {
+	it("serves ALL tables — no cap/truncation (DAT-621)", () => {
 		const rows: EntityBlockRow[] = Array.from({ length: 30 }, (_, i) => ({
-			// zero-pad so address sort matches numeric order — the first 25 are kept.
 			address: entAddr(`t_${String(i).padStart(2, "0")}`),
 			entity: entity({ grain: [`g_${i}`] }),
 		}));
 		const out = formatEntities(rows);
+		// No silent cut — every table (already address-sorted) is served.
 		expect(out).toContain("lake.typed.t_00");
-		expect(out).toContain("lake.typed.t_24"); // 25th kept
-		expect(out).not.toContain("lake.typed.t_25"); // 26th dropped by the cap
-		expect(out).toContain("(… 5 more tables omitted.)");
+		expect(out).toContain("lake.typed.t_29");
+		expect(out).not.toContain("omitted");
 	});
 
 	it("tells the agent the columns also apply to the enriched view (prefer-enriched reconciliation)", () => {

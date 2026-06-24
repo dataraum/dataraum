@@ -1672,6 +1672,27 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 + "."
             )
 
+        # Concept bindings (DAT-616): the lifecycle/status concepts this cycle defines
+        # as an EXPLICIT, IN-list-ready concept → (column, value-set) map — the one
+        # detection-confirmed value→concept binding the engine already has (≈ the cut
+        # DAT-620 binding shape). The narrative above is for reading; THIS is for
+        # grounding a filter. Covers lifecycle/status concepts, not P&L partitions.
+        binding_lines: list[str] = []
+        for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
+            if stage.indicator_column and stage.indicator_values:
+                vals = ", ".join(f"'{v}'" for v in stage.indicator_values)
+                binding_lines.append(
+                    f'  - "{stage.stage_name}" = WHERE {stage.indicator_column} IN ({vals})'
+                )
+        if cycle.status_column and cycle.completion_value:
+            binding_lines.append(
+                f'  - "{cycle.cycle_type} completed" = '
+                f"WHERE {cycle.status_column} = '{cycle.completion_value}'"
+            )
+        if binding_lines:
+            lines.append("Concept bindings (confirmed — use as the filter, do not improvise):")
+            lines.extend(binding_lines)
+
         # Entity flows
         if cycle.entity_flows:
             for ef in cycle.entity_flows:

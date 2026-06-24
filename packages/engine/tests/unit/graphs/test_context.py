@@ -710,3 +710,41 @@ class TestDriversRendering:
     def test_no_drivers_section_when_empty(self) -> None:
         result = format_metadata_document(GraphExecutionContext(total_tables=0))
         assert "## Drivers" not in result
+
+
+class TestCycleConceptBindings:
+    """Cycle stages/completion rendered as explicit IN-list bindings (DAT-616)."""
+
+    def test_stage_and_completion_bindings_rendered(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext, CycleStageContext
+
+        c = BusinessCycleContext(
+            cycle_name="Order to Cash",
+            cycle_type="order_to_cash",
+            status_column="orders.status",
+            completion_value="delivered",
+            stages=[
+                CycleStageContext(
+                    stage_name="Shipped",
+                    stage_order=2,
+                    indicator_column="status",
+                    indicator_values=["shipped", "in_transit"],
+                )
+            ],
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+
+        assert "Concept bindings (confirmed" in result
+        assert "\"Shipped\" = WHERE status IN ('shipped', 'in_transit')" in result
+        assert "\"order_to_cash completed\" = WHERE orders.status = 'delivered'" in result
+
+    def test_no_bindings_block_without_indicators(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext
+
+        c = BusinessCycleContext(cycle_name="C", cycle_type="c")  # no stages, no status
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+        assert "Concept bindings (confirmed" not in result

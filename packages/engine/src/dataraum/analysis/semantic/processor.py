@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
+    compute_introduces_duplicates,
     compute_ri_metrics,
 )
 from dataraum.analysis.semantic.agent import SemanticAgent
@@ -401,6 +402,31 @@ def synthesize_and_store_tables(
                 )
 
         cardinality = _resolve_cardinality(rel=rel, evidence=evidence, duckdb_conn=duckdb_conn)
+
+        # Fan-trap signal. The structural evaluator computes this (evaluate_relationship_
+        # candidate -> compute_introduces_duplicates), but the LLM-synthesis path lost it
+        # in the DAT-362 split: this branch recomputes cardinality + RI from data yet
+        # dropped the duplicate-introduction check, so synthesized relationships carried a
+        # NULL introduces_duplicates and BOTH SQL agents' fan-out cautions read a dead flag
+        # (a many-to-many join silently double-counts). Restore it — empirically, the same
+        # LEFT-JOIN row-count check the structural path uses — whenever a candidate didn't
+        # already supply it and the lake is reachable.
+        if "introduces_duplicates" not in evidence and duckdb_conn is not None:
+            try:
+                evidence["introduces_duplicates"] = compute_introduces_duplicates(
+                    f'lake.typed."{rel.from_table}"',
+                    f'lake.typed."{rel.to_table}"',
+                    rel.from_column,
+                    rel.to_column,
+                    duckdb_conn,
+                )
+            except Exception as e:
+                logger.warning(
+                    "introduces_duplicates_computation_failed",
+                    from_table=rel.from_table,
+                    to_table=rel.to_table,
+                    error=str(e),
+                )
 
         rel_rows.append(
             {

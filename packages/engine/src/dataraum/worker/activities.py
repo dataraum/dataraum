@@ -121,6 +121,21 @@ def _provider_app_error(exc: ProviderError) -> ApplicationError:
     return ApplicationError(message, type="PhaseFailed", non_retryable=True)
 
 
+def _is_transient_commit_conflict(error: str | None) -> bool:
+    """True for a DuckLake optimistic-concurrency commit conflict — transient.
+
+    add_source fans out one ``ProcessTableWorkflow`` per table concurrently; their
+    per-phase commits race on the single shared DuckLake catalog, and the losing
+    commit raises ``TransactionException: … Transaction conflict``. It is NOT a
+    deterministic phase failure — the phases are idempotent (upsert on
+    ``(column_id, run_id)``), so a retry against the now-committed rows succeeds.
+    """
+    if not error:
+        return False
+    e = error.lower()
+    return "transaction conflict" in e or "failed to commit ducklake transaction" in e
+
+
 class PhaseActivities:
     """Phase activities bound to the worker's ConnectionManager.
 
@@ -652,5 +667,12 @@ class PhaseActivities:
         """
         if run.status == PhaseStatus.FAILED.value:
             message = run.error or f"Phase '{phase_name}' failed"
+            # A DuckLake commit CONFLICT is the one transient FAILED outcome: the
+            # concurrent add_source fan-out raced on the shared catalog. The phase is
+            # idempotent, so raise the retryable TransientPhaseFailure (absent from the
+            # activity RetryPolicy's non_retryable_error_types) instead of the permanent
+            # non-retryable PhaseFailed — Temporal re-runs it with backoff and wins.
+            if _is_transient_commit_conflict(run.error):
+                raise ApplicationError(message, type="TransientPhaseFailure")
             raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
         return PhaseOutcome(status=run.status, summary=run.summary)

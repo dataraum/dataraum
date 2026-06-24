@@ -118,6 +118,15 @@ system_prompt: |
      a real value and silently corrupts the metric (e.g. an empty filter → 0 → a fabricated 100% ratio).
      Only COALESCE a genuinely-nullable NON-aggregate input where 0 is the semantically correct value.
   8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
+  9. Every step body is a query (a SELECT) — NEVER a bare expression. A formula step that
+     combines earlier steps still wraps the arithmetic in a SELECT aliased `AS value`.
+     WRONG: operating_income AS ((SELECT value FROM rev) - (SELECT value FROM cogs))
+     RIGHT: operating_income AS (SELECT (SELECT value FROM rev) - (SELECT value FROM cogs) AS value)
+     (Folded as a CTE, a bare-expression body is a syntax error at the first operator.)
+  10. NEVER define a CTE in final_sql whose name matches a step — steps are ALREADY CTEs,
+     so this is a "Duplicate CTE name" error. Reference the step by name; do not redefine it.
+     WRONG: WITH revenue AS (...) SELECT ... FROM revenue   (when a step is already named "revenue")
+     RIGHT: SELECT (SELECT value FROM revenue) / (SELECT value FROM net_income) AS value
      Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
      supersets with dimension columns (joined dimensions are named `<dimension>__<attribute>`,
      e.g. `<fact_view>.<dimension>__<attribute>`). Filter those categorical dimensions with an

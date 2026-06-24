@@ -254,6 +254,7 @@ describe("toolResultToCanvas", () => {
 		expect(toolResultToCanvas("answer", result)).toEqual({
 			kind: "answer-result",
 			sql: "SELECT SUM(revenue) AS value FROM t",
+			summary: "Total revenue is 42.",
 			confidence: {
 				band: "investigate",
 				note: "one table not analyzed",
@@ -276,6 +277,7 @@ describe("toolResultToCanvas", () => {
 		).toEqual({
 			kind: "answer-result",
 			sql: "SELECT 1",
+			summary: "",
 			confidence: {
 				band: null,
 				note: undefined,
@@ -306,6 +308,7 @@ describe("toolResultToCanvas", () => {
 		expect(state).toEqual({
 			kind: "answer-result",
 			sql: "SELECT 1",
+			summary: "",
 			confidence: {
 				band: null,
 				note: undefined,

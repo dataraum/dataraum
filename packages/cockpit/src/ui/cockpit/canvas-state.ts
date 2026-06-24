@@ -118,7 +118,14 @@ export type CanvasState =
 	// reuse, assumptions). All of it is already in the AnswerSchema result; the
 	// projector surfaces it here instead of dropping it. The grid streams via the
 	// same result-grid path (the table is unchanged; confidence rides on top).
-	| { kind: "answer-result"; sql: string; confidence: AnswerConfidence }
+	// `summary` is the answer narrative (the AnswerSchema `answer` field) — carried
+	// so the Report mint (DAT-624) can freeze it alongside the SQL + confidence.
+	| {
+			kind: "answer-result";
+			sql: string;
+			summary: string;
+			confidence: AnswerConfidence;
+	  }
 	// DAT-576/DAT-597: the editable probe surface — the staging hub default. The user
 	// picks a configured DB source, writes/edits read-only SQL, and runs it against
 	// the external DB BEFORE ingest (streamed via /api/probe-sql into the same result

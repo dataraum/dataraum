@@ -288,6 +288,9 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		return {
 			kind: "answer-result",
 			sql: grid.sql,
+			// The narrative `answer` field, read defensively (cockpit boundary rule):
+			// a drifted result with a non-string answer yields "" rather than throwing.
+			summary: typeof r?.answer === "string" ? r.answer : "",
 			confidence: readAnswerConfidence(r),
 		};
 	},

@@ -80,8 +80,9 @@ describe("CockpitShell (DAT-380)", () => {
 		for (const section of sections) {
 			expect(screen.getByTestId(`rail-${section.id}`)).toBeTruthy();
 		}
-		// cockpit, library, runs, metadata, model (DAT-591), governance, settings.
-		expect(sections).toHaveLength(7);
+		// cockpit, reports (DAT-624), sources, runs, metadata, model (DAT-591),
+		// governance, settings.
+		expect(sections).toHaveLength(8);
 	});
 
 	it("resolves a workspace section route under the shell", async () => {

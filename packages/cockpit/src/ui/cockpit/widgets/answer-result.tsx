@@ -10,10 +10,14 @@
 // registered AnswerResultWidget composes the strip over the streaming grid (the
 // grid owns the fetch, so it's covered by the result-grid tests + the smoke).
 
-import { Badge, Group, Stack, Text } from "@mantine/core";
+import { Badge, Button, Group, Stack, Text } from "@mantine/core";
+import { Link, useParams } from "@tanstack/react-router";
+import { Library } from "lucide-react";
+import { useState } from "react";
 
 import type { AnswerConfidence, CanvasState } from "#/ui/cockpit/canvas-state";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
+import { defaultReportTitle } from "#/ui/cockpit/widgets/report-title";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
 // Bound both model-controlled arrays — the answer tool does not cap them, so a
@@ -122,18 +126,91 @@ export function ConfidenceStrip({
 }
 
 /**
- * The registered widget: the confidence strip on top, the streaming result table
- * below. The table reuses the run_sql result-grid stream verbatim (same NDJSON
- * endpoint, virtualization, and sort) — confidence is purely additive.
+ * The registered widget: the confidence strip on top, a mint-to-Report action, and
+ * the streaming result table below. The table reuses the run_sql result-grid stream
+ * verbatim (same NDJSON endpoint, virtualization, and sort) — confidence is purely
+ * additive.
+ *
+ * The Report button (DAT-624) freezes this answer's SQL + narrative + confidence into
+ * a durable, workspace-owned report. It is a user-action mutation living in an event
+ * handler (React convention 4), not an analysis recompute — the widget stays a pure
+ * render of `state`. After minting, the button becomes a link to the new report.
  */
 export function AnswerResultWidget({
 	state,
 }: {
 	state: Extract<CanvasState, { kind: "answer-result" }>;
 }) {
+	// strict:false — provenance is best-effort: read wsId/conversationId off the
+	// current route when present (the answer surface lives in a conversation route).
+	const params = useParams({ strict: false }) as {
+		wsId?: string;
+		conversationId?: string;
+	};
+	const wsId = params.wsId;
+	const [saving, setSaving] = useState(false);
+	const [mintedId, setMintedId] = useState<string | null>(null);
+
+	// POST to the mint endpoint over fetch (not an imported server fn) so this
+	// canvas-registered widget never drags the cockpit_db client / config into the
+	// client bundle — the /api/run-sql + /api/upload convention.
+	const onMint = async () => {
+		setSaving(true);
+		try {
+			const res = await fetch("/api/reports/mint", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					sql: state.sql,
+					summary: state.summary,
+					title: defaultReportTitle(state.summary),
+					conversationId: params.conversationId ?? null,
+					confidence: state.confidence,
+				}),
+			});
+			if (!res.ok) throw new Error(`mint failed: ${res.status}`);
+			const { id } = (await res.json()) as { id: string };
+			setMintedId(id);
+		} catch (err) {
+			console.error("[cockpit] mint report failed:", err);
+		} finally {
+			setSaving(false);
+		}
+	};
+
 	return (
 		<div data-testid="canvas-answer-result">
 			<ConfidenceStrip confidence={state.confidence} />
+			<Group justify="flex-end" mb="xs">
+				{mintedId && wsId ? (
+					<Button
+						variant="light"
+						size="xs"
+						leftSection={<Library size={14} />}
+						data-testid="report-saved"
+						renderRoot={(props) => (
+							<Link
+								to="/workspace/$wsId/reports/$reportId"
+								params={{ wsId, reportId: mintedId }}
+								{...props}
+							/>
+						)}
+					>
+						Saved to Reports
+					</Button>
+				) : (
+					<Button
+						variant="light"
+						size="xs"
+						leftSection={<Library size={14} />}
+						onClick={onMint}
+						loading={saving}
+						data-testid="report-mint"
+					>
+						Report
+					</Button>
+				)}
+			</Group>
 			<ResultGridWidget state={{ kind: "result-grid", sql: state.sql }} />
 		</div>
 	);

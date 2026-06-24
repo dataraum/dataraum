@@ -4,6 +4,29 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-24: DAT-629 — topo-warm the shared metric node-set (within-run reuse)
+
+`metrics_phase` authored metrics in parallel, so a sub-node shared by several metrics (e.g.
+the `cost_of_goods_sold` extract) was cold in the snippet cache for all of them at once —
+each independently LLM-authored it, they diverged, and some ground to an empty filter
+(born-loud `composed but not executed: extract '<x>' has no support`). The fix adds a
+**warming pre-pass** (`graphs/node_warming.py` + `metrics_phase._warm_shared_nodes`): each
+UNIQUE cache-keyed node (extract/constant/formula, keyed exactly as the snippet cache) is
+authored once in dependency order before the fan-out, so the per-metric execute assembles
+from the warm cache — no LLM, no within-run race, consistent grounding.
+
+### dataraum-eval
+- **Outcome shift, not a shape change.** Same artifacts/snippets; what changes is that
+  metrics sharing an extract no longer randomly fall to `grounded — no support` on the
+  long-format fixture (the `ebitda`/`net_income`/`operating_margin` class of failures from
+  the DAT-616 smoke). Expect **more `executed`, fewer flaky `grounded — no support`**, and
+  far less run-to-run variance in which metrics execute.
+- A genuine empty-filter extract still stays `grounded` with the reason (warming inherits
+  the same verifier gate) — that regression assertion holds.
+- Orthogonal to the JOIN fan-out (**DAT-277**): warming makes grounding *consistent*, it does
+  not fix a wrong value from a many-to-many join. gross_margin's magnitude bug is still DAT-277.
+- **Status**: pending.
+
 ## 2026-06-24: DAT-621 — context model "don't cut, don't guess" (caps gone, complete value-sets, look_values)
 
 Follow-up to DAT-616. The principle: never cut grounding context blindly, never pre-guess

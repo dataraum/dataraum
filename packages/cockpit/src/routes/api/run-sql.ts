@@ -12,14 +12,19 @@
 // unit-tested `duckdb/stream-sql.ts`.
 
 import { createFileRoute } from "@tanstack/react-router";
-import { getLakeConnection } from "../../duckdb/lake";
 import {
+	buildFilterClause,
 	buildGridQuery,
 	clampOffset,
 	clampPageLimit,
-	encodeFrame,
+	type GridFilter,
 	type GridSort,
+	parseFilters,
 	parseSort,
+} from "../../duckdb/grid-query";
+import { getLakeConnection } from "../../duckdb/lake";
+import {
+	encodeFrame,
 	type StreamableResult,
 	streamNdjson,
 } from "../../duckdb/stream-sql";
@@ -52,6 +57,13 @@ interface RunSqlStreamBody {
 	 * injection.
 	 */
 	sort?: GridSort;
+	/**
+	 * Optional per-column push-down filters (DAT-613). ANDed into a WHERE over the
+	 * wrapped query, applied to the FULL result before the window is cut. Each
+	 * value binds as a positional param numbered AFTER the user's own `params`, so
+	 * a filter never collides with the inner query's `$1..$k`.
+	 */
+	filters?: GridFilter[];
 }
 
 let queryCounter = 0;
@@ -91,10 +103,22 @@ export const Route = createFileRoute("/api/run-sql")({
 				const sortResult = parseSort(body.sort);
 				if ("error" in sortResult) return badRequest(sortResult.error);
 
+				const filterResult = parseFilters(body.filters);
+				if ("error" in filterResult) return badRequest(filterResult.error);
+
 				const limit = clampPageLimit(body.limit);
 				const offset = clampOffset(body.offset);
 				const queryId = nextQueryId();
-				const params = body.params;
+
+				// Filter binds are numbered AFTER the user's own params and appended in
+				// order, so the inner `sql`'s `$1..$k` and the WHERE's `$(k+1)..` never
+				// collide.
+				const userParams = body.params ?? [];
+				const { where, params: filterParams } = buildFilterClause(
+					filterResult.filters,
+					userParams.length,
+				);
+				const params = [...userParams, ...filterParams];
 
 				// Reuse the shared READ_ONLY lake reader — writes fail at the engine
 				// level (READ_ONLY ATTACH, defense in depth). `stream()` is lazy: it
@@ -105,14 +129,16 @@ export const Route = createFileRoute("/api/run-sql")({
 				// SQL parse/bind error that surfaces here can still become a 400
 				// (e.g. malformed `sql`). Once the ReadableStream starts flushing the
 				// status is locked at 200 and mid-stream errors go in the footer.
-				const wrapped = buildGridQuery(body.sql, sortResult.sort, {
-					limit,
-					offset,
-				});
+				const wrapped = buildGridQuery(
+					body.sql,
+					sortResult.sort,
+					{ limit, offset },
+					where,
+				);
 				let result: StreamableResult;
 				try {
 					const conn = await getLakeConnection();
-					result = (await (params
+					result = (await (params.length
 						? conn.stream(wrapped, params)
 						: conn.stream(wrapped))) as unknown as StreamableResult;
 				} catch (err) {

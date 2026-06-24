@@ -14,11 +14,8 @@ import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import {
-	buildGridQuery,
-	type StreamableResult,
-	streamNdjson,
-} from "./stream-sql";
+import { buildGridQuery } from "./grid-query";
+import { type StreamableResult, streamNdjson } from "./stream-sql";
 
 const REQUIRED_DEFAULTS: Record<string, string> = {
 	COCKPIT_DATABASE_URL:

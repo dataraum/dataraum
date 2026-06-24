@@ -19,10 +19,14 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-	type AbortSignalLike,
+	buildFilterClause,
 	buildGridQuery,
 	clampGridCap,
+	type GridFilter,
 	type GridSort,
+} from "./grid-query";
+import {
+	type AbortSignalLike,
 	type ResultFrame,
 	type StreamableResult,
 	streamNdjson,
@@ -430,6 +434,67 @@ describe("windowed paging over a real DuckLake lake (DAT-613)", () => {
 		expect(p0.rows.map(Number)).toEqual([4999, 4998, 4997]);
 		expect(p0.hasMore).toBe(true);
 		expect(p1.rows.map(Number)).toEqual([4996, 4995, 4994]);
+	});
+
+	it("applies push-down filters (WHERE) over the FULL result before the window", async () => {
+		// Mirror the route: compose the WHERE + its bind params, then window over
+		// the filtered result. `customer = 'acme'` keeps 2 of 3 orders; ORDER BY ALL
+		// makes the page deterministic.
+		const filters: GridFilter[] = [
+			{ column: "customer", op: "eq", value: "acme" },
+		];
+		const { where, params } = buildFilterClause(filters, 0);
+		const wrapped = buildGridQuery(
+			"SELECT id, customer FROM lake.typed.orders",
+			null,
+			{ limit: 10, offset: 0 },
+			where,
+		);
+		const result = (await readerConn.stream(
+			wrapped,
+			params,
+		)) as unknown as StreamableResult;
+		const ids: (string | number | null)[] = [];
+		for await (const line of streamNdjson(result, 10, "q_filter")) {
+			const frame = JSON.parse(line) as ResultFrame;
+			if (frame.t === "b")
+				for (const v of frame.cols[0]) ids.push(v as string | number | null);
+		}
+		expect(ids).toEqual([1, 3]);
+	});
+
+	it("binds a comparison filter and numbers it after a user param", async () => {
+		// User query carries its own $1; the filter's value binds at $2 — the
+		// renumbering the route does. `amount > 10` over customer='acme' rows
+		// (10.00, 50.50) keeps only 50.50.
+		const userParams = ["acme"];
+		const filters: GridFilter[] = [{ column: "amount", op: "gt", value: "10" }];
+		const { where, params } = buildFilterClause(filters, userParams.length);
+		const wrapped = buildGridQuery(
+			"SELECT id, amount FROM lake.typed.orders WHERE customer = $1",
+			null,
+			{ limit: 10, offset: 0 },
+			where,
+		);
+		const result = (await readerConn.stream(wrapped, [
+			...userParams,
+			...params,
+		])) as unknown as StreamableResult;
+		const rows: {
+			id: (string | number | null)[];
+			amount: (string | number | null)[];
+		} = { id: [], amount: [] };
+		for await (const line of streamNdjson(result, 10, "q_filter2")) {
+			const frame = JSON.parse(line) as ResultFrame;
+			if (frame.t === "b") {
+				for (const v of frame.cols[0])
+					rows.id.push(v as string | number | null);
+				for (const v of frame.cols[1])
+					rows.amount.push(v as string | number | null);
+			}
+		}
+		expect(rows.id).toEqual([3]);
+		expect(rows.amount).toEqual(["50.50"]);
 	});
 
 	it("keeps a window stable under heavy ties via the COLUMNS(*) tiebreaker", async () => {

@@ -33,6 +33,7 @@ import {
 	Group,
 	Table,
 	Text,
+	TextInput,
 	UnstyledButton,
 } from "@mantine/core";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -45,7 +46,13 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cellAlign, formatCell } from "#/duckdb/cell-format";
+import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
+import {
+	GRID_PAGE_SIZE,
+	type GridFilter,
+	type GridSort,
+	parseColumnFilterInput,
+} from "#/duckdb/grid-query";
 import {
 	ColumnStore,
 	type GridStatus,
@@ -54,7 +61,6 @@ import {
 	readNdjsonIntoStore,
 	readNdjsonStream,
 } from "#/duckdb/ndjson-stream";
-import { GRID_PAGE_SIZE, type GridSort } from "#/duckdb/stream-sql";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 
@@ -98,20 +104,24 @@ export function cycleSort(
  * view itself never reorders rows — sort runs across the full result, server-
  * side. `onReachEnd` (DAT-613) fires when the virtualized body scrolls within an
  * overscan of the last loaded row, so the windowed owner can fetch the next page;
- * omit it (probe, pure-render test) and the grid never asks for more. Omit
- * `onToggleSort` and the headers stay static. */
+ * omit it (probe, pure-render test) and the grid never asks for more.
+ * `onFilterCommit` (DAT-613) renders a per-column filter row whose inputs commit
+ * (Enter/blur) a push-down filter to the owner; omit it and no filter row shows.
+ * Omit `onToggleSort` and the headers stay static. */
 export function ResultGridView({
 	store,
 	fatal,
 	sort,
 	onToggleSort,
 	onReachEnd,
+	onFilterCommit,
 }: {
 	store: GridView;
 	fatal?: string | null;
 	sort?: GridSort | null;
 	onToggleSort?: (column: string) => void;
 	onReachEnd?: () => void;
+	onFilterCommit?: (column: string, raw: string) => void;
 }) {
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
@@ -264,6 +274,43 @@ export function ResultGridView({
 									);
 								})}
 							</Table.Tr>
+							{/* Filter row (DAT-613): one input per column. Text columns match
+							    a substring; numeric/temporal accept a leading comparison
+							    operator (>1000, >=2024-01-01). Uncontrolled — commit on
+							    Enter/blur so we re-page once, not per keystroke. */}
+							{onFilterCommit && (
+								<Table.Tr>
+									{table.getFlatHeaders().map((header) => {
+										const name = String(header.column.columnDef.header ?? "");
+										const kind = columnFilterKind(
+											header.column.columnDef.meta?.duckdbType,
+										);
+										return (
+											<Table.Th
+												key={`${header.id}-filter`}
+												style={{ padding: "2px 6px" }}
+											>
+												<TextInput
+													size="xs"
+													variant="default"
+													placeholder={
+														kind === "text" ? "contains…" : ">, <, ="
+													}
+													aria-label={`Filter ${name}`}
+													data-testid={`canvas-result-grid-filter-${name}`}
+													onKeyDown={(e) => {
+														if (e.key === "Enter")
+															onFilterCommit(name, e.currentTarget.value);
+													}}
+													onBlur={(e) =>
+														onFilterCommit(name, e.currentTarget.value)
+													}
+												/>
+											</Table.Th>
+										);
+									})}
+								</Table.Tr>
+							)}
 						</Table.Thead>
 						<Table.Tbody>
 							{/* Spacer rows reserve the off-screen scroll height so only the
@@ -412,20 +459,22 @@ function extractError(text: string): string {
  * the windows scrolled into ever live in memory, so the result set is unbounded.
  *
  * Paging goes through TanStack Query (`useInfiniteQuery`), not a hand-rolled
- * effect (React rule 3): the query key carries the body + sort, so a sort change
- * transparently re-pages from offset 0, and Query owns fetch dedup, cancellation
- * of superseded windows, and the loading state. Sort is grid-local and reset by
- * remounting on a new base query (ResultGridWidget's `key`).
+ * effect (React rule 3): the query key carries the body + sort + filters, so a
+ * sort or filter change transparently re-pages from offset 0, and Query owns
+ * fetch dedup, cancellation of superseded windows, and the loading state. Sort +
+ * filters are grid-local and reset by remounting on a new base query
+ * (ResultGridWidget's `key`).
  */
 export function WindowedGrid({
 	endpoint,
 	body,
 }: {
 	endpoint: string;
-	/** The base request body (WITHOUT sort/limit/offset — the grid appends those). */
+	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
 	body: Record<string, unknown>;
 }) {
 	const [sort, setSort] = useState<GridSort | null>(null);
+	const [filters, setFilters] = useState<GridFilter[]>([]);
 	const toggleSort = useCallback((column: string) => {
 		setSort((cur) => cycleSort(cur, column));
 	}, []);
@@ -435,7 +484,7 @@ export function WindowedGrid({
 	const bodyKey = useMemo(() => JSON.stringify(body), [body]);
 
 	const query = useInfiniteQuery({
-		queryKey: ["run-sql-grid", endpoint, bodyKey, sort],
+		queryKey: ["run-sql-grid", endpoint, bodyKey, sort, filters],
 		initialPageParam: 0,
 		queryFn: async ({ pageParam, signal }) => {
 			const base = JSON.parse(bodyKey) as Record<string, unknown>;
@@ -445,6 +494,7 @@ export function WindowedGrid({
 				body: JSON.stringify({
 					...base,
 					sort: sort ?? undefined,
+					filters: filters.length ? filters : undefined,
 					limit: GRID_PAGE_SIZE,
 					offset: pageParam,
 				}),
@@ -498,6 +548,40 @@ export function WindowedGrid({
 		return new PagedGridView(pages, GRID_PAGE_SIZE, status, message);
 	}, [data, error, isFetching, isFetchingNextPage]);
 
+	// Map each output column to its DuckDB type so a filter input knows whether to
+	// parse comparisons (numeric/temporal) or a substring (text). Types arrive
+	// with page 0, before the user can read a column to filter it.
+	const typeByColumn = useMemo(() => {
+		const map = new Map<string, Json | undefined>();
+		const types = Array.isArray(view.types) ? (view.types as Json[]) : [];
+		view.columns.forEach((name, i) => {
+			map.set(name, types[i]);
+		});
+		return map;
+	}, [view]);
+
+	const onFilterCommit = useCallback(
+		(column: string, raw: string) => {
+			const kind = columnFilterKind(typeByColumn.get(column));
+			const next = parseColumnFilterInput(column, raw, kind);
+			setFilters((prev) => {
+				const existing = prev.find((f) => f.column === column);
+				// No-op commits (blurring an empty input, re-entering the same value)
+				// must NOT produce a new array — that would needlessly re-page.
+				if (!next)
+					return existing ? prev.filter((f) => f.column !== column) : prev;
+				if (
+					existing &&
+					existing.op === next.op &&
+					existing.value === next.value
+				)
+					return prev;
+				return [...prev.filter((f) => f.column !== column), next];
+			});
+		},
+		[typeByColumn],
+	);
+
 	// PagedGridView carries status + error, so the view renders the badge and the
 	// error banner straight off `store` — no separate `fatal` needed here.
 	return (
@@ -506,6 +590,7 @@ export function WindowedGrid({
 			sort={sort}
 			onToggleSort={toggleSort}
 			onReachEnd={onReachEnd}
+			onFilterCommit={onFilterCommit}
 		/>
 	);
 }

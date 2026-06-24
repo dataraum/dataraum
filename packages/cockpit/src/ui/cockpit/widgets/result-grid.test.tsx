@@ -16,8 +16,8 @@ import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { GridSort } from "#/duckdb/grid-query";
 import { ColumnStore } from "#/duckdb/ndjson-stream";
-import type { GridSort } from "#/duckdb/stream-sql";
 import {
 	cycleSort,
 	GridSqlDisclosure,

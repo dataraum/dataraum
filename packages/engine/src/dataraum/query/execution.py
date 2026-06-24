@@ -1,7 +1,12 @@
 """Shared SQL step execution logic.
 
-Extracts the common pattern of executing SQL steps as temp views,
-used by the GraphAgent.
+Used by the GraphAgent. DAT-616: the engine now MIRRORS the cockpit answer agent —
+steps + final_sql are folded into ONE standalone CTE (``compose_standalone``, the Python
+mirror of the cockpit ``composeStandalone``) and that single statement is the deterministic
+executable (validated == executed, no temp-view state). The per-step scalars the metric
+verifier's support gate needs are still fetched (steps are standalone SELECTs by prompt
+contract), so the cheap floor survives; the composed CTE is the executable artifact the
+metric carries alongside its snippet list.
 
 Usage:
     result = execute_sql_steps(
@@ -14,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -25,6 +31,27 @@ if TYPE_CHECKING:
     import duckdb
 
 logger = get_logger(__name__)
+
+_LEADING_WITH = re.compile(r"^\s*with\s+", re.IGNORECASE)
+
+
+def compose_standalone(steps: list[SQLStep], final_sql: str) -> str:
+    """Fold ``{steps, final_sql}`` into ONE standalone statement.
+
+    Each step becomes a CTE; ``final_sql`` references them by name. Python mirror of the
+    cockpit ``composeStandalone`` (``run-steps.ts``) — the EXACT statement that executes,
+    so there is no temp-view-vs-result divergence. No steps → ``final_sql`` verbatim.
+    A ``final_sql`` that brings its OWN leading ``WITH`` has its CTEs merged into the one
+    ``WITH`` (never the invalid ``WITH … WITH …``).
+    """
+    final = final_sql.strip().rstrip(";").strip()
+    if not steps:
+        return final
+    ctes = ",\n".join(f"{s.step_id} AS (\n{s.sql}\n)" for s in steps)
+    if _LEADING_WITH.match(final):
+        rest = _LEADING_WITH.sub("", final, count=1)
+        return f"WITH {ctes},\n{rest}"
+    return f"WITH {ctes}\n{final}"
 
 
 @dataclass
@@ -56,6 +83,9 @@ class ExecutionResult:
     rows: list[tuple[Any, ...]] | None = None
     total_count: int | None = None
     final_value: Any = None
+    # DAT-616: the single self-contained statement actually executed (steps as CTEs +
+    # final_sql) — the metric's executable artifact, alongside its per-step snippet list.
+    composed_sql: str | None = None
 
 
 # Type alias for the repair function signature
@@ -95,21 +125,33 @@ def execute_sql_steps(
     """
     step_results: list[StepExecutionResult] = []
 
-    # Execute each step as a temp view
+    # Fetch each step's scalar for the verifier's support gate. A step MAY reference an
+    # earlier step (the old temp-view model allowed it; formula steps with depends_on do),
+    # so each step is probed inside a CTE context of the prior (already-validated) steps —
+    # `WITH <prior…>, <this step> SELECT * FROM <this step>` — not in raw isolation. No temp
+    # views; the (possibly repaired) SQL then composes into the single executable below.
+    validated: list[SQLStep] = []
     for step in steps:
         step_result = _execute_step(
             step=step,
+            prior_steps=validated,
             duckdb_conn=duckdb_conn,
             max_repair_attempts=max_repair_attempts,
             repair_fn=repair_fn,
         )
         if not step_result.success or not step_result.value:
             return Result.fail(step_result.error or f"Step '{step.step_id}' failed")
-        step_results.append(step_result.value)
+        sr = step_result.value
+        step_results.append(sr)
+        validated.append(SQLStep(step_id=sr.step_id, sql=sr.sql_executed, description=""))
 
-    # Execute final SQL
+    # Compose the single standalone statement (steps as CTEs + final_sql), using each
+    # step's executed (post-repair) SQL — the deterministic executable, no temp views.
+    composed_sql = compose_standalone(validated, final_sql)
+
+    # Execute the composed statement ONCE.
     final_result = _execute_final(
-        final_sql=final_sql,
+        final_sql=composed_sql,
         duckdb_conn=duckdb_conn,
         max_repair_attempts=max_repair_attempts,
         repair_fn=repair_fn,
@@ -125,7 +167,7 @@ def execute_sql_steps(
     if not final_result.success:
         return Result.fail(final_result.error or "Final SQL failed")
 
-    execution_result = ExecutionResult(step_results=step_results)
+    execution_result = ExecutionResult(step_results=step_results, composed_sql=composed_sql)
 
     if return_table:
         # Table mode: _execute_final returns (columns, rows, total_count) on success
@@ -139,29 +181,36 @@ def execute_sql_steps(
     else:
         execution_result.final_value = final_result.value
 
-    # Temp views are NOT dropped — they die when the cursor closes.
-    # This allows callers (e.g. export) to reuse them on the same cursor.
     return Result.ok(execution_result)
 
 
 def _execute_step(
     step: SQLStep,
+    prior_steps: list[SQLStep],
     duckdb_conn: duckdb.DuckDBPyConnection,
     max_repair_attempts: int,
     repair_fn: RepairFn | None,
 ) -> Result[StepExecutionResult]:
-    """Execute a single step with retry/repair logic."""
+    """Fetch a single step's scalar with retry/repair logic.
+
+    DAT-616: no temp view. The step is probed inside a CTE context of the prior
+    (already-validated) steps — ``WITH <prior…>, <step> SELECT * FROM <step> LIMIT 1`` —
+    so a step that references an earlier step still resolves (the old temp-view model
+    allowed this; formula steps depend on it). Takes the first column of the first row,
+    matching the prior `SELECT * FROM <view>` semantics. Repair targets the STEP's SQL,
+    not the composed probe.
+    """
     original_sql = step.sql
     current_sql = step.sql
     last_error: str | None = None
 
     for attempt in range(max_repair_attempts + 1):
         try:
-            view_sql = f"CREATE OR REPLACE TEMP VIEW {step.step_id} AS {current_sql}"
-            duckdb_conn.execute(view_sql)
-
-            # Get the result value
-            result = duckdb_conn.execute(f"SELECT * FROM {step.step_id}").fetchone()
+            probe = compose_standalone(
+                [*prior_steps, SQLStep(step.step_id, current_sql, "")],
+                f'SELECT * FROM "{step.step_id}" LIMIT 1',
+            )
+            result = duckdb_conn.execute(probe).fetchone()
             value = result[0] if result else None
 
             return Result.ok(

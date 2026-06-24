@@ -55,6 +55,18 @@ class ColumnContext:
     cardinality_ratio: float | None = None
     outlier_ratio: float | None = None
 
+    # Value enumeration (DAT-616): the freq-ordered value-set the SQL agent
+    # grounds metric predicates in, instead of improvising an ILIKE filter.
+    # `top_values` is [{value, count, percentage}] capped at the profiler's
+    # top_k; it is the COMPLETE enumeration iff `distinct_count <= len(top_values)`.
+    distinct_count: int | None = None
+    top_values: list[dict[str, Any]] = field(default_factory=list)
+
+    # DAT-616: measure range/sign — grounds signed measures (a min < 0 tells the agent
+    # the column carries negatives, e.g. debit/credit, so a bare SUM may not be the metric).
+    numeric_min: float | None = None
+    numeric_max: float | None = None
+
     # Temporal metrics
     is_stale: bool | None = None
     detected_granularity: str | None = None
@@ -126,6 +138,10 @@ class RelationshipContext:
     cardinality: str | None = None
     confidence: float = 0.0
 
+    # DAT-616: joining on this edge fans out (one row matches many) → SUMming an
+    # additive measure across the join double-counts. The second silent-wrong vector.
+    introduces_duplicates: bool | None = None
+
     # Entropy (from entropy layer)
     relationship_entropy: dict[str, Any] | None = None  # Join path entropy
 
@@ -158,6 +174,29 @@ class HierarchyContext:
     members: list[str]  # ordered level names (drilldown) or the group (alias)
     canonical_label: str
     needs_confirmation: bool = False
+
+
+@dataclass
+class DriverContext:
+    """One measure's driver ranking, served to the GraphAgent (DAT-616).
+
+    The engine GraphAgent loaded NO drivers before this — the asymmetry the cockpit
+    answer agent never had (`<drivers>`, DAT-548). `interesting_slices` are the actual
+    dimension VALUES that move the measure (value + signed effect + support) — a
+    high-signal HINT for which values carry data, NOT the complete value-set (recall<1;
+    the value-set is `top_values`). `target_type` grounds the aggregation (flow→SUM,
+    stock→end-of-period, ratio). Mirrors the cockpit `projectDriverRanking`.
+    """
+
+    measure_label: str
+    target_type: str  # flow | stock | ratio
+    grain: str  # row | entity
+    entity: str | None = None
+    ranked_dimensions: list[dict[str, Any]] = field(default_factory=list)  # [{dimension, gain}]
+    interesting_slices: list[dict[str, Any]] = field(
+        default_factory=list
+    )  # [{dimension, value, effect, support}]
+    secondary_dimensions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -274,6 +313,11 @@ class GraphExecutionContext:
     # the answer agent to drill / de-duplicate axes; prompt use lands in DAT-538.
     dimension_hierarchies: list[HierarchyContext] = field(default_factory=list)
 
+    # Driver rankings per measure (DAT-616): which dims/values move each measure +
+    # target_type. The engine GraphAgent served none before — the cockpit/engine
+    # asymmetry this closes.
+    drivers: list[DriverContext] = field(default_factory=list)
+
     # Business cycles (from cycles analysis)
     business_cycles: list[BusinessCycleContext] = field(default_factory=list)
 
@@ -288,6 +332,12 @@ class GraphExecutionContext:
 
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
+
+    # Ontology concept vocabulary (DAT-616): the vertical's concepts with their
+    # indicators/exclude_patterns, so the SQL agent can map discriminator VALUES
+    # (e.g. which account_type values ARE revenue) to a concept inline on
+    # long-format data where field_mappings is empty. None when no vertical.
+    concept_vocabulary: str | None = None
 
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -496,6 +546,7 @@ def build_execution_context(
                         relationship_type=rel.relationship_type or "unknown",
                         cardinality=rel.cardinality,
                         confidence=rel.confidence,
+                        introduces_duplicates=(rel.evidence or {}).get("introduces_duplicates"),
                     )
                 )
                 rel_list_for_topology.append(
@@ -557,6 +608,30 @@ def build_execution_context(
                         needs_confirmation=hier.needs_confirmation,
                     )
                 )
+
+    # 10c. Load driver rankings (DAT-616) — begin_session value-layer artifact
+    # (DAT-546), run-versioned; same fail-closed catalog-run scoping as the slices.
+    # The engine GraphAgent served NONE before this (the cockpit/engine asymmetry).
+    driver_contexts: list[DriverContext] = []
+    if run_id is not None:
+        from dataraum.analysis.drivers.db_models import DriverRankingArtifact
+
+        driver_stmt = select(DriverRankingArtifact).where(
+            DriverRankingArtifact.measure_table_id.in_(table_ids),
+            DriverRankingArtifact.run_id == run_id,
+        )
+        for art in session.execute(driver_stmt).scalars().all():
+            driver_contexts.append(
+                DriverContext(
+                    measure_label=art.measure_label,
+                    target_type=art.target_type,
+                    grain=art.grain,
+                    entity=art.entity,
+                    ranked_dimensions=art.ranked_dimensions or [],
+                    interesting_slices=art.interesting_slices or [],
+                    secondary_dimensions=art.secondary_dimensions or [],
+                )
+            )
 
     # 11. Load derived columns from correlation analysis — run-versioned since
     # DAT-448, same fail-closed discipline as the slices above (scoped to the
@@ -700,6 +775,20 @@ def build_execution_context(
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)
 
+    # 14b. Load the vertical's concept vocabulary (DAT-616). On long-format data the
+    # discriminating measure (`amount`) carries no business_concept, so field_mappings
+    # is empty for the P&L concepts; serving the ontology lets the agent ground which
+    # discriminator VALUES are revenue/cogs/opex from the value-sets it's now fed.
+    concept_vocabulary: str | None = None
+    if vertical:
+        try:
+            from dataraum.analysis.semantic.ontology import OntologyLoader
+
+            ontology = OntologyLoader().load(vertical)
+            concept_vocabulary = _format_concept_vocabulary(ontology)
+        except Exception as e:
+            logger.warning("concept_vocabulary_load_failed", vertical=vertical, error=str(e))
+
     # 15. Compute graph topology
     table_names = [t.table_name for t in tables]
     graph_structure = analyze_graph_topology(
@@ -809,6 +898,16 @@ def build_execution_context(
             # Extract metrics
             null_ratio = stat_prof.null_ratio if stat_prof else None
             cardinality_ratio = stat_prof.cardinality_ratio if stat_prof else None
+            # DAT-616: the value-set the agent needs to ground predicates lives in
+            # the profile (distinct_count column + top_values in profile_data); the
+            # assembler used to drop it. Lift it so format_metadata_document can serve
+            # the complete enumeration for low-cardinality categoricals.
+            distinct_count = stat_prof.distinct_count if stat_prof else None
+            profile_data = (stat_prof.profile_data or {}) if stat_prof else {}
+            top_values = profile_data.get("top_values", [])
+            numeric_stats = profile_data.get("numeric_stats") or {}
+            numeric_min = numeric_stats.get("min_value")
+            numeric_max = numeric_stats.get("max_value")
             outlier_ratio = None
             if quality:
                 outlier_ratio = quality.iqr_outlier_ratio or quality.zscore_outlier_ratio
@@ -857,6 +956,10 @@ def build_execution_context(
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
+                    distinct_count=distinct_count,
+                    top_values=top_values,
+                    numeric_min=numeric_min,
+                    numeric_max=numeric_max,
                     is_stale=temp_profile.is_stale if temp_profile else None,
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
@@ -939,11 +1042,13 @@ def build_execution_context(
         slice_value=slice_value,
         available_slices=slice_contexts,
         dimension_hierarchies=hierarchy_contexts,
+        drivers=driver_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,
         validations=validation_contexts,
         enriched_views=enriched_view_contexts,
         field_mappings=field_mappings,
+        concept_vocabulary=concept_vocabulary,
     )
 
 
@@ -1106,6 +1211,21 @@ def format_metadata_document(
 
     lines.append("")
 
+    # --- Business Concepts (ontology vocabulary, DAT-616) ---
+    # The concept→value grounding surface for long-format data: the agent maps a
+    # discriminator's values (served per-table under "Value sets") to these concepts.
+    if context.concept_vocabulary:
+        lines.append("## Business Concepts")
+        lines.append("")
+        lines.append(
+            "Vertical vocabulary. Ground each metric concept in specific column values "
+            "from the **Value sets** below — match by meaning, honoring `exclude` patterns; "
+            "do not improvise a substring filter."
+        )
+        lines.append("")
+        lines.append(context.concept_vocabulary)
+        lines.append("")
+
     # --- Tables ---
     lines.append("## Tables")
 
@@ -1182,11 +1302,22 @@ def format_metadata_document(
                 f"| {col.column_name} | {col_type} | {col_role} | {col_desc} | {col_notes} |"
             )
 
+        # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
+        # agent grounds metric predicates in real values rather than guessing a filter.
+        value_sets = _build_value_sets(table)
+        if value_sets:
+            lines.append("")
+            lines.append("**Value sets** (categorical columns — `value (count)`):")
+            lines.extend(value_sets)
+
         # Quality section (per-table)
         _append_table_quality(lines, table)
 
         # Data quality notes (entropy interpretations for non-ready columns)
         _append_data_quality_notes(lines, table)
+
+    # --- Drivers (DAT-616) ---
+    _append_drivers(lines, context)
 
     # --- Relationships ---
     if context.relationships:
@@ -1201,6 +1332,11 @@ def format_metadata_document(
                 "is_deterministic", True
             ):
                 warning = " ⚠ non-deterministic"
+            # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
+            # measure across this join double-counts. Tell the agent to aggregate
+            # before the join (or COUNT DISTINCT), not after.
+            if rel.introduces_duplicates:
+                warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(
                 f"| {rel.from_table}.{rel.from_column} | {rel.to_table}.{rel.to_column} "
                 f"| {rel.cardinality or '?'} | {rel.confidence:.2f}{warning} |"
@@ -1320,6 +1456,77 @@ def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
     return f"Data readiness: {readiness} ({blocked_count} blocked)."
 
 
+def _format_concept_vocabulary(ontology: Any) -> str | None:
+    """Format the vertical's ontology concepts for the SQL-grounding prompt (DAT-616).
+
+    Unlike ``OntologyLoader.format_concepts_for_prompt`` (semantic-phase use), this
+    also surfaces ``exclude_patterns`` — the agent needs them to resolve traps where a
+    value's surface form contradicts its concept (e.g. ``Cost Recovery Income`` is
+    revenue despite containing "cost"). Returns ``None`` when there is nothing to serve.
+
+    Args:
+        ontology: An ``OntologyDefinition`` (or None).
+
+    Returns:
+        Markdown bullet list of concepts, or None when no concepts are defined.
+    """
+    if ontology is None or not getattr(ontology, "concepts", None):
+        return None
+
+    lines: list[str] = []
+    for concept in ontology.concepts:
+        line = f"- **{concept.name}**"
+        if concept.description:
+            line += f": {concept.description}"
+        lines.append(line)
+        if concept.indicators:
+            lines.append(f"  - indicators: {', '.join(concept.indicators)}")
+        if concept.exclude_patterns:
+            lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
+    return "\n".join(lines) if lines else None
+
+
+# A categorical is renderable as a complete value-set when its distinct count is at or
+# below this gate (mirrors the slicing fan-out gate). Above it, enumeration is partial.
+_VALUE_SET_RENDER_MAX = 50
+# Roles whose values are never a metric-grounding predicate (keys fan out; measures are
+# aggregated, not filtered; time axes are handled by the temporal blueprints).
+_NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
+
+
+def _build_value_sets(table: TableContext) -> list[str]:
+    """Render the complete value enumeration for a table's low-card categoricals.
+
+    This is the DAT-616 grounding surface: the agent maps a concept to specific
+    discriminator VALUES from this enumeration instead of improvising an ILIKE. Each
+    line marks whether the set is the COMPLETE enumeration (distinct_count within the
+    served top_values) or a partial top-K — a partial set must not be treated as
+    exhaustive (the fall-loud cue for the agent).
+    """
+    out: list[str] = []
+    for col in table.columns:
+        if not col.top_values:
+            continue
+        if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
+            continue
+        if col.distinct_count is not None and col.distinct_count > _VALUE_SET_RENDER_MAX:
+            continue
+        rendered = ", ".join(
+            f"{tv.get('value')} ({tv.get('count')})"
+            for tv in col.top_values
+            if tv.get("value") is not None
+        )
+        if not rendered:
+            continue
+        served = len(col.top_values)
+        if col.distinct_count is not None and col.distinct_count > served:
+            completeness = f"top {served} of {col.distinct_count} (PARTIAL — not exhaustive)"
+        else:
+            completeness = "complete"
+        out.append(f"- **{col.column_name}** ({completeness}): {rendered}")
+    return out
+
+
 def _build_column_description(col: ColumnContext) -> str:
     """Build column description from business metadata."""
     parts = []
@@ -1339,7 +1546,15 @@ def _build_column_notes(col: ColumnContext) -> str:
     notes = []
 
     if col.unit_source_column:
-        notes.append(f"Unit source: {col.unit_source_column}.")
+        notes.append(f"Unit source: {col.unit_source_column} (values may mix units — caveat).")
+
+    # DAT-616: measure range/sign — a negative min flags a signed measure (debit/credit),
+    # where a bare SUM may not be the intended metric (a signed/net expression might be).
+    if col.semantic_role == "measure" and col.numeric_min is not None:
+        rng = f"Range: {col.numeric_min:g}..{col.numeric_max:g}."
+        if col.numeric_min < 0:
+            rng += " Signed (has negatives) — SUM nets debits/credits."
+        notes.append(rng)
 
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
@@ -1364,6 +1579,52 @@ def _append_table_quality(lines: list[str], table: TableContext) -> None:
 
 def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
     """Append data quality notes (placeholder for BBN readiness in v0.2)."""
+
+
+def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
+    """Append the per-measure driver rankings (DAT-616).
+
+    Grounds the aggregation choice (`target_type`) and tells the agent which
+    dimensions/values move each measure. `interesting_slices` carry the actual
+    dimension VALUES with signed effect + support — a HINT for which values carry
+    data, never the complete value-set (that's the per-column Value sets).
+    """
+    if not context.drivers:
+        return
+
+    lines.append("")
+    lines.append("## Drivers")
+    lines.append("")
+    lines.append(
+        "Per-measure drivers (statistical, FDR-gated on this data). `target_type` grounds the "
+        "aggregation: flow→SUM across periods, stock→latest-period only, ratio→Σnum/Σden. "
+        "`interesting_slices` are values that MOVE the measure — a hint, NOT the value-set."
+    )
+    for d in context.drivers:
+        grain_note = f", grain {d.grain}" + (f"/{d.entity}" if d.entity else "")
+        lines.append(f"\n### {d.measure_label} ({d.target_type}{grain_note})")
+        if d.ranked_dimensions:
+            dims = ", ".join(
+                f"{r.get('dimension')} ({r.get('gain'):.2f})"
+                if isinstance(r.get("gain"), (int, float))
+                else str(r.get("dimension"))
+                for r in d.ranked_dimensions
+            )
+            lines.append(f"- **Top dimensions**: {dims}")
+        if d.interesting_slices:
+            slices = "; ".join(
+                f"{s.get('dimension')}={s.get('value')} "
+                f"(effect {s.get('effect'):+.2f}, support {s.get('support')})"
+                if isinstance(s.get("effect"), (int, float))
+                else f"{s.get('dimension')}={s.get('value')}"
+                for s in d.interesting_slices
+            )
+            lines.append(f"- **Notable slices** (hint, not the set): {slices}")
+        if d.secondary_dimensions:
+            sec = ", ".join(
+                f"{s.get('dimension')} ({s.get('grain')})" for s in d.secondary_dimensions
+            )
+            lines.append(f"- **Secondary** (other grain): {sec}")
 
 
 def _append_business_processes(lines: list[str], context: GraphExecutionContext) -> None:
@@ -1439,6 +1700,27 @@ def _append_business_processes(lines: list[str], context: GraphExecutionContext)
                 )
                 + "."
             )
+
+        # Concept bindings (DAT-616): the lifecycle/status concepts this cycle defines
+        # as an EXPLICIT, IN-list-ready concept → (column, value-set) map — the one
+        # detection-confirmed value→concept binding the engine already has (≈ the cut
+        # DAT-620 binding shape). The narrative above is for reading; THIS is for
+        # grounding a filter. Covers lifecycle/status concepts, not P&L partitions.
+        binding_lines: list[str] = []
+        for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
+            if stage.indicator_column and stage.indicator_values:
+                vals = ", ".join(f"'{v}'" for v in stage.indicator_values)
+                binding_lines.append(
+                    f'  - "{stage.stage_name}" = WHERE {stage.indicator_column} IN ({vals})'
+                )
+        if cycle.status_column and cycle.completion_value:
+            binding_lines.append(
+                f'  - "{cycle.cycle_type} completed" = '
+                f"WHERE {cycle.status_column} = '{cycle.completion_value}'"
+            )
+        if binding_lines:
+            lines.append("Concept bindings (confirmed — use as the filter, do not improvise):")
+            lines.extend(binding_lines)
 
         # Entity flows
         if cycle.entity_flows:

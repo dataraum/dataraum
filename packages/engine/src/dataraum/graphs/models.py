@@ -278,6 +278,11 @@ class GraphExecution:
     output_value: Any = None
     output_interpretation: str | None = None
 
+    # DAT-616: the single self-contained CTE statement executed (steps composed +
+    # final_sql) — the metric's executable artifact, mirroring the answer agent's
+    # composed grid SQL. Ephemeral like output_value (durable knowledge = snippets).
+    composed_sql: str | None = None
+
     # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)
 

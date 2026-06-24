@@ -314,7 +314,15 @@ export async function buildSchemaBlock(): Promise<string> {
 export interface CatalogAxisRow {
 	tableId: string;
 	columnName: string;
+	// DAT-616: the dimension's actual values — the answer agent's grounding value-set.
+	// The slice catalog is low-card by construction, so this is naturally bounded
+	// (no fire-hose); a metric filter grounds in these literals, not a guessed ILIKE.
+	distinctValues?: string[] | null;
 }
+
+// Cap rendered values per dimension — the catalog is already low-card, this just
+// guards a pathological row from bloating the prompt.
+const MAX_DIMENSION_VALUES = 30;
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
  * drill-down chain. `members` is the engine's JSON array of `{column_name}`. */
@@ -368,7 +376,21 @@ export function formatCatalog(
 		}
 		return b;
 	};
-	for (const a of axisRows) bucket(a.tableId).dimensions.push(a.columnName);
+	for (const a of axisRows) {
+		const values = Array.isArray(a.distinctValues)
+			? a.distinctValues.filter((v): v is string => v != null).map(String)
+			: [];
+		let line = `"${a.columnName}"`;
+		if (values.length) {
+			const shown = values.slice(0, MAX_DIMENSION_VALUES).join(", ");
+			const more =
+				values.length > MAX_DIMENSION_VALUES
+					? `, +${values.length - MAX_DIMENSION_VALUES} more`
+					: "";
+			line += ` [${shown}${more}]`;
+		}
+		bucket(a.tableId).dimensions.push(line);
+	}
 	for (const h of hierarchyRows) {
 		const line = hierarchyLine(h);
 		if (line) bucket(h.tableId).hierarchies.push(line);
@@ -381,12 +403,7 @@ export function formatCatalog(
 		.map(([tableId, b]) => {
 			const lines: string[] = [`Table ${addressOf(tableId)}:`];
 			if (b.dimensions.length)
-				lines.push(
-					`  dimensions: ${[...b.dimensions]
-						.sort()
-						.map((n) => `"${n}"`)
-						.join(", ")}`,
-				);
+				lines.push(`  dimensions: ${[...b.dimensions].sort().join(", ")}`);
 			lines.push(...b.hierarchies.sort());
 			return lines.join("\n");
 		});
@@ -414,6 +431,7 @@ export async function buildCatalogBlock(): Promise<string> {
 			.select({
 				tableId: currentSliceDefinitions.tableId,
 				columnName: currentSliceDefinitions.columnName,
+				distinctValues: currentSliceDefinitions.distinctValues,
 			})
 			.from(currentSliceDefinitions),
 		metadataDb
@@ -450,6 +468,9 @@ export async function buildCatalogBlock(): Promise<string> {
 			.map((a) => ({
 				tableId: a.tableId as string,
 				columnName: a.columnName as string,
+				distinctValues: Array.isArray(a.distinctValues)
+					? (a.distinctValues as string[])
+					: null,
 			})),
 		hierarchyRows
 			.filter((h) => h.tableId)
@@ -620,10 +641,13 @@ export async function buildEntitiesBlock(): Promise<string> {
 // agent still authors the SQL. Empty (no promoted begin_session run, or no measures
 // with a significant driver) → a one-line note.
 
-/** Cap the per-measure slice list so the block stays a hint, not a data dump. */
-const MAX_SLICES_PER_MEASURE = 3;
-/** Cap other-grain drivers too — bounds the block on a workspace with many
- * identity columns (the engine doesn't cap secondary families before persisting). */
+// No cap on interesting_slices (DAT-616): the driver engine ALREADY bounds them —
+// FDR-gated, per-node top-5 by |effect|, effect-sorted — so the persisted set is a small
+// curated list, not a dump. A second display cap (was 3) was a SILENT recall gate: on a
+// larger table it dropped most of the curated signal where neither the user nor the agent
+// could see the loss. Serve the full set (matching the engine GraphAgent's `## Drivers`).
+/** Cap other-grain drivers — this source IS genuinely uncapped at persist time (the engine
+ * doesn't bound secondary families), so the block needs a real guard on wide workspaces. */
 const MAX_SECONDARY_PER_MEASURE = 5;
 
 /** Render a ranking's grain for the prompt: "row-level", or "within <identity>". */
@@ -666,7 +690,7 @@ export function formatDrivers(rankings: DriverRanking[]): string {
 					.map((p) => p.map((n) => `"${n}"`).join(" → "))
 					.join("; ")}`,
 			);
-		const slices = r.interesting_slices.slice(0, MAX_SLICES_PER_MEASURE);
+		const slices = r.interesting_slices;
 		if (slices.length)
 			lines.push(
 				`  notable slices: ${slices

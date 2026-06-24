@@ -599,3 +599,199 @@ class TestFormatMetadataDocument:
         result = format_metadata_document(ctx)
 
         assert "⚠" in result
+
+
+# =============================================================================
+# Tests for DAT-616 grounding surface (value sets + concept vocabulary)
+# =============================================================================
+
+
+def _categorical(name: str, distinct: int, values: list[tuple[str, int]]) -> ColumnContext:
+    return ColumnContext(
+        column_id=f"col-{name}",
+        column_name=name,
+        table_name="ledger",
+        semantic_role="dimension",
+        distinct_count=distinct,
+        top_values=[{"value": v, "count": c, "percentage": 0.0} for v, c in values],
+    )
+
+
+class TestValueSetGrounding:
+    """The complete value enumeration the SQL agent grounds predicates in (DAT-616)."""
+
+    def test_complete_value_set_rendered_with_counts(self) -> None:
+        """A low-card categorical renders every value with its count, marked complete."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[
+                _categorical(
+                    "account_type", 3, [("Sales Revenue", 120), ("COGS", 100), ("SG&A", 80)]
+                )
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" in result
+        assert "**account_type** (complete)" in result
+        assert "Sales Revenue (120)" in result
+        assert "COGS (100)" in result
+
+    def test_partial_value_set_flagged_not_exhaustive(self) -> None:
+        """When distinct_count exceeds the served top_values, the set is flagged PARTIAL."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[_categorical("cost_center", 30, [("North", 9), ("South", 7)])],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "PARTIAL — not exhaustive" in result
+        assert "top 2 of 30" in result
+
+    def test_measure_and_high_card_columns_have_no_value_set(self) -> None:
+        """Measures (aggregated, not filtered) and oversized categoricals are suppressed."""
+        measure = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            distinct_count=900,
+            top_values=[{"value": "1.0", "count": 1, "percentage": 0.0}],
+        )
+        huge = _categorical("txn_id", 9999, [("a", 1), ("b", 1)])  # > render gate
+        table = TableContext(table_id="t1", table_name="ledger", columns=[measure, huge])
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" not in result
+
+    def test_concept_vocabulary_section_rendered(self) -> None:
+        """The ontology vocabulary is served as a Business Concepts section."""
+        ctx = GraphExecutionContext(
+            total_tables=0,
+            concept_vocabulary="- **revenue**: income from sales\n  - exclude: cost",
+        )
+        result = format_metadata_document(ctx)
+
+        assert "## Business Concepts" in result
+        assert "**revenue**: income from sales" in result
+        assert "do not improvise a substring filter" in result
+
+    def test_no_concept_section_without_vocabulary(self) -> None:
+        """No vertical → no Business Concepts section (clean default)."""
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Business Concepts" not in result
+
+
+class TestDriversRendering:
+    """The per-measure driver block served to the GraphAgent (DAT-616)."""
+
+    def test_drivers_block_renders_target_type_dims_and_slices(self) -> None:
+        from dataraum.graphs.context import DriverContext
+
+        d = DriverContext(
+            measure_label="amount",
+            target_type="flow",
+            grain="row",
+            ranked_dimensions=[{"dimension": "account_type", "gain": 0.42}],
+            interesting_slices=[
+                {"dimension": "account_type", "value": "COGS", "effect": -0.8, "support": 4120}
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(drivers=[d], total_tables=0))
+
+        assert "## Drivers" in result
+        assert "amount (flow" in result
+        assert "account_type (0.42)" in result
+        assert "account_type=COGS (effect -0.80, support 4120)" in result
+        assert "hint, NOT the value-set" in result
+
+    def test_no_drivers_section_when_empty(self) -> None:
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Drivers" not in result
+
+
+class TestCycleConceptBindings:
+    """Cycle stages/completion rendered as explicit IN-list bindings (DAT-616)."""
+
+    def test_stage_and_completion_bindings_rendered(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext, CycleStageContext
+
+        c = BusinessCycleContext(
+            cycle_name="Order to Cash",
+            cycle_type="order_to_cash",
+            status_column="orders.status",
+            completion_value="delivered",
+            stages=[
+                CycleStageContext(
+                    stage_name="Shipped",
+                    stage_order=2,
+                    indicator_column="status",
+                    indicator_values=["shipped", "in_transit"],
+                )
+            ],
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+
+        assert "Concept bindings (confirmed" in result
+        assert "\"Shipped\" = WHERE status IN ('shipped', 'in_transit')" in result
+        assert "\"order_to_cash completed\" = WHERE orders.status = 'delivered'" in result
+
+    def test_no_bindings_block_without_indicators(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext
+
+        c = BusinessCycleContext(cycle_name="C", cycle_type="c")  # no stages, no status
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+        assert "Concept bindings (confirmed" not in result
+
+
+class TestFanTrapAndSignedMeasure:
+    """Fan-trap caution + signed-measure range (DAT-616)."""
+
+    def test_fan_out_relationship_warned(self) -> None:
+        rel = RelationshipContext(
+            from_table="lines",
+            from_column="order_id",
+            to_table="orders",
+            to_column="id",
+            relationship_type="fk",
+            cardinality="many_to_one",
+            confidence=0.9,
+            introduces_duplicates=True,
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(relationships=[rel], total_tables=0)
+        )
+        assert "fan-out: SUM across this join double-counts" in result
+
+    def test_signed_measure_range_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            numeric_min=-500.0,
+            numeric_max=9000.0,
+        )
+        t = TableContext(table_id="t", table_name="ledger", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Range: -500..9000" in result
+        assert "Signed (has negatives)" in result
+
+    def test_unsigned_measure_no_signed_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="qty",
+            table_name="t",
+            semantic_role="measure",
+            numeric_min=1.0,
+            numeric_max=50.0,
+        )
+        t = TableContext(table_id="t", table_name="t", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Signed (has negatives)" not in result

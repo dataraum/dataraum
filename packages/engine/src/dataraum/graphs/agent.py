@@ -2,7 +2,7 @@
 
 Pipeline per graph:
 1. Load graph specification (YAML with accounting context)
-2. Analyze actual data schema (columns, types, samples)
+2. Analyze actual data schema (columns, types)
 3. Look up cached SQL snippets from the knowledge base
 4. Use LLM to generate executable SQL (with snippet hints)
 5. Cache generated SQL in-memory + save as snippets for cross-agent reuse
@@ -429,6 +429,12 @@ class GraphAgent(LLMFeature):
             context.rich_context.field_mappings
         )
 
+        # DAT-616 feedback loops: feed back what prior runs already learned for this metric
+        # — the honest-fail reason (so the next attempt isn't blind) and the prior
+        # value→concept FILTER decisions (column_mappings_basis), so grounding isn't
+        # re-invented every run.
+        prompt_context["prior_context"] = self._build_prior_context(session, graph, cached_snippets)
+
         # Render prompt with system/user split
         try:
             system_prompt, user_prompt, temperature = self.renderer.render_split(
@@ -591,7 +597,7 @@ class GraphAgent(LLMFeature):
                 source_query=sr.sql_executed,
                 inputs_used={
                     "sql": sr.sql_executed,
-                    "view_name": sr.step_id,
+                    "step_id": sr.step_id,
                     "repair_attempts": sr.repair_attempts,
                 },
             )
@@ -610,6 +616,7 @@ class GraphAgent(LLMFeature):
             execution.step_results.append(step_result)
 
         execution.output_value = result.final_value
+        execution.composed_sql = result.composed_sql
 
         # Add interpretation if available
         if graph.interpretation and execution.output_value is not None:
@@ -654,28 +661,18 @@ class GraphAgent(LLMFeature):
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
     ) -> dict[str, Any] | None:
-        """DESCRIBE a single DuckDB table and return schema with sample values."""
+        """DESCRIBE a single DuckDB table and return its name + column types.
+
+        DAT-616: this no longer self-fetches `SELECT DISTINCT … LIMIT 5` per column —
+        that arbitrary, count-less sample was the agent's only value view and is what it
+        improvised filters from. The authoritative, complete value enumeration is now the
+        per-column **Value sets** block in the rich-context metadata document
+        (`format_metadata_document`); this returns physical name + type only.
+        """
         try:
             columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
 
-            columns = []
-            for col in columns_result:
-                col_name = col[0]
-                col_type = col[1]
-
-                sample_result = duckdb_conn.execute(
-                    f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
-                    f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
-                ).fetchall()
-                samples = [str(r[0]) for r in sample_result]
-
-                columns.append(
-                    {
-                        "name": col_name,
-                        "type": col_type,
-                        "sample_values": samples,
-                    }
-                )
+            columns = [{"name": col[0], "type": col[1]} for col in columns_result]
 
             count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0
@@ -1113,6 +1110,11 @@ class GraphAgent(LLMFeature):
                     "description": match.snippet.description,
                     "snippet_id": match.snippet.snippet_id,
                     "column_mappings": match.snippet.column_mappings or {},
+                    # DAT-616: the prior value→concept FILTER decisions, fed back so
+                    # grounding isn't re-invented (served, not just reused-as-SQL).
+                    "column_mappings_basis": (match.snippet.provenance or {}).get(
+                        "column_mappings_basis"
+                    ),
                 }
 
         if cached_steps:
@@ -1124,3 +1126,57 @@ class GraphAgent(LLMFeature):
             )
 
         return cached_steps
+
+    def _build_prior_context(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        cached_snippets: dict[str, dict[str, Any]] | None,
+    ) -> str:
+        """Assemble what prior runs learned for this metric (DAT-616 feedback loops).
+
+        Two signals, both written-but-never-read until now:
+        - the most recent honest-fail ``state_reason`` for this metric (so the next
+          attempt addresses it or abstains, instead of repeating a blind guess);
+        - prior ``column_mappings_basis`` from reusable snippets (the value→concept FILTER
+          decisions), so grounding isn't re-invented each run.
+
+        Returns "" when there is nothing to feed (the prompt slot is optional). Best-effort
+        — a lookup failure never blocks generation.
+        """
+        parts: list[str] = []
+
+        try:
+            from dataraum.lifecycle import LifecycleArtifact
+
+            prior = (
+                session.query(LifecycleArtifact)
+                .filter(
+                    LifecycleArtifact.artifact_type == "metric",
+                    LifecycleArtifact.artifact_key == graph.graph_id,
+                    LifecycleArtifact.state_reason.isnot(None),
+                )
+                .order_by(LifecycleArtifact.created_at.desc())
+                .first()
+            )
+            if prior and prior.state_reason:
+                parts.append(
+                    f"Last run this metric was inconclusive: {prior.state_reason}. "
+                    "Address the cause or, if it still cannot be grounded, abstain (record a "
+                    "low-confidence assumption) — do not repeat a blind guess."
+                )
+        except Exception as e:  # pragma: no cover - feedback is best-effort
+            logger.debug("prior_reason_lookup_failed", graph_id=graph.graph_id, error=str(e))
+
+        groundings: list[str] = []
+        for step_id, info in (cached_snippets or {}).items():
+            basis = info.get("column_mappings_basis")
+            if basis:
+                groundings.append(f"  - {step_id}: {json.dumps(basis)}")
+        if groundings:
+            parts.append(
+                "Prior value→concept groundings (reuse the same columns/filters unless wrong):\n"
+                + "\n".join(groundings)
+            )
+
+        return "\n\n".join(parts)

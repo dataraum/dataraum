@@ -4,6 +4,70 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-06-24: DAT-616 — feed BOTH SQL agents the full grounding + compose-CTE + feedback loops
+
+The full feed (the design in `plans/metric-grounding/dat-616.md`), not just the value-set
+slice. The engine GraphAgent is the grounding PRODUCER (one-shot, writes the snippet
+library — full feed); the cockpit answer agent is the CONSUMER (searches the library,
+token-constrained — lean touches).
+
+**Engine GraphAgent context (`graphs/context.py::format_metadata_document`, the `<dataset_context>`):**
+- **Value sets** per table — COMPLETE value enumeration of each low-card categorical
+  (`value (count)`, freq-ordered) from `StatisticalProfile.top_values` + `distinct_count`
+  (the assembler dropped both); `complete` vs `PARTIAL — not exhaustive`; measures/keys/
+  timestamps + `distinct_count > 50` suppressed.
+- **Business Concepts** — the vertical ontology vocabulary (name + description + `indicators`
+  + `exclude_patterns`).
+- **## Drivers** per measure — `target_type` (grounds the aggregation) + `ranked_dimensions`
+  + `interesting_slices` (dimension=value, signed effect, support) from `DriverRankingArtifact`.
+  The engine loaded ZERO drivers before (the cockpit/engine asymmetry); a HINT, not the set.
+- **Cycle concept bindings** — `CycleStage.indicator_column`+`indicator_values` /
+  `status_column`=`completion_value` rendered as explicit IN-list `concept → (column,
+  value-set)` lines (a detection-confirmed binding, lifecycle/status concepts).
+- **Fan-trap caution** — `relationships.evidence.introduces_duplicates` → "SUM across this
+  join double-counts (pre-aggregate)" (the second silent-wrong vector).
+- **Signed-measure range** — `numeric_stats` min/max on measures; a negative min flags a
+  signed measure (SUM nets). `unit_source_column` rendered as a mixed-unit caveat.
+- **`_describe_table`'s `SELECT DISTINCT … LIMIT 5` self-fetch is GONE** — name+type only;
+  Value sets are the authoritative enumeration.
+
+**Engine execution (`query/execution.py`):** steps + final_sql are folded into ONE CTE
+(`compose_standalone`, the Python mirror of the cockpit `composeStandalone`) and executed
+as a single statement — no temp-view state; `GraphExecution.composed_sql` carries the
+executable artifact alongside the per-step snippet list. Per-step scalars are still fetched
+(standalone steps) so the `verifier.py` floor is unchanged.
+
+**Engine prompt (`graph_sql_generation.yaml` v3.1 → v4.0):** grounding contract (IN-list over
+the served values, no ILIKE), compose-CTE `<step_execution_model>`, `<channel_precedence>`
+(concepts=meaning, Value sets=the set, drivers=hint; human/teach>driver>frequency),
+`<never_force_fit>` (abstain on opaque codes / PARTIAL), `<blueprint_library>` (simple
+aggregate / end-of-period / window / multi-column / ratio shapes), `<prior_context>` slot.
+Generic placeholders (de-finance v3.1 spirit).
+
+**Feedback loops:** the prior-run honest-fail `LifecycleArtifact.state_reason` and prior
+`provenance.column_mappings_basis` (the value→concept filter) — both written-never-read — are
+now fed back into the GraphAgent's `<prior_context>` (abstain-or-address steer; reuse prior
+grounding). Pairs with the kept `verifier.py` value-bound + NULL sanity floor (#369).
+
+**Cockpit answer agent (CONSUMER — lean):** `<dimensions>` now carries slice-catalog
+`distinct_values` inline (capped + overflow tail — the naturally-bounded grounding set);
+`snippet_search` results surface `column_mappings_basis`; the query prompt gains a
+`<grounding>` IN-list + never-force-fit rule. No raw value-set pre-inject.
+
+### dataraum-eval
+- **Prompt-surface + metadata-document change only** (no detector / DB-schema / response-shape
+  change). Calibrations snapshotting `format_metadata_document` or the cockpit context blocks
+  will see the new `## Drivers`, `**Value sets**`, `## Business Concepts`, cycle-binding,
+  fan-trap, and `<dimensions>` value lines; empty/absent when no vertical / no low-card dims.
+- **The long-format NAMES regression should PASS** (feed-only → gross_profit rel.err 0, the
+  lane-1 finding). Opaque-code fixtures stay inconclusive-by-design (fall-loud + teach case).
+- **NEW eval ask — shape-varied fixtures (gate the blueprint library):** the lane-1 gate only
+  proved semantic NAMES. Add long-format fixtures exercising the non-trivial shapes —
+  end-of-period (stock/latest-period), window/period-comparison (growth/YoY), multi-column
+  conjunction, ratio — with ground-truth metric values, to verify the `<blueprint_library>`
+  produces correct SQL beyond the simple aggregate. **Real-LLM; runs on request, not yet executed.**
+- **Status**: pending (engine + cockpit landed; shape eval is the open cross-repo task).
+
 ## 2026-06-23: DAT-616 reworked + DAT-620 — metric grounding on long-format finance (REFRAMED)
 
 The silently-wrong metric bug is **context-engine starvation**, not a missing checker. Full

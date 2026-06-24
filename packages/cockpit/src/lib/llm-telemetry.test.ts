@@ -119,19 +119,23 @@ describe("llmTelemetryMiddleware", () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const mw = llmTelemetryMiddleware("grounding");
 
+		mw.onIteration?.(ctx("claude-x"), iter(0));
 		mw.onError?.(ctx("claude-x"), {
 			error: new Error("boom"),
 			duration: 200,
 		} as ErrorInfo);
 
-		expect(info).toHaveBeenCalledWith(
-			"llm_call",
-			expect.objectContaining({
-				label: "grounding",
-				status: "error",
-				elapsed_ms: 200,
-			}),
-		);
+		expect(info).toHaveBeenCalledWith("llm_call", {
+			label: "grounding",
+			model: "claude-x",
+			status: "error",
+			elapsed_ms: 200,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+			iterations: 1,
+		});
 	});
 
 	it("keeps the iteration counter private per middleware instance", () => {

@@ -25,7 +25,10 @@
 // so we log on all three with a `status` — unlike the engine (success-only), the
 // cockpit has deliberate early-abort paths (frame induction aborts after the
 // forced tool fires, ×4/frame), and an aborted/errored turn is still latency data.
-// Tokens are only known on a clean finish; abort/error lines carry zeros.
+// Tokens are only known on a clean finish; abort/error lines carry zeros. So
+// any per-label token aggregation must FILTER `status == "finished"` first —
+// frame induction alone emits up to 4 aborted rows per frame() (it aborts after
+// the forced tool fires), and those intentional zeros would skew a naive average.
 //
 // Granularity note: the engine logs one line per model call; here one line is a
 // whole chat() run — the RUN_FINISHED usage is the loop total across iterations

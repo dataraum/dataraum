@@ -315,10 +315,18 @@ describe("formatRelationships (DAT-621 join-grounding block)", () => {
 		expect(block).toContain("JOIN ON the listed column pair");
 	});
 
-	it("flags a fan-out edge with the double-count caution", () => {
+	it("flags a fan-out edge from the engine's introduces_duplicates flag", () => {
 		const block = formatRelationships([rel({ introducesDuplicates: true })]);
 		expect(block).toContain("⚠ fan-out");
 		expect(block).toContain("pre-aggregate");
+	});
+
+	it("does not flag when the flag is unset (no consumer-side derivation)", () => {
+		// The fan-trap check is the engine's job; a null flag means no caution here.
+		const block = formatRelationships([
+			rel({ cardinality: "many-to-many", introducesDuplicates: null }),
+		]);
+		expect(block).not.toContain("fan-out");
 	});
 
 	it("omits the fact tag when cardinality and type are absent", () => {

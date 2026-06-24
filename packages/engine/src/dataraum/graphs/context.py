@@ -1352,7 +1352,9 @@ def format_metadata_document(
                 warning = " ⚠ non-deterministic"
             # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
             # measure across this join double-counts. Tell the agent to aggregate
-            # before the join (or COUNT DISTINCT), not after.
+            # before the join (or COUNT DISTINCT), not after. Reads the engine's
+            # introduces_duplicates flag (the fan-trap check is the detector's job, not
+            # this renderer's — DAT-628: the LLM synthesis path doesn't yet populate it).
             if rel.introduces_duplicates:
                 warning += " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
             lines.append(

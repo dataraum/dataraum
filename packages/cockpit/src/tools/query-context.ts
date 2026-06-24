@@ -533,9 +533,13 @@ export function formatRelationships(rows: RelationshipBlockRow[]): string {
 				.filter((f): f is string => !!f)
 				.join("; ");
 			const factTag = facts ? ` (${facts})` : "";
-			const fanOut = r.introducesDuplicates
-				? " ⚠ fan-out: SUM across this join double-counts — pre-aggregate or COUNT DISTINCT"
-				: "";
+			// Fan-out caution reads the engine's introduces_duplicates flag (the fan-trap
+			// check is the engine's job, not the consumer's — see DAT-628: the LLM
+			// synthesis path doesn't yet populate it). Null flag → no caution.
+			const fanOut =
+				r.introducesDuplicates === true
+					? " ⚠ fan-out: SUM across this join double-counts — pre-aggregate or COUNT DISTINCT"
+					: "";
 			return `- ${r.fromAddress}."${r.fromColumn}" = ${r.toAddress}."${r.toColumn}"${factTag}${fanOut}`;
 		})
 		.sort();

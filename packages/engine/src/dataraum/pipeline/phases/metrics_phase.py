@@ -375,7 +375,14 @@ def _warm_shared_nodes(
 
     if ctx.manager is not None:
         _warm_generations_parallel(
-            generations, nodes, ctx.manager, agent, schema_mapping_id, table_ids, vertical, om_run_id
+            generations,
+            nodes,
+            ctx.manager,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
         )
     else:
         _warm_generations_serial(

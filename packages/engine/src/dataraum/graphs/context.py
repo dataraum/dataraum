@@ -1589,7 +1589,9 @@ def _build_value_sets(table: TableContext) -> list[str]:
         )
         if not rendered:
             continue
-        out.append(f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}")
+        out.append(
+            f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}"
+        )
     return out
 
 

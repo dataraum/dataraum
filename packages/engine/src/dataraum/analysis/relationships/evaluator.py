@@ -242,7 +242,7 @@ def evaluate_relationship_candidate(
     join_success_rate = best_join.left_referential_integrity
 
     # Check for duplicate introduction (fan trap)
-    introduces_duplicates = _check_duplicate_introduction(
+    introduces_duplicates = compute_introduces_duplicates(
         table1_path,
         table2_path,
         best_join.column1,
@@ -259,7 +259,7 @@ def evaluate_relationship_candidate(
     )
 
 
-def _check_duplicate_introduction(
+def compute_introduces_duplicates(
     table1_path: str,
     table2_path: str,
     col1: str,
@@ -269,7 +269,9 @@ def _check_duplicate_introduction(
     """Check if joining introduces duplicate rows (fan trap).
 
     A fan trap occurs when joining through a relationship causes
-    row multiplication, which can inflate aggregates.
+    row multiplication, which can inflate aggregates. Public (used by the
+    structural evaluator AND the LLM-synthesis processor) so synthesized
+    relationships carry the same empirical fan-trap signal as structural ones.
 
     Args:
         table1_path: DuckDB path to first table

@@ -177,6 +177,9 @@ class TestDescribeTable:
         col_names = [c["name"] for c in result["columns"]]
         assert "id" in col_names
         assert "amount" in col_names
+        # DAT-616: no per-column DISTINCT/LIMIT-5 self-fetch — name+type only; the
+        # authoritative value enumeration is the rich-context Value sets block.
+        assert "sample_values" not in result["columns"][0]
 
     def test_describe_nonexistent_table(self, duckdb_with_data):
         """Test describing a table that doesn't exist returns None."""

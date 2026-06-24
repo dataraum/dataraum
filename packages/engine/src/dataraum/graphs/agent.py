@@ -654,28 +654,18 @@ class GraphAgent(LLMFeature):
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
     ) -> dict[str, Any] | None:
-        """DESCRIBE a single DuckDB table and return schema with sample values."""
+        """DESCRIBE a single DuckDB table and return its name + column types.
+
+        DAT-616: this no longer self-fetches `SELECT DISTINCT … LIMIT 5` per column —
+        that arbitrary, count-less sample was the agent's only value view and is what it
+        improvised filters from. The authoritative, complete value enumeration is now the
+        per-column **Value sets** block in the rich-context metadata document
+        (`format_metadata_document`); this returns physical name + type only.
+        """
         try:
             columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
 
-            columns = []
-            for col in columns_result:
-                col_name = col[0]
-                col_type = col[1]
-
-                sample_result = duckdb_conn.execute(
-                    f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
-                    f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
-                ).fetchall()
-                samples = [str(r[0]) for r in sample_result]
-
-                columns.append(
-                    {
-                        "name": col_name,
-                        "type": col_type,
-                        "sample_values": samples,
-                    }
-                )
+            columns = [{"name": col[0], "type": col[1]} for col in columns_result]
 
             count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0

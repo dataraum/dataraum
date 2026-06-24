@@ -517,20 +517,16 @@ class TestWarmSharedNodes:
         assert agent.warmed == []
 
 
-def test_asyncio_run_does_not_deadlock_with_nested_calls(
+def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`asyncio.run` is safe only because callers are synchronous.
+    """The parallel path uses a ThreadPoolExecutor, not an asyncio event loop.
 
-    The pipeline scheduler calls phases synchronously — either from the
-    main thread or from a ThreadPoolExecutor worker (the parallel-phases
-    path). Neither has a running event loop, so `asyncio.run` inside the
-    phase creates a fresh loop without conflict. If a future async-native
-    scheduler ever calls this phase from inside an existing loop, this
-    pattern would raise `RuntimeError: This event loop is already
-    running` — that case is out of scope for v0.2.2 and tracked separately.
+    The metrics activity is a SYNC Temporal activity on a thread engine; the
+    fan-out is a plain ``ThreadPoolExecutor`` (the codebase's standard primitive)
+    — no nested ``asyncio.run`` in a worker thread. Sanity-check it dispatches
+    cleanly from a sync caller with no running loop in scope.
     """
-    # Make sure no event loop is already running in this thread
     with pytest.raises(RuntimeError):
         asyncio.get_running_loop()
 

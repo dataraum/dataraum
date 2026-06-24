@@ -41,15 +41,16 @@ TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
 so a redelivery can inflate usage telemetry; nothing gates on it (write-only
 since DAT-487/488).
 
-Per-metric LLM calls are independent — dispatched concurrently via
-asyncio.to_thread + gather when the phase context exposes a ConnectionManager
-(each parallel call gets its own SQLAlchemy session + DuckDB cursor). Falls back
-to a serial loop in unit tests where the manager isn't wired.
+Per-metric LLM calls are independent — dispatched concurrently via a
+``ThreadPoolExecutor`` when the phase context exposes a ConnectionManager (each
+parallel call gets its own SQLAlchemy session + DuckDB cursor; ``max_workers``
+is the concurrency cap). Falls back to a serial loop in unit tests where the
+manager isn't wired.
 """
 
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -70,19 +71,10 @@ _STAGE = "operating_model"
 
 # Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
 # 4000 RPM (~67 RPS) comfortably; with ~30-60s LLM latencies, 10 concurrent
-# is ~10 RPS at peak — well under the limit.
+# is ~10 RPS at peak — well under the limit. The warming pre-pass (DAT-629) and
+# the execute wave run sequentially, each peaking at this many isolated sessions
+# (+1 phase session) — comfortably under the ConnectionManager pool (15).
 _MAX_CONCURRENT_METRICS = 10
-
-# The warming pre-pass (DAT-629) runs a SECOND wave of concurrent agent calls
-# at the START of the metrics activity — which overlaps the tail of the prior
-# operating_model activities (business_cycles, validation) on the SHARED
-# ConnectionManager pool (pool_size=5 + max_overflow=10 = 15). Each agent call
-# holds one pooled session for the whole LLM round-trip, so a 10-wide warming
-# wave colliding with a draining sibling activity exhausts the pool (QueuePool
-# timeout). Warming is a light, latency-tolerant dedup pre-pass — a small cap
-# keeps its peak connection demand well clear of that contention window while
-# still parallelizing; the (now cache-warm) execute wave keeps the full cap.
-_MAX_CONCURRENT_WARMING = 4
 
 if TYPE_CHECKING:
     import duckdb
@@ -421,43 +413,39 @@ def _warm_generations_parallel(
 ) -> None:
     """Warm generations concurrently within each wave, barrier between waves.
 
-    The barrier (``gather`` per generation) is load-bearing: generation N+1's
-    formula nodes must see generation N's extracts already committed to the
-    cache, so they assemble from the warm cache rather than re-authoring.
+    One ``ThreadPoolExecutor`` (``max_workers`` IS the concurrency cap — no
+    separate semaphore), the engine's standard fan-out primitive for blocking
+    SQLAlchemy/DuckDB/LLM work on the sync activity worker. Draining each
+    generation's futures before submitting the next is the load-bearing barrier:
+    generation N+1's formula nodes must see generation N's extracts already
+    committed to the cache so they assemble from the warm cache rather than
+    re-authoring. A node that raises is logged and skipped — warming is an
+    optimization, never fatal; the per-metric execute authors any un-warmed node.
     """
-
-    async def _run_all() -> None:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_WARMING)
-
-        async def _warm_one(key: tuple[str | None, ...]) -> None:
-            async with sem:
-                try:
-                    await asyncio.to_thread(
-                        _warm_isolated,
-                        nodes[key],
-                        manager,
-                        agent,
-                        schema_mapping_id,
-                        table_ids,
-                        vertical,
-                        om_run_id,
-                    )
-                except Exception as exc:
-                    # Never abort siblings or the phase — fall back to per-metric
-                    # authoring for this node.
-                    _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
-
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
+    ) as pool:
         for generation in generations:
-            await asyncio.gather(*(_warm_one(key) for key in generation))
-
-    # Outer guard: each node is already isolated in _warm_one, but gather/loop
-    # teardown (e.g. external cancellation) can still raise. Warming is an
-    # optimization — never let it abort the phase; the per-metric execute follows
-    # regardless, authoring any un-warmed node as before.
-    try:
-        asyncio.run(_run_all())
-    except Exception as exc:
-        _log.warning("metric_warming_run_failed", error=str(exc))
+            futures = {
+                pool.submit(
+                    _warm_isolated,
+                    nodes[key],
+                    manager,
+                    agent,
+                    schema_mapping_id,
+                    table_ids,
+                    vertical,
+                    om_run_id,
+                ): key
+                for key in generation
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    _log.warning(
+                        "metric_node_warm_error", node=str(futures[future]), error=str(exc)
+                    )
 
 
 def _warm_isolated(
@@ -561,46 +549,44 @@ def _execute_metrics_parallel(
     *,
     om_run_id: str,
 ) -> list[MetricResult]:
-    """Concurrent path: per-call session + cursor, gathered via asyncio.
+    """Concurrent path: per-call session + cursor via a ThreadPoolExecutor.
 
-    Each metric runs `agent.execute` on a thread with its own SQLAlchemy
+    Each metric runs `agent.execute` on a pool thread with its own SQLAlchemy
     session (auto-commit via session_scope) and its own DuckDB cursor.
-    A semaphore caps in-flight LLM calls to _MAX_CONCURRENT_METRICS.
-    ``om_run_id`` is this operating_model run — the graph context reads its
-    cycles/validation evidence at this run, not the (not-yet-promoted) head.
+    ``max_workers`` caps in-flight LLM calls to _MAX_CONCURRENT_METRICS — the
+    engine's standard fan-out primitive (no asyncio event loop on the sync
+    activity worker). ``om_run_id`` is this operating_model run — the graph
+    context reads its cycles/validation evidence at this run, not the
+    (not-yet-promoted) head.
     """
-
-    async def _run_all() -> list[MetricResult]:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
-
-        async def _run_one(
-            graph_id: str,
-            graph: TransformationGraph,
-            hint_sql: str | None,
-            inspiration_id: str | None,
-        ) -> MetricResult:
-            async with sem:
-                # Capture unexpected exceptions as Result.fail so one worker
-                # raising doesn't abort siblings via gather propagation.
-                try:
-                    result = await asyncio.to_thread(
-                        _execute_isolated,
-                        graph,
-                        hint_sql,
-                        manager,
-                        agent,
-                        schema_mapping_id,
-                        table_ids,
-                        vertical,
-                        om_run_id,
-                    )
-                except Exception as exc:
-                    result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
-            return graph_id, result, inspiration_id
-
-        return await asyncio.gather(*(_run_one(gid, g, hsql, iid) for gid, g, hsql, iid in prep))
-
-    return asyncio.run(_run_all())
+    out: list[MetricResult] = []
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric"
+    ) as pool:
+        futures = {
+            pool.submit(
+                _execute_isolated,
+                graph,
+                hint_sql,
+                manager,
+                agent,
+                schema_mapping_id,
+                table_ids,
+                vertical,
+                om_run_id,
+            ): (graph_id, inspiration_id)
+            for graph_id, graph, hint_sql, inspiration_id in prep
+        }
+        for future in as_completed(futures):
+            graph_id, inspiration_id = futures[future]
+            # Capture unexpected exceptions as Result.fail so one worker raising
+            # doesn't abort siblings.
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
+            out.append((graph_id, result, inspiration_id))
+    return out
 
 
 def _execute_isolated(

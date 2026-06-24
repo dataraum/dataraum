@@ -181,51 +181,52 @@ export function AnswerResultWidget({
 		}
 	};
 
+	// The mint action rides in the grid's own toolbar (left of "View SQL") rather
+	// than floating above the grid — it's a peer of the result-surface actions.
+	const reportAction =
+		mintedId && wsId ? (
+			<Button
+				variant="light"
+				color="green"
+				size="compact-xs"
+				leftSection={<Library size={13} />}
+				data-testid="report-saved"
+				renderRoot={(props) => (
+					<Link
+						to="/workspace/$wsId/reports/$reportId"
+						params={{ wsId, reportId: mintedId }}
+						{...props}
+					/>
+				)}
+			>
+				Saved to Reports
+			</Button>
+		) : (
+			<Button
+				variant="subtle"
+				color="gray"
+				size="compact-xs"
+				leftSection={<Library size={13} />}
+				onClick={onMint}
+				loading={saving}
+				data-testid="report-mint"
+			>
+				Report
+			</Button>
+		);
+
 	return (
 		<div data-testid="canvas-answer-result">
 			<ConfidenceStrip confidence={state.confidence} />
-			<Group justify="flex-end" mb="xs">
-				{mintedId && wsId ? (
-					<Button
-						variant="light"
-						size="xs"
-						leftSection={<Library size={14} />}
-						data-testid="report-saved"
-						renderRoot={(props) => (
-							<Link
-								to="/workspace/$wsId/reports/$reportId"
-								params={{ wsId, reportId: mintedId }}
-								{...props}
-							/>
-						)}
-					>
-						Saved to Reports
-					</Button>
-				) : (
-					<Button
-						variant="light"
-						size="xs"
-						leftSection={<Library size={14} />}
-						onClick={onMint}
-						loading={saving}
-						data-testid="report-mint"
-					>
-						Report
-					</Button>
-				)}
-			</Group>
 			{mintFailed && (
-				<Text
-					size="xs"
-					c="red"
-					ta="right"
-					mb="xs"
-					data-testid="report-mint-error"
-				>
+				<Text size="xs" c="red" mb="xs" data-testid="report-mint-error">
 					Couldn’t save the report — try again.
 				</Text>
 			)}
-			<ResultGridWidget state={{ kind: "result-grid", sql: state.sql }} />
+			<ResultGridWidget
+				state={{ kind: "result-grid", sql: state.sql }}
+				toolbarActions={reportAction}
+			/>
 		</div>
 	);
 }

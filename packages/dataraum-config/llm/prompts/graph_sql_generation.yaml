@@ -226,19 +226,17 @@ system_prompt: |
 
   Use the generate_sql tool to provide your structured response.
 
-# User prompt - provides graph and schema context
+# User prompt - provides schema/grounding then the specific metric.
+# LAYOUT IS CACHE-ORDERED (DAT-621, for DAT-599 prompt caching): the STABLE,
+# shared-across-metrics grounding (data_schema + dataset_context + field_mappings) comes
+# FIRST as a cacheable prefix — every metric in a run sends the identical block, so a cache
+# breakpoint after it yields a very high hit ratio across the per-metric loop. The VOLATILE,
+# per-metric content (graph_specification, parameters, cached_steps, prior_context) comes
+# LAST so it never poisons that prefix.
 user_prompt: |
-  <graph_specification>
-  {graph_yaml}
-  </graph_specification>
-
   <data_schema description="All available tables and enriched views with column names and types. For grounding filters, use the COMPLETE Value sets in dataset_context.">
   {table_schema}
   </data_schema>
-
-  <parameters>
-  {parameters}
-  </parameters>
 
   <dataset_context description="Semantic annotations, value sets, relationships, quality, and entropy for understanding column meaning">
   {rich_context}
@@ -247,6 +245,14 @@ user_prompt: |
   <field_mappings>
   {field_mappings}
   </field_mappings>
+
+  <graph_specification>
+  {graph_yaml}
+  </graph_specification>
+
+  <parameters>
+  {parameters}
+  </parameters>
 
   <cached_steps>
   {cached_steps}
@@ -281,7 +287,7 @@ user_prompt: |
      - Use the aggregation type from the graph specification
 
   4. Write final_sql to combine step results:
-     - Reference steps as temp views: SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)
+     - Reference the step CTEs by name: SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)
      - Graph-specific logic (ratios, formulas, multipliers) belongs here
 
   5. Document provenance — how you grounded business concepts to columns:

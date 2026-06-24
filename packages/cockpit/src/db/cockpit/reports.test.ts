@@ -24,6 +24,7 @@ vi.mock("#/db/cockpit/schema", () => ({
 		parentId: "parent_id",
 		title: "title",
 		summary: "summary",
+		summaryFingerprint: "summary_fingerprint",
 		sql: "sql",
 		confidence: "confidence",
 		createdAt: "created_at",
@@ -78,7 +79,9 @@ import {
 	getReport,
 	listReports,
 	renameReport,
+	setReportFingerprint,
 	softDeleteReport,
+	updateReportSummary,
 } from "./reports";
 
 const confidence: AnswerConfidence = {
@@ -118,6 +121,28 @@ describe("createReport", () => {
 			sql: "SELECT 1",
 			confidence,
 		});
+	});
+
+	it("stores the mint-time fingerprint, defaulting it to null when absent (DAT-625)", async () => {
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t",
+			summary: "s",
+			sql: "SELECT 1",
+			confidence,
+			summaryFingerprint: "abc123",
+		});
+		expect(h.inserts[0].rows).toMatchObject({ summaryFingerprint: "abc123" });
+
+		h.inserts = [];
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t",
+			summary: "s",
+			sql: "SELECT 1",
+			confidence,
+		});
+		expect(h.inserts[0].rows).toMatchObject({ summaryFingerprint: null });
 	});
 
 	it("defaults absent provenance/lineage to null (workspaceId is the only owner)", async () => {
@@ -168,6 +193,28 @@ describe("renameReport", () => {
 		await renameReport("r1", "New title");
 		const upd = h.updates.find((u) => u.table === "reports");
 		expect(upd?.set).toEqual({ title: "New title" });
+		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+	});
+});
+
+describe("updateReportSummary", () => {
+	it("sets summary + fingerprint together, scoped to live rows (the only summary write)", async () => {
+		await updateReportSummary("r1", "Refreshed prose.", "fp-new");
+		const upd = h.updates.find((u) => u.table === "reports");
+		expect(upd?.set).toEqual({
+			summary: "Refreshed prose.",
+			summaryFingerprint: "fp-new",
+		});
+		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
+	});
+});
+
+describe("setReportFingerprint", () => {
+	it("backfills only the fingerprint (summary untouched), scoped to live rows", async () => {
+		await setReportFingerprint("r1", "fp-backfill");
+		const upd = h.updates.find((u) => u.table === "reports");
+		expect(upd?.set).toEqual({ summaryFingerprint: "fp-backfill" });
+		expect(upd?.set.summary).toBeUndefined();
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
 	});
 });

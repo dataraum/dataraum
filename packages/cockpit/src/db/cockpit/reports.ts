@@ -32,16 +32,21 @@ export interface CreateReportInput {
 	summary: string;
 	sql: string;
 	confidence: AnswerConfidence;
+	/** Headline result fingerprint at mint (DAT-625). Drives drift detection on open;
+	 * null only if fingerprinting failed (best-effort), then lazy-backfilled later. */
+	summaryFingerprint?: string | null;
 }
 
-/** A report as the gallery + detail render it. `chartConfig` is reserved (DAT-626);
- * `summaryFingerprint` drives the DAT-625 staleness flag — both null until then. */
+/** A report as the gallery + detail render it. `chartConfig` is reserved (DAT-626).
+ * `summaryFingerprint` is the result fingerprint at last summary-gen (DAT-625) — the
+ * detail loader compares it to a fresh fingerprint to flag the summary outdated. */
 export interface ReportRow {
 	id: string;
 	workspaceId: string;
 	parentId: string | null;
 	title: string;
 	summary: string;
+	summaryFingerprint: string | null;
 	sql: string;
 	confidence: AnswerConfidence;
 	createdAt: Date;
@@ -62,6 +67,7 @@ export async function createReport(input: CreateReportInput): Promise<string> {
 		parentId: input.parentId ?? null,
 		title: input.title,
 		summary: input.summary,
+		summaryFingerprint: input.summaryFingerprint ?? null,
 		sql: input.sql,
 		confidence: input.confidence,
 	});
@@ -83,6 +89,7 @@ export async function listReports(
 			parentId: reports.parentId,
 			title: reports.title,
 			summary: reports.summary,
+			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
 			confidence: reports.confidence,
 			createdAt: reports.createdAt,
@@ -105,6 +112,7 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
 			parentId: reports.parentId,
 			title: reports.title,
 			summary: reports.summary,
+			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
 			confidence: reports.confidence,
 			createdAt: reports.createdAt,
@@ -126,6 +134,39 @@ export async function renameReport(
 	await cockpitDb
 		.update(reports)
 		.set({ title })
+		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+}
+
+/**
+ * Refresh a report's summary + its result fingerprint together (DAT-625 regenerate).
+ * This is the ONLY path that mutates `summary` — `sql` stays immutable. Atomic so the
+ * stored fingerprint always matches the summary it was generated against (no window
+ * where the prose is new but the fingerprint still flags it outdated). Live-rows only.
+ */
+export async function updateReportSummary(
+	reportId: string,
+	summary: string,
+	summaryFingerprint: string,
+): Promise<void> {
+	await cockpitDb
+		.update(reports)
+		.set({ summary, summaryFingerprint })
+		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
+}
+
+/**
+ * Lazy-backfill a report's fingerprint (DAT-625) — for reports minted before this
+ * existed, or when mint-time fingerprinting failed. Written on first open so the
+ * report starts tracking drift WITHOUT touching `summary` (the prose is unchanged, so
+ * it's not "outdated" — we just had nothing to compare against yet). Live-rows only.
+ */
+export async function setReportFingerprint(
+	reportId: string,
+	summaryFingerprint: string,
+): Promise<void> {
+	await cockpitDb
+		.update(reports)
+		.set({ summaryFingerprint })
 		.where(and(eq(reports.id, reportId), isNull(reports.deletedAt)));
 }
 

@@ -20,6 +20,7 @@ the rare commit conflict raises and is absorbed by Temporal's activity retry.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -83,6 +84,16 @@ def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[
     activity declare a short ``heartbeat_timeout`` for fast worker-death
     detection without the phase having to thread a progress callback. The pulse
     is a no-op outside an activity context (unit tests), so it stays test-safe.
+
+    The daemon thread runs inside a COPY of the caller's context
+    (:func:`contextvars.copy_context`): ``activity.heartbeat()`` resolves the
+    activity through a ``ContextVar`` (``temporalio.activity._current_context``),
+    and a bare ``threading.Thread`` starts with an EMPTY context — so without the
+    copy every ``heartbeat()`` raised ``RuntimeError("Not in activity context")``,
+    the loop hit its ``except`` and exited at the first beat, and the pulse never
+    fired. The activity then survived only by finishing within its
+    ``heartbeat_timeout``; a longer run (e.g. the DAT-629 warming pre-pass) blew
+    past it, got cancelled, and leaked the sync worker's pooled connections.
     """
     stop = threading.Event()
 
@@ -95,7 +106,9 @@ def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[
                 # nothing to heartbeat against; stop quietly.
                 return
 
-    thread = threading.Thread(target=_beat, name="metrics-heartbeat", daemon=True)
+    # Propagate the activity context (the heartbeat ContextVar) into the daemon.
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(target=lambda: ctx.run(_beat), name="metrics-heartbeat", daemon=True)
     thread.start()
     try:
         yield

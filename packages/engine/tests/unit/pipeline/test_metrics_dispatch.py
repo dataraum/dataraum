@@ -362,20 +362,171 @@ class TestExecuteIsolated:
 # ---------------------------------------------------------------------------
 
 
-def test_asyncio_run_does_not_deadlock_with_nested_calls(
+# ---------------------------------------------------------------------------
+# Node warming pre-pass (DAT-629)
+# ---------------------------------------------------------------------------
+
+
+from dataraum.graphs.models import (  # noqa: E402
+    GraphMetadata,
+    GraphSource,
+    GraphStep,
+    OutputDef,
+    OutputType,
+    StepSource,
+    StepType,
+    TransformationGraph,
+)
+
+
+def _real_extract(step_id: str, standard_field: str) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field=standard_field, statement="income_statement"),
+        aggregation="sum",
+    )
+
+
+def _real_formula(step_id: str, expression: str, depends_on: list[str]) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.FORMULA,
+        expression=expression,
+        depends_on=depends_on,
+        output_step=True,
+    )
+
+
+def _real_graph(graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
+    return TransformationGraph(
+        graph_id=graph_id,
+        version="1.0",
+        metadata=GraphMetadata(
+            name=graph_id, description="", category="profitability", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR),
+        steps=steps,
+    )
+
+
+class _RecordingWarmAgent:
+    """Records the output-step identity of each warmed mini-graph, in call order."""
+
+    def __init__(self) -> None:
+        self.warmed: list[str] = []
+
+    def execute(
+        self,
+        session: Any,
+        graph: TransformationGraph,
+        context: Any,
+        inspiration_sql: str | None = None,
+        *,
+        workspace_id: str = "",
+    ) -> Result[str]:
+        out = graph.get_output_step()
+        assert out is not None  # every mini-graph has exactly one output
+        if out.step_type == StepType.EXTRACT and out.source:
+            ident = f"extract:{out.source.standard_field}"
+        else:
+            ident = f"formula:{out.expression}"
+        self.warmed.append(ident)
+        return Result.ok(ident)
+
+
+class _StubCtx:
+    """Minimal PhaseContext stand-in for the warm pre-pass (serial path)."""
+
+    def __init__(self) -> None:
+        self.manager = None  # forces serial warming
+        self.session = MagicMock()
+        self.duckdb_conn = MagicMock()
+
+
+class TestWarmSharedNodes:
+    def test_shared_extract_warmed_once_extracts_before_formulas(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "dataraum.graphs.agent.ExecutionContext.with_rich_context",
+            classmethod(lambda cls, **kw: MagicMock()),
+        )
+        gross = _real_graph(
+            "gross_margin",
+            {
+                "rev": _real_extract("rev", "revenue"),
+                "cogs": _real_extract("cogs", "cost_of_goods_sold"),
+                "gp": _real_formula("gp", "revenue - cogs", ["rev", "cogs"]),
+            },
+        )
+        net = _real_graph(
+            "net_income",
+            {
+                "rev2": _real_extract("rev2", "revenue"),
+                "cogs2": _real_extract("cogs2", "cost_of_goods_sold"),
+                "opex": _real_extract("opex", "operating_expense"),
+                "ni": _real_formula("ni", "revenue - cogs - opex", ["rev2", "cogs2", "opex"]),
+            },
+        )
+        agent = _RecordingWarmAgent()
+
+        gep._warm_shared_nodes(
+            {"gross_margin": gross, "net_income": net},
+            _StubCtx(),  # type: ignore[arg-type]
+            agent,  # type: ignore[arg-type]
+            _WORKSPACE_ID,
+            ["t1"],
+            _VERTICAL,
+            om_run_id="run-test",
+        )
+
+        # cost_of_goods_sold + revenue each warmed exactly once (deduped).
+        assert agent.warmed.count("extract:cost_of_goods_sold") == 1
+        assert agent.warmed.count("extract:revenue") == 1
+        assert agent.warmed.count("extract:operating_expense") == 1
+        # The two distinct formula expressions warmed once each.
+        formulas = [w for w in agent.warmed if w.startswith("formula:")]
+        assert len(formulas) == 2
+        # Every extract is warmed before any formula (dependency order).
+        first_formula = next(i for i, w in enumerate(agent.warmed) if w.startswith("formula:"))
+        assert all(w.startswith("extract:") for w in agent.warmed[:first_formula])
+
+    def test_cyclic_metric_set_is_best_effort_no_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "dataraum.graphs.agent.ExecutionContext.with_rich_context",
+            classmethod(lambda cls, **kw: MagicMock()),
+        )
+        a = _real_formula("a", "x_one - y_two", ["b"])
+        b = _real_formula("b", "y_two - x_one", ["a"])
+        cyclic = _real_graph("cyclic", {"a": a, "b": b})
+        agent = _RecordingWarmAgent()
+
+        # A cyclic set must not raise — warming is skipped, execute surfaces it.
+        gep._warm_shared_nodes(
+            {"cyclic": cyclic},
+            _StubCtx(),  # type: ignore[arg-type]
+            agent,  # type: ignore[arg-type]
+            _WORKSPACE_ID,
+            ["t1"],
+            _VERTICAL,
+            om_run_id="run-test",
+        )
+        assert agent.warmed == []
+
+
+def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`asyncio.run` is safe only because callers are synchronous.
+    """The parallel path uses a ThreadPoolExecutor, not an asyncio event loop.
 
-    The pipeline scheduler calls phases synchronously — either from the
-    main thread or from a ThreadPoolExecutor worker (the parallel-phases
-    path). Neither has a running event loop, so `asyncio.run` inside the
-    phase creates a fresh loop without conflict. If a future async-native
-    scheduler ever calls this phase from inside an existing loop, this
-    pattern would raise `RuntimeError: This event loop is already
-    running` — that case is out of scope for v0.2.2 and tracked separately.
+    The metrics activity is a SYNC Temporal activity on a thread engine; the
+    fan-out is a plain ``ThreadPoolExecutor`` (the codebase's standard primitive)
+    — no nested ``asyncio.run`` in a worker thread. Sanity-check it dispatches
+    cleanly from a sync caller with no running loop in scope.
     """
-    # Make sure no event loop is already running in this thread
     with pytest.raises(RuntimeError):
         asyncio.get_running_loop()
 

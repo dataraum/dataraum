@@ -70,3 +70,33 @@ def test_heartbeat_pulse_starts_and_stops_a_thread() -> None:
     # Give the daemon a moment to exit after stop.set().
     time.sleep(0.05)
     assert threading.active_count() <= before
+
+
+def test_heartbeat_pulse_actually_fires_from_daemon_in_context() -> None:
+    """Regression (DAT-629): the pulser daemon must INHERIT the activity context.
+
+    ``activity.heartbeat()`` resolves the activity through the ``_current_context``
+    ContextVar. A bare ``threading.Thread`` starts with an EMPTY context, so
+    without ``copy_context()`` every beat raised ``RuntimeError("Not in activity
+    context")``, the loop hit its ``except`` and exited at the first beat — the
+    pulse never fired, and the metrics activity survived only by finishing within
+    its 60s ``heartbeat_timeout``. A longer run (the warming pre-pass) blew past
+    it → cancel → leaked the sync worker's pooled connections. This asserts a
+    real beat reaches the activity from the daemon thread.
+    """
+    import temporalio.activity as activity_mod
+
+    beats: list[tuple[object, ...]] = []
+
+    class _FakeCtx:
+        # _Context.current() returns this (truthy); .heartbeat is the fn called.
+        heartbeat = staticmethod(lambda *details: beats.append(details))
+
+    token = activity_mod._current_context.set(_FakeCtx())  # type: ignore[arg-type]
+    try:
+        with _heartbeat_pulse(interval=0.02):
+            time.sleep(0.12)  # allow several beats
+    finally:
+        activity_mod._current_context.reset(token)
+
+    assert beats, "pulser daemon never heartbeat — activity context not propagated"

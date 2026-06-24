@@ -41,15 +41,16 @@ TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
 so a redelivery can inflate usage telemetry; nothing gates on it (write-only
 since DAT-487/488).
 
-Per-metric LLM calls are independent — dispatched concurrently via
-asyncio.to_thread + gather when the phase context exposes a ConnectionManager
-(each parallel call gets its own SQLAlchemy session + DuckDB cursor). Falls back
-to a serial loop in unit tests where the manager isn't wired.
+Per-metric LLM calls are independent — dispatched concurrently via a
+``ThreadPoolExecutor`` when the phase context exposes a ConnectionManager (each
+parallel call gets its own SQLAlchemy session + DuckDB cursor; ``max_workers``
+is the concurrency cap). Falls back to a serial loop in unit tests where the
+manager isn't wired.
 """
 
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -70,16 +71,20 @@ _STAGE = "operating_model"
 
 # Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
 # 4000 RPM (~67 RPS) comfortably; with ~30-60s LLM latencies, 10 concurrent
-# is ~10 RPS at peak — well under the limit.
+# is ~10 RPS at peak — well under the limit. The warming pre-pass (DAT-629) and
+# the execute wave run sequentially, each peaking at this many isolated sessions
+# (+1 phase session) — comfortably under the ConnectionManager pool (15).
 _MAX_CONCURRENT_METRICS = 10
 
 if TYPE_CHECKING:
+    import duckdb
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
+    from dataraum.graphs.node_warming import WarmNode
     from dataraum.lifecycle import LifecycleArtifact
 
     MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
@@ -238,6 +243,19 @@ class MetricsPhase(BasePhase):
                     hint_sql = hint_snippet.sql
             prep.append((graph_id, graph, hint_sql, inspiration_id))
 
+        # warm (DAT-629): before the per-metric fan-out, author each UNIQUE
+        # cache-keyed node once, in dependency order. metrics_phase executes
+        # metrics in parallel; a sub-node shared by several metrics (e.g. the
+        # cost_of_goods_sold extract) is cold for all of them at once, so each
+        # independently LLM-authors it — they diverge and some ground to an empty
+        # filter (born-loud "no support"). Warming the shared node-set first lets
+        # the execute below assemble those nodes from the now-warm snippet cache —
+        # consistent, no within-run race. Best-effort: a node that fails to warm
+        # just falls back to per-metric authoring (the pre-DAT-629 behavior).
+        _warm_shared_nodes(
+            graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
+        )
+
         # execute: run each composed metric. Parallel when the manager is wired,
         # serial fallback otherwise.
         if ctx.manager is not None:
@@ -314,6 +332,189 @@ class MetricsPhase(BasePhase):
 
 
 # ---------------------------------------------------------------------------
+# Node warming pre-pass (DAT-629)
+# ---------------------------------------------------------------------------
+
+
+def _warm_shared_nodes(
+    graphs: dict[str, TransformationGraph],
+    ctx: PhaseContext,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    *,
+    om_run_id: str,
+) -> None:
+    """Topo-warm the unique cache-keyed nodes before the per-metric fan-out.
+
+    Builds the cross-metric DAG, then warms each unique node once in dependency
+    order: a generation runs concurrently (independent nodes), with a barrier
+    between generations so a formula node sees its dep extracts already cached.
+    The per-metric ``execute`` that follows assembles the warmed nodes from the
+    snippet cache with no LLM call — consistent and race-free.
+
+    This is purely an optimization of the cache-warming order. A cyclic metric
+    set or a node that fails to warm is non-fatal: warming is skipped/best-effort
+    and the per-metric execute surfaces any real failure born-loud as before.
+    """
+    from dataraum.graphs.node_warming import build_warm_dag, warming_generations
+
+    try:
+        dag, nodes = build_warm_dag(graphs)
+    except ValueError as e:
+        _log.warning("metric_warm_dag_failed", error=str(e))
+        return
+
+    generations = warming_generations(dag)
+    if not generations:
+        return
+
+    _log.info(
+        "metrics_warming_start",
+        nodes=sum(len(g) for g in generations),
+        generations=len(generations),
+    )
+
+    if ctx.manager is not None:
+        _warm_generations_parallel(
+            generations,
+            nodes,
+            ctx.manager,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+        )
+    else:
+        _warm_generations_serial(
+            generations,
+            nodes,
+            ctx.session,
+            ctx.duckdb_conn,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+        )
+
+
+def _warm_generations_parallel(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Warm generations concurrently within each wave, barrier between waves.
+
+    One ``ThreadPoolExecutor`` (``max_workers`` IS the concurrency cap — no
+    separate semaphore), the engine's standard fan-out primitive for blocking
+    SQLAlchemy/DuckDB/LLM work on the sync activity worker. Draining each
+    generation's futures before submitting the next is the load-bearing barrier:
+    generation N+1's formula nodes must see generation N's extracts already
+    committed to the cache so they assemble from the warm cache rather than
+    re-authoring. A node that raises is logged and skipped — warming is an
+    optimization, never fatal; the per-metric execute authors any un-warmed node.
+    """
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
+    ) as pool:
+        for generation in generations:
+            futures = {
+                pool.submit(
+                    _warm_isolated,
+                    nodes[key],
+                    manager,
+                    agent,
+                    schema_mapping_id,
+                    table_ids,
+                    vertical,
+                    om_run_id,
+                ): key
+                for key in generation
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    _log.warning(
+                        "metric_node_warm_error", node=str(futures[future]), error=str(exc)
+                    )
+
+
+def _warm_isolated(
+    node: WarmNode,
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Warm one node with an isolated session + cursor (mirrors _execute_isolated)."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import build_mini_graph
+
+    mini = build_mini_graph(node)
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=cursor,
+            table_ids=table_ids,
+            schema_mapping_id=schema_mapping_id,
+            om_run_id=om_run_id,
+            vertical=vertical,
+        )
+        result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
+    if not result.success:
+        # Inconclusive warm (e.g. an extract with genuinely no support): not an
+        # error — the metric using it will surface it born-loud at execute.
+        _log.info("metric_node_warm_inconclusive", node=str(node.key), reason=result.error)
+
+
+def _warm_generations_serial(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Serial fallback: shared session + cursor, sequential dependency order."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import build_mini_graph
+
+    exec_ctx = ExecutionContext.with_rich_context(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        schema_mapping_id=schema_mapping_id,
+        om_run_id=om_run_id,
+        vertical=vertical,
+    )
+    for generation in generations:
+        for key in generation:
+            try:
+                result = agent.execute(
+                    session, build_mini_graph(nodes[key]), exec_ctx, workspace_id=schema_mapping_id
+                )
+            except Exception as exc:
+                _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                continue
+            if not result.success:
+                _log.info("metric_node_warm_inconclusive", node=str(key), reason=result.error)
+
+
+# ---------------------------------------------------------------------------
 # Per-metric dispatch
 # ---------------------------------------------------------------------------
 
@@ -348,46 +549,44 @@ def _execute_metrics_parallel(
     *,
     om_run_id: str,
 ) -> list[MetricResult]:
-    """Concurrent path: per-call session + cursor, gathered via asyncio.
+    """Concurrent path: per-call session + cursor via a ThreadPoolExecutor.
 
-    Each metric runs `agent.execute` on a thread with its own SQLAlchemy
+    Each metric runs `agent.execute` on a pool thread with its own SQLAlchemy
     session (auto-commit via session_scope) and its own DuckDB cursor.
-    A semaphore caps in-flight LLM calls to _MAX_CONCURRENT_METRICS.
-    ``om_run_id`` is this operating_model run — the graph context reads its
-    cycles/validation evidence at this run, not the (not-yet-promoted) head.
+    ``max_workers`` caps in-flight LLM calls to _MAX_CONCURRENT_METRICS — the
+    engine's standard fan-out primitive (no asyncio event loop on the sync
+    activity worker). ``om_run_id`` is this operating_model run — the graph
+    context reads its cycles/validation evidence at this run, not the
+    (not-yet-promoted) head.
     """
-
-    async def _run_all() -> list[MetricResult]:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
-
-        async def _run_one(
-            graph_id: str,
-            graph: TransformationGraph,
-            hint_sql: str | None,
-            inspiration_id: str | None,
-        ) -> MetricResult:
-            async with sem:
-                # Capture unexpected exceptions as Result.fail so one worker
-                # raising doesn't abort siblings via gather propagation.
-                try:
-                    result = await asyncio.to_thread(
-                        _execute_isolated,
-                        graph,
-                        hint_sql,
-                        manager,
-                        agent,
-                        schema_mapping_id,
-                        table_ids,
-                        vertical,
-                        om_run_id,
-                    )
-                except Exception as exc:
-                    result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
-            return graph_id, result, inspiration_id
-
-        return await asyncio.gather(*(_run_one(gid, g, hsql, iid) for gid, g, hsql, iid in prep))
-
-    return asyncio.run(_run_all())
+    out: list[MetricResult] = []
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric"
+    ) as pool:
+        futures = {
+            pool.submit(
+                _execute_isolated,
+                graph,
+                hint_sql,
+                manager,
+                agent,
+                schema_mapping_id,
+                table_ids,
+                vertical,
+                om_run_id,
+            ): (graph_id, inspiration_id)
+            for graph_id, graph, hint_sql, inspiration_id in prep
+        }
+        for future in as_completed(futures):
+            graph_id, inspiration_id = futures[future]
+            # Capture unexpected exceptions as Result.fail so one worker raising
+            # doesn't abort siblings.
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
+            out.append((graph_id, result, inspiration_id))
+    return out
 
 
 def _execute_isolated(

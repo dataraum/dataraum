@@ -1,0 +1,191 @@
+"""Topo-warm the shared-node metric DAG before the parallel fan-out (DAT-629).
+
+``metrics_phase`` authors every metric in parallel. Each metric's ``agent.execute``
+looks up cached snippets at its start, so a sub-node shared by several metrics
+(e.g. the ``cost_of_goods_sold`` extract) is **cold** for all of them at once —
+each metric independently LLM-authors it, they diverge, and some ground to an
+empty filter (born-loud ``no support``). Cross-run reuse works; *within*-run
+authoring is racy.
+
+The fix is not to restructure the agent — the snippet cache already covers every
+step type and assembles a fully-cached graph with no LLM. The only defect is the
+cache is cold during the parallel burst. So we **warm the unique nodes in
+dependency order before the fan-out**: dedup every step across all metric graphs
+to its global cache key, topologically order them, and warm each once. The
+existing per-metric ``execute`` then assembles from the warm cache — unchanged,
+no race, consistent.
+
+This module is two layers:
+
+* a **pure** DAG builder (:func:`build_warm_dag` / :func:`warming_generations`) —
+  no execution, fully unit-testable;
+* a **warmer** (:func:`warm_nodes`) that runs one mini-graph per unique node
+  through the graph agent so its concept-keyed snippet gets minted.
+
+The node key mirrors the snippet cache key *exactly* (extract → standard_field /
+statement / aggregation; constant → parameter / value; formula → normalized
+expression), so warming mints precisely what the per-metric ``_lookup_snippets``
+will later find.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import networkx as nx
+
+from dataraum.graphs.models import StepType
+from dataraum.query.snippet_utils import normalize_expression
+
+if TYPE_CHECKING:
+    from dataraum.graphs.models import GraphStep, TransformationGraph
+
+# A node's global identity — a tuple mirroring the snippet cache key. Hashable,
+# so it doubles as the networkx node id.
+NodeKey = tuple[str | None, ...]
+
+
+@dataclass(frozen=True)
+class WarmNode:
+    """A unique cache-keyed node in the cross-metric DAG.
+
+    ``key`` is the global dedup identity (mirrors the snippet cache key, so
+    warming this node mints exactly what a later per-metric lookup finds).
+    ``graph`` / ``step`` are the *representative* occurrence — the first one
+    seen — used to build the warming mini-graph. The snippet is concept-keyed,
+    so which representative we pick does not affect later lookups.
+    """
+
+    key: NodeKey
+    graph: TransformationGraph
+    step: GraphStep
+
+
+def _resolve_constant_value(step: GraphStep, graph: TransformationGraph) -> str | None:
+    """Resolve a constant step's parameter default to its string cache value."""
+    if not step.parameter:
+        return None
+    for param in graph.parameters:
+        if param.name == step.parameter:
+            return str(param.default) if param.default is not None else None
+    return None
+
+
+def node_key(step: GraphStep, graph: TransformationGraph) -> NodeKey | None:
+    """Global dedup key for a step, mirroring the snippet cache key.
+
+    Returns ``None`` for a step that cannot be cache-keyed (an extract with no
+    source, a formula with no expression) — such a step is never warmed; it
+    falls through to per-metric authoring as before.
+    """
+    if step.step_type == StepType.EXTRACT:
+        if not step.source:
+            return None
+        return ("extract", step.source.standard_field, step.source.statement, step.aggregation)
+    if step.step_type == StepType.CONSTANT:
+        # Mirror _save_snippets/_lookup_snippets: keyed by parameter name (or the
+        # local step_id when there is no parameter) + the resolved value. The
+        # step_id fallback is graph-local, so two graphs sharing a step_id but
+        # different values could in principle collide — that's the EXISTING cache
+        # keying (we mirror it exactly so warming mints what lookup finds); it
+        # does not arise in practice (parameterized constants carry a parameter).
+        return ("constant", step.parameter or step.step_id, _resolve_constant_value(step, graph))
+    if step.step_type == StepType.FORMULA:
+        if not step.expression:
+            return None
+        normalized, _, _ = normalize_expression(step.expression)
+        return ("formula", normalized)
+    return None
+
+
+def build_warm_dag(
+    graphs: dict[str, TransformationGraph],
+) -> tuple[nx.DiGraph, dict[NodeKey, WarmNode]]:
+    """Build the cross-metric DAG of unique cache-keyed nodes.
+
+    Every cache-keyable step across all graphs collapses to one node by its
+    global key; edges follow ``depends_on`` (resolved through each graph's local
+    step ids). A cycle is a malformed metric set — raised, not tolerated.
+
+    Returns the ``networkx`` DiGraph (node ids are :data:`NodeKey` tuples) and a
+    map from key to its representative :class:`WarmNode`.
+    """
+    dag: nx.DiGraph = nx.DiGraph()
+    nodes: dict[NodeKey, WarmNode] = {}
+    # Per-graph: local step_id -> global node key, to resolve depends_on edges.
+    local_to_key: dict[str, dict[str, NodeKey]] = {}
+
+    for graph_id, graph in graphs.items():
+        per_graph: dict[str, NodeKey] = {}
+        local_to_key[graph_id] = per_graph
+        for step_id, step in graph.steps.items():
+            key = node_key(step, graph)
+            if key is None:
+                continue
+            per_graph[step_id] = key
+            if key not in nodes:
+                nodes[key] = WarmNode(key=key, graph=graph, step=step)
+                dag.add_node(key)
+
+    for graph_id, graph in graphs.items():
+        per_graph = local_to_key[graph_id]
+        for step_id, step in graph.steps.items():
+            key = per_graph.get(step_id)
+            if key is None:
+                continue
+            for dep_local in step.depends_on:
+                dep_key = per_graph.get(dep_local)
+                if dep_key is not None and dep_key != key:
+                    dag.add_edge(dep_key, key)
+
+    try:
+        cycle = nx.find_cycle(dag)
+    except nx.NetworkXNoCycle:
+        cycle = None
+    if cycle:
+        raise ValueError(f"metric DAG has a dependency cycle: {cycle}")
+
+    return dag, nodes
+
+
+def warming_generations(dag: nx.DiGraph) -> list[list[NodeKey]]:
+    """Topologically ordered waves: generation N depends only on < N.
+
+    Nodes within a generation are independent — safe to warm concurrently.
+    """
+    return [list(generation) for generation in nx.topological_generations(dag)]
+
+
+def build_mini_graph(node: WarmNode) -> TransformationGraph:
+    """Minimal single-output graph for warming one node.
+
+    The representative step plus its transitive dependency steps (taken from the
+    representative graph, original local step ids preserved so ``depends_on``
+    resolves), with **only** the warmed node marked as the output step. The
+    deps are already warm by the time a later-generation node is warmed, so the
+    agent assembles them from cache and only authors this node.
+
+    Steps are **copied** (:func:`dataclasses.replace`) — the originals belong to
+    the real metric graphs that execute later in the phase; warming must never
+    mutate their ``output_step`` flag.
+    """
+    graph = node.graph
+    needed: dict[str, GraphStep] = {}
+    stack = [node.step.step_id]
+    while stack:
+        step_id = stack.pop()
+        if step_id in needed:
+            continue
+        step = graph.steps.get(step_id)
+        if step is None:
+            continue
+        needed[step_id] = step
+        stack.extend(step.depends_on)
+
+    mini_steps = {
+        step_id: dataclasses.replace(step, output_step=(step_id == node.step.step_id))
+        for step_id, step in needed.items()
+    }
+    return dataclasses.replace(graph, steps=mini_steps)

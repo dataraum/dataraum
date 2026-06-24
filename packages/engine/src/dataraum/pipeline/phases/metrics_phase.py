@@ -439,7 +439,14 @@ def _warm_generations_parallel(
         for generation in generations:
             await asyncio.gather(*(_warm_one(key) for key in generation))
 
-    asyncio.run(_run_all())
+    # Outer guard: each node is already isolated in _warm_one, but gather/loop
+    # teardown (e.g. external cancellation) can still raise. Warming is an
+    # optimization — never let it abort the phase; the per-metric execute follows
+    # regardless, authoring any un-warmed node as before.
+    try:
+        asyncio.run(_run_all())
+    except Exception as exc:
+        _log.warning("metric_warming_run_failed", error=str(exc))
 
 
 def _warm_isolated(

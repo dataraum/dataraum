@@ -89,7 +89,11 @@ def node_key(step: GraphStep, graph: TransformationGraph) -> NodeKey | None:
         return ("extract", step.source.standard_field, step.source.statement, step.aggregation)
     if step.step_type == StepType.CONSTANT:
         # Mirror _save_snippets/_lookup_snippets: keyed by parameter name (or the
-        # local step_id when there is no parameter) + the resolved value.
+        # local step_id when there is no parameter) + the resolved value. The
+        # step_id fallback is graph-local, so two graphs sharing a step_id but
+        # different values could in principle collide — that's the EXISTING cache
+        # keying (we mirror it exactly so warming mints what lookup finds); it
+        # does not arise in practice (parameterized constants carry a parameter).
         return ("constant", step.parameter or step.step_id, _resolve_constant_value(step, graph))
     if step.step_type == StepType.FORMULA:
         if not step.expression:

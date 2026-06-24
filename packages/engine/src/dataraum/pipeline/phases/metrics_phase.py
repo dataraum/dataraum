@@ -74,12 +74,14 @@ _STAGE = "operating_model"
 _MAX_CONCURRENT_METRICS = 10
 
 if TYPE_CHECKING:
+    import duckdb
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
+    from dataraum.graphs.node_warming import WarmNode
     from dataraum.lifecycle import LifecycleArtifact
 
     MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
@@ -238,6 +240,19 @@ class MetricsPhase(BasePhase):
                     hint_sql = hint_snippet.sql
             prep.append((graph_id, graph, hint_sql, inspiration_id))
 
+        # warm (DAT-629): before the per-metric fan-out, author each UNIQUE
+        # cache-keyed node once, in dependency order. metrics_phase executes
+        # metrics in parallel; a sub-node shared by several metrics (e.g. the
+        # cost_of_goods_sold extract) is cold for all of them at once, so each
+        # independently LLM-authors it — they diverge and some ground to an empty
+        # filter (born-loud "no support"). Warming the shared node-set first lets
+        # the execute below assemble those nodes from the now-warm snippet cache —
+        # consistent, no within-run race. Best-effort: a node that fails to warm
+        # just falls back to per-metric authoring (the pre-DAT-629 behavior).
+        _warm_shared_nodes(
+            graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
+        )
+
         # execute: run each composed metric. Parallel when the manager is wired,
         # serial fallback otherwise.
         if ctx.manager is not None:
@@ -311,6 +326,179 @@ class MetricsPhase(BasePhase):
                 f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed"
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Node warming pre-pass (DAT-629)
+# ---------------------------------------------------------------------------
+
+
+def _warm_shared_nodes(
+    graphs: dict[str, TransformationGraph],
+    ctx: PhaseContext,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    *,
+    om_run_id: str,
+) -> None:
+    """Topo-warm the unique cache-keyed nodes before the per-metric fan-out.
+
+    Builds the cross-metric DAG, then warms each unique node once in dependency
+    order: a generation runs concurrently (independent nodes), with a barrier
+    between generations so a formula node sees its dep extracts already cached.
+    The per-metric ``execute`` that follows assembles the warmed nodes from the
+    snippet cache with no LLM call — consistent and race-free.
+
+    This is purely an optimization of the cache-warming order. A cyclic metric
+    set or a node that fails to warm is non-fatal: warming is skipped/best-effort
+    and the per-metric execute surfaces any real failure born-loud as before.
+    """
+    from dataraum.graphs.node_warming import build_warm_dag, warming_generations
+
+    try:
+        dag, nodes = build_warm_dag(graphs)
+    except ValueError as e:
+        _log.warning("metric_warm_dag_failed", error=str(e))
+        return
+
+    generations = warming_generations(dag)
+    if not generations:
+        return
+
+    _log.info(
+        "metrics_warming_start",
+        nodes=sum(len(g) for g in generations),
+        generations=len(generations),
+    )
+
+    if ctx.manager is not None:
+        _warm_generations_parallel(
+            generations, nodes, ctx.manager, agent, schema_mapping_id, table_ids, vertical, om_run_id
+        )
+    else:
+        _warm_generations_serial(
+            generations,
+            nodes,
+            ctx.session,
+            ctx.duckdb_conn,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+        )
+
+
+def _warm_generations_parallel(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Warm generations concurrently within each wave, barrier between waves.
+
+    The barrier (``gather`` per generation) is load-bearing: generation N+1's
+    formula nodes must see generation N's extracts already committed to the
+    cache, so they assemble from the warm cache rather than re-authoring.
+    """
+
+    async def _run_all() -> None:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
+
+        async def _warm_one(key: tuple[str | None, ...]) -> None:
+            async with sem:
+                try:
+                    await asyncio.to_thread(
+                        _warm_isolated,
+                        nodes[key],
+                        manager,
+                        agent,
+                        schema_mapping_id,
+                        table_ids,
+                        vertical,
+                        om_run_id,
+                    )
+                except Exception as exc:
+                    # Never abort siblings or the phase — fall back to per-metric
+                    # authoring for this node.
+                    _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+
+        for generation in generations:
+            await asyncio.gather(*(_warm_one(key) for key in generation))
+
+    asyncio.run(_run_all())
+
+
+def _warm_isolated(
+    node: WarmNode,
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Warm one node with an isolated session + cursor (mirrors _execute_isolated)."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import build_mini_graph
+
+    mini = build_mini_graph(node)
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=cursor,
+            table_ids=table_ids,
+            schema_mapping_id=schema_mapping_id,
+            om_run_id=om_run_id,
+            vertical=vertical,
+        )
+        result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
+    if not result.success:
+        # Inconclusive warm (e.g. an extract with genuinely no support): not an
+        # error — the metric using it will surface it born-loud at execute.
+        _log.info("metric_node_warm_inconclusive", node=str(node.key), reason=result.error)
+
+
+def _warm_generations_serial(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> None:
+    """Serial fallback: shared session + cursor, sequential dependency order."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import build_mini_graph
+
+    exec_ctx = ExecutionContext.with_rich_context(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        schema_mapping_id=schema_mapping_id,
+        om_run_id=om_run_id,
+        vertical=vertical,
+    )
+    for generation in generations:
+        for key in generation:
+            try:
+                result = agent.execute(
+                    session, build_mini_graph(nodes[key]), exec_ctx, workspace_id=schema_mapping_id
+                )
+            except Exception as exc:
+                _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                continue
+            if not result.success:
+                _log.info("metric_node_warm_inconclusive", node=str(key), reason=result.error)
 
 
 # ---------------------------------------------------------------------------

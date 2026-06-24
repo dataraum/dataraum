@@ -30,6 +30,7 @@ will later find.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -154,3 +155,36 @@ def warming_generations(dag: nx.DiGraph) -> list[list[NodeKey]]:
     Nodes within a generation are independent — safe to warm concurrently.
     """
     return [list(generation) for generation in nx.topological_generations(dag)]
+
+
+def build_mini_graph(node: WarmNode) -> TransformationGraph:
+    """Minimal single-output graph for warming one node.
+
+    The representative step plus its transitive dependency steps (taken from the
+    representative graph, original local step ids preserved so ``depends_on``
+    resolves), with **only** the warmed node marked as the output step. The
+    deps are already warm by the time a later-generation node is warmed, so the
+    agent assembles them from cache and only authors this node.
+
+    Steps are **copied** (:func:`dataclasses.replace`) — the originals belong to
+    the real metric graphs that execute later in the phase; warming must never
+    mutate their ``output_step`` flag.
+    """
+    graph = node.graph
+    needed: dict[str, GraphStep] = {}
+    stack = [node.step.step_id]
+    while stack:
+        step_id = stack.pop()
+        if step_id in needed:
+            continue
+        step = graph.steps.get(step_id)
+        if step is None:
+            continue
+        needed[step_id] = step
+        stack.extend(step.depends_on)
+
+    mini_steps = {
+        step_id: dataclasses.replace(step, output_step=(step_id == node.step.step_id))
+        for step_id, step in needed.items()
+    }
+    return dataclasses.replace(graph, steps=mini_steps)

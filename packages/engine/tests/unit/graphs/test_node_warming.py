@@ -21,6 +21,8 @@ from dataraum.graphs.models import (
     TransformationGraph,
 )
 from dataraum.graphs.node_warming import (
+    WarmNode,
+    build_mini_graph,
     build_warm_dag,
     node_key,
     warming_generations,
@@ -189,3 +191,51 @@ class TestBuildWarmDag:
         _, nodes = build_warm_dag({"m": g})
         assert len(nodes) == 1
         assert ("extract", "revenue", "income_statement", "sum") in nodes
+
+
+class TestBuildMiniGraph:
+    def test_extract_node_is_single_output_step(self) -> None:
+        g = _graph("gross_margin", {"cogs": _extract("cogs", "cost_of_goods_sold")})
+        _, nodes = build_warm_dag({"gross_margin": g})
+        node = nodes[("extract", "cost_of_goods_sold", "income_statement", "sum")]
+
+        mini = build_mini_graph(node)
+
+        assert set(mini.steps) == {"cogs"}
+        assert mini.steps["cogs"].output_step is True
+        assert mini.get_output_step() is mini.steps["cogs"]
+
+    def test_formula_node_includes_transitive_deps(self) -> None:
+        g = _graph(
+            "gross_margin",
+            {
+                "rev": _extract("rev", "revenue"),
+                "cogs": _extract("cogs", "cost_of_goods_sold"),
+                "gp": _formula("gp", "revenue - cogs", ["rev", "cogs"]),
+            },
+        )
+        _, nodes = build_warm_dag({"gross_margin": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        mini = build_mini_graph(nodes[formula_key])
+
+        # Formula + both dep extracts, with only the formula as output.
+        assert set(mini.steps) == {"rev", "cogs", "gp"}
+        assert mini.steps["gp"].output_step is True
+        assert mini.steps["rev"].output_step is False
+        assert mini.steps["cogs"].output_step is False
+        # depends_on preserved so the agent assembles deps from the warm cache.
+        assert set(mini.steps["gp"].depends_on) == {"rev", "cogs"}
+
+    def test_originals_are_not_mutated(self) -> None:
+        """The warmed node's output_step flip must not touch the real graph."""
+        rev = _extract("rev", "revenue")  # output_step defaults to False
+        g = _graph("gross_margin", {"rev": rev})
+        _, nodes = build_warm_dag({"gross_margin": g})
+        node = nodes[("extract", "revenue", "income_statement", "sum")]
+
+        mini = build_mini_graph(node)
+
+        assert mini.steps["rev"].output_step is True
+        assert rev.output_step is False  # original untouched
+        assert g.steps["rev"].output_step is False

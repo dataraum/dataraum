@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { MantineProvider } from "@mantine/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
@@ -8,10 +9,17 @@ import { FocusCanvas } from "#/ui/cockpit/focus-canvas";
 import { theme } from "#/ui/theme";
 
 function renderCanvas(state: CanvasState) {
+	// The result-grid widget pages via useInfiniteQuery (DAT-613), so a
+	// QueryClient must be in scope for it to mount.
+	const qc = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
 	render(
-		<MantineProvider theme={theme} env="test">
-			<FocusCanvas state={state} />
-		</MantineProvider>,
+		<QueryClientProvider client={qc}>
+			<MantineProvider theme={theme} env="test">
+				<FocusCanvas state={state} />
+			</MantineProvider>
+		</QueryClientProvider>,
 	);
 }
 

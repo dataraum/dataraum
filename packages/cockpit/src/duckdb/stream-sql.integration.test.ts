@@ -19,10 +19,14 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-	type AbortSignalLike,
+	buildFilterClause,
 	buildGridQuery,
 	clampGridCap,
+	type GridFilter,
 	type GridSort,
+} from "./grid-query";
+import {
+	type AbortSignalLike,
 	type ResultFrame,
 	type StreamableResult,
 	streamNdjson,
@@ -341,5 +345,214 @@ describe("streamNdjson over a real DuckLake lake (DAT-385)", () => {
 		expect(batch.cols[0]).toEqual([1, 2, 3]);
 		expect(batch.cols[1]).toEqual(["acme", "beta", "acme"]);
 		expect(after.at(-1)).toEqual({ t: "f", rows: 3 });
+	});
+});
+
+/**
+ * Stream ONE windowed page exactly as the route does (DAT-613): build the
+ * LIMIT/OFFSET window query and stream it with `cap = limit`, so the route's +1
+ * over-fetch surfaces as footer.truncated = has-more. Returns the first column's
+ * values plus the has-more flag.
+ */
+async function streamWindow(
+	sql: string,
+	limit: number,
+	offset: number,
+	sort?: GridSort,
+): Promise<{ rows: (string | number | null)[]; hasMore: boolean }> {
+	const wrapped = buildGridQuery(sql, sort ?? null, { limit, offset });
+	const result = (await readerConn.stream(
+		wrapped,
+	)) as unknown as StreamableResult;
+	const rows: (string | number | null)[] = [];
+	let hasMore = false;
+	for await (const line of streamNdjson(result, limit, "q_win")) {
+		const frame = JSON.parse(line) as ResultFrame;
+		if (frame.t === "b") {
+			for (const v of frame.cols[0]) rows.push(v as string | number | null);
+		} else if (frame.t === "f") {
+			hasMore = frame.truncated === true;
+		}
+	}
+	return { rows, hasMore };
+}
+
+describe("windowed paging over a real DuckLake lake (DAT-613)", () => {
+	it("pages the full result with stable, non-overlapping, gap-free windows", async () => {
+		const PAGE = 1000;
+		const seen: (string | number | null)[] = [];
+		let offset = 0;
+		let guard = 0;
+		for (;;) {
+			if (++guard > 10) throw new Error("paging did not terminate");
+			const { rows, hasMore } = await streamWindow(
+				"SELECT n FROM lake.typed.big",
+				PAGE,
+				offset,
+			);
+			expect(rows.length).toBeLessThanOrEqual(PAGE);
+			seen.push(...rows);
+			if (!hasMore) break;
+			offset += PAGE;
+		}
+		// Every row exactly once: 5000 distinct values 0..4999, no overlap, no gap.
+		expect(seen.length).toBe(5000);
+		const nums = seen.map(Number).sort((a, b) => a - b);
+		expect(new Set(nums).size).toBe(5000);
+		expect(nums[0]).toBe(0);
+		expect(nums[4999]).toBe(4999);
+	});
+
+	it("pages a duplicate-heavy column with the correct multiset (full-dup safety)", async () => {
+		// `ORDER BY ALL` orders by VALUES, not row identity — rows identical in every
+		// column are interchangeable. A page boundary that splits a run of duplicates
+		// must still yield the correct multiset (no skip, no dup). bucket = n % 7 over
+		// 5000 rows → 7 distinct values, ~714 each, heavily duplicated.
+		const PAGE = 1000;
+		const counts = new Map<number, number>();
+		let offset = 0;
+		let guard = 0;
+		for (;;) {
+			if (++guard > 10) throw new Error("paging did not terminate");
+			const { rows, hasMore } = await streamWindow(
+				"SELECT n % 7 AS bucket FROM lake.typed.big",
+				PAGE,
+				offset,
+			);
+			for (const v of rows) {
+				const k = Number(v);
+				counts.set(k, (counts.get(k) ?? 0) + 1);
+			}
+			if (!hasMore) break;
+			offset += PAGE;
+		}
+		const total = [...counts.values()].reduce((a, b) => a + b, 0);
+		expect(total).toBe(5000);
+		// Reconstruct the expected multiset and compare exactly.
+		const expected = new Map<number, number>();
+		for (let i = 0; i < 5000; i++) {
+			const k = i % 7;
+			expected.set(k, (expected.get(k) ?? 0) + 1);
+		}
+		expect([...counts.entries()].sort()).toEqual(
+			[...expected.entries()].sort(),
+		);
+	});
+
+	it("does NOT flag has-more when the window exactly drains the result", async () => {
+		// 1000-row result, page of 1000: the +1 over-fetch finds nothing past it, so
+		// the last page reads as a clean finish — no spurious empty next page.
+		const { rows, hasMore } = await streamWindow(
+			"SELECT n FROM lake.typed.big WHERE n < 1000",
+			1000,
+			0,
+		);
+		expect(rows.length).toBe(1000);
+		expect(hasMore).toBe(false);
+	});
+
+	it("flags has-more while rows remain past the window", async () => {
+		const { rows, hasMore } = await streamWindow(
+			"SELECT n FROM lake.typed.big",
+			100,
+			0,
+		);
+		expect(rows.length).toBe(100);
+		expect(hasMore).toBe(true);
+	});
+
+	it("orders sorted windows across the FULL result, stable across pages", async () => {
+		// n DESC: page 0 is the global top, page 1 continues it — the sort runs over
+		// the whole result before each window is cut, not just within a window.
+		const sort: GridSort = { column: "n", dir: "desc" };
+		const p0 = await streamWindow("SELECT n FROM lake.typed.big", 3, 0, sort);
+		const p1 = await streamWindow("SELECT n FROM lake.typed.big", 3, 3, sort);
+		expect(p0.rows.map(Number)).toEqual([4999, 4998, 4997]);
+		expect(p0.hasMore).toBe(true);
+		expect(p1.rows.map(Number)).toEqual([4996, 4995, 4994]);
+	});
+
+	it("applies push-down filters (WHERE) over the FULL result before the window", async () => {
+		// Mirror the route: compose the WHERE + its bind params, then window over
+		// the filtered result. `customer = 'acme'` keeps 2 of 3 orders; ORDER BY ALL
+		// makes the page deterministic.
+		const filters: GridFilter[] = [
+			{ column: "customer", op: "eq", value: "acme" },
+		];
+		const { where, params } = buildFilterClause(filters, 0);
+		const wrapped = buildGridQuery(
+			"SELECT id, customer FROM lake.typed.orders",
+			null,
+			{ limit: 10, offset: 0 },
+			where,
+		);
+		const result = (await readerConn.stream(
+			wrapped,
+			params,
+		)) as unknown as StreamableResult;
+		const ids: (string | number | null)[] = [];
+		for await (const line of streamNdjson(result, 10, "q_filter")) {
+			const frame = JSON.parse(line) as ResultFrame;
+			if (frame.t === "b")
+				for (const v of frame.cols[0]) ids.push(v as string | number | null);
+		}
+		expect(ids).toEqual([1, 3]);
+	});
+
+	it("binds a comparison filter and numbers it after a user param", async () => {
+		// User query carries its own $1; the filter's value binds at $2 — the
+		// renumbering the route does. `amount > 10` over customer='acme' rows
+		// (10.00, 50.50) keeps only 50.50.
+		const userParams = ["acme"];
+		const filters: GridFilter[] = [{ column: "amount", op: "gt", value: "10" }];
+		const { where, params } = buildFilterClause(filters, userParams.length);
+		const wrapped = buildGridQuery(
+			"SELECT id, amount FROM lake.typed.orders WHERE customer = $1",
+			null,
+			{ limit: 10, offset: 0 },
+			where,
+		);
+		const result = (await readerConn.stream(wrapped, [
+			...userParams,
+			...params,
+		])) as unknown as StreamableResult;
+		const rows: {
+			id: (string | number | null)[];
+			amount: (string | number | null)[];
+		} = { id: [], amount: [] };
+		for await (const line of streamNdjson(result, 10, "q_filter2")) {
+			const frame = JSON.parse(line) as ResultFrame;
+			if (frame.t === "b") {
+				for (const v of frame.cols[0])
+					rows.id.push(v as string | number | null);
+				for (const v of frame.cols[1])
+					rows.amount.push(v as string | number | null);
+			}
+		}
+		expect(rows.id).toEqual([3]);
+		expect(rows.amount).toEqual(["50.50"]);
+	});
+
+	it("keeps a window stable under heavy ties via the COLUMNS(*) tiebreaker", async () => {
+		// `orders.customer` has ties ('acme' twice). Sort by it with page size 2: the
+		// COLUMNS(*) tiebreaker gives the tied rows a deterministic order, so the two
+		// pages partition the 3 rows with no overlap.
+		const sort: GridSort = { column: "customer", dir: "asc" };
+		const p0 = await streamWindow(
+			"SELECT customer FROM lake.typed.orders",
+			2,
+			0,
+			sort,
+		);
+		const p1 = await streamWindow(
+			"SELECT customer FROM lake.typed.orders",
+			2,
+			2,
+			sort,
+		);
+		expect(p0.rows).toEqual(["acme", "acme"]);
+		expect(p0.hasMore).toBe(true);
+		expect(p1.rows).toEqual(["beta"]);
+		expect(p1.hasMore).toBe(false);
 	});
 });

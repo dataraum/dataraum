@@ -167,3 +167,19 @@ export function cellAlign(duckdbType?: Json): "left" | "right" {
 	const id = typeIdOf(duckdbType);
 	return id !== undefined && NUMERIC_IDS.has(id) ? "right" : "left";
 }
+
+/** The filter category a column's DuckDB type falls into (DAT-613): numeric and
+ * temporal columns get comparison operators in the grid's filter row; everything
+ * else (text, boolean, blob, nested) gets a substring match. Mirrors the same
+ * NUMERIC/DATETIME id sets the formatting uses, so filter affordances and cell
+ * rendering agree on what a column "is". */
+export function columnFilterKind(
+	duckdbType?: Json,
+): "numeric" | "temporal" | "text" {
+	const id = typeIdOf(duckdbType);
+	if (id !== undefined) {
+		if (NUMERIC_IDS.has(id)) return "numeric";
+		if (id === TYPE.DATE || DATETIME_IDS.has(id)) return "temporal";
+	}
+	return "text";
+}

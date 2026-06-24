@@ -9,7 +9,7 @@
 
 import type { Json } from "@duckdb/node-api";
 import { describe, expect, it } from "vitest";
-import { cellAlign, formatCell } from "#/duckdb/cell-format";
+import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
 
 // neo columnTypesJson() shape — { typeId, … }. Only typeId drives formatting.
 const T = (typeId: number, extra: Record<string, unknown> = {}): Json =>
@@ -146,6 +146,26 @@ describe("cellAlign", () => {
 			undefined,
 		]) {
 			expect(cellAlign(t)).toBe("left");
+		}
+	});
+});
+
+describe("columnFilterKind (DAT-613)", () => {
+	it("classes numeric types as numeric", () => {
+		for (const t of [INTEGER, BIGINT, DOUBLE, DECIMAL]) {
+			expect(columnFilterKind(t)).toBe("numeric");
+		}
+	});
+
+	it("classes date + timestamp types as temporal", () => {
+		for (const t of [DATE, TIMESTAMP, TIMESTAMP_TZ]) {
+			expect(columnFilterKind(t)).toBe("temporal");
+		}
+	});
+
+	it("falls back to text for varchar, boolean, and unknown/absent types", () => {
+		for (const t of [VARCHAR, BOOLEAN, undefined]) {
+			expect(columnFilterKind(t)).toBe("text");
 		}
 	});
 });

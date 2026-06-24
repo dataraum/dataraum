@@ -14,118 +14,20 @@
 // `JsonDuckDBValueConverter` coercion (bigint→string, dates→ISO, nested→plain
 // JSON) that `query-result.ts` already relies on.
 //
-// This module is the PURE core: the frame protocol, the cap clamp, and the
-// chunk→columnar generator. It depends only on a minimal `StreamableResult`
-// shape (what neo's `conn.stream()` returns), so it is unit-testable with a fake
-// result — no real DuckDB, no native addon. The route (`routes/api/run-sql.ts`)
-// wires `getLakeConnection` + `conn.stream` + the `ReadableStream` and
-// cancellation around `streamNdjson`.
+// This module is the PURE streaming core: the frame protocol + the chunk→columnar
+// generator. It depends only on a minimal `StreamableResult` shape (what neo's
+// `conn.stream()` returns), so it is unit-testable with a fake result — no real
+// DuckDB, no native addon. The route (`routes/api/run-sql.ts`) wires
+// `getLakeConnection` + `conn.stream` + the `ReadableStream` and cancellation
+// around `streamNdjson`. The SQL composition + request-field parsing (sort,
+// window, filter, clamps) is the neo-free `grid-query.ts` so the client bundle
+// can share it without pulling the native driver.
 
 import {
 	type DuckDBValueConverter,
 	type Json,
 	JsonDuckDBValueConverter,
 } from "@duckdb/node-api";
-import { HARD_ROW_CEILING } from "#/duckdb/limit";
-
-// --- Cap clamp (design §5.5) -------------------------------------------------
-
-/**
- * Grid default cap. Intentionally larger than the agent tool's 1000 (run-sql.ts
- * DEFAULT_LIMIT): the grid is a human browsing surface, not an LLM context, so
- * it streams far more before truncating.
- */
-export const GRID_DEFAULT_CAP = 50_000;
-
-/**
- * Clamp a client-requested cap to `[1, HARD_ROW_CEILING]`, defaulting an absent
- * cap to {@link GRID_DEFAULT_CAP}. A client can never ask for an unbounded — or
- * a non-positive — materialization. The 200k ceiling is shared with the agent
- * tool ({@link HARD_ROW_CEILING}, DAT-384); only the *default* differs (the grid
- * streams far more before truncating). A floor of 1 keeps a 0/negative cap from
- * streaming nothing forever.
- */
-export function clampGridCap(cap?: number): number {
-	if (cap === undefined || !Number.isFinite(cap)) {
-		return GRID_DEFAULT_CAP;
-	}
-	const floored = Math.max(1, Math.floor(cap));
-	return Math.min(floored, HARD_ROW_CEILING);
-}
-
-// --- Query composition (design §7.3 — server-side sort, DAT-385 P3) ----------
-
-/**
- * A single-column sort the grid asks the server to apply. `column` is an OUTPUT
- * column name of the user's query (the grid only offers names it received in the
- * stream header); `dir` is the sort direction.
- */
-export interface GridSort {
-	column: string;
-	dir: "asc" | "desc";
-}
-
-/**
- * Quote `name` as a DuckDB identifier: wrap in double quotes and double any
- * embedded quote. This is the ONLY safe way to interpolate a column name into
- * SQL — the grid's sort column is user/agent-influenced (it's an output column
- * of arbitrary `run_sql`), so it can never be concatenated raw. A bogus name
- * still can't inject; it just yields a binder error the stream reports in-band.
- */
-export function quoteIdentifier(name: string): string {
-	return `"${name.replace(/"/g, '""')}"`;
-}
-
-/**
- * Wrap the user's `sql` as the grid's effective query, optionally appending a
- * server-side `ORDER BY`.
- *
- * Sort MUST be server-side, not client-side: the grid caps at
- * {@link GRID_DEFAULT_CAP} and can truncate, so sorting only the streamed window
- * would sort an arbitrary first-N slice of a larger result. Ordering the wrapped
- * query applies the sort BEFORE the cap, so the grid shows the true top-N.
- *
- * Sort carries NO bind values, so this never perturbs the caller's positional
- * `params` ($1, $2, …) — they bind against the inner `sql` exactly as before.
- * (Filter values, which WOULD need param renumbering, are a later phase.)
- */
-export function buildGridQuery(sql: string, sort?: GridSort | null): string {
-	const base = `SELECT * FROM (${sql}) AS _run_sql`;
-	if (!sort) return base;
-	const dir = sort.dir === "desc" ? "DESC" : "ASC";
-	return `${base} ORDER BY ${quoteIdentifier(sort.column)} ${dir}`;
-}
-
-/**
- * Validate an optional grid `sort` field off a request body. Shared by every grid
- * stream route (`/api/run-sql`, `/api/probe-sql`): returns the sort, `null` when
- * absent, or an `{ error }` the route turns into a 400. Bounds the column-name
- * length so a validated field can't balloon the SQL handed to DuckDB.
- */
-export function parseSort(
-	raw: unknown,
-): { sort: GridSort | null } | { error: string } {
-	if (raw === undefined || raw === null) return { sort: null };
-	// `typeof [] === "object"`, so reject arrays explicitly — otherwise a JSON
-	// array falls through to the column check and yields a misleading error.
-	if (typeof raw !== "object" || Array.isArray(raw))
-		return { error: "Field 'sort' must be an object." };
-	const { column, dir } = raw as { column?: unknown; dir?: unknown };
-	if (
-		typeof column !== "string" ||
-		column.length === 0 ||
-		column.length > 256
-	) {
-		return {
-			error:
-				"Field 'sort.column' is required and must be a non-empty string (max 256 chars).",
-		};
-	}
-	if (dir !== "asc" && dir !== "desc") {
-		return { error: "Field 'sort.dir' must be 'asc' or 'desc'." };
-	}
-	return { sort: { column, dir } };
-}
 
 // --- Wire protocol (design §4) -----------------------------------------------
 

@@ -67,20 +67,26 @@ system_prompt: |
      enumerated values.
   3. Record the grounding in column_mappings (which values, which concept, why).
 
-  HARD RULES:
-  - Filter on the EXACT values printed in a **Value sets** block. Never invent a value, and
-    never use a substring/`ILIKE '%<fragment>%'` guess in place of the enumerated values.
-  - A Value set marked PARTIAL is NOT exhaustive — do not assume it lists every value.
-  - NEVER use a standard_field name as a table name in SQL.
+  HARD RULES — a predicate may be grounded ONLY two ways; anything else is forbidden:
+  - (1) an explicit `IN (...)` list of values from a Value-set marked **complete**, or
+    (2) a join to a dimension table and an `IN (...)` over THAT dimension's complete Value-set.
+  - **NEVER `ILIKE '%fragment%'` (or `LIKE`/substring) to GUESS membership.** `ILIKE` is only
+    for case-insensitivity against a KNOWN exact value — never to fish for rows by a fragment.
+  - **NEVER filter on a column flagged `near-constant`** (one value ≥90% — e.g. a mostly-true
+    boolean flag); it is not a discriminator and grounding on it is silently wrong.
+  - A column with NO Value-set here is high-cardinality and deliberately not enumerated for
+    you (you are one-shot and cannot drill its values): do NOT invent a filter on it. Ground
+    via a join to a dimension that HAS a complete value-set, or ABSTAIN.
+  - Never invent a value; never use a standard_field name as a table name.
 
   FALL LOUD — do not guess (this protects against a confidently-wrong number):
-  If you CANNOT confidently map the concept to specific values — the discriminator holds
-  opaque codes (e.g. `4000`, `5000`) with no semantic signal, the needed values are absent,
-  or the Value set is PARTIAL and may omit them — then do NOT fabricate a filter. Emit the
-  step's SQL as best you can but record an assumption with LOW confidence and basis
-  "inferred", naming the concept and why it is ungrounded (e.g. "<discriminator> holds opaque
-  codes; <concept> value-set not determinable from context"). A flagged inconclusive result
-  is correct; a confident wrong number is not.
+  If you cannot ground a concept by rule (1) or (2) — the only complete value-set is opaque
+  codes (e.g. `4000`, `5000`) with no semantic signal, the needed values are absent, the
+  discriminators are near-constant, or the discriminator is high-card (no served value-set)
+  and no dimension join reaches it — then do NOT fabricate a filter (no ILIKE, no guess).
+  Emit your best attempt but record an assumption with LOW confidence and basis "inferred",
+  naming the concept and why it is ungrounded. A flagged inconclusive result is correct; a
+  confident wrong number is the failure we are preventing.
   </field_resolution_strategy>
 
   <sql_guidelines>

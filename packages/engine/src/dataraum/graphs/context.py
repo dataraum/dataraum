@@ -1376,17 +1376,13 @@ def format_metadata_document(
             dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
             lines.append(f"Joined columns: {dims}.")
 
+            # DAT-621: list the slice dimension NAMES only — their value-sets are served
+            # COMPLETE (or size-stated) in the per-table Value sets block, so re-rendering a
+            # capped [:10] sample here was redundant duplication + a partial sample.
             view_slices = slices_by_table.get(ev.fact_table, [])
             if view_slices:
-                lines.append("Slice dimensions:")
-                for s in view_slices:
-                    vals_str = ""
-                    if s.distinct_values:
-                        vals = ", ".join(s.distinct_values[:10])
-                        if len(s.distinct_values) > 10:
-                            vals += f", +{len(s.distinct_values) - 10} more"
-                        vals_str = f": [{vals}]"
-                    lines.append(f"  - **{s.column_name}** ({s.value_count} values){vals_str}")
+                names = ", ".join(f"{s.column_name} ({s.value_count} values)" for s in view_slices)
+                lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
 
     # --- Business Processes ---
     if context.business_cycles:
@@ -1510,6 +1506,10 @@ def _format_concept_vocabulary(ontology: Any) -> str | None:
 # and is served size+sample, never enumerated. Set from the measured dimension distribution
 # (median 27, then a 40k tail; the number is insensitive in [100,500]).
 _VALUE_SET_COMPLETE_MAX = 200
+# A column whose single most-frequent value covers more than this fraction is near-constant
+# — not a discriminator (e.g. a 99.6%-true `sale` boolean). Grounding a concept on it is
+# silently wrong, so it's flagged, never served as a groundable value-set.
+_NEAR_CONSTANT_FRAC = 0.9
 # Roles whose values are never a metric-grounding predicate (keys fan out; measures are
 # aggregated, not filtered; time axes are handled by the temporal blueprints).
 _NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
@@ -1544,18 +1544,41 @@ def _fetch_complete_value_set(
 def _build_value_sets(table: TableContext) -> list[str]:
     """Render the value enumeration for a table's categorical columns (DAT-621).
 
-    The agent grounds a concept in specific discriminator VALUES from here instead of
-    improvising an ILIKE. NO distinct-count suppression — every categorical-role column is
-    served (silence is never an option): a low-card dimension shows its COMPLETE set (the
-    assembler fetched it live up to the reasonable-top), a high-card column shows a freq-
-    ordered SAMPLE + its size so the agent can recognise it (e.g. opaque codes → abstain)
-    and the cockpit/user can drill. Only key/measure/time roles are skipped (never partitions).
+    The agent grounds a concept in the discriminator VALUES from here, never a guessed
+    ILIKE. The GraphAgent is ONE-SHOT with NO tools (it cannot drill), so it gets the
+    LOW-CARD BASELINE only — nothing it would be tempted to guess at:
+    - low-card (≤ reasonable-top) + non-degenerate → the COMPLETE value-set inline (the
+      assembler fetched it live);
+    - high-card (> reasonable-top) → NOT rendered at all. High-card discriminators are the
+      cockpit answer sub-agent's + user's lane (they have look_values to drill on demand);
+      dangling a high-card column here only invites the ILIKE-guess that is the root bug. A
+      metric that genuinely needs one falls loud (no value-set → no IN-list → abstain);
+    - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
+      on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
+    Only key/measure/time roles are skipped (never partitions).
     """
     out: list[str] = []
     for col in table.columns:
         if not col.top_values:
             continue
         if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
+            continue
+        served = len(col.top_values)
+        dc = col.distinct_count
+        # High-card / incomplete-fetch → NOT served to the one-shot GraphAgent at all (it
+        # can't drill; high-card is the cockpit/user lane). The served set must be the
+        # COMPLETE enumeration to render — a partial never becomes a value list here.
+        if dc is not None and dc > served:
+            continue
+        # Degenerate / near-constant → not a discriminator; flag, don't serve as groundable
+        # (grounding a concept on a ~constant flag is silently wrong).
+        counts = [tv.get("count") or 0 for tv in col.top_values]
+        total = sum(counts)
+        if total and max(counts) / total > _NEAR_CONSTANT_FRAC:
+            out.append(
+                f"- **{col.column_name}**: near-constant ({dc} distinct, one value ≥90%) — "
+                "NOT a discriminator, do not filter on it"
+            )
             continue
         rendered = ", ".join(
             f"{tv.get('value')} ({tv.get('count')})"
@@ -1564,14 +1587,7 @@ def _build_value_sets(table: TableContext) -> list[str]:
         )
         if not rendered:
             continue
-        served = len(col.top_values)
-        if col.distinct_count is not None and col.distinct_count > served:
-            # High-card: not a complete set — a sample. Non-silent (size shown); the agent
-            # must not treat it as exhaustive (drill / fall loud).
-            completeness = f"SAMPLE — {served} of {col.distinct_count}, not exhaustive"
-        else:
-            completeness = "complete"
-        out.append(f"- **{col.column_name}** ({completeness}): {rendered}")
+        out.append(f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}")
     return out
 
 

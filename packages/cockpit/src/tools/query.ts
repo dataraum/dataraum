@@ -55,6 +55,7 @@ import {
 } from "./agent-error";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
+import { lookValuesTool } from "./look-values";
 import {
 	buildCatalogBlock,
 	buildDriversBlock,
@@ -595,7 +596,11 @@ export async function querySubAgent(
 			agentLoopStrategy: maxIterations(QUERY_SUBAGENT_MAX_ITERATIONS),
 			systemPrompts: [getQueryInstructions()],
 			messages: [{ role: "user", content: userMessage }],
-			tools: [snippetSearchTool, makeRunStepsTool(captured, nearUniqueColumns)],
+			tools: [
+				snippetSearchTool,
+				lookValuesTool,
+				makeRunStepsTool(captured, nearUniqueColumns),
+			],
 			outputSchema: QueryDraftSchema,
 		});
 	} catch (err) {

@@ -1,9 +1,12 @@
 // Unit test for the DAT-600 LLM telemetry middleware. Drives the hooks with
 // synthetic SDK fixtures (no chat() / no network) and asserts the emitted
-// `llm_call` line — snake_case keys + iteration count — mirrors the engine half.
+// `llm_call` line — snake_case keys, terminal status, iteration count — mirrors
+// the engine half.
 
 import type {
+	AbortInfo,
 	ChatMiddlewareContext,
+	ErrorInfo,
 	FinishInfo,
 	IterationInfo,
 	UsageInfo,
@@ -35,7 +38,7 @@ const usage = (over: Partial<UsageInfo>): UsageInfo =>
 afterEach(() => vi.restoreAllMocks());
 
 describe("llmTelemetryMiddleware", () => {
-	it("emits one llm_call with label, model, elapsed, mapped tokens, and iteration count", () => {
+	it("emits one finished llm_call with label, model, elapsed, mapped tokens, iterations", () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const mw = llmTelemetryMiddleware("answer_subagent");
 
@@ -59,6 +62,7 @@ describe("llmTelemetryMiddleware", () => {
 		expect(info).toHaveBeenCalledWith("llm_call", {
 			label: "answer_subagent",
 			model: "claude-x",
+			status: "finished",
 			elapsed_ms: 4201, // rounded
 			input_tokens: 512,
 			output_tokens: 64,
@@ -72,12 +76,13 @@ describe("llmTelemetryMiddleware", () => {
 		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const mw = llmTelemetryMiddleware("orchestrator");
 
-		// No usage on the finish info, and no iterations recorded.
+		// usage field absent on the finish info, and no iterations recorded.
 		mw.onFinish?.(ctx("claude-y"), finish({ duration: 10, usage: undefined }));
 
 		expect(info).toHaveBeenCalledWith("llm_call", {
 			label: "orchestrator",
 			model: "claude-y",
+			status: "finished",
 			elapsed_ms: 10,
 			input_tokens: 0,
 			output_tokens: 0,
@@ -85,6 +90,48 @@ describe("llmTelemetryMiddleware", () => {
 			cache_creation_input_tokens: 0,
 			iterations: 0,
 		});
+	});
+
+	it("logs aborted runs with status + elapsed and zero tokens (frame induction aborts deliberately)", () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const mw = llmTelemetryMiddleware("frame_family");
+
+		mw.onIteration?.(ctx("claude-x"), iter(0));
+		mw.onAbort?.(ctx("claude-x"), {
+			reason: "captured",
+			duration: 87.4,
+		} as AbortInfo);
+
+		expect(info).toHaveBeenCalledWith("llm_call", {
+			label: "frame_family",
+			model: "claude-x",
+			status: "aborted",
+			elapsed_ms: 87,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_input_tokens: 0,
+			cache_creation_input_tokens: 0,
+			iterations: 1,
+		});
+	});
+
+	it("logs errored runs with status + elapsed", () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+		const mw = llmTelemetryMiddleware("grounding");
+
+		mw.onError?.(ctx("claude-x"), {
+			error: new Error("boom"),
+			duration: 200,
+		} as ErrorInfo);
+
+		expect(info).toHaveBeenCalledWith(
+			"llm_call",
+			expect.objectContaining({
+				label: "grounding",
+				status: "error",
+				elapsed_ms: 200,
+			}),
+		);
 	});
 
 	it("keeps the iteration counter private per middleware instance", () => {

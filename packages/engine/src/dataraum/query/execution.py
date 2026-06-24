@@ -125,27 +125,29 @@ def execute_sql_steps(
     """
     step_results: list[StepExecutionResult] = []
 
-    # Execute each step standalone (NO temp view) — steps are standalone SELECTs by
-    # prompt contract; this fetches the per-step scalar the verifier's support gate
-    # needs and repairs the step in place. The (possibly repaired) SQL then composes
-    # into the single CTE below.
+    # Fetch each step's scalar for the verifier's support gate. A step MAY reference an
+    # earlier step (the old temp-view model allowed it; formula steps with depends_on do),
+    # so each step is probed inside a CTE context of the prior (already-validated) steps —
+    # `WITH <prior…>, <this step> SELECT * FROM <this step>` — not in raw isolation. No temp
+    # views; the (possibly repaired) SQL then composes into the single executable below.
+    validated: list[SQLStep] = []
     for step in steps:
         step_result = _execute_step(
             step=step,
+            prior_steps=validated,
             duckdb_conn=duckdb_conn,
             max_repair_attempts=max_repair_attempts,
             repair_fn=repair_fn,
         )
         if not step_result.success or not step_result.value:
             return Result.fail(step_result.error or f"Step '{step.step_id}' failed")
-        step_results.append(step_result.value)
+        sr = step_result.value
+        step_results.append(sr)
+        validated.append(SQLStep(step_id=sr.step_id, sql=sr.sql_executed, description=""))
 
     # Compose the single standalone statement (steps as CTEs + final_sql), using each
     # step's executed (post-repair) SQL — the deterministic executable, no temp views.
-    composed_sql = compose_standalone(
-        [SQLStep(step_id=sr.step_id, sql=sr.sql_executed, description="") for sr in step_results],
-        final_sql,
-    )
+    composed_sql = compose_standalone(validated, final_sql)
 
     # Execute the composed statement ONCE.
     final_result = _execute_final(
@@ -184,16 +186,19 @@ def execute_sql_steps(
 
 def _execute_step(
     step: SQLStep,
+    prior_steps: list[SQLStep],
     duckdb_conn: duckdb.DuckDBPyConnection,
     max_repair_attempts: int,
     repair_fn: RepairFn | None,
 ) -> Result[StepExecutionResult]:
-    """Execute a single step standalone with retry/repair logic.
+    """Fetch a single step's scalar with retry/repair logic.
 
-    DAT-616: no temp view — the step is a standalone SELECT (prompt contract), executed
-    directly to fetch its scalar (first column of the first row, matching the prior
-    `SELECT * FROM <view>` semantics). The (possibly repaired) SQL is then composed into
-    the single CTE statement; no view state leaks onto the cursor.
+    DAT-616: no temp view. The step is probed inside a CTE context of the prior
+    (already-validated) steps — ``WITH <prior…>, <step> SELECT * FROM <step> LIMIT 1`` —
+    so a step that references an earlier step still resolves (the old temp-view model
+    allowed this; formula steps depend on it). Takes the first column of the first row,
+    matching the prior `SELECT * FROM <view>` semantics. Repair targets the STEP's SQL,
+    not the composed probe.
     """
     original_sql = step.sql
     current_sql = step.sql
@@ -201,8 +206,11 @@ def _execute_step(
 
     for attempt in range(max_repair_attempts + 1):
         try:
-            # Execute the step's standalone SQL; take the first column of the first row.
-            result = duckdb_conn.execute(current_sql).fetchone()
+            probe = compose_standalone(
+                [*prior_steps, SQLStep(step.step_id, current_sql, "")],
+                f'SELECT * FROM "{step.step_id}" LIMIT 1',
+            )
+            result = duckdb_conn.execute(probe).fetchone()
             value = result[0] if result else None
 
             return Result.ok(

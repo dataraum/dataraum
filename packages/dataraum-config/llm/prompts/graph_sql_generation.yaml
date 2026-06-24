@@ -127,8 +127,9 @@ system_prompt: |
   is no separate per-step materialization to diverge from.
 
   Therefore:
-  - Each step must be STANDALONE SQL (a single SELECT that does NOT reference another step's
-    CTE — keep joins/combining logic in final_sql).
+  - Each step is a single SELECT. It MAY reference an EARLIER step by name (steps become
+    CTEs in order, so a later step can build on an earlier one); prefer keeping a step
+    reusable on its own, and put graph-specific combining in final_sql.
   - Alias each step's computed VALUE column `AS value` (the snippet-library convention: the
     same computation is then recognised as the same reusable snippet). For a grouped step the
     grouping column keeps its own name; only the aggregate/computed column is `value`.

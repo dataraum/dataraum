@@ -73,6 +73,27 @@ class TestExecuteSqlSteps:
         assert result.value.final_value == 200.0  # 600 / 3
         assert len(result.value.step_results) == 2
 
+    def test_step_referencing_an_earlier_step(self, duckdb_conn):
+        """DAT-616: a step that references an earlier step still resolves (the old
+        temp-view model allowed it; formula steps with depends_on rely on it). The
+        per-step scalar is probed inside the prior steps' CTE context."""
+        steps = [
+            SQLStep(step_id="base", sql="SELECT SUM(value) AS value FROM test_data", description=""),
+            SQLStep(step_id="doubled", sql="SELECT value * 2 AS value FROM base", description=""),
+        ]
+
+        result = execute_sql_steps(
+            steps=steps,
+            final_sql="SELECT value FROM doubled",
+            duckdb_conn=duckdb_conn,
+        )
+
+        assert result.success
+        by_id = {s.step_id: s.value for s in result.value.step_results}
+        assert by_id["base"] == 600
+        assert by_id["doubled"] == 1200  # base references resolved in the CTE context
+        assert result.value.final_value == 1200
+
     def test_return_table_mode(self, duckdb_conn):
         """return_table=True returns columns and rows."""
         steps = []

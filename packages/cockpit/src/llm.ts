@@ -23,6 +23,12 @@ export const MODEL = "claude-sonnet-4-6";
 // dated `claude-haiku-4-5-20251001` only if the alias ever fails to resolve.
 export const NAV_MODEL = "claude-haiku-4-5";
 
+// The report-summary regenerator's model (DAT-625) — a cheap Haiku one-shot that
+// rewrites a stale report summary against the fresh result, in the original voice.
+// Same undated Haiku alias as NAV_MODEL; kept as its own constant so the model
+// choice for this surface is explicit and tunable independently.
+export const SUMMARY_MODEL = "claude-haiku-4-5";
+
 export const MAX_OUTPUT_TOKENS = 24576;
 
 // The agent-loop iteration ceiling for /api/chat. chat() defaults to

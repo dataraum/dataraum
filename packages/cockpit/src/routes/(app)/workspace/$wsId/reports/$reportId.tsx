@@ -15,15 +15,24 @@ import {
 	useRouter,
 } from "@tanstack/react-router";
 import { createServerFn, useServerFn } from "@tanstack/react-start";
-import { Check, Pencil, Trash2, TriangleAlert, X } from "lucide-react";
+import {
+	Check,
+	Pencil,
+	RefreshCw,
+	Trash2,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import { useState } from "react";
 import {
 	getReport,
 	renameReport,
 	setReportFingerprint,
 	softDeleteReport,
+	updateReportSummary,
 } from "#/db/cockpit/reports";
 import { computeReportFingerprint } from "#/duckdb/report-fingerprint-read";
+import { regenerateSummary } from "#/lib/report-summary-agent";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
@@ -75,6 +84,20 @@ const deleteReportFn = createServerFn({ method: "POST" })
 		await softDeleteReport(reportId);
 	});
 
+// Regenerate (DAT-625): re-run the SQL, hand the old summary + fresh result to Haiku,
+// and persist the new summary together with the fresh fingerprint — the one path that
+// mutates `summary`. A throw here (missing report, LLM failure) propagates to the
+// caller, which keeps the old summary + outdated badge rather than half-applying.
+const regenerateSummaryFn = createServerFn({ method: "POST" })
+	.inputValidator((reportId: string) => reportId)
+	.handler(async ({ data: reportId }) => {
+		const report = await getReport(reportId);
+		if (!report) throw notFound();
+		const { fingerprint, result } = await computeReportFingerprint(report.sql);
+		const summary = await regenerateSummary(report.summary, result);
+		await updateReportSummary(reportId, summary, fingerprint);
+	});
+
 export const Route = createFileRoute(
 	"/(app)/workspace/$wsId/reports/$reportId",
 )({
@@ -93,6 +116,7 @@ function ReportDetail() {
 	const navigate = useNavigate();
 	const rename = useServerFn(renameReportFn);
 	const remove = useServerFn(deleteReportFn);
+	const regenerate = useServerFn(regenerateSummaryFn);
 
 	const [editing, setEditing] = useState(false);
 	// Seeded when the editor opens (below), NOT from useState(report.title): after a
@@ -100,6 +124,24 @@ function ReportDetail() {
 	// once-initialized draft would show the stale pre-rename title on the next open.
 	const [draft, setDraft] = useState("");
 	const [busy, setBusy] = useState(false);
+	const [regenerating, setRegenerating] = useState(false);
+	const [regenFailed, setRegenFailed] = useState(false);
+
+	// Refresh the stale summary: regenerate server-side, then re-load so the new prose
+	// + cleared badge render. On failure keep the old summary + badge and flag inline.
+	const refreshSummary = async () => {
+		setRegenerating(true);
+		setRegenFailed(false);
+		try {
+			await regenerate({ data: report.id });
+			await router.invalidate();
+		} catch (err) {
+			console.error("[reports] regenerate summary failed:", err);
+			setRegenFailed(true);
+		} finally {
+			setRegenerating(false);
+		}
+	};
 
 	// Mutations fired by user events live in handlers, not effects (React conv. 4).
 	const saveTitle = async () => {
@@ -205,7 +247,23 @@ function ReportDetail() {
 							>
 								Outdated — data changed since this summary
 							</Badge>
+							<Button
+								variant="light"
+								color="yellow"
+								size="compact-xs"
+								leftSection={<RefreshCw size={13} />}
+								onClick={refreshSummary}
+								loading={regenerating}
+								data-testid="report-regenerate"
+							>
+								Regenerate
+							</Button>
 						</Group>
+					)}
+					{regenFailed && (
+						<Text size="xs" c="red" data-testid="report-regenerate-error">
+							Couldn’t regenerate the summary — try again.
+						</Text>
 					)}
 					<Text>{report.summary}</Text>
 				</Stack>

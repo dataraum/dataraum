@@ -108,9 +108,7 @@ def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[
 
     # Propagate the activity context (the heartbeat ContextVar) into the daemon.
     ctx = contextvars.copy_context()
-    thread = threading.Thread(
-        target=lambda: ctx.run(_beat), name="metrics-heartbeat", daemon=True
-    )
+    thread = threading.Thread(target=lambda: ctx.run(_beat), name="metrics-heartbeat", daemon=True)
     thread.start()
     try:
         yield

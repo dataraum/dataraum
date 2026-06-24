@@ -18,11 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GridSort } from "#/duckdb/grid-query";
 import { ColumnStore } from "#/duckdb/ndjson-stream";
-import {
-	cycleSort,
-	GridSqlDisclosure,
-	ResultGridView,
-} from "#/ui/cockpit/widgets/result-grid";
+import { cycleSort, ResultGridView } from "#/ui/cockpit/widgets/result-grid";
 import { theme } from "#/ui/theme";
 
 function seeded(): ColumnStore {
@@ -215,43 +211,39 @@ describe("ResultGridView filter toggle (DAT-613)", () => {
 	});
 });
 
-describe("GridSqlDisclosure (DAT-577)", () => {
+describe("ResultGridView SQL modal (DAT-613)", () => {
 	afterEach(() => cleanup());
 
-	function renderDisclosure(
-		sql: string,
-		params?: (string | number | boolean | null)[],
+	function renderWithSql(
+		sql?: string,
+		sqlParams?: (string | number | boolean | null)[],
 	) {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
 		render(
 			<MantineProvider theme={theme} env="test">
-				<GridSqlDisclosure sql={sql} params={params} />
+				<ResultGridView store={store} sql={sql} sqlParams={sqlParams} />
 			</MantineProvider>,
 		);
 	}
 
-	it("starts collapsed and toggles open on click", () => {
-		renderDisclosure("SELECT 1 FROM lake.typed.t");
-		const toggle = screen.getByRole("button");
-		// aria-expanded is the robust open/closed contract. (We don't assert DOM
-		// absence when collapsed: Mantine Collapse only unmounts AFTER its exit
-		// animation, which never fires in jsdom — so the content stays mounted here
-		// regardless. Real visual collapse is smoke-verified.)
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		fireEvent.click(toggle);
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+	it("opens the SQL in a modal from the toolbar button", () => {
+		renderWithSql("SELECT 1 FROM lake.typed.t");
+		// The query is not shown until the modal is opened.
+		expect(screen.queryByText("SELECT 1 FROM lake.typed.t")).toBeNull();
+		fireEvent.click(screen.getByTestId("canvas-result-grid-sql-toggle"));
 		expect(screen.getByText("SELECT 1 FROM lake.typed.t")).toBeTruthy();
 	});
 
-	it("shows bind params when present", () => {
-		renderDisclosure("SELECT * FROM t WHERE a = $1", [7]);
-		fireEvent.click(screen.getByRole("button"));
+	it("shows bind params in the modal", () => {
+		renderWithSql("SELECT * FROM t WHERE a = $1", [7]);
+		fireEvent.click(screen.getByTestId("canvas-result-grid-sql-toggle"));
 		expect(screen.getByTestId("sql-block-params")).toBeTruthy();
 		expect(screen.getByText("7")).toBeTruthy();
 	});
 
-	it("renders nothing when there is no SQL", () => {
-		renderDisclosure("");
-		expect(screen.queryByTestId("canvas-result-grid-sql")).toBeNull();
-		expect(screen.queryByRole("button")).toBeNull();
+	it("renders no SQL button when there is no query", () => {
+		renderWithSql(undefined);
+		expect(screen.queryByTestId("canvas-result-grid-sql-toggle")).toBeNull();
 	});
 });

@@ -30,12 +30,12 @@ import {
 	ActionIcon,
 	Alert,
 	Badge,
-	Collapse,
 	Group,
+	Indicator,
+	Modal,
 	Table,
 	Text,
 	TextInput,
-	UnstyledButton,
 } from "@mantine/core";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
@@ -46,7 +46,13 @@ import {
 	useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronsUpDown, ChevronUp, Filter } from "lucide-react";
+import {
+	ChevronDown,
+	ChevronsUpDown,
+	ChevronUp,
+	Code,
+	Filter,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
 import {
@@ -119,6 +125,8 @@ export function ResultGridView({
 	onFilterCommit,
 	activeFilterCount = 0,
 	scrollResetKey,
+	sql,
+	sqlParams,
 }: {
 	store: GridView;
 	fatal?: string | null;
@@ -132,11 +140,17 @@ export function ResultGridView({
 	/** Changes when the owner re-pages from offset 0 (sort/filter change); the body
 	 * scrolls back to the top so the new top-N is visible, not a clamped middle. */
 	scrollResetKey?: string;
+	/** The query behind the grid — when present, the toolbar shows a "Show SQL"
+	 * button opening a read-only modal. Omitted by the probe (it has its own
+	 * editor), so no button there. */
+	sql?: string;
+	sqlParams?: (string | number | boolean | null)[];
 }) {
 	// The filter row is hidden by default (a clean grid) and toggled by the funnel
 	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
 	// active + shows the count, so the user can re-open to edit it.
 	const [filtersOpen, setFiltersOpen] = useState(false);
+	const [sqlOpen, setSqlOpen] = useState(false);
 	const showFilterRow = onFilterCommit !== undefined && filtersOpen;
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
@@ -230,36 +244,65 @@ export function ResultGridView({
 					{store.rowCount} row{store.rowCount === 1 ? "" : "s"}
 				</Text>
 				<Group gap="xs">
-					{onFilterCommit && (
+					{sql && (
 						<ActionIcon
-							variant={
-								activeFilterCount > 0 || filtersOpen ? "light" : "subtle"
-							}
-							color={activeFilterCount > 0 ? "blue" : "gray"}
+							variant="subtle"
+							color="gray"
 							size="sm"
-							aria-label={filtersOpen ? "Hide filters" : "Show filters"}
-							aria-pressed={filtersOpen}
-							title={
-								activeFilterCount > 0
-									? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} active`
-									: "Filter rows"
-							}
-							data-testid="canvas-result-grid-filter-toggle"
-							onClick={() => setFiltersOpen((o) => !o)}
+							aria-label="Show SQL"
+							title="Show SQL"
+							data-testid="canvas-result-grid-sql-toggle"
+							onClick={() => setSqlOpen(true)}
 						>
-							<Filter size={14} />
+							<Code size={15} />
 						</ActionIcon>
 					)}
-					{activeFilterCount > 0 && (
-						<Text size="xs" c="blue" fw={600}>
-							{activeFilterCount}
-						</Text>
+					{onFilterCommit && (
+						<Indicator
+							label={activeFilterCount}
+							size={15}
+							offset={2}
+							color="blue"
+							disabled={activeFilterCount === 0}
+							aria-label={`${activeFilterCount} filters active`}
+						>
+							<ActionIcon
+								variant={
+									activeFilterCount > 0 || filtersOpen ? "light" : "subtle"
+								}
+								color={activeFilterCount > 0 ? "blue" : "gray"}
+								size="sm"
+								aria-label={filtersOpen ? "Hide filters" : "Show filters"}
+								aria-pressed={filtersOpen}
+								title={
+									activeFilterCount > 0
+										? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} active`
+										: "Filter rows"
+								}
+								data-testid="canvas-result-grid-filter-toggle"
+								onClick={() => setFiltersOpen((o) => !o)}
+							>
+								<Filter size={14} />
+							</ActionIcon>
+						</Indicator>
 					)}
 					<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
 						{status}
 					</Badge>
 				</Group>
 			</Group>
+
+			{sql && (
+				<Modal
+					opened={sqlOpen}
+					onClose={() => setSqlOpen(false)}
+					title="SQL"
+					size="lg"
+					data-testid="canvas-result-grid-sql-modal"
+				>
+					<SqlBlock sql={sql} params={sqlParams} maxHeight={420} />
+				</Modal>
+			)}
 
 			{(fatal || store.error) && (
 				<Alert color="red" mb="xs" data-testid="canvas-result-grid-error">
@@ -453,55 +496,18 @@ export function ResultGridView({
 }
 
 /**
- * A collapsible "SQL" disclosure for a grid (DAT-577): the literal query behind
- * the result, plus its bind params when present. Read-only — Analyse never edits
- * SQL (editing is a probe-only capability). Pure (local open-state only), so it's
- * unit-testable without the streaming grid. No SQL → nothing renders.
- */
-export function GridSqlDisclosure({
-	sql,
-	params,
-}: {
-	sql: string;
-	params?: (string | number | boolean | null)[];
-}) {
-	// Open-state is intentionally NOT reset on a new query: only StreamingGrid is
-	// keyed (to reset sort). If the user opened the SQL and a new query streams in,
-	// the disclosure stays open showing the new query's SQL — the prop updates.
-	const [open, setOpen] = useState(false);
-	if (!sql) return null;
-	return (
-		<div data-testid="canvas-result-grid-sql">
-			<UnstyledButton
-				onClick={() => setOpen((o) => !o)}
-				aria-expanded={open}
-				aria-label="Toggle SQL"
-				mb={open ? "xs" : 0}
-			>
-				<Text size="xs" c="dimmed" fw={500}>
-					{open ? "▾" : "▸"} SQL
-				</Text>
-			</UnstyledButton>
-			<Collapse expanded={open}>
-				<SqlBlock sql={sql} params={params} maxHeight={200} />
-			</Collapse>
-		</div>
-	);
-}
-
-/**
  * The registered widget. Owns the BASE query (the agent's `run_sql` call) and
  * remounts the inner grid whenever that query changes, via a value-stable `key`.
  *
- * The remount is deliberate: the inner grid holds the grid-local sort state, and
- * remounting on a new base query resets the sort cleanly to "unsorted" without a
- * reset effect (which would fire a redundant second stream). The agent's
- * `state.sql`/`params` stay immutable — sort is a VIEW concern, never written
- * back to the canvas state.
+ * The remount is deliberate: the inner grid holds the grid-local sort + filter
+ * state, and remounting on a new base query resets them cleanly without a reset
+ * effect (which would fire a redundant second stream). The agent's
+ * `state.sql`/`params` stay immutable — sort/filter are VIEW concerns, never
+ * written back to the canvas state.
  *
- * The SQL disclosure sits above the grid so it covers BOTH `run_sql` grids and
- * `answer` grids (AnswerResultWidget composes this widget with the composed
- * final SQL) in one place.
+ * The query itself is reachable from the grid's toolbar ("Show SQL" → modal),
+ * covering BOTH `run_sql` grids and `answer` grids (AnswerResultWidget composes
+ * this widget with the composed final SQL) in one place.
  */
 export function ResultGridWidget({
 	state,
@@ -516,14 +522,13 @@ export function ResultGridWidget({
 		[state.sql, state.params],
 	);
 	return (
-		<div>
-			<GridSqlDisclosure sql={state.sql} params={state.params} />
-			<WindowedGrid
-				key={baseKey}
-				endpoint="/api/run-sql"
-				body={{ sql: state.sql, params: state.params }}
-			/>
-		</div>
+		<WindowedGrid
+			key={baseKey}
+			endpoint="/api/run-sql"
+			body={{ sql: state.sql, params: state.params }}
+			sql={state.sql}
+			sqlParams={state.params}
+		/>
 	);
 }
 
@@ -556,10 +561,15 @@ function extractError(text: string): string {
 export function WindowedGrid({
 	endpoint,
 	body,
+	sql,
+	sqlParams,
 }: {
 	endpoint: string;
 	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
 	body: Record<string, unknown>;
+	/** The query behind the grid, surfaced via the toolbar "Show SQL" modal. */
+	sql?: string;
+	sqlParams?: (string | number | boolean | null)[];
 }) {
 	const [sort, setSort] = useState<GridSort | null>(null);
 	const [filters, setFilters] = useState<GridFilter[]>([]);
@@ -680,6 +690,8 @@ export function WindowedGrid({
 			onFilterCommit={onFilterCommit}
 			activeFilterCount={filters.length}
 			scrollResetKey={JSON.stringify([sort, filters])}
+			sql={sql}
+			sqlParams={sqlParams}
 		/>
 	);
 }

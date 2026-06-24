@@ -317,6 +317,10 @@ export const CHIP_ONLY: ReadonlySet<string> = new Set([
 	"teach_validation",
 	"teach_cycle",
 	// NB teach_metric is NOT here — an override projects the metric-shadow canvas.
+	// look_values (DAT-621): a value-set DRILL whose output the AGENT consumes to ground
+	// a filter — no widget. A chip summary (column + count) avoids dumping a 1000-value
+	// list into the DOM (the values go to the agent, never the page).
+	"look_values",
 ]);
 
 /** A tool whose result maps to a canvas member → its chip is clickable. */

@@ -413,7 +413,9 @@ export function formatCatalog(
 		"The workspace's natural analysis dimensions per table, and how they relate. " +
 		"For an alias group, group by the canonical column (don't double-count the " +
 		"same axis); to answer at a coarser level, roll a drill-down chain up along " +
-		"its listed order.\n\n" +
+		"its listed order. Listed values may be truncated (a trailing `+N more`) — when " +
+		"you need a column's COMPLETE value-set to ground a filter, call " +
+		"look_values(column_ids) for the full list.\n\n" +
 		`${tableBlocks.join("\n\n")}\n` +
 		"</dimensions>"
 	);

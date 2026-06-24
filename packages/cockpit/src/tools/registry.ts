@@ -25,6 +25,7 @@ import { lookProfileTool } from "./look-profile";
 import { lookRelationshipsTool } from "./look-relationships";
 import { lookTableTool } from "./look-table";
 import { lookValidationTool } from "./look-validation";
+import { lookValuesTool } from "./look-values";
 import { openStagingHubTool } from "./open-staging-hub";
 import { operatingModelTool } from "./operating-model";
 import { answerTool } from "./query";
@@ -46,6 +47,7 @@ import { whyValidationTool } from "./why-validation";
 const inspectTools = [
 	lookTableTool,
 	lookProfileTool,
+	lookValuesTool,
 	lookRelationshipsTool,
 	lookValidationTool,
 	lookCycleTool,

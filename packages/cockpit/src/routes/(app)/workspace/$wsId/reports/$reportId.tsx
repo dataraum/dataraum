@@ -1,5 +1,6 @@
 import {
 	ActionIcon,
+	Badge,
 	Button,
 	Group,
 	Stack,
@@ -14,27 +15,53 @@ import {
 	useRouter,
 } from "@tanstack/react-router";
 import { createServerFn, useServerFn } from "@tanstack/react-start";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, Pencil, Trash2, TriangleAlert, X } from "lucide-react";
 import { useState } from "react";
 import {
 	getReport,
 	renameReport,
+	setReportFingerprint,
 	softDeleteReport,
 } from "#/db/cockpit/reports";
+import { computeReportFingerprint } from "#/duckdb/report-fingerprint-read";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
-// Report detail (DAT-624) — the frozen artifact rendered over LIVE data: the SQL is
-// re-run on every open through the same result-grid stream, so numbers stay current.
-// The title is the one editable field (inline); the SQL / summary / confidence are
-// immutable. Delete is soft (the row stays; children keep their lineage).
+// Report detail (DAT-624 / DAT-625) — the frozen artifact rendered over LIVE data:
+// the SQL is re-run on every open through the same result-grid stream, so numbers
+// stay current. The title is the one editable field (inline); the SQL / confidence
+// are immutable; the summary is frozen prose, refreshed only via regenerate. Delete
+// is soft (the row stays; children keep their lineage).
+//
+// On open we re-fingerprint the live result (DAT-625) and compare it to the stored
+// fingerprint: a mismatch means the frozen summary is talking about stale numbers, so
+// it's badged "outdated". A null stored fingerprint (pre-DAT-625 report, or a failed
+// mint-time fingerprint) is lazy-backfilled here — start tracking, show clean.
 //
 // The loader + action server fns are defined inline (the cockpit route convention)
-// so the plugin strips their cockpit_db handlers from the client bundle.
+// so the plugin strips their cockpit_db + lake handlers from the client bundle.
 
 const loadReport = createServerFn({ method: "GET" })
 	.inputValidator((reportId: string) => reportId)
-	.handler(async ({ data: reportId }) => getReport(reportId));
+	.handler(async ({ data: reportId }) => {
+		const report = await getReport(reportId);
+		if (!report) return null;
+		let outdated = false;
+		try {
+			const { fingerprint } = await computeReportFingerprint(report.sql);
+			if (report.summaryFingerprint === null) {
+				// First time we can fingerprint this report — backfill, don't badge.
+				await setReportFingerprint(report.id, fingerprint);
+			} else {
+				outdated = report.summaryFingerprint !== fingerprint;
+			}
+		} catch (err) {
+			// Best-effort: if the live result can't be fingerprinted (a since-broken
+			// SQL, a lake hiccup), don't badge — the grid surfaces the real error.
+			console.error("[reports] drift check failed — not flagging:", err);
+		}
+		return { report, outdated };
+	});
 
 const renameReportFn = createServerFn({ method: "POST" })
 	.inputValidator((data: { id: string; title: string }) => data)
@@ -52,15 +79,15 @@ export const Route = createFileRoute(
 	"/(app)/workspace/$wsId/reports/$reportId",
 )({
 	loader: async ({ params }) => {
-		const report = await loadReport({ data: params.reportId });
-		if (!report) throw notFound();
-		return report;
+		const data = await loadReport({ data: params.reportId });
+		if (!data) throw notFound();
+		return data;
 	},
 	component: ReportDetail,
 });
 
 function ReportDetail() {
-	const report = Route.useLoaderData();
+	const { report, outdated } = Route.useLoaderData();
 	const { wsId } = Route.useParams();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -165,7 +192,24 @@ function ReportDetail() {
 				</Button>
 			</Group>
 
-			{report.summary && <Text>{report.summary}</Text>}
+			{report.summary && (
+				<Stack gap="xs">
+					{outdated && (
+						<Group gap="xs">
+							<Badge
+								color="yellow"
+								variant="light"
+								leftSection={<TriangleAlert size={12} />}
+								tt="none"
+								data-testid="report-outdated"
+							>
+								Outdated — data changed since this summary
+							</Badge>
+						</Group>
+					)}
+					<Text>{report.summary}</Text>
+				</Stack>
+			)}
 			<ConfidenceStrip confidence={report.confidence} />
 			<ResultGridWidget state={{ kind: "result-grid", sql: report.sql }} />
 		</Stack>

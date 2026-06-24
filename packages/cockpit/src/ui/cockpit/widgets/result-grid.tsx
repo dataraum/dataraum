@@ -54,7 +54,14 @@ import {
 	Code,
 	Filter,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
 import {
 	GRID_PAGE_SIZE,
@@ -128,6 +135,7 @@ export function ResultGridView({
 	scrollResetKey,
 	sql,
 	sqlParams,
+	toolbarActions,
 }: {
 	store: GridView;
 	fatal?: string | null;
@@ -146,6 +154,10 @@ export function ResultGridView({
 	 * editor), so no button there. */
 	sql?: string;
 	sqlParams?: (string | number | boolean | null)[];
+	/** Extra toolbar actions rendered to the LEFT of "View SQL" — the answer surface
+	 * mounts its mint-to-Report button here so it sits with the grid's own actions
+	 * instead of floating above the grid. Omitted for plain run_sql / probe grids. */
+	toolbarActions?: ReactNode;
 }) {
 	// The filter row is hidden by default (a clean grid) and toggled by the funnel
 	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
@@ -245,6 +257,7 @@ export function ResultGridView({
 					{store.rowCount} row{store.rowCount === 1 ? "" : "s"}
 				</Text>
 				<Group gap="xs">
+					{toolbarActions}
 					{sql && (
 						<Button
 							variant="subtle"
@@ -511,8 +524,11 @@ export function ResultGridView({
  */
 export function ResultGridWidget({
 	state,
+	toolbarActions,
 }: {
 	state: Extract<CanvasState, { kind: "result-grid" }>;
+	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
+	toolbarActions?: ReactNode;
 }) {
 	// The provider derives a fresh canvas object on every message tick; serialize
 	// sql+params so a new `key` is produced only when the QUERY actually changes,
@@ -528,6 +544,7 @@ export function ResultGridWidget({
 			body={{ sql: state.sql, params: state.params }}
 			sql={state.sql}
 			sqlParams={state.params}
+			toolbarActions={toolbarActions}
 		/>
 	);
 }
@@ -563,6 +580,7 @@ export function WindowedGrid({
 	body,
 	sql,
 	sqlParams,
+	toolbarActions,
 }: {
 	endpoint: string;
 	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
@@ -570,6 +588,8 @@ export function WindowedGrid({
 	/** The query behind the grid, surfaced via the toolbar "Show SQL" modal. */
 	sql?: string;
 	sqlParams?: (string | number | boolean | null)[];
+	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
+	toolbarActions?: ReactNode;
 }) {
 	const [sort, setSort] = useState<GridSort | null>(null);
 	const [filters, setFilters] = useState<GridFilter[]>([]);
@@ -692,6 +712,7 @@ export function WindowedGrid({
 			scrollResetKey={JSON.stringify([sort, filters])}
 			sql={sql}
 			sqlParams={sqlParams}
+			toolbarActions={toolbarActions}
 		/>
 	);
 }

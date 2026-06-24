@@ -84,6 +84,12 @@ function typeIdOf(t: Json | undefined): number | undefined {
  * locale so grouped output uses the right separator for the fractional part. */
 const DECIMAL_SEP: string = (1.1).toLocaleString().replace(/\d/g, "");
 
+/** Decimal places FLOAT/DOUBLE columns render to. Binary floats carry
+ * representation noise — a summed 183996.9 comes back as 183996.89999999967 —
+ * so we round them for display. DECIMAL has an explicit, meaningful scale and
+ * the big-int types are exact strings, so those are left untouched. */
+const FLOAT_DISPLAY_DP = 2;
+
 /** Locale-group a numeric value WITHOUT precision loss. The value is a JS number
  * (small ints / floats) or a string (big ints / decimals). Groups the integer
  * part via BigInt (arbitrary precision) and re-attaches the exact fractional
@@ -146,7 +152,16 @@ export function formatCell(value: unknown, duckdbType?: Json): string {
 	const id = typeIdOf(duckdbType);
 	if (id !== undefined) {
 		if (NUMERIC_IDS.has(id)) {
-			const n = formatNumeric(value);
+			// Round binary floats to a fixed display precision; leave exact-scale
+			// DECIMAL and string-carried big ints alone (and pass Infinity/NaN through
+			// untouched so they aren't coerced to "Infinity.00").
+			const display =
+				(id === TYPE.FLOAT || id === TYPE.DOUBLE) &&
+				typeof value === "number" &&
+				Number.isFinite(value)
+					? value.toFixed(FLOAT_DISPLAY_DP)
+					: value;
+			const n = formatNumeric(display);
 			if (n !== null) return n;
 		} else if (id === TYPE.DATE) {
 			return formatDate(value);

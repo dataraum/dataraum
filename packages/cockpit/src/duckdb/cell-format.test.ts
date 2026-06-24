@@ -69,10 +69,17 @@ describe("formatCell — numerics", () => {
 		expect(out.endsWith("67")).toBe(true);
 	});
 
-	it("groups floats and keeps their fractional digits", () => {
-		const out = formatCell(1234.5, DOUBLE);
-		expect(digits(out)).toBe("12345");
-		expect(out).toMatch(/1.234.5$/);
+	it("rounds FLOAT/DOUBLE to two places and groups them", () => {
+		// Binary-representation noise from a summed double is trimmed to 2 places.
+		const noisy = formatCell(183996.89999999967, DOUBLE);
+		expect(digits(noisy)).toBe("18399690");
+		expect(noisy).toMatch(/183.996.90$/);
+		// Rounds (not truncates) the third decimal.
+		expect(formatCell(1234.567, DOUBLE)).toMatch(/1.234.57$/);
+		// A clean half still renders a full two places.
+		const half = formatCell(1234.5, DOUBLE);
+		expect(digits(half)).toBe("123450");
+		expect(half.endsWith("50")).toBe(true);
 	});
 
 	it("handles negative numbers", () => {

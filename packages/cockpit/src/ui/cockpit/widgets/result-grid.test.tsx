@@ -227,11 +227,13 @@ describe("ResultGridView SQL modal (DAT-613)", () => {
 		);
 	}
 
-	it("opens the SQL in a modal from the toolbar button", () => {
+	it("opens the SQL in a modal from the labeled toolbar button", () => {
 		renderWithSql("SELECT 1 FROM lake.typed.t");
+		const button = screen.getByTestId("canvas-result-grid-sql-toggle");
+		expect(button.textContent).toContain("View SQL");
 		// The query is not shown until the modal is opened.
 		expect(screen.queryByText("SELECT 1 FROM lake.typed.t")).toBeNull();
-		fireEvent.click(screen.getByTestId("canvas-result-grid-sql-toggle"));
+		fireEvent.click(button);
 		expect(screen.getByText("SELECT 1 FROM lake.typed.t")).toBeTruthy();
 	});
 

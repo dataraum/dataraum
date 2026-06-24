@@ -30,6 +30,7 @@ import {
 	ActionIcon,
 	Alert,
 	Badge,
+	Button,
 	Group,
 	Indicator,
 	Modal,
@@ -245,17 +246,16 @@ export function ResultGridView({
 				</Text>
 				<Group gap="xs">
 					{sql && (
-						<ActionIcon
+						<Button
 							variant="subtle"
 							color="gray"
-							size="sm"
-							aria-label="Show SQL"
-							title="Show SQL"
+							size="compact-xs"
+							leftSection={<Code size={13} />}
 							data-testid="canvas-result-grid-sql-toggle"
 							onClick={() => setSqlOpen(true)}
 						>
-							<Code size={15} />
-						</ActionIcon>
+							View SQL
+						</Button>
 					)}
 					{onFilterCommit && (
 						<Indicator

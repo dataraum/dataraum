@@ -41,6 +41,7 @@ import {
 	validateStepNames,
 } from "../duckdb/run-steps";
 import { linkedAbortController } from "../lib/abort";
+import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
 import { sqlEquivalent } from "../lib/sql-canonical";
 import {
 	MAX_OUTPUT_TOKENS,
@@ -604,6 +605,10 @@ export async function querySubAgent(
 				lookValuesTool,
 				makeRunStepsTool(captured, nearUniqueColumns),
 			],
+			// Per-turn LLM telemetry (DAT-600). Logs this nested sub-agent loop
+			// SEPARATELY from the orchestrator; `iterations` exposes its round-trip
+			// depth (the multiplier DAT-605 quantifies).
+			middleware: [llmTelemetryMiddleware("answer_subagent")],
 			outputSchema: QueryDraftSchema,
 		});
 	} catch (err) {

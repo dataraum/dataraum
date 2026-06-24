@@ -12,13 +12,15 @@
 // ends OR is cancelled (the `finally` in `start`, reached on both paths).
 
 import { createFileRoute } from "@tanstack/react-router";
-import { openProbeConnection, SUPPORTED_BACKENDS } from "../../duckdb/probe";
 import {
 	buildGridQuery,
 	clampGridCap,
-	encodeFrame,
 	type GridSort,
 	parseSort,
+} from "../../duckdb/grid-query";
+import { openProbeConnection, SUPPORTED_BACKENDS } from "../../duckdb/probe";
+import {
+	encodeFrame,
 	type StreamableResult,
 	streamNdjson,
 } from "../../duckdb/stream-sql";

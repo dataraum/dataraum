@@ -28,13 +28,32 @@ export type GridStatus =
 	| "error";
 
 /**
+ * The read surface the grid view ({@link ResultGridView}) renders from: column
+ * names + structured types, a row count, a terminal status + banners, and O(1)
+ * cell access by `(column, row)`. Both the one-shot {@link ColumnStore} (probe)
+ * and the windowed {@link PagedGridView} (lake, DAT-613) satisfy it, so the view
+ * is agnostic to whether the result arrived as one stream or paged on scroll.
+ */
+export interface GridView {
+	columns: string[];
+	types: Json;
+	rowCount: number;
+	status: GridStatus;
+	truncated: boolean;
+	cap?: number;
+	error?: string;
+	/** The cell at `(col, row)`, or `null` when out of range / not yet loaded. */
+	cell(col: number, row: number): Json | null;
+}
+
+/**
  * Columnar accumulator. `cols[colIndex][rowIndex]` mirrors the server's
  * column-major batches; the grid reads cells out of it via an `accessorFn` so no
  * row objects are ever built. `types` is neo's structured `columnTypesJson()`
  * (per-column metadata objects), not bare type strings — it drives cell
  * formatting/alignment in the grid.
  */
-export class ColumnStore {
+export class ColumnStore implements GridView {
 	columns: string[] = [];
 	types: Json = null;
 	queryId: string | null = null;
@@ -44,6 +63,11 @@ export class ColumnStore {
 	truncated = false;
 	cap?: number;
 	error?: string;
+
+	/** O(1) cell read — the {@link GridView} surface over the columnar arrays. */
+	cell(col: number, row: number): Json | null {
+		return this.cols[col]?.[row] ?? null;
+	}
 
 	/** Fold one frame into the store (mutating). */
 	apply(frame: ResultFrame): void {
@@ -76,6 +100,49 @@ export class ColumnStore {
 							: "done";
 				break;
 		}
+	}
+}
+
+/**
+ * A {@link GridView} assembled from the sequential LIMIT/OFFSET page-stores of
+ * the windowed lake grid (DAT-613). Each page (one `ColumnStore`) holds exactly
+ * `pageSize` rows except the last — the route over-fetches by one row to detect
+ * has-more, so every non-final window fills the page — which lets a global row
+ * index map to its page by floor division: O(1) cell access with no merged-array
+ * rebuild as pages accumulate on scroll.
+ *
+ * `status`/`error` are supplied by the owner ({@link useInfiniteQuery} state in
+ * the widget), since "still loading more" vs "done" is a query-state concern, not
+ * something a single page knows. `truncated` is always false: windowing fetches
+ * the rest on scroll, so the one-shot "narrow your query" banner never applies.
+ */
+export class PagedGridView implements GridView {
+	readonly truncated = false;
+
+	constructor(
+		private readonly pages: readonly ColumnStore[],
+		private readonly pageSize: number,
+		readonly status: GridStatus,
+		readonly error?: string,
+	) {}
+
+	get columns(): string[] {
+		return this.pages[0]?.columns ?? [];
+	}
+
+	get types(): Json {
+		return this.pages[0]?.types ?? null;
+	}
+
+	get rowCount(): number {
+		let n = 0;
+		for (const p of this.pages) n += p.rowCount;
+		return n;
+	}
+
+	cell(col: number, row: number): Json | null {
+		const page = this.pages[Math.floor(row / this.pageSize)];
+		return page ? page.cell(col, row % this.pageSize) : null;
 	}
 }
 

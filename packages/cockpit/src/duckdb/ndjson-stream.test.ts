@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { ResultFrame } from "#/duckdb/stream-sql";
 import {
 	ColumnStore,
+	PagedGridView,
 	readNdjsonIntoStore,
 	readNdjsonStream,
 } from "./ndjson-stream";
@@ -136,6 +137,18 @@ describe("ColumnStore", () => {
 		expect(s.cols[1][2]).toBe("c");
 	});
 
+	it("reads cells via the GridView cell() surface, null out of range", () => {
+		const s = new ColumnStore();
+		s.apply(HEADER);
+		s.apply(BATCH1);
+		s.apply(BATCH2);
+		expect(s.cell(0, 0)).toBe(1);
+		expect(s.cell(1, 2)).toBe("c");
+		// Out of range (row or column) reads as null, never throws.
+		expect(s.cell(0, 99)).toBeNull();
+		expect(s.cell(9, 0)).toBeNull();
+	});
+
 	it("marks done on a clean footer", () => {
 		const s = new ColumnStore();
 		s.apply(HEADER);
@@ -183,5 +196,63 @@ describe("readNdjsonIntoStore", () => {
 			[1, 2, 3],
 			["a", "b", "c"],
 		]);
+	});
+});
+
+describe("PagedGridView (DAT-613 windowed grid)", () => {
+	function page(ids: number[], names: string[]): ColumnStore {
+		const s = new ColumnStore();
+		s.apply({
+			t: "h",
+			columns: ["id", "name"],
+			types: [{ typeId: 1 }, { typeId: 2 }],
+			queryId: "q",
+		});
+		s.apply({ t: "b", n: ids.length, cols: [ids, names] });
+		s.apply({ t: "f", rows: ids.length });
+		return s;
+	}
+
+	it("maps a global row index to its page by floor division (O(1) cell access)", () => {
+		// pageSize 2: page 0 = rows 0-1, page 1 = row 2. The last page can be short;
+		// every earlier page fills, so floor(row / pageSize) is the correct page.
+		const view = new PagedGridView(
+			[page([1, 2], ["a", "b"]), page([3], ["c"])],
+			2,
+			"done",
+		);
+		expect(view.rowCount).toBe(3);
+		expect(view.columns).toEqual(["id", "name"]);
+		expect(view.cell(0, 0)).toBe(1);
+		expect(view.cell(1, 1)).toBe("b");
+		// global row 2 → page 1, local row 0
+		expect(view.cell(0, 2)).toBe(3);
+		expect(view.cell(1, 2)).toBe("c");
+		// past the loaded rows → null, never throws
+		expect(view.cell(0, 5)).toBeNull();
+	});
+
+	it("carries the owner-supplied status + error, never the truncate banner", () => {
+		const streaming = new PagedGridView([page([1], ["a"])], 2, "streaming");
+		expect(streaming.status).toBe("streaming");
+		// Windowing fetches the rest on scroll, so the one-shot truncate banner
+		// never applies.
+		expect(streaming.truncated).toBe(false);
+
+		const errored = new PagedGridView([], 2, "error", "boom");
+		expect(errored.status).toBe("error");
+		expect(errored.error).toBe("boom");
+	});
+
+	it("takes columns/types from the first page and is empty-safe before any load", () => {
+		expect(new PagedGridView([page([1], ["a"])], 2, "done").types).toEqual([
+			{ typeId: 1 },
+			{ typeId: 2 },
+		]);
+		const empty = new PagedGridView([], 500, "streaming");
+		expect(empty.rowCount).toBe(0);
+		expect(empty.columns).toEqual([]);
+		expect(empty.types).toBeNull();
+		expect(empty.cell(0, 0)).toBeNull();
 	});
 });

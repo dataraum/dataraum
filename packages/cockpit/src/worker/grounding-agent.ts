@@ -20,12 +20,12 @@
 import { chat, maxIterations, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
-
 import { config } from "#/config";
 import {
 	type GroundingReadinessRow,
 	readGroundingReadiness,
 } from "#/db/metadata/grounding-readiness";
+import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { teach } from "#/tools/teach";
 import {
@@ -159,6 +159,7 @@ export async function assessAndGround(
 	const captured = { count: 0 };
 	const verdict = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		middleware: [llmTelemetryMiddleware("grounding")],
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(GROUNDING_LOOP_MAX_ITERATIONS),
 		systemPrompts: [GROUNDING_INSTRUCTIONS],

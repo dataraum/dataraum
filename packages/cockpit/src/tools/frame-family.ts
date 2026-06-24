@@ -26,6 +26,7 @@ import type { z } from "zod";
 
 import { config } from "../config";
 import { linkedAbortController } from "../lib/abort";
+import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { teach } from "./teach";
 import type { TeachType } from "./teach.validation";
@@ -71,6 +72,7 @@ export async function induceStructured<R>(opts: {
 	const abortController = linkedAbortController(opts.signal);
 	const stream = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		middleware: [llmTelemetryMiddleware("frame_family")],
 		abortController,
 		modelOptions: {
 			max_tokens: MAX_OUTPUT_TOKENS,

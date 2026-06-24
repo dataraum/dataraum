@@ -11,9 +11,9 @@
 import { chat } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
-
 import { config } from "#/config";
 import type { ConversationKind } from "#/db/cockpit/conversations";
+import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
 import { MAX_OUTPUT_TOKENS, NAV_MODEL } from "#/llm";
 
 const KINDS = ["connect", "stage", "analyse"] as const;
@@ -38,6 +38,7 @@ export async function classifyOpeningMessage(
 	try {
 		const result = await chat({
 			adapter: createAnthropicChat(NAV_MODEL, config.anthropicApiKey),
+			middleware: [llmTelemetryMiddleware("nav_classifier")],
 			modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 			systemPrompts: [
 				{ content: `${SYSTEM}\nAvailable: ${available.join(", ")}.` },

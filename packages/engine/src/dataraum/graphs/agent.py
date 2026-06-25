@@ -487,17 +487,21 @@ class GraphAgent(LLMFeature):
 
         # Select the prompt by the AUTHORED node's type (DAT-636 P2). The authoring
         # pass runs one single-output mini-graph at a time, so the output step IS the
-        # node being authored: a FORMULA is pure composition of already-decided scalar
-        # steps (fast/Haiku tier, a tiny prompt — NO grounding evidence); an
-        # EXTRACT/CONSTANT needs the full fed grounding evidence (balanced/Sonnet).
+        # node being authored. A FORMULA composes already-decided scalar steps and a
+        # CONSTANT returns a parameter value — BOTH are grounding-free (no value-sets,
+        # no field mappings), so both take the lean composition prompt on the fast/Haiku
+        # tier. Only an EXTRACT needs the full fed grounding evidence (balanced/Sonnet).
         output_step = graph.get_output_step()
-        if output_step is not None and output_step.step_type == StepType.FORMULA:
+        if output_step is not None and output_step.step_type in (
+            StepType.FORMULA,
+            StepType.CONSTANT,
+        ):
             prompt_name = "graph_formula_composition"
             tier = "fast"
             prompt_context = {
                 "graph_yaml": graph_yaml,
                 "parameters": json.dumps(parameters, indent=2),
-                "cached_steps": cached_steps_json,
+                "dependency_steps": cached_steps_json,
             }
         else:
             prompt_name = "graph_sql_generation"
@@ -520,14 +524,16 @@ class GraphAgent(LLMFeature):
             from dataraum.graphs.context import format_metadata_document
             from dataraum.graphs.field_mapping import format_mappings_for_prompt
 
+            # An extract is a leaf with no dependency steps, and a cached extract is
+            # ASSEMBLED (never re-authored), so cached_steps is always empty here — the
+            # grounding prompt does not carry it.
             prompt_context = {
                 "graph_yaml": graph_yaml,
                 "table_schema": json.dumps(self._build_schema_info(context), indent=2),
                 "parameters": json.dumps(parameters, indent=2),
-                "cached_steps": cached_steps_json,
                 "rich_context": format_metadata_document(context.rich_context),
                 "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
-                # DAT-616: feed back what prior runs learned for this metric — the
+                # DAT-616: feed back what prior runs learned for this concept — the
                 # honest-fail reason + prior value→concept filter decisions.
                 "prior_context": self._build_prior_context(session, graph, cached_snippets),
             }
@@ -1057,6 +1063,13 @@ class GraphAgent(LLMFeature):
         workspace_id: str,
     ) -> None:
         """Save generated SQL steps as snippets for cross-graph reuse.
+
+        Called only from the authoring path (``execute`` on a single-output
+        mini-graph); ``assemble`` never saves — its nodes were already minted here.
+        A FORMULA mini-graph reproduces its dep extract/constant steps, so this loop
+        re-encounters them — that is a harmless no-op: ``save_snippet`` is
+        first-writer-wins, so an existing healthy snippet for the dep concept is KEPT
+        (a hallucinated dep-SQL change can never overwrite a good extract snippet).
 
         Called AFTER successful execution so that:
         - Only working SQL is saved (not broken SQL that needs marking as failed)

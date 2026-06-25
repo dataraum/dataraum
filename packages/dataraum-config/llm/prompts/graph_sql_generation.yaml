@@ -181,10 +181,6 @@ user_prompt: |
   {parameters}
   </parameters>
 
-  <cached_steps description="A previously validated step for this concept, if any — reuse it exactly (same sql) unless the schema changed. Empty on a fresh grounding.">
-  {cached_steps}
-  </cached_steps>
-
   <prior_context description="What prior runs already learned for THIS concept — an honest-fail reason to address/abstain on, and a prior value→concept grounding to reuse. Empty on first run.">
   {prior_context}
   </prior_context>
@@ -229,10 +225,6 @@ inputs:
     type: "string"
     required: true
     description: "Business concept → column candidates from semantic analysis (empty string if none)"
-  cached_steps:
-    type: "string"
-    required: true
-    description: "A previously validated step for this concept (empty string if none)"
   prior_context:
     type: "string"
     required: true

@@ -82,8 +82,31 @@ def test_formula_node_selects_lean_formula_prompt_on_fast_tier() -> None:
     assert name == "graph_formula_composition"
     provider.get_model_for_tier.assert_called_with("fast")
     # Lean context: deps + graph, NONE of the grounding evidence.
-    assert set(prompt_ctx) == {"graph_yaml", "parameters", "cached_steps"}
+    assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
     assert "rich_context" not in prompt_ctx and "field_mappings" not in prompt_ctx
+
+
+def test_constant_node_selects_lean_prompt_without_grounding_evidence() -> None:
+    """A CONSTANT (e.g. days_in_period) is grounding-free like a formula — it takes
+    the lean prompt on the fast tier and must NOT require rich_context/field_mappings."""
+    cst = GraphStep(
+        step_id="days_in_period",
+        step_type=StepType.CONSTANT,
+        parameter="days_in_period",
+        output_step=True,
+    )
+    graph = _graph("days_in_period", {"days_in_period": cst})
+    renderer, provider = _mocks()
+    agent = _agent_with(renderer, provider)
+    # No rich_context — a constant needs none. (Pre-fix this raised Result.fail.)
+    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
+
+    agent._generate_sql(MagicMock(), graph, ctx, {"days_in_period": 30})
+
+    name, prompt_ctx = renderer.render_split.call_args.args
+    assert name == "graph_formula_composition"
+    provider.get_model_for_tier.assert_called_with("fast")
+    assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
 
 
 def test_extract_node_selects_grounding_prompt_on_balanced_tier(monkeypatch) -> None:

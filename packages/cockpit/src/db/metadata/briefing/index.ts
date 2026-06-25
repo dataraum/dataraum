@@ -3,6 +3,7 @@
 
 export { assembleBriefing } from "./assemble";
 export { buildWorkspaceBriefing } from "./build";
+export { formatBriefingDigest } from "./digest";
 export { computeNextActions } from "./next-actions";
 export { projectBriefing } from "./project";
 export type * from "./types";

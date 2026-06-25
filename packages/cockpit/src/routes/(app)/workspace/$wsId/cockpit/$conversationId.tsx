@@ -16,6 +16,7 @@ import {
 import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { listRunningStages } from "#/db/cockpit/runs";
 import { loadUiState, saveUiState } from "#/db/cockpit/ui-state";
+import { buildWorkspaceBriefing } from "#/db/metadata/briefing";
 import { hasImportedTables } from "#/db/metadata/workspace-state";
 import { chatReadiness } from "#/lib/chat-readiness";
 import { reconcileActiveRuns } from "#/temporal/reconcile";
@@ -58,12 +59,16 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 			if (!conversation) return { notFound: true as const };
 			// Readiness inputs (DAT-534) alongside hydration — both soft (a read blip
 			// just drops the advisory banner, never the chat).
-			const [initialMessages, uiState, hasTables, runningStages] =
+			const [initialMessages, uiState, hasTables, runningStages, briefing] =
 				await Promise.all([
 					loadDisplayMessages(conversationId),
 					loadUiState(conversationId),
 					hasImportedTables().catch(() => false),
 					listRunningStages(conversationId).catch(() => []),
+					// The chat-open Workspace Briefing (DAT-634) — the landing canvas for
+					// a fresh stage/analyse chat. Soft: a read blip just drops the landing
+					// orientation (falls back to empty), never the chat.
+					buildWorkspaceBriefing().catch(() => null),
 				]);
 			void reconcileActiveRuns(conversationId);
 			return {
@@ -73,6 +78,7 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 				title: conversation.title,
 				initialMessages,
 				uiState,
+				briefing,
 				readiness: chatReadiness(conversation.kind, {
 					hasTables,
 					hasActiveRun: runningStages.length > 0,
@@ -90,6 +96,7 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 				title: null,
 				initialMessages: undefined,
 				uiState: null,
+				briefing: null,
 				readiness: null,
 			};
 		}
@@ -126,8 +133,14 @@ function CockpitChat() {
 	// drives the readiness banner (DAT-534), and is the composer drop-up's active
 	// type. The readiness banner is advisory + non-blocking — shown only when the
 	// chat's kind can't act yet (no data / a run in progress).
-	const { conversationId, kind, initialMessages, uiState, readiness } =
-		Route.useLoaderData();
+	const {
+		conversationId,
+		kind,
+		initialMessages,
+		uiState,
+		briefing,
+		readiness,
+	} = Route.useLoaderData();
 	const { wsId } = Route.useParams();
 	const navigate = useNavigate();
 	// The layout loader carries availability + latest-by-kind for the drop-up; read
@@ -188,6 +201,7 @@ function CockpitChat() {
 			conversationKind={kind}
 			initialMessages={initialMessages}
 			initialUiState={uiState}
+			initialBriefing={briefing}
 			seedMessage={seedMessage}
 			typeNav={typeNav}
 			onPersistPin={(pinnedCallId) =>

@@ -13,7 +13,12 @@
 // and the context block names the workspace, not a session.
 
 import { eq } from "drizzle-orm";
+import type { ConversationKind } from "../db/cockpit/conversations";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
+import {
+	buildWorkspaceBriefing,
+	formatBriefingDigest,
+} from "../db/metadata/briefing";
 import { metadataDb } from "../db/metadata/client";
 import { GENERATION_STAGE } from "../db/metadata/relationship-target";
 import {
@@ -69,9 +74,22 @@ export function formatWorkspaceContext(
  * WORKSPACE's (DAT-506: a workspace property); the table set is the workspace-current
  * set (the generation heads).
  */
-export async function buildWorkspaceContext(): Promise<string | null> {
+export async function buildWorkspaceContext(
+	kind: ConversationKind,
+): Promise<string | null> {
 	const workspace = await resolveActiveWorkspaceRow();
 	const tableNames = await workspaceTableNames();
 	if (tableNames.length === 0) return null;
-	return formatWorkspaceContext(workspace.vertical, tableNames);
+	const block = formatWorkspaceContext(workspace.vertical, tableNames);
+
+	// Append a compact, PROJECTED readiness digest (DAT-634) so the agent can speak
+	// to "what's blocked / what to do next" for this chat's kind without a tool
+	// round-trip. Soft: a briefing read blip just drops the digest, keeping the base
+	// block. TODO(DAT-634): cache candidate — buildWorkspaceBriefing runs ~9 queries
+	// per turn here; a short-TTL / invalidate-on-promote cache would cut it.
+	// Intentionally UNCACHED for now (correctness first; DB cost is negligible beside
+	// the LLM call). Do NOT add a cache without measuring.
+	const briefing = await buildWorkspaceBriefing().catch(() => null);
+	const digest = briefing ? formatBriefingDigest(briefing, kind) : null;
+	return digest && block ? `${block}\n\n${digest}` : block;
 }

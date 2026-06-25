@@ -5,6 +5,8 @@
 // tool→canvas mapper case — they never touch the canvas/stream/shell plumbing.
 // Keep the union sorted baseline-first so the extension point is obvious.
 
+import type { ConversationKind } from "#/db/cockpit/conversations";
+import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
@@ -134,6 +136,17 @@ export type CanvasState =
 			kind: "probe";
 			source?: { name: string; backend: string };
 			sql?: string;
+	  }
+	// DAT-634: the chat-open "Workspace Briefing" — the LANDING orientation for a
+	// fresh stage/analyse chat (the idle fallback, replacing blank `empty`). Carries
+	// the full briefing + this chat's kind; the widget projects client-side
+	// (`projectBriefing`) to foreground this chat's actions. It yields to any live
+	// tool canvas on the first turn; the durable, always-fresh view is the
+	// Governance route (DAT-633), so this is never re-fetched or kept live here.
+	| {
+			kind: "briefing";
+			briefing: WorkspaceBriefing;
+			chatKind: ConversationKind;
 	  };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */

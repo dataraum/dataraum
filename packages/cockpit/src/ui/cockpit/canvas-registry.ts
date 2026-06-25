@@ -7,6 +7,7 @@
 
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { AnswerResultWidget } from "#/ui/cockpit/widgets/answer-result";
+import { BriefingWidget } from "#/ui/cockpit/widgets/briefing";
 import { ColumnProfileWidget } from "#/ui/cockpit/widgets/column-profile";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
@@ -63,4 +64,5 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "operating-model-progress",
 		component: OperatingModelProgressWidget,
 	})
-	.register({ kind: "probe", component: ProbeWidget });
+	.register({ kind: "probe", component: ProbeWidget })
+	.register({ kind: "briefing", component: BriefingWidget });

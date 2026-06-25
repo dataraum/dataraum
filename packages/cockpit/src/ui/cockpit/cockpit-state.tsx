@@ -36,6 +36,7 @@ import {
 // the client bundle — only the UiState shape rides along.
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { UiState } from "#/db/cockpit/ui-state";
+import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
 import {
 	asWorkflowProgressEvent,
 	progressQueryKey,
@@ -134,6 +135,7 @@ export function CockpitProvider({
 	conversationKind,
 	initialMessages,
 	initialUiState,
+	initialBriefing,
 	onPersistPin,
 	seedMessage,
 	typeNav,
@@ -151,6 +153,11 @@ export function CockpitProvider({
 	conversationId?: string;
 	initialMessages?: Array<UIMessage>;
 	initialUiState?: UiState | null;
+	/** The chat-open Workspace Briefing (DAT-634) from the route loader — the LANDING
+	 * canvas for a fresh stage/analyse chat. A load-time snapshot; it yields to any
+	 * live tool canvas on the first turn and is never refreshed here (Governance is
+	 * the durable view). Null for connect (uses the probe hub) or on a read blip. */
+	initialBriefing?: WorkspaceBriefing | null;
 	/** Persist a canvas-pin change (server fn from the route); fire-and-forget. */
 	onPersistPin?: (pinnedCallId: string | null) => void;
 	/** The landing nav-agent's opening message (DAT-534) — sent ONCE on mount into
@@ -280,12 +287,26 @@ export function CockpitProvider({
 	// still takes the canvas as `live`; the hub returns underneath. The hub wins over
 	// `loading` too — it's always useful, and acquisition + teaching are sequential so
 	// there is no half-built import set to hide behind a spinner.
+	// A fresh stage/analyse chat (no messages yet) lands on the Workspace Briefing
+	// (DAT-634) — the "here's where you are, here's what to do" orientation that
+	// replaces a blank `empty`. It's the idle fallback only: once the user sends a
+	// turn (messages.length > 0) it yields, and any live tool result wins above. The
+	// durable, always-fresh view is the Governance route, so this snapshot is never
+	// refreshed here. Connect keeps its probe hub.
 	const fallback: CanvasState =
 		conversationKind === "connect"
 			? { kind: "probe" }
-			: isLoading
-				? { kind: "loading", label: pendingLabel }
-				: { kind: "empty" };
+			: initialBriefing != null &&
+					conversationKind != null &&
+					messages.length === 0
+				? {
+						kind: "briefing",
+						briefing: initialBriefing,
+						chatKind: conversationKind,
+					}
+				: isLoading
+					? { kind: "loading", label: pendingLabel }
+					: { kind: "empty" };
 	const canvas = useStableValue<CanvasState>(pinned ?? live ?? fallback);
 
 	// Reactive state — recreated each streaming tick (messages/canvas change).

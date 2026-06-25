@@ -226,7 +226,7 @@ export const Route = createFileRoute("/api/chat")({
 				// OPPORTUNISTIC enrichment: a DB hiccup must NOT take down chat, so a
 				// throw degrades to no block (the agent falls back to asking — the
 				// pre-fix behavior), never a dead turn.
-				const workspaceContext = await buildWorkspaceContext().catch(
+				const workspaceContext = await buildWorkspaceContext(kind).catch(
 					(err: unknown) => {
 						console.error(
 							"[chat] workspace-context read failed — continuing without it:",

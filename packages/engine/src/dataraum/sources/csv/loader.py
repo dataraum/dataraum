@@ -104,7 +104,6 @@ class CSVLoader(LoaderBase):
         self,
         source_uri: str,
         source_id: str,
-        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
         null_config: NullValueConfig,
@@ -120,8 +119,6 @@ class CSVLoader(LoaderBase):
         Args:
             source_uri: URI of the CSV file (passed straight to ``read_csv``).
             source_id: ID of the parent source
-            source_name: Logical name of the parent source (used to compose
-                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
             null_config: Null value configuration
@@ -131,7 +128,7 @@ class CSVLoader(LoaderBase):
         Returns:
             Result containing StagedTable
         """
-        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.core.duckdb_naming import schema_for_layer, workspace_table_name
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
         file_stem = uri_stem(source_uri)
@@ -150,10 +147,11 @@ class CSVLoader(LoaderBase):
             if not columns:
                 return Result.fail("No columns found in CSV")
 
-            # Compose the source-prefixed name. The catalog alias is resolved
-            # here so the loader can write directly into ``lake.raw.*``.
+            # Compose the narrow, workspace-unique name (DAT-639 — no source
+            # prefix). The catalog alias is resolved here so the loader can write
+            # directly into ``lake.raw.*``.
             file_table_name = self._sanitize_table_name(file_stem)
-            bare = table_name_for_source(source_name, file_table_name)
+            bare = workspace_table_name(file_table_name)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Track which columns are junk for later filtering (match on original name)

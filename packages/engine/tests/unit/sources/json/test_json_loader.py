@@ -1,9 +1,10 @@
 """Tests for JSON/JSONL loader.
 
-Post-DAT-341: loader writes to ``lake.raw.<source>__<table>`` via the
-DuckLake-anchored connection. Tests under ``TestLoadSingleFile`` request
-``lake_anchor`` + ``lake_clean`` and open ``connect_session()`` instead of
-a plain ``:memory:`` DuckDB.
+Post-DAT-341: loader writes to ``lake.raw.<table>`` via the DuckLake-anchored
+connection — the physical name is NARROW (the file stem, no source prefix —
+DAT-639). Tests under ``TestLoadSingleFile`` request ``lake_anchor`` +
+``lake_clean`` and open ``connect_session()`` instead of a plain ``:memory:``
+DuckDB.
 """
 
 from __future__ import annotations
@@ -99,9 +100,6 @@ class TestGetSchema:
         assert not result.success
 
 
-_SOURCE_NAME = "test_baseline"  # matches the session fixture's seeded Source.name
-
-
 def _fqn(bare: str) -> str:
     """Return ``lake.raw."<bare>"`` — convenience for assertions."""
     return f'lake.raw."{bare}"'
@@ -123,7 +121,6 @@ class TestLoadSingleFile:
             result = loader._load_single_file(
                 source_uri=str(json_file),
                 source_id=_TEST_SOURCE_ID,
-                source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
                 session=session,
             )
@@ -132,8 +129,8 @@ class TestLoadSingleFile:
             staged = result.unwrap()
             assert staged.row_count == 3
             assert staged.column_count == 3
-            assert staged.table_name == "test_baseline__data"
-            assert staged.raw_table_name == "test_baseline__data"
+            assert staged.table_name == "data"
+            assert staged.raw_table_name == "data"
 
             # Verify all columns are VARCHAR by reading back from lake.raw
             row = conn.execute(f"SELECT * FROM {_fqn(staged.raw_table_name)} LIMIT 1").fetchone()
@@ -157,7 +154,6 @@ class TestLoadSingleFile:
             result = loader._load_single_file(
                 source_uri=str(jsonl_file),
                 source_id=_TEST_SOURCE_ID,
-                source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
                 session=session,
             )
@@ -165,7 +161,7 @@ class TestLoadSingleFile:
             assert result.success
             staged = result.unwrap()
             assert staged.row_count == 2
-            assert staged.table_name == "test_baseline__cities"
+            assert staged.table_name == "cities"
         finally:
             conn.close()
 
@@ -188,7 +184,6 @@ class TestLoadSingleFile:
             result = loader._load_single_file(
                 source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
-                source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
                 session=session,
             )
@@ -197,8 +192,7 @@ class TestLoadSingleFile:
             # Describe the materialized table directly via PRAGMA so we don't
             # depend on information_schema (DuckLake doesn't expose it cleanly).
             cols = conn.execute(
-                f"SELECT column_name FROM (DESCRIBE {_fqn('test_baseline__weird_cols')}) "
-                "ORDER BY column_name"
+                f"SELECT column_name FROM (DESCRIBE {_fqn('weird_cols')}) ORDER BY column_name"
             ).fetchall()
             col_names = [c[0] for c in cols]
             assert "first_name" in col_names
@@ -230,7 +224,6 @@ class TestLoadSingleFile:
             result = loader._load_single_file(
                 source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
-                source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
                 session=session,
             )
@@ -266,7 +259,6 @@ class TestLoadSingleFile:
             result = loader._load_single_file(
                 source_uri=str(path),
                 source_id=_TEST_SOURCE_ID,
-                source_name=_SOURCE_NAME,
                 duckdb_conn=conn,
                 session=session,
             )

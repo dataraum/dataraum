@@ -93,7 +93,6 @@ class JsonLoader(LoaderBase):
         self,
         source_uri: str,
         source_id: str,
-        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
     ) -> Result[StagedTable]:
@@ -106,15 +105,13 @@ class JsonLoader(LoaderBase):
         Args:
             source_uri: URI of the JSON file (passed straight to ``read_json_auto``).
             source_id: ID of the parent source.
-            source_name: Logical name of the parent source (used to compose
-                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection.
             session: SQLAlchemy session.
 
         Returns:
             Result containing StagedTable.
         """
-        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.core.duckdb_naming import schema_for_layer, workspace_table_name
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
         try:
@@ -143,10 +140,11 @@ class JsonLoader(LoaderBase):
                     seen[normalized] = 1
                 col_mapping.append((original, normalized))
 
-            # Compose the source-prefixed name. The catalog alias is resolved
-            # here so the loader can write directly into ``lake.raw.*``.
+            # Compose the narrow, workspace-unique name (DAT-639 — no source
+            # prefix). The catalog alias is resolved here so the loader can write
+            # directly into ``lake.raw.*``.
             file_table_name = self._sanitize_table_name(uri_stem(source_uri))
-            bare = table_name_for_source(source_name, file_table_name)
+            bare = workspace_table_name(file_table_name)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Build SELECT: serialize every column to VARCHAR via to_json().

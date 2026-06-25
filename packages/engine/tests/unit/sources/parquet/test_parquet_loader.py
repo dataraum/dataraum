@@ -95,7 +95,6 @@ def _stage_parquet(
     result = loader._load_single_file(
         source_uri=source_uri,
         source_id=source_id,
-        source_name=source_name,
         duckdb_conn=conn,
         session=session,
     )
@@ -172,9 +171,9 @@ class TestParquetLoader:
         try:
             staged = _stage_parquet(conn, test_session, str(sample_parquet), source_name="sample")
 
-            # Post-DAT-341: bare name is ``<source>__<table>``
-            assert staged.table_name == "sample__sample"
-            assert staged.raw_table_name == "sample__sample"
+            # DAT-639: bare name is NARROW (the file stem, no source prefix).
+            assert staged.table_name == "sample"
+            assert staged.raw_table_name == "sample"
             assert staged.row_count == 3
             assert staged.column_count == 5
 
@@ -184,7 +183,7 @@ class TestParquetLoader:
                 "WHERE database_name = 'lake' AND schema_name = 'raw'"
             ).fetchall()
             table_names = [t[0] for t in tables]
-            assert "sample__sample" in table_names
+            assert "sample" in table_names
         finally:
             conn.close()
 
@@ -196,7 +195,7 @@ class TestParquetLoader:
         try:
             _stage_parquet(conn, test_session, str(sample_parquet), source_name="typed_test")
 
-            schema = conn.execute('DESCRIBE lake.raw."typed_test__sample"').fetchall()
+            schema = conn.execute('DESCRIBE lake.raw."sample"').fetchall()
             # DESCRIBE returns (column_name, column_type, null, key, default, extra)
             type_map = {row[0]: row[1] for row in schema}
             assert type_map["id"] == "BIGINT"
@@ -226,7 +225,7 @@ class TestParquetLoader:
         try:
             _stage_parquet(conn, test_session, str(path), source_name="special_cols")
 
-            schema = conn.execute('DESCRIBE lake.raw."special_cols__special_cols"').fetchall()
+            schema = conn.execute('DESCRIBE lake.raw."special_cols"').fetchall()
             col_names = [row[0] for row in schema]
             assert col_names == ["customer_id", "first_name", "totalamount"]
         finally:
@@ -251,7 +250,6 @@ class TestParquetLoader:
             result = loader._load_single_file(
                 source_uri="nonexistent.parquet",
                 source_id="src-missing",
-                source_name="missing",
                 duckdb_conn=conn,
                 session=test_session,
             )
@@ -284,8 +282,8 @@ class TestParquetLoader:
                 select(Table).where(Table.source_id == source.source_id)
             ).scalar_one()
             assert table.layer == "raw"
-            # Post-DAT-341: table_name is ``<source>__<file_stem>``
-            assert table.table_name == "metadata_test__sample"
+            # DAT-639: table_name is the NARROW file stem (no source prefix).
+            assert table.table_name == "sample"
 
             # Check Column records
             columns = (

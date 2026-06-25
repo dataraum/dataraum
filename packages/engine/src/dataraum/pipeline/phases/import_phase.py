@@ -9,8 +9,8 @@ ingests a SET of sources, ``AddSourceWorkflow`` executes this phase once per
    wrote before triggering ``addSourceWorkflow``.
 2. Dispatches by ``source_type``: db_recipe → extract_backend; otherwise →
    file loader (CSV/Parquet/JSON) selected by the source URI's suffix.
-3. Creates raw Table + Column records, table names prefixed with
-   ``{source_name}__`` to keep them recognizable in DuckDB.
+3. Creates raw Table + Column records with NARROW, workspace-unique table names
+   (DAT-639 — no source prefix; the source is an atomic wrapper, not a namespace).
 
 Source shapes — both written by the cockpit ``select`` tool, the only producer:
 
@@ -228,13 +228,13 @@ class ImportPhase(BasePhase):
         Each element of ``source_uris`` is an ``s3://<lake-bucket>/<key>`` URI
         (already validated by ``_run``) handed verbatim to the loader, which
         passes it to DuckDB's ``read_*_auto`` — the loader is selected per
-        element by its own suffix and names each raw table
-        ``<source_name>__<file_stem>``. The cockpit ``select`` tool persists
-        one-element lists (one content-keyed source per file, DAT-422), so the
-        loop runs once today; it stays list-generic because it is the load
-        mechanism. A per-element failure fails the whole import (no silent
-        swallow); the phase runner's rollback-on-FAILED keeps it all-or-nothing
-        (DAT-502).
+        element by its own suffix and names each raw table by its NARROW,
+        workspace-unique stem (``<file_stem>``, no source prefix — DAT-639).
+        The cockpit ``select`` tool persists one-element lists (one
+        content-keyed source per file, DAT-422), so the loop runs once today;
+        it stays list-generic because it is the load mechanism. A per-element
+        failure fails the whole import (no silent swallow); the phase runner's
+        rollback-on-FAILED keeps it all-or-nothing (DAT-502).
         """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
@@ -244,9 +244,7 @@ class ImportPhase(BasePhase):
         warnings_acc: list[str] = []
 
         for source_uri in source_uris:
-            result = self._load_single_file_with_prefix(
-                ctx, source, source_name, source_uri, null_config, junk_columns
-            )
+            result = self._load_single_uri(ctx, source, source_uri, null_config, junk_columns)
             if result.status != PhaseStatus.COMPLETED:
                 # Multi-URI import is all-or-nothing — and that atomicity is owned
                 # by the phase runner, not this loop (DAT-502): ``run_phase`` /
@@ -273,21 +271,20 @@ class ImportPhase(BasePhase):
             summary=f"{len(table_ids)} tables, {records_processed:,} rows",
         )
 
-    def _load_single_file_with_prefix(
+    def _load_single_uri(
         self,
         ctx: PhaseContext,
         source: Source,
-        source_name: str,
         source_uri: str,
         null_config: Any,
         junk_columns: list[str],
     ) -> PhaseResult:
-        """Load a single file. Loaders write directly into ``lake.raw.<source>__<table>``.
+        """Load a single file. Loaders write directly into ``lake.raw.<table>``.
 
-        Post-DAT-341 the loader composes the source-prefixed identifier and
-        writes the DuckDB table into ``lake.raw.*`` via fully-qualified
-        ``CREATE OR REPLACE TABLE`` (DAT-378 — idempotent across retries). There
-        is no rename / cross-schema move step here.
+        Post-DAT-341 the loader writes the DuckDB table into ``lake.raw.*`` via
+        a fully-qualified ``CREATE OR REPLACE TABLE`` (DAT-378 — idempotent
+        across retries) under its NARROW, workspace-unique name (no source
+        prefix — DAT-639). There is no rename / cross-schema move step here.
 
         ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI; dispatch is on its
         suffix alone.
@@ -299,7 +296,6 @@ class ImportPhase(BasePhase):
             result = pq_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -308,7 +304,6 @@ class ImportPhase(BasePhase):
             result = json_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -317,7 +312,6 @@ class ImportPhase(BasePhase):
             result = csv_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 null_config=null_config,
@@ -435,13 +429,14 @@ class ImportPhase(BasePhase):
                 "(via .env or the docker-compose environment)."
             )
 
-        prefix = f"{source_name}__"
+        # Narrow, workspace-unique table names (DAT-639) — no source prefix; the
+        # recipe's query name IS the table name in the workspace.
         result = extract_backend(
             backend=backend,
             url=credential.url,
             queries=queries,
             duckdb_conn=ctx.duckdb_conn,
-            raw_prefix=prefix,
+            raw_prefix="",
         )
         if not result.success or result.value is None:
             return PhaseResult.failed(

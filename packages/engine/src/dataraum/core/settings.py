@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     temporal_namespace: str
     temporal_task_queue: str
 
+    # --- Observability (optional; off unless set) ---
+    # When set, the LLM features dump each rendered prompt (system + user, with
+    # every injected concept) under this directory for offline analysis — the
+    # only way to read the *actual* produced prompt, not the template. Unset in
+    # production; a smoke/eval run flips ``PROMPT_DUMP_DIR`` to inspect grounding.
+    prompt_dump_dir: Path | None = None
+
 
 @cache
 def get_settings() -> Settings:

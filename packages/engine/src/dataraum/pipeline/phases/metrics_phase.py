@@ -76,6 +76,16 @@ _STAGE = "operating_model"
 # (+1 phase session) — comfortably under the ConnectionManager pool (15).
 _MAX_CONCURRENT_METRICS = 10
 
+# DAT-631: a metric whose SQL runs and verifies still reaches ``executed`` only
+# as strongly as its WEAKEST grounded input. The graph agent already records an
+# honest per-concept confidence in each snippet's assumptions (e.g. a COGS proxy
+# at 0.35, a fabricated 0.0 at 0.10); below this floor the executed metric is
+# FLAGGED — its ``state_reason`` names the weak grounding — so the cockpit can
+# render it amber instead of plainly green. The value still shows (state stays
+# ``executed``); we surface the doubt rather than hide the number. Tuned against
+# eval over the iterations — a first-round floor, not a magic constant.
+_LOW_CONFIDENCE_FLOOR = 0.5
+
 if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
@@ -283,11 +293,21 @@ class MetricsPhase(BasePhase):
         # whose SQL failed OR whose result was inconclusive (no support / a
         # declared condition violated — DAT-616 verifier) stays grounded with the
         # reason (born loud, never silently green).
+        low_confidence = 0
         for graph_id, result, inspiration_id in results:
             artifact = artifacts[graph_id]
             if result.success:
-                transition(artifact, operation="execute", stage=_STAGE)
-                _log.info("metric_executed", graph_id=graph_id)
+                # DAT-631: consume the grounding confidence. A clean+verified run
+                # reaches executed, but if its weakest input grounded below the
+                # floor we record WHY on the (still-executed) artifact, so it is
+                # no longer silently green.
+                reason = _low_confidence_reason(result.value)
+                transition(artifact, operation="execute", stage=_STAGE, state_reason=reason)
+                if reason:
+                    low_confidence += 1
+                    _log.warning("metric_executed_low_confidence", graph_id=graph_id, reason=reason)
+                else:
+                    _log.info("metric_executed", graph_id=graph_id)
                 # Snippet promotion: drop the ad-hoc snippet once the metric it
                 # inspired executes cleanly.
                 if inspiration_id:
@@ -310,7 +330,12 @@ class MetricsPhase(BasePhase):
         previews: list[str] = []
         for graph_id, a in artifacts.items():
             if a.state == "executed":
-                previews.append(f"{graph_id}: executed")
+                # An executed artifact carries a reason ONLY when flagged
+                # low-confidence (DAT-631) — surface it so the flag is visible.
+                if a.state_reason:
+                    previews.append(f"{graph_id}: executed (low-confidence) — {a.state_reason}")
+                else:
+                    previews.append(f"{graph_id}: executed")
             else:
                 previews.append(f"{graph_id}: {a.state} — {a.state_reason or 'no reason recorded'}")
 
@@ -318,6 +343,7 @@ class MetricsPhase(BasePhase):
             outputs={
                 "declared": len(artifacts),
                 "executed": executed,
+                "executed_low_confidence": low_confidence,
                 "stuck_grounded": grounded_stuck,
                 "stuck_declared": declared_stuck,
             },
@@ -329,6 +355,32 @@ class MetricsPhase(BasePhase):
                 f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed"
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Grounding-confidence gate (DAT-631)
+# ---------------------------------------------------------------------------
+
+
+def _low_confidence_reason(execution: GraphExecution | None) -> str | None:
+    """Reason string if the metric's weakest grounded input is below the floor.
+
+    A metric is only as trustworthy as its least-confident grounding. We take
+    the MIN confidence across the execution's assumptions (the graph agent's
+    honest per-concept signal, carried forward even for cache-assembled metrics)
+    and, when it falls below :data:`_LOW_CONFIDENCE_FLOOR`, return a short reason
+    naming the floor and the weakest assumption. ``None`` when there are no
+    assumptions or all clear — the metric is plainly executed.
+    """
+    if execution is None or not execution.assumptions:
+        return None
+    weakest = min(execution.assumptions, key=lambda a: a.confidence)
+    if weakest.confidence >= _LOW_CONFIDENCE_FLOOR:
+        return None
+    return (
+        f"low-confidence grounding ({weakest.confidence:.2f} < {_LOW_CONFIDENCE_FLOOR:.2f}): "
+        f"{weakest.assumption}"
+    )
 
 
 # ---------------------------------------------------------------------------

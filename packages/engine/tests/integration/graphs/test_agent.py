@@ -683,18 +683,20 @@ class TestPriorContextFeedback:
         assert "account_type" in out
 
     def test_prior_reason_fed_back(self) -> None:
-        """A prior run's honest-fail state_reason is fed back with an abstain steer."""
+        """A prior run's honest-fail state_reason is fed back verbatim with an abstain steer."""
         session = MagicMock()
         prior = MagicMock()
-        prior.state_reason = "cogs has no support: filter matched no rows"
+        # Sentinel reason — the test asserts the MECHANISM (the prior reason is
+        # echoed into the next run's context), not any domain-specific wording.
+        prior.state_reason = "SENTINEL_PRIOR_REASON"
         session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
             prior
         )
         graph = MagicMock()
-        graph.graph_id = "gross_margin"
+        graph.graph_id = "some_metric"
         out = self._agent()._build_prior_context(session, graph, None)
-        assert "Last run this metric was inconclusive" in out
-        assert "cogs has no support" in out
+        assert "Last run this metric was flagged" in out
+        assert "SENTINEL_PRIOR_REASON" in out
         assert "abstain" in out
 
     def test_empty_when_nothing_prior(self) -> None:

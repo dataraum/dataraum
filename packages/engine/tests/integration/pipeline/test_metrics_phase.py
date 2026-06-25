@@ -207,7 +207,12 @@ def _fake_execute(fail_ids: set[str]):
     def _execute(session, graph, context, *args, inspiration_sql=None, session_id="", **kw):  # noqa: ANN001
         if graph.graph_id in fail_ids:
             return Result.fail("SQL execution failed against the workspace")
-        return Result.ok(MagicMock())
+        # A clean execution carries assumptions (empty here = plainly executed,
+        # no low-confidence flag — DAT-631); a bare MagicMock would iterate empty
+        # but read truthy, so make the stub realistic.
+        execution = MagicMock()
+        execution.assumptions = []
+        return Result.ok(execution)
 
     return _execute
 

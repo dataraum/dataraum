@@ -326,6 +326,11 @@ class GraphAgent(LLMFeature):
         """
         steps = []
         merged_column_mappings: dict[str, str] = {}
+        # DAT-631: carry each snippet's authored grounding confidence forward.
+        # Cache-assembly skips the LLM, so without this the assembled metric would
+        # reach the phase with no assumptions and look confidently green — exactly
+        # the silent-wrong mode for a metric resting on a 0.35-confidence proxy.
+        assumptions: list[GraphAssumptionOutput] = []
         for step_id in graph.steps:
             snippet = cached_snippets.get(step_id)
             if not snippet:
@@ -341,6 +346,16 @@ class GraphAgent(LLMFeature):
             snippet_mappings = snippet.get("column_mappings")
             if isinstance(snippet_mappings, dict):
                 merged_column_mappings.update(snippet_mappings)
+            for a in snippet.get("assumptions") or []:
+                assumptions.append(
+                    GraphAssumptionOutput(
+                        dimension=a.get("dimension", "grounding.cached"),
+                        target=a.get("target", f"step:{step_id}"),
+                        assumption=a.get("assumption", ""),
+                        basis=a.get("basis", "inferred"),
+                        confidence=a.get("confidence", 0.5),
+                    )
+                )
 
         # Build final_sql by referencing the output step
         output_step = graph.get_output_step()
@@ -360,6 +375,7 @@ class GraphAgent(LLMFeature):
             llm_model="cached",
             prompt_hash="snippets",
             generated_at=datetime.now(UTC),
+            assumptions=assumptions,
         )
 
     def _generate_sql(
@@ -446,15 +462,29 @@ class GraphAgent(LLMFeature):
         # Compute prompt hash for reproducibility
         prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()[:16]
 
+        # Dump the rendered prompt (system + user, with every injected concept)
+        # for offline analysis — no-op unless prompt_dump_dir is set. This is the
+        # only way to read the ACTUAL produced prompt, not the template.
+        from dataraum.llm.prompt_log import dump_prompt
+
+        # Get model for this feature (graph_sql_generation uses balanced tier)
+        model = self.provider.get_model_for_tier("balanced")
+
+        dump_prompt(
+            label="graph_sql_generation",
+            key=graph.graph_id,
+            prompt_hash=prompt_hash,
+            system=system_prompt,
+            user=user_prompt,
+            model=model,
+        )
+
         # Define tool for structured output
         tool = ToolDefinition(
             name="generate_sql",
             description="Provide generated SQL for the graph specification",
             input_schema=GraphSQLGenerationOutput.model_json_schema(),
         )
-
-        # Get model for this feature (graph_sql_generation uses balanced tier)
-        model = self.provider.get_model_for_tier("balanced")
 
         # Call LLM with tool use
         request = ConversationRequest(
@@ -508,6 +538,35 @@ class GraphAgent(LLMFeature):
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
+        )
+
+        # Verification half (DAT-631): append what the agent PRODUCED to the
+        # prompt dump — the SQL, per-concept grounding, and confidence — so a
+        # metric that fails verification (and never persists a snippet) is still
+        # inspectable offline. No-op unless prompt_dump_dir is set.
+        from dataraum.llm.prompt_log import dump_response
+
+        basis = output.provenance.column_mappings_basis if output.provenance else {}
+        response_body = json.dumps(
+            {
+                "final_sql": output.final_sql,
+                "steps": [{"step_id": s.step_id, "sql": s.sql} for s in output.steps],
+                "field_resolution": output.provenance.field_resolution
+                if output.provenance
+                else None,
+                "column_mappings_basis": basis,
+                "assumptions": [
+                    {"assumption": a.assumption, "basis": a.basis, "confidence": a.confidence}
+                    for a in (output.assumptions or [])
+                ],
+            },
+            indent=2,
+        )
+        dump_response(
+            label="graph_sql_generation",
+            key=graph.graph_id,
+            prompt_hash=prompt_hash,
+            body=response_body,
         )
 
         return Result.ok(generated_code)
@@ -1117,6 +1176,12 @@ class GraphAgent(LLMFeature):
                     "column_mappings_basis": (match.snippet.provenance or {}).get(
                         "column_mappings_basis"
                     ),
+                    # DAT-631: the grounding confidence the snippet was authored with.
+                    # Carried so a metric ASSEMBLED from cache (no LLM call — the
+                    # post-warming common path) still surfaces its weakest input's
+                    # confidence to the phase gate, instead of looking confidently
+                    # green because cache-assembly dropped the assumptions.
+                    "assumptions": (match.snippet.provenance or {}).get("assumptions") or [],
                 }
 
         if cached_steps:
@@ -1163,7 +1228,7 @@ class GraphAgent(LLMFeature):
             )
             if prior and prior.state_reason:
                 parts.append(
-                    f"Last run this metric was inconclusive: {prior.state_reason}. "
+                    f"Last run this metric was flagged: {prior.state_reason}. "
                     "Address the cause or, if it still cannot be grounded, abstain (record a "
                     "low-confidence assumption) — do not repeat a blind guess."
                 )

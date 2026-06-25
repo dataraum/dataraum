@@ -81,7 +81,7 @@ def test_transient_commit_conflict_is_retryable() -> None:
     # idempotent), so it must retry — not die as a permanent PhaseFailed.
     run = _failed(
         "TransactionException: TransactionContext Error: Failed to commit: Failed to "
-        'commit DuckLake transaction.\nTransaction conflict - attempting to insert into '
+        "commit DuckLake transaction.\nTransaction conflict - attempting to insert into "
         'table with index "27" - but another transaction has altered it'
     )
     with pytest.raises(ApplicationError) as ei:

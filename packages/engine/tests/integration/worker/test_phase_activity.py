@@ -28,6 +28,7 @@ from sqlalchemy import select, text
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.entropy.db_models import EntropyObjectRecord, EntropyReadinessRecord
+from dataraum.sources.base import raw_table_name_for_uri
 from dataraum.storage import Source, Table
 from dataraum.worker import (
     RunRef,
@@ -379,9 +380,9 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
     assert len(raw_ids) == len(files), "each enumerated URI maps to one raw table"
 
     # CALIBRATION GUARD (DAT-378): the per-URI loop must reproduce the EXACT
-    # ``small_finance__<file_stem>`` raw-table set the pre-DAT-389 directory
+    # the NARROW per-file-stem raw-table set the pre-DAT-389 directory
     # branch produced, so dataraum-eval recall baselines do not move. Assert the
-    # raw-table NAME set is byte-identical to ``small_finance__<stem>`` for every
+    # raw-table NAME set is byte-identical to the narrow ``<stem>`` for every
     # enumerated fixture file.
     with worker_manager.session_scope() as session:
         raw_names = {
@@ -390,7 +391,7 @@ def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_p
                 select(Table.table_name).where(Table.source_id == source_id, Table.layer == "raw")
             )
         }
-    expected_names = {f"small_finance__{p.stem}" for p in files}
+    expected_names = {raw_table_name_for_uri(str(p)) for p in files}
     assert raw_names == expected_names, (
         "per-URI loop changed the raw-table set — dataraum-eval baselines would move"
     )

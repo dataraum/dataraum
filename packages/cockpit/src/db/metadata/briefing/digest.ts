@@ -32,9 +32,12 @@ export function formatBriefingDigest(
 	if (a.pendingTeaches.needsReplay)
 		facts.push(`${a.pendingTeaches.count} teaches pending (replay to apply)`);
 
-	// Nothing notable AND nothing for this chat to do → no digest (the base
-	// workspace-context block already names the tables + vertical).
-	if (facts.length === 0 && foreground.length === 0) return null;
+	// Nothing notable, nothing for this chat to do, AND nothing waiting elsewhere →
+	// no digest (the base workspace-context block already names the tables +
+	// vertical). A background-only state (e.g. an Analyse chat whose model isn't
+	// staged yet) still emits the "elsewhere" pointer.
+	if (facts.length === 0 && foreground.length === 0 && background.length === 0)
+		return null;
 
 	const blockers = a.readinessBlockers
 		.slice(0, DIGEST_BLOCKER_CAP)

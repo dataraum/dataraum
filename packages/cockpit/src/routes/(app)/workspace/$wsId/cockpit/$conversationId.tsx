@@ -59,16 +59,21 @@ const loadChat = createServerFn({ method: "GET", strict: { output: false } })
 			if (!conversation) return { notFound: true as const };
 			// Readiness inputs (DAT-534) alongside hydration — both soft (a read blip
 			// just drops the advisory banner, never the chat).
+			// The chat-open Workspace Briefing (DAT-634) — the landing canvas for a
+			// fresh stage/analyse chat. Connect keeps its probe hub and discards the
+			// briefing, so don't pay the read there. Soft: a blip drops the landing
+			// orientation (falls back to empty), never the chat.
+			const briefingPromise =
+				conversation.kind === "connect"
+					? Promise.resolve(null)
+					: buildWorkspaceBriefing().catch(() => null);
 			const [initialMessages, uiState, hasTables, runningStages, briefing] =
 				await Promise.all([
 					loadDisplayMessages(conversationId),
 					loadUiState(conversationId),
 					hasImportedTables().catch(() => false),
 					listRunningStages(conversationId).catch(() => []),
-					// The chat-open Workspace Briefing (DAT-634) — the landing canvas for
-					// a fresh stage/analyse chat. Soft: a read blip just drops the landing
-					// orientation (falls back to empty), never the chat.
-					buildWorkspaceBriefing().catch(() => null),
+					briefingPromise,
 				]);
 			void reconcileActiveRuns(conversationId);
 			return {

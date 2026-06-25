@@ -20,8 +20,11 @@ export function nextActionSeed(action: BriefingAction): string {
 			return "What can I analyze in this data?";
 		case "review_blocker":
 			return `A run needs input: ${action.label}. Help me resolve it.`;
-		default:
-			// Exhaustive over BriefingActionKind; a new kind is a compile error here.
-			return action.label;
+		default: {
+			// Exhaustive over BriefingActionKind — adding a kind without a case above
+			// is a compile error here (a real guarantee, not just a comment).
+			const _exhaustive: never = action.kind;
+			return _exhaustive;
+		}
 	}
 }

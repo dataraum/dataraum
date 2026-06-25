@@ -8,27 +8,9 @@
 
 import { Center, Loader, Stack, Text } from "@mantine/core";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { createServerFn } from "@tanstack/react-start";
-import { createConversation } from "#/db/cockpit/conversations";
-import { resolveActiveWorkspace } from "#/db/cockpit/registry";
-import { buildWorkspaceBriefing } from "#/db/metadata/briefing";
 import { GovernanceOverview } from "#/ui/governance/governance-overview";
 import { REPLAY_SEED } from "#/ui/governance/governance-target";
-
-// No wsId param: single-active-workspace; DAT-357 will add per-request scoping
-// here (mirrors briefing/build.ts). The $wsId route param stays decorative.
-const loadBriefing = createServerFn({ method: "GET" }).handler(async () => {
-	return buildWorkspaceBriefing();
-});
-
-// Mint a Stage chat to act on a governance item — the server-side workspace read
-// never reaches the client bundle (the plugin strips this handler); the client
-// navigates to the new chat with the seed in router state. Same flow as the run
-// monitor's "Needs you" resolve (workflows.tsx).
-const openStageChat = createServerFn({ method: "POST" }).handler(async () => {
-	const workspaceId = await resolveActiveWorkspace();
-	return createConversation(workspaceId, "stage");
-});
+import { loadBriefing, openStageChat } from "./governance.functions";
 
 export const Route = createFileRoute("/(app)/workspace/$wsId/governance")({
 	loader: () => loadBriefing(),

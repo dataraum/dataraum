@@ -22,7 +22,23 @@ interface ConversationContext {
 	conversationId: string;
 }
 
-const storage = new AsyncLocalStorage<ConversationContext>();
+// Lazy singleton — instantiated on first SERVER call, never at module load. This
+// module is server-only, but it is reachable from a CLIENT graph by a non-route
+// path the `.functions.ts` peel can't cover: `probe.tsx` (client) → the
+// `importSources` server fn's FILE (`server/import-sources.ts`) → `trigger-add-
+// source` → here. The build replaces the server fn with a stub but keeps the
+// FILE's transitively-imported helpers if they aren't tree-shakeable — and a
+// top-level `new AsyncLocalStorage()` is a module side effect prod DCE cannot
+// drop, so it leaked into the client bundle (shimmed-empty `new` → crash). With
+// the `new` deferred into `store()`, this module is side-effect-free and DCE
+// removes it from every client chunk (like `mappers` after the createHash split).
+// See [[feedback_cockpit_isomorphic_import_side_effects]].
+let storage: AsyncLocalStorage<ConversationContext> | null = null;
+
+function store(): AsyncLocalStorage<ConversationContext> {
+	storage ??= new AsyncLocalStorage<ConversationContext>();
+	return storage;
+}
 
 /**
  * Run `fn` with `conversationId` bound for its ENTIRE async call tree — every
@@ -31,7 +47,7 @@ const storage = new AsyncLocalStorage<ConversationContext>();
  * awaited by the caller.
  */
 export function runWithConversation<T>(conversationId: string, fn: () => T): T {
-	return storage.run({ conversationId }, fn);
+	return store().run({ conversationId }, fn);
 }
 
 /**
@@ -41,5 +57,5 @@ export function runWithConversation<T>(conversationId: string, fn: () => T): T {
  * (the completion-watcher filters on a matching conversationId).
  */
 export function currentConversationId(): string | null {
-	return storage.getStore()?.conversationId ?? null;
+	return store().getStore()?.conversationId ?? null;
 }

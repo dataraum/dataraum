@@ -13,14 +13,16 @@ vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 import type { ConnectSchema } from "#/duckdb/connect";
 import {
 	connectTablesToRecipeTables,
-	contentKeyedSourceName,
-	recipeContentHash,
 	recipeSqlForDisplayName,
 	reservedSourceNamePrefix,
 	sanitizeRecipeName,
 	sourceTypeForUri,
 	uploadTableName,
 } from "./mappers";
+import {
+	contentKeyedSourceName,
+	recipeContentHash,
+} from "./source-content-hash";
 
 // A real 40-char sha-1 hex digest (the digest of the empty string) — the shape
 // upload/digest.ts produces; `src_` + 40 = 44 chars, a valid source name.

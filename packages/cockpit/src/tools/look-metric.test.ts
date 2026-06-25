@@ -17,8 +17,6 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import type { LifecycleArtifactRow } from "../db/metadata/lifecycle-artifacts";
 import { metricSnippetSource, projectMetricOverview } from "./look-metric";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 describe("metricSnippetSource (DAT-466)", () => {
 	it("builds the graph:<id> provenance link", () => {
 		expect(metricSnippetSource("ebitda")).toBe("graph:ebitda");
@@ -69,11 +67,11 @@ describe("projectMetricOverview (DAT-466)", () => {
 		expect(projected.snippet_count).toBe(3);
 	});
 
-	it("strips content-keyed src_<digest> names from engine-built free text", () => {
+	it("renders narrow names in engine-built free text; stays digest-free (DAT-639)", () => {
 		const artifact: LifecycleArtifactRow = {
 			artifactKey: "gross_margin",
 			state: "declared",
-			stateReason: `ungroundable: src_${D1}__income missing`,
+			stateReason: `ungroundable: income missing`,
 		};
 		const projected = projectMetricOverview(artifact, 0);
 		expect(projected.state_reason).toBe("ungroundable: income missing");

@@ -18,8 +18,6 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import type { LifecycleArtifactRow } from "../db/metadata/lifecycle-artifacts";
 import { type CycleDetectionRow, projectCycleOverview } from "./look-cycle";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 describe("projectCycleOverview (DAT-465)", () => {
 	it("joins an executed artifact with its detection row — values verbatim", () => {
 		const artifact: LifecycleArtifactRow = {
@@ -96,14 +94,14 @@ describe("projectCycleOverview (DAT-465)", () => {
 		expect(projected.completion_rate).toBeNull();
 	});
 
-	it("strips content-keyed src_<digest> names from engine-built free text", () => {
+	it("renders narrow names in engine-built free text; stays digest-free (DAT-639)", () => {
 		const artifact: LifecycleArtifactRow = {
 			artifactKey: "inventory_cycle",
 			state: "declared",
-			stateReason: `not detected: src_${D1}__inventory missing`,
+			stateReason: `not detected: inventory missing`,
 		};
 		const detected: CycleDetectionRow = {
-			cycleName: `Flow over src_${D1}__inventory`,
+			cycleName: `Flow over inventory`,
 			businessValue: "medium",
 			isKnownType: false,
 			confidence: 0.4,

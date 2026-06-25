@@ -85,7 +85,6 @@ describe("reservedSourceNamePrefix (DAT-433)", () => {
 	it("flags each derived-table family prefix", () => {
 		expect(reservedSourceNamePrefix("src_mydata")).toBe("src_");
 		expect(reservedSourceNamePrefix("enriched_data")).toBe("enriched_");
-		expect(reservedSourceNamePrefix("slice_metrics")).toBe("slice_");
 	});
 
 	it("passes bare words and near-misses (only the prefixed forms collide)", () => {

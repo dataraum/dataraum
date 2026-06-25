@@ -19,8 +19,6 @@ import {
 	type WhyValidationResultRow,
 } from "./why-validation";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 const executedArtifact: WhyValidationArtifactRow = {
 	state: "executed",
 	stateReason: null,
@@ -104,25 +102,25 @@ describe("projectWhyValidation (DAT-440)", () => {
 		expect(projected.status).toBeNull();
 	});
 
-	it("strips content-keyed digests from reason, message, and SQL; sanitizes JSON blobs", () => {
+	it("renders narrow names in reason, message, and SQL; stays digest-free (DAT-639)", () => {
 		const projected = projectWhyValidation(
 			"balance_check",
 			{
 				state: "executed",
-				stateReason: `bound against src_${D1}__orders`,
+				stateReason: `bound against orders`,
 				strictness: null,
 				// `_`-prefixed engine plumbing keys are dropped by the sanitizer.
-				groundedAgainst: { _table_name: `src_${D1}__orders`, table: "orders" },
+				groundedAgainst: { _table_name: `orders`, table: "orders" },
 			},
 			{
 				status: "executed",
 				severity: null,
 				passed: true,
-				message: `src_${D1}__orders is balanced`,
-				sqlUsed: `SELECT count(*) FROM lake.typed.src_${D1}__orders`,
+				message: `orders is balanced`,
+				sqlUsed: `SELECT count(*) FROM lake.typed.orders`,
 				executedAt: null,
-				details: { table: `src_${D1}__orders` },
-				columnsUsed: [`src_${D1}__orders.amount`],
+				details: { table: `orders` },
+				columnsUsed: [`orders.amount`],
 			},
 			0,
 		);

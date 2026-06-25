@@ -1,22 +1,22 @@
 // Property-style leak tests (DAT-433): no content-keyed `src_<digest>` name
-// reaches the agent through ANY tool projection. Fixtures are ENGINE-SHAPED —
-// they mirror what the engine actually persists:
+// reaches the agent through ANY tool projection. Post-DAT-639 physical table
+// names are NARROW (no `src_<digest>__` prefix), so the digest only survives on
+// the upload SOURCE name (`sources.name` = `src_<digest>`) and the staged-upload
+// s3 URI — those are the live leak vectors these tests pin. Fixtures are
+// ENGINE-SHAPED — they mirror what the engine actually persists:
 //   - every evidence dict carries `_column_name` + `_table_name` (stamped by
 //     `entropy/detectors/base.py` create_entropy_object),
 //   - relationship detectors add explicit `from_table`/`to_table`
 //     (`entropy/detectors/structural/relations.py`),
-//   - slice detectors add `slice_table_name` with the underscore-collapsed
-//     slice name (`entropy/detectors/value/slice_variance.py` +
-//     `analysis/slicing/slice_runner.py` naming),
-//   - workflow failures embed raw physical names in engine-built message text
-//     (`worker.contracts.ProgressFailure`).
+//   - workflow failures embed physical names in engine-built message text
+//     (`worker.contracts.ProgressFailure`),
+//   - an upload source's row carries `src_<digest>` as its name + the digest s3
+//     URI in `connection_config` (the list_tables case).
 //
 // The property: JSON.stringify of the FULL projected result never matches
-// /src_[0-9a-f]{40}/ — with ONE sanctioned exception: list_tables/look_table
-// deliberately carry the raw DuckDB name in `physical_name` (the run_sql
-// round-trip key; the agent cannot reconstruct the digest from a display
-// name). For those two, the property holds on the result MINUS that field,
-// and the orchestrator prompt forbids echoing it in prose.
+// /src_[0-9a-f]{40}/. list_tables/look_table carry the raw DuckDB name in
+// `physical_name` (the run_sql round-trip key) — now narrow, so the property
+// holds on the full result.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -49,12 +49,13 @@ import { projectWhyValidation } from "./why-validation";
 
 const LEAK = /src_[0-9a-f]{40}/;
 
-// Two distinct content digests (sha-1 hex), as the upload sources mint them.
+// A content digest (sha-1 hex), as the upload sources mint them. Lives on the
+// SOURCE name + URI now — never on a table name (DAT-639).
 const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-const D2 = "3cb4f3325aa757324f32b2dbe30b4ca5a55a8b50";
-const RAW_ORDERS = `src_${D1}__orders`;
-const RAW_CUSTOMERS = `src_${D2}__customers`;
-const RAW_SLICE = `slice_src_${D1}_orders_region_emea`;
+// Narrow, workspace-unique table names (DAT-639): the physical name IS the
+// display name — there is no digest to strip out of it.
+const ORDERS = "orders";
+const CUSTOMERS = "customers";
 
 // Engine-shaped per-column evidence: detector payload + the stamped `_` keys.
 const columnEvidence: WhyEvidenceRow[] = [
@@ -69,26 +70,7 @@ const columnEvidence: WhyEvidenceRow[] = [
 				metric: "undeclared_ratio",
 				value: 0.8,
 				_column_name: "amount",
-				_table_name: RAW_ORDERS,
-			},
-		],
-	},
-	{
-		layer: "value",
-		dimension: "distribution",
-		subDimension: "slice_variance",
-		score: 0.6,
-		detectorId: "slice_variance",
-		evidence: [
-			{
-				null_ratio: 0.1,
-				distinct_count: 5,
-				row_count: 100,
-				slice_table_name: RAW_SLICE,
-				outlier_ratio: 0.0,
-				benford_p_value: null,
-				_column_name: "amount",
-				_table_name: RAW_ORDERS,
+				_table_name: ORDERS,
 			},
 		],
 	},
@@ -98,12 +80,12 @@ const columnEvidence: WhyEvidenceRow[] = [
 const relationshipEvidence = [
 	{
 		path_status: "ambiguous",
-		from_table: RAW_ORDERS,
-		to_table: RAW_CUSTOMERS,
+		from_table: ORDERS,
+		to_table: CUSTOMERS,
 		distinct_join_paths: 2,
 		resolved_by_overlay: false,
 		_column_name: "customer_id",
-		_table_name: RAW_ORDERS,
+		_table_name: ORDERS,
 	},
 ];
 
@@ -112,7 +94,7 @@ describe("agent name-leak property (DAT-433)", () => {
 		const readiness: WhyReadinessRow = {
 			columnId: "c_amount",
 			columnName: "amount",
-			tableName: RAW_ORDERS,
+			tableName: ORDERS,
 			band: "investigate",
 			bandStage: "add_source",
 			bandComputedAt: null,
@@ -121,16 +103,14 @@ describe("agent name-leak property (DAT-433)", () => {
 		};
 		const out = projectWhyData(readiness, columnEvidence, 1);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
-		// The display name survives — sanitization is not erasure.
 		expect(out.table_name).toBe("orders");
-		expect(out.evidence[1]?.detail).toContain("slice_orders_region_emea");
 	});
 
 	it("why_table: full result is digest-free", () => {
 		const evidenceRows: WhyTableEvidenceRow[] = columnEvidence;
 		const out = projectWhyTable(
 			"t_orders",
-			RAW_ORDERS,
+			ORDERS,
 			{
 				band: "investigate",
 				bandStage: "session_detect",
@@ -147,9 +127,9 @@ describe("agent name-leak property (DAT-433)", () => {
 
 	it("why_relationship: full result is digest-free", () => {
 		const endpoints: RelEndpoints = {
-			fromTableName: RAW_ORDERS,
+			fromTableName: ORDERS,
 			fromColumnName: "customer_id",
-			toTableName: RAW_CUSTOMERS,
+			toTableName: CUSTOMERS,
 			toColumnName: "id",
 		};
 		const evidenceRows: WhyRelEvidenceRow[] = [
@@ -179,7 +159,7 @@ describe("agent name-leak property (DAT-433)", () => {
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
 		expect(out.from_table_name).toBe("orders");
 		expect(out.to_table_name).toBe("customers");
-		// The relationship detector's explicit name keys are display-mapped.
+		// The relationship detector's explicit name keys survive verbatim (narrow).
 		expect(out.evidence[0]?.detail).toContain('"from_table":"orders"');
 		expect(out.evidence[0]?.detail).toContain('"to_table":"customers"');
 	});
@@ -193,19 +173,22 @@ describe("agent name-leak property (DAT-433)", () => {
 			topDrivers: [],
 		};
 		const names: ColumnNameLookup = new Map([
-			["c_from", { columnName: "customer_id", tableName: RAW_ORDERS }],
-			["c_to", { columnName: "id", tableName: RAW_CUSTOMERS }],
+			["c_from", { columnName: "customer_id", tableName: ORDERS }],
+			["c_to", { columnName: "id", tableName: CUSTOMERS }],
 		]);
 		const out = projectRelationshipReadiness(row, names);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
 		expect(out?.from_table_name).toBe("orders");
 	});
 
-	it("list_tables: result minus the sanctioned physical_name is digest-free", () => {
+	it("list_tables: a content-keyed source name + upload URI never leak", () => {
+		// The live digest vector post-DAT-639: the upload's source row carries
+		// `src_<digest>` as its name and the digest s3 URI in connection_config.
+		// The projection must surface the human filename, never the digest.
 		const rows: InventoryTableRow[] = [
 			{
 				tableId: "t_orders",
-				tableName: RAW_ORDERS,
+				tableName: ORDERS,
 				layer: "typed",
 				rowCount: 100,
 				sourceId: "s1",
@@ -218,18 +201,17 @@ describe("agent name-leak property (DAT-433)", () => {
 			},
 		];
 		const [out] = buildInventory(rows, []);
-		const { physical_name, ...rest } = out;
-		expect(JSON.stringify(rest)).not.toMatch(LEAK);
-		// The round-trip key still carries the raw DuckDB name.
-		expect(physical_name).toBe(RAW_ORDERS);
+		expect(JSON.stringify(out)).not.toMatch(LEAK);
+		// The round-trip key carries the (now narrow) physical name.
+		expect(out.physical_name).toBe(ORDERS);
 		expect(out.table_name).toBe("orders");
 		expect(out.source_name).toBe("orders.csv");
 	});
 
-	it("look_table: result minus the sanctioned physical_name is digest-free", () => {
+	it("look_table: full result is digest-free", () => {
 		const out = projectLookTable(
 			"t_orders",
-			RAW_ORDERS,
+			ORDERS,
 			[
 				projectColumnReadiness({
 					columnId: "c_amount",
@@ -244,27 +226,24 @@ describe("agent name-leak property (DAT-433)", () => {
 			null,
 			0,
 		);
-		const { physical_name, ...rest } = out;
-		expect(JSON.stringify(rest)).not.toMatch(LEAK);
-		expect(physical_name).toBe(RAW_ORDERS);
+		expect(JSON.stringify(out)).not.toMatch(LEAK);
+		expect(out.physical_name).toBe(ORDERS);
 		expect(out.table_name).toBe("orders");
 	});
 
 	it("look_validation: full result is digest-free, reason stays readable", () => {
-		// Engine-built lifecycle reasons + result messages embed raw physical
-		// names (the validation binder works on lake tables).
 		const out = projectValidationOverview(
 			{
 				artifactKey: "gl_invoice_match",
 				state: "declared",
-				stateReason: `Missing required tables: ${RAW_ORDERS} and ${RAW_CUSTOMERS}`,
+				stateReason: `Missing required tables: ${ORDERS} and ${CUSTOMERS}`,
 			},
 			{
 				status: "executed",
 				severity: "error",
 				passed: false,
-				message: `12 rows in ${RAW_ORDERS} have no match`,
-				columnsUsed: [`${RAW_ORDERS}.customer_id`],
+				message: `12 rows in ${ORDERS} have no match`,
+				columnsUsed: [`${ORDERS}.customer_id`],
 			},
 		);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
@@ -274,7 +253,7 @@ describe("agent name-leak property (DAT-433)", () => {
 		expect(out.message).toBe("12 rows in orders have no match");
 	});
 
-	it("why_validation: full result is digest-free, SQL + grounding sanitized", () => {
+	it("why_validation: full result is digest-free, SQL + grounding readable", () => {
 		const out = projectWhyValidation(
 			"gl_invoice_match",
 			{
@@ -282,29 +261,27 @@ describe("agent name-leak property (DAT-433)", () => {
 				stateReason: null,
 				strictness: 0.8,
 				groundedAgainst: {
-					from_table: RAW_ORDERS,
-					to_table: RAW_CUSTOMERS,
-					_table_name: RAW_ORDERS,
+					from_table: ORDERS,
+					to_table: CUSTOMERS,
+					_table_name: ORDERS,
 				},
 			},
 			{
 				status: "executed",
 				severity: "error",
 				passed: false,
-				message: `12 rows in ${RAW_ORDERS} have no match`,
-				sqlUsed: `SELECT count(*) FROM lake.typed.${RAW_ORDERS} o LEFT JOIN lake.typed.${RAW_CUSTOMERS} c ON o.customer_id = c.id`,
+				message: `12 rows in ${ORDERS} have no match`,
+				sqlUsed: `SELECT count(*) FROM lake.typed.${ORDERS} o LEFT JOIN lake.typed.${CUSTOMERS} c ON o.customer_id = c.id`,
 				executedAt: new Date("2026-06-07T12:00:00Z"),
-				details: { table: RAW_ORDERS, failing_rows: 12 },
-				columnsUsed: [`${RAW_ORDERS}.customer_id`],
+				details: { table: ORDERS, failing_rows: 12 },
+				columnsUsed: [`${ORDERS}.customer_id`],
 			},
 			0,
 		);
 		expect(JSON.stringify(out)).not.toMatch(LEAK);
-		// The SQL stays readable as evidence — digest prefixes dropped.
 		expect(out.sql_used).toContain("lake.typed.orders");
 		expect(out.sql_used).toContain("lake.typed.customers");
-		// The grounding render display-maps known table-name keys and drops
-		// engine-internal `_` keys (shared evidence sanitizer).
+		// The grounding render keeps narrow table-name keys + drops engine `_` keys.
 		expect(out.grounded_against).toContain('"from_table":"orders"');
 		expect(out.grounded_against).not.toContain("_table_name");
 	});

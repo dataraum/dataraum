@@ -17,8 +17,6 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
 import { type DriverRankingRow, projectDriverRanking } from "./look-drivers";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 describe("projectDriverRanking (DAT-546)", () => {
 	it("preserves per-family grain labels — primary + secondaries never merged", () => {
 		const row: DriverRankingRow = {
@@ -63,18 +61,18 @@ describe("projectDriverRanking (DAT-546)", () => {
 		});
 	});
 
-	it("sanitizes content-keyed src_<digest>__ prefixes on dimension names", () => {
+	it("renders narrow dimension names as-is (DAT-639)", () => {
 		const row: DriverRankingRow = {
 			measureLabel: "amount",
 			targetType: "flow",
 			grain: "row",
 			entity: null,
 			nRows: 10_000,
-			rankedDimensions: [{ dimension: `src_${D1}__region`, gain: 0.3 }],
-			driverPaths: [[`src_${D1}__region`, "channel"]],
+			rankedDimensions: [{ dimension: `region`, gain: 0.3 }],
+			driverPaths: [[`region`, "channel"]],
 			interestingSlices: [
 				{
-					dimension: `src_${D1}__region`,
+					dimension: `region`,
 					value: "CH",
 					effect: 0.4,
 					support: 90,

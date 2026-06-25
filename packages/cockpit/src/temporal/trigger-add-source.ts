@@ -1,27 +1,25 @@
-// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436; routed
-// through the JourneyWorkflow in DAT-551 slice 1) — SIGNALS the per-workspace
-// journey to run the engine's addSourceWorkflow for the source set `select` just
-// persisted.
+// add_source TRIGGER (DAT-352, folded into the select tool by DAT-436; DAT-609) —
+// starts the per-workspace `groundingLoopWorkflow` to run the engine's
+// addSourceWorkflow for the source set `select` just persisted, then auto-ground.
 //
 // Since DAT-436 the ONLY caller is `select.server` (tools/select.ts): calling
 // the `select` tool registers the source(s) AND starts the import in one step —
 // there is no separate "Add source" button or `/api/add-source` route, and no
 // approval hop.
 //
-// DAT-551: this trigger no longer starts the workflow directly. It SIGNALS the
-// per-workspace JourneyWorkflow (`runAddSource`); the journey records the run in
-// cockpit_db (authoritative, before start — an unrecorded run is orphaned) and
-// starts `addSourceWorkflow` as a cross-language CHILD on the workspace's
-// `engine-<id>` queue. So the journey is the single owner of all stage execution
-// (begin_session/operating_model already route this way). The journey advances
-// tab-independently; the tool captures the current conversationId and threads it
-// through so the run still narrates into THIS chat (the journey has no request
-// ALS — DAT-528).
+// DAT-609: this trigger starts the per-workspace `groundingLoopWorkflow` (id
+// `grounding-<ws>`) on the cockpit-orchestration queue. That workflow records the run
+// in cockpit_db (authoritative, before start — an unrecorded run is orphaned), starts
+// `addSourceWorkflow` as a cross-language CHILD on the workspace's `engine-<id>` queue,
+// and runs the autonomous teach-and-replay loop. (A manual `replay` is a DIRECT engine
+// start — not this loop.) The workflow advances tab-independently; the tool captures
+// the current conversationId and threads it through so the import's progress routes to
+// THIS chat (the worker has no request ALS — DAT-528).
 //
-// The tool returns the DETERMINISTIC workflow id immediately (the cockpit polls
-// progress by workflow id — the latest execution; the real Temporal run id is owned
-// by the journey). The workflow id is `addsource-<workspace_id>` — one per workspace
-// (DAT-562 retired the per-import session segment); the serial per-workspace journey
+// The tool returns the DETERMINISTIC engine workflow id immediately (the cockpit polls
+// progress by workflow id — the latest execution; the real Temporal run id is owned by
+// the workflow). The workflow id is `addsource-<workspace_id>` — one per workspace
+// (DAT-562 retired the per-import session segment); single-flight (the id-reuse policy)
 // makes re-runs reuse it safely. The `verticals` ride on the FLAT workflow INPUT,
 // sourced from the workspace registry (DAT-506), NOT picked per add_source — no
 // identity envelope, no session/source id on the wire.
@@ -29,7 +27,7 @@
 import { config } from "../config";
 import { resolveActiveWorkspaceRow } from "../db/cockpit/registry";
 import { currentConversationId } from "../lib/run-context";
-import { signalRunAddSource } from "./journey-trigger";
+import { startGroundingLoop } from "./orchestration-trigger";
 import { addSourceWorkflowId } from "./workflow-id";
 
 export interface TriggerAddSourceInput {
@@ -46,8 +44,8 @@ export interface TriggerAddSourceResult {
 }
 
 /** The Temporal-unconfigured guard, mirroring begin-session.ts: Temporal config is
- * OPTIONAL in config.ts, so the trigger fails loud (not silently) BEFORE signalling
- * the journey — so an unconfigured trigger signals nothing. (signalRunAddSource
+ * OPTIONAL in config.ts, so the trigger fails loud (not silently) BEFORE starting
+ * the workflow — so an unconfigured trigger starts nothing. (startGroundingLoop
  * guards again downstream; this keeps the throw at the tool boundary.) */
 function requireTemporalConfig(): void {
 	if (!config.temporalHost || !config.temporalNamespace) {
@@ -59,17 +57,18 @@ function requireTemporalConfig(): void {
 }
 
 /**
- * Signal the workspace's JourneyWorkflow to run an add_source stage (DAT-551).
- * Returns the deterministic workflow + minted session id immediately; the journey
- * records the run (authoritative, before start) and starts + awaits the engine
- * child, narrating completion into the originating chat. Returns the workflowId as
- * a PLACEHOLDER run_id — the real Temporal execution id is minted by the journey
- * post-start and rewritten via `attachRunId` (DAT-595). The widget seed + reconcile
- * use the placeholder (latest-execution fallback in getWorkflowProgress); the
- * completion-watcher waits for the real id, then PINS it.
+ * Start the workspace's groundingLoopWorkflow for an onboarding import (DAT-609).
+ * Returns the deterministic engine workflow id immediately; the workflow starts the
+ * engine child, records the run with its real Temporal execution id (DAT-595), and
+ * runs the autonomous teach loop. The returned `run_id` is the deterministic
+ * `workflowId` because the engine execution id isn't knowable at trigger time — the
+ * widget seed polls `getWorkflowProgress`, which resolves the LATEST execution when
+ * `run_id === workflow_id` (correct for the seed; the watcher pins the real id it
+ * reads from the recorded run row).
  *
  * No engine seed (DAT-506): the run's table set is anchored by `run_tables` (keyed
- * by `run_id`), and the `vertical` is the workspace property from the registry.
+ * by the engine's metadata `run_id`), and the `vertical` is the workspace property
+ * from the registry.
  */
 export async function triggerAddSource(
 	input: TriggerAddSourceInput,
@@ -83,27 +82,27 @@ export async function triggerAddSource(
 	const workspace = await resolveActiveWorkspaceRow();
 	const workflowId = addSourceWorkflowId(workspace.id);
 
-	// Signal the journey to run the stage (DAT-551). The tool passes the derived
+	// Start the grounding-loop workflow (DAT-609). The tool passes the derived
 	// ids/queue + the source SET + verticals + the originating conversationId
 	// (captured from the request-scoped ALS HERE, while we're still in the chat turn
-	// — the journey has none). The journey records the run authoritatively and starts
-	// the engine child on the workspace's OWN queue (DAT-505). `kind: onboarding`
-	// marks the session origin (a fresh import, vs replay's "replay").
-	await signalRunAddSource(workspace.id, {
+	// — the worker has none). The workflow records the run authoritatively and starts
+	// the engine child on the workspace's OWN queue (DAT-505), then grounds.
+	await startGroundingLoop({
+		workspaceId: workspace.id,
 		workflowId,
 		engineTaskQueue: workspace.taskQueue,
 		sources: input.sources,
 		verticals: [workspace.vertical],
-		kind: "onboarding",
 		conversationId: currentConversationId(),
 	});
 
 	return {
 		workflow_id: workflowId,
-		// PLACEHOLDER run_id (DAT-595): the journey mints the real Temporal execution
-		// id post-start and rewrites it via `attachRunId`. The widget seed + reconcile
-		// take getWorkflowProgress's latest-execution fallback until then; the
-		// completion-watcher SKIPS the placeholder and pins the real id once attached.
+		// run_id mirrors the deterministic workflowId: the engine execution id isn't
+		// knowable at trigger time, so the widget seed polls by workflowId and
+		// getWorkflowProgress resolves the LATEST execution (run_id === workflow_id).
+		// The recorded run row carries the real execution id (DAT-595), which the
+		// watcher/reconcile pin precisely.
 		run_id: workflowId,
 		sources: input.sources,
 	};

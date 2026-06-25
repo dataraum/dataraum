@@ -1,48 +1,17 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { createServerFn } from "@tanstack/react-start";
-import {
-	type ConversationKind,
-	createConversation,
-	listConversations,
-} from "#/db/cockpit/conversations";
-import { resolveActiveWorkspace } from "#/db/cockpit/registry";
-import { hasImportedTables } from "#/db/metadata/workspace-state";
-import { chatTypesFromState } from "#/lib/chat-availability";
-import { classifyOpeningMessage } from "#/lib/nav-agent";
+import type { ConversationKind } from "#/db/cockpit/conversations";
 import { CockpitHome } from "#/ui/cockpit/cockpit-home";
+import {
+	loadHistory,
+	routeOpeningMessage,
+	startConversation,
+} from "./index.functions";
 
 // The cockpit landing (DAT-528 + DAT-534): "tell or click". The free composer
 // (tell) routes through the Haiku nav-agent → a typed chat seeded with the
 // message; the type chips (click) create a typed chat deterministically. Both
 // server fns resolve the active workspace server-side (the registry read never
 // reaches the client bundle); the plugin strips these handlers from the client.
-
-const loadHistory = createServerFn({ method: "GET" }).handler(async () => {
-	const workspaceId = await resolveActiveWorkspace();
-	return { conversations: await listConversations(workspaceId) };
-});
-
-const startConversation = createServerFn({ method: "POST" })
-	.inputValidator((kind: ConversationKind) => kind)
-	.handler(async ({ data }) => {
-		const workspaceId = await resolveActiveWorkspace();
-		return createConversation(workspaceId, data);
-	});
-
-// The "tell" entry (DAT-534): classify the opening message into a kind (Haiku,
-// best-effort, biased by what's startable), then create that typed chat. The
-// caller seeds the message into the new chat client-side (router state).
-const routeOpeningMessage = createServerFn({ method: "POST" })
-	.inputValidator((message: string) => message)
-	.handler(async ({ data: message }) => {
-		const workspaceId = await resolveActiveWorkspace();
-		const hasTables = await hasImportedTables().catch(() => false);
-		const available = chatTypesFromState({ hasTables })
-			.filter((t) => t.available)
-			.map((t) => t.kind);
-		const kind = await classifyOpeningMessage(message, available);
-		return { conversationId: await createConversation(workspaceId, kind) };
-	});
 
 export const Route = createFileRoute("/(app)/workspace/$wsId/cockpit/")({
 	loader: () => loadHistory(),

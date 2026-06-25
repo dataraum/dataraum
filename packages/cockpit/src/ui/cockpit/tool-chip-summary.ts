@@ -17,25 +17,24 @@
 // `{type, payload}` before it runs, `{overlay_id, type}` once complete. Output
 // is the part's `output` (undefined until the call completes).
 
-import type { ConnectSchema } from "#/duckdb/connect";
 import { humanizeIdentifier } from "#/lib/display-names";
-import { fileName } from "#/lib/file-uri";
 import { isAgentError } from "#/tools/agent-error";
-import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
-import type { Vertical } from "#/tools/list-verticals";
+import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
+import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
 import type { LookTableResult } from "#/tools/look-table";
 import type { LookValidationResult } from "#/tools/look-validation";
-import type { SelectResult } from "#/tools/select";
 import type { TeachResult } from "#/tools/teach";
 import type { TeachCycleResult } from "#/tools/teach-cycle";
 import type { TeachMetricResult } from "#/tools/teach-metric";
 import type { TeachValidationResult } from "#/tools/teach-validation";
-import type { UseVerticalResult } from "#/tools/use-vertical";
 import type { WhyColumnResult } from "#/tools/why-column";
+import type { WhyCycleResult } from "#/tools/why-cycle";
+import type { WhyMetricResult } from "#/tools/why-metric";
 import type { WhyRelationshipResult } from "#/tools/why-relationship";
 import type { WhyTableResult } from "#/tools/why-table";
 import type { WhyValidationResult } from "#/tools/why-validation";
@@ -62,8 +61,6 @@ function truncate(s: string, max = 60): string {
 // specifics; this is just the plain-language "what is happening".
 const TOOL_LABELS: Record<string, string> = {
 	list_sources: "Available data",
-	list_verticals: "Domains",
-	use_vertical: "Adopting vertical",
 	list_tables: "Workspace tables",
 	look_table: "Table readiness",
 	look_profile: "Column profile",
@@ -73,20 +70,19 @@ const TOOL_LABELS: Record<string, string> = {
 	look_relationships: "Relationships",
 	look_validation: "Validations",
 	why_validation: "Validation detail",
+	look_cycle: "Business cycles",
+	why_cycle: "Cycle detail",
+	look_metric: "Metrics",
+	why_metric: "Metric detail",
+	look_drivers: "Drivers",
 	operating_model: "Starting validation run",
-	connect: "Reading source",
-	frame: "Framing the model",
-	select: "Registering source",
 	begin_session: "Starting session",
 	run_sql: "Query",
-	probe: "Data check",
-	open_probe: "Probe editor",
 	teach: "Teaching",
 	teach_validation: "Declaring validation",
 	teach_cycle: "Declaring cycle",
 	teach_metric: "Declaring metric",
 	replay: "Re-running",
-	upload: "File upload",
 };
 
 // Past-tense / settled titles for the few tools whose default label reads as an
@@ -94,9 +90,6 @@ const TOOL_LABELS: Record<string, string> = {
 // card never says "Registering source" — the rest of TOOL_LABELS are already
 // nouns ("Workspace tables", "Query") that read fine in both states.
 const TOOL_LABELS_DONE: Record<string, string> = {
-	connect: "Source schema",
-	use_vertical: "Vertical adopted",
-	select: "Registered source",
 	begin_session: "Session started",
 	teach: "Taught",
 	teach_validation: "Validation declared",
@@ -158,17 +151,6 @@ export function toolChipSummary(
 			if (files > 0) parts.push(plural(files, "file"));
 			return parts.join(", ");
 		}
-		case "list_verticals": {
-			if (!done) return "listing verticals…";
-			const verticals = Array.isArray(output) ? (output as Vertical[]) : [];
-			if (verticals.length === 0) return "no verticals";
-			const builtin = verticals.filter((v) => v.kind === "builtin").length;
-			const framed = verticals.filter((v) => v.kind === "framed").length;
-			const parts: string[] = [];
-			if (builtin > 0) parts.push(`${builtin} builtin`);
-			if (framed > 0) parts.push(`${framed} framed`);
-			return `${plural(verticals.length, "vertical")} (${parts.join(", ")})`;
-		}
 		case "list_tables": {
 			// The input `source_id` is only a SIGNAL that the call was filtered — for
 			// uploads it's the content-keyed `src_<40hex>` digest, which must never
@@ -200,6 +182,19 @@ export function toolChipSummary(
 			return r.analyzed
 				? `${r.table_name} — ${cols}`
 				: `${r.table_name} — ${cols}, not yet analyzed`;
+		}
+		case "look_values": {
+			if (!done) return "drilling value-sets…";
+			const cols = (output as { columns?: unknown } | undefined)?.columns;
+			const list = Array.isArray(cols)
+				? (cols as Array<{ column_name?: string | null; values?: unknown[] }>)
+				: [];
+			if (list.length === 0) return "no value-sets";
+			const total = list.reduce(
+				(n, c) => n + (Array.isArray(c.values) ? c.values.length : 0),
+				0,
+			);
+			return `${plural(list.length, "column")}, ${plural(total, "value")}`;
 		}
 		case "look_profile": {
 			const r = output as LookProfileResult | undefined;
@@ -277,6 +272,46 @@ export function toolChipSummary(
 						: "failed";
 			return `${label} — ${verdict}`;
 		}
+		case "look_cycle": {
+			const r = output as LookCycleResult | undefined;
+			if (!r || !Array.isArray(r.cycles)) return "reading business cycles…";
+			if (!r.analyzed) return "not yet run";
+			if (r.cycles.length === 0) return "no cycles declared";
+			const executed = r.cycles.filter((c) => c.state === "executed").length;
+			return `${plural(r.cycles.length, "cycle")} (${executed} executed)`;
+		}
+		case "why_cycle": {
+			const r = output as WhyCycleResult | undefined;
+			if (!r) return "explaining cycle…";
+			if (!r.found) return "cycle not found";
+			// A cycle is keyed by its name (which may already be display-form);
+			// humanize, then fall back to the raw name before the generic word.
+			const label =
+				humanizeIdentifier(r.cycle_name ?? "") || r.cycle_name || "cycle";
+			return `${label} — ${r.state ?? "not run"}`;
+		}
+		case "look_metric": {
+			const r = output as LookMetricResult | undefined;
+			if (!r || !Array.isArray(r.metrics)) return "reading metrics…";
+			if (!r.analyzed) return "not yet run";
+			if (r.metrics.length === 0) return "no metrics declared";
+			const executed = r.metrics.filter((m) => m.state === "executed").length;
+			return `${plural(r.metrics.length, "metric")} (${executed} executed)`;
+		}
+		case "why_metric": {
+			const r = output as WhyMetricResult | undefined;
+			if (!r) return "explaining metric…";
+			if (!r.found) return "metric not found";
+			// graph_id is a snake_case key (e.g. gross_margin) — humanize it.
+			const label = humanizeIdentifier(r.graph_id) || "metric";
+			return `${label} — ${r.state ?? "not run"}`;
+		}
+		case "look_drivers": {
+			const r = output as LookDriversResult | undefined;
+			if (!r || !Array.isArray(r.rankings)) return "reading drivers…";
+			if (!r.analyzed) return "not yet run";
+			return plural(r.rankings.length, "driver");
+		}
 		case "operating_model": {
 			// Non-blocking driver: done = the durable run STARTED (ids in the
 			// output), not finished — completion arrives via workflow_status /
@@ -284,40 +319,6 @@ export function toolChipSummary(
 			return done
 				? "validation run started — outcomes via the validations view"
 				: "starting the validation run…";
-		}
-		case "connect": {
-			const s = output as ConnectSchema | undefined;
-			// `output` can be a truthy-but-PARTIAL object while the result streams in
-			// (tables not populated yet) — treat a missing tables array as still
-			// connecting rather than crashing on `.length` (the multi-file drag-drop
-			// crash). The complete result always carries the array.
-			if (!s || !Array.isArray(s.tables)) return "connecting…";
-			// A file source's `source` is the full `s3://…/<id>/<name>` URI — show the
-			// filename, not the bucket/prefix plumbing (a database source is a name).
-			const src = s.sourceKind === "file" ? fileName(s.source) : s.source;
-			return `${src} — ${plural(s.tables.length, "table")}`;
-		}
-		case "frame": {
-			const f = output as FrameResult | undefined;
-			if (!f || !Array.isArray(f.concepts)) return "framing the model…";
-			const parts = [plural(f.concepts.length, "concept")];
-			if (Array.isArray(f.validations) && f.validations.length > 0) {
-				parts.push(plural(f.validations.length, "validation"));
-			}
-			if (Array.isArray(f.cycles) && f.cycles.length > 0) {
-				parts.push(plural(f.cycles.length, "cycle"));
-			}
-			return `${f.vertical} — ${parts.join(", ")}`;
-		}
-		case "use_vertical": {
-			const v = output as UseVerticalResult | undefined;
-			if (!v) return "adopting vertical…";
-			return `${v.vertical} (${v.kind})`;
-		}
-		case "select": {
-			const s = output as SelectResult | undefined;
-			if (!s) return "registering source…";
-			return `${s.name} (${s.source_type})`;
 		}
 		case "begin_session": {
 			// The tool returns as soon as the workflow STARTS — the run keeps going
@@ -339,15 +340,6 @@ export function toolChipSummary(
 			if (typeof sql === "string" && sql.length > 0) return truncate(sql);
 			return done ? "query run" : "running query…";
 		}
-		case "probe": {
-			const args = input as { source_name?: string; sql?: string } | undefined;
-			const where = args?.source_name ? ` on ${args.source_name}` : "";
-			const out = output as { rowCount?: number } | undefined;
-			if (out && typeof out.rowCount === "number") {
-				return `probe${where} — ${plural(out.rowCount, "row")}`;
-			}
-			return `probe${where}…`;
-		}
 		case "teach":
 			return teachChipSummary(input, output);
 		case "teach_validation":
@@ -362,10 +354,6 @@ export function toolChipSummary(
 			if (out?.run_id) return `replay — run ${out.run_id}`;
 			return args?.source_id ? `replay ${args.source_id}` : "replay…";
 		}
-		case "upload":
-			return "drop files to import";
-		case "open_probe":
-			return "write SQL to probe a source";
 		default:
 			// Never surface a raw snake_case verb as the summary — humanize unmapped
 			// tools the same way the title does (look_relationships → "Look relationships").

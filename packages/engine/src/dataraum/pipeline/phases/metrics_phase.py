@@ -41,15 +41,18 @@ TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
 so a redelivery can inflate usage telemetry; nothing gates on it (write-only
 since DAT-487/488).
 
-Per-metric LLM calls are independent — dispatched concurrently via
-asyncio.to_thread + gather when the phase context exposes a ConnectionManager
-(each parallel call gets its own SQLAlchemy session + DuckDB cursor). Falls back
-to a serial loop in unit tests where the manager isn't wired.
+Authoring vs assembly (DAT-636): the LLM is called ONLY in the up-front
+authoring pass (``_warm_shared_nodes``), which decides every unique node once and
+returns the run-scoped binding map. The per-metric fan-out is then pure ASSEMBLY
+(``agent.assemble``) — no LLM — dispatched concurrently via a ``ThreadPoolExecutor``
+when the phase context exposes a ConnectionManager (each parallel call gets its
+own SQLAlchemy session + DuckDB cursor; ``max_workers`` is the concurrency cap).
+Falls back to a serial loop in unit tests where the manager isn't wired.
 """
 
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -70,19 +73,33 @@ _STAGE = "operating_model"
 
 # Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
 # 4000 RPM (~67 RPS) comfortably; with ~30-60s LLM latencies, 10 concurrent
-# is ~10 RPS at peak — well under the limit.
+# is ~10 RPS at peak — well under the limit. The warming pre-pass (DAT-629) and
+# the execute wave run sequentially, each peaking at this many isolated sessions
+# (+1 phase session) — comfortably under the ConnectionManager pool (15).
 _MAX_CONCURRENT_METRICS = 10
 
+# DAT-631: a metric whose SQL runs and verifies still reaches ``executed`` only
+# as strongly as its WEAKEST grounded input. The graph agent already records an
+# honest per-concept confidence in each snippet's assumptions (e.g. a COGS proxy
+# at 0.35, a fabricated 0.0 at 0.10); below this floor the executed metric is
+# FLAGGED — its ``state_reason`` names the weak grounding — so the cockpit can
+# render it amber instead of plainly green. The value still shows (state stays
+# ``executed``); we surface the doubt rather than hide the number. Tuned against
+# eval over the iterations — a first-round floor, not a magic constant.
+_LOW_CONFIDENCE_FLOOR = 0.5
+
 if TYPE_CHECKING:
+    import duckdb
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
+    from dataraum.graphs.node_warming import NodeDecision, NodeKey, WarmNode
     from dataraum.lifecycle import LifecycleArtifact
 
-    MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
+    MetricPrep = tuple[str, TransformationGraph, str | None]
     MetricResult = tuple[str, Result[GraphExecution], str | None]
 
 
@@ -230,15 +247,26 @@ class MetricsPhase(BasePhase):
                 grounded_against=grounded_against,
             )
 
-            hint_sql: str | None = None
-            inspiration_id = graph.metadata.inspiration_snippet_id
-            if inspiration_id:
-                hint_snippet = snippet_library.find_by_id(inspiration_id)
-                if hint_snippet:
-                    hint_sql = hint_snippet.sql
-            prep.append((graph_id, graph, hint_sql, inspiration_id))
+            prep.append((graph_id, graph, graph.metadata.inspiration_snippet_id))
 
-        # execute: run each composed metric. Parallel when the manager is wired,
+        # Authoring pass (DAT-636): before the per-metric fan-out, decide every
+        # UNIQUE cache-keyed node ONCE, in dependency order. A sub-node shared by
+        # several metrics (e.g. the cost_of_goods_sold extract) is decided a single
+        # time; the per-metric assembly below reads the returned binding map and
+        # NEVER re-authors, so the same concept can no longer ground different ways
+        # across siblings (the within-run divergence DAT-629 only half-fixed —
+        # it cached successes but the per-metric path re-authored every miss).
+        bindings = _warm_shared_nodes(
+            graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
+        )
+        _log.info(
+            "metrics_authored",
+            grounded=sum(1 for d in bindings.values() if d.grounded),
+            ungroundable=sum(1 for d in bindings.values() if not d.grounded),
+        )
+
+        # assemble: compose each metric from the bindings (no LLM — the authoring
+        # pass already decided every node). Parallel when the manager is wired,
         # serial fallback otherwise.
         if ctx.manager is not None:
             results = _execute_metrics_parallel(
@@ -248,6 +276,7 @@ class MetricsPhase(BasePhase):
                 schema_mapping_id,
                 table_ids,
                 vertical,
+                bindings,
                 om_run_id=run_id,
             )
         else:
@@ -259,15 +288,29 @@ class MetricsPhase(BasePhase):
                 om_run_id=run_id,
                 vertical=vertical,
             )
-            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, schema_mapping_id)
+            results = _execute_metrics_serial(
+                prep, ctx.session, exec_ctx, agent, schema_mapping_id, bindings
+            )
 
-        # A composed metric that ran cleanly reaches executed; one whose SQL
-        # failed stays grounded with the reason (born loud, never silently absent).
+        # A composed metric that ran cleanly AND verified reaches executed; one
+        # whose SQL failed OR whose result was inconclusive (no support / a
+        # declared condition violated — DAT-616 verifier) stays grounded with the
+        # reason (born loud, never silently green).
+        low_confidence = 0
         for graph_id, result, inspiration_id in results:
             artifact = artifacts[graph_id]
             if result.success:
-                transition(artifact, operation="execute", stage=_STAGE)
-                _log.info("metric_executed", graph_id=graph_id)
+                # DAT-631: consume the grounding confidence. A clean+verified run
+                # reaches executed, but if its weakest input grounded below the
+                # floor we record WHY on the (still-executed) artifact, so it is
+                # no longer silently green.
+                reason = _low_confidence_reason(result.value)
+                transition(artifact, operation="execute", stage=_STAGE, state_reason=reason)
+                if reason:
+                    low_confidence += 1
+                    _log.warning("metric_executed_low_confidence", graph_id=graph_id, reason=reason)
+                else:
+                    _log.info("metric_executed", graph_id=graph_id)
                 # Snippet promotion: drop the ad-hoc snippet once the metric it
                 # inspired executes cleanly.
                 if inspiration_id:
@@ -276,8 +319,8 @@ class MetricsPhase(BasePhase):
                         ctx.session.delete(ad_hoc)
                         _log.info("snippet_promoted", graph_id=graph_id, snippet_id=inspiration_id)
             else:
-                artifact.state_reason = f"composed but execution failed: {result.error}"
-                _log.warning("metric_execution_failed", graph_id=graph_id, error=result.error)
+                artifact.state_reason = f"composed but not executed: {result.error}"
+                _log.warning("metric_not_executed", graph_id=graph_id, error=result.error)
 
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
@@ -290,7 +333,12 @@ class MetricsPhase(BasePhase):
         previews: list[str] = []
         for graph_id, a in artifacts.items():
             if a.state == "executed":
-                previews.append(f"{graph_id}: executed")
+                # An executed artifact carries a reason ONLY when flagged
+                # low-confidence (DAT-631) — surface it so the flag is visible.
+                if a.state_reason:
+                    previews.append(f"{graph_id}: executed (low-confidence) — {a.state_reason}")
+                else:
+                    previews.append(f"{graph_id}: executed")
             else:
                 previews.append(f"{graph_id}: {a.state} — {a.state_reason or 'no reason recorded'}")
 
@@ -298,6 +346,7 @@ class MetricsPhase(BasePhase):
             outputs={
                 "declared": len(artifacts),
                 "executed": executed,
+                "executed_low_confidence": low_confidence,
                 "stuck_grounded": grounded_stuck,
                 "stuck_declared": declared_stuck,
             },
@@ -306,9 +355,247 @@ class MetricsPhase(BasePhase):
             warnings=previews,
             summary=(
                 f"{executed}/{len(artifacts)} metrics executed; "
-                f"{declared_stuck} ungroundable, {grounded_stuck} composed but unexecutable"
+                f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed"
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Grounding-confidence gate (DAT-631)
+# ---------------------------------------------------------------------------
+
+
+def _low_confidence_reason(execution: GraphExecution | None) -> str | None:
+    """Reason string if the metric's weakest grounded input is below the floor.
+
+    A metric is only as trustworthy as its least-confident grounding. We take
+    the MIN confidence across the execution's assumptions (the graph agent's
+    honest per-concept signal, carried forward even for cache-assembled metrics)
+    and, when it falls below :data:`_LOW_CONFIDENCE_FLOOR`, return a short reason
+    naming the floor and the weakest assumption. ``None`` when there are no
+    assumptions or all clear — the metric is plainly executed.
+    """
+    if execution is None or not execution.assumptions:
+        return None
+    weakest = min(execution.assumptions, key=lambda a: a.confidence)
+    if weakest.confidence >= _LOW_CONFIDENCE_FLOOR:
+        return None
+    return (
+        f"low-confidence grounding ({weakest.confidence:.2f} < {_LOW_CONFIDENCE_FLOOR:.2f}): "
+        f"{weakest.assumption}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Node warming pre-pass (DAT-629)
+# ---------------------------------------------------------------------------
+
+
+def _warm_shared_nodes(
+    graphs: dict[str, TransformationGraph],
+    ctx: PhaseContext,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    *,
+    om_run_id: str,
+) -> dict[NodeKey, NodeDecision]:
+    """The authoring pass: decide every unique cache-keyed node ONCE (DAT-636).
+
+    Builds the cross-metric DAG, then authors each unique node once in dependency
+    order: a generation runs concurrently (independent nodes), with a barrier
+    between generations so a formula node sees its dep extracts already grounded.
+    Returns the run-scoped, in-memory **binding map** ``{NodeKey: NodeDecision}`` —
+    every node's decision (grounded → its concept-keyed snippet is minted;
+    ungroundable → the born-loud reason). The per-metric ASSEMBLY that follows
+    reads this map and never re-authors: a metric with an ungroundable dependency
+    honest-fails immediately, no LLM. A cyclic metric set yields an empty map
+    (every metric then honest-fails born-loud at assembly).
+    """
+    from dataraum.graphs.node_warming import build_warm_dag, warming_generations
+
+    try:
+        dag, nodes = build_warm_dag(graphs)
+    except ValueError as e:
+        _log.warning("metric_warm_dag_failed", error=str(e))
+        return {}
+
+    generations = warming_generations(dag)
+    if not generations:
+        return {}
+
+    _log.info(
+        "metrics_warming_start",
+        nodes=sum(len(g) for g in generations),
+        generations=len(generations),
+    )
+
+    if ctx.manager is not None:
+        return _warm_generations_parallel(
+            generations,
+            nodes,
+            ctx.manager,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id,
+        )
+    return _warm_generations_serial(
+        generations,
+        nodes,
+        ctx.session,
+        ctx.duckdb_conn,
+        agent,
+        schema_mapping_id,
+        table_ids,
+        vertical,
+        om_run_id,
+    )
+
+
+def _warm_generations_parallel(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> dict[NodeKey, NodeDecision]:
+    """Author generations concurrently within each wave, barrier between waves.
+
+    One ``ThreadPoolExecutor`` (``max_workers`` IS the concurrency cap — no
+    separate semaphore), the engine's standard fan-out primitive for blocking
+    SQLAlchemy/DuckDB/LLM work on the sync activity worker. Draining each
+    generation's futures before submitting the next is the load-bearing barrier:
+    generation N+1's formula nodes must see generation N's extracts already
+    grounded. Returns the run-scoped binding map; a node that raises is recorded
+    ungroundable so its dependent metrics honest-fail born-loud at assembly.
+    """
+    from dataraum.graphs.node_warming import NodeDecision, ungroundable_dep_reason
+
+    bindings: dict[NodeKey, NodeDecision] = {}
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
+    ) as pool:
+        for generation in generations:
+            # Gate before authoring: a node whose dependency did not ground is
+            # recorded ungroundable WITHOUT an LLM call — never let the composition
+            # prompt fabricate the missing dep and poison the snippet cache (DAT-636).
+            futures: dict[Future[NodeDecision], NodeKey] = {}
+            for key in generation:
+                reason = ungroundable_dep_reason(nodes[key], bindings)
+                if reason is not None:
+                    bindings[key] = NodeDecision(grounded=False, reason=reason)
+                    continue
+                futures[
+                    pool.submit(
+                        _warm_isolated,
+                        nodes[key],
+                        manager,
+                        agent,
+                        schema_mapping_id,
+                        table_ids,
+                        vertical,
+                        om_run_id,
+                    )
+                ] = key
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    bindings[key] = future.result()
+                except Exception as exc:
+                    # A node that crashes warming is recorded ungroundable — the
+                    # dependent metrics then honest-fail born-loud at assembly.
+                    _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                    bindings[key] = NodeDecision(grounded=False, reason=f"warm error: {exc}")
+    return bindings
+
+
+def _warm_isolated(
+    node: WarmNode,
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> NodeDecision:
+    """Author one node with an isolated session + cursor; return its decision."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
+
+    mini = build_mini_graph(node)
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=cursor,
+            table_ids=table_ids,
+            schema_mapping_id=schema_mapping_id,
+            om_run_id=om_run_id,
+            vertical=vertical,
+        )
+        result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
+    if result.success:
+        return NodeDecision(grounded=True)
+    # Ungroundable (e.g. an extract with genuinely no support): recorded, not an
+    # error — the metric using it honest-fails born-loud at assembly.
+    _log.info("metric_node_ungroundable", node=str(node.key), reason=result.error)
+    return NodeDecision(grounded=False, reason=result.error)
+
+
+def _warm_generations_serial(
+    generations: list[list[tuple[str | None, ...]]],
+    nodes: dict[tuple[str | None, ...], WarmNode],
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    agent: GraphAgent,
+    schema_mapping_id: str,
+    table_ids: list[str],
+    vertical: str,
+    om_run_id: str,
+) -> dict[NodeKey, NodeDecision]:
+    """Serial fallback: shared session + cursor, sequential dependency order."""
+    from dataraum.graphs.agent import ExecutionContext
+    from dataraum.graphs.node_warming import (
+        NodeDecision,
+        build_mini_graph,
+        ungroundable_dep_reason,
+    )
+
+    exec_ctx = ExecutionContext.with_rich_context(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        table_ids=table_ids,
+        schema_mapping_id=schema_mapping_id,
+        om_run_id=om_run_id,
+        vertical=vertical,
+    )
+    bindings: dict[NodeKey, NodeDecision] = {}
+    for generation in generations:
+        for key in generation:
+            # Gate before authoring — see _warm_generations (DAT-636 cache-poison guard).
+            reason = ungroundable_dep_reason(nodes[key], bindings)
+            if reason is not None:
+                bindings[key] = NodeDecision(grounded=False, reason=reason)
+                continue
+            try:
+                result = agent.execute(
+                    session, build_mini_graph(nodes[key]), exec_ctx, workspace_id=schema_mapping_id
+                )
+            except Exception as exc:
+                _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                bindings[key] = NodeDecision(grounded=False, reason=f"warm error: {exc}")
+                continue
+            if result.success:
+                bindings[key] = NodeDecision(grounded=True)
+            else:
+                _log.info("metric_node_ungroundable", node=str(key), reason=result.error)
+                bindings[key] = NodeDecision(grounded=False, reason=result.error)
+    return bindings
 
 
 # ---------------------------------------------------------------------------
@@ -322,16 +609,16 @@ def _execute_metrics_serial(
     exec_ctx: _ExecutionContext,
     agent: GraphAgent,
     workspace_id: str,
+    bindings: dict[NodeKey, NodeDecision],
 ) -> list[MetricResult]:
     """Fallback path: shared session + cursor, sequential dispatch.
 
-    Used in unit tests where PhaseContext.manager is None.
+    Pure ASSEMBLY (DAT-636): composes each metric from the authoring pass's
+    bindings — no LLM. Used in unit tests where PhaseContext.manager is None.
     """
     out: list[MetricResult] = []
-    for graph_id, graph, hint_sql, inspiration_id in prep:
-        result = agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=workspace_id
-        )
+    for graph_id, graph, inspiration_id in prep:
+        result = agent.assemble(session, graph, exec_ctx, bindings, workspace_id=workspace_id)
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -343,62 +630,60 @@ def _execute_metrics_parallel(
     schema_mapping_id: str,
     table_ids: list[str],
     vertical: str,
+    bindings: dict[NodeKey, NodeDecision],
     *,
     om_run_id: str,
 ) -> list[MetricResult]:
-    """Concurrent path: per-call session + cursor, gathered via asyncio.
+    """Concurrent path: per-call session + cursor via a ThreadPoolExecutor.
 
-    Each metric runs `agent.execute` on a thread with its own SQLAlchemy
-    session (auto-commit via session_scope) and its own DuckDB cursor.
-    A semaphore caps in-flight LLM calls to _MAX_CONCURRENT_METRICS.
-    ``om_run_id`` is this operating_model run — the graph context reads its
-    cycles/validation evidence at this run, not the (not-yet-promoted) head.
+    Pure ASSEMBLY (DAT-636): each metric composes from the authoring pass's
+    bindings on a pool thread with its own SQLAlchemy session (auto-commit via
+    session_scope) and its own DuckDB cursor — NO LLM in this path. ``max_workers``
+    caps concurrency to _MAX_CONCURRENT_METRICS. ``om_run_id`` is this
+    operating_model run — the graph context reads its cycles/validation evidence
+    at this run, not the (not-yet-promoted) head.
     """
-
-    async def _run_all() -> list[MetricResult]:
-        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
-
-        async def _run_one(
-            graph_id: str,
-            graph: TransformationGraph,
-            hint_sql: str | None,
-            inspiration_id: str | None,
-        ) -> MetricResult:
-            async with sem:
-                # Capture unexpected exceptions as Result.fail so one worker
-                # raising doesn't abort siblings via gather propagation.
-                try:
-                    result = await asyncio.to_thread(
-                        _execute_isolated,
-                        graph,
-                        hint_sql,
-                        manager,
-                        agent,
-                        schema_mapping_id,
-                        table_ids,
-                        vertical,
-                        om_run_id,
-                    )
-                except Exception as exc:
-                    result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
-            return graph_id, result, inspiration_id
-
-        return await asyncio.gather(*(_run_one(gid, g, hsql, iid) for gid, g, hsql, iid in prep))
-
-    return asyncio.run(_run_all())
+    out: list[MetricResult] = []
+    with ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric"
+    ) as pool:
+        futures = {
+            pool.submit(
+                _execute_isolated,
+                graph,
+                manager,
+                agent,
+                schema_mapping_id,
+                table_ids,
+                vertical,
+                bindings,
+                om_run_id,
+            ): (graph_id, inspiration_id)
+            for graph_id, graph, inspiration_id in prep
+        }
+        for future in as_completed(futures):
+            graph_id, inspiration_id = futures[future]
+            # Capture unexpected exceptions as Result.fail so one worker raising
+            # doesn't abort siblings.
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
+            out.append((graph_id, result, inspiration_id))
+    return out
 
 
 def _execute_isolated(
     graph: TransformationGraph,
-    hint_sql: str | None,
     manager: ConnectionManager,
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
     vertical: str,
+    bindings: dict[NodeKey, NodeDecision],
     om_run_id: str,
 ) -> Result[GraphExecution]:
-    """Run one metric with an isolated session + cursor pair.
+    """Assemble one metric from the bindings with an isolated session + cursor.
 
     Wraps the call in manager.session_scope() so writes commit on success
     and roll back on exception. The DuckDB cursor is independent — the
@@ -421,6 +706,4 @@ def _execute_isolated(
             om_run_id=om_run_id,
             vertical=vertical,
         )
-        return agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=schema_mapping_id
-        )
+        return agent.assemble(session, graph, exec_ctx, bindings, workspace_id=schema_mapping_id)

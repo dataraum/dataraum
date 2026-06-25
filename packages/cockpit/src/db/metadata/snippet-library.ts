@@ -44,6 +44,9 @@ export interface SnippetRow {
 	sql: string;
 	description: string;
 	columnMappings: unknown;
+	// DAT-616: {field_resolution, column_mappings_basis, …} — the agent's own prior
+	// value→concept FILTER decisions, fed back so grounding isn't re-invented.
+	provenance: unknown;
 	source: string;
 }
 
@@ -59,6 +62,7 @@ const SNIPPET_COLUMNS = {
 	sql: sqlSnippets.sql,
 	description: sqlSnippets.description,
 	columnMappings: sqlSnippets.columnMappings,
+	provenance: sqlSnippets.provenance,
 	source: sqlSnippets.source,
 } as const;
 
@@ -93,6 +97,7 @@ function mapRow(r: RawSnippetRow): SnippetRow {
 		sql: req(r.sql, "sql"),
 		description: (r.description as string | null) ?? "",
 		columnMappings: r.columnMappings,
+		provenance: r.provenance,
 		source: req(r.source, "source"),
 	};
 }

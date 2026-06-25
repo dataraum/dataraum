@@ -1,26 +1,44 @@
-// Result-grid widget (DAT-385 P2 grid + P3 server-side sort) — the human-facing
-// SQL result surface.
+// Result-grid widget (DAT-385 P2 grid + P3 server-side sort + DAT-613 windowed
+// paging) — the human-facing SQL result surface.
 //
-// Splits cleanly in three:
-//   - ResultGridView: PURE render of a ColumnStore via TanStack Table with
+// Splits cleanly in four:
+//   - ResultGridView: PURE render of a GridView via TanStack Table with
 //     index-rows + accessorFn (no row-object rematerialization). Headers are
-//     interactive when given `onToggleSort`. Trivially testable, no I/O.
+//     interactive when given `onToggleSort`; `onReachEnd` fires when the
+//     virtualized body nears its end (the windowed grid pages on it). Trivially
+//     testable, no I/O.
 //   - ResultGridWidget: the registered entry. Owns the BASE query (the agent's
 //     run_sql call) and `key`s the inner grid on it, so a new agent query
 //     remounts the grid and resets the sort cleanly.
-//   - StreamingGrid: owns the I/O + the grid-local sort. POSTs sql+params+sort
-//     to the P1 `/api/run-sql` NDJSON endpoint, folds frames into a ColumnStore
-//     as they arrive, and aborts the fetch on unmount/query-change/sort-change
-//     (the server then emits a `cancelled` footer).
+//   - WindowedGrid (lake, DAT-613): the human-facing lake grid. A Mosaic-style
+//     window onto a re-runnable query — `useInfiniteQuery` fetches one
+//     LIMIT/OFFSET page per scroll-window from `/api/run-sql`, each folded into
+//     its own ColumnStore, assembled into a PagedGridView. No 50k cap: only the
+//     loaded windows live in memory; the result set itself is unbounded.
+//   - StreamingGrid (probe): the one-shot grid the editable probe uses. POSTs
+//     sql+params+sort to an NDJSON endpoint and folds the WHOLE result into a
+//     single ColumnStore (capped). Kept for `/api/probe-sql`, whose per-request
+//     ATTACH can't yet back windowed paging (needs kept-alive sessions).
 //
-// Sort is SERVER-SIDE (re-issue with ORDER BY), not a client reorder: the grid
-// caps at 50k and can truncate, so the sort must run before the cap to show the
-// true top-N. Filter + keyset paging stay deferred (a connected, researched P3/P4
-// effort). The body IS virtualized (only the visible window hits the DOM) —
-// load-bearing for the 50k streaming cap, not optional.
+// Sort is SERVER-SIDE (re-issue with ORDER BY), not a client reorder: a window
+// is only a slice, so the sort must run across the full result before the slice
+// is cut to show the true order. The body IS virtualized (only the visible window
+// hits the DOM) — load-bearing for an unbounded result, not optional.
 
 import type { Json } from "@duckdb/node-api";
-import { Alert, Badge, Group, Table, Text } from "@mantine/core";
+import {
+	ActionIcon,
+	Alert,
+	Badge,
+	Button,
+	Group,
+	Indicator,
+	Modal,
+	Table,
+	Text,
+	TextInput,
+} from "@mantine/core";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import {
 	type ColumnDef,
 	flexRender,
@@ -29,28 +47,48 @@ import {
 	useReactTable,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ColumnStore, readNdjsonStream } from "#/duckdb/ndjson-stream";
-import type { GridSort } from "#/duckdb/stream-sql";
+import {
+	ChevronDown,
+	ChevronsUpDown,
+	ChevronUp,
+	Code,
+	Filter,
+} from "lucide-react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { cellAlign, columnFilterKind, formatCell } from "#/duckdb/cell-format";
+import {
+	GRID_PAGE_SIZE,
+	type GridFilter,
+	type GridSort,
+	parseColumnFilterInput,
+} from "#/duckdb/grid-query";
+import {
+	ColumnStore,
+	type GridStatus,
+	type GridView,
+	PagedGridView,
+	readNdjsonIntoStore,
+	readNdjsonStream,
+} from "#/duckdb/ndjson-stream";
 import type { CanvasState } from "#/ui/cockpit/canvas-state";
+import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 
-// §7.3 hook: carry the neo column type metadata on each TanStack column. P2
-// does not consume it; P3 type-driven formatting (right-align numerics, render
-// timestamps) + sort/filter dispatch on `columnDef.meta.duckdbType`. Kept type-
-// only (Json) so the neo native driver never reaches the client bundle.
+// §7.3 hook: carry the neo column type metadata on each TanStack column. The
+// type-driven cell formatting (right-align numerics, render timestamps) lives in
+// cell-format.ts (DAT-575) and dispatches on `columnDef.meta.duckdbType`; sort/
+// filter will too. Kept type-only (Json) so the neo native driver never reaches
+// the client bundle.
 declare module "@tanstack/react-table" {
 	interface ColumnMeta<TData extends RowData, TValue> {
 		duckdbType?: Json;
 	}
-}
-
-/** JSON-safe cell → display string. Columnar values are already coerced
- * server-side (bigint→string, dates→ISO, nested→plain JSON); we only pick a
- * readable rendering: null as an em-dash, objects/arrays as compact JSON. */
-function formatCell(value: unknown): string {
-	if (value === null || value === undefined) return "—";
-	if (typeof value === "object") return JSON.stringify(value);
-	return String(value);
 }
 
 const STATUS_COLOR = {
@@ -75,39 +113,83 @@ export function cycleSort(
 	return null;
 }
 
-/** Pure presentation of a (possibly still-filling) ColumnStore.
+/** Pure presentation of a (possibly still-filling / still-paging) GridView.
  *
  * `sort` + `onToggleSort` make the column headers interactive (DAT-385 P3): a
  * click asks the OWNER to re-issue the query with a new server-side sort. The
- * view itself never reorders rows — sort runs before the cap, server-side, so a
- * truncated result still shows the true top-N. Omit `onToggleSort` (e.g. in a
- * pure-render test) and the headers stay static. */
+ * view itself never reorders rows — sort runs across the full result, server-
+ * side. `onReachEnd` (DAT-613) fires when the virtualized body scrolls within an
+ * overscan of the last loaded row, so the windowed owner can fetch the next page;
+ * omit it (probe, pure-render test) and the grid never asks for more.
+ * `onFilterCommit` (DAT-613) renders a per-column filter row whose inputs commit
+ * (Enter/blur) a push-down filter to the owner; omit it and no filter row shows.
+ * Omit `onToggleSort` and the headers stay static. */
 export function ResultGridView({
 	store,
 	fatal,
 	sort,
 	onToggleSort,
+	onReachEnd,
+	onFilterCommit,
+	activeFilterCount = 0,
+	scrollResetKey,
+	sql,
+	sqlParams,
+	toolbarActions,
 }: {
-	store: ColumnStore;
+	store: GridView;
 	fatal?: string | null;
 	sort?: GridSort | null;
 	onToggleSort?: (column: string) => void;
+	onReachEnd?: () => void;
+	onFilterCommit?: (column: string, raw: string) => void;
+	/** How many push-down filters are currently active (drives the funnel toggle's
+	 * active state + count). Owner-tracked; the view only renders the row. */
+	activeFilterCount?: number;
+	/** Changes when the owner re-pages from offset 0 (sort/filter change); the body
+	 * scrolls back to the top so the new top-N is visible, not a clamped middle. */
+	scrollResetKey?: string;
+	/** The query behind the grid — when present, the toolbar shows a "Show SQL"
+	 * button opening a read-only modal. Omitted by the probe (it has its own
+	 * editor), so no button there. */
+	sql?: string;
+	sqlParams?: (string | number | boolean | null)[];
+	/** Extra toolbar actions rendered to the LEFT of "View SQL" — the answer surface
+	 * mounts its mint-to-Report button here so it sits with the grid's own actions
+	 * instead of floating above the grid. Omitted for plain run_sql / probe grids. */
+	toolbarActions?: ReactNode;
 }) {
+	// The filter row is hidden by default (a clean grid) and toggled by the funnel
+	// in the toolbar. An applied-but-hidden filter isn't stranded: the funnel stays
+	// active + shows the count, so the user can re-open to edit it.
+	const [filtersOpen, setFiltersOpen] = useState(false);
+	const [sqlOpen, setSqlOpen] = useState(false);
+	const showFilterRow = onFilterCommit !== undefined && filtersOpen;
 	// Index-rows: TanStack Table iterates row indices; each accessor reads its
 	// column array at that index — O(1), no row objects ever built.
+	//
+	// `store` is a dep, not just `store.rowCount`: a windowed re-sort/filter SWAPS
+	// the store for one with DIFFERENT values at the SAME row indices (e.g. row 0
+	// goes min→max). TanStack caches `row.getValue()` per Row, and Rows are
+	// memoized on this `data` array — so if its reference were stable across a
+	// store swap, the table would keep serving the OLD store's cached cell values
+	// even though the accessor now closes over the new store. Tying `data`'s
+	// identity to `store` rebuilds the row model on a swap, busting that cache.
+	// (The streaming/probe store mutates in place — stable ref — so this still
+	// only refreshes on rowCount growth there.)
 	const data = useMemo<number[]>(
 		() => Array.from({ length: store.rowCount }, (_, i) => i),
-		[store.rowCount],
+		[store.rowCount, store],
 	);
 	const columns = useMemo<ColumnDef<number>[]>(() => {
 		const typeList = Array.isArray(store.types) ? (store.types as Json[]) : [];
 		return store.columns.map((name, c) => ({
 			id: `c${c}`,
 			header: name,
-			// accessorFn closes over `store` by REFERENCE and reads the column array
-			// lazily at render time (not at memo creation), so cells fill in as
-			// streamed batches grow store.cols — don't freeze or copy the store.
-			accessorFn: (rowIndex: number) => store.cols[c]?.[rowIndex] ?? null,
+			// accessorFn closes over `store` by REFERENCE and reads the cell lazily at
+			// render time (not at memo creation), so cells fill in as streamed batches
+			// grow the store / new pages append — don't freeze or copy the store.
+			accessorFn: (rowIndex: number) => store.cell(c, rowIndex),
 			meta: { duckdbType: typeList[c] },
 		}));
 	}, [store.columns, store]);
@@ -141,6 +223,31 @@ export function ResultGridView({
 			: 0;
 	const colCount = store.columns.length;
 
+	// Load-on-scroll (DAT-613): when the virtualized body reaches within an
+	// overscan of the last loaded row, ask the owner for the next page. This is a
+	// scroll-driven side effect (a DOM/measurement signal), so it lives in an
+	// effect per React rule 2 — the third such effect in the cockpit, justified
+	// here. `lastIndex` is a scalar, so the effect re-fires only when the visible
+	// end actually moves; `onReachEnd` self-guards against re-fetching while a page
+	// is already in flight, and content shorter than the viewport keeps it firing
+	// until the window is filled or the result is exhausted.
+	const lastIndex =
+		virtualRows.length > 0 ? virtualRows[virtualRows.length - 1].index : -1;
+	useEffect(() => {
+		if (onReachEnd && lastIndex >= 0 && lastIndex >= rows.length - 1 - 8) {
+			onReachEnd();
+		}
+	}, [onReachEnd, lastIndex, rows.length]);
+
+	// Re-page from 0 (sort/filter change) → scroll the body back to the top, so a
+	// deep-scrolled grid doesn't strand the user at a clamped offset of the new,
+	// shorter result. DOM scroll sync → an effect (React rule 2).
+	useEffect(() => {
+		if (scrollResetKey !== undefined && scrollRef.current) {
+			scrollRef.current.scrollTop = 0;
+		}
+	}, [scrollResetKey]);
+
 	const status = fatal ? "error" : store.status;
 
 	return (
@@ -149,10 +256,66 @@ export function ResultGridView({
 				<Text size="sm" fw={500}>
 					{store.rowCount} row{store.rowCount === 1 ? "" : "s"}
 				</Text>
-				<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
-					{status}
-				</Badge>
+				<Group gap="xs">
+					{toolbarActions}
+					{sql && (
+						<Button
+							variant="subtle"
+							color="gray"
+							size="compact-xs"
+							leftSection={<Code size={13} />}
+							data-testid="canvas-result-grid-sql-toggle"
+							onClick={() => setSqlOpen(true)}
+						>
+							View SQL
+						</Button>
+					)}
+					{onFilterCommit && (
+						<Indicator
+							label={activeFilterCount}
+							size={15}
+							offset={2}
+							color="blue"
+							disabled={activeFilterCount === 0}
+							aria-label={`${activeFilterCount} filters active`}
+						>
+							<ActionIcon
+								variant={
+									activeFilterCount > 0 || filtersOpen ? "light" : "subtle"
+								}
+								color={activeFilterCount > 0 ? "blue" : "gray"}
+								size="sm"
+								aria-label={filtersOpen ? "Hide filters" : "Show filters"}
+								aria-pressed={filtersOpen}
+								title={
+									activeFilterCount > 0
+										? `${activeFilterCount} filter${activeFilterCount === 1 ? "" : "s"} active`
+										: "Filter rows"
+								}
+								data-testid="canvas-result-grid-filter-toggle"
+								onClick={() => setFiltersOpen((o) => !o)}
+							>
+								<Filter size={14} />
+							</ActionIcon>
+						</Indicator>
+					)}
+					<Badge color={STATUS_COLOR[status]} variant="light" size="sm">
+						{status}
+					</Badge>
+				</Group>
 			</Group>
+
+			{sql && (
+				<Modal
+					opened={sqlOpen}
+					onClose={() => setSqlOpen(false)}
+					title="SQL"
+					size="lg"
+					data-testid="canvas-result-grid-sql-modal"
+				>
+					<SqlBlock sql={sql} params={sqlParams} maxHeight={420} />
+				</Modal>
+			)}
 
 			{(fatal || store.error) && (
 				<Alert color="red" mb="xs" data-testid="canvas-result-grid-error">
@@ -183,41 +346,115 @@ export function ResultGridView({
 									const name = String(header.column.columnDef.header ?? "");
 									const active = sort?.column === name;
 									const clickable = onToggleSort !== undefined;
+									// Right-align numeric headers so they sit over their
+									// right-aligned cells (DAT-575).
+									const alignRight =
+										cellAlign(header.column.columnDef.meta?.duckdbType) ===
+										"right";
 									return (
 										<Table.Th
 											key={header.id}
 											onClick={clickable ? () => onToggleSort(name) : undefined}
-											style={
-												clickable
+											style={{
+												...(clickable
 													? { cursor: "pointer", userSelect: "none" }
-													: undefined
-											}
+													: {}),
+												...(alignRight ? { textAlign: "right" } : {}),
+											}}
 											data-testid={`canvas-result-grid-header-${name}`}
 										>
-											<Group gap={4} wrap="nowrap">
+											<Group
+												gap={4}
+												wrap="nowrap"
+												justify={alignRight ? "flex-end" : "flex-start"}
+											>
 												{flexRender(
 													header.column.columnDef.header,
 													header.getContext(),
 												)}
-												{active && (
-													<Text
-														span
-														size="xs"
-														c="dimmed"
-														aria-label={
-															sort.dir === "asc"
-																? "sorted ascending"
-																: "sorted descending"
-														}
-													>
-														{sort.dir === "asc" ? "▲" : "▼"}
-													</Text>
+												{active ? (
+													sort.dir === "asc" ? (
+														<ChevronUp
+															size={14}
+															color="var(--mantine-color-gray-7)"
+															aria-label="sorted ascending"
+														/>
+													) : (
+														<ChevronDown
+															size={14}
+															color="var(--mantine-color-gray-7)"
+															aria-label="sorted descending"
+														/>
+													)
+												) : (
+													clickable && (
+														// Neutral handle so EVERY sortable column reads as
+														// clickable, not just the active one (DAT-613 review).
+														<ChevronsUpDown
+															size={14}
+															color="var(--mantine-color-gray-5)"
+															aria-hidden
+														/>
+													)
 												)}
 											</Group>
 										</Table.Th>
 									);
 								})}
 							</Table.Tr>
+							{/* Filter row (DAT-613): one input per column, toggled by the
+							    toolbar funnel. Text columns match a substring; numeric/
+							    temporal accept a leading comparison operator (>1000,
+							    >=2024-01-01). Uncontrolled — commit on Enter/blur so we
+							    re-page once, not per keystroke. */}
+							{showFilterRow && (
+								<Table.Tr>
+									{table.getFlatHeaders().map((header) => {
+										const name = String(header.column.columnDef.header ?? "");
+										const kind = columnFilterKind(
+											header.column.columnDef.meta?.duckdbType,
+										);
+										return (
+											<Table.Th
+												key={`${header.id}-filter`}
+												style={{
+													padding: "4px 6px 8px",
+													borderBottom:
+														"2px solid var(--mantine-color-default-border)",
+												}}
+											>
+												<TextInput
+													size="xs"
+													variant="default"
+													styles={{
+														input: {
+															height: 24,
+															minHeight: 24,
+															fontWeight: 400,
+														},
+													}}
+													placeholder={
+														kind === "text"
+															? "contains…"
+															: kind === "temporal"
+																? ">2024-01-01"
+																: ">100"
+													}
+													aria-label={`Filter ${name}`}
+													data-testid={`canvas-result-grid-filter-${name}`}
+													onKeyDown={(e) => {
+														if (e.key === "Enter")
+															onFilterCommit(name, e.currentTarget.value);
+													}}
+													onBlur={(e) =>
+														onFilterCommit(name, e.currentTarget.value)
+													}
+												/>
+											</Table.Th>
+										);
+									})}
+								</Table.Tr>
+							)}
 						</Table.Thead>
 						<Table.Tbody>
 							{/* Spacer rows reserve the off-screen scroll height so only the
@@ -234,11 +471,24 @@ export function ResultGridView({
 								const row = rows[vr.index];
 								return (
 									<Table.Tr key={row.id}>
-										{row.getVisibleCells().map((cell) => (
-											<Table.Td key={cell.id}>
-												{formatCell(cell.getValue())}
-											</Table.Td>
-										))}
+										{row.getVisibleCells().map((cell) => {
+											const type = cell.column.columnDef.meta?.duckdbType;
+											return (
+												<Table.Td
+													key={cell.id}
+													style={
+														cellAlign(type) === "right"
+															? {
+																	textAlign: "right",
+																	fontVariantNumeric: "tabular-nums",
+																}
+															: undefined
+													}
+												>
+													{formatCell(cell.getValue(), type)}
+												</Table.Td>
+											);
+										})}
 									</Table.Tr>
 								);
 							})}
@@ -262,16 +512,23 @@ export function ResultGridView({
  * The registered widget. Owns the BASE query (the agent's `run_sql` call) and
  * remounts the inner grid whenever that query changes, via a value-stable `key`.
  *
- * The remount is deliberate: the inner grid holds the grid-local sort state, and
- * remounting on a new base query resets the sort cleanly to "unsorted" without a
- * reset effect (which would fire a redundant second stream). The agent's
- * `state.sql`/`params` stay immutable — sort is a VIEW concern, never written
- * back to the canvas state.
+ * The remount is deliberate: the inner grid holds the grid-local sort + filter
+ * state, and remounting on a new base query resets them cleanly without a reset
+ * effect (which would fire a redundant second stream). The agent's
+ * `state.sql`/`params` stay immutable — sort/filter are VIEW concerns, never
+ * written back to the canvas state.
+ *
+ * The query itself is reachable from the grid's toolbar ("Show SQL" → modal),
+ * covering BOTH `run_sql` grids and `answer` grids (AnswerResultWidget composes
+ * this widget with the composed final SQL) in one place.
  */
 export function ResultGridWidget({
 	state,
+	toolbarActions,
 }: {
 	state: Extract<CanvasState, { kind: "result-grid" }>;
+	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
+	toolbarActions?: ReactNode;
 }) {
 	// The provider derives a fresh canvas object on every message tick; serialize
 	// sql+params so a new `key` is produced only when the QUERY actually changes,
@@ -281,10 +538,13 @@ export function ResultGridWidget({
 		[state.sql, state.params],
 	);
 	return (
-		<StreamingGrid
+		<WindowedGrid
 			key={baseKey}
 			endpoint="/api/run-sql"
 			body={{ sql: state.sql, params: state.params }}
+			sql={state.sql}
+			sqlParams={state.params}
+			toolbarActions={toolbarActions}
 		/>
 	);
 }
@@ -299,6 +559,162 @@ function extractError(text: string): string {
 		// not JSON — use the text as-is
 	}
 	return text;
+}
+
+/**
+ * The windowed lake grid (DAT-613). A Mosaic-style window onto a re-runnable
+ * query: `useInfiniteQuery` fetches one LIMIT/OFFSET page per scroll-window from
+ * the NDJSON endpoint, folds each into its own ColumnStore, and assembles the
+ * loaded pages into a PagedGridView the view renders. The 50k cap is gone — only
+ * the windows scrolled into ever live in memory, so the result set is unbounded.
+ *
+ * Paging goes through TanStack Query (`useInfiniteQuery`), not a hand-rolled
+ * effect (React rule 3): the query key carries the body + sort + filters, so a
+ * sort or filter change transparently re-pages from offset 0, and Query owns
+ * fetch dedup, cancellation of superseded windows, and the loading state. Sort +
+ * filters are grid-local and reset by remounting on a new base query
+ * (ResultGridWidget's `key`).
+ */
+export function WindowedGrid({
+	endpoint,
+	body,
+	sql,
+	sqlParams,
+	toolbarActions,
+}: {
+	endpoint: string;
+	/** The base request body (WITHOUT sort/filters/limit/offset — the grid appends those). */
+	body: Record<string, unknown>;
+	/** The query behind the grid, surfaced via the toolbar "Show SQL" modal. */
+	sql?: string;
+	sqlParams?: (string | number | boolean | null)[];
+	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
+	toolbarActions?: ReactNode;
+}) {
+	const [sort, setSort] = useState<GridSort | null>(null);
+	const [filters, setFilters] = useState<GridFilter[]>([]);
+	const toggleSort = useCallback((column: string) => {
+		setSort((cur) => cycleSort(cur, column));
+	}, []);
+
+	// Value-stable body identity so the query key doesn't churn on a fresh `body`
+	// object each parent render; parsed back inside the queryFn.
+	const bodyKey = useMemo(() => JSON.stringify(body), [body]);
+
+	const query = useInfiniteQuery({
+		queryKey: ["run-sql-grid", endpoint, bodyKey, sort, filters],
+		initialPageParam: 0,
+		queryFn: async ({ pageParam, signal }) => {
+			const base = JSON.parse(bodyKey) as Record<string, unknown>;
+			const res = await fetch(endpoint, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					...base,
+					sort: sort ?? undefined,
+					filters: filters.length ? filters : undefined,
+					limit: GRID_PAGE_SIZE,
+					offset: pageParam,
+				}),
+				signal,
+			});
+			if (!res.ok || !res.body) {
+				const detail = await res.text().catch(() => res.statusText);
+				throw new Error(
+					extractError(detail) || `request failed (${res.status})`,
+				);
+			}
+			// Each window is bounded (≤ GRID_PAGE_SIZE rows), so folding the whole
+			// page into one ColumnStore is fine — unboundedness is handled by paging,
+			// not by streaming one giant result.
+			return readNdjsonIntoStore(res.body);
+		},
+		// A full window (truncated = the route's +1 over-fetch saw more rows) means
+		// there's a next page; its offset = pages-so-far × page size.
+		getNextPageParam: (lastPage, allPages) =>
+			lastPage.truncated ? allPages.length * GRID_PAGE_SIZE : undefined,
+	});
+
+	const { data, error, isFetchingNextPage, fetchNextPage, isFetching } = query;
+
+	// `fetchNextPage` is stable (TanStack Query) and internally no-ops when there's
+	// no next page or one is already in flight — so the callback needs no volatile
+	// deps. Keeping its identity stable means the view's scroll effect re-fires only
+	// on actual scroll, not on every paging-state flip. The view gates WHEN to call
+	// this (only within an overscan of the loaded end), which also bounds eager
+	// auto-paging to filling the viewport.
+	const onReachEnd = useCallback(() => {
+		void fetchNextPage();
+	}, [fetchNextPage]);
+
+	const view = useMemo<PagedGridView>(() => {
+		const pages = data?.pages ?? [];
+		// An in-band footer error on any page (e.g. a DuckDB binder error) is fatal
+		// for the whole grid, same as a failed fetch.
+		const inbandError = pages.find((p) => p.error)?.error;
+		const message = error
+			? error instanceof Error
+				? error.message
+				: String(error)
+			: inbandError;
+		const status: GridStatus = message
+			? "error"
+			: isFetching || isFetchingNextPage
+				? "streaming"
+				: "done";
+		return new PagedGridView(pages, GRID_PAGE_SIZE, status, message);
+	}, [data, error, isFetching, isFetchingNextPage]);
+
+	// Map each output column to its DuckDB type so a filter input knows whether to
+	// parse comparisons (numeric/temporal) or a substring (text). Types arrive
+	// with page 0, before the user can read a column to filter it.
+	const typeByColumn = useMemo(() => {
+		const map = new Map<string, Json | undefined>();
+		const types = Array.isArray(view.types) ? (view.types as Json[]) : [];
+		view.columns.forEach((name, i) => {
+			map.set(name, types[i]);
+		});
+		return map;
+	}, [view]);
+
+	const onFilterCommit = useCallback(
+		(column: string, raw: string) => {
+			const kind = columnFilterKind(typeByColumn.get(column));
+			const next = parseColumnFilterInput(column, raw, kind);
+			setFilters((prev) => {
+				const existing = prev.find((f) => f.column === column);
+				// No-op commits (blurring an empty input, re-entering the same value)
+				// must NOT produce a new array — that would needlessly re-page.
+				if (!next)
+					return existing ? prev.filter((f) => f.column !== column) : prev;
+				if (
+					existing &&
+					existing.op === next.op &&
+					existing.value === next.value
+				)
+					return prev;
+				return [...prev.filter((f) => f.column !== column), next];
+			});
+		},
+		[typeByColumn],
+	);
+
+	// PagedGridView carries status + error, so the view renders the badge and the
+	// error banner straight off `store` — no separate `fatal` needed here.
+	return (
+		<ResultGridView
+			store={view}
+			sort={sort}
+			onToggleSort={toggleSort}
+			onReachEnd={onReachEnd}
+			onFilterCommit={onFilterCommit}
+			activeFilterCount={filters.length}
+			scrollResetKey={JSON.stringify([sort, filters])}
+			sql={sql}
+			sqlParams={sqlParams}
+			toolbarActions={toolbarActions}
+		/>
+	);
 }
 
 /**

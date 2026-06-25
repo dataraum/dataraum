@@ -288,17 +288,17 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 				tables: [
 					{
 						raw_table_id: "r1",
-						name: "finance_data__payments",
+						name: "payments",
 						status: "done",
 					},
 					{
 						raw_table_id: "r2",
-						name: "finance_data__invoices",
+						name: "invoices",
 						status: "done",
 					},
 					{
 						raw_table_id: "r3",
-						name: "finance_data__fx_rates",
+						name: "fx_rates",
 						status: "done",
 					},
 				],
@@ -335,7 +335,7 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		);
 	});
 
-	it("strips the `<source>__` prefix from table names in the list AND the failure message", () => {
+	it("renders narrow table names in the list AND the failure message (DAT-639)", () => {
 		h.queryResult = {
 			data: {
 				phase: "processing_tables",
@@ -344,12 +344,12 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 				tables: [
 					{
 						raw_table_id: "r1",
-						name: "finance_data__trial_balance",
+						name: "trial_balance",
 						status: "done",
 					},
 					{
 						raw_table_id: "r2",
-						name: "finance_data__journal_lines",
+						name: "journal_lines",
 						status: "failed",
 					},
 				],
@@ -367,11 +367,9 @@ describe("MeasureProgressWidget (DAT-352)", () => {
 		renderWidget();
 		const list = screen.getByTestId("measure-progress-tables");
 		expect(list.textContent).toContain("trial_balance");
-		expect(list.textContent).not.toContain("finance_data__trial_balance");
-		// The failure path strips the prefix too — the bug the review caught.
+		// The failure path resolves the table by id → its narrow name.
 		const alert = screen.getByTestId("measure-progress-failed");
 		expect(alert.textContent).toContain("journal_lines");
-		expect(alert.textContent).not.toContain("finance_data__journal_lines");
 	});
 
 	it("strips content-keyed digests from the failure message (DAT-433 — same treatment as the agent side)", () => {

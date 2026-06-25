@@ -20,6 +20,7 @@ import {
 	type ConversationKind,
 } from "#/db/cockpit/conversations";
 import { publish } from "#/lib/chat-bus";
+import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
 import { AGENT_LOOP_MAX_ITERATIONS, MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { getInstructions } from "#/prompts";
 import { toolsByKind } from "#/tools/registry";
@@ -102,6 +103,9 @@ export function buildChatOptions(
 		messages,
 		tools: [...toolsByKind[kind]],
 		abortController,
+		// Per-turn LLM telemetry (DAT-600). Observe-only; tags this orchestrator
+		// turn distinctly from the nested `answer` sub-agent (tools/query.ts).
+		middleware: [llmTelemetryMiddleware("orchestrator")],
 	};
 }
 

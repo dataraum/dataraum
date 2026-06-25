@@ -90,19 +90,24 @@ class Table(Base):
     """
 
     __tablename__ = "tables"
-    __table_args__ = (
-        UniqueConstraint("source_id", "table_name", "layer", name="uq_source_table_layer"),
-    )
+    # Workspace-unique table identity (DAT-639): the per-workspace DuckLake
+    # catalog IS the namespace, so a workspace holds exactly one ``orders`` raw
+    # table — uniqueness is ``(table_name, layer)``, NOT scoped by source. The
+    # source is an atomic content-keyed wrapper (how the table arrived), never a
+    # disambiguator; two sources cannot each own an ``orders`` (import fails loud
+    # and tells the user to retire the existing one first).
+    __table_args__ = (UniqueConstraint("table_name", "layer", name="uq_table_name_layer"),)
 
     table_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
     layer: Mapped[str] = mapped_column(String, nullable=False)  # 'raw', 'typed', 'quarantine'
-    # Unqualified DuckDB table name (e.g., ``csv_source__orders``). Schema is
-    # derived from ``layer`` via ``dataraum.core.duckdb_naming.schema_for_layer``;
-    # cross-layer SQL composes the full ``"schema.table"`` form via
-    # ``qualified_table(layer, source.name, table_name)``. The catalog alias
-    # (``lake`` in slice 1) is NOT stored here — it's resolved at query time.
+    # Unqualified DuckDB table name — NARROW, workspace-unique (e.g. ``orders``,
+    # no source prefix — DAT-639). Schema is derived from ``layer`` via
+    # ``dataraum.core.duckdb_naming.schema_for_layer``; cross-layer SQL composes
+    # the full ``"schema.table"`` form via ``qualified_table(layer, table_name)``.
+    # The catalog alias (``lake`` in slice 1) is NOT stored here — it's resolved
+    # at query time.
     duckdb_path: Mapped[str | None] = mapped_column(String)
     row_count: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(

@@ -20,23 +20,32 @@
 
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { chat } from "@tanstack/ai";
+import { chat, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import type { z } from "zod";
 
 import { config } from "../config";
 import { linkedAbortController } from "../lib/abort";
+import { llmTelemetryMiddleware } from "../lib/llm-telemetry";
 import { MAX_OUTPUT_TOKENS, MODEL } from "../llm";
 import { teach } from "./teach";
 import type { TeachType } from "./teach.validation";
 
 /**
- * One forced structured-output Anthropic call: a cached system block
- * (`instructions`), the per-turn context (`userMessage`), and a Zod
- * `outputSchema` the model fills directly. Shared by every family's induce step
- * (concepts, validations, …) so the adapter / abort / max_tokens wiring lives in
- * one place. `signal` is the tool-context abort (DAT-449) — a stopped run aborts
- * the nested call instead of billing it to completion.
+ * One induction call that returns a typed object. The model is given a single
+ * `emit_result` tool whose input IS `outputSchema`, and `tool_choice` FORCES it,
+ * so the structured value arrives as the tool's validated arguments — the plain
+ * tool-calling path, deliberately NOT `chat({ outputSchema })`.
+ *
+ * Why a forced tool and not `outputSchema`: for the 4.x models the Anthropic
+ * adapter routes `outputSchema` through Anthropic's NATIVE structured-output API
+ * (`output_config.format`), which can't represent our induction schemas — it
+ * rejects `z.record` maps (the metric DAG's `dependencies` / `parameters`, keyed
+ * by step id) with "additionalProperties: object is not supported", and forces
+ * optionals present-as-`null`. A plain forced tool sidesteps both: records are
+ * accepted and the model OMITS the optionals it has no value for (no null spray),
+ * so the args validate against `outputSchema` directly. `signal` is the
+ * tool-context abort (DAT-449) — a stopped run aborts the nested call.
  */
 export async function induceStructured<R>(opts: {
 	instructions: string;
@@ -44,18 +53,56 @@ export async function induceStructured<R>(opts: {
 	outputSchema: z.ZodType<R>;
 	signal?: AbortSignal;
 }): Promise<R> {
-	// `chat()`'s structured-output overload infers the result from a CONCRETE
-	// schema; a generic `z.ZodType<R>` widens it to unknown, so narrow back to R
-	// (validation still runs server-side against `outputSchema`).
-	const result = await chat({
+	let captured: R | undefined;
+	const emit = toolDefinition({
+		name: "emit_result",
+		description:
+			"Return your proposal as this tool's arguments, in the required structure.",
+		inputSchema: opts.outputSchema,
+	}).server((input) => {
+		// A generic `z.ZodType<R>` widens the inferred tool input to `unknown`; the
+		// args were validated against `outputSchema` before this runs, so narrow to R.
+		captured = input as R;
+		return { ok: true };
+	});
+
+	// Held so we can abort the in-flight request on early break (below) — otherwise
+	// the Anthropic response keeps streaming to completion after we already have the
+	// tool args, billing tokens we discard (×4 per frame).
+	const abortController = linkedAbortController(opts.signal);
+	const stream = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
-		abortController: linkedAbortController(opts.signal),
-		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
+		middleware: [llmTelemetryMiddleware("frame_family")],
+		abortController,
+		modelOptions: {
+			max_tokens: MAX_OUTPUT_TOKENS,
+			// Anthropic `tool_choice` (passed through as a provider option) — forces the
+			// model to call `emit_result` on the first turn. If a dep bump renames/drops
+			// this field, the model may answer in prose with no tool call and we fall
+			// through to the `captured === undefined` throw rather than silently looping.
+			tool_choice: { type: "tool", name: "emit_result" },
+		},
 		systemPrompts: [opts.instructions],
 		messages: [{ role: "user", content: opts.userMessage }],
-		outputSchema: opts.outputSchema,
+		tools: [emit],
 	});
-	return result as R;
+
+	// Drain the agent-loop stream so the forced tool actually executes (its
+	// `.server()` handler captures the validated args). Stop at the first capture:
+	// `tool_choice` keeps forcing `emit_result`, so draining further would bill an
+	// extra turn that only re-emits — abort the in-flight request, then break.
+	for await (const _chunk of stream) {
+		if (captured !== undefined) {
+			abortController?.abort();
+			break;
+		}
+	}
+	if (captured === undefined) {
+		throw new Error(
+			"Induction returned no result — the model emitted no tool call.",
+		);
+	}
+	return captured;
 }
 
 /** A written family member + the overlay row id it landed as. */

@@ -22,6 +22,17 @@ This codebase is mid-pivot (Python library → web-app cockpit). Retiring recent
 - **Philipp owns design direction and is the senior engineer.** Build what's specified at high quality without relitigating settled calls. Reserve check-ins for genuine forks or design risk, not micro-steps.
 - **No backwards-compat shims.** Clean cuts, no migration/compatibility paths.
 
+## Information has one home — by lifecycle
+
+The architecture is fixed; the work now is fixing bugs and inconsistencies. Don't let information accrete in parallel journals. Each fact has exactly one home, chosen by how long it lives:
+
+- **How it works *now*** (invariants, behaviour, the why behind a line) → **code: precise comments + tests.** A finished task's knowledge lives in the diff it produced. This is the default — reach for it before any doc.
+- **Why the architecture/approach is this way** → **ADRs (`docs/adr/`) + Confluence (space DD).** Long-lived, superseded only by a newer ADR.
+- **In-flight work, plans, design exploration, refinement notes, status** → **the Jira epic/task** (description or an attached `.md`). Closed issue = delete the artifact; the code is the truth, do *not* migrate a closed issue's docs anywhere.
+- **Non-derivable, currently-true, cross-cutting facts with no other home** → agent memory (gotchas, seams, preferences). Not a status board.
+
+**The rule that enforces it: a ticket ID in a filename (`dat-NNN-*.md`) means the file is ephemeral → it belongs in Jira, never committed to the repo and never in memory.** `docs/adr/` is the one ticket-free zone. When a task lands, delete its plan/handoff/status file — don't archive it. When a Jira issue closes, delete its `project_` memory and prune its MEMORY.md line.
+
 ## How the packages connect
 
 - **Engine ↔ cockpit:** the engine is a **Temporal activity worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.

@@ -377,10 +377,9 @@ def _apply_unit_overrides(
     Reads ``overrides.units`` from typing config (the column-scoped unit teach,
     DAT-428). Keys are ``"table.column"``; values contain ``{unit: "USD"}``.
 
-    A teach names the table by its USER-FACING identity (``bank_transactions``),
-    but a raw table's stored name is source-qualified (``src_<digest>__bank_transactions``).
-    So we match a key against BOTH the qualified name and the de-prefixed raw name —
-    a human teach lands without the user having to know the internal source digest.
+    Table names are narrow and workspace-unique (DAT-639 — no ``src_<digest>__``
+    qualifier), so a teach keys directly on the bare ``<table>.<column>``; there
+    is no source-qualified form to also match.
 
     ``run_id`` scopes the patch to THIS run's candidate. A teach RE-RUN leaves the
     prior run's TypeCandidate rows in place, so an unscoped ``confidence DESC`` pick
@@ -397,18 +396,11 @@ def _apply_unit_overrides(
     if not isinstance(units, dict) or not units:
         return
 
-    # Strip the ``src_<digest>__`` source-qualifier so a teach keyed by the bare
-    # table name resolves; the qualified key still matches too.
-    qualified = table.table_name
-    raw_name = (
-        qualified.split("__", 1)[1]
-        if qualified.startswith("src_") and "__" in qualified
-        else qualified
-    )
-
+    # Table names are narrow (DAT-639 — no ``src_<digest>__`` qualifier), so a
+    # teach keys directly on the bare ``<table>.<column>``.
     for col in table.columns:
-        col_ref = f"{qualified}.{col.column_name}"
-        entry = units.get(col_ref) or units.get(f"{raw_name}.{col.column_name}")
+        col_ref = f"{table.table_name}.{col.column_name}"
+        entry = units.get(col_ref)
         if not isinstance(entry, dict):
             continue
         unit = entry.get("unit")

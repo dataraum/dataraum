@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.core.uri import uri_basename, uri_stem
+from dataraum.core.uri import uri_basename
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable
 from dataraum.storage import Column, Table
@@ -93,7 +93,6 @@ class JsonLoader(LoaderBase):
         self,
         source_uri: str,
         source_id: str,
-        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
     ) -> Result[StagedTable]:
@@ -106,16 +105,15 @@ class JsonLoader(LoaderBase):
         Args:
             source_uri: URI of the JSON file (passed straight to ``read_json_auto``).
             source_id: ID of the parent source.
-            source_name: Logical name of the parent source (used to compose
-                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection.
             session: SQLAlchemy session.
 
         Returns:
             Result containing StagedTable.
         """
-        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.core.duckdb_naming import schema_for_layer
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
+        from dataraum.sources.base import raw_table_name_for_uri
 
         try:
             # Escape single quotes in the URI for SQL safety
@@ -143,10 +141,11 @@ class JsonLoader(LoaderBase):
                     seen[normalized] = 1
                 col_mapping.append((original, normalized))
 
-            # Compose the source-prefixed name. The catalog alias is resolved
-            # here so the loader can write directly into ``lake.raw.*``.
-            file_table_name = self._sanitize_table_name(uri_stem(source_uri))
-            bare = table_name_for_source(source_name, file_table_name)
+            # Compose the narrow, workspace-unique name (DAT-639 — no source
+            # prefix) via the single canonical derivation the import phase's
+            # collision guard also uses. The catalog alias is resolved here so
+            # the loader can write directly into ``lake.raw.*``.
+            bare = raw_table_name_for_uri(source_uri)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Build SELECT: serialize every column to VARCHAR via to_json().

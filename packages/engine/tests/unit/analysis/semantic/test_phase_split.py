@@ -239,6 +239,69 @@ class TestSynthesizeAndStoreTables:
         assert len(rels) == 1 and rels[0].cardinality is None  # no duckdb → unresolved
         assert anns == []  # per-table synthesis never writes column annotations
 
+    def test_synthesized_relationship_gets_fan_trap_flag_from_data(self, session) -> None:
+        """Regression: a synthesized (table_synthesis) relationship with NO structural
+        candidate must still get introduces_duplicates computed EMPIRICALLY from the lake.
+
+        The DAT-362 semantic split rebuilt this path to recompute cardinality + RI from
+        data but dropped the duplicate-introduction check, so synthesized relationships
+        carried a NULL fan-trap flag — both SQL agents' fan-out cautions then read a dead
+        flag and a many-to-many join silently double-counts (the gross_margin smoke).
+        """
+        import duckdb
+
+        orders = _table_with_columns(session, "orders", ["order_id", "customer_id"])
+        customers = _table_with_columns(session, "customers", ["id"])
+
+        conn = duckdb.connect()
+        conn.execute("ATTACH ':memory:' AS lake")
+        conn.execute("CREATE SCHEMA lake.typed")
+        conn.execute("CREATE TABLE lake.typed.orders (order_id INTEGER, customer_id INTEGER)")
+        conn.execute("INSERT INTO lake.typed.orders VALUES (1, 100), (2, 100)")
+        # customer 100 recurs THREE times → joining fans out (2 rows → 6): a fan trap.
+        conn.execute("CREATE TABLE lake.typed.customers (id INTEGER)")
+        conn.execute("INSERT INTO lake.typed.customers VALUES (100), (100), (100)")
+
+        agent = MagicMock()
+        agent.synthesize_tables = MagicMock(
+            return_value=Result.ok(
+                SemanticEnrichmentResult(
+                    annotations=[],
+                    entity_detections=[],
+                    relationships=[
+                        Relationship(
+                            relationship_id="rel-1",
+                            from_table="orders",
+                            from_column="customer_id",
+                            to_table="customers",
+                            to_column="id",
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            confidence=0.9,
+                            detection_method="llm_tool",
+                            evidence={"source": "table_synthesis"},  # no candidate flag
+                        )
+                    ],
+                )
+            )
+        )
+
+        result = synthesize_and_store_tables(
+            session,
+            agent,
+            [orders.table_id, customers.table_id],
+            duckdb_conn=conn,
+            run_id=baseline_run_id(),
+        )
+        session.flush()
+
+        assert result.success
+        rel = (
+            session.execute(select(RelationshipDB).where(RelationshipDB.detection_method == "llm"))
+            .scalars()
+            .one()
+        )
+        assert rel.evidence["introduces_duplicates"] is True
+
     @staticmethod
     def _agent() -> MagicMock:
         """An agent that always classifies `orders` and confirms the orders→customers FK."""

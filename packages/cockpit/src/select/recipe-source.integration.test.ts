@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { recipeContentHash } from "./mappers";
+import { recipeContentHash } from "./source-content-hash";
 
 const STACK_AVAILABLE = !!process.env.METADATA_DATABASE_URL;
 

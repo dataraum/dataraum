@@ -20,8 +20,6 @@ import {
 	type ValidationResultRow,
 } from "./look-validation";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 describe("projectValidationOverview (DAT-440)", () => {
 	it("joins an executed artifact with its result row — values verbatim", () => {
 		const artifact: LifecycleArtifactRow = {
@@ -69,18 +67,18 @@ describe("projectValidationOverview (DAT-440)", () => {
 		expect(projected.severity).toBeNull();
 	});
 
-	it("strips content-keyed src_<digest> names from engine-built free text", () => {
+	it("renders narrow names in engine-built free text; stays digest-free (DAT-639)", () => {
 		const artifact: LifecycleArtifactRow = {
 			artifactKey: "balance_check",
 			state: "declared",
-			stateReason: `Missing required tables: src_${D1}__orders`,
+			stateReason: `Missing required tables: orders`,
 		};
 		const result: ValidationResultRow = {
 			status: "executed",
 			severity: null,
 			passed: true,
-			message: `checked src_${D1}__orders rows`,
-			columnsUsed: [`src_${D1}__orders.amount`],
+			message: `checked orders rows`,
+			columnsUsed: [`orders.amount`],
 		};
 
 		const projected = projectValidationOverview(artifact, result);

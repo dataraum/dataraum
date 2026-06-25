@@ -118,12 +118,12 @@ describe("projectWhyData (DAT-351)", () => {
 		expect(out.evidence[0].detail).toBe("");
 	});
 
-	it("strips the content-keyed `src_<digest>__` prefix from table_name (DAT-431)", () => {
+	it("renders the narrow table_name as-is (DAT-639)", () => {
 		// The result feeds the agent's context + the synthesis prompt — never the
 		// hash form. Round-trips key on column_id, so nothing depends on the raw name.
 		const out = projectWhyData(
 			readiness({
-				tableName: "src_204bc8e118543a6c35654c1f68c43539a2e226f2__orders",
+				tableName: "orders",
 			}),
 			evidenceRows,
 			0,

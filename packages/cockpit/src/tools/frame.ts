@@ -1,4 +1,6 @@
-// frame tool (DAT-382, DAT-469) — the agent-tier model-induction step.
+// frame model-induction (DAT-382, DAT-469). The agent `frame` TOOL was removed by
+// DAT-597 (acquisition moved to the staging hub); this is now the shared induction
+// + overlay-write helper that `server/stage-frame.ts` calls directly.
 //
 // This is where induction LEAVES the engine (per the agent-tier boundary,
 // DD/27688962): the cockpit `frame` stage runs induction on the connect schema
@@ -24,7 +26,6 @@
 // on the user's explicit instruction — there is no approval gate, exactly like
 // `teach`/`replay`.
 
-import { toolDefinition } from "@tanstack/ai";
 import { z } from "zod";
 
 import { setActiveWorkspaceVertical } from "#/db/cockpit/registry";
@@ -35,11 +36,7 @@ import {
 	getFrameMetricsInstructions,
 	getFrameValidationsInstructions,
 } from "../prompts";
-import {
-	AgentActionableError,
-	catchActionable,
-	withAgentError,
-} from "./agent-error";
+import { AgentActionableError } from "./agent-error";
 import { CycleSpecSchema, type ShippedCycleSpec } from "./cycle-spec";
 import {
 	formatSeedExamples,
@@ -469,75 +466,3 @@ export async function frame(
 		metrics: metrics.written,
 	};
 }
-
-/**
- * The `frame` tool for the agent loop. An acting tool: it writes
- * `concept` + `validation` + `cycle` + `metric` overlay rows, so it runs on the
- * user's explicit instruction — there is no approval gate. Input is the connect
- * schema (to induce from) plus an optional user-edited concept and/or validation
- * and/or cycle and/or metric set (the accept/edit round-trip). Output is the
- * written model, projected to the ModelFrame canvas widget.
- */
-export const frameTool = toolDefinition({
-	name: "frame",
-	description:
-		"Co-design the user's model for a connected source as a NEW vertical: induce " +
-		"the business concepts from its schema + samples AND the executable knowledge " +
-		"over them — the validations (data-quality / business-rule checks), the " +
-		"business cycles (recurring multi-stage processes like order-to-cash), and the " +
-		"metrics (computation DAGs, e.g. EBITDA, DSO) — then write the declared model " +
-		"as overlay rows under a named vertical. Propose a `vertical_name` that fits the " +
-		"data (e.g. sales, logistics) — the user can rename. Pass `schema` (the connect " +
-		"result) to induce a proposal; pass `concepts`, `validations`, `cycles`, and/or " +
-		"`metrics` (a user-reviewed/edited set) to declare those verbatim — validations, " +
-		"cycles, and metrics induce over the framed concepts. Metric leaves are CONCEPTS " +
-		"(grounded to columns later, in the semantic phase), not column names. If " +
-		"`list_verticals` shows a builtin that already fits (e.g. finance), DON'T frame " +
-		"— adopt it with `use_vertical` instead. frame writes the declared model to " +
-		"the workspace; run it after `connect` and before `select`.",
-	inputSchema: z.object({
-		schema: ConnectSchema.describe("The `connect` tool result for the source."),
-		vertical_name: z
-			.string()
-			.nullish()
-			.describe(
-				"Name for the new vertical to declare the concepts under (lowercase, " +
-					"starts with a letter, [a-z0-9_]). Propose one that fits the data; the " +
-					"user can rename. Omit only for an unnamed cold-start (defaults _adhoc).",
-			),
-		concepts: z
-			.array(ProposedConcept)
-			.optional()
-			.describe(
-				"User-reviewed/edited concepts to declare verbatim (skips concept induction).",
-			),
-		validations: z
-			.array(ProposedValidation)
-			.optional()
-			.describe(
-				"User-reviewed/edited validations to declare verbatim (skips validation " +
-					"induction). Omit to induce validations over the framed concepts.",
-			),
-		cycles: z
-			.array(ProposedCycle)
-			.optional()
-			.describe(
-				"User-reviewed/edited business cycles to declare verbatim (skips cycle " +
-					"induction). Omit to induce cycles over the framed concepts.",
-			),
-		metrics: z
-			.array(ProposedMetric)
-			.optional()
-			.describe(
-				"User-reviewed/edited metric DAGs to declare verbatim (skips metric " +
-					"induction). Omit to induce metrics over the framed concepts. Each is a " +
-					"TransformationGraph whose extract-step leaves name framed concepts.",
-			),
-	}),
-	// Success OR `{ error }`: an invalid vertical name or an induction that
-	// returned no concepts is the agent's to fix (rephrase / pick a vertical), so
-	// it's returned as data, not an opaque throw (consistency pass 2b).
-	outputSchema: withAgentError(FrameResult),
-}).server((input, ctx) =>
-	catchActionable(() => frame(input, ctx?.abortSignal)),
-);

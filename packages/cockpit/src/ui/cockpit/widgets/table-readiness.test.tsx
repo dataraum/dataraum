@@ -170,6 +170,37 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		expect(screen.getByTestId("canvas-table-readiness-empty")).toBeTruthy();
 	});
 
+	// DAT-566: the entity header surfaces recurring identities (would-be FKs)
+	// alongside grain / time, with the per-item note on hover.
+	const entity: NonNullable<LookTableResult["entity"]> = {
+		entity_type: "transaction",
+		is_fact_table: true,
+		is_dimension_table: false,
+		grain: ["order_id", "line_no"],
+		time_columns: [],
+		identity_columns: [
+			{ column: "customer_id", note: "Recurring customer identity." },
+		],
+		description: null,
+	};
+
+	it("renders identity columns (with the note on hover) in the entity header", () => {
+		renderWidget({ ...analyzed, entity });
+		const header = within(screen.getByTestId("canvas-table-readiness-entity"));
+		expect(header.getByText(/Identity:/)).toBeTruthy();
+		expect(header.getByText(/customer_id/)).toBeTruthy();
+		// The note rides the hover title, not the inline label.
+		expect(header.getByText(/customer_id/).getAttribute("title")).toMatch(
+			/Recurring customer identity\./,
+		);
+	});
+
+	it("omits the identity block when the entity has no identity columns", () => {
+		renderWidget({ ...analyzed, entity: { ...entity, identity_columns: [] } });
+		const header = within(screen.getByTestId("canvas-table-readiness-entity"));
+		expect(header.queryByText(/Identity:/)).toBeNull();
+	});
+
 	// DAT-352: clicking a column routes a why_column request through the chat-loop
 	// hook (sendMessage), carrying the row's column_id — it does NOT call
 	// whyColumn directly (the request runs once per click through the agent loop,

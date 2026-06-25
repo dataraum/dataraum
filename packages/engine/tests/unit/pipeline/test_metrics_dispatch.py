@@ -60,40 +60,39 @@ def _graph(gid: str, inspiration: str | None = None) -> _StubGraph:
 class TestExecuteMetricsSerial:
     def test_dispatches_each_graph_in_order(self) -> None:
         agent = MagicMock()
-        agent.execute.side_effect = [Result.ok(f"r{i}") for i in range(3)]
+        agent.assemble.side_effect = [Result.ok(f"r{i}") for i in range(3)]
         session = MagicMock()
         exec_ctx = MagicMock()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("g1", _graph("g1"), "SELECT 1", "insp-1"),
-            ("g2", _graph("g2"), None, None),
+            ("g0", _graph("g0"), None),
+            ("g1", _graph("g1"), "insp-1"),
+            ("g2", _graph("g2"), None),
         ]
 
-        out = gep._execute_metrics_serial(
-            prep, session, exec_ctx, agent, workspace_id=_WORKSPACE_ID
-        )
+        out = gep._execute_metrics_serial(prep, session, exec_ctx, agent, _WORKSPACE_ID, {})
 
         assert [graph_id for graph_id, _, _ in out] == ["g0", "g1", "g2"]
         assert [r.value for _, r, _ in out] == ["r0", "r1", "r2"]
         assert [iid for _, _, iid in out] == [None, "insp-1", None]
-        assert agent.execute.call_count == 3
+        assert agent.assemble.call_count == 3
         # All calls share the same session + exec_ctx (the fallback contract)
-        for call in agent.execute.call_args_list:
+        for call in agent.assemble.call_args_list:
             assert call.args[0] is session
             assert call.args[2] is exec_ctx
 
     def test_propagates_failure_per_graph(self) -> None:
         agent = MagicMock()
-        agent.execute.side_effect = [
+        agent.assemble.side_effect = [
             Result.ok("ok"),
             Result.fail("nope"),
         ]
         out = gep._execute_metrics_serial(
-            [("g0", _graph("g0"), None, None), ("g1", _graph("g1"), None, None)],
+            [("g0", _graph("g0"), None), ("g1", _graph("g1"), None)],
             MagicMock(),
             MagicMock(),
             agent,
-            workspace_id=_WORKSPACE_ID,
+            _WORKSPACE_ID,
+            {},
         )
         assert out[0][1].success is True
         assert out[1][1].success is False
@@ -115,12 +114,13 @@ class _ConcurrencyTrackingAgent:
         self.peak_in_flight = 0
         self.calls: list[str] = []
 
-    def execute(
+    def assemble(
         self,
         session: Any,
         graph: _StubGraph,
         context: Any,
-        inspiration_sql: str | None = None,
+        bindings: Any,
+        parameters: Any = None,
         *,
         workspace_id: str = "",
     ) -> Result[str]:
@@ -163,7 +163,7 @@ class TestExecuteMetricsParallel:
         )
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.01)
         manager = _stub_manager()
-        prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(7)]
+        prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(7)]
 
         out = gep._execute_metrics_parallel(
             prep,
@@ -172,12 +172,13 @@ class TestExecuteMetricsParallel:
             "src-1",
             ["t1"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
         assert sorted(gid for gid, _, _ in out) == [f"g{i}" for i in range(7)]
         assert all(r.success for _, r, _ in out)
-        assert sorted(agent.calls) == sorted(g.graph_id for _, g, _, _ in prep)
+        assert sorted(agent.calls) == sorted(g.graph_id for _, g, _ in prep)
 
     def test_concurrency_capped_at_max(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -189,7 +190,7 @@ class TestExecuteMetricsParallel:
         # Sleep long enough that contention is observable
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.05)
         manager = _stub_manager()
-        prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(8)]
+        prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(8)]
 
         gep._execute_metrics_parallel(
             prep,
@@ -198,6 +199,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -214,9 +216,9 @@ class TestExecuteMetricsParallel:
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.0)
         manager = _stub_manager()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("g1", _graph("g1"), "SELECT 1", "insp-1"),
-            ("g2", _graph("g2"), None, "insp-2"),
+            ("g0", _graph("g0"), None),
+            ("g1", _graph("g1"), "insp-1"),
+            ("g2", _graph("g2"), "insp-2"),
         ]
 
         out = gep._execute_metrics_parallel(
@@ -226,6 +228,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -246,6 +249,7 @@ class TestExecuteMetricsParallel:
             "src",
             [],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
         assert out == []
@@ -266,12 +270,13 @@ class TestExecuteMetricsParallel:
 
         # Agent that raises on graph_id="bad", succeeds otherwise
         class _FlakyAgent:
-            def execute(
+            def assemble(
                 self,
                 session: Any,
                 graph: _StubGraph,
                 context: Any,
-                inspiration_sql: str | None = None,
+                bindings: Any,
+                parameters: Any = None,
                 *,
                 workspace_id: str = "",
             ) -> Result[str]:
@@ -281,9 +286,9 @@ class TestExecuteMetricsParallel:
 
         manager = _stub_manager()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("bad", _graph("bad"), None, "insp-bad"),
-            ("g2", _graph("g2"), None, None),
+            ("g0", _graph("g0"), None),
+            ("bad", _graph("bad"), "insp-bad"),
+            ("g2", _graph("g2"), None),
         ]
 
         out = gep._execute_metrics_parallel(
@@ -293,6 +298,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -341,15 +347,11 @@ class TestExecuteIsolated:
         manager.duckdb_cursor = duckdb_cursor
 
         agent = MagicMock()
-        agent.execute.return_value = Result.ok("done")
+        agent.assemble.return_value = Result.ok("done")
 
         # Each call should open a fresh pair
-        gep._execute_isolated(
-            _graph("g0"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
-        )
-        gep._execute_isolated(
-            _graph("g1"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
-        )
+        gep._execute_isolated(_graph("g0"), manager, agent, "src", ["t"], _VERTICAL, {}, "run-test")
+        gep._execute_isolated(_graph("g1"), manager, agent, "src", ["t"], _VERTICAL, {}, "run-test")
 
         assert len(opened_sessions) == 2
         assert len(opened_cursors) == 2
@@ -362,20 +364,172 @@ class TestExecuteIsolated:
 # ---------------------------------------------------------------------------
 
 
-def test_asyncio_run_does_not_deadlock_with_nested_calls(
+# ---------------------------------------------------------------------------
+# Node warming pre-pass (DAT-629)
+# ---------------------------------------------------------------------------
+
+
+from dataraum.graphs.models import (  # noqa: E402
+    GraphMetadata,
+    GraphSource,
+    GraphStep,
+    OutputDef,
+    OutputType,
+    StepSource,
+    StepType,
+    TransformationGraph,
+)
+
+
+def _real_extract(step_id: str, standard_field: str) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field=standard_field, statement="income_statement"),
+        aggregation="sum",
+    )
+
+
+def _real_formula(step_id: str, expression: str, depends_on: list[str]) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.FORMULA,
+        expression=expression,
+        depends_on=depends_on,
+        output_step=True,
+    )
+
+
+def _real_graph(graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
+    return TransformationGraph(
+        graph_id=graph_id,
+        version="1.0",
+        metadata=GraphMetadata(
+            name=graph_id, description="", category="profitability", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR),
+        steps=steps,
+    )
+
+
+class _RecordingWarmAgent:
+    """Records the output-step identity of each warmed mini-graph, in call order."""
+
+    def __init__(self) -> None:
+        self.warmed: list[str] = []
+
+    def execute(
+        self,
+        session: Any,
+        graph: TransformationGraph,
+        context: Any,
+        inspiration_sql: str | None = None,
+        *,
+        workspace_id: str = "",
+    ) -> Result[str]:
+        out = graph.get_output_step()
+        assert out is not None  # every mini-graph has exactly one output
+        if out.step_type == StepType.EXTRACT and out.source:
+            ident = f"extract:{out.source.standard_field}"
+        else:
+            ident = f"formula:{out.expression}"
+        self.warmed.append(ident)
+        return Result.ok(ident)
+
+
+class _StubCtx:
+    """Minimal PhaseContext stand-in for the warm pre-pass (serial path)."""
+
+    def __init__(self) -> None:
+        self.manager = None  # forces serial warming
+        self.session = MagicMock()
+        self.duckdb_conn = MagicMock()
+
+
+class TestWarmSharedNodes:
+    def test_shared_extract_warmed_once_extracts_before_formulas(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "dataraum.graphs.agent.ExecutionContext.with_rich_context",
+            classmethod(lambda cls, **kw: MagicMock()),
+        )
+        gross = _real_graph(
+            "gross_margin",
+            {
+                "rev": _real_extract("rev", "revenue"),
+                "cogs": _real_extract("cogs", "cost_of_goods_sold"),
+                "gp": _real_formula("gp", "revenue - cogs", ["rev", "cogs"]),
+            },
+        )
+        net = _real_graph(
+            "net_income",
+            {
+                "rev2": _real_extract("rev2", "revenue"),
+                "cogs2": _real_extract("cogs2", "cost_of_goods_sold"),
+                "opex": _real_extract("opex", "operating_expense"),
+                "ni": _real_formula("ni", "revenue - cogs - opex", ["rev2", "cogs2", "opex"]),
+            },
+        )
+        agent = _RecordingWarmAgent()
+
+        gep._warm_shared_nodes(
+            {"gross_margin": gross, "net_income": net},
+            _StubCtx(),  # type: ignore[arg-type]
+            agent,  # type: ignore[arg-type]
+            _WORKSPACE_ID,
+            ["t1"],
+            _VERTICAL,
+            om_run_id="run-test",
+        )
+
+        # cost_of_goods_sold + revenue each warmed exactly once (deduped).
+        assert agent.warmed.count("extract:cost_of_goods_sold") == 1
+        assert agent.warmed.count("extract:revenue") == 1
+        assert agent.warmed.count("extract:operating_expense") == 1
+        # The two distinct formula expressions warmed once each.
+        formulas = [w for w in agent.warmed if w.startswith("formula:")]
+        assert len(formulas) == 2
+        # Every extract is warmed before any formula (dependency order).
+        first_formula = next(i for i, w in enumerate(agent.warmed) if w.startswith("formula:"))
+        assert all(w.startswith("extract:") for w in agent.warmed[:first_formula])
+
+    def test_cyclic_metric_set_is_best_effort_no_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "dataraum.graphs.agent.ExecutionContext.with_rich_context",
+            classmethod(lambda cls, **kw: MagicMock()),
+        )
+        a = _real_formula("a", "x_one - y_two", ["b"])
+        b = _real_formula("b", "y_two - x_one", ["a"])
+        cyclic = _real_graph("cyclic", {"a": a, "b": b})
+        agent = _RecordingWarmAgent()
+
+        # A cyclic set must not raise — warming is skipped, execute surfaces it.
+        bindings = gep._warm_shared_nodes(
+            {"cyclic": cyclic},
+            _StubCtx(),  # type: ignore[arg-type]
+            agent,  # type: ignore[arg-type]
+            _WORKSPACE_ID,
+            ["t1"],
+            _VERTICAL,
+            om_run_id="run-test",
+        )
+        assert agent.warmed == []
+        assert bindings == {}
+
+
+def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`asyncio.run` is safe only because callers are synchronous.
+    """The parallel path uses a ThreadPoolExecutor, not an asyncio event loop.
 
-    The pipeline scheduler calls phases synchronously — either from the
-    main thread or from a ThreadPoolExecutor worker (the parallel-phases
-    path). Neither has a running event loop, so `asyncio.run` inside the
-    phase creates a fresh loop without conflict. If a future async-native
-    scheduler ever calls this phase from inside an existing loop, this
-    pattern would raise `RuntimeError: This event loop is already
-    running` — that case is out of scope for v0.2.2 and tracked separately.
+    The metrics activity is a SYNC Temporal activity on a thread engine; the
+    fan-out is a plain ``ThreadPoolExecutor`` (the codebase's standard primitive)
+    — no nested ``asyncio.run`` in a worker thread. Sanity-check it dispatches
+    cleanly from a sync caller with no running loop in scope.
     """
-    # Make sure no event loop is already running in this thread
     with pytest.raises(RuntimeError):
         asyncio.get_running_loop()
 
@@ -385,9 +539,9 @@ def test_asyncio_run_does_not_deadlock_with_nested_calls(
     )
     agent = _ConcurrencyTrackingAgent(sleep_seconds=0.0)
     manager = _stub_manager()
-    prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
+    prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(3)]
 
     out = gep._execute_metrics_parallel(
-        prep, manager, agent, "src", ["t"], _VERTICAL, om_run_id="run-test"
+        prep, manager, agent, "src", ["t"], _VERTICAL, {}, om_run_id="run-test"
     )
     assert len(out) == 3

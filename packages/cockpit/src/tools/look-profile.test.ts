@@ -62,12 +62,11 @@ function candidate(
 }
 
 describe("projectColumnProfile — identity + not-found (DAT-475)", () => {
-	it("strips the digest prefix to a display table_name; column_id stays the round-trip key", () => {
-		const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+	it("renders the narrow table_name; column_id stays the round-trip key (DAT-639)", () => {
 		const out = projectColumnProfile(
 			"c_1",
 			"amount",
-			`src_${DIGEST}__orders`,
+			`orders`,
 			"DECIMAL(18,2)",
 			EMPTY_ROWS,
 		);

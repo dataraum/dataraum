@@ -117,7 +117,7 @@ function requireTemporalConfig(): { host: string; namespace: string } {
  */
 let temporalClientPromise: Promise<Client> | null = null;
 
-function getTemporalClient(): Promise<Client> {
+export function getTemporalClient(): Promise<Client> {
 	if (!temporalClientPromise) {
 		const { host, namespace } = requireTemporalConfig();
 		temporalClientPromise = Connection.connect({ address: host })
@@ -145,7 +145,7 @@ export function isProgressDone(phase: string, status: string): boolean {
 /**
  * The snapshot returned while a triggered run isn't queryable yet (DAT-570). A
  * stage trigger returns the deterministic workflow id immediately, but the
- * per-workspace journey starts the engine child a beat later (DAT-530/562) — so an
+ * orchestration workflow starts the engine child a beat later (DAT-530/562) — so an
  * eager poll can land before any execution exists. Report PENDING (done:false) so
  * the widget keeps polling, rather than letting the poll 500 on a
  * `WorkflowNotFoundError`.
@@ -188,7 +188,7 @@ export function terminalRunStatus(
  * fan-out detail, begin_session sequential with empty fan-out fields).
  *
  * Tolerant of the two poll-races a stage trigger opens (DAT-570): the trigger
- * returns the deterministic workflow id before the journey starts the engine
+ * returns the deterministic workflow id before the workflow starts the engine
  * child, so an eager poll can (a) find NO execution yet — `describe()` throws
  * `WorkflowNotFoundError`, reported as PENDING; or (b) reach a brand-new execution
  * whose first workflow task hasn't completed, so the query can't be served — the
@@ -200,26 +200,20 @@ export async function getWorkflowProgress(
 	input: WorkflowProgressInput,
 ): Promise<WorkflowProgress> {
 	const client = await getTemporalClient();
-	// Pin the PRECISE execution when we hold a real Temporal run id; resolve the
-	// LATEST execution only for the pre-attach PLACEHOLDER (DAT-595).
+	// Pin the PRECISE execution when given a real Temporal run id; resolve the LATEST
+	// execution only when the caller passes the workflowId as the run id (DAT-595).
 	//
-	// Run-id semantics (cockpit_db.runs): a run row's `runId` IS Temporal's
-	// execution id (firstExecutionRunId) — but it is recorded as the workflowId
-	// PLACEHOLDER until `attachRunId` rewrites it just after start. So this has two
-	// callers with two different ids, and must treat them differently:
-	//   • the COMPLETION WATCHER passes the real, attached run id → we PIN it
-	//     (getHandle(workflowId, runId)). A workspace's workflow id is REUSED across
-	//     runs (`addsource-<ws>`), so resolving "latest" here let a PRIOR run's
-	//     terminal state be read for the run actually being watched — which marked a
-	//     2nd import done off the 1st's snapshot and stranded it (DAT-595). Pinning
-	//     reads exactly the watched execution.
-	//   • the widget SEED passes the placeholder (`run_id === workflow_id` — the
-	//     trigger returns it before the journey knows the execution id), where the
-	//     precise run isn't knowable, so we take the latest execution. That also
-	//     gives a reload-pinned widget its terminal state; a placeholder PIN would
-	//     404 → PENDING forever on a completed run.
-	// The watcher SKIPS placeholder rows (completion-watcher.ts) so its path ALWAYS
-	// pins — only the seed ever takes the latest-execution fallback.
+	// Two callers, two ids:
+	//   • the COMPLETION WATCHER / reconcile read the run row's `runId`, which IS the
+	//     real Temporal execution id (firstExecutionRunId, recorded directly post-start
+	//     — DAT-595), and pass it here → we PIN it (getHandle(workflowId, runId)). A
+	//     workspace's workflow id is REUSED across runs (`addsource-<ws>`), so resolving
+	//     "latest" for a watched run would let a PRIOR run's terminal state be read for
+	//     it; pinning reads exactly the watched execution.
+	//   • the widget SEED passes `run_id === workflow_id` — the trigger returns the
+	//     deterministic workflowId because the execution id isn't knowable at trigger
+	//     time — so here we take the LATEST execution. That also gives a reload-pinned
+	//     widget its terminal state (a non-existent-id PIN would 404 → PENDING forever).
 	const handle =
 		input.run_id === input.workflow_id
 			? client.workflow.getHandle(input.workflow_id)

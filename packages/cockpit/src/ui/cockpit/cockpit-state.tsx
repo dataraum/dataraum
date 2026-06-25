@@ -34,7 +34,9 @@ import {
 } from "react";
 // Type-only: erased at build, so the cockpit_db (bun:sql) client never enters
 // the client bundle — only the UiState shape rides along.
+import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { UiState } from "#/db/cockpit/ui-state";
+import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
 import {
 	asWorkflowProgressEvent,
 	progressQueryKey,
@@ -130,13 +132,20 @@ function useStableValue<T>(value: T): T {
 export function CockpitProvider({
 	children,
 	conversationId,
+	conversationKind,
 	initialMessages,
 	initialUiState,
+	initialBriefing,
 	onPersistPin,
 	seedMessage,
 	typeNav,
 }: {
 	children: ReactNode;
+	/** The chat's kind (DAT-597): a `connect` chat is an ACQUISITION surface, so its
+	 * canvas defaults to the staging hub (`probe`) instead of empty — the hub is
+	 * Connect's persistent home, the one way to assemble/frame/import. `stage`/
+	 * `analyse` keep the empty default. Null on the degraded (unhydrated) path. */
+	conversationKind?: ConversationKind | null;
 	// Server-owned conversation hydration (DAT-462): the persisted thread id +
 	// its display transcript + restored UI state, from the route loader. Optional
 	// so the provider still mounts (a fresh, unhydrated chat) without a loader —
@@ -144,6 +153,11 @@ export function CockpitProvider({
 	conversationId?: string;
 	initialMessages?: Array<UIMessage>;
 	initialUiState?: UiState | null;
+	/** The chat-open Workspace Briefing (DAT-634) from the route loader — the LANDING
+	 * canvas for a fresh stage/analyse chat. A load-time snapshot; it yields to any
+	 * live tool canvas on the first turn and is never refreshed here (Governance is
+	 * the durable view). Null for connect (uses the probe hub) or on a read blip. */
+	initialBriefing?: WorkspaceBriefing | null;
 	/** Persist a canvas-pin change (server fn from the route); fire-and-forget. */
 	onPersistPin?: (pinnedCallId: string | null) => void;
 	/** The landing nav-agent's opening message (DAT-534) — sent ONCE on mount into
@@ -267,13 +281,33 @@ export function CockpitProvider({
 	const live = canvasFromMessages(messages);
 	const pinned =
 		pinnedCallId !== null ? canvasFromCallId(messages, pinnedCallId) : null;
-	const canvas = useStableValue<CanvasState>(
-		pinned ??
-			live ??
-			(isLoading
-				? { kind: "loading", label: pendingLabel }
-				: { kind: "empty" }),
-	);
+	// A `connect` chat's canvas DEFAULTS to the staging hub (DAT-597): Connect is an
+	// acquisition surface, so the hub is its persistent home — pinned-top, always the
+	// fallback when nothing live/pinned. A teach inspection (look_table/why_column)
+	// still takes the canvas as `live`; the hub returns underneath. The hub wins over
+	// `loading` too — it's always useful, and acquisition + teaching are sequential so
+	// there is no half-built import set to hide behind a spinner.
+	// A fresh stage/analyse chat (no messages yet) lands on the Workspace Briefing
+	// (DAT-634) — the "here's where you are, here's what to do" orientation that
+	// replaces a blank `empty`. It's the idle fallback only: once the user sends a
+	// turn (messages.length > 0) it yields, and any live tool result wins above. The
+	// durable, always-fresh view is the Governance route, so this snapshot is never
+	// refreshed here. Connect keeps its probe hub.
+	const fallback: CanvasState =
+		conversationKind === "connect"
+			? { kind: "probe" }
+			: initialBriefing != null &&
+					conversationKind != null &&
+					messages.length === 0
+				? {
+						kind: "briefing",
+						briefing: initialBriefing,
+						chatKind: conversationKind,
+					}
+				: isLoading
+					? { kind: "loading", label: pendingLabel }
+					: { kind: "empty" };
+	const canvas = useStableValue<CanvasState>(pinned ?? live ?? fallback);
 
 	// Reactive state — recreated each streaming tick (messages/canvas change).
 	const state = useMemo<CockpitState>(

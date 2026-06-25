@@ -61,3 +61,6 @@ packages/engine/.claude/agent-memory/
 # Playwright MCP session artifacts
 .playwright-mcp/
 /*.png
+
+# DAT-631/636 verification: rendered-prompt dumps (PROMPT_DUMP_DIR), local-only
+packages/infra/prompt_dumps/

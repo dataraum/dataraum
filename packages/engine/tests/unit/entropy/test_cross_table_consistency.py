@@ -190,7 +190,7 @@ class TestColumnFanOut:
         table = Table(
             table_id="jl",
             source_id="src_v",
-            table_name="src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines",
+            table_name="journal_lines",  # narrow, workspace-unique (DAT-639)
             layer="typed",
         )
         session.add(table)
@@ -208,7 +208,7 @@ class TestColumnFanOut:
     def _context(self, session, validations: list) -> DetectorContext:  # noqa: ANN001
         ctx = DetectorContext(
             table_id="jl",
-            table_name="src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines",
+            table_name="journal_lines",
             session=session,
         )
         ctx.analysis_results["validation"] = validations
@@ -217,7 +217,7 @@ class TestColumnFanOut:
     def test_failed_check_bands_its_columns(
         self, detector: CrossTableConsistencyDetector, session
     ) -> None:  # noqa: ANN001
-        """Logical and physical table prefixes both match; foreign tables ignored;
+        """Own-table columns matched by exact narrow name; foreign tables ignored;
         hallucinated columns dropped; column_id rides in evidence."""
         _, ids = self._seed(session)
         ctx = self._context(
@@ -227,8 +227,8 @@ class TestColumnFanOut:
                     severity="critical",
                     details={"check_type": "aggregate", "violation_rate": 0.1},
                     columns_used=[
-                        "journal_lines.credit",  # logical table name
-                        "src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines.debit",  # physical name
+                        "journal_lines.credit",  # ours
+                        "journal_lines.debit",  # ours
                         "trial_balance.debit_balance",  # other table — not ours
                         "journal_lines.ghost",  # hallucinated column
                     ],
@@ -238,16 +238,10 @@ class TestColumnFanOut:
         objects = detector.detect(ctx)
 
         by_target = {o.target: o for o in objects}
-        assert (
-            "column:src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines.credit" in by_target
-        )
-        assert (
-            "column:src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines.debit" in by_target
-        )
+        assert "column:journal_lines.credit" in by_target
+        assert "column:journal_lines.debit" in by_target
         assert len(objects) == 3  # table object + 2 columns (ghost + foreign dropped)
-        credit = by_target[
-            "column:src_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__journal_lines.credit"
-        ]
+        credit = by_target["column:journal_lines.credit"]
         assert credit.score == 1.0  # critical → categorical
         assert credit.evidence[0]["column_id"] == ids["credit"]
 

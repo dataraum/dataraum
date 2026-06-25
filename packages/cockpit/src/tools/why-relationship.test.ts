@@ -135,14 +135,14 @@ describe("projectWhyRelationship (DAT-409)", () => {
 		expect(out.pending_teaches).toBe(2);
 	});
 
-	it("strips the content-keyed `src_<digest>__` prefix from endpoint table names (DAT-431)", () => {
+	it("renders narrow endpoint table names as-is (DAT-639)", () => {
 		// The result feeds the agent's context + the synthesis prompt — never the
 		// hash form. Round-trips key on the column ids. Null endpoints stay null.
 		const out = projectWhyRelationship(
 			FROM,
 			TO,
 			{
-				fromTableName: "src_204bc8e118543a6c35654c1f68c43539a2e226f2__payments",
+				fromTableName: "payments",
 				fromColumnName: "invoice_id",
 				toTableName: null,
 				toColumnName: null,

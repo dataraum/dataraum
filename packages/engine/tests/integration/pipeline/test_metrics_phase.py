@@ -11,6 +11,7 @@ grounded with the reason). Born-loud lives at the agent, not in a heuristic skip
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session
 from dataraum.core.models.base import Result
 from dataraum.lifecycle import ArtifactState, LifecycleArtifact
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
+from dataraum.pipeline.phases import metrics_phase as gep
 from dataraum.pipeline.phases.metrics_phase import MetricsPhase
 from dataraum.storage import Column, Source, Table
 
@@ -196,21 +198,43 @@ class TestMetricsPhaseOutcomes:
         assert "workspace_id missing" in (result.error or "")
 
 
-def _fake_execute(fail_ids: set[str]):
-    """A GraphAgent.execute stand-in: succeeds unless the graph_id is in fail_ids.
+def _fake_warm():
+    """GraphAgent.execute stand-in for the AUTHORING pass: every node grounds.
 
-    Patched onto the class, so it is called unbound — no ``self`` argument.
+    The per-metric outcome is modelled separately on ``assemble`` (DAT-636); the
+    authoring pass just needs to ground the nodes. Patched on the class → called
+    unbound, no ``self``.
     """
 
-    def _execute(session, graph, context, *args, inspiration_sql=None, session_id="", **kw):  # noqa: ANN001
-        if graph.graph_id in fail_ids:
-            return Result.fail("SQL execution failed against the workspace")
-        return Result.ok(MagicMock())
+    def _execute(session, graph, context, *args, inspiration_sql=None, workspace_id="", **kw):  # noqa: ANN001
+        execution = MagicMock()
+        execution.assumptions = []
+        return Result.ok(execution)
 
     return _execute
 
 
+def _fake_assemble(fail_ids: set[str]):
+    """GraphAgent.assemble stand-in: a metric composes cleanly unless its graph_id
+    is in fail_ids (modelling an ungroundable dependency / failed composition).
+
+    A clean execution carries assumptions (empty here = plainly executed, no
+    low-confidence flag — DAT-631); a bare MagicMock reads truthy but iterates
+    empty, so set it explicitly. Patched on the class → called unbound, no ``self``.
+    """
+
+    def _assemble(session, graph, context, bindings, parameters=None, *, workspace_id=""):  # noqa: ANN001
+        if graph.graph_id in fail_ids:
+            return Result.fail("SQL execution failed against the workspace")
+        execution = MagicMock()
+        execution.assumptions = []
+        return Result.ok(execution)
+
+    return _assemble
+
+
 class TestMetricLifecycleFlow:
+    @patch("dataraum.graphs.agent.GraphAgent.assemble")
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
     @patch("dataraum.graphs.config.get_metric_definitions")
@@ -219,19 +243,21 @@ class TestMetricLifecycleFlow:
         mock_defs: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
+        mock_assemble: MagicMock,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         workspace_table: Table,
         _mock_llm: None,
     ) -> None:
-        """Every parseable metric is composed by the agent: one executes cleanly,
+        """Every parseable metric is composed by the agent: one assembles cleanly,
         one cannot materialize runnable SQL and stays grounded with the reason.
         No pre-gate — the agent's outcome decides, not a field-mapping check."""
         mock_defs.return_value = {
             "m_exec": _metric_def("m_exec", field="accounts_receivable"),
             "m_unexec": _metric_def("m_unexec", field="revenue"),
         }
-        mock_execute.side_effect = _fake_execute(fail_ids={"m_unexec"})
+        mock_execute.side_effect = _fake_warm()
+        mock_assemble.side_effect = _fake_assemble(fail_ids={"m_unexec"})
         mock_ctx.return_value = MagicMock()
 
         result = MetricsPhase()._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id]))
@@ -254,6 +280,7 @@ class TestMetricLifecycleFlow:
         # No metric stays declared via a heuristic gate — declared is parse-only.
         assert result.outputs["stuck_declared"] == 0
 
+    @patch("dataraum.graphs.agent.GraphAgent.assemble")
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
     @patch("dataraum.graphs.config.get_metric_definitions")
@@ -262,6 +289,7 @@ class TestMetricLifecycleFlow:
         mock_defs: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
+        mock_assemble: MagicMock,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         workspace_table: Table,
@@ -273,7 +301,8 @@ class TestMetricLifecycleFlow:
             "ok_metric": _metric_def("ok_metric", field="accounts_receivable"),
             "broken": {"graph_id": "broken", "output": {"type": "scalar"}},  # missing metadata.name
         }
-        mock_execute.side_effect = _fake_execute(fail_ids=set())
+        mock_execute.side_effect = _fake_warm()
+        mock_assemble.side_effect = _fake_assemble(fail_ids=set())
         mock_ctx.return_value = MagicMock()
 
         result = MetricsPhase()._run(_make_ctx(session, duckdb_conn, [workspace_table.table_id]))
@@ -285,6 +314,7 @@ class TestMetricLifecycleFlow:
         assert artifacts["broken"].state == ArtifactState.DECLARED.value
         assert "malformed" in (artifacts["broken"].state_reason or "")
 
+    @patch("dataraum.graphs.agent.GraphAgent.assemble")
     @patch("dataraum.graphs.agent.ExecutionContext.with_rich_context")
     @patch("dataraum.graphs.agent.GraphAgent.execute")
     @patch("dataraum.graphs.config.get_metric_definitions")
@@ -293,6 +323,7 @@ class TestMetricLifecycleFlow:
         mock_defs: MagicMock,
         mock_execute: MagicMock,
         mock_ctx: MagicMock,
+        mock_assemble: MagicMock,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         workspace_table: Table,
@@ -300,7 +331,8 @@ class TestMetricLifecycleFlow:
     ) -> None:
         """No skip-if-already-ran: the re-run re-flows everything; runs coexist."""
         mock_defs.return_value = {"dso": _metric_def("dso", field="accounts_receivable")}
-        mock_execute.side_effect = _fake_execute(fail_ids=set())
+        mock_execute.side_effect = _fake_warm()
+        mock_assemble.side_effect = _fake_assemble(fail_ids=set())
         mock_ctx.return_value = MagicMock()
 
         phase = MetricsPhase()
@@ -316,3 +348,187 @@ class TestMetricLifecycleFlow:
             ("run-1", "executed"),
             ("run-2", "executed"),
         }
+
+
+# ---------------------------------------------------------------------------
+# DAT-629: warming primes the cache so the per-metric fan-out is race-free
+# ---------------------------------------------------------------------------
+
+from dataraum.graphs.agent import ExecutionContext, GeneratedCode, GraphAgent  # noqa: E402
+from dataraum.graphs.models import (  # noqa: E402
+    GraphMetadata,
+    GraphSource,
+    GraphStep,
+    OutputDef,
+    OutputType,
+    StepSource,
+    StepType,
+    TransformationGraph,
+)
+
+
+def _wm_extract(step_id: str, standard_field: str) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field=standard_field, statement="income_statement"),
+        aggregation="sum",
+    )
+
+
+def _wm_formula(step_id: str, expression: str, depends_on: list[str]) -> GraphStep:
+    return GraphStep(
+        step_id=step_id,
+        step_type=StepType.FORMULA,
+        expression=expression,
+        depends_on=depends_on,
+        output_step=True,
+    )
+
+
+def _wm_graph(graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
+    return TransformationGraph(
+        graph_id=graph_id,
+        version="1.0",
+        metadata=GraphMetadata(
+            name=graph_id, description="", category="profitability", source=GraphSource.SYSTEM
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR),
+        steps=steps,
+    )
+
+
+class _WarmStubCtx:
+    """PhaseContext stand-in: manager=None forces the serial warm path."""
+
+    def __init__(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> None:
+        self.manager = None
+        self.session = session
+        self.duckdb_conn = duckdb_conn
+
+
+def _fake_generate(authored: list[str]):
+    """Stand in for GraphAgent._generate_sql: author every step as a trivial,
+    runnable SELECT, recording each authoring so we can prove the per-metric
+    fan-out re-authors nothing once the cache is warm. The point under test is
+    the warm→cache→assemble plumbing, not arithmetic — every step yields a
+    supported (non-NULL) value, so the verifier passes.
+    """
+
+    def _gen(session, graph, context, parameters, cached_snippets=None):  # noqa: ANN001
+        authored.append(graph.graph_id)
+        steps = [
+            {"step_id": sid, "sql": "SELECT 1 AS value", "description": sid} for sid in graph.steps
+        ]
+        out = graph.get_output_step()
+        if out and out.step_type == StepType.FORMULA and out.depends_on:
+            # A formula's final_sql composes over its DEP steps (never the output step
+            # itself). The snippet is now saved FROM final_sql (DAT-636 round-trip), so a
+            # self-referential `SELECT value FROM <out>` would fold to an invalid CTE in
+            # assembly — mirror real composition: reference the dependency CTEs.
+            terms = " + ".join(f"(SELECT value FROM {d})" for d in out.depends_on)
+            final = f"SELECT {terms} AS value"
+        elif out:
+            final = f"SELECT value FROM {out.step_id}"
+        else:
+            final = "SELECT 1 AS value"
+        return Result.ok(
+            GeneratedCode(
+                code_id=str(uuid4()),
+                graph_id=graph.graph_id,
+                summary="fake",
+                steps=steps,
+                final_sql=final,
+                column_mappings={},
+                llm_model="fake",
+                prompt_hash="x",
+                generated_at=datetime.now(UTC),
+            )
+        )
+
+    return _gen
+
+
+class TestWarmingPrimesCache:
+    def test_shared_node_authored_once_both_metrics_assemble_from_warm_cache(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The DAT-629 fix end-to-end: warming authors each unique node once;
+        the per-metric execute then assembles every step from the warm cache
+        with no further authoring — so a shared extract (cost_of_goods_sold)
+        cannot diverge or ground to an empty filter across siblings."""
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        # gross_profit and net_income both extract cost_of_goods_sold + revenue;
+        # net_income adds operating_expense. Five unique nodes total.
+        gross = _wm_graph(
+            "gross_profit",
+            {
+                "rev": _wm_extract("rev", "revenue"),
+                "cogs": _wm_extract("cogs", "cost_of_goods_sold"),
+                "gp": _wm_formula("gp", "revenue - cogs", ["rev", "cogs"]),
+            },
+        )
+        net = _wm_graph(
+            "net_income",
+            {
+                "rev2": _wm_extract("rev2", "revenue"),
+                "cogs2": _wm_extract("cogs2", "cost_of_goods_sold"),
+                "opex": _wm_extract("opex", "operating_expense"),
+                "ni": _wm_formula(
+                    "ni", "revenue - cogs - operating_expense", ["rev2", "cogs2", "opex"]
+                ),
+            },
+        )
+
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        authored: list[str] = []
+        # Patch the LLM authoring boundary on the instance.
+        agent._generate_sql = _fake_generate(authored)  # type: ignore[method-assign]
+        # The serial warm + manual execute both build their context through
+        # with_rich_context; give them a minimal context over the real cursor.
+        monkeypatch.setattr(
+            ExecutionContext,
+            "with_rich_context",
+            classmethod(
+                lambda cls, **kw: ExecutionContext(
+                    duckdb_conn=duckdb_conn, schema_mapping_id=kw["schema_mapping_id"]
+                )
+            ),
+        )
+
+        ctx = _WarmStubCtx(session, duckdb_conn)
+        bindings = gep._warm_shared_nodes(
+            {"gross_profit": gross, "net_income": net},
+            ctx,  # type: ignore[arg-type]
+            agent,
+            "ws-warm",
+            ["t1"],
+            "finance",
+            om_run_id="run-warm",
+        )
+        session.flush()
+        assert len(authored) > 0, "the authoring pass should author the unique nodes"
+        # Every unique node was decided ONCE and is grounded in the binding map.
+        assert bindings and all(d.grounded for d in bindings.values())
+
+        # The shared cost_of_goods_sold extract is cached exactly once.
+        cogs = [
+            s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "extract" and s.standard_field == "cost_of_goods_sold"
+        ]
+        assert len(cogs) == 1
+
+        # The per-metric path is now pure ASSEMBLY (DAT-636): both metrics compose
+        # from the binding map + warm cache, NEITHER re-authors anything.
+        authored.clear()
+        exec_ctx = ExecutionContext(duckdb_conn=duckdb_conn, schema_mapping_id="ws-warm")
+        r_gross = agent.assemble(session, gross, exec_ctx, bindings, workspace_id="ws-warm")
+        r_net = agent.assemble(session, net, exec_ctx, bindings, workspace_id="ws-warm")
+
+        assert r_gross.success and r_net.success
+        assert authored == [], "assembly must make the per-metric fan-out LLM-free"

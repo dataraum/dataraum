@@ -1,28 +1,32 @@
-// Run-completion watcher (Phase 2A.2) — the server-side half of "the agent tells
-// you when a background run finishes". It lives inside an open /api/chat-stream
-// subscription (one watcher per open stream), polls the conversation's in-flight
-// Temporal runs, and on the not-done→done edge runs ONE agent turn whose
-// narration is published over the bus → rendered in the chat. No client polling.
+// Run-completion watcher (Phase 2A.2; push-completion DAT-615) — the server-side
+// half of "the agent tells you when a background run finishes". It lives inside an
+// open /api/chat-stream subscription (one watcher per open stream) and, for each of
+// the conversation's in-flight runs, AWAITS the run's Temporal `result()` — the
+// built-in completion push (the SDK long-polls; to us it's an `await`). On
+// resolution it marks the run terminal and runs ONE agent turn whose narration is
+// published over the bus → rendered in the chat. No client polling; no server-side
+// poll for the DONE edge.
 //
-// This replaces the old loop where the agent itself called the `workflow_status`
-// tool on a timer, flooding the transcript with poll cards. The user already sees
-// live progress in the canvas widget; the agent's only job is to react ONCE when
-// a run lands — which is exactly what this does.
+// Live phase progress (the pills + the staging-hub bar) is the one thing Temporal
+// can't push to a client — `get_progress` is a @workflow.query — so it stays a light
+// query while a run is in flight (DAT-615 wrinkle #2, accepted). Completion does NOT
+// ride that query anymore; it rides `result()`.
 //
-// Correctness:
-//   - A run is captured into `tracked` while it's still `running`, then polled
-//     against Temporal DIRECTLY (the source of truth) — so the separate
-//     progress-poll marking a run terminal in cockpit_db can't make the watcher
-//     miss it.
-//   - `claimRunNarration` is an atomic cockpit_db claim, so a conversation open in
-//     several tabs (each hosting its own watcher) narrates a run EXACTLY once.
-//   - A run that completed while NO client was connected was never tracked (it's
-//     already terminal in cockpit_db on reconnect), so it isn't narrated — the
-//     canvas already shows its terminal state; consistent, not a regression.
+// Once-only: `acquireCompletionWatcher` refcounts to EXACTLY ONE watcher per
+// conversation, so a run gets ONE `result()` awaiter; `markRunStatus` runs BEFORE
+// narrate, so a completed run drops out of `listWatchableRuns` (`status='running'`)
+// and a stream reopen never re-narrates it. The old cross-process `claimRunNarration`
+// claim is gone — the chat-bus is single-instance by design (see chat-bus.ts), so the
+// multi-process case it guarded can't occur.
+//
+// A run that completed while NO client was connected was marked terminal by its own
+// worker (`runStage` / the reconcile), so it isn't watchable on reconnect → not
+// narrated; the canvas already shows its terminal state. Consistent, not a regression.
 //
 // SERVER-ONLY (Temporal client + cockpit_db + the agent loop).
 
 import type { StreamChunk } from "@tanstack/ai";
+import { WorkflowFailedError } from "@temporalio/client";
 
 import {
 	appendMessages,
@@ -30,7 +34,6 @@ import {
 	loadModelTranscript,
 } from "#/db/cockpit/conversations";
 import {
-	claimRunNarration,
 	listRunningStages,
 	listWatchableRuns,
 	markRunStatus,
@@ -45,13 +48,14 @@ import { runWithConversation } from "#/lib/run-context";
 import { WORKFLOW_PROGRESS_EVENT } from "#/lib/workflow-progress-event";
 import { buildWorkspaceContext } from "#/prompts/workspace-context";
 import {
+	getTemporalClient,
 	getWorkflowProgress,
-	terminalRunStatus,
 	type WorkflowProgress,
 } from "#/temporal/progress";
 
-/** Poll cadence. Workflows run for seconds-to-minutes, so a tracked run is seen
- * `running` on many ticks before it lands — the edge is never missed. */
+/** Discovery + phase-pill cadence. Workflows run seconds-to-minutes; this only
+ * paces the cheap cockpit_db run-list + the phase `query` — the DONE edge is the
+ * `result()` await, not this tick, so its latency no longer gates completion. */
 const POLL_MS = 2500;
 /** Cap the per-tick run fan-out so a stale backlog can't blow up Temporal load. */
 const WATCH_LIMIT = 20;
@@ -71,9 +75,8 @@ const watchers = new Map<string, WatcherEntry>();
  * Ensure EXACTLY ONE watcher runs per conversation, however many
  * /api/chat-stream connections are open for it. The first open starts the loop;
  * each later open just bumps the refcount; `releaseCompletionWatcher` stops the
- * loop when the LAST one closes. This keeps the Temporal poll AND the narration
- * single regardless of the dev double-subscribe / real multi-tab (the per-run
- * claim is still the once-only backstop). `startFn` is injectable for tests.
+ * loop when the LAST one closes. One watcher per conversation ⇒ one `result()`
+ * awaiter per run ⇒ one narration. `startFn` is injectable for tests.
  */
 export function acquireCompletionWatcher(
 	conversationId: string,
@@ -116,89 +119,134 @@ async function watchLoop(
 	conversationId: string,
 	signal: AbortSignal,
 ): Promise<void> {
-	const tracked = new Map<string, WatchableRun>();
+	// runKeys with a live `result()` awaiter — so a still-running run discovered on
+	// many ticks gets exactly one awaiter.
+	const awaiting = new Set<string>();
 	while (!signal.aborted) {
-		await sleep(POLL_MS, signal);
+		await pollOnce(conversationId, awaiting, signal);
 		if (signal.aborted) return;
-		await pollOnce(conversationId, tracked, signal);
+		await sleep(POLL_MS, signal);
 	}
 }
 
 /**
- * One poll tick — capture this CONVERSATION's newly in-flight runs, poll each
- * against Temporal, and narrate on the done edge. Extracted from the loop so the
- * run-routing contract is unit-tested without the timer (conventions rule 10): a
- * watcher narrates ONLY runs started in ITS conversation, because the runs it
- * tracks come from `listWatchableRuns(conversationId)` (DAT-528). `tracked`
- * persists across ticks (a run seen `running` on earlier ticks still narrates when
- * it lands). Exported for the proof test.
+ * One discovery tick — for THIS conversation's in-flight runs (DAT-528 run-routing:
+ * `listWatchableRuns(conversationId)` scopes a watcher to its own chat's runs):
+ *   1. spawn a `result()` awaiter ONCE per run (the DONE edge → narrate; push), and
+ *   2. push the current phase snapshot (the pills) via a light `get_progress` query.
+ * `awaiting` persists across ticks so a run isn't double-awaited. Exported for tests.
  */
 export async function pollOnce(
 	conversationId: string,
-	tracked: Map<string, WatchableRun>,
+	awaiting: Set<string>,
 	signal: AbortSignal,
 ): Promise<void> {
-	// Nothing to narrate to if no client is listening (defensive — the watcher
-	// rides an open stream, but the connection can close between ticks).
+	// Nothing to push to if no client is listening (the watcher rides an open stream,
+	// but the connection can close between ticks).
 	if (!hasSubscribers(conversationId)) return;
 
-	// (1) Capture newly in-flight, un-narrated runs FOR THIS CONVERSATION — the
-	// run-routing filter: another chat's runs never enter this watcher's `tracked`.
 	const candidates = await listWatchableRuns(conversationId, WATCH_LIMIT).catch(
 		() => [] as WatchableRun[],
 	);
+
 	for (const run of candidates) {
-		// Skip a run still at its pre-attach PLACEHOLDER id (runId === workflowId):
-		// getWorkflowProgress can only PIN a real execution id, and the placeholder
-		// would fall back to the latest execution — which, for a REUSED workflow id
-		// (`addsource-<ws>`), can read a PRIOR run's terminal state and mark THIS run
-		// done off the wrong snapshot (the DAT-595 conflation). `attachRunId`
-		// finalizes the real id moments after start, so the row is tracked on the
-		// next tick (sub-second) and then pinned precisely.
-		if (run.runId === run.workflowId) continue;
-		tracked.set(runKey(run), run);
-	}
-
-	// (2) Poll each tracked run against Temporal; narrate on the done edge.
-	for (const [key, run] of [...tracked]) {
-		let progress: WorkflowProgress;
-		try {
-			progress = await getWorkflowProgress({
-				workflow_id: run.workflowId,
-				run_id: run.runId,
-			});
-		} catch {
-			continue; // transient Temporal hiccup — retry next tick.
-		}
-
-		// Push this snapshot to the widget (Phase 2A.3) — every tick AND the
-		// done tick, so the progress widget renders live and its terminal state
-		// WITHOUT polling. The provider's onChunk writes it to the query cache.
-		publish(conversationId, {
-			type: "CUSTOM",
-			name: WORKFLOW_PROGRESS_EVENT,
-			value: {
-				workflow_id: run.workflowId,
-				run_id: run.runId,
-				progress,
-			},
-		} as unknown as StreamChunk);
-
-		if (!progress.done) continue;
-
-		tracked.delete(key);
-		await markRunStatus(run.workflowId, run.runId, terminalRunStatus(progress));
-		// The atomic claim is the once-only guard across a chat's tabs.
-		if (await claimRunNarration(run.workflowId, run.runId)) {
-			await narrateCompletion(conversationId, run, progress, signal).catch(
-				(err) => {
-					console.warn(
-						`[completion-watcher] narrate failed for run ${run.runId}: ${err}`,
-					);
-				},
+		const key = runKey(run);
+		// (1) Completion is PUSH: one `result()` awaiter per run (DAT-615). It reads the
+		// watcher signal so its post-completion work is skipped once the last stream closes.
+		if (!awaiting.has(key)) {
+			awaiting.add(key);
+			void awaitCompletion(conversationId, run, signal).finally(() =>
+				awaiting.delete(key),
 			);
 		}
+
+		// (2) Live phase pills — the one residual pull (Temporal has no progress push
+		// to a client; `get_progress` is a query). Pin the exact (workflowId, runId)
+		// — the run row carries the real execution id (DAT-595).
+		const progress = await getWorkflowProgress({
+			workflow_id: run.workflowId,
+			run_id: run.runId,
+		}).catch(() => null);
+		if (progress) publishProgress(conversationId, run, progress);
 	}
+}
+
+/**
+ * Await ONE run's completion via Temporal's `result()` (push), then mark it terminal
+ * and narrate. `result()` resolves when the run finishes and throws
+ * `WorkflowFailedError` if it failed — so this is the DONE edge, instant, with no
+ * poll. A transient/infra error (anything but a clean fail) is logged and the run is
+ * re-discovered next tick (it's removed from `awaiting` by the caller's `finally`).
+ */
+export async function awaitCompletion(
+	conversationId: string,
+	run: WatchableRun,
+	signal: AbortSignal,
+): Promise<void> {
+	let status: "completed" | "failed";
+	try {
+		const client = await getTemporalClient();
+		const handle = client.workflow.getHandle(run.workflowId, run.runId);
+		try {
+			await handle.result();
+			status = "completed";
+		} catch (err) {
+			if (!(err instanceof WorkflowFailedError)) throw err; // infra → re-discover
+			status = "failed";
+		}
+	} catch (err) {
+		console.warn(
+			`[completion-watcher] await result for run ${run.runId}: ${err}`,
+		);
+		return;
+	}
+	// `result()` is not itself cancelled when the stream closes mid-run — the SDK
+	// long-poll runs until the workflow finishes, then we drop the post-completion
+	// work here. Accepted: Temporal reaps the server-side poll, and runs are
+	// seconds-to-minutes, so the dangling poll is bounded and cheap.
+	if (signal.aborted) return;
+
+	// Terminal snapshot for the pills' final state + the note's failure message.
+	const finalProgress = await getWorkflowProgress({
+		workflow_id: run.workflowId,
+		run_id: run.runId,
+	}).catch(() => null);
+	if (finalProgress) publishProgress(conversationId, run, finalProgress);
+
+	// markRunStatus BEFORE narrate: a completed run drops out of `listWatchableRuns`
+	// (status='running'), so a stream reopen never re-narrates it (the once-only).
+	await markRunStatus(run.workflowId, run.runId, status);
+
+	// Import (onboarding add_source) is NOT narrated into the chat (DAT-597): its
+	// progress + outcome live in the staging hub widget + the "Needs you" inbox. A
+	// `replay` (teach→re-ground) DOES narrate — the teach-verification message.
+	if (run.stage === "add_source" && run.kind === "onboarding") return;
+
+	await narrateCompletion(
+		conversationId,
+		run,
+		status,
+		finalProgress,
+		signal,
+	).catch((err) => {
+		console.warn(
+			`[completion-watcher] narrate failed for run ${run.runId}: ${err}`,
+		);
+	});
+}
+
+/** Push a phase snapshot to the widget (Phase 2A.3) — the provider's onChunk writes
+ * it to the query cache, so the progress widget renders live WITHOUT polling. */
+function publishProgress(
+	conversationId: string,
+	run: WatchableRun,
+	progress: WorkflowProgress,
+): void {
+	publish(conversationId, {
+		type: "CUSTOM",
+		name: WORKFLOW_PROGRESS_EVENT,
+		value: { workflow_id: run.workflowId, run_id: run.runId, progress },
+	} as unknown as StreamChunk);
 }
 
 /** Append the model-only note, then run an agent turn whose narration is teed +
@@ -206,7 +254,8 @@ export async function pollOnce(
 async function narrateCompletion(
 	conversationId: string,
 	run: WatchableRun,
-	progress: WorkflowProgress,
+	status: "completed" | "failed",
+	finalProgress: WorkflowProgress | null,
 	signal: AbortSignal,
 ): Promise<void> {
 	// The chat's kind (DAT-532) selects the narration turn's toolstack + prompt —
@@ -215,16 +264,15 @@ async function narrateCompletion(
 	const conversation = await getConversation(conversationId).catch(() => null);
 	if (!conversation) return;
 	// The OTHER stages still running for THIS conversation — the agent must narrate
-	// only this run and not claim these finished (DAT-510). The just-finished run
-	// is already marked terminal upstream, so it's excluded from this set. On a DB
-	// hiccup, degrade to `[]` (the solo-run boundary): safe direction — the note
-	// still pins to this run, it just can't name the others.
+	// only this run and not claim these finished (DAT-510). The just-finished run is
+	// already marked terminal upstream, so it's excluded from this set. On a DB
+	// hiccup, degrade to `[]` (the solo-run boundary): safe direction.
 	const inFlight = await listRunningStages(conversationId).catch(() => []);
 	const note = completionNote(
 		run.stage,
 		{
-			failed: terminalRunStatus(progress) === "failed",
-			failureMessage: progress.failure?.message ?? null,
+			failed: status === "failed",
+			failureMessage: finalProgress?.failure?.message ?? null,
 		},
 		inFlight,
 	);
@@ -232,7 +280,9 @@ async function narrateCompletion(
 	const modelMessages = buildModelMessages(
 		await loadModelTranscript(conversationId),
 	);
-	const workspaceContext = await buildWorkspaceContext().catch(() => null);
+	const workspaceContext = await buildWorkspaceContext(conversation.kind).catch(
+		() => null,
+	);
 	const abortController = linkedAbortController(signal);
 	// Bind the conversationId (DAT-528): if this narration turn starts a follow-up
 	// run, it routes back to THIS chat — same contract as the send path (chat.ts).

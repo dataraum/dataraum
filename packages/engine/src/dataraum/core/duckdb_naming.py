@@ -18,7 +18,8 @@ including the catalog compose it at query time.
 
 Convention for ``Table.duckdb_path``:
 
-    Stores the **unqualified table name** (e.g., ``"csv_source__orders"``).
+    Stores the **unqualified, narrow table name** (e.g., ``"orders"`` — no
+    source prefix, workspace-unique per DAT-639).
     The schema is derived from ``Table.layer`` via :func:`schema_for_layer`.
     Reads pre-DAT-341 produced bare names like ``"raw_orders"`` resolved
     via the connection's ``USE`` state; post-DAT-341 the connection USEs
@@ -104,38 +105,40 @@ def schema_for_layer(layer: str) -> str:
     return _LAYER_SCHEMA.get(layer, _DEFAULT_SCHEMA)
 
 
-def table_name_for_source(source_name: str, table_name: str) -> str:
-    """Compose a per-source table name with collision-safe separator.
+def workspace_table_name(table_name: str) -> str:
+    """Compose the workspace-unique physical table name — NARROW (DAT-639).
 
-    Two different sources may carry tables with the same logical name
-    (e.g., both an MSSQL source and a CSV source register ``orders``).
-    Prefixing the source disambiguates within a single layer schema.
+    Tables are per-WORKSPACE, not per-source: a workspace holds one ``orders``,
+    full stop. The source is an atomic content-hashed wrapper (how the table
+    arrived), not a namespace — so the physical name carries NO source prefix.
+    This completes DAT-506 (source dropped as a DB identifier) into the physical
+    naming, which had kept the ``{source}__`` prefix. A second source trying to
+    land the same name is a conflict (resolved at import: replay on the same
+    content hash, else fail-loud), never a silently-disambiguated parallel table.
 
     Args:
-        source_name: Logical name of the source the table belongs to.
-        table_name: Logical name of the table within that source.
+        table_name: Logical name of the table.
 
     Returns:
-        ``"<source>__<table>"`` with both segments sanitized.
+        ``"<table>"`` sanitized — safe to embed unquoted in SQL.
     """
-    return f"{sanitize_identifier(source_name)}__{sanitize_identifier(table_name)}"
+    return sanitize_identifier(table_name)
 
 
-def qualified_table(layer: str, source_name: str, table_name: str) -> str:
+def qualified_table(layer: str, table_name: str) -> str:
     """Return the schema-qualified ``"schema.table"`` form (no catalog).
 
     Compose with a catalog alias at query time for full FQN, e.g.
-    ``f"lake.{qualified_table(layer, src, tbl)}"``.
+    ``f"lake.{qualified_table(layer, tbl)}"``.
 
     Args:
         layer: ``Table.layer`` value.
-        source_name: Logical name of the source.
-        table_name: Logical name of the table within the source.
+        table_name: Logical (narrow) name of the table.
 
     Returns:
-        ``"<schema>.<source>__<table>"``, safe to embed unquoted in SQL.
+        ``"<schema>.<table>"``, safe to embed unquoted in SQL.
     """
-    return f"{schema_for_layer(layer)}.{table_name_for_source(source_name, table_name)}"
+    return f"{schema_for_layer(layer)}.{workspace_table_name(table_name)}"
 
 
 # Schemas reserved for slice 2 substrate (session overlays + archive). Documented

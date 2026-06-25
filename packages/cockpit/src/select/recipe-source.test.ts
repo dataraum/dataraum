@@ -9,7 +9,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { recipeContentHash, sanitizeRecipeName } from "./mappers";
+import { sanitizeRecipeName } from "./mappers";
+import { recipeContentHash } from "./source-content-hash";
 
 // recipe-source pulls SUPPORTED_BACKENDS from `#/duckdb/probe`, which imports
 // config at module load — stub it so the unit test needs no real env (same as

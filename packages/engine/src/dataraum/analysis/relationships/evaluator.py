@@ -242,7 +242,7 @@ def evaluate_relationship_candidate(
     join_success_rate = best_join.left_referential_integrity
 
     # Check for duplicate introduction (fan trap)
-    introduces_duplicates = _check_duplicate_introduction(
+    introduces_duplicates = compute_introduces_duplicates(
         table1_path,
         table2_path,
         best_join.column1,
@@ -259,7 +259,7 @@ def evaluate_relationship_candidate(
     )
 
 
-def _check_duplicate_introduction(
+def compute_introduces_duplicates(
     table1_path: str,
     table2_path: str,
     col1: str,
@@ -269,7 +269,9 @@ def _check_duplicate_introduction(
     """Check if joining introduces duplicate rows (fan trap).
 
     A fan trap occurs when joining through a relationship causes
-    row multiplication, which can inflate aggregates.
+    row multiplication, which can inflate aggregates. Public (used by the
+    structural evaluator AND the LLM-synthesis processor) so synthesized
+    relationships carry the same empirical fan-trap signal as structural ones.
 
     Args:
         table1_path: DuckDB path to first table
@@ -325,10 +327,10 @@ def compute_ri_metrics(
 
     Args:
         from_table: Fully-qualified DuckDB path to source table
-            (e.g., ``lake.typed."source__orders"`` post-DAT-341).
+            (e.g., ``lake.typed."orders"`` — narrow, DAT-639).
         from_column: Column name in source table
         to_table: Fully-qualified DuckDB path to target table
-            (e.g., ``lake.typed."source__customers"`` post-DAT-341).
+            (e.g., ``lake.typed."customers"`` — narrow, DAT-639).
         to_column: Column name in target table
         duckdb_conn: DuckDB connection
         cardinality: Optional cardinality to verify (e.g., "one-to-many")

@@ -410,6 +410,15 @@ class ConnectionManager:
 
         raw_conn = connect_session()
         raw_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
+        # Raise the DuckLake commit-retry budget (DAT-641 groundwork): the per-table
+        # typing fan-out has many connections racing for the next snapshot id; the
+        # default 10 retries is exhausted on a wide replay, failing the run. Distinct
+        # tables are non-logical conflicts that auto-resolve on retry, so a larger
+        # budget makes concurrent typing reliable. Read from settings directly (like
+        # bootstrap_lake's pool tuning) — it's process-wide, not per-ConnectionConfig.
+        raw_conn.execute(
+            f"SET ducklake_max_retry_count = {get_settings().ducklake_max_retry_count}"
+        )
         # The lake DATA_PATH is an ``s3://`` URI; this connection reads/writes
         # lake parquet, so it needs the object-store secret too. DuckDB's secret
         # manager is per-instance and this shares the anchor's named in-memory

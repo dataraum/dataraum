@@ -149,7 +149,7 @@ class TestBuilderExtractsSemanticFields:
 
 
 class TestBuilderExtractsTableEntity:
-    """Verify builder reads table_description, grain_columns, time_column."""
+    """Verify builder reads table_description, grain_columns, time/identity columns."""
 
     def test_table_description_and_grain(self, session: Session) -> None:
         from dataraum.analysis.semantic.db_models import TableEntity
@@ -170,6 +170,9 @@ class TestBuilderExtractsTableEntity:
                 time_columns=[
                     {"column": "created_at", "aspect": "created", "note": "Row created."}
                 ],
+                identity_columns=[
+                    {"column": "customer_id", "note": "Recurring customer identity."}
+                ],
                 is_fact_table=True,
             )
         )
@@ -186,6 +189,9 @@ class TestBuilderExtractsTableEntity:
         assert table.table_description == "Records of all financial transactions"
         assert table.grain_columns == ["invoice_id"]
         assert [tc["column"] for tc in table.time_columns] == ["created_at"]
+        # DAT-566: identity_columns flows through the DB→context read path (the
+        # `or []` None-guard branch is the common pre-DAT-565 case).
+        assert [ic["column"] for ic in table.identity_columns] == ["customer_id"]
 
     def test_unresolved_catalog_reads_no_run_versioned_data(self, session: Session) -> None:
         """Fail-closed (DAT-429): no resolved catalog run ⇒ no entities/relationships.

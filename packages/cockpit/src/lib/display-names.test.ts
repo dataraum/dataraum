@@ -10,112 +10,37 @@ import {
 const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
 
 describe("displayTableName", () => {
-	it("strips the exact `<source>__` prefix when the source name is known", () => {
-		expect(
-			displayTableName("finance_data__trial_balance", "finance_data"),
-		).toBe("trial_balance");
-	});
-
-	it("falls back to dropping up to the first `__` when no source name is given", () => {
-		expect(displayTableName("detection_v1__bank_transactions")).toBe(
-			"bank_transactions",
-		);
-	});
-
-	it("strips a content-keyed `src_<digest>__` prefix via the fallback", () => {
-		expect(displayTableName(`src_${DIGEST}__journal_lines`)).toBe(
-			"journal_lines",
-		);
-	});
-
-	it("leaves a name without a `__` separator untouched", () => {
+	// Post-DAT-639 a stored table name is already NARROW + workspace-unique, so
+	// display is the identity — no `<source>__` / `src_<digest>__` prefix to strip,
+	// no enriched/slice family to special-case (slices were removed entirely).
+	it("returns a narrow table name unchanged", () => {
+		expect(displayTableName("trial_balance")).toBe("trial_balance");
 		expect(displayTableName("payments")).toBe("payments");
-		expect(displayTableName("payments", "finance")).toBe("payments");
 	});
 
-	it("only strips the first segment (logical names with `__` survive)", () => {
-		expect(displayTableName("src__a__b")).toBe("a__b");
+	it("ignores the (retained-for-stability) sourceName arg", () => {
+		expect(displayTableName("orders", "finance")).toBe("orders");
 	});
 
-	// Enriched-view family (DAT-433): `enriched_<source>__<table>` keeps its
-	// prefix so the display name never collides with the base table's.
-	it("maps an enriched view to `enriched_<table>` instead of the bare table", () => {
-		expect(displayTableName(`enriched_src_${DIGEST}__journal_lines`)).toBe(
-			"enriched_journal_lines",
-		);
-		expect(displayTableName("enriched_finance__journal_lines")).toBe(
-			"enriched_journal_lines",
-		);
-	});
-
-	it("leaves an enriched name without a `__` remainder untouched", () => {
-		expect(displayTableName("enriched_thing")).toBe("enriched_thing");
-	});
-
-	// Slice family (DAT-433): the engine's slice sanitizer collapses `__` → `_`,
-	// so the digest would otherwise survive the generic fallback.
-	it("strips the digest from a slice table name, keeping the family prefix", () => {
-		expect(
-			displayTableName(`slice_src_${DIGEST}_journal_lines_region_emea`),
-		).toBe("slice_journal_lines_region_emea");
-	});
-
-	it("leaves a slice over a human-named source untouched (no digest to strip)", () => {
-		expect(displayTableName("slice_finance_journal_lines_region_emea")).toBe(
-			"slice_finance_journal_lines_region_emea",
-		);
-	});
-
-	it("family handling applies even when the raw source name is passed", () => {
-		// An enriched name never starts with `<sourceName>__` (the family prefix
-		// comes first), so the exact-prefix check falls through to the family rule.
-		expect(
-			displayTableName(`enriched_src_${DIGEST}__orders`, `src_${DIGEST}`),
-		).toBe("enriched_orders");
-	});
-
-	it("a source legitimately named enriched_* is not mistaken for the family", () => {
-		expect(displayTableName("enriched_data__report", "enriched_data")).toBe(
-			"report",
-		);
-	});
-
-	it("an enriched_* name with NO sourceName context is the family (prefix reservation)", () => {
-		// `enriched_` is a RESERVED source-name prefix (select/mappers.ts
-		// RESERVED_SOURCE_NAME_PREFIXES, enforced by tools/select.ts), so a
-		// physical name starting with it can ONLY be an actual enriched view —
-		// here the enriched view of source `data`'s `report` table. This is what
-		// makes the no-sourceName callers (why_*/look_relationships) sound.
-		expect(displayTableName("enriched_data__report")).toBe("enriched_report");
-	});
-
-	it("a slice_src_* name with NO sourceName context is the slice family (prefix reservation)", () => {
-		// `src_` is reserved too, so `slice_src_<digest>_…` can only be a slice
-		// table over a content-keyed upload — never a table of a source that
-		// happens to be named `slice_src_…`.
-		expect(displayTableName(`slice_src_${DIGEST}_orders_region_emea`)).toBe(
-			"slice_orders_region_emea",
-		);
+	it("leaves an enriched view name as-is (no digest, narrow base)", () => {
+		expect(displayTableName("enriched_orders")).toBe("enriched_orders");
 	});
 });
 
 describe("stripSrcDigests", () => {
-	it("drops `src_<digest>__` physical-name prefixes from free text", () => {
-		expect(
-			stripSrcDigests(`typing failed for src_${DIGEST}__journal_lines`),
-		).toBe("typing failed for journal_lines");
-	});
-
 	it("neutralizes a bare `src_<digest>` source name as `upload`", () => {
 		expect(stripSrcDigests(`source src_${DIGEST} not found`)).toBe(
 			"source upload not found",
 		);
 	});
 
-	it("neutralizes the digest inside an underscore-collapsed slice name", () => {
-		expect(stripSrcDigests(`slice_src_${DIGEST}_orders_region_emea`)).toBe(
-			"slice_upload_orders_region_emea",
-		);
+	it("neutralizes a digest even if other text trails it (no digest leaks)", () => {
+		// Physical names are narrow now, but the bare-digest replace is the
+		// backstop for any shape engine free text invents — the digest never
+		// survives, whatever follows it.
+		const out = stripSrcDigests(`unexpected src_${DIGEST}__orders in log`);
+		expect(out).not.toMatch(/[0-9a-f]{40}/);
+		expect(out).toContain("upload");
 	});
 
 	it("returns digest-free text unchanged", () => {
@@ -166,19 +91,19 @@ describe("renderEvidenceDetail", () => {
 				metric: "undeclared_ratio",
 				value: 0.8,
 				_column_name: "amount",
-				_table_name: `src_${DIGEST}__orders`,
+				_table_name: "orders",
 			},
 		]);
 		expect(detail).toBe('[{"metric":"undeclared_ratio","value":0.8}]');
 	});
 
-	it("display-maps the explicit table-name keys instead of dropping them", () => {
+	it("keeps narrow table-name keys as-is (no per-key remap needed post-DAT-639)", () => {
 		const detail = renderEvidenceDetail([
 			{
 				path_status: "resolved",
-				from_table: `src_${DIGEST}__orders`,
-				to_table: `src_${DIGEST}__customers`,
-				_table_name: `src_${DIGEST}__orders`,
+				from_table: "orders",
+				to_table: "customers",
+				_table_name: "orders",
 			},
 		]);
 		expect(JSON.parse(detail)).toEqual([
@@ -186,36 +111,24 @@ describe("renderEvidenceDetail", () => {
 		]);
 	});
 
-	it("display-maps slice_table_name through the slice family rule", () => {
-		const detail = renderEvidenceDetail([
-			{
-				null_ratio: 0.1,
-				slice_table_name: `slice_src_${DIGEST}_orders_region_emea`,
-			},
-		]);
-		expect(JSON.parse(detail)).toEqual([
-			{ null_ratio: 0.1, slice_table_name: "slice_orders_region_emea" },
-		]);
-	});
-
 	it("sanitizes nested structures recursively", () => {
 		const detail = renderEvidenceDetail({
-			slices: [
-				{ _table_name: `src_${DIGEST}__a`, rows: 10 },
-				{ _table_name: `src_${DIGEST}__b`, rows: 20 },
+			rows: [
+				{ _table_name: "a", n: 10 },
+				{ _table_name: "b", n: 20 },
 			],
 		});
 		expect(JSON.parse(detail)).toEqual({
-			slices: [{ rows: 10 }, { rows: 20 }],
+			rows: [{ n: 10 }, { n: 20 }],
 		});
 	});
 
-	it("backstops digests in unanticipated keys via stripSrcDigests", () => {
+	it("backstops a content-keyed source name leaking into free-text evidence", () => {
 		const detail = renderEvidenceDetail([
-			{ note: `joined src_${DIGEST}__orders to dim` },
+			{ note: `joined src_${DIGEST} into the run` },
 		]);
 		expect(detail).not.toMatch(/[0-9a-f]{40}/);
-		expect(detail).toContain("joined orders to dim");
+		expect(detail).toContain("joined upload into the run");
 	});
 
 	it("keeps a non-object evidence value as its JSON form", () => {

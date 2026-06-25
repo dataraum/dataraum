@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     ducklake_pg_pool_max: int = 16
     ducklake_skip_install: bool = False
     duckdb_extension_directory: Path | None = None
+    # Max retry attempts for a DuckLake transaction commit (DAT-641 groundwork).
+    # DuckLake serializes snapshots via a PK on snapshot_id, so concurrent writers
+    # (the per-table typing fan-out) race for the next id and retry. The default
+    # is 10 (ducklake docs) — too low for a wide replay fan-out, where 7–21 tables
+    # commit at once. Non-logical conflicts (distinct tables) auto-resolve on
+    # retry, so a higher budget makes the fan-out reliable. Set per lake connection
+    # in core/connections. (The Temporal-retry fallback stays in DAT-641 proper.)
+    ducklake_max_retry_count: int = 100
 
     # --- Promoted-read surface (ADR-0008 / DAT-453; defaulted for dev) ---
     # Password for the cluster-global ``cockpit_reader`` role the bootstrap
@@ -109,6 +117,13 @@ class Settings(BaseSettings):
     temporal_host: str
     temporal_namespace: str
     temporal_task_queue: str
+
+    # --- Observability (optional; off unless set) ---
+    # When set, the LLM features dump each rendered prompt (system + user, with
+    # every injected concept) under this directory for offline analysis — the
+    # only way to read the *actual* produced prompt, not the template. Unset in
+    # production; a smoke/eval run flips ``PROMPT_DUMP_DIR`` to inspect grounding.
+    prompt_dump_dir: Path | None = None
 
 
 @cache

@@ -7,10 +7,12 @@
 
 import { WidgetRegistry } from "#/ui/cockpit/widget-registry";
 import { AnswerResultWidget } from "#/ui/cockpit/widgets/answer-result";
+import { BriefingWidget } from "#/ui/cockpit/widgets/briefing";
 import { ColumnProfileWidget } from "#/ui/cockpit/widgets/column-profile";
 import { ColumnWhyWidget } from "#/ui/cockpit/widgets/column-why";
 import { CycleListWidget } from "#/ui/cockpit/widgets/cycle-list";
 import { CycleWhyWidget } from "#/ui/cockpit/widgets/cycle-why";
+import { DriverListWidget } from "#/ui/cockpit/widgets/driver-list";
 import { EmptyWidget } from "#/ui/cockpit/widgets/empty";
 import { ErrorWidget } from "#/ui/cockpit/widgets/error";
 import { LoadingWidget } from "#/ui/cockpit/widgets/loading";
@@ -18,18 +20,15 @@ import { MeasureProgressWidget } from "#/ui/cockpit/widgets/measure-progress";
 import { MetricListWidget } from "#/ui/cockpit/widgets/metric-list";
 import { MetricShadowWidget } from "#/ui/cockpit/widgets/metric-shadow";
 import { MetricWhyWidget } from "#/ui/cockpit/widgets/metric-why";
-import { ModelFrameWidget } from "#/ui/cockpit/widgets/model-frame";
 import { OperatingModelProgressWidget } from "#/ui/cockpit/widgets/operating-model-progress";
 import { ProbeWidget } from "#/ui/cockpit/widgets/probe";
 import { RelationshipListWidget } from "#/ui/cockpit/widgets/relationship-list";
 import { RelationshipWhyWidget } from "#/ui/cockpit/widgets/relationship-why";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
-import { SchemaPreviewWidget } from "#/ui/cockpit/widgets/schema-preview";
 import { SessionProgressWidget } from "#/ui/cockpit/widgets/session-progress";
 import { SourceListWidget } from "#/ui/cockpit/widgets/source-list";
 import { TableReadinessWidget } from "#/ui/cockpit/widgets/table-readiness";
 import { TableWhyWidget } from "#/ui/cockpit/widgets/table-why";
-import { UploadAreaWidget } from "#/ui/cockpit/widgets/upload-area";
 import { ValidationListWidget } from "#/ui/cockpit/widgets/validation-list";
 import { ValidationWhyWidget } from "#/ui/cockpit/widgets/validation-why";
 import { WorkspaceInventoryWidget } from "#/ui/cockpit/widgets/workspace-inventory";
@@ -43,8 +42,6 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "workspace-inventory",
 		component: WorkspaceInventoryWidget,
 	})
-	.register({ kind: "schema-preview", component: SchemaPreviewWidget })
-	.register({ kind: "model-frame", component: ModelFrameWidget })
 	.register({ kind: "result-grid", component: ResultGridWidget })
 	.register({ kind: "answer-result", component: AnswerResultWidget })
 	.register({ kind: "table-readiness", component: TableReadinessWidget })
@@ -59,6 +56,7 @@ export const canvasRegistry = new WidgetRegistry()
 	.register({ kind: "cycle-why", component: CycleWhyWidget })
 	.register({ kind: "metric-list", component: MetricListWidget })
 	.register({ kind: "metric-why", component: MetricWhyWidget })
+	.register({ kind: "driver-list", component: DriverListWidget })
 	.register({ kind: "metric-shadow", component: MetricShadowWidget })
 	.register({ kind: "add-source-progress", component: MeasureProgressWidget })
 	.register({ kind: "session-progress", component: SessionProgressWidget })
@@ -66,5 +64,5 @@ export const canvasRegistry = new WidgetRegistry()
 		kind: "operating-model-progress",
 		component: OperatingModelProgressWidget,
 	})
-	.register({ kind: "upload-area", component: UploadAreaWidget })
-	.register({ kind: "probe", component: ProbeWidget });
+	.register({ kind: "probe", component: ProbeWidget })
+	.register({ kind: "briefing", component: BriefingWidget });

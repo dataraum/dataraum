@@ -1,30 +1,45 @@
-// Run-routing proof (DAT-528) — THE load-bearing acceptance criterion: a run
-// started in conversation A narrates into A, even when another conversation's
-// watcher is live. Before DAT-528 the watcher tracked ALL of a workspace's runs
-// and whichever stream's claim landed first narrated it (order-dependent). Now
-// each watcher tracks only `listWatchableRuns(itsConversationId)`, so a run only
-// surfaces in the watcher of the chat that started it.
+// Run-completion watcher (DAT-528 run-routing + DAT-615 push-completion).
 //
-// We drive `pollOnce` (the extracted poll tick) directly — no timer, no loop. The
-// `listWatchableRuns` mock is CONVERSATION-SCOPED exactly as the real SQL is
-// (returns runs only for the queried id), so the test exercises the real routing
-// contract: the watcher passes its own conversationId, the query filters on it.
+// Two surfaces, tested separately because completion is now fire-and-forget:
+//   • `pollOnce` — the DISCOVERY tick: lists THIS conversation's in-flight runs
+//     (conversation-scoped, DAT-528), spawns a `result()` awaiter per run, and pushes
+//     the phase pills. It does NOT itself narrate (the awaiter does), so its tests
+//     assert routing/discovery, not narration.
+//   • `awaitCompletion` — the per-run completion path: `await handle.result()` (push,
+//     DAT-615) → markRunStatus → narrate. Awaitable, so its tests assert the
+//     narration contract (routing into its conversation, DAT-597 import-skip, failure).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => ({
-	// The one in-flight run — it belongs to conversation "A".
-	runForA: {
-		workflowId: "wf-A",
-		runId: "r-A",
-		stage: "begin_session" as const,
-	},
-	narrated: [] as string[],
+const h = vi.hoisted(() => {
+	// Stand-in for the SDK error `handle.result()` throws on a failed run — the module
+	// under test does `err instanceof WorkflowFailedError`, so the mock exports THIS class.
+	class WorkflowFailedError extends Error {}
+	return {
+		WorkflowFailedError,
+		runForA: {
+			workflowId: "wf-A",
+			runId: "r-A",
+			stage: "begin_session" as const,
+			kind: "begin_session" as const,
+		},
+		narrated: [] as string[],
+		markStatus: [] as Array<{
+			workflowId: string;
+			runId: string;
+			status: string;
+		}>,
+		// handle.result() — resolves (completed) by default; a test can reject it.
+		result: vi.fn(async () => ({})),
+		getHandle: vi.fn(),
+	};
+});
+
+vi.mock("@temporalio/client", () => ({
+	WorkflowFailedError: h.WorkflowFailedError,
 }));
 
 vi.mock("#/db/cockpit/conversations", () => ({
-	// narrateCompletion resolves the chat's kind (DAT-532) before narrating; a
-	// non-null row lets the narration proceed (kind drives its toolstack).
 	getConversation: vi.fn(async (id: string) => ({
 		id,
 		workspaceId: "ws-1",
@@ -41,8 +56,11 @@ vi.mock("#/db/cockpit/runs", () => ({
 		conversationId === "A" ? [h.runForA] : [],
 	),
 	listRunningStages: vi.fn(async () => []),
-	markRunStatus: vi.fn(async () => {}),
-	claimRunNarration: vi.fn(async () => true),
+	markRunStatus: vi.fn(
+		async (workflowId: string, runId: string, status: string) => {
+			h.markStatus.push({ workflowId, runId, status });
+		},
+	),
 }));
 
 vi.mock("#/lib/chat-bus", () => ({
@@ -65,73 +83,123 @@ vi.mock("#/prompts/workspace-context", () => ({
 	buildWorkspaceContext: async () => null,
 }));
 vi.mock("#/temporal/progress", () => ({
-	getWorkflowProgress: vi.fn(async () => ({ done: true, status: "COMPLETED" })),
-	terminalRunStatus: () => "completed",
+	// The completion-watcher awaits handle.result() via this client; getHandle returns
+	// a handle whose result() is the controllable mock.
+	getTemporalClient: vi.fn(async () => ({
+		workflow: { getHandle: (...args: unknown[]) => h.getHandle(...args) },
+	})),
+	getWorkflowProgress: vi.fn(async () => ({
+		done: true,
+		status: "COMPLETED",
+		failure: null,
+	})),
 }));
 
-import { listWatchableRuns, type WatchableRun } from "#/db/cockpit/runs";
 import { streamAgentTurnToBus } from "#/lib/agent-turn";
-import { getWorkflowProgress } from "#/temporal/progress";
-import { pollOnce } from "./completion-watcher";
+import { getTemporalClient, getWorkflowProgress } from "#/temporal/progress";
+import { awaitCompletion, pollOnce } from "./completion-watcher";
 
 beforeEach(() => {
 	h.narrated = [];
+	h.markStatus = [];
 	vi.clearAllMocks();
+	h.result.mockResolvedValue({});
+	h.getHandle.mockReturnValue({ result: h.result });
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe("run-routing (DAT-528): a run narrates only into its own conversation", () => {
-	it("conversation B's watcher does NOT narrate A's run", async () => {
-		await pollOnce(
-			"B",
-			new Map<string, WatchableRun>(),
-			new AbortController().signal,
-		);
-		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+const liveSignal = (): AbortSignal => new AbortController().signal;
+
+describe("pollOnce — discovery + routing (DAT-528)", () => {
+	it("conversation B's tick does NOT touch A's run (scoped by conversationId)", async () => {
+		await pollOnce("B", new Set<string>(), liveSignal());
+		// No run for B → no awaiter spawned (no client handle), no progress query.
+		expect(getTemporalClient).not.toHaveBeenCalled();
+		expect(getWorkflowProgress).not.toHaveBeenCalled();
 	});
 
-	it("conversation A's watcher narrates A's run, into A", async () => {
-		await pollOnce(
-			"A",
-			new Map<string, WatchableRun>(),
-			new AbortController().signal,
-		);
-		expect(streamAgentTurnToBus).toHaveBeenCalledTimes(1);
-		// The narration turn targets conversation A — the routing guarantee.
-		expect(h.narrated).toEqual(["A"]);
-	});
-
-	it("A narrates into A even while B's watcher polls concurrently (the proof)", async () => {
-		const trackedA = new Map<string, WatchableRun>();
-		const trackedB = new Map<string, WatchableRun>();
-		const signal = new AbortController().signal;
-		// Both watchers tick; only A's tracks (and narrates) the run.
-		await Promise.all([
-			pollOnce("A", trackedA, signal),
-			pollOnce("B", trackedB, signal),
-		]);
-		expect(h.narrated).toEqual(["A"]);
-		expect(trackedB.size).toBe(0);
+	it("conversation A's tick discovers A's run: pins the real id + spawns one awaiter", async () => {
+		const tracked = new Set<string>();
+		await pollOnce("A", tracked, liveSignal());
+		// Pills query pins the exact (workflowId, runId) — the real id (DAT-595).
+		expect(getWorkflowProgress).toHaveBeenCalledWith({
+			workflow_id: "wf-A",
+			run_id: "r-A",
+		});
+		// The run is now being awaited — a second tick must NOT spawn a 2nd awaiter.
+		expect(tracked.has("wf-A:r-A")).toBe(true);
+		const handleCalls = h.getHandle.mock.calls.length;
+		await pollOnce("A", tracked, liveSignal());
+		expect(h.getHandle.mock.calls.length).toBe(handleCalls); // no re-spawn
 	});
 });
 
-describe("placeholder runs are skipped until attachRunId finalizes the real id (DAT-595)", () => {
-	it("does NOT track, poll, or narrate a run whose runId still equals its workflowId", async () => {
-		// A just-recorded run carries the workflowId PLACEHOLDER until attachRunId
-		// rewrites it post-start. getWorkflowProgress can only PIN a real id, so the
-		// watcher must skip the placeholder — otherwise a reused workflow id would
-		// resolve a PRIOR run's terminal state and mark this one done off it (DAT-595).
-		vi.mocked(listWatchableRuns).mockResolvedValueOnce([
+describe("awaitCompletion — push completion via result() (DAT-615)", () => {
+	it("awaits the run's result(), marks it completed, and narrates into ITS conversation", async () => {
+		await awaitCompletion("A", h.runForA, liveSignal());
+		// Pinned the exact execution + awaited result() (the push edge, no poll).
+		expect(h.getHandle).toHaveBeenCalledWith("wf-A", "r-A");
+		expect(h.result).toHaveBeenCalledTimes(1);
+		// markRunStatus BEFORE narrate (once-only via the status filter).
+		expect(h.markStatus).toEqual([
+			{ workflowId: "wf-A", runId: "r-A", status: "completed" },
+		]);
+		expect(h.narrated).toEqual(["A"]); // routed into A
+	});
+
+	it("marks FAILED when result() throws WorkflowFailedError (still narrates)", async () => {
+		h.result.mockRejectedValueOnce(new h.WorkflowFailedError("boom"));
+		await awaitCompletion("A", h.runForA, liveSignal());
+		expect(h.markStatus).toEqual([
+			{ workflowId: "wf-A", runId: "r-A", status: "failed" },
+		]);
+		expect(h.narrated).toEqual(["A"]);
+	});
+
+	it("an INFRA error (not WorkflowFailedError) is swallowed — no mark, no narrate (re-discovered next tick)", async () => {
+		h.result.mockRejectedValueOnce(new Error("temporal hiccup"));
+		await awaitCompletion("A", h.runForA, liveSignal());
+		expect(h.markStatus).toEqual([]);
+		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+	});
+
+	it("does NOT narrate an onboarding add_source — the hub owns import progress (DAT-597)", async () => {
+		await awaitCompletion(
+			"A",
 			{
 				workflowId: "addsource-ws",
-				runId: "addsource-ws",
+				runId: "r1",
 				stage: "add_source",
+				kind: "onboarding",
 			},
+			liveSignal(),
+		);
+		// Still marked terminal (the monitor/inbox need it), just not narrated into chat.
+		expect(h.markStatus).toEqual([
+			{ workflowId: "addsource-ws", runId: "r1", status: "completed" },
 		]);
-		const tracked = new Map<string, WatchableRun>();
-		await pollOnce("A", tracked, new AbortController().signal);
-		expect(tracked.size).toBe(0);
-		expect(getWorkflowProgress).not.toHaveBeenCalled();
+		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
+	});
+
+	it("DOES narrate a replay add_source — the teach→re-ground verification (DAT-597)", async () => {
+		await awaitCompletion(
+			"A",
+			{
+				workflowId: "addsource-ws",
+				runId: "r2",
+				stage: "add_source",
+				kind: "replay",
+			},
+			liveSignal(),
+		);
+		expect(h.narrated).toEqual(["A"]);
+	});
+
+	it("skips post-completion work once the stream has closed (signal aborted)", async () => {
+		const ac = new AbortController();
+		ac.abort();
+		await awaitCompletion("A", h.runForA, ac.signal);
+		expect(h.markStatus).toEqual([]);
 		expect(streamAgentTurnToBus).not.toHaveBeenCalled();
 	});
 });

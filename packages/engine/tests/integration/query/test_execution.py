@@ -73,6 +73,29 @@ class TestExecuteSqlSteps:
         assert result.value.final_value == 200.0  # 600 / 3
         assert len(result.value.step_results) == 2
 
+    def test_step_referencing_an_earlier_step(self, duckdb_conn):
+        """DAT-616: a step that references an earlier step still resolves (the old
+        temp-view model allowed it; formula steps with depends_on rely on it). The
+        per-step scalar is probed inside the prior steps' CTE context."""
+        steps = [
+            SQLStep(
+                step_id="base", sql="SELECT SUM(value) AS value FROM test_data", description=""
+            ),
+            SQLStep(step_id="doubled", sql="SELECT value * 2 AS value FROM base", description=""),
+        ]
+
+        result = execute_sql_steps(
+            steps=steps,
+            final_sql="SELECT value FROM doubled",
+            duckdb_conn=duckdb_conn,
+        )
+
+        assert result.success
+        by_id = {s.step_id: s.value for s in result.value.step_results}
+        assert by_id["base"] == 600
+        assert by_id["doubled"] == 1200  # base references resolved in the CTE context
+        assert result.value.final_value == 1200
+
     def test_return_table_mode(self, duckdb_conn):
         """return_table=True returns columns and rows."""
         steps = []
@@ -129,13 +152,60 @@ class TestExecuteSqlSteps:
         assert not result.success
         assert "Final SQL failed" in result.error
 
-    def test_views_survive_for_export_reuse(self, duckdb_conn):
-        """Temp views survive after execution (cursor-scoped, not explicitly dropped)."""
+    def test_genuine_zero_final_passes(self, duckdb_conn):
+        """A genuine 0 final value is returned, not rejected (DAT-616).
+
+        The old guard `not final_result.value` conflated a real 0 with failure.
+        A metric that legitimately computes 0 (e.g. revenue == cogs) must succeed.
+        """
+        steps = [SQLStep(step_id="z", sql="SELECT 0 AS val", description="zero")]
+
+        result = execute_sql_steps(
+            steps=steps,
+            final_sql="SELECT 0 AS val",
+            duckdb_conn=duckdb_conn,
+        )
+
+        assert result.success
+        assert result.value is not None
+        assert result.value.final_value == 0
+
+    def test_empty_support_final_returns_null_ok_not_failure(self, duckdb_conn):
+        """An empty-support final aggregates to NULL and returns ok(None) (DAT-616).
+
+        The shared executor returns values faithfully — it no longer conflates an
+        empty/NULL result with a thrown error. Degeneracy (no support) is judged
+        downstream by the metric verifier, which has the catalogue + step context
+        to produce a precise per-extract reason.
+        """
+        steps = [
+            SQLStep(
+                step_id="empty",
+                sql="SELECT SUM(value) AS val FROM test_data WHERE name = 'nobody'",
+                description="sum over an empty filter",
+            )
+        ]
+
+        result = execute_sql_steps(
+            steps=steps,
+            final_sql="SELECT SUM(value) AS val FROM test_data WHERE name = 'nobody'",
+            duckdb_conn=duckdb_conn,
+        )
+
+        assert result.success  # not a failure — a faithful NULL
+        assert result.value is not None
+        assert result.value.final_value is None
+        # The per-step value is likewise None (no support) for the verifier to catch.
+        assert result.value.step_results[0].value is None
+
+    def test_no_temp_views_leak_and_composed_cte_returned(self, duckdb_conn):
+        """DAT-616: execution composes ONE CTE — no temp view leaks onto the cursor,
+        and the composed statement is returned as the executable artifact."""
         steps = [
             SQLStep(
                 step_id="reuse_test",
                 sql="SELECT 42 AS val",
-                description="Test view survival",
+                description="Test no view leak",
             )
         ]
 
@@ -146,9 +216,15 @@ class TestExecuteSqlSteps:
         )
 
         assert result.success
-        # Views survive for export reuse — they die when the connection/cursor closes
-        row = duckdb_conn.execute("SELECT * FROM reuse_test").fetchone()
-        assert row is not None
+        # No temp view is created anymore — the step name is not a queryable relation.
+        with pytest.raises(Exception, match="reuse_test"):
+            duckdb_conn.execute("SELECT * FROM reuse_test").fetchone()
+        # The composed CTE (steps + final_sql, one statement) is the executable artifact.
+        composed = result.value.composed_sql
+        assert composed is not None
+        assert "WITH reuse_test AS" in composed
+        assert composed.rstrip().endswith("SELECT val FROM reuse_test")
+        assert result.value.final_value == 42
 
     def test_repair_function_called_on_failure(self, duckdb_conn):
         """Repair function is called when a step fails."""

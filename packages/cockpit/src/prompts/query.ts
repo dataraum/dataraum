@@ -44,8 +44,12 @@ snippet_search returns each snippet's concept keys (standard_field / statement /
 - REUSE: a snippet computes what your step needs → set the step's snippet_id to it and REPRODUCE its validated SQL faithfully — same expression, same form — changing ONLY the table reference to lake.<layer>.<name> as the schema shows it (the stored snippet uses a bare table name). Do not rephrase math that already matches.
 - ADAPT: the snippet is close but the question genuinely needs something it does NOT compute — a different grain or period, or a tighter/more-correct filter (e.g. the snippet sums all expenses but the question asks specifically for cost of goods sold) → set its snippet_id AND write your adapted SQL, and note what you changed. Adapt for a real difference, never just to reword.
 - FRESH: nothing fits → omit snippet_id and write new SQL.
-Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula. Mix reused, adapted, and fresh steps freely.
+Snippets sharing a graph_id form one calculation chain — pull the whole chain when you need the formula. Mix reused, adapted, and fresh steps freely. A reused snippet may carry a column_mappings_basis (its prior value→concept filter) — reuse those same columns/values unless the question genuinely needs otherwise.
 </reuse>
+
+<grounding>
+When a metric concept is a SET OF VALUES of a dimension (long-format data: one amount column + a discriminator), do NOT improvise the filter. The <dimensions> block shows each axis's value-COUNT and its [id: …], not the values themselves — so to ground a predicate, call look_values with that id, then write an explicit IN (...) over the EXACT values it returns (honoring concept exclude semantics). Never an ILIKE/substring guess, and never a near-constant flag (a boolean that's ~always true/false is not a discriminator; grounding on it is silently wrong). The <schema> block lists every column, including high-cardinality ones that are NOT listed dimensions; if the discriminator you need is one of those (no [id: …] to drill), ground via a join to a dimension that IS listed, or abstain — never guess its values. NEVER force-fit: if you still cannot map the concept to specific values (opaque codes, values absent), do NOT fabricate a filter — say so and record a low-confidence assumption. A flagged inconclusive answer beats a confident wrong number.
+</grounding>
 
 <steps>
 Each step becomes a CTE named after its business concept, and final_sql references those CTEs:
@@ -59,6 +63,7 @@ Each step becomes a CTE named after its business concept, and final_sql referenc
 <duckdb_dialect>
 Generate valid DuckDB SQL:
 - Address every table as lake.<layer>.<name> exactly as the schema shows; quote column names with special characters in double quotes ("Betrag").
+- JOIN only on a column pair listed in <relationships> (the confirmed join paths) — never invent a join key (e.g. matching a code column to a name column). If the join you need isn't listed, do not fabricate one: abstain and state the limitation. Heed a ⚠ fan-out edge — pre-aggregate (or COUNT DISTINCT) before SUMming an additive measure across it.
 - GROUP BY strictness: every non-aggregated column in SELECT/ORDER BY/HAVING must appear in GROUP BY (or use ANY_VALUE).
 - Never use a reserved word as an alias (DATE, MONTH, YEAR, TIME, CURRENT_DATE …) — use descriptive names (period_month, calculation_date).
 - Case-insensitive matching: ILIKE, not LOWER(col) = '…'. Dates: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.

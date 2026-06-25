@@ -85,6 +85,22 @@ class StepSource:
 
 
 @dataclass
+class StepValidation:
+    """A declared post-execution check on a step's value (DAT-616).
+
+    From the catalogue's per-extract ``validation:`` block, e.g.
+    ``{condition: "value > 0", severity: "error", message: "Revenue must be positive"}``.
+    Enforced by :func:`dataraum.graphs.verifier.verify_execution` against the
+    executed value — execution-pass is not validation. Before DAT-616 the loader
+    dropped this block on the floor; it is now parsed into this model.
+    """
+
+    condition: str  # comparison over `value`, e.g. "value > 0" / "value >= 0"
+    severity: str = "error"
+    message: str = ""
+
+
+@dataclass
 class GraphStep:
     """A single step in a transformation graph."""
 
@@ -107,6 +123,9 @@ class GraphStep:
 
     # Output marker
     output_step: bool = False
+
+    # Declared post-execution checks (catalogue `validation:` block, DAT-616)
+    validations: list[StepValidation] = field(default_factory=list)
 
 
 @dataclass
@@ -258,6 +277,11 @@ class GraphExecution:
     # Output
     output_value: Any = None
     output_interpretation: str | None = None
+
+    # DAT-616: the single self-contained CTE statement executed (steps composed +
+    # final_sql) — the metric's executable artifact, mirroring the answer agent's
+    # composed grid SQL. Ephemeral like output_value (durable knowledge = snippets).
+    composed_sql: str | None = None
 
     # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)

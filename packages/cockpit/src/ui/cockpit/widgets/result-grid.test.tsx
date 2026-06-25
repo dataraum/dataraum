@@ -16,8 +16,8 @@ import { MantineProvider } from "@mantine/core";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { GridSort } from "#/duckdb/grid-query";
 import { ColumnStore } from "#/duckdb/ndjson-stream";
-import type { GridSort } from "#/duckdb/stream-sql";
 import { cycleSort, ResultGridView } from "#/ui/cockpit/widgets/result-grid";
 import { theme } from "#/ui/theme";
 
@@ -134,5 +134,118 @@ describe("ResultGridView (DAT-385 P2)", () => {
 		// No sort indicators and no crash without the callback.
 		expect(screen.queryByLabelText("sorted ascending")).toBeNull();
 		expect(screen.queryByLabelText("sorted descending")).toBeNull();
+	});
+
+	it("right-aligns numeric column headers off duckdbType (DAT-575)", () => {
+		// The body is virtualized away in headless DOM (see file note); the header
+		// IS rendered, so it's the one observable type-driven path here. `amount` is
+		// a numeric column (INTEGER=4), `label` is text (VARCHAR=17).
+		const s = new ColumnStore();
+		s.apply({
+			t: "h",
+			columns: ["amount", "label"],
+			types: [{ typeId: 4 }, { typeId: 17 }],
+			queryId: "q_1",
+		});
+		s.apply({ t: "f", rows: 0 });
+		renderView(s);
+		expect(
+			screen.getByTestId("canvas-result-grid-header-amount").style.textAlign,
+		).toBe("right");
+		expect(
+			screen.getByTestId("canvas-result-grid-header-label").style.textAlign,
+		).toBe("");
+	});
+});
+
+describe("ResultGridView filter toggle (DAT-613)", () => {
+	afterEach(() => cleanup());
+
+	function renderFilterable(
+		onFilterCommit: (column: string, raw: string) => void,
+		activeFilterCount = 0,
+	) {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ResultGridView
+					store={store}
+					onFilterCommit={onFilterCommit}
+					activeFilterCount={activeFilterCount}
+				/>
+			</MantineProvider>,
+		);
+	}
+
+	it("hides the filter row by default and reveals it on the funnel toggle", () => {
+		renderFilterable(vi.fn());
+		// Filter row starts hidden — no per-column inputs in the DOM.
+		expect(screen.queryByTestId("canvas-result-grid-filter-id")).toBeNull();
+		// The funnel is present; clicking it reveals the inputs.
+		fireEvent.click(screen.getByTestId("canvas-result-grid-filter-toggle"));
+		expect(screen.getByTestId("canvas-result-grid-filter-id")).toBeTruthy();
+		expect(screen.getByTestId("canvas-result-grid-filter-name")).toBeTruthy();
+	});
+
+	it("commits a filter on Enter with the column name and typed value", () => {
+		const onFilterCommit = vi.fn();
+		renderFilterable(onFilterCommit);
+		fireEvent.click(screen.getByTestId("canvas-result-grid-filter-toggle"));
+		const input = screen.getByTestId("canvas-result-grid-filter-id");
+		fireEvent.change(input, { target: { value: ">100" } });
+		fireEvent.keyDown(input, { key: "Enter" });
+		expect(onFilterCommit).toHaveBeenCalledWith("id", ">100");
+	});
+
+	it("does not render the funnel or filter row when filtering is unsupported", () => {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ResultGridView store={store} />
+			</MantineProvider>,
+		);
+		expect(screen.queryByTestId("canvas-result-grid-filter-toggle")).toBeNull();
+		expect(screen.queryByTestId("canvas-result-grid-filter-id")).toBeNull();
+	});
+});
+
+describe("ResultGridView SQL modal (DAT-613)", () => {
+	afterEach(() => cleanup());
+
+	function renderWithSql(
+		sql?: string,
+		sqlParams?: (string | number | boolean | null)[],
+	) {
+		const store = seeded();
+		store.apply({ t: "f", rows: 3 });
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ResultGridView store={store} sql={sql} sqlParams={sqlParams} />
+			</MantineProvider>,
+		);
+	}
+
+	it("opens the SQL in a modal from the labeled toolbar button", () => {
+		renderWithSql("SELECT 1 FROM lake.typed.t");
+		const button = screen.getByTestId("canvas-result-grid-sql-toggle");
+		expect(button.textContent).toContain("View SQL");
+		// The query is not shown until the modal is opened.
+		expect(screen.queryByText("SELECT 1 FROM lake.typed.t")).toBeNull();
+		fireEvent.click(button);
+		expect(screen.getByText("SELECT 1 FROM lake.typed.t")).toBeTruthy();
+	});
+
+	it("shows bind params in the modal", () => {
+		renderWithSql("SELECT * FROM t WHERE a = $1", [7]);
+		fireEvent.click(screen.getByTestId("canvas-result-grid-sql-toggle"));
+		expect(screen.getByTestId("sql-block-params")).toBeTruthy();
+		expect(screen.getByText("7")).toBeTruthy();
+	});
+
+	it("renders no SQL button when there is no query", () => {
+		renderWithSql(undefined);
+		expect(screen.queryByTestId("canvas-result-grid-sql-toggle")).toBeNull();
 	});
 });

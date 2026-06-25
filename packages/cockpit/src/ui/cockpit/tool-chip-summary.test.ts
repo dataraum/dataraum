@@ -17,6 +17,12 @@ describe("toolLabel", () => {
 		expect(toolLabel("run_sql")).toBe("Query");
 		expect(toolLabel("why_column")).toBe("Column detail");
 		expect(toolLabel("look_table")).toBe("Table readiness");
+		// DAT-579: cycle / metric / drivers titles (were falling through to the verb).
+		expect(toolLabel("look_cycle")).toBe("Business cycles");
+		expect(toolLabel("why_cycle")).toBe("Cycle detail");
+		expect(toolLabel("look_metric")).toBe("Metrics");
+		expect(toolLabel("why_metric")).toBe("Metric detail");
+		expect(toolLabel("look_drivers")).toBe("Drivers");
 	});
 
 	it("humanizes an unmapped tool instead of leaking snake_case", () => {
@@ -27,11 +33,8 @@ describe("toolLabel", () => {
 
 	it("flips a progressive verb to its settled form once the call is done", () => {
 		// In-progress title (done=false) stays present-tense…
-		expect(toolLabel("select")).toBe("Registering source");
-		expect(toolLabel("connect")).toBe("Reading source");
+		expect(toolLabel("teach")).toBe("Teaching");
 		// …and flips to a settled form when the call completes.
-		expect(toolLabel("select", true)).toBe("Registered source");
-		expect(toolLabel("connect", true)).toBe("Source schema");
 		expect(toolLabel("teach", true)).toBe("Taught");
 		expect(toolLabel("replay", true)).toBe("Re-ran");
 		expect(toolLabel("begin_session")).toBe("Starting session");
@@ -49,9 +52,15 @@ describe("toolLabel", () => {
 });
 
 describe("isCanvasTool", () => {
-	it("marks the 26 canvas-producing tools clickable", () => {
-		expect(CANVAS_TOOLS.size).toBe(26);
+	it("marks the 22 canvas-producing tools clickable", () => {
+		// DAT-597 removed the acquisition tools (connect, frame, select, upload,
+		// probe) — acquisition is now the staging hub, not agent tools. ONE opener is
+		// kept: open_staging_hub re-mounts that hub on the canvas (DAT-597 follow-up).
+		// DAT-579 follow-up: look_drivers gained a canvas widget (driver-list).
+		expect(CANVAS_TOOLS.size).toBe(22);
 		for (const name of [
+			// The retained hub opener — projects the `probe` (staging-hub) canvas.
+			"open_staging_hub",
 			"list_sources",
 			"list_tables",
 			"look_table",
@@ -66,21 +75,15 @@ describe("isCanvasTool", () => {
 			"why_cycle",
 			"look_metric",
 			"why_metric",
+			"look_drivers",
 			// teach_metric: an OVERRIDE projects the metric-shadow canvas (DAT-482).
 			"teach_metric",
-			"connect",
-			"frame",
-			"select",
 			"begin_session",
 			"operating_model",
 			"run_sql",
 			// answer projects the streaming result-grid from its composed SQL (DAT-485).
 			"answer",
 			"replay",
-			"upload",
-			// probe SEEDS the editable probe canvas + open_probe opens it empty (DAT-576).
-			"probe",
-			"open_probe",
 		]) {
 			expect(isCanvasTool(name)).toBe(true);
 		}
@@ -95,13 +98,9 @@ describe("isCanvasTool", () => {
 		// teach_metric LEFT this list (DAT-482): an OVERRIDE projects the shipped
 		// DAG it replaces (metric-shadow), so its chip is clickable.
 		for (const name of [
-			// probe LEFT this list (DAT-576): it now seeds the editable probe canvas.
 			"teach",
 			"teach_validation",
 			"teach_cycle",
-			// use_vertical (DAT-523) sets the workspace's vertical — a control-plane
-			// write with no renderable surface, so its chip is display-only.
-			"use_vertical",
 			"unknown",
 		]) {
 			expect(isCanvasTool(name)).toBe(false);
@@ -313,6 +312,106 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		).toBe("not yet run");
 	});
 
+	// DAT-579: the cycle / metric / drivers tools were missing from the mapper, so
+	// their chips fell through to the humanized verb as BOTH title and summary
+	// ("Look cycle / Look cycle"). These mirror the validation family.
+	it("look_cycle counts cycles + executed (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_cycle",
+				{},
+				{
+					analyzed: true,
+					cycles: [{ state: "executed" }, { state: "declared" }],
+				},
+			),
+		).toBe("2 cycles (1 executed)");
+		expect(
+			toolChipSummary("look_cycle", {}, { analyzed: true, cycles: [] }),
+		).toBe("no cycles declared");
+		expect(
+			toolChipSummary("look_cycle", {}, { analyzed: false, cycles: [] }),
+		).toBe("not yet run");
+	});
+
+	it("why_cycle names the cycle + lifecycle state (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"why_cycle",
+				{},
+				{ found: true, cycle_name: "Accounts Payable", state: "executed" },
+			),
+		).toBe("Accounts Payable — executed");
+		expect(
+			toolChipSummary(
+				"why_cycle",
+				{},
+				{ found: false, cycle_name: null, state: null },
+			),
+		).toBe("cycle not found");
+	});
+
+	it("look_metric counts metrics + executed (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_metric",
+				{},
+				{
+					analyzed: true,
+					metrics: [
+						{ state: "executed" },
+						{ state: "grounded" },
+						{ state: "executed" },
+					],
+				},
+			),
+		).toBe("3 metrics (2 executed)");
+		expect(
+			toolChipSummary("look_metric", {}, { analyzed: true, metrics: [] }),
+		).toBe("no metrics declared");
+		expect(
+			toolChipSummary("look_metric", {}, { analyzed: false, metrics: [] }),
+		).toBe("not yet run");
+	});
+
+	it("why_metric humanizes the graph_id + lifecycle state — never snake_case (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "gross_margin", found: true, state: "executed" },
+			),
+		).toBe("Gross margin — executed");
+		// A grounded-but-failed metric reads its lifecycle state, not a verdict.
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "ebitda", found: true, state: "grounded" },
+			),
+		).toBe("Ebitda — grounded");
+		expect(
+			toolChipSummary(
+				"why_metric",
+				{},
+				{ graph_id: "ebitda", found: false, state: null },
+			),
+		).toBe("metric not found");
+	});
+
+	it("look_drivers counts the driver rankings (DAT-579)", () => {
+		expect(
+			toolChipSummary(
+				"look_drivers",
+				{},
+				{ analyzed: true, rankings: [{}, {}, {}] },
+			),
+		).toBe("3 drivers");
+		expect(
+			toolChipSummary("look_drivers", {}, { analyzed: false, rankings: [] }),
+		).toBe("not yet run");
+	});
+
 	it("why_validation humanizes the key + verdict — never the snake_case id (DAT-440)", () => {
 		expect(
 			toolChipSummary(
@@ -366,69 +465,6 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 		).toBe("validation run started — outcomes via the validations view");
 	});
 
-	it("connect names the source + table count", () => {
-		expect(
-			toolChipSummary("connect", {}, { source: "people.csv", tables: [{}] }),
-		).toBe("people.csv — 1 table");
-	});
-
-	it("connect shows a file source's filename, not the full s3:// URI", () => {
-		expect(
-			toolChipSummary(
-				"connect",
-				{},
-				{
-					sourceKind: "file",
-					source: "s3://dataraum-lake/uploads/da833c2e/trial_balance.csv",
-					tables: [{}],
-				},
-			),
-		).toBe("trial_balance.csv — 1 table");
-	});
-
-	it("frame names the vertical + concept count", () => {
-		expect(
-			toolChipSummary(
-				"frame",
-				{},
-				{ vertical: "ecommerce", concepts: [{}, {}], validations: [] },
-			),
-		).toBe("ecommerce — 2 concepts");
-	});
-
-	it("frame appends the validation count when validations were framed", () => {
-		expect(
-			toolChipSummary(
-				"frame",
-				{},
-				{
-					vertical: "ecommerce",
-					concepts: [{}, {}],
-					validations: [{}, {}, {}],
-				},
-			),
-		).toBe("ecommerce — 2 concepts, 3 validations");
-	});
-
-	it("select names the source + type", () => {
-		expect(
-			toolChipSummary("select", {}, { name: "orders", source_type: "file" }),
-		).toBe("orders (file)");
-	});
-
-	it("use_vertical names the adopted vertical + kind (DAT-523)", () => {
-		expect(
-			toolChipSummary(
-				"use_vertical",
-				{},
-				{ vertical: "finance", kind: "builtin" },
-			),
-		).toBe("finance (builtin)");
-		expect(toolChipSummary("use_vertical", {}, undefined)).toBe(
-			"adopting vertical…",
-		);
-	});
-
 	it("begin_session counts the selection and never leaks run/session ids (DAT-435)", () => {
 		const input = { table_ids: ["t-1", "t-2", "t-3"] };
 		const output = {
@@ -462,12 +498,9 @@ describe("toolChipSummary — completed canvas tools (no JSON, readable)", () =>
 
 	it("never includes raw JSON braces from the output", () => {
 		const summary = toolChipSummary(
-			"connect",
+			"look_table",
 			{},
-			{
-				source: "x",
-				tables: [{ name: "t" }],
-			},
+			{ table_name: "orders", analyzed: true, columns: [{ name: "id" }] },
 		);
 		expect(summary).not.toContain("{");
 		expect(summary).not.toContain('"');
@@ -479,21 +512,13 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 		expect(toolChipSummary("list_sources", {}, undefined)).toBe(
 			"listing available inputs…",
 		);
-		expect(toolChipSummary("connect", {}, undefined)).toBe("connecting…");
 		expect(toolChipSummary("run_sql", {}, undefined)).toBe("running query…");
 	});
 
 	it("treats a truthy-but-PARTIAL result as still running (no .length crash)", () => {
 		// The SDK can surface a partial/streaming or errored tool output: truthy but
-		// missing its array. Accessing `.tables.length` / `.concepts.length` /
-		// `.columns.length` on it crashed the chat rail (the multi-file drag-drop
-		// crash). These must degrade to the running label, not throw.
-		expect(toolChipSummary("connect", {}, { source: "people.csv" })).toBe(
-			"connecting…",
-		);
-		expect(toolChipSummary("frame", {}, { vertical: "finance" })).toBe(
-			"framing the model…",
-		);
+		// missing its array. Accessing `.columns.length` on it crashed the chat rail.
+		// These must degrade to the running label, not throw.
 		expect(toolChipSummary("look_table", {}, { table_name: "orders" })).toBe(
 			"reading table readiness…",
 		);
@@ -503,7 +528,6 @@ describe("toolChipSummary — streaming / pre-result states", () => {
 		// list_* outputs are arrays; a partial/errored truthy non-array reached
 		// `.filter`/`.length` → "e.filter is not a function" crashed the rail.
 		expect(toolChipSummary("list_sources", {}, {})).toBe("no available inputs");
-		expect(toolChipSummary("list_verticals", {}, {})).toBe("no verticals");
 		expect(toolChipSummary("list_tables", {}, {})).toBe("0 tables");
 	});
 });
@@ -692,7 +716,7 @@ describe("teachMetricChipSummary (DAT-482, visible override)", () => {
 	});
 });
 
-describe("toolChipSummary — replay / probe (display-only)", () => {
+describe("toolChipSummary — replay (display-only)", () => {
 	it("replay shows the source before run, run id after", () => {
 		expect(toolChipSummary("replay", { source_id: "src1" }, undefined)).toBe(
 			"replay src1",
@@ -706,11 +730,5 @@ describe("toolChipSummary — replay / probe (display-only)", () => {
 				},
 			),
 		).toBe("replay — run r9");
-	});
-
-	it("probe shows the source name + row count", () => {
-		expect(
-			toolChipSummary("probe", { source_name: "pg" }, { rowCount: 3 }),
-		).toBe("probe on pg — 3 rows");
 	});
 });

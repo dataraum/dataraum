@@ -247,6 +247,7 @@ class TestFormatMetadataDocument:
             time_columns=[
                 {"column": "created_at", "aspect": "created", "note": "When the row was created."}
             ],
+            identity_columns=[{"column": "customer_id", "note": "Recurring customer identity."}],
             columns=[
                 ColumnContext(
                     column_id="col-1",
@@ -273,6 +274,10 @@ class TestFormatMetadataDocument:
         assert "by created" in result
         assert "2024-01-01 to 2024-12-31" in result
         assert "When the row was created." in result
+        # DAT-566: recurring identities surface with their note for "per <entity>".
+        assert "Identity columns" in result
+        assert "customer_id" in result
+        assert "Recurring customer identity" in result
 
     def test_column_table_format(self) -> None:
         """Columns are formatted in a table with business metadata."""
@@ -303,6 +308,8 @@ class TestFormatMetadataDocument:
         assert "Invoice Amount" in result
         assert "currency_code" in result
         assert "qty * price" in result
+        # DAT-566: a table with no identity_columns renders no identity clause.
+        assert "Identity columns" not in result
 
     def test_entropy_scores_per_column(self) -> None:
         """Entropy scores shown per column in data quality notes."""
@@ -384,8 +391,10 @@ class TestFormatMetadataDocument:
         assert "## Enriched Views" in result
         assert "enriched_sales" in result
         assert "grain verified" in result
+        # DAT-621: slice dimension NAMES only here; values live in the Value sets block
+        # (no redundant capped sample re-rendered in the enriched-views block).
         assert "region" in result
-        assert "EMEA" in result
+        assert "see Value sets" in result
 
     def test_slice_filter_shown(self) -> None:
         """Active slice filter shown in overview."""
@@ -592,3 +601,232 @@ class TestFormatMetadataDocument:
         result = format_metadata_document(ctx)
 
         assert "⚠" in result
+
+
+# =============================================================================
+# Tests for DAT-616 grounding surface (value sets + concept vocabulary)
+# =============================================================================
+
+
+def _categorical(name: str, distinct: int, values: list[tuple[str, int]]) -> ColumnContext:
+    return ColumnContext(
+        column_id=f"col-{name}",
+        column_name=name,
+        table_name="ledger",
+        semantic_role="dimension",
+        distinct_count=distinct,
+        top_values=[{"value": v, "count": c, "percentage": 0.0} for v, c in values],
+    )
+
+
+class TestValueSetGrounding:
+    """The complete value enumeration the SQL agent grounds predicates in (DAT-616)."""
+
+    def test_complete_value_set_rendered_with_counts(self) -> None:
+        """A low-card categorical renders every value with its count, marked complete."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[
+                _categorical(
+                    "account_type", 3, [("Sales Revenue", 120), ("COGS", 100), ("SG&A", 80)]
+                )
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" in result
+        assert "**account_type** (complete, 3 distinct)" in result
+        assert "Sales Revenue (120)" in result
+        assert "COGS (100)" in result
+
+    def test_high_card_column_not_served_to_graph_agent(self) -> None:
+        """DAT-621: the one-shot GraphAgent gets the LOW-CARD BASELINE only. A high-card /
+        incompletely-fetched column (distinct > served) is NOT rendered at all — no size
+        line, no partial sample. High-card is the cockpit sub-agent's + user's drill lane;
+        dangling it here only invites the ILIKE-guess that is the root bug."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[_categorical("cost_center", 30, [("North", 9), ("South", 7)])],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        # The column is still MENTIONED in the catalog, but carries NO value-set entry and
+        # no size-only/abstain line — high-card is simply not a groundable surface here.
+        assert "**cost_center**" not in result  # no value-set entry
+        assert "not inlined" not in result  # the old size-only branch is gone
+        assert "North (9)" not in result  # no partial value sample leaked
+
+    def test_near_constant_column_flagged_not_served(self) -> None:
+        """A near-constant column (one value ≥90%) is flagged, never served as groundable —
+        the sale/purchase silent-wrong trap."""
+        table = TableContext(
+            table_id="t1",
+            table_name="ledger",
+            columns=[_categorical("sale", 2, [("true", 4980), ("false", 20)])],
+        )
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**sale**: near-constant" in result
+        assert "NOT a discriminator" in result
+        assert "true (4980)" not in result
+
+    def test_fetch_complete_value_set_is_freq_ordered_and_null_free(self) -> None:
+        """DAT-621: the live-DISTINCT helper returns the COMPLETE {value,count} set,
+        freq-ordered, NULLs excluded — the agent's full IN-list."""
+        import duckdb
+
+        from dataraum.graphs.context import _fetch_complete_value_set
+
+        conn = duckdb.connect()
+        conn.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES ('a'),('a'),('a'),('b'),(NULL)) v(cat)"
+        )
+        out = _fetch_complete_value_set(conn, "t", "cat", 200)
+        assert out == [{"value": "a", "count": 3}, {"value": "b", "count": 1}]
+
+    def test_measure_role_has_no_value_set(self) -> None:
+        """Only key/measure/time roles are skipped — they're never aggregation partitions."""
+        measure = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            distinct_count=900,
+            top_values=[{"value": "1.0", "count": 1, "percentage": 0.0}],
+        )
+        table = TableContext(table_id="t1", table_name="ledger", columns=[measure])
+        result = format_metadata_document(GraphExecutionContext(tables=[table], total_tables=1))
+
+        assert "**Value sets**" not in result
+
+    def test_concept_vocabulary_section_rendered(self) -> None:
+        """The ontology vocabulary is served as a Business Concepts section."""
+        ctx = GraphExecutionContext(
+            total_tables=0,
+            concept_vocabulary="- **revenue**: income from sales\n  - exclude: cost",
+        )
+        result = format_metadata_document(ctx)
+
+        assert "## Business Concepts" in result
+        assert "**revenue**: income from sales" in result
+        assert "do not improvise a substring filter" in result
+
+    def test_no_concept_section_without_vocabulary(self) -> None:
+        """No vertical → no Business Concepts section (clean default)."""
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Business Concepts" not in result
+
+
+class TestDriversRendering:
+    """The per-measure driver block served to the GraphAgent (DAT-616)."""
+
+    def test_drivers_block_renders_target_type_dims_and_slices(self) -> None:
+        from dataraum.graphs.context import DriverContext
+
+        d = DriverContext(
+            measure_label="amount",
+            target_type="flow",
+            grain="row",
+            ranked_dimensions=[{"dimension": "account_type", "gain": 0.42}],
+            interesting_slices=[
+                {"dimension": "account_type", "value": "COGS", "effect": -0.8, "support": 4120}
+            ],
+        )
+        result = format_metadata_document(GraphExecutionContext(drivers=[d], total_tables=0))
+
+        assert "## Drivers" in result
+        assert "amount (flow" in result
+        assert "account_type (0.42)" in result
+        assert "account_type=COGS (effect -0.80, support 4120)" in result
+        assert "hint, NOT the value-set" in result
+
+    def test_no_drivers_section_when_empty(self) -> None:
+        result = format_metadata_document(GraphExecutionContext(total_tables=0))
+        assert "## Drivers" not in result
+
+
+class TestCycleConceptBindings:
+    """Cycle stages/completion rendered as explicit IN-list bindings (DAT-616)."""
+
+    def test_stage_and_completion_bindings_rendered(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext, CycleStageContext
+
+        c = BusinessCycleContext(
+            cycle_name="Order to Cash",
+            cycle_type="order_to_cash",
+            status_column="orders.status",
+            completion_value="delivered",
+            stages=[
+                CycleStageContext(
+                    stage_name="Shipped",
+                    stage_order=2,
+                    indicator_column="status",
+                    indicator_values=["shipped", "in_transit"],
+                )
+            ],
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+
+        assert "Concept bindings (confirmed" in result
+        assert "\"Shipped\" = WHERE status IN ('shipped', 'in_transit')" in result
+        assert "\"order_to_cash completed\" = WHERE orders.status = 'delivered'" in result
+
+    def test_no_bindings_block_without_indicators(self) -> None:
+        from dataraum.graphs.context import BusinessCycleContext
+
+        c = BusinessCycleContext(cycle_name="C", cycle_type="c")  # no stages, no status
+        result = format_metadata_document(
+            GraphExecutionContext(business_cycles=[c], total_tables=0)
+        )
+        assert "Concept bindings (confirmed" not in result
+
+
+class TestFanTrapAndSignedMeasure:
+    """Fan-trap caution + signed-measure range (DAT-616)."""
+
+    def test_fan_out_relationship_warned(self) -> None:
+        rel = RelationshipContext(
+            from_table="lines",
+            from_column="order_id",
+            to_table="orders",
+            to_column="id",
+            relationship_type="fk",
+            cardinality="many_to_one",
+            confidence=0.9,
+            introduces_duplicates=True,
+        )
+        result = format_metadata_document(
+            GraphExecutionContext(relationships=[rel], total_tables=0)
+        )
+        assert "fan-out: SUM across this join double-counts" in result
+
+    def test_signed_measure_range_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="amount",
+            table_name="ledger",
+            semantic_role="measure",
+            numeric_min=-500.0,
+            numeric_max=9000.0,
+        )
+        t = TableContext(table_id="t", table_name="ledger", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Range: -500..9000" in result
+        assert "Signed (has negatives)" in result
+
+    def test_unsigned_measure_no_signed_note(self) -> None:
+        m = ColumnContext(
+            column_id="m",
+            column_name="qty",
+            table_name="t",
+            semantic_role="measure",
+            numeric_min=1.0,
+            numeric_max=50.0,
+        )
+        t = TableContext(table_id="t", table_name="t", columns=[m])
+        result = format_metadata_document(GraphExecutionContext(tables=[t], total_tables=1))
+        assert "Signed (has negatives)" not in result

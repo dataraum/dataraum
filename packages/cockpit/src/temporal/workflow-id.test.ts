@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
 	addSourceWorkflowId,
 	beginSessionWorkflowId,
+	groundingLoopWorkflowId,
 	operatingModelWorkflowId,
+	sessionCascadeWorkflowId,
 } from "./workflow-id";
 
 // The parent workflow ID is `<stage>-<workspace_id>` — ONE id per stage per
@@ -51,5 +53,32 @@ describe("stage ids are distinct within one workspace", () => {
 			operatingModelWorkflowId(WS_A),
 		]);
 		expect(ids.size).toBe(3);
+	});
+});
+
+describe("orchestration workflow ids (DAT-609)", () => {
+	it("encode the orchestration stage then the workspace", () => {
+		expect(groundingLoopWorkflowId(WS_A)).toBe(`grounding-${WS_A}`);
+		expect(sessionCascadeWorkflowId(WS_A)).toBe(`session-${WS_A}`);
+	});
+
+	it("do not collide across workspaces", () => {
+		expect(groundingLoopWorkflowId(WS_A)).not.toBe(
+			groundingLoopWorkflowId(WS_B),
+		);
+		expect(sessionCascadeWorkflowId(WS_A)).not.toBe(
+			sessionCascadeWorkflowId(WS_B),
+		);
+	});
+
+	it("are distinct from the engine ids they wrap (no orchestration↔child clash)", () => {
+		const ids = new Set([
+			groundingLoopWorkflowId(WS_A),
+			sessionCascadeWorkflowId(WS_A),
+			addSourceWorkflowId(WS_A),
+			beginSessionWorkflowId(WS_A),
+			operatingModelWorkflowId(WS_A),
+		]);
+		expect(ids.size).toBe(5);
 	});
 });

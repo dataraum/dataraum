@@ -20,6 +20,7 @@ the rare commit conflict raises and is absorbed by Temporal's activity retry.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -83,6 +84,16 @@ def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[
     activity declare a short ``heartbeat_timeout`` for fast worker-death
     detection without the phase having to thread a progress callback. The pulse
     is a no-op outside an activity context (unit tests), so it stays test-safe.
+
+    The daemon thread runs inside a COPY of the caller's context
+    (:func:`contextvars.copy_context`): ``activity.heartbeat()`` resolves the
+    activity through a ``ContextVar`` (``temporalio.activity._current_context``),
+    and a bare ``threading.Thread`` starts with an EMPTY context — so without the
+    copy every ``heartbeat()`` raised ``RuntimeError("Not in activity context")``,
+    the loop hit its ``except`` and exited at the first beat, and the pulse never
+    fired. The activity then survived only by finishing within its
+    ``heartbeat_timeout``; a longer run (e.g. the DAT-629 warming pre-pass) blew
+    past it, got cancelled, and leaked the sync worker's pooled connections.
     """
     stop = threading.Event()
 
@@ -95,7 +106,9 @@ def _heartbeat_pulse(interval: float = _HEARTBEAT_INTERVAL_SECONDS) -> Iterator[
                 # nothing to heartbeat against; stop quietly.
                 return
 
-    thread = threading.Thread(target=_beat, name="metrics-heartbeat", daemon=True)
+    # Propagate the activity context (the heartbeat ContextVar) into the daemon.
+    ctx = contextvars.copy_context()
+    thread = threading.Thread(target=lambda: ctx.run(_beat), name="metrics-heartbeat", daemon=True)
     thread.start()
     try:
         yield
@@ -119,6 +132,21 @@ def _provider_app_error(exc: ProviderError) -> ApplicationError:
     if isinstance(exc, TransientProviderError):
         return ApplicationError(message, type="TransientPhaseFailure")
     return ApplicationError(message, type="PhaseFailed", non_retryable=True)
+
+
+def _is_transient_commit_conflict(error: str | None) -> bool:
+    """True for a DuckLake optimistic-concurrency commit conflict — transient.
+
+    add_source fans out one ``ProcessTableWorkflow`` per table concurrently; their
+    per-phase commits race on the single shared DuckLake catalog, and the losing
+    commit raises ``TransactionException: … Transaction conflict``. It is NOT a
+    deterministic phase failure — the phases are idempotent (upsert on
+    ``(column_id, run_id)``), so a retry against the now-committed rows succeeds.
+    """
+    if not error:
+        return False
+    e = error.lower()
+    return "transaction conflict" in e or "failed to commit ducklake transaction" in e
 
 
 class PhaseActivities:
@@ -652,5 +680,12 @@ class PhaseActivities:
         """
         if run.status == PhaseStatus.FAILED.value:
             message = run.error or f"Phase '{phase_name}' failed"
+            # A DuckLake commit CONFLICT is the one transient FAILED outcome: the
+            # concurrent add_source fan-out raced on the shared catalog. The phase is
+            # idempotent, so raise the retryable TransientPhaseFailure (absent from the
+            # activity RetryPolicy's non_retryable_error_types) instead of the permanent
+            # non-retryable PhaseFailed — Temporal re-runs it with backoff and wins.
+            if _is_transient_commit_conflict(run.error):
+                raise ApplicationError(message, type="TransientPhaseFailure")
             raise ApplicationError(message, type="PhaseFailed", non_retryable=True)
         return PhaseOutcome(status=run.status, summary=run.summary)

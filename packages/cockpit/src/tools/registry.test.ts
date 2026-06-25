@@ -26,12 +26,13 @@ vi.mock("#/db/cockpit/registry", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: async () => {},
-	attachRunId: async () => {},
 	hasRunningRun: async () => false,
 }));
 
 import { CANVAS_TOOLS, CHIP_ONLY } from "#/ui/cockpit/tool-result-to-canvas";
 import { toolsByKind } from "./registry";
+import { connectTeachTool, teachTool } from "./teach";
+import { AGENT_TEACH_TYPES, CONNECT_TEACH_TYPES } from "./teach.validation";
 
 /** The reachable tool surface = the union of the per-kind buckets, deduped by
  * name (a tool may sit in several kinds). Derived — never a hand-maintained
@@ -51,22 +52,18 @@ describe("tool registry (DAT-353)", () => {
 		expect(names).toHaveLength(new Set(names).size); // no dupes
 		expect(new Set(names)).toEqual(
 			new Set([
+				"open_staging_hub",
 				"list_sources",
 				"list_tables",
-				"list_verticals",
-				"use_vertical",
 				"look_table",
 				"look_profile",
+				"look_values",
 				"why_column",
 				"why_table",
 				"look_relationships",
 				"why_relationship",
 				"run_sql",
 				"answer",
-				"probe",
-				"connect",
-				"frame",
-				"select",
 				"teach",
 				"teach_validation",
 				"teach_cycle",
@@ -81,8 +78,6 @@ describe("tool registry (DAT-353)", () => {
 				"why_metric",
 				"look_drivers",
 				"replay",
-				"upload",
-				"open_probe",
 			]),
 		);
 	});
@@ -123,25 +118,71 @@ describe("tool registry (DAT-353)", () => {
 		expect(analyse.has("begin_session")).toBe(false);
 
 		// answer is the Analyse surface; raw run_sql is Stage-only (answer replaces
-		// it for analysis — run_sql overflows context). probe is Connect-only.
+		// it for analysis — run_sql overflows context).
 		expect(analyse.has("answer")).toBe(true);
 		expect(stage.has("answer")).toBe(false);
 		expect(connect.has("answer")).toBe(false);
 		expect(stage.has("run_sql")).toBe(true);
 		expect(analyse.has("run_sql")).toBe(false);
-		expect(connect.has("probe")).toBe(true);
-		expect(analyse.has("probe")).toBe(false);
 
-		// select/frame/use_vertical are Connect's acquisition tools.
-		for (const t of ["select", "frame", "use_vertical", "upload"]) {
+		// Connect is the TEACH surface (DAT-597): teach + look_table/why_column to
+		// inspect + replay to re-ground + list_sources/list_tables for context.
+		// Acquisition (assemble/frame/import) is the staging hub widget — but the chat
+		// keeps ONE opener (open_staging_hub) to re-mount that hub after an inspect
+		// view replaced the canvas (DAT-597 follow-up). It still has NO acquisition
+		// LOGIC tools.
+		for (const t of [
+			"open_staging_hub",
+			"teach",
+			"look_table",
+			"why_column",
+			"replay",
+		]) {
 			expect(connect.has(t)).toBe(true);
-			expect(stage.has(t)).toBe(false);
+		}
+		for (const t of [
+			"select",
+			"frame",
+			"use_vertical",
+			"upload",
+			"open_probe",
+			"probe",
+			"connect",
+			"list_verticals",
+		]) {
+			expect(connect.has(t)).toBe(false);
 		}
 
 		// The read+explain set overlaps Stage and Analyse (overlap is by design).
 		for (const t of ["look_table", "why_column", "look_metric"]) {
 			expect(stage.has(t) && analyse.has(t)).toBe(true);
 		}
+	});
+
+	it("connect gets the add_source-scoped teach; stage gets the full teach (DAT-597)", () => {
+		// Both tools are named "teach", so the `allTools` Map dedups them — assert by
+		// OBJECT IDENTITY that each kind carries the right one (the dedup can't mask
+		// a swap). Connect must NOT carry the topology-capable stage teach.
+		expect(toolsByKind.connect).toContain(connectTeachTool);
+		expect(toolsByKind.connect).not.toContain(teachTool);
+		expect(toolsByKind.stage).toContain(teachTool);
+		expect(toolsByKind.stage).not.toContain(connectTeachTool);
+
+		// CONNECT_TEACH_TYPES = the add_source grounding layer (AGENT_TEACH_TYPES
+		// minus the stage-owned relationship/hierarchy). No overlap.
+		expect([...CONNECT_TEACH_TYPES]).toEqual([
+			"type_pattern",
+			"null_value",
+			"unit",
+			"concept",
+			"concept_property",
+			"rebind",
+		]);
+		expect(CONNECT_TEACH_TYPES).not.toContain("relationship");
+		expect(CONNECT_TEACH_TYPES).not.toContain("hierarchy");
+		// Stage keeps both topology families.
+		expect(AGENT_TEACH_TYPES).toContain("relationship");
+		expect(AGENT_TEACH_TYPES).toContain("hierarchy");
 	});
 
 	it("declares NO approval gate on any tool — every tool runs directly", () => {

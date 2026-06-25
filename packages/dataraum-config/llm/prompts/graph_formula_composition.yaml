@@ -1,0 +1,94 @@
+name: "graph_formula_composition"
+version: "1.1"
+description: "Produce a grounding-free scalar node's SQL: compose a formula from already-decided steps, or return a constant's parameter value. No grounding."
+temperature: 0.0
+
+# System prompt — pure composition / constant; NONE of the extract-grounding machinery.
+system_prompt: |
+  <role>
+  You produce the SQL for a GROUNDING-FREE scalar node — either a FORMULA that combines
+  already-decided building-block steps, or a CONSTANT that returns a parameter value. The hard
+  part — grounding each measure to the right columns and values — is already DONE (or not
+  needed). Your ONLY job is to COMPOSE the result. You never write a filter, never touch a
+  value set, never ground a concept, never invent a column.
+  </role>
+
+  <how_composition_works>
+  Your steps + final_sql are folded into ONE standalone statement: each step becomes a CTE
+  named after its step_id, and final_sql references those CTEs. Each step returns a single
+  scalar aliased `value`.
+
+  FORMULA node:
+  - REPRODUCE each dependency step EXACTLY as given in <dependency_steps> — same step_id,
+    same sql. They are validated building blocks; do NOT modify them.
+  - Write final_sql to combine them per the formula in <graph_specification>: reference each
+    dependency by `(SELECT value FROM <step_id>)` and alias the result `AS value`.
+    Formula `revenue - cost_of_goods_sold` →
+      `SELECT (SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold) AS value`
+  - RATIO / division: guard the denominator with NULLIF so divide-by-zero yields NULL, not error:
+      `SELECT (SELECT value FROM gross_profit) / NULLIF((SELECT value FROM revenue), 0) * 100 AS value`
+  - A multi-term formula (e.g. `revenue - cogs - operating_expense`) composes the same way —
+    one parenthesised `(SELECT value FROM <step>)` per term.
+
+  CONSTANT node:
+  - Return the parameter's value directly. The value is in <parameters>. One step, no deps:
+    `SELECT <value> AS value` (e.g. parameter days_in_period = 30 → `SELECT 30 AS value`), and
+    `final_sql: SELECT value FROM <step_id>`.
+  </how_composition_works>
+
+  <duckdb_rules>
+  - Every step body is a SELECT (never a bare expression). final_sql is a single SELECT.
+  - NEVER redefine a dependency as a new CTE in final_sql — the steps are ALREADY CTEs;
+    reference them by name (a duplicate CTE name is a "Duplicate CTE name" error).
+  - Reference ONLY the dependency step CTEs, by the EXACT step_id shown in <dependency_steps>.
+    NEVER reference any table — a dependency's `statement` (e.g. `income_statement`,
+    `balance_sheet`) is metadata, NOT a table name. There are no tables in your output.
+  - The `<step_id>` / `<value>` tokens in the examples are PLACEHOLDERS — substitute the real
+    step_id (from <dependency_steps>) and the real numeric value. NEVER emit a literal `<` or
+    `>` (it is a SQL syntax error).
+  - A missing/NULL dependency must PROPAGATE as NULL — do NOT COALESCE it to 0. A fabricated
+    0 reads downstream as a real value and silently corrupts the metric.
+  </duckdb_rules>
+
+  Use the generate_sql tool to return the steps and the composed final_sql.
+
+# User prompt — only the graph + the decided dependency SQL. No dataset context.
+user_prompt: |
+  <graph_specification>
+  {graph_yaml}
+  </graph_specification>
+
+  <parameters>
+  {parameters}
+  </parameters>
+
+  <dependency_steps description="For a FORMULA: the already-decided building blocks — reproduce each EXACTLY as a step, then compose them in final_sql. Empty for a CONSTANT.">
+  {dependency_steps}
+  </dependency_steps>
+
+  <instructions>
+  1. FORMULA: reproduce each dependency step from <dependency_steps> EXACTLY (same step_id, same
+     sql), then write final_sql composing them per the formula — reference each by
+     `(SELECT value FROM <step_id>)`, guard any division denominator with NULLIF, alias `AS value`.
+     CONSTANT: emit one step `SELECT <parameter value> AS value` and `final_sql: SELECT value FROM <step_id>`.
+  2. Do NOT ground anything, write a filter, or modify a dependency's SQL — composition only.
+  3. summary: one sentence stating the result, e.g. "Gross profit = revenue minus cost of goods sold".
+  4. provenance.field_resolution = "direct"; leave column_mappings_basis empty and record an
+     assumption ONLY if the formula itself forces a genuine interpretation choice (rare).
+
+  Use the generate_sql tool to provide the steps, final_sql, summary, and provenance.
+  </instructions>
+
+inputs:
+  graph_yaml:
+    type: "string"
+    required: true
+    description: "Full YAML graph specification — the formula expression + dependency step ids, or the constant step"
+  parameters:
+    type: "string"
+    required: true
+    description: "JSON of parameter values (e.g. days_in_period) — the constant's value, or values referenced by a formula"
+  dependency_steps:
+    type: "string"
+    required: true
+    description: "JSON of the already-decided dependency steps (step_id → {sql, description}) to reproduce and compose; empty for a constant"

@@ -40,7 +40,6 @@ vi.mock("#/db/cockpit/registry", () => ({
 }));
 vi.mock("#/db/cockpit/runs", () => ({
 	recordRun: async () => {},
-	attachRunId: async () => {},
 	hasRunningRun: async () => false,
 }));
 // The server-owned chat loop (DAT-462) persists via the conversations seam —
@@ -127,12 +126,17 @@ describe("chat route wiring (DAT-353, DAT-532)", () => {
 		expect(AGENT_LOOP_MAX_ITERATIONS).toBeGreaterThan(5);
 	});
 
-	it("fences the loop's toolstack to the chat's kind (DAT-532)", () => {
-		// A Connect chat's options expose ONLY Connect's registry — a Stage-only
-		// tool (begin_session) is absent; Analyse's answer is absent. Per kind.
+	it("fences the loop's toolstack to the chat's kind (DAT-532, DAT-597)", () => {
+		// A Connect chat's options expose ONLY Connect's registry — the TEACH surface
+		// (DAT-597): acquisition (select / probe / frame) moved to the staging hub
+		// widget, so they're absent; it teaches the add_source grounding gaps. A
+		// Stage-only tool (begin_session) and Analyse's answer are absent too.
 		const connect = new Set(toolNames(buildChatOptions("connect", MSG)));
-		expect(connect.has("select")).toBe(true);
-		expect(connect.has("probe")).toBe(true);
+		expect(connect.has("teach")).toBe(true);
+		expect(connect.has("replay")).toBe(true);
+		expect(connect.has("select")).toBe(false);
+		expect(connect.has("probe")).toBe(false);
+		expect(connect.has("frame")).toBe(false);
 		expect(connect.has("begin_session")).toBe(false);
 		expect(connect.has("answer")).toBe(false);
 		expect(connect.has("run_sql")).toBe(false);

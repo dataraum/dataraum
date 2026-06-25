@@ -1,4 +1,4 @@
-// Grounding-teach agent (DAT-551 P3c) — the LLM activity the journey runs after an
+// Grounding-teach agent (DAT-551 P3c) — the LLM activity the grounding-loop workflow runs after an
 // add_source completes. It reads the run's readiness oracle and, via a nested
 // chat(), auto-applies ONLY mechanical grounding teaches (type_pattern / null_value
 // / unit) for the gaps a detector can verify, reporting whether a human-judgement
@@ -8,7 +8,7 @@
 // config_overlay writes via `teach`) and a real LLM call. This is the FIRST chat()
 // from the worker process — the cockpit's request-scoped tools (answer/why) are the
 // pattern, and `config.anthropicApiKey` is available here too. Non-deterministic →
-// correctly an ACTIVITY; the journey's deterministic loop drives the replays around
+// correctly an ACTIVITY; the grounding-loop workflow's deterministic loop drives the replays around
 // it (it never replays itself).
 //
 // The gate is authoritative + structural: the agent is handed ONLY the constrained
@@ -20,12 +20,12 @@
 import { chat, maxIterations, toolDefinition } from "@tanstack/ai";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
-
 import { config } from "#/config";
 import {
 	type GroundingReadinessRow,
 	readGroundingReadiness,
 } from "#/db/metadata/grounding-readiness";
+import { llmTelemetryMiddleware } from "#/lib/llm-telemetry";
 import { MAX_OUTPUT_TOKENS, MODEL } from "#/llm";
 import { teach } from "#/tools/teach";
 import {
@@ -69,16 +69,16 @@ const VerdictSchema = z.object({
 export interface AssessAndGroundInput {
 	/** The run's typed table ids — the readiness scope to assess + ground. */
 	tableIds: string[];
-	/** How many grounding attempts remain (for the agent's context; the journey
+	/** How many grounding attempts remain (for the agent's context; the grounding-loop workflow
 	 * owns the actual loop bound). */
 	attemptsRemaining: number;
 }
 
 export interface AssessAndGroundResult {
 	/** Mechanical grounding teaches applied this round (captured from the tool, not
-	 * self-reported) — the journey replays iff this is > 0 and attempts remain. */
+	 * self-reported) — the grounding-loop workflow replays iff this is > 0 and attempts remain. */
 	appliedCount: number;
-	/** A non-mechanical gap remains → the journey surfaces it (awaiting_input). */
+	/** A non-mechanical gap remains → the grounding-loop workflow surfaces it (awaiting_input). */
 	needsJudgement: boolean;
 	/** What to tell the human, when needsJudgement. */
 	judgementNote: string | null;
@@ -99,7 +99,7 @@ function buildReadinessMessage(
 
 /** The constrained grounding-teach tool — the authoritative gate. Its input can
  * ONLY name an auto-apply type; the write goes through the same `teach` primitive,
- * and each success bumps the capture cell so the journey gets a real applied-count. */
+ * and each success bumps the capture cell so the grounding-loop workflow gets a real applied-count. */
 function makeGroundTeachTool(captured: { count: number }) {
 	return toolDefinition({
 		name: "ground_teach",
@@ -144,9 +144,9 @@ export async function assessAndGround(
 	if (gaps.length === 0) {
 		return { appliedCount: 0, needsJudgement: false, judgementNote: null };
 	}
-	// No key → can't run the agent. Don't crash the journey; surface for a human
+	// No key → can't run the agent. Don't crash the workflow; surface for a human
 	// (mirrors the api-key-required contract — the engine treats the key as hard,
-	// but the journey must stay alive).
+	// but the workflow must stay alive).
 	if (!config.anthropicApiKey) {
 		return {
 			appliedCount: 0,
@@ -159,6 +159,7 @@ export async function assessAndGround(
 	const captured = { count: 0 };
 	const verdict = await chat({
 		adapter: createAnthropicChat(MODEL, config.anthropicApiKey),
+		middleware: [llmTelemetryMiddleware("grounding")],
 		modelOptions: { max_tokens: MAX_OUTPUT_TOKENS },
 		agentLoopStrategy: maxIterations(GROUNDING_LOOP_MAX_ITERATIONS),
 		systemPrompts: [GROUNDING_INSTRUCTIONS],

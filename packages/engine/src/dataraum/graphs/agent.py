@@ -2,7 +2,7 @@
 
 Pipeline per graph:
 1. Load graph specification (YAML with accounting context)
-2. Analyze actual data schema (columns, types, samples)
+2. Analyze actual data schema (columns, types)
 3. Look up cached SQL snippets from the knowledge base
 4. Use LLM to generate executable SQL (with snippet hints)
 5. Cache generated SQL in-memory + save as snippets for cross-agent reuse
@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
@@ -40,8 +42,30 @@ from .models import (
     StepType,
     TransformationGraph,
 )
+from .verifier import verify_execution
+
+if TYPE_CHECKING:
+    from dataraum.graphs.node_warming import NodeDecision, NodeKey
 
 logger = get_logger(__name__)
+
+
+def _as_float(value: Any) -> float | None:
+    """Coerce a metric scalar (Decimal / int / float / None) to float for comparison."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
+
+
+def _values_agree(a: Any, b: Any) -> bool:
+    """Two metric scalars agree if both are NULL, or both numeric and close."""
+    fa, fb = _as_float(a), _as_float(b)
+    if fa is None or fb is None:
+        return fa is None and fb is None
+    return math.isclose(fa, fb, rel_tol=1e-9, abs_tol=1e-9)
 
 
 @dataclass
@@ -209,9 +233,22 @@ class GraphAgent(LLMFeature):
                 "snippet_id": None,
             }
 
-        # If ALL steps have cached snippets, assemble without LLM
         generated_code: GeneratedCode | None
-        if cached_snippets and len(cached_snippets) == len(graph.steps):
+        # DAT-636 step 3: FORMULA + CONSTANT are authored DETERMINISTICALLY (no LLM) —
+        # EXTRACT is the sole LLM authoring surface. The LLM still runs afterwards as a
+        # shadow (both paths at the same time) for continued comparison.
+        deterministic = self._author_grounding_free(graph, cached_snippets, resolved_params)
+        if deterministic is not None:
+            generated_code = deterministic
+            self._track_snippet_usage(
+                session=session,
+                execution_id=generated_code.code_id,
+                cached_snippets=cached_snippets or {},
+                generated_steps=generated_code.steps,
+                workspace_id=workspace_id,
+            )
+        # Otherwise, if ALL steps have cached snippets, assemble without LLM
+        elif cached_snippets and len(cached_snippets) == len(graph.steps):
             generated_code = self._assemble_from_snippets(
                 graph, context, cached_snippets, resolved_params
             )
@@ -258,29 +295,118 @@ class GraphAgent(LLMFeature):
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph)
         if not exec_result.success or not exec_result.value:
-            # Mark cached snippets as failed so they get skipped next time
-            if cached_snippets:
-                from dataraum.query.snippet_library import SnippetLibrary
-
-                failed_ids = [
-                    s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
-                ]
-                SnippetLibrary(session, workspace_id=workspace_id).record_failure(failed_ids)
+            # This node is ungroundable — the caller records it in the run's binding
+            # map. Do NOT record_failure the cached DEP snippets: they were
+            # decided-once and grounded by their OWN authoring, so blaming them for
+            # THIS node's failure poisons shared extracts (a broken formula would mark
+            # `revenue` failed → every metric using it can no longer find it, and
+            # honest metrics like dso silently break). DAT-636 (Bug B).
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value
 
-        # Save snippets AFTER successful execution — includes repair info
-        # and only saves SQL that actually works.
+        # DAT-636 step 3: a deterministically-authored formula/constant runs the LLM as
+        # a SHADOW and logs agreement/divergence vs the deterministic value (both paths
+        # at the same time). Pure side-effect; never alters the authored result.
+        if generated_code.llm_model == "deterministic":
+            self._shadow_compare_llm(
+                session, graph, context, resolved_params, cached_snippets, execution.output_value
+            )
+
+        # Verifier gate (DAT-616): execution-pass is NOT validation. A node whose SQL
+        # ran cleanly is still inconclusive if it had no support (empty filter -> NULL),
+        # the value is degenerate (NULL), or a catalogue-declared condition is violated.
+        # Such a node stays ungroundable with the reason — never executed-green — and its
+        # SQL is NOT cached (we return before _save_snippets). As above, the cached deps
+        # are NOT blamed for this node's verdict.
+        verdict = verify_execution(graph, execution)
+        if not verdict.success:
+            return Result.fail(verdict.error or "metric verification failed")
+
+        # Save snippets AFTER successful execution AND verification — includes
+        # repair info and only saves SQL that actually works AND is trustworthy.
         self._save_snippets(
             session=session,
             graph=graph,
             generated_code=generated_code,
             schema_mapping_id=schema_mapping_id,
             step_results=execution.step_results,
+            resolved_params=resolved_params,
             workspace_id=workspace_id,
         )
 
+        return Result.ok(execution)
+
+    def assemble(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        bindings: dict[NodeKey, NodeDecision],
+        parameters: dict[str, Any] | None = None,
+        *,
+        workspace_id: str,
+    ) -> Result[GraphExecution]:
+        """Assemble a metric from already-decided node bindings — NO LLM (DAT-636).
+
+        The authoring pass (``metrics_phase._warm_shared_nodes``) decided every
+        unique node ONCE and recorded it in ``bindings``. This composes the metric
+        from those decisions: if any of the metric's nodes is ungroundable, the
+        metric honest-fails immediately with the failing dependency named — it is
+        NEVER re-authored. Otherwise it assembles ``final_sql`` from the snippets
+        the pass minted, then executes and verifies. The per-metric path is a dumb
+        assembler; the LLM is only ever called in the authoring pass — so the same
+        concept can no longer ground three different ways across dependent metrics.
+        """
+        from dataraum.graphs.node_warming import node_key
+
+        resolved_params = self._resolve_parameters(graph, parameters or {})
+        schema_mapping_id = context.schema_mapping_id or "default"
+
+        # Honest-fail on the first ungroundable dependency — born-loud, no LLM. A
+        # keyable step absent from the map is a contract violation (the authoring
+        # pass authors every keyable node), so fail loud here, not silently later.
+        for step_id, step in graph.steps.items():
+            key = node_key(step, graph)
+            if key is None:
+                continue  # non-keyable step (rare) — caught by the cache check below
+            decision = bindings.get(key)
+            if decision is None or not decision.grounded:
+                reason = (
+                    decision.reason
+                    if decision is not None
+                    else "not authored (absent from binding map)"
+                )
+                return Result.fail(f"dependency '{step_id}' is ungroundable: {reason}")
+
+        # Every dependency grounded → assemble from the snippets the pass minted.
+        cached_snippets = self._lookup_snippets(session, graph, schema_mapping_id, resolved_params)
+        if not cached_snippets or len(cached_snippets) != len(graph.steps):
+            missing = len(graph.steps) - len(cached_snippets or {})
+            return Result.fail(
+                f"metric '{graph.graph_id}': {missing} step(s) grounded per the binding "
+                "map but absent from the snippet cache"
+            )
+        generated_code = self._assemble_from_snippets(
+            graph, context, cached_snippets, resolved_params
+        )
+        if generated_code is None:
+            return Result.fail(f"metric '{graph.graph_id}': failed to assemble cached snippets")
+        self._track_snippet_usage(
+            session=session,
+            execution_id=generated_code.code_id,
+            cached_snippets=cached_snippets,
+            generated_steps=generated_code.steps,
+            workspace_id=workspace_id,
+        )
+
+        exec_result = self._execute_sql(generated_code, context, graph)
+        if not exec_result.success or not exec_result.value:
+            return Result.fail(exec_result.error or "metric assembly execution failed")
+        execution = exec_result.value
+        verdict = verify_execution(graph, execution)
+        if not verdict.success:
+            return Result.fail(verdict.error or "metric verification failed")
         return Result.ok(execution)
 
     def _assemble_from_snippets(
@@ -306,6 +432,11 @@ class GraphAgent(LLMFeature):
         """
         steps = []
         merged_column_mappings: dict[str, str] = {}
+        # DAT-631: carry each snippet's authored grounding confidence forward.
+        # Cache-assembly skips the LLM, so without this the assembled metric would
+        # reach the phase with no assumptions and look confidently green — exactly
+        # the silent-wrong mode for a metric resting on a 0.35-confidence proxy.
+        assumptions: list[GraphAssumptionOutput] = []
         for step_id in graph.steps:
             snippet = cached_snippets.get(step_id)
             if not snippet:
@@ -321,6 +452,16 @@ class GraphAgent(LLMFeature):
             snippet_mappings = snippet.get("column_mappings")
             if isinstance(snippet_mappings, dict):
                 merged_column_mappings.update(snippet_mappings)
+            for a in snippet.get("assumptions") or []:
+                assumptions.append(
+                    GraphAssumptionOutput(
+                        dimension=a.get("dimension", "grounding.cached"),
+                        target=a.get("target", f"step:{step_id}"),
+                        assumption=a.get("assumption", ""),
+                        basis=a.get("basis", "inferred"),
+                        confidence=a.get("confidence", 0.5),
+                    )
+                )
 
         # Build final_sql by referencing the output step
         output_step = graph.get_output_step()
@@ -340,6 +481,7 @@ class GraphAgent(LLMFeature):
             llm_model="cached",
             prompt_hash="snippets",
             generated_at=datetime.now(UTC),
+            assumptions=assumptions,
         )
 
     def _generate_sql(
@@ -357,68 +499,105 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
         )
 
-        # Build multi-table schema from rich context
-        schema_info = self._build_schema_info(context)
-
-        # Serialize graph to YAML for LLM context
+        # Serialize graph to YAML for LLM context.
         graph_yaml = self._graph_to_yaml(graph)
 
-        # Build prompt context
-        prompt_context = {
-            "graph_yaml": graph_yaml,
-            "table_schema": json.dumps(schema_info, indent=2),
-            "parameters": json.dumps(parameters, indent=2),
-        }
-
-        # Inject cached snippets into prompt context
-        if cached_snippets:
-            prompt_context["cached_steps"] = json.dumps(
+        # Cached dep SQL — common to both prompt paths (the already-decided steps a
+        # node builds on).
+        cached_steps_json = (
+            json.dumps(
                 {
                     step_id: {"sql": info["sql"], "description": info["description"]}
                     for step_id, info in cached_snippets.items()
                 },
                 indent=2,
             )
-        else:
-            prompt_context["cached_steps"] = ""
-
-        # Rich context is required — the LLM needs metadata to generate correct SQL
-        if context.rich_context is None:
-            return Result.fail(
-                "Cannot generate SQL without dataset context. "
-                "Use ExecutionContext.with_rich_context() to build context."
-            )
-
-        from dataraum.graphs.context import format_metadata_document
-
-        prompt_context["rich_context"] = format_metadata_document(context.rich_context)
-
-        # Field mappings are required — the LLM needs them to resolve business concepts
-        if (
-            not context.rich_context.field_mappings
-            or not context.rich_context.field_mappings.mappings
-        ):
-            return Result.fail(
-                "Cannot generate SQL without field mappings. "
-                "Run the semantic phase to map business concepts to columns."
-            )
-
-        from dataraum.graphs.field_mapping import format_mappings_for_prompt
-
-        prompt_context["field_mappings"] = format_mappings_for_prompt(
-            context.rich_context.field_mappings
+            if cached_snippets
+            else ""
         )
 
-        # Render prompt with system/user split
+        # Select the prompt by the AUTHORED node's type (DAT-636 P2). The authoring
+        # pass runs one single-output mini-graph at a time, so the output step IS the
+        # node being authored. A FORMULA composes already-decided scalar steps and a
+        # CONSTANT returns a parameter value — BOTH are grounding-free (no value-sets,
+        # no field mappings), so both take the lean composition prompt. Only an EXTRACT
+        # needs the full fed grounding evidence.
+        #
+        # Tier = balanced/Sonnet for both. The P2 smoke showed the fast/Haiku tier
+        # leaking prompt placeholders (literal `<step_id>`) and using a dep's statement
+        # name as a table — invalid SQL. Every formula in the vertical is simple
+        # arithmetic over named scalars, so the eventual win is DETERMINISTIC composition
+        # (no LLM at all); Sonnet is the reliable interim.
+        output_step = graph.get_output_step()
+        if output_step is not None and output_step.step_type in (
+            StepType.FORMULA,
+            StepType.CONSTANT,
+        ):
+            prompt_name = "graph_formula_composition"
+            tier = "balanced"
+            prompt_context = {
+                "graph_yaml": graph_yaml,
+                "parameters": json.dumps(parameters, indent=2),
+                "dependency_steps": cached_steps_json,
+            }
+        else:
+            prompt_name = "graph_sql_generation"
+            tier = "balanced"
+            # Grounding requires the dataset context + field mappings — fail loud if
+            # the semantic phase did not produce them.
+            if context.rich_context is None:
+                return Result.fail(
+                    "Cannot generate SQL without dataset context. "
+                    "Use ExecutionContext.with_rich_context() to build context."
+                )
+            if (
+                not context.rich_context.field_mappings
+                or not context.rich_context.field_mappings.mappings
+            ):
+                return Result.fail(
+                    "Cannot generate SQL without field mappings. "
+                    "Run the semantic phase to map business concepts to columns."
+                )
+            from dataraum.graphs.context import format_metadata_document
+            from dataraum.graphs.field_mapping import format_mappings_for_prompt
+
+            # An extract is a leaf with no dependency steps, and a cached extract is
+            # ASSEMBLED (never re-authored), so cached_steps is always empty here — the
+            # grounding prompt does not carry it.
+            prompt_context = {
+                "graph_yaml": graph_yaml,
+                "table_schema": json.dumps(self._build_schema_info(context), indent=2),
+                "parameters": json.dumps(parameters, indent=2),
+                "rich_context": format_metadata_document(context.rich_context),
+                "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
+                # DAT-616: feed back what prior runs learned for this concept — the
+                # honest-fail reason + prior value→concept filter decisions.
+                "prior_context": self._build_prior_context(session, graph, cached_snippets),
+            }
+
+        # Render prompt with system/user split.
         try:
             system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "graph_sql_generation", prompt_context
+                prompt_name, prompt_context
             )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Compute prompt hash for reproducibility
         prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()[:16]
+        model = self.provider.get_model_for_tier(tier)
+
+        # Dump the rendered prompt (system + user) for offline analysis — no-op unless
+        # prompt_dump_dir is set. The label distinguishes formula vs grounding prompts.
+        from dataraum.llm.prompt_log import dump_prompt
+
+        dump_prompt(
+            label=prompt_name,
+            key=graph.graph_id,
+            prompt_hash=prompt_hash,
+            system=system_prompt,
+            user=user_prompt,
+            model=model,
+        )
 
         # Define tool for structured output
         tool = ToolDefinition(
@@ -427,15 +606,13 @@ class GraphAgent(LLMFeature):
             input_schema=GraphSQLGenerationOutput.model_json_schema(),
         )
 
-        # Get model for this feature (graph_sql_generation uses balanced tier)
-        model = self.provider.get_model_for_tier("balanced")
-
         # Call LLM with tool use
         request = ConversationRequest(
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_sql"},
+            label=prompt_name,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
@@ -481,6 +658,35 @@ class GraphAgent(LLMFeature):
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
+        )
+
+        # Verification half (DAT-631): append what the agent PRODUCED to the
+        # prompt dump — the SQL, per-concept grounding, and confidence — so a
+        # metric that fails verification (and never persists a snippet) is still
+        # inspectable offline. No-op unless prompt_dump_dir is set.
+        from dataraum.llm.prompt_log import dump_response
+
+        basis = output.provenance.column_mappings_basis if output.provenance else {}
+        response_body = json.dumps(
+            {
+                "final_sql": output.final_sql,
+                "steps": [{"step_id": s.step_id, "sql": s.sql} for s in output.steps],
+                "field_resolution": output.provenance.field_resolution
+                if output.provenance
+                else None,
+                "column_mappings_basis": basis,
+                "assumptions": [
+                    {"assumption": a.assumption, "basis": a.basis, "confidence": a.confidence}
+                    for a in (output.assumptions or [])
+                ],
+            },
+            indent=2,
+        )
+        dump_response(
+            label="graph_sql_generation",
+            key=graph.graph_id,
+            prompt_hash=prompt_hash,
+            body=response_body,
         )
 
         return Result.ok(generated_code)
@@ -571,21 +777,26 @@ class GraphAgent(LLMFeature):
                 source_query=sr.sql_executed,
                 inputs_used={
                     "sql": sr.sql_executed,
-                    "view_name": sr.step_id,
+                    "step_id": sr.step_id,
                     "repair_attempts": sr.repair_attempts,
                 },
             )
+            # bool BEFORE int (bool is an int subclass); Decimal IS the common
+            # currency type DuckDB returns for SUM over DECIMAL columns — it must
+            # land in value_scalar, else the verifier reads a real sum as NULL
+            # "no support" and false-fails every real metric (DAT-616).
             value = sr.value
-            if isinstance(value, (int, float)):
-                step_result.value_scalar = float(value)
-            elif isinstance(value, bool):
+            if isinstance(value, bool):
                 step_result.value_boolean = value
+            elif isinstance(value, (int, float, Decimal)):
+                step_result.value_scalar = float(value)
             elif isinstance(value, str):
                 step_result.value_string = value
 
             execution.step_results.append(step_result)
 
         execution.output_value = result.final_value
+        execution.composed_sql = result.composed_sql
 
         # Add interpretation if available
         if graph.interpretation and execution.output_value is not None:
@@ -630,28 +841,18 @@ class GraphAgent(LLMFeature):
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
     ) -> dict[str, Any] | None:
-        """DESCRIBE a single DuckDB table and return schema with sample values."""
+        """DESCRIBE a single DuckDB table and return its name + column types.
+
+        DAT-616: this no longer self-fetches `SELECT DISTINCT … LIMIT 5` per column —
+        that arbitrary, count-less sample was the agent's only value view and is what it
+        improvised filters from. The authoritative, complete value enumeration is now the
+        per-column **Value sets** block in the rich-context metadata document
+        (`format_metadata_document`); this returns physical name + type only.
+        """
         try:
             columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
 
-            columns = []
-            for col in columns_result:
-                col_name = col[0]
-                col_type = col[1]
-
-                sample_result = duckdb_conn.execute(
-                    f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
-                    f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
-                ).fetchall()
-                samples = [str(r[0]) for r in sample_result]
-
-                columns.append(
-                    {
-                        "name": col_name,
-                        "type": col_type,
-                        "sample_values": samples,
-                    }
-                )
+            columns = [{"name": col[0], "type": col[1]} for col in columns_result]
 
             count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0
@@ -780,6 +981,7 @@ class GraphAgent(LLMFeature):
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=self.provider.get_model_for_tier(model_tier),
+            label="sql_repair",
         )
 
         # converse raises a typed ProviderError on an API failure (DAT-503) —
@@ -887,6 +1089,128 @@ class GraphAgent(LLMFeature):
                         step_id=step_id,
                     )
 
+    def _author_grounding_free(
+        self,
+        graph: TransformationGraph,
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+    ) -> GeneratedCode | None:
+        """Deterministically author a grounding-free node — FORMULA or CONSTANT, no LLM.
+
+        DAT-636 step 3: a formula is pure arithmetic over already-decided dep steps
+        and a constant is a known parameter value — neither carries judgment, so the
+        composer authors them and the LLM is no longer the source of truth (it keeps
+        running as a shadow). Returns ``None`` for an EXTRACT (genuinely needs LLM
+        grounding) or a FORMULA whose deps are not all cached (the legacy full-graph
+        ``execute`` path → fall back to the LLM), so callers degrade gracefully.
+        """
+        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+
+        output_step = graph.get_output_step()
+        if output_step is None:
+            return None
+
+        steps: list[dict[str, str]]
+        try:
+            if output_step.step_type == StepType.CONSTANT:
+                value = (
+                    resolved_params.get(output_step.parameter) if output_step.parameter else None
+                )
+                if value is None:
+                    return None
+                final_sql = compose_constant_sql(value)
+                steps = []
+                summary = f"Constant {output_step.parameter} = {value}"
+            elif output_step.step_type == StepType.FORMULA and output_step.expression:
+                deps = output_step.depends_on
+                if not all(d in cached_snippets for d in deps):
+                    return None  # legacy full-graph path: deps not warmed yet → LLM
+                steps = [
+                    {
+                        "step_id": d,
+                        "sql": cached_snippets[d]["sql"],
+                        "description": cached_snippets[d].get("description", ""),
+                    }
+                    for d in deps
+                ]
+                final_sql = compose_formula_sql(output_step.expression, set(deps))
+                summary = f"Composed {graph.graph_id}: {output_step.expression}"
+            else:
+                return None
+        except ValueError:
+            # Malformed expression/constant — let the LLM path try instead of failing here.
+            return None
+
+        return GeneratedCode(
+            code_id=str(uuid4()),
+            graph_id=graph.graph_id,
+            summary=summary,
+            steps=steps,
+            final_sql=final_sql,
+            column_mappings={},
+            llm_model="deterministic",
+            prompt_hash="deterministic",
+            generated_at=datetime.now(UTC),
+        )
+
+    def _shadow_compare_llm(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        resolved_params: dict[str, Any],
+        cached_snippets: dict[str, dict[str, Any]] | None,
+        primary_value: Any,
+    ) -> None:
+        """Run the LLM composition as a SHADOW beside the deterministic primary (DAT-636).
+
+        With formula/constant authoring now deterministic, the LLM keeps running for
+        continued comparison — both paths at the same time. Author via the LLM,
+        execute it, and log agreement/divergence vs the deterministic ``primary_value``
+        (``formula_shadow_compare``). Pure side-effect: never raises, never alters the
+        authored result. A real divergence is the signal that the LLM, not the
+        composer, was wrong — exactly the evidence that retiring the LLM path is safe.
+        """
+        from dataraum.query.execution import SQLStep, execute_sql_steps
+
+        output_step = graph.get_output_step()
+        if output_step is None:
+            return
+        try:
+            gen = self._generate_sql(
+                session, graph, context, resolved_params, cached_snippets=cached_snippets or None
+            )
+            if not gen.success or not gen.value:
+                logger.info("formula_shadow_compare", graph_id=graph.graph_id, llm_authored=False)
+                return
+            steps = [
+                SQLStep(step_id=s.get("step_id", ""), sql=s.get("sql", ""), description="")
+                for s in gen.value.steps
+            ]
+            llm_result = execute_sql_steps(
+                steps=steps,
+                final_sql=gen.value.final_sql,
+                duckdb_conn=context.duckdb_conn,
+                max_repair_attempts=0,
+                return_table=False,
+            )
+        except Exception as exc:  # the shadow must never break authoring
+            logger.warning("formula_shadow_error", graph_id=graph.graph_id, error=str(exc))
+            return
+
+        llm_value = (
+            llm_result.value.final_value if llm_result.success and llm_result.value else None
+        )
+        logger.info(
+            "formula_shadow_compare",
+            graph_id=graph.graph_id,
+            expression=output_step.expression,  # formula label (None for a constant)
+            parameter=output_step.parameter,  # constant label (None for a formula)
+            deterministic_value=_as_float(primary_value),
+            llm_value=_as_float(llm_value),
+            agree=_values_agree(primary_value, llm_value),
+        )
+
     def _save_snippets(
         self,
         session: Session,
@@ -894,10 +1218,18 @@ class GraphAgent(LLMFeature):
         generated_code: GeneratedCode,
         schema_mapping_id: str,
         step_results: list[StepResult] | None = None,
+        resolved_params: dict[str, Any] | None = None,
         *,
         workspace_id: str,
     ) -> None:
         """Save generated SQL steps as snippets for cross-graph reuse.
+
+        Called only from the authoring path (``execute`` on a single-output
+        mini-graph); ``assemble`` never saves — its nodes were already minted here.
+        A FORMULA mini-graph reproduces its dep extract/constant steps, so this loop
+        re-encounters them — that is a harmless no-op: ``save_snippet`` is
+        first-writer-wins, so an existing healthy snippet for the dep concept is KEPT
+        (a hallucinated dep-SQL change can never overwrite a good extract snippet).
 
         Called AFTER successful execution so that:
         - Only working SQL is saved (not broken SQL that needs marking as failed)
@@ -957,20 +1289,43 @@ class GraphAgent(LLMFeature):
         # Map graph steps to snippets
         for step_id, graph_step in graph.steps.items():
             gen_step = generated_steps.get(step_id)
-            if not gen_step:
+
+            # The authored grounding-free output's SQL lives in final_sql, not in
+            # `steps`: deterministic authoring (DAT-636 step 3) emits no entry for the
+            # output step, and the LLM tool schema makes `steps` OPTIONAL while
+            # final_sql is REQUIRED. So a FORMULA or CONSTANT output step is persisted
+            # from final_sql even when absent from `steps` — reading it from the
+            # optional `steps` left the node "grounded in the binding map but absent
+            # from the cache", un-assemblable per-metric (DAT-636).
+            is_composed_output = graph_step.output_step and graph_step.step_type in (
+                StepType.FORMULA,
+                StepType.CONSTANT,
+            )
+            if not gen_step and not is_composed_output:
                 continue
 
-            # Use repaired SQL if available, otherwise original LLM SQL
+            # The composed output's SQL is ALWAYS final_sql — repair tracks per-step
+            # CTE bodies (by step_id), which are not the composed final statement, so
+            # a repaired formula step must not override the composition. Otherwise:
+            # repaired step SQL if available, else the step's own LLM SQL.
             repaired = repair_by_step.get(step_id)
-            sql = (
-                repaired.source_query
-                if repaired and repaired.source_query
-                else gen_step.get("sql", "")
-            )
-            description = gen_step.get("description", "")
+            if is_composed_output:
+                sql = generated_code.final_sql
+            elif repaired and repaired.source_query:
+                sql = repaired.source_query
+            else:
+                sql = gen_step.get("sql", "") if gen_step else ""
+            description = gen_step.get("description", "") if gen_step else generated_code.summary
 
             if graph_step.step_type == StepType.EXTRACT and graph_step.source:
-                # Extract snippet: keyed by standard_field + statement + aggregation
+                # Extract snippet: keyed by standard_field + statement + aggregation.
+                # column_mappings is now PER-CONCEPT (DAT-495 closed): post-DAT-636-P1
+                # _save_snippets is only ever reached via the authoring pass on a
+                # single-output mini-graph, so generated_code.column_mappings describes
+                # this one concept — never the sibling-leaking whole-metric dict the old
+                # whole-graph authoring produced. It is a secondary, graph-level HINT for
+                # the cockpit query agent (NOT a source of truth — the authoritative
+                # per-concept grounding is provenance.column_mappings_basis).
                 library.save_snippet(
                     snippet_type="extract",
                     sql=sql,
@@ -986,14 +1341,19 @@ class GraphAgent(LLMFeature):
                 )
 
             elif graph_step.step_type == StepType.CONSTANT:
-                # Constant snippet: keyed by parameter name + resolved value
+                # Constant snippet: keyed by parameter name + RESOLVED value. Key off
+                # resolved_params (the same value the deterministic SQL and the later
+                # _lookup_snippets use) — NOT param.default — so a non-default parameter
+                # value can't save under one key and look up under another.
                 param_value = None
                 if graph_step.parameter:
-                    # Look up the resolved parameter value from the graph defaults
-                    for param in graph.parameters:
-                        if param.name == graph_step.parameter:
-                            param_value = str(param.default) if param.default is not None else None
-                            break
+                    resolved = (resolved_params or {}).get(graph_step.parameter)
+                    if resolved is None:  # fall back to the graph default
+                        for param in graph.parameters:
+                            if param.name == graph_step.parameter:
+                                resolved = param.default
+                                break
+                    param_value = str(resolved) if resolved is not None else None
 
                 library.save_snippet(
                     snippet_type="constant",
@@ -1089,6 +1449,17 @@ class GraphAgent(LLMFeature):
                     "description": match.snippet.description,
                     "snippet_id": match.snippet.snippet_id,
                     "column_mappings": match.snippet.column_mappings or {},
+                    # DAT-616: the prior value→concept FILTER decisions, fed back so
+                    # grounding isn't re-invented (served, not just reused-as-SQL).
+                    "column_mappings_basis": (match.snippet.provenance or {}).get(
+                        "column_mappings_basis"
+                    ),
+                    # DAT-631: the grounding confidence the snippet was authored with.
+                    # Carried so a metric ASSEMBLED from cache (no LLM call — the
+                    # post-warming common path) still surfaces its weakest input's
+                    # confidence to the phase gate, instead of looking confidently
+                    # green because cache-assembly dropped the assumptions.
+                    "assumptions": (match.snippet.provenance or {}).get("assumptions") or [],
                 }
 
         if cached_steps:
@@ -1100,3 +1471,57 @@ class GraphAgent(LLMFeature):
             )
 
         return cached_steps
+
+    def _build_prior_context(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        cached_snippets: dict[str, dict[str, Any]] | None,
+    ) -> str:
+        """Assemble what prior runs learned for this metric (DAT-616 feedback loops).
+
+        Two signals, both written-but-never-read until now:
+        - the most recent honest-fail ``state_reason`` for this metric (so the next
+          attempt addresses it or abstains, instead of repeating a blind guess);
+        - prior ``column_mappings_basis`` from reusable snippets (the value→concept FILTER
+          decisions), so grounding isn't re-invented each run.
+
+        Returns "" when there is nothing to feed (the prompt slot is optional). Best-effort
+        — a lookup failure never blocks generation.
+        """
+        parts: list[str] = []
+
+        try:
+            from dataraum.lifecycle import LifecycleArtifact
+
+            prior = (
+                session.query(LifecycleArtifact)
+                .filter(
+                    LifecycleArtifact.artifact_type == "metric",
+                    LifecycleArtifact.artifact_key == graph.graph_id,
+                    LifecycleArtifact.state_reason.isnot(None),
+                )
+                .order_by(LifecycleArtifact.created_at.desc())
+                .first()
+            )
+            if prior and prior.state_reason:
+                parts.append(
+                    f"Last run this metric was flagged: {prior.state_reason}. "
+                    "Address the cause or, if it still cannot be grounded, abstain (record a "
+                    "low-confidence assumption) — do not repeat a blind guess."
+                )
+        except Exception as e:  # pragma: no cover - feedback is best-effort
+            logger.debug("prior_reason_lookup_failed", graph_id=graph.graph_id, error=str(e))
+
+        groundings: list[str] = []
+        for step_id, info in (cached_snippets or {}).items():
+            basis = info.get("column_mappings_basis")
+            if basis:
+                groundings.append(f"  - {step_id}: {json.dumps(basis)}")
+        if groundings:
+            parts.append(
+                "Prior value→concept groundings (reuse the same columns/filters unless wrong):\n"
+                + "\n".join(groundings)
+            )
+
+        return "\n\n".join(parts)

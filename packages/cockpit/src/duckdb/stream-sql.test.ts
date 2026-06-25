@@ -4,13 +4,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { HARD_ROW_CEILING } from "#/duckdb/limit";
 import {
-	buildGridQuery,
-	clampGridCap,
 	encodeFrame,
-	GRID_DEFAULT_CAP,
-	quoteIdentifier,
 	type ResultFrame,
 	type StreamableChunk,
 	type StreamableResult,
@@ -65,83 +60,6 @@ async function collect(
 	}
 	return frames;
 }
-
-describe("clampGridCap (design §5.5)", () => {
-	it("defaults an absent cap to the grid default (50k, not the agent's 1000)", () => {
-		expect(clampGridCap()).toBe(GRID_DEFAULT_CAP);
-		expect(clampGridCap(undefined)).toBe(50_000);
-	});
-
-	it("passes through a value within range", () => {
-		expect(clampGridCap(1234)).toBe(1234);
-	});
-
-	it("clamps above the shared hard ceiling (HARD_ROW_CEILING, DAT-384)", () => {
-		expect(clampGridCap(999_999)).toBe(HARD_ROW_CEILING);
-		expect(clampGridCap(HARD_ROW_CEILING + 1)).toBe(200_000);
-	});
-
-	it("floors a non-positive or non-finite cap to at least 1", () => {
-		expect(clampGridCap(0)).toBe(1);
-		expect(clampGridCap(-5)).toBe(1);
-		expect(clampGridCap(Number.NaN)).toBe(GRID_DEFAULT_CAP);
-		expect(clampGridCap(Number.POSITIVE_INFINITY)).toBe(GRID_DEFAULT_CAP);
-	});
-
-	it("floors a fractional cap", () => {
-		expect(clampGridCap(10.9)).toBe(10);
-	});
-});
-
-describe("quoteIdentifier", () => {
-	it("wraps a plain name in double quotes", () => {
-		expect(quoteIdentifier("amount")).toBe('"amount"');
-	});
-
-	it("doubles embedded quotes so a name can never break out of the literal", () => {
-		// A column literally named `weird"name` (or an injection attempt) is quoted,
-		// not escaped-then-concatenated: the embedded `"` is doubled.
-		expect(quoteIdentifier('weird"name')).toBe('"weird""name"');
-		expect(quoteIdentifier('x" ; DROP TABLE t --')).toBe(
-			'"x"" ; DROP TABLE t --"',
-		);
-	});
-});
-
-describe("buildGridQuery (design §7.3 — server-side sort)", () => {
-	it("wraps the query unchanged when there is no sort", () => {
-		expect(buildGridQuery("SELECT * FROM lake.typed.orders")).toBe(
-			"SELECT * FROM (SELECT * FROM lake.typed.orders) AS _run_sql",
-		);
-		expect(buildGridQuery("SELECT 1", null)).toBe(
-			"SELECT * FROM (SELECT 1) AS _run_sql",
-		);
-	});
-
-	it("appends an ORDER BY on the quoted column for asc/desc", () => {
-		expect(
-			buildGridQuery("SELECT id, amount FROM t", {
-				column: "amount",
-				dir: "asc",
-			}),
-		).toBe(
-			'SELECT * FROM (SELECT id, amount FROM t) AS _run_sql ORDER BY "amount" ASC',
-		);
-		expect(
-			buildGridQuery("SELECT id FROM t", { column: "id", dir: "desc" }),
-		).toBe('SELECT * FROM (SELECT id FROM t) AS _run_sql ORDER BY "id" DESC');
-	});
-
-	it("quotes the sort column so a hostile name can't inject", () => {
-		const out = buildGridQuery("SELECT * FROM t", {
-			column: 'x" ; DROP TABLE t --',
-			dir: "asc",
-		});
-		expect(out).toBe(
-			'SELECT * FROM (SELECT * FROM t) AS _run_sql ORDER BY "x"" ; DROP TABLE t --" ASC',
-		);
-	});
-});
 
 describe("encodeFrame", () => {
 	it("serializes one frame per line with a trailing newline", () => {

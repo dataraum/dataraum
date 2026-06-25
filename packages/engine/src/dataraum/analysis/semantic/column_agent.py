@@ -145,6 +145,7 @@ class ColumnAnnotationAgent(LLMFeature):
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "annotate_columns"},
+            label="column_annotation",
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,

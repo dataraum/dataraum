@@ -28,7 +28,7 @@ export interface WorkflowProgressEventValue {
  * on both sides, so it lives here. Keyed by `workflowId` ALONE (DAT-530): the
  * workflow id is the stable run identity and progress always reflects the LATEST
  * execution, so the volatile Temporal `runId` is not part of the key. This also
- * lets a journey-started run (whose runId isn't known at tool-return time) and
+ * lets a workflow-started run (whose runId isn't known at tool-return time) and
  * the watcher's push agree on the key. Distinct workflows keep distinct keys, so
  * concurrent runs are tracked independently; only same-id re-runs collapse to
  * latest (intended). */

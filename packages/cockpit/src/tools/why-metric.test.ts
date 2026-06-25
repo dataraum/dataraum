@@ -19,8 +19,6 @@ import {
 	type WhyMetricArtifactRow,
 } from "./why-metric";
 
-const D1 = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
 const executedArtifact: WhyMetricArtifactRow = {
 	state: "executed",
 	stateReason: null,
@@ -155,16 +153,16 @@ describe("projectWhyMetric (DAT-466)", () => {
 		expect(projected.steps[0].label).toBe("(constant)");
 	});
 
-	it("strips content-keyed digests from the SQL, description, and labels", () => {
+	it("renders narrow names in SQL, description, and labels; stays digest-free (DAT-639)", () => {
 		const dirty: MetricSnippetRow = {
 			snippetId: "snip-dirty",
 			snippetType: "extract",
-			standardField: `src_${D1}__revenue`,
+			standardField: `revenue`,
 			statement: null,
 			aggregation: "sum",
 			normalizedExpression: null,
-			sql: `SELECT sum(x) FROM lake.typed.src_${D1}__income`,
-			description: `pulls src_${D1}__revenue`,
+			sql: `SELECT sum(x) FROM lake.typed.income`,
+			description: `pulls revenue`,
 			executionCount: 0,
 			failureCount: 0,
 		};
@@ -172,9 +170,9 @@ describe("projectWhyMetric (DAT-466)", () => {
 			"m",
 			{
 				state: "executed",
-				stateReason: `measured src_${D1}__income`,
+				stateReason: `measured income`,
 				strictness: null,
-				groundedAgainst: { _internal: `src_${D1}`, detect: "run-9" },
+				groundedAgainst: { detect: "run-9" },
 			},
 			[dirty],
 			0,

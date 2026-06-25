@@ -1,10 +1,8 @@
-// Unit tests for the add_source TRIGGER (DAT-352; one-call select DAT-436; routed
-// through the journey in DAT-551). The trigger no longer starts the workflow
-// directly — it signals the per-workspace JourneyWorkflow (`runAddSource`), which
-// records the run + starts the engine child. So the unit asserts the SIGNAL
-// payload, not a workflow.start. Mocked seams: #/config, the registry (workspace +
-// vertical + queue), the journey trigger (signalRunAddSource), and the ALS
-// conversation context.
+// Unit tests for the add_source TRIGGER (DAT-352; one-call select DAT-436; DAT-609).
+// The trigger starts the per-workspace `groundingLoopWorkflow` (import + autonomous
+// teach loop). So the unit asserts the START payload, not a journey signal. Mocked
+// seams: #/config, the registry (workspace + vertical + queue), the orchestration
+// trigger (startGroundingLoop), and the ALS conversation context.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,16 +16,10 @@ const h = vi.hoisted(() => ({
 	} as Record<string, unknown>,
 	vertical: "_adhoc" as string,
 	conversationId: "conv-1" as string | null,
-	signalled: null as {
-		workspaceId: string;
-		req: Record<string, unknown>;
-	} | null,
-	signalRunAddSource: vi.fn(
-		async (workspaceId: string, req: Record<string, unknown>) => {
-			h.signalled = { workspaceId, req };
-			return req.workflowId as string;
-		},
-	),
+	started: null as Record<string, unknown> | null,
+	startGroundingLoop: vi.fn(async (input: Record<string, unknown>) => {
+		h.started = input;
+	}),
 }));
 
 // Live getter (the unconfigured-guard test reassigns h.config).
@@ -39,13 +31,13 @@ vi.mock("#/config", () => ({
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: vi.fn(async () => ({
 		id: h.config.dataraumWorkspaceId,
-		// Per-workspace engine queue (DAT-505) — the journey runs the child here.
+		// Per-workspace engine queue (DAT-505) — the workflow runs the child here.
 		taskQueue: `engine-${h.config.dataraumWorkspaceId}`,
 		vertical: h.vertical,
 	})),
 }));
-vi.mock("#/temporal/journey-trigger", () => ({
-	signalRunAddSource: h.signalRunAddSource,
+vi.mock("#/temporal/orchestration-trigger", () => ({
+	startGroundingLoop: h.startGroundingLoop,
 }));
 vi.mock("#/lib/run-context", () => ({
 	currentConversationId: () => h.conversationId,
@@ -61,27 +53,26 @@ beforeEach(() => {
 	};
 	h.vertical = "_adhoc";
 	h.conversationId = "conv-1";
-	h.signalled = null;
-	h.signalRunAddSource.mockClear();
+	h.started = null;
+	h.startGroundingLoop.mockClear();
 });
 
-describe("triggerAddSource (DAT-352, one-call DAT-436, routed via the journey — DAT-551)", () => {
-	it("signals the journey with the source SET / queue / verticals + kind onboarding", async () => {
+describe("triggerAddSource (DAT-352, one-call DAT-436, grounding loop — DAT-609)", () => {
+	it("starts the grounding loop with the source SET / queue / verticals", async () => {
 		h.vertical = "financial_reporting";
 		const result = await triggerAddSource({ sources: ["src-1"] });
 
 		// One workflow id per workspace (DAT-562) — no minted session segment.
-		expect(h.signalled?.workspaceId).toBe(WS);
-		expect(h.signalled?.req).toEqual({
+		expect(h.started).toEqual({
+			workspaceId: WS,
 			workflowId: `addsource-${WS}`,
 			engineTaskQueue: `engine-${WS}`,
 			sources: ["src-1"],
 			verticals: ["financial_reporting"],
-			kind: "onboarding",
 			conversationId: "conv-1",
 		});
-		// The trigger returns the deterministic workflow id (run_id mirrors it — the
-		// journey owns the real execution id; progress resolves latest by id).
+		// The trigger returns the deterministic engine workflow id (run_id mirrors it —
+		// the workflow owns the real execution id; progress resolves latest by id).
 		expect(result).toEqual({
 			workflow_id: `addsource-${WS}`,
 			run_id: `addsource-${WS}`,
@@ -92,14 +83,14 @@ describe("triggerAddSource (DAT-352, one-call DAT-436, routed via the journey �
 	it("threads a NULL conversationId when outside a chat turn (non-narrating run)", async () => {
 		h.conversationId = null;
 		await triggerAddSource({ sources: ["src-1"] });
-		expect(h.signalled?.req.conversationId).toBeNull();
+		expect(h.started?.conversationId).toBeNull();
 	});
 
-	it("throws when Temporal is unconfigured and signals nothing", async () => {
+	it("throws when Temporal is unconfigured and starts nothing", async () => {
 		h.config = { dataraumWorkspaceId: WS };
 		await expect(triggerAddSource({ sources: ["src-1"] })).rejects.toThrow(
 			/Temporal client is not configured/,
 		);
-		expect(h.signalRunAddSource).not.toHaveBeenCalled();
+		expect(h.startGroundingLoop).not.toHaveBeenCalled();
 	});
 });

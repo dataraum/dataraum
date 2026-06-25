@@ -5,11 +5,12 @@
 // tool→canvas mapper case — they never touch the canvas/stream/shell plumbing.
 // Keep the union sorted baseline-first so the extension point is obvious.
 
-import type { ConnectSchema } from "#/duckdb/connect";
-import type { FrameResult } from "#/tools/frame";
+import type { ConversationKind } from "#/db/cockpit/conversations";
+import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
 import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
@@ -35,12 +36,6 @@ export type CanvasState =
 	// provenance + a rolled-up readiness band. Carries the (enriched) list_tables
 	// result; the widget derives the per-source SourceCard drill-in locally.
 	| { kind: "workspace-inventory"; tables: InventoryTable[] }
-	| { kind: "schema-preview"; schema: ConnectSchema }
-	// DAT-382/DAT-469/DAT-471: the frame-stage co-design surface — the user's
-	// framed model (business concepts + the validations AND metric DAGs over them).
-	// Carries the frame tool result; the widget renders every family read-only for
-	// accept/edit.
-	| { kind: "model-frame"; frame: FrameResult }
 	// DAT-350: per-table readiness traffic-light grid. Carries the look_table
 	// tool result (calibrated bands per column × intent, read from the persisted
 	// entropy_readiness rows — the cockpit never re-derives the band).
@@ -85,6 +80,11 @@ export type CanvasState =
 	// first-class + the per-step SQL fragments (how it computes). Carries the
 	// why_metric result.
 	| { kind: "metric-why"; why: WhyMetricResult }
+	// DAT-546/DAT-579: the begin_session driver rankings — one row per ranked
+	// measure with its target type, grain, effective sample, and the dimensions
+	// that best explain its variation. Read-only (no per-row drill tool). Carries
+	// the look_drivers result.
+	| { kind: "driver-list"; look: LookDriversResult }
 	// DAT-482: the shipped metric DAG a teach OVERRIDE replaces. Carries ONLY the
 	// (vertical, graph_id) key — the widget RE-FETCHES the shipped output +
 	// dependencies via getShippedMetricDag, so the heavy graph never rides the lean
@@ -120,20 +120,33 @@ export type CanvasState =
 	// reuse, assumptions). All of it is already in the AnswerSchema result; the
 	// projector surfaces it here instead of dropping it. The grid streams via the
 	// same result-grid path (the table is unchanged; confidence rides on top).
-	| { kind: "answer-result"; sql: string; confidence: AnswerConfidence }
-	// A file-upload area (redesign) — projected by the `upload` UI tool so the user
-	// can drop local files; NOT a permanent chat fixture. Carries nothing; the
-	// widget owns the dropzone + drives connect on upload.
-	| { kind: "upload-area" }
-	// DAT-576: the editable probe surface — the user picks a configured DB source,
-	// writes/edits read-only SQL, and runs it against the external DB BEFORE ingest
-	// (streamed via /api/probe-sql into the same result grid). Projected EMPTY by the
-	// `open_probe` UI tool, or SEEDED with the agent's `probe` call input (source +
-	// sql) so a generated query lands in the editor for the user to edit + re-run.
+	// `summary` is the answer narrative (the AnswerSchema `answer` field) — carried
+	// so the Report mint (DAT-624) can freeze it alongside the SQL + confidence.
+	| {
+			kind: "answer-result";
+			sql: string;
+			summary: string;
+			confidence: AnswerConfidence;
+	  }
+	// DAT-576/DAT-597: the editable probe surface — the staging hub default. The user
+	// picks a configured DB source, writes/edits read-only SQL, and runs it against
+	// the external DB BEFORE ingest (streamed via /api/probe-sql into the same result
+	// grid), then assembles the import set. Carries an optional seeded (source + sql).
 	| {
 			kind: "probe";
 			source?: { name: string; backend: string };
 			sql?: string;
+	  }
+	// DAT-634: the chat-open "Workspace Briefing" — the LANDING orientation for a
+	// fresh stage/analyse chat (the idle fallback, replacing blank `empty`). Carries
+	// the full briefing + this chat's kind; the widget projects client-side
+	// (`projectBriefing`) to foreground this chat's actions. It yields to any live
+	// tool canvas on the first turn; the durable, always-fresh view is the
+	// Governance route (DAT-633), so this is never re-fetched or kept live here.
+	| {
+			kind: "briefing";
+			briefing: WorkspaceBriefing;
+			chatKind: ConversationKind;
 	  };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */

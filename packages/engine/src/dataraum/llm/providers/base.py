@@ -100,6 +100,10 @@ class ConversationRequest(BaseModel):
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model
+    # Greppable agent/phase tag for per-call telemetry (DAT-600). The provider
+    # has no phase context of its own, so each call site stamps the prompt
+    # template / feature name it is invoking (e.g. "graph_sql_generation").
+    label: str | None = None
 
 
 class ConversationResponse(BaseModel):
@@ -111,6 +115,10 @@ class ConversationResponse(BaseModel):
     model: str
     input_tokens: int
     output_tokens: int
+    # Prompt-cache usage (DAT-600). Captured for telemetry today; the verifier
+    # for DAT-601 (engine prompt caching) reads cache_read to confirm hits.
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 class LLMProvider(ABC):

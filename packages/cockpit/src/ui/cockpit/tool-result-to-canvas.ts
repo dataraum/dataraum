@@ -12,12 +12,11 @@
 // Row types are type-only imports (erased — no server code in the client bundle).
 
 import type { UIMessage } from "@tanstack/ai-react";
-import type { ConnectSchema } from "#/duckdb/connect";
 import { isAgentError } from "#/tools/agent-error";
-import type { FrameResult } from "#/tools/frame";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
+import type { LookDriversResult } from "#/tools/look-drivers";
 import type { LookMetricResult } from "#/tools/look-metric";
 import type { LookProfileResult } from "#/tools/look-profile";
 import type { LookRelationshipsResult } from "#/tools/look-relationships";
@@ -92,6 +91,11 @@ function isWhyResult(result: unknown): boolean {
  * (teach / probe) project nothing → their chips are display-only.
  */
 const PROJECTORS: Record<string, CanvasProjector> = {
+	// The staging-hub opener (DAT-597 follow-up): re-mount the hub on the canvas.
+	// The hub is the Connect default canvas, but any projecting tool below replaces
+	// it; this brings it back. A bare `probe` kind (no seed — the user picks the
+	// source + writes SQL in the hub).
+	open_staging_hub: () => ({ kind: "probe" }),
 	// Project only a real array — a partial/streaming or errored output can be a
 	// truthy NON-array, and the SourceList/Inventory widgets call .filter/.reduce/
 	// .length on it ("e.filter is not a function"). Non-array → leave unchanged.
@@ -183,6 +187,12 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		isWhyResult(result)
 			? { kind: "metric-why", why: result as WhyMetricResult }
 			: null,
+	// The begin_session driver rankings (DAT-546/DAT-579). Project only a complete
+	// result (a `rankings` array) — same partial/errored-output guard as look_metric.
+	look_drivers: (result) =>
+		Array.isArray((result as { rankings?: unknown } | null)?.rankings)
+			? { kind: "driver-list", look: result as LookDriversResult }
+			: null,
 	// DAT-482: a teach_metric OVERRIDE surfaces the shipped DAG it replaces. Unlike
 	// the other teach tools (rail-only), an override carries a renderable surface —
 	// but only an override: a fresh declaration (override:false) or an errored
@@ -199,37 +209,6 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 			typeof r.vertical === "string" &&
 			typeof r.graph_id === "string"
 			? { kind: "metric-shadow", vertical: r.vertical, graphId: r.graph_id }
-			: null;
-	},
-	// Only project once the result is a COMPLETE schema (a `tables` array): a
-	// partial/streaming or errored connect output is truthy-but-tables-less, and
-	// projecting it crashes SchemaPreview on `schema.tables.length` (the multi-file
-	// drag-drop crash). Not-yet-complete → leave the canvas unchanged (the last
-	// good preview stays; a failed connect surfaces its error in the chat rail).
-	connect: (result) =>
-		Array.isArray((result as { tables?: unknown } | null)?.tables)
-			? { kind: "schema-preview", schema: result as ConnectSchema }
-			: null,
-	// The framed model (concepts + validations + metric DAGs) renders as the
-	// ModelFrame widget; only once the result carries a `concepts` array (the
-	// model's foundation — same partial-output guard as connect; validations and
-	// metrics may each be an empty array).
-	frame: (result) =>
-		Array.isArray((result as { concepts?: unknown } | null)?.concepts)
-			? { kind: "model-frame", frame: result as FrameResult }
-			: null,
-	// Calling select STARTS the import (DAT-436): the result carries the
-	// started run's workflow_id + run_id, so project the live add-source-progress
-	// widget directly — the same member replay projects. A refused/failed select
-	// (no ids — e.g. NoConceptsError) leaves the canvas unchanged.
-	select: (result) => {
-		const r = result as { workflow_id?: string; run_id?: string } | null;
-		return r?.workflow_id && r?.run_id
-			? {
-					kind: "add-source-progress",
-					workflowId: r.workflow_id,
-					runId: r.run_id,
-				}
 			: null;
 	},
 	// A replay is an addSourceWorkflow run (reused workflow id, fresh run_id), so
@@ -309,38 +288,10 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 		return {
 			kind: "answer-result",
 			sql: grid.sql,
+			// The narrative `answer` field, read defensively (cockpit boundary rule):
+			// a drifted result with a non-string answer yields "" rather than throwing.
+			summary: typeof r?.answer === "string" ? r.answer : "",
 			confidence: readAnswerConfidence(r),
-		};
-	},
-	// The `upload` UI tool carries no data — it just opens the upload area so the
-	// user can drop local files.
-	upload: () => ({ kind: "upload-area" }),
-	// The `open_probe` UI tool carries no data — it opens an EMPTY editable probe
-	// panel for the user to pick a source + write SQL.
-	open_probe: () => ({ kind: "probe" }),
-	// The agent's `probe` ran a sample for ITS context; the human grid re-streams the
-	// FULL result. Like run_sql, the query is in the CALL INPUT (source + sql), not the
-	// result — so it SEEDS the editable panel (probe is OUT of CHIP_ONLY now): the user
-	// sees the agent's query, can edit it, and re-runs it as a stream. An errored probe
-	// (`{ error }`) or a call missing source/sql leaves the canvas unchanged.
-	probe: (result, input) => {
-		if (isAgentError(result)) return null;
-		const args = (input ?? {}) as {
-			source_name?: unknown;
-			backend?: unknown;
-			sql?: unknown;
-		};
-		if (typeof args.sql !== "string" || args.sql.length === 0) return null;
-		if (
-			typeof args.source_name !== "string" ||
-			typeof args.backend !== "string"
-		) {
-			return null;
-		}
-		return {
-			kind: "probe",
-			source: { name: args.source_name, backend: args.backend },
-			sql: args.sql,
 		};
 	},
 };
@@ -362,13 +313,14 @@ export const CANVAS_TOOLS: ReadonlySet<string> = new Set(
  * guardrail for the DAT-526 P1 registry split. Disjoint from `CANVAS_TOOLS`.
  */
 export const CHIP_ONLY: ReadonlySet<string> = new Set([
-	"list_verticals", // catalogue → chip summary, no widget
-	"use_vertical", // adopt = control-plane write, no renderable surface (DAT-523)
-	"look_drivers", // driver rankings → chip summary; a dedicated widget is a fast-follow (DAT-546)
 	"teach", // writes an overlay row; outcome surfaces after a re-run, not a widget
 	"teach_validation",
 	"teach_cycle",
 	// NB teach_metric is NOT here — an override projects the metric-shadow canvas.
+	// look_values (DAT-621): a value-set DRILL whose output the AGENT consumes to ground
+	// a filter — no widget. A chip summary (column + count) avoids dumping a 1000-value
+	// list into the DOM (the values go to the agent, never the page).
+	"look_values",
 ]);
 
 /** A tool whose result maps to a canvas member → its chip is clickable. */
@@ -394,11 +346,11 @@ export function toolResultToCanvas(
  * shapes the SDK can emit: an `output` on the `tool-call` part, or a correlated
  * `tool-result` part (content is JSON; fall back to the raw string if it isn't).
  *
- * "Maps to a canvas" is the key word: a non-canvas tool (list_verticals, teach,
- * probe) completing LAST must NOT shadow the last real canvas result — otherwise
+ * "Maps to a canvas" is the key word: a non-canvas tool (teach, teach_cycle)
+ * completing LAST must NOT shadow the last real canvas result — otherwise
  * `canvasFromMessages` returns null and the caller, which optimistically set the
  * canvas to "loading" on submit, has nothing to reconcile to (the stuck-spinner
- * bug after a refused/failed select, whose turn ends on a non-canvas list_verticals).
+ * bug after a turn whose last call is a non-canvas tool).
  * Returns the latest mappable CanvasState, or null when no part maps at all.
  */
 export function canvasFromMessages(

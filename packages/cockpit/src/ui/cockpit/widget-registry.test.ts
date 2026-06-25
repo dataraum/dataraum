@@ -26,12 +26,8 @@ describe("WidgetRegistry (DAT-347)", () => {
 		}
 	});
 
-	it("the shared canvas registry has the schema-preview widget (DAT-381)", () => {
-		expect(canvasRegistry.has("schema-preview")).toBe(true);
-	});
-
-	it("the shared canvas registry has the model-frame widget (DAT-382, DAT-469)", () => {
-		expect(canvasRegistry.has("model-frame")).toBe(true);
+	it("the shared canvas registry has the probe widget (DAT-576, the staging-hub default)", () => {
+		expect(canvasRegistry.has("probe")).toBe(true);
 	});
 
 	it("the shared canvas registry has the result-grid widget (DAT-385)", () => {
@@ -56,10 +52,6 @@ describe("WidgetRegistry (DAT-347)", () => {
 
 	it("the shared canvas registry has the session-progress widget (DAT-435)", () => {
 		expect(canvasRegistry.has("session-progress")).toBe(true);
-	});
-
-	it("the shared canvas registry has the upload-area widget (redesign)", () => {
-		expect(canvasRegistry.has("upload-area")).toBe(true);
 	});
 
 	it("the shared canvas registry has the validation widgets (DAT-440)", () => {

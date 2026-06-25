@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
+from dataraum.graphs import agent as agent_module
 from dataraum.graphs.agent import (
     ExecutionContext,
     GeneratedCode,
@@ -177,6 +178,9 @@ class TestDescribeTable:
         col_names = [c["name"] for c in result["columns"]]
         assert "id" in col_names
         assert "amount" in col_names
+        # DAT-616: no per-column DISTINCT/LIMIT-5 self-fetch — name+type only; the
+        # authoritative value enumeration is the rich-context Value sets block.
+        assert "sample_values" not in result["columns"][0]
 
     def test_describe_nonexistent_table(self, duckdb_with_data):
         """Test describing a table that doesn't exist returns None."""
@@ -284,6 +288,278 @@ class TestGraphAgentIntegration:
         execution = result.value
         assert execution.graph_id == "test_metric"
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
+
+
+def _agent_with_sql(steps: list[dict[str, str]], final_sql: str) -> GraphAgent:
+    """A GraphAgent whose mocked LLM emits the given steps + final SQL."""
+    mock_config = MagicMock()
+    mock_config.limits.max_output_tokens_per_request = 4000
+    mock_config.limits.cache_ttl_seconds = 3600
+    mock_renderer = MagicMock()
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+    agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
+    agent.provider.get_model_for_tier.return_value = "test-model"
+
+    tool_call = MagicMock()
+    tool_call.name = "generate_sql"
+    tool_call.input = {
+        "summary": "test",
+        "steps": steps,
+        "final_sql": final_sql,
+        "column_mappings": {"amount": "amount"},
+    }
+    response = MagicMock()
+    response.tool_calls = [tool_call]
+    response.content = None
+    agent.provider.converse = MagicMock(return_value=Result.ok(response))
+    return agent
+
+
+class TestGraphAgentVerifier:
+    """The post-execution verifier converts silently-wrong metrics into honest fails (DAT-616)."""
+
+    def test_empty_support_extract_fails_grounded_and_caches_nothing(
+        self, session: Session, duckdb_with_data, sample_graph
+    ):
+        """An extract whose filter matches no rows is inconclusive, not executed-green.
+
+        Reproduces the long-format finance bug: a SUM over an empty filter (no
+        COALESCE mask) yields NULL → the metric stays grounded with a 'no support'
+        reason and its SQL is NOT promoted into the reuse cache.
+        """
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        agent = _agent_with_sql(
+            steps=[
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount) AS value FROM test_data WHERE id = 999",
+                    "description": "empty filter",
+                }
+            ],
+            final_sql="SELECT * FROM value",
+        )
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+
+        assert not result.success
+        assert "no support" in result.error
+        # The bad SQL must NOT enter the shared snippet cache (the verifier gates it).
+        snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
+        assert snippets == []
+
+    def test_genuine_zero_metric_executes(self, session: Session, duckdb_with_data, sample_graph):
+        """A metric that genuinely computes 0 (rows matched, summing to 0) passes.
+
+        `id = 1` matches a row; `amount * 0` sums to a real 0 — support exists, so
+        the metric is executed with value 0, not rejected as degenerate."""
+        agent = _agent_with_sql(
+            steps=[
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount * 0) AS value FROM test_data WHERE id = 1",
+                    "description": "genuine zero with support",
+                }
+            ],
+            final_sql="SELECT * FROM value",
+        )
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, sample_graph, context, workspace_id=baseline_run_id())
+
+        assert result.success
+        assert result.value.output_value == 0
+
+
+def _formula_graph() -> TransformationGraph:
+    """A single-output FORMULA graph whose composed SQL lives in final_sql.
+
+    The expression is a bare constant (no operands) so it is self-consistent with
+    the empty depends_on and self-contained final_sql the round-trip test uses —
+    composer correctness over real multi-operand formulas is covered exhaustively
+    in test_formula_composer.py; this fixture only exercises the save-path.
+    """
+    return TransformationGraph(
+        graph_id="gross_profit",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="Gross Profit",
+            description="",
+            category="test",
+            source=GraphSource.SYSTEM,
+            tags=[],
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="gp"),
+        parameters=[],
+        steps={
+            "gp": GraphStep(
+                step_id="gp",
+                step_type=StepType.FORMULA,
+                expression="42",
+                depends_on=[],
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+def _formula_with_deps(expression: str, depends_on: list[str]) -> TransformationGraph:
+    """A single formula output step (deps supplied via generated_code, not graph steps)."""
+    return TransformationGraph(
+        graph_id="margin",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="Margin", description="", category="test", source=GraphSource.SYSTEM, tags=[]
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="m"),
+        parameters=[],
+        steps={
+            "out": GraphStep(
+                step_id="out",
+                step_type=StepType.FORMULA,
+                expression=expression,
+                depends_on=depends_on,
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+def _constant_graph() -> TransformationGraph:
+    """A single CONSTANT output step over a `days_in_period` parameter."""
+    from dataraum.graphs.models import ParameterDef
+
+    return TransformationGraph(
+        graph_id="dip",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="DIP", description="", category="test", source=GraphSource.SYSTEM, tags=[]
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="dip"),
+        parameters=[ParameterDef(name="days_in_period", param_type="integer", default=30)],
+        steps={
+            "out": GraphStep(
+                step_id="out",
+                step_type=StepType.CONSTANT,
+                parameter="days_in_period",
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+class TestAuthorGroundingFree:
+    """Deterministic authoring (DAT-636 step 3) — formula + constant, no LLM."""
+
+    @staticmethod
+    def _agent() -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+    def test_formula_composed_from_cached_deps(self) -> None:
+        graph = _formula_with_deps(
+            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+        )
+        cached = {
+            "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
+            "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
+        }
+        code = self._agent()._author_grounding_free(graph, cached, {})
+        assert code is not None
+        assert code.llm_model == "deterministic"
+        assert code.final_sql == (
+            "SELECT ((SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold)) AS value"
+        )
+        assert {s["step_id"] for s in code.steps} == {"revenue", "cost_of_goods_sold"}
+
+    def test_formula_with_missing_dep_falls_back_to_llm(self) -> None:
+        graph = _formula_with_deps(
+            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+        )
+        # cost_of_goods_sold not cached → deterministic authoring declines (None).
+        cached = {"revenue": {"sql": "SELECT 1000 AS value", "description": ""}}
+        assert self._agent()._author_grounding_free(graph, cached, {}) is None
+
+    def test_constant_composed_from_resolved_param(self) -> None:
+        code = self._agent()._author_grounding_free(_constant_graph(), {}, {"days_in_period": 30})
+        assert code is not None
+        assert code.llm_model == "deterministic"
+        assert code.final_sql == "SELECT 30 AS value"
+        assert code.steps == []
+
+    def test_extract_returns_none(self, sample_graph) -> None:
+        # sample_graph's output is an EXTRACT — genuinely needs LLM grounding.
+        assert self._agent()._author_grounding_free(sample_graph, {}, {}) is None
+
+
+class TestDeterministicAuthoringEndToEnd:
+    """execute() authors formula/constant deterministically and runs the LLM as a shadow."""
+
+    @staticmethod
+    def _formula_snippets(session: Session) -> list:
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        return [
+            s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "formula"
+        ]
+
+    def test_formula_authored_deterministically_not_from_llm(
+        self, session: Session, duckdb_with_data
+    ):
+        # The LLM mock would emit "SELECT 42 AS value"; the DETERMINISTIC path wins and
+        # composes the expression itself → "SELECT 42.0 AS value", llm_model=deterministic.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        assert result.success
+        formulas = self._formula_snippets(session)
+        assert len(formulas) == 1
+        assert formulas[0].llm_model == "deterministic"
+        assert formulas[0].sql == "SELECT 42.0 AS value"
+        assert formulas[0].normalized_expression
+
+    def test_shadow_logs_agreement_with_llm(self, session: Session, duckdb_with_data, monkeypatch):
+        # LLM shadow returns 42, matching the deterministic 42.0 → agree.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        shadow = [
+            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
+        ]
+        assert len(shadow) == 1
+        assert shadow[0].kwargs["agree"] is True
+        assert shadow[0].kwargs["deterministic_value"] == 42.0
+
+    def test_shadow_flags_divergence(self, session: Session, duckdb_with_data, monkeypatch):
+        # LLM shadow returns 999, deterministic computes 42 → divergence flagged.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 999 AS value")
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        shadow = [
+            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
+        ]
+        assert len(shadow) == 1
+        assert shadow[0].kwargs["agree"] is False
 
 
 class TestGraphAgentSnippets:
@@ -565,3 +841,57 @@ class TestGraphAgentSnippets:
         newly_generated = [u for u in usages if u.usage_type == "newly_generated"]
         assert len(newly_generated) >= 1
         assert newly_generated[0].execution_type == "graph"
+
+
+class TestPriorContextFeedback:
+    """DAT-616 feedback loops: prior honest-fail reason + prior groundings."""
+
+    def _agent(self) -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+    def test_prior_groundings_from_cached_snippets(self) -> None:
+        """column_mappings_basis on a cached snippet is fed back as a prior grounding."""
+        session = MagicMock()
+        # No prior lifecycle reason.
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            None
+        )
+        graph = MagicMock()
+        graph.graph_id = "gross_margin"
+        cached = {
+            "revenue": {
+                "sql": "SELECT 1 AS value",
+                "column_mappings_basis": {
+                    "revenue": {"column": "account_type", "filter": "IN (...)"}
+                },
+            }
+        }
+        out = self._agent()._build_prior_context(session, graph, cached)
+        assert "Prior value→concept groundings" in out
+        assert "account_type" in out
+
+    def test_prior_reason_fed_back(self) -> None:
+        """A prior run's honest-fail state_reason is fed back verbatim with an abstain steer."""
+        session = MagicMock()
+        prior = MagicMock()
+        # Sentinel reason — the test asserts the MECHANISM (the prior reason is
+        # echoed into the next run's context), not any domain-specific wording.
+        prior.state_reason = "SENTINEL_PRIOR_REASON"
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            prior
+        )
+        graph = MagicMock()
+        graph.graph_id = "some_metric"
+        out = self._agent()._build_prior_context(session, graph, None)
+        assert "Last run this metric was flagged" in out
+        assert "SENTINEL_PRIOR_REASON" in out
+        assert "abstain" in out
+
+    def test_empty_when_nothing_prior(self) -> None:
+        session = MagicMock()
+        session.query.return_value.filter.return_value.order_by.return_value.first.return_value = (
+            None
+        )
+        graph = MagicMock()
+        graph.graph_id = "g"
+        assert self._agent()._build_prior_context(session, graph, None) == ""

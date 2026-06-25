@@ -80,14 +80,6 @@ async function seed(sourceId: string): Promise<void> {
 			updatedAt: now,
 		})
 		.onConflictDoNothing({ target: sourcesWrite.sourceId });
-	// Record the cockpit run (DAT-562: runs group by workspace, no session row);
-	// the run is keyed by the workspace's deterministic add_source workflow id.
-	await recordRun({
-		workspaceId: env.DATARAUM_WORKSPACE_ID,
-		kind: "onboarding",
-		stage: "add_source",
-		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
-	});
 }
 
 async function countOverlays(): Promise<number> {
@@ -112,11 +104,13 @@ async function runInitial(
 		// wire. The run's source SET (DAT-422) — one source here, so a 1-element set.
 		workspace_id: env.DATARAUM_WORKSPACE_ID,
 		sources: [sourceId],
-		// `_adhoc` is the empty / start-here vertical (DAT-371), on the workflow INPUT
-		// now (DAT-506): cold-start induction generates concepts from the data and
-		// stores them as `concept` overlay rows. This smoke is the real DAT-371
-		// acceptance test — a clean run proves induction works against the mounted config.
-		verticals: ["_adhoc"],
+		// A BUILTIN vertical whose `concept` rows ship with the mounted config, so
+		// grounding has concepts to ground against. `_adhoc` + cold-start induction
+		// (the old DAT-371 "generate concepts from the data" path) was RETIRED — a
+		// vertical must DECLARE its concepts; `_adhoc` has none, so add_source's
+		// semantic_per_column grounding fails loud ("run frame first"). `finance`
+		// (builtin, ~22 concepts) is the standard smoke vertical.
+		verticals: ["finance"],
 	};
 	// `start` (not `execute`) so we can capture the run id — the replay
 	// assertion compares its fresh run_id against the initial one.
@@ -130,6 +124,15 @@ async function runInitial(
 		taskQueue: engineTaskQueueFor(env.DATARAUM_WORKSPACE_ID),
 		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
 		args: [input],
+	});
+	// Record the cockpit run AFTER start with the real execution id (DAT-562/DAT-595:
+	// runs group by workspace; the row carries the Temporal exec id directly).
+	await recordRun({
+		workspaceId: env.DATARAUM_WORKSPACE_ID,
+		kind: "onboarding",
+		stage: "add_source",
+		workflowId: addSourceWorkflowId(env.DATARAUM_WORKSPACE_ID),
+		runId: handle.firstExecutionRunId,
 	});
 	const result = (await handle.result()) as AddSourceResult;
 

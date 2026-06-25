@@ -19,7 +19,11 @@ from dataraum.llm.providers.base import (
     TransientProviderError,
 )
 from dataraum.pipeline.base import PhaseStatus
-from dataraum.worker.activities import PhaseActivities, _provider_app_error
+from dataraum.worker.activities import (
+    PhaseActivities,
+    _is_transient_commit_conflict,
+    _provider_app_error,
+)
 from dataraum.worker.activity import PhaseRun
 from dataraum.worker.contracts import RunRef, SessionScopedInput
 from dataraum.worker.workflows import _LLM_RETRY, _RETRY
@@ -69,6 +73,31 @@ def test_deterministic_failure_stays_non_retryable() -> None:
         _acts()._outcome_or_raise(run, "relationships")
     assert ei.value.non_retryable is True
     assert ei.value.type == "PhaseFailed"
+
+
+def test_transient_commit_conflict_is_retryable() -> None:
+    # add_source fans out a ProcessTableWorkflow per table; their commits race on the
+    # one shared DuckLake catalog. The losing commit is TRANSIENT (the phase is
+    # idempotent), so it must retry — not die as a permanent PhaseFailed.
+    run = _failed(
+        "TransactionException: TransactionContext Error: Failed to commit: Failed to "
+        "commit DuckLake transaction.\nTransaction conflict - attempting to insert into "
+        'table with index "27" - but another transaction has altered it'
+    )
+    with pytest.raises(ApplicationError) as ei:
+        _acts()._outcome_or_raise(run, "column_eligibility")
+    assert ei.value.type == "TransientPhaseFailure"
+    assert ei.value.non_retryable is False
+    # The retryable type must be absent from the activity policy's non-retryable list.
+    assert "TransientPhaseFailure" not in (_RETRY.non_retryable_error_types or ())
+
+
+def test_commit_conflict_classifier_signatures() -> None:
+    assert _is_transient_commit_conflict("... Transaction conflict - attempting ...")
+    assert _is_transient_commit_conflict("Failed to commit DuckLake transaction.")
+    # A genuine deterministic failure is NOT a transient conflict.
+    assert not _is_transient_commit_conflict("No typed tables found. Run typing first.")
+    assert not _is_transient_commit_conflict(None)
 
 
 def test_completed_run_returns_outcome() -> None:

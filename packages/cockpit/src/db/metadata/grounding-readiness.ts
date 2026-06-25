@@ -9,7 +9,7 @@
 // to formulate a `unit` teach; `top_drivers` (e.g. type_fidelity / null_semantics /
 // unit_entropy) tell it WHICH mechanical grounding teach a gap calls for.
 
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { metadataDb } from "./client";
 import { currentEntropyReadiness } from "./schema";
 
@@ -49,7 +49,20 @@ export async function readGroundingReadiness(
 			topDrivers: currentEntropyReadiness.topDrivers,
 		})
 		.from(currentEntropyReadiness)
-		.where(inArray(currentEntropyReadiness.tableId, tableIds));
+		// Pin the add_source GRAIN (via_table_head, DAT-597). `current_entropy_readiness`
+		// is multi-grain: after a begin_session/operating_model run a column carries a
+		// SECOND row sealed by the catalog head (the session re-adjudication). The
+		// grounding loop grounds the add_source layer, so it must assess the add_source
+		// run's own verdict — NOT a stale catalog row that a replay-after-session would
+		// otherwise mix in (two rows per column → duplicate/conflicting gaps). On a first
+		// import no catalog head exists yet, so this is a no-op there. (The inspect tools
+		// keep the OPPOSITE pick — pickCurrentRow, catalog supersedes — by design.)
+		.where(
+			and(
+				inArray(currentEntropyReadiness.tableId, tableIds),
+				eq(currentEntropyReadiness.viaTableHead, true),
+			),
+		);
 	return rows.map((r) => ({
 		target: r.target ?? "",
 		tableId: r.tableId,

@@ -21,6 +21,7 @@
 
 import type { UIMessage } from "@tanstack/ai-react";
 import {
+	type AnyPgColumn,
 	boolean,
 	index,
 	integer,
@@ -31,6 +32,7 @@ import {
 	uniqueIndex,
 	varchar,
 } from "drizzle-orm/pg-core";
+import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 /**
  * Who triggered control-plane work. A coarse identity seam (DAT-460): a single
@@ -104,7 +106,7 @@ export const runs = pgTable(
 		// The completion-watcher + reconcile filter on it so a run narrates into the
 		// chat that triggered it, not whichever workspace watcher claims it first
 		// (the old order-dependent bug). NULLABLE by design: a legacy run (pre-528)
-		// or a future auto-orchestrated run (P3 JourneyWorkflow) has no originating
+		// or a future auto-orchestrated run has no originating
 		// chat — it simply doesn't narrate. Stamped in `recordRun` from the
 		// request-scoped ALS context (lib/run-context).
 		conversationId: varchar("conversation_id").references(
@@ -112,19 +114,11 @@ export const runs = pgTable(
 		),
 		status: varchar("status").notNull().default("running"),
 		startedAt: timestamp("started_at", { mode: "date" }).notNull().defaultNow(),
-		// The atomic claim for the run-completion narration (Phase 2A): the server
-		// watcher sets this (conditional UPDATE … WHERE … IS NULL) the first time it
-		// narrates a run's completion, so the agent narrates EXACTLY once even with
-		// several watchers for one conversation (multi-tab — each open
-		// /api/chat-stream hosts its own watcher). Distinct from `status`: the
-		// terminal-status writers (the progress poll / reconcile) don't touch it, so
-		// the claim never races them. NULL = not yet narrated.
-		completionNarratedAt: timestamp("completion_narrated_at", { mode: "date" }),
 		// Why the run is parked in `status='awaiting_input'` (DAT-551 P3c): the
 		// grounding-teach agent fixed what it mechanically could and a human-judgement
 		// gap remains (a concept/relationship the agent must not auto-apply), or it hit
 		// its attempt limit. One sentence the surface shows + deep-links a Stage chat
-		// from. NULL for every other run. Written by the journey's markRunAwaitingInput.
+		// from. NULL for every other run. Written by the grounding-loop workflow's markRunAwaitingInput.
 		awaitingNote: text("awaiting_note"),
 	},
 	(t) => [
@@ -216,3 +210,62 @@ export const uiState = pgTable("ui_state", {
 	pinnedCallId: varchar("pinned_call_id"),
 	updatedAt: timestamp("updated_at", { mode: "date" }).notNull().defaultNow(),
 });
+
+/**
+ * A minted report (DAT-624) — a frozen { SQL + summary (+ chart config) } widget
+ * over LIVE data. Created from an `answer`: the composed CTE, the answer narrative,
+ * and the confidence are captured at mint; the report RE-RUNS the SQL on every open
+ * (no result snapshot, no run_id / catalog pin — the standard BI model, so numbers
+ * stay current). Workspace-owned and session-independent: it outlives the chat it
+ * was minted from, which is why `conversationId` / `messageId` are NULLABLE
+ * provenance, not owners — deleting the chat must never orphan the report.
+ *
+ * `parentId` is the evolve-lineage self-reference (DAT-627): null for a freshly
+ * minted report, set when re-minted from a drilled-down answer. Deletion is SOFT
+ * (`deletedAt`) — a deleted parent keeps its children. `summaryFingerprint`
+ * (DAT-625 staleness) and `chartConfig` (DAT-626 charts) are reserved here so those
+ * phases need no migration; both stay null until then.
+ */
+export const reports = pgTable(
+	"reports",
+	{
+		id: varchar("id").primaryKey(),
+		workspaceId: varchar("workspace_id")
+			.notNull()
+			.references(() => workspaces.id),
+		// Provenance (nullable): the chat the report was minted from. Mirrors
+		// `runs.conversationId` — a report outlives the chat, so the chat doesn't own
+		// it. `messageId` is a plain pointer (no FK): pure provenance, and report
+		// lifetime must not couple to message-row lifetime.
+		conversationId: varchar("conversation_id").references(
+			() => conversations.id,
+		),
+		messageId: varchar("message_id"),
+		// Evolve lineage (DAT-627): the report this one was drilled-down from. Self-FK
+		// is safe under soft-delete (the parent row is never physically removed).
+		parentId: varchar("parent_id").references((): AnyPgColumn => reports.id),
+		// The ONLY editable field — a human label, defaulted from the answer at mint.
+		title: varchar("title").notNull(),
+		// The frozen answer narrative. Immutable text; the DAT-625 staleness pass
+		// regenerates it via Haiku when the result fingerprint drifts.
+		summary: text("summary").notNull(),
+		// Result fingerprint at last summary-gen — drives the DAT-625 outdated flag.
+		// Null until that phase populates it.
+		summaryFingerprint: varchar("summary_fingerprint"),
+		// The frozen composed CTE (stable lake names) — re-run live on every open.
+		sql: text("sql").notNull(),
+		// Frozen chart config (DAT-626) — null = table-only report (first-class).
+		chartConfig: jsonb("chart_config"),
+		// The answer's confidence at mint (band / grounded ratio / reuse) — colored
+		// in the gallery + detail, never recomputed.
+		confidence: jsonb("confidence").$type<AnswerConfidence>().notNull(),
+		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
+		// Soft delete — a deleted report drops out of the gallery; its children
+		// (parentId) remain. Null = live.
+		deletedAt: timestamp("deleted_at", { mode: "date" }),
+	},
+	(t) => [
+		// The gallery list: a workspace's reports, newest first.
+		index("reports_workspace_idx").on(t.workspaceId, t.createdAt),
+	],
+);

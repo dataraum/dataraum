@@ -79,12 +79,14 @@ def test_filter_keeps_typed_tables_across_sources(
 ) -> None:
     """DAT-422: the per-table scope is source-AGNOSTIC — ``table_ids`` spanning two
     sources resolve BOTH (a run is over a set of objects from 1–N sources), with
-    no source boundary to cross.
+    no source boundary to cross. The two tables carry DISTINCT names because table
+    identity is workspace-unique now (DAT-639): a workspace can't hold two
+    ``orders``, so the cross-source set is ``orders`` + ``shipments``.
     """
     src_a = _source(session)
     src_b = _source(session)
     a1 = _table(session, src_a.source_id, "orders", layer="typed")
-    b1 = _table(session, src_b.source_id, "orders", layer="typed")
+    b1 = _table(session, src_b.source_id, "shipments", layer="typed")
 
     resolved = StatisticsPhase()._typed_tables(
         _ctx(session, duckdb_conn, [a1.table_id, b1.table_id])

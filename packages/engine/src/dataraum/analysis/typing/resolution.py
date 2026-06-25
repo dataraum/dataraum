@@ -101,8 +101,8 @@ def reconcile_typed_table(
     """Find-or-create the ``layer`` Table for ``raw_table`` and refresh its stats.
 
     Stable typed identity (DAT-373 Option A): a re-type REUSES the existing
-    ``typed`` / ``quarantine`` ``Table`` row (matched by
-    ``(source_id, table_name, layer)`` — unique per ``uq_source_table_layer``)
+    ``typed`` / ``quarantine`` ``Table`` row (the typed sibling shares the raw's
+    ``source_id`` and its now workspace-unique ``(table_name, layer)`` — DAT-639)
     rather than minting a fresh ``table_id``. Reusing the row keeps the typed
     Table id — and the Column ids reconciled under it — stable across teach
     replays, so other stages' per-Column rows stay attached. Only the

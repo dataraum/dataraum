@@ -63,6 +63,7 @@ from dataraum.core.uri import uri_suffix, validate_source_uri
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.sources.base import raw_table_name_for_uri
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.sources.json import JsonLoader
@@ -196,9 +197,51 @@ class ImportPhase(BasePhase):
                     validate_source_uri(uri)
                 except ValueError as e:
                     return PhaseResult.failed(str(e))
+            collision = self._first_name_collision(
+                ctx, source_id, [raw_table_name_for_uri(uri) for uri in source_uris]
+            )
+            if collision is not None:
+                return PhaseResult.failed(collision)
             result = self._load_file_source(ctx, source, source_name, source_uris)
 
         return result
+
+    @staticmethod
+    def _first_name_collision(
+        ctx: PhaseContext, source_id: str | None, target_names: list[str]
+    ) -> str | None:
+        """Fail loud if a target raw-table name is already owned by ANOTHER source.
+
+        Workspace-unique table identity (DAT-639): the per-workspace DuckLake
+        catalog holds exactly one raw ``orders``. This import is about to write
+        ``CREATE OR REPLACE TABLE lake.raw."<name>"`` for each ``target_names``
+        entry — a physical write OUTSIDE the SQLAlchemy transaction the phase
+        runner rolls back (DAT-502). So a name already materialized by a DIFFERENT
+        source must be caught BEFORE the loaders run, or the CREATE OR REPLACE
+        silently overwrites that source's data. The same-source case is NOT a
+        collision: an upload replays via ``should_skip`` (content-keyed id), a db
+        recipe replaces in place via the recipe-hash teardown.
+
+        Returns an actionable failure message (retire the owning source first) on
+        the first cross-source collision, else ``None``. The DB ``uq_table_name_
+        layer`` constraint is the backstop if a name slips past this pre-check.
+        """
+        if not target_names:
+            return None
+        rows = ctx.session.execute(
+            select(Table.table_name, Table.source_id, Source.name)
+            .join(Source, Source.source_id == Table.source_id)
+            .where(Table.layer == "raw", Table.table_name.in_(target_names))
+        ).all()
+        for table_name, owner_id, owner_name in rows:
+            if owner_id != source_id:
+                return (
+                    f"Workspace already has a raw table '{table_name}' from source "
+                    f"'{owner_name}'. A workspace holds exactly one '{table_name}' — "
+                    "retire that source first to replace it (re-importing identical "
+                    "content replays automatically; different content must be retired)."
+                )
+        return None
 
     @staticmethod
     def _resolve_file_uris(connection_config: dict[str, Any]) -> list[str]:
@@ -365,6 +408,24 @@ class ImportPhase(BasePhase):
         from dataraum.pipeline.phases._source_teardown import teardown_source_tables
         from dataraum.sources.backends import extract_backend
         from dataraum.sources.db_recipe import RecipeTable
+
+        # Workspace-unique guard (DAT-639), BEFORE teardown: if this recipe targets
+        # a raw-table name ANOTHER source already owns, fail loud now — never tear
+        # down or overwrite across sources. A name owned by THIS source is the
+        # in-place replace handled just below. The recipe query names ARE the
+        # narrow physical table names (no prefix; ``raw_prefix=""``).
+        recipe_tables = connection_config.get("tables") or []
+        collision = self._first_name_collision(
+            ctx,
+            source.source_id,
+            [
+                q["name"]
+                for q in recipe_tables
+                if isinstance(q, dict) and isinstance(q.get("name"), str)
+            ],
+        )
+        if collision is not None:
+            return PhaseResult.failed(collision)
 
         # The recipe was re-pointed under the same source name (``should_skip``
         # declined on a hash mismatch / missing witness, DAT-430). Replace in

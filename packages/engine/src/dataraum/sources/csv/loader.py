@@ -128,8 +128,9 @@ class CSVLoader(LoaderBase):
         Returns:
             Result containing StagedTable
         """
-        from dataraum.core.duckdb_naming import schema_for_layer, workspace_table_name
+        from dataraum.core.duckdb_naming import schema_for_layer
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
+        from dataraum.sources.base import raw_table_name_for_uri
 
         file_stem = uri_stem(source_uri)
         try:
@@ -148,10 +149,10 @@ class CSVLoader(LoaderBase):
                 return Result.fail("No columns found in CSV")
 
             # Compose the narrow, workspace-unique name (DAT-639 — no source
-            # prefix). The catalog alias is resolved here so the loader can write
-            # directly into ``lake.raw.*``.
-            file_table_name = self._sanitize_table_name(file_stem)
-            bare = workspace_table_name(file_table_name)
+            # prefix) via the single canonical derivation the import phase's
+            # collision guard also uses. The catalog alias is resolved here so
+            # the loader can write directly into ``lake.raw.*``.
+            bare = raw_table_name_for_uri(source_uri)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Track which columns are junk for later filtering (match on original name)

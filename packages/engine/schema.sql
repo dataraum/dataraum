@@ -189,7 +189,7 @@ CREATE TABLE tables (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	last_profiled_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_tables PRIMARY KEY (table_id), 
-	CONSTRAINT uq_source_table_layer UNIQUE (source_id, table_name, layer), 
+	CONSTRAINT uq_table_name_layer UNIQUE (table_name, layer), 
 	CONSTRAINT fk_tables_source_id_sources FOREIGN KEY(source_id) REFERENCES sources (source_id)
 );
 

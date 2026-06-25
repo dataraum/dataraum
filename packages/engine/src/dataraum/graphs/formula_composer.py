@@ -71,7 +71,9 @@ def _render(node: ast.expr, dep_step_ids: set[str], expression: str) -> str:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         if isinstance(node.value, bool):  # bool is an int subclass — reject explicitly
             raise ValueError(f"formula {expression!r} uses a boolean literal")
-        return repr(node.value)
+        # Emit as a float literal (e.g. 100 → 100.0) so a literal can never make a
+        # surrounding division integer-typed (and silently truncate) in DuckDB.
+        return repr(float(node.value))
 
     if isinstance(node, ast.BinOp):
         op = _BINOP_SQL.get(type(node.op))

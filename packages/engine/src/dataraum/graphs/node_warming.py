@@ -194,16 +194,19 @@ def ungroundable_dep_reason(node: WarmNode, bindings: dict[NodeKey, NodeDecision
     the node here instead — symmetric to the per-metric assembly's guard.
 
     The barrier between warming generations guarantees every dependency is
-    already decided in ``bindings`` by the time its dependent node is gated.
+    already decided in ``bindings`` by the time its dependent node is gated — so
+    a dependency that is missing, un-keyable, or not grounded is treated as
+    ungroundable (fail loud), never silently passed through (which would hand the
+    LLM a dep it can only fabricate).
     """
     graph = node.graph
     for dep_id in node.step.depends_on:
         dep_step = graph.steps.get(dep_id)
         if dep_step is None:
-            continue
+            return f"dependency '{dep_id}' is ungroundable: not defined in the graph"
         dep_key = node_key(dep_step, graph)
         if dep_key is None:
-            continue
+            return f"dependency '{dep_id}' is ungroundable: has no cache key (never authored)"
         decision = bindings.get(dep_key)
         if decision is None or not decision.grounded:
             reason = decision.reason if decision and decision.reason else "not authored"

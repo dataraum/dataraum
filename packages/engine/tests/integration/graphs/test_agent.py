@@ -375,7 +375,13 @@ class TestGraphAgentVerifier:
 
 
 def _formula_graph() -> TransformationGraph:
-    """A single-output FORMULA graph (its composed SQL lives in final_sql)."""
+    """A single-output FORMULA graph whose composed SQL lives in final_sql.
+
+    The expression is a bare constant (no operands) so it is self-consistent with
+    the empty depends_on and self-contained final_sql the round-trip test uses —
+    composer correctness over real multi-operand formulas is covered exhaustively
+    in test_formula_composer.py; this fixture only exercises the save-path.
+    """
     return TransformationGraph(
         graph_id="gross_profit",
         version="1.0",
@@ -392,7 +398,7 @@ def _formula_graph() -> TransformationGraph:
             "gp": GraphStep(
                 step_id="gp",
                 step_type=StepType.FORMULA,
-                expression="revenue - cost_of_goods_sold",
+                expression="42",
                 depends_on=[],
                 output_step=True,
             ),

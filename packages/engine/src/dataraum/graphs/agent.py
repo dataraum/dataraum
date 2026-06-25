@@ -1223,13 +1223,15 @@ class GraphAgent(LLMFeature):
             if not gen_step and not is_formula_output:
                 continue
 
-            # Use repaired SQL if available; the formula output's SQL is final_sql;
-            # otherwise the step's own LLM SQL.
+            # The formula output's SQL is ALWAYS final_sql — repair tracks per-step
+            # CTE bodies (by step_id), which are not the composed final statement, so
+            # a repaired formula step must not override the composition. Otherwise:
+            # repaired step SQL if available, else the step's own LLM SQL.
             repaired = repair_by_step.get(step_id)
-            if repaired and repaired.source_query:
-                sql = repaired.source_query
-            elif is_formula_output:
+            if is_formula_output:
                 sql = generated_code.final_sql
+            elif repaired and repaired.source_query:
+                sql = repaired.source_query
             else:
                 sql = gen_step.get("sql", "") if gen_step else ""
             description = gen_step.get("description", "") if gen_step else generated_code.summary

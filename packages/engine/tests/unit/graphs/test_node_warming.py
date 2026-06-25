@@ -313,3 +313,26 @@ class TestUngroundableDepReason:
         node = nodes[("extract", "revenue", "income_statement", "sum")]
 
         assert ungroundable_dep_reason(node, {}) is None
+
+    def test_unkeyable_dep_is_gated(self) -> None:
+        """A formula dep with no cache key (e.g. an extract missing its source) is
+        gated, NOT silently passed through — else the LLM gets a dep it can only
+        fabricate (the guard's invariant must hold for un-keyable deps too)."""
+        bad = GraphStep(step_id="bad", step_type=StepType.EXTRACT, aggregation="sum")  # no source
+        g = _graph("m", {"bad": bad, "gp": _formula("gp", "bad - x", ["bad"])})
+        _, nodes = build_warm_dag({"m": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        reason = ungroundable_dep_reason(nodes[formula_key], {})
+
+        assert reason is not None and "no cache key" in reason
+
+    def test_dep_not_defined_in_graph_is_gated(self) -> None:
+        """A formula depending on a step id that is not defined is gated, not skipped."""
+        g = _graph("m", {"gp": _formula("gp", "ghost - x", ["ghost"])})
+        _, nodes = build_warm_dag({"m": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        reason = ungroundable_dep_reason(nodes[formula_key], {})
+
+        assert reason is not None and "not defined" in reason

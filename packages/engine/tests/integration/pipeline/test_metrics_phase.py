@@ -421,7 +421,17 @@ def _fake_generate(authored: list[str]):
             {"step_id": sid, "sql": "SELECT 1 AS value", "description": sid} for sid in graph.steps
         ]
         out = graph.get_output_step()
-        final = f"SELECT value FROM {out.step_id}" if out else "SELECT 1 AS value"
+        if out and out.step_type == StepType.FORMULA and out.depends_on:
+            # A formula's final_sql composes over its DEP steps (never the output step
+            # itself). The snippet is now saved FROM final_sql (DAT-636 round-trip), so a
+            # self-referential `SELECT value FROM <out>` would fold to an invalid CTE in
+            # assembly — mirror real composition: reference the dependency CTEs.
+            terms = " + ".join(f"(SELECT value FROM {d})" for d in out.depends_on)
+            final = f"SELECT {terms} AS value"
+        elif out:
+            final = f"SELECT value FROM {out.step_id}"
+        else:
+            final = "SELECT 1 AS value"
         return Result.ok(
             GeneratedCode(
                 code_id=str(uuid4()),

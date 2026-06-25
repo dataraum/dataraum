@@ -537,8 +537,14 @@ class GraphAgent(LLMFeature):
         # only way to read the ACTUAL produced prompt, not the template.
         from dataraum.llm.prompt_log import dump_prompt
 
-        # Get model for this feature (graph_sql_generation uses balanced tier)
-        model = self.provider.get_model_for_tier("balanced")
+        # Tier by the authored node (DAT-636): a FORMULA is simple composition over
+        # already-decided scalar steps → the fast/Haiku tier; an extract needs the
+        # grounding-capable balanced/Sonnet tier. After the authoring/assembly split
+        # _generate_sql is only ever called by the authoring pass on a single-node
+        # mini-graph, so the output step IS the node being authored.
+        output_step = graph.get_output_step()
+        tier = "fast" if output_step and output_step.step_type == StepType.FORMULA else "balanced"
+        model = self.provider.get_model_for_tier(tier)
 
         dump_prompt(
             label="graph_sql_generation",

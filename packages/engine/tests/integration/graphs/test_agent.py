@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
+from dataraum.graphs import agent as agent_module
 from dataraum.graphs.agent import (
     ExecutionContext,
     GeneratedCode,
@@ -530,8 +531,6 @@ class TestDeterministicAuthoringEndToEnd:
         assert formulas[0].normalized_expression
 
     def test_shadow_logs_agreement_with_llm(self, session: Session, duckdb_with_data, monkeypatch):
-        import dataraum.graphs.agent as agent_module
-
         # LLM shadow returns 42, matching the deterministic 42.0 → agree.
         agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
         context = _make_execution_context(duckdb_with_data)
@@ -548,8 +547,6 @@ class TestDeterministicAuthoringEndToEnd:
         assert shadow[0].kwargs["deterministic_value"] == 42.0
 
     def test_shadow_flags_divergence(self, session: Session, duckdb_with_data, monkeypatch):
-        import dataraum.graphs.agent as agent_module
-
         # LLM shadow returns 999, deterministic computes 42 → divergence flagged.
         agent = _agent_with_sql(steps=[], final_sql="SELECT 999 AS value")
         context = _make_execution_context(duckdb_with_data)

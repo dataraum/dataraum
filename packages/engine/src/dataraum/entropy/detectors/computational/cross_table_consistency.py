@@ -28,7 +28,6 @@ Aggregation: max() — worst validation failure drives the table's score.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from sqlalchemy import select
@@ -39,15 +38,6 @@ from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimens
 from dataraum.entropy.models import EntropyObject
 
 logger = get_logger(__name__)
-
-# The content-keyed upload prefix (src_<sha1>__) — the ONLY prefix the logical
-# table-name fallback strips. A bare '__' split would eat legitimate name parts
-# and cross-claim same-named tables from different sources.
-_UPLOAD_PREFIX = re.compile(r"^src_[0-9a-f]{40}__")
-
-
-def _strip_upload_prefix(name: str) -> str:
-    return _UPLOAD_PREFIX.sub("", name)
 
 
 def _score_validation_result(result: Any) -> float:
@@ -233,26 +223,17 @@ class CrossTableConsistencyDetector(EntropyDetector):
     def _own_columns_used(context: DetectorContext, result: Any) -> list[str]:
         """The failing check's ``columns_used`` entries that name THIS table.
 
-        Entries are LLM-declared ``"table.column"`` strings; the table part may
-        carry the physical ``src_<digest>__`` upload prefix or the logical name,
-        so both sides compare suffix-stripped.
+        Entries are LLM-declared ``"table.column"`` strings. Table names are
+        workspace-unique and narrow (DAT-639 — no ``src_<digest>__`` prefix), so a
+        single exact match is correct and unambiguous: there is exactly one table
+        of a given name in the workspace, so this can't cross-claim another
+        source's same-named table.
         """
-
         table_name = context.table_name or ""
-        own_logical = _strip_upload_prefix(table_name)
         out: list[str] = []
         for ref in getattr(result, "columns_used", None) or []:
             table_part, _, column_part = ref.partition(".")
-            if not column_part:
-                continue
-            # Exact physical match first; the logical fallback strips ONLY the
-            # src_<digest>__ upload prefix (never any '__') and requires the
-            # ref to be unprefixed — otherwise a check touching source A's
-            # journal_lines would band source B's same-named table (review
-            # wave-1, the suffix-matching bug class for the third time).
-            if table_part == table_name or (
-                table_part == _strip_upload_prefix(table_part) and table_part == own_logical
-            ):
+            if column_part and table_part == table_name:
                 out.append(column_part)
         return out
 

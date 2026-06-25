@@ -397,18 +397,11 @@ def _apply_unit_overrides(
     if not isinstance(units, dict) or not units:
         return
 
-    # Strip the ``src_<digest>__`` source-qualifier so a teach keyed by the bare
-    # table name resolves; the qualified key still matches too.
-    qualified = table.table_name
-    raw_name = (
-        qualified.split("__", 1)[1]
-        if qualified.startswith("src_") and "__" in qualified
-        else qualified
-    )
-
+    # Table names are narrow (DAT-639 — no ``src_<digest>__`` qualifier), so a
+    # teach keys directly on the bare ``<table>.<column>``.
     for col in table.columns:
-        col_ref = f"{qualified}.{col.column_name}"
-        entry = units.get(col_ref) or units.get(f"{raw_name}.{col.column_name}")
+        col_ref = f"{table.table_name}.{col.column_name}"
+        entry = units.get(col_ref)
         if not isinstance(entry, dict):
             continue
         unit = entry.get("unit")

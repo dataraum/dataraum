@@ -225,6 +225,16 @@ class ImportPhase(BasePhase):
         Returns an actionable failure message (retire the owning source first) on
         the first cross-source collision, else ``None``. The DB ``uq_table_name_
         layer`` constraint is the backstop if a name slips past this pre-check.
+
+        Concurrency caveat (best-effort, NOT serialization): this guard + the DB
+        constraint protect against the common case, but two import activities for
+        DIFFERENT sources landing the SAME narrow name concurrently can still race
+        — A's check passes, B's ``CREATE OR REPLACE`` overwrites A's DuckDB table,
+        then B's ``Table`` insert trips ``uq_table_name_layer`` and rolls back the
+        SQLAlchemy session, but the DuckDB write is OUTSIDE that rollback (DAT-502).
+        Closing that window needs per-workspace import serialization at the
+        Temporal layer (deferred); narrow naming makes the window exist where
+        source-prefixed names made it structurally impossible.
         """
         if not target_names:
             return None

@@ -314,10 +314,10 @@ class EnrichedViewsPhase(BasePhase):
                     reason="no qualifying dimension joins",
                 )
 
-            # Collision-free identities: name the view off the fact's
-            # source-qualified duckdb_path (``enriched_{source}__{table}``), so two
-            # sources that each have an ``orders`` fact don't clash on
-            # ``enriched_orders``. Every source is fully-qualified, so CREATE OR
+            # Name the view off the fact's narrow, workspace-unique duckdb_path
+            # (``enriched_{table}`` — DAT-639). Table names are workspace-unique
+            # (``uq_table_name_layer``), so two sources can't each own an
+            # ``orders`` fact in the first place. CREATE OR
             # REPLACE only ever replaces THIS view on a re-run, never a sibling.
             view_name = f"enriched_{fact_table.duckdb_path}"
             view_fqn = _lake_fqn("enriched", view_name)

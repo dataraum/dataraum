@@ -15,7 +15,7 @@ from pydantic import BaseModel
 class RecipeTable(BaseModel):
     """One named SELECT inside a recipe.
 
-    `name` becomes the DuckDB table name (`raw_{name}` in staging).
+    `name` becomes the DuckDB table name in `lake.raw` (narrow, no prefix — DAT-639).
     `sql` is materialized verbatim against the attached database.
     """
 

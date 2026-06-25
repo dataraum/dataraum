@@ -377,10 +377,9 @@ def _apply_unit_overrides(
     Reads ``overrides.units`` from typing config (the column-scoped unit teach,
     DAT-428). Keys are ``"table.column"``; values contain ``{unit: "USD"}``.
 
-    A teach names the table by its USER-FACING identity (``bank_transactions``),
-    but a raw table's stored name is source-qualified (``src_<digest>__bank_transactions``).
-    So we match a key against BOTH the qualified name and the de-prefixed raw name —
-    a human teach lands without the user having to know the internal source digest.
+    Table names are narrow and workspace-unique (DAT-639 — no ``src_<digest>__``
+    qualifier), so a teach keys directly on the bare ``<table>.<column>``; there
+    is no source-qualified form to also match.
 
     ``run_id`` scopes the patch to THIS run's candidate. A teach RE-RUN leaves the
     prior run's TypeCandidate rows in place, so an unscoped ``confidence DESC`` pick

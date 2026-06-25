@@ -18,7 +18,8 @@ including the catalog compose it at query time.
 
 Convention for ``Table.duckdb_path``:
 
-    Stores the **unqualified table name** (e.g., ``"csv_source__orders"``).
+    Stores the **unqualified, narrow table name** (e.g., ``"orders"`` — no
+    source prefix, workspace-unique per DAT-639).
     The schema is derived from ``Table.layer`` via :func:`schema_for_layer`.
     Reads pre-DAT-341 produced bare names like ``"raw_orders"`` resolved
     via the connection's ``USE`` state; post-DAT-341 the connection USEs

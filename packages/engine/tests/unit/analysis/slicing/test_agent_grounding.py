@@ -31,7 +31,7 @@ def _context() -> dict:
             {
                 "table_name": "journal_lines",
                 "table_id": "tbl_jl",
-                "duckdb_path": "src_x__journal_lines",
+                "duckdb_path": "journal_lines",
                 "enriched_duckdb_path": None,
                 "columns": [
                     {

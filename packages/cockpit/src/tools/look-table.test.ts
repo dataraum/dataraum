@@ -257,20 +257,17 @@ describe("projectTableEntity (DAT-476)", () => {
 		).toEqual([]);
 	});
 
-	it("strips src_<digest>__ prefixes from grain / time-axis columns / description", () => {
-		// Engine free-text/name fields can carry the content-keyed source prefix;
-		// the projection digest-strips them before they reach the tool output.
-		const D = "204bc8e118543a6c35654c1f68c43539a2e226f2";
+	it("renders narrow grain / time-axis columns / description (DAT-639)", () => {
+		// Engine free-text/name fields are NARROW post-DAT-639; the projection
+		// renders them as-is and the result stays digest-free.
 		const out = projectTableEntity(
 			entityRow({
-				grainColumns: { columns: [`src_${D}__order_id`, "line_no"] },
+				grainColumns: { columns: [`order_id`, "line_no"] },
 				timeColumns: [
-					{ column: `src_${D}__order_date`, aspect: "order", note: "Placed." },
+					{ column: `order_date`, aspect: "order", note: "Placed." },
 				],
-				identityColumns: [
-					{ column: `src_${D}__order_id`, note: "Recurring identity." },
-				],
-				description: `One row per line in src_${D}__orders.`,
+				identityColumns: [{ column: `order_id`, note: "Recurring identity." }],
+				description: `One row per line in orders.`,
 			}),
 		);
 		expect(out.grain).toEqual(["order_id", "line_no"]);
@@ -384,19 +381,17 @@ describe("projectTableBand (DAT-415)", () => {
 });
 
 describe("projectLookTable (DAT-433)", () => {
-	const DIGEST = "204bc8e118543a6c35654c1f68c43539a2e226f2";
-
-	it("splits the raw name into display table_name + raw physical_name", () => {
+	it("surfaces the narrow table_name + the physical_name round-trip key (DAT-639)", () => {
 		const out = projectLookTable(
 			"t_orders",
-			`src_${DIGEST}__orders`,
+			`orders`,
 			[projectColumnReadiness(row())],
 			null,
 			2,
 			projectTableEntity(entityRow()),
 		);
 		expect(out.table_name).toBe("orders");
-		expect(out.physical_name).toBe(`src_${DIGEST}__orders`);
+		expect(out.physical_name).toBe(`orders`);
 		expect(out.analyzed).toBe(true);
 		expect(out.pending_teaches).toBe(2);
 		// The entity header carries straight through (DAT-476).

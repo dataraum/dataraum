@@ -327,10 +327,10 @@ def compute_ri_metrics(
 
     Args:
         from_table: Fully-qualified DuckDB path to source table
-            (e.g., ``lake.typed."source__orders"`` post-DAT-341).
+            (e.g., ``lake.typed."orders"`` — narrow, DAT-639).
         from_column: Column name in source table
         to_table: Fully-qualified DuckDB path to target table
-            (e.g., ``lake.typed."source__customers"`` post-DAT-341).
+            (e.g., ``lake.typed."customers"`` — narrow, DAT-639).
         to_column: Column name in target table
         duckdb_conn: DuckDB connection
         cardinality: Optional cardinality to verify (e.g., "one-to-many")

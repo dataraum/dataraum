@@ -197,9 +197,9 @@ class PipelineTestHarness:
         ``source_id`` / ``source_name``. The per-URI loop loads each in turn and
         aggregates the per-file ``raw_tables`` into one COMPLETED ``PhaseResult``
         — the same multi-URI shape production now runs (DAT-378). The loader
-        names each raw table ``<source_name>__<file_stem>``, so the loop
-        reproduces the exact multi-table dataset (``small_finance__customers``,
-        ``small_finance__payment_methods``, …). If any per-file load fails, the
+        names each raw table by its NARROW, workspace-unique file stem (DAT-639 —
+        no source prefix), so the loop reproduces the exact multi-table dataset
+        (``customers``, ``payment_methods``, …). If any per-file load fails, the
         aggregate fails with that error.
 
         Args:

@@ -19,6 +19,7 @@ import {
 	reservedSourceNamePrefix,
 	sanitizeRecipeName,
 	sourceTypeForUri,
+	uploadTableName,
 } from "./mappers";
 
 // A real 40-char sha-1 hex digest (the digest of the empty string) — the shape
@@ -84,7 +85,6 @@ describe("reservedSourceNamePrefix (DAT-433)", () => {
 	it("flags each derived-table family prefix", () => {
 		expect(reservedSourceNamePrefix("src_mydata")).toBe("src_");
 		expect(reservedSourceNamePrefix("enriched_data")).toBe("enriched_");
-		expect(reservedSourceNamePrefix("slice_metrics")).toBe("slice_");
 	});
 
 	it("passes bare words and near-misses (only the prefixed forms collide)", () => {
@@ -135,6 +135,49 @@ describe("sanitizeRecipeName", () => {
 		for (const display of ["dbo.Invoices", "2024_x", "A B C", "tbl"]) {
 			expect(sanitizeRecipeName(display)).toMatch(/^[a-z][a-z0-9_]*$/);
 		}
+	});
+});
+
+describe("uploadTableName (DAT-639)", () => {
+	it("names a file's raw table after the sanitized stem (mirrors raw_table_name_for_uri)", () => {
+		// The engine drops the `src_<digest>__` source prefix post-DAT-639: a CSV at
+		// uploads/<digest>/Orders.CSV loads into the NARROW raw table `orders`.
+		expect(
+			uploadTableName(`s3://dataraum-lake/${WS}/uploads/${DIGEST}/Orders.CSV`),
+		).toBe("orders");
+	});
+
+	it("sanitizes a dashed/odd filename sensibly (lowercase, underscores, letter-led)", () => {
+		expect(
+			uploadTableName(
+				`s3://dataraum-lake/${WS}/uploads/${DIGEST}/Master TXN-sample.csv`,
+			),
+		).toBe("master_txn_sample");
+		// A digit-led stem gets the `t_` lead-letter fix (sanitizeRecipeName rule).
+		expect(
+			uploadTableName(
+				`s3://dataraum-lake/${WS}/uploads/${DIGEST}/2024_orders.parquet`,
+			),
+		).toBe("t_2024_orders");
+	});
+
+	it("keys on the filename, not the digest — two files with the same stem collide", () => {
+		// The narrow-name guard's whole point: two distinct uploads whose stems match
+		// resolve to ONE raw table name (the duplication DAT-639 catches).
+		const a = uploadTableName(
+			`s3://dataraum-lake/${WS}/uploads/${DIGEST}/orders.csv`,
+		);
+		const b = uploadTableName(
+			"s3://dataraum-lake/ws2/uploads/0000000000000000000000000000000000000000/orders.csv",
+		);
+		expect(a).toBe("orders");
+		expect(b).toBe("orders");
+	});
+
+	it("handles a stem with no extension (a dotless basename stays whole)", () => {
+		expect(
+			uploadTableName(`s3://dataraum-lake/${WS}/uploads/${DIGEST}/README`),
+		).toBe("readme");
 	});
 });
 

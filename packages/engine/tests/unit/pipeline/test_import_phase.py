@@ -483,3 +483,99 @@ class TestMultiUriDispatch:
         with factory() as session:
             rows = list(session.execute(select(Table)).scalars())
         assert rows == []
+
+
+class TestWorkspaceNameCollision:
+    """Workspace-unique table identity (DAT-639): a workspace holds exactly one
+    ``orders``. A DIFFERENT source landing on a name an existing source already
+    owns fails loud BEFORE any loader writes — the loader's ``CREATE OR REPLACE``
+    would otherwise overwrite that source's DuckDB table outside the transaction
+    the phase runner rolls back. ``source_id`` here is OWNERSHIP, not naming: the
+    same source re-importing its own name is not a collision (upload replay via
+    ``should_skip`` / db recipe refresh via teardown).
+    """
+
+    @staticmethod
+    def _session():  # noqa: ANN205
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+
+        from dataraum.storage import init_database
+
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        init_database(engine)
+        return sessionmaker(bind=engine)()
+
+    def test_cross_source_collision_fails_loud_before_any_loader(self) -> None:
+        from dataraum.storage import Source, Table
+
+        session = self._session()
+        with session:
+            # Source A already owns the raw ``orders`` table.
+            session.add(Source(source_id="src-a", name="alpha", source_type="csv"))
+            session.add(
+                Table(
+                    table_id="t-a",
+                    source_id="src-a",
+                    table_name="orders",
+                    layer="raw",
+                    duckdb_path="orders",
+                )
+            )
+            # Source B (a DIFFERENT source) tries to import a file whose stem also
+            # narrows to ``orders``.
+            session.add(Source(source_id="src-b", name="beta", source_type="csv"))
+            session.commit()
+
+            ctx = PhaseContext(
+                session=session,
+                duckdb_conn=MagicMock(),
+                config={
+                    "source_id": "src-b",
+                    "source_name": "beta",
+                    "source_type": "file",
+                    "source_connection_config": {
+                        "file_uris": ["s3://dataraum-lake/sel/orders.csv"]
+                    },
+                },
+            )
+
+            csv_loader = MagicMock()
+            with patch("dataraum.pipeline.phases.import_phase.CSVLoader", csv_loader):
+                result = ImportPhase()._run(ctx)
+
+            assert result.status == PhaseStatus.FAILED
+            assert "orders" in (result.error or "")
+            assert "retire" in (result.error or "").lower()
+            assert "alpha" in (result.error or "")  # names the owning source
+            csv_loader.assert_not_called()  # guard fired before any load
+
+    def test_same_source_owning_the_name_is_not_a_collision(self) -> None:
+        from dataraum.storage import Source, Table
+
+        session = self._session()
+        with session:
+            session.add(Source(source_id="src-a", name="alpha", source_type="csv"))
+            session.add(
+                Table(
+                    table_id="t-a",
+                    source_id="src-a",
+                    table_name="orders",
+                    layer="raw",
+                    duckdb_path="orders",
+                )
+            )
+            session.commit()
+            ctx = PhaseContext(session=session, duckdb_conn=MagicMock())
+
+            # Same source re-importing its own ``orders`` → ownership, not collision.
+            assert ImportPhase._first_name_collision(ctx, "src-a", ["orders"]) is None
+            # A name no source owns yet → free to create.
+            assert ImportPhase._first_name_collision(ctx, "src-b", ["customers"]) is None
+            # Another source owning the name → fail-loud message.
+            assert ImportPhase._first_name_collision(ctx, "src-b", ["orders"]) is not None

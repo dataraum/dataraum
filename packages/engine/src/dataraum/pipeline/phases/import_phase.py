@@ -9,8 +9,8 @@ ingests a SET of sources, ``AddSourceWorkflow`` executes this phase once per
    wrote before triggering ``addSourceWorkflow``.
 2. Dispatches by ``source_type``: db_recipe → extract_backend; otherwise →
    file loader (CSV/Parquet/JSON) selected by the source URI's suffix.
-3. Creates raw Table + Column records, table names prefixed with
-   ``{source_name}__`` to keep them recognizable in DuckDB.
+3. Creates raw Table + Column records with NARROW, workspace-unique table names
+   (DAT-639 — no source prefix; the source is an atomic wrapper, not a namespace).
 
 Source shapes — both written by the cockpit ``select`` tool, the only producer:
 
@@ -63,6 +63,7 @@ from dataraum.core.uri import uri_suffix, validate_source_uri
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
+from dataraum.sources.base import raw_table_name_for_uri
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.sources.json import JsonLoader
@@ -196,9 +197,61 @@ class ImportPhase(BasePhase):
                     validate_source_uri(uri)
                 except ValueError as e:
                     return PhaseResult.failed(str(e))
+            collision = self._first_name_collision(
+                ctx, source_id, [raw_table_name_for_uri(uri) for uri in source_uris]
+            )
+            if collision is not None:
+                return PhaseResult.failed(collision)
             result = self._load_file_source(ctx, source, source_name, source_uris)
 
         return result
+
+    @staticmethod
+    def _first_name_collision(
+        ctx: PhaseContext, source_id: str | None, target_names: list[str]
+    ) -> str | None:
+        """Fail loud if a target raw-table name is already owned by ANOTHER source.
+
+        Workspace-unique table identity (DAT-639): the per-workspace DuckLake
+        catalog holds exactly one raw ``orders``. This import is about to write
+        ``CREATE OR REPLACE TABLE lake.raw."<name>"`` for each ``target_names``
+        entry — a physical write OUTSIDE the SQLAlchemy transaction the phase
+        runner rolls back (DAT-502). So a name already materialized by a DIFFERENT
+        source must be caught BEFORE the loaders run, or the CREATE OR REPLACE
+        silently overwrites that source's data. The same-source case is NOT a
+        collision: an upload replays via ``should_skip`` (content-keyed id), a db
+        recipe replaces in place via the recipe-hash teardown.
+
+        Returns an actionable failure message (retire the owning source first) on
+        the first cross-source collision, else ``None``. The DB ``uq_table_name_
+        layer`` constraint is the backstop if a name slips past this pre-check.
+
+        Concurrency caveat (best-effort, NOT serialization): this guard + the DB
+        constraint protect against the common case, but two import activities for
+        DIFFERENT sources landing the SAME narrow name concurrently can still race
+        — A's check passes, B's ``CREATE OR REPLACE`` overwrites A's DuckDB table,
+        then B's ``Table`` insert trips ``uq_table_name_layer`` and rolls back the
+        SQLAlchemy session, but the DuckDB write is OUTSIDE that rollback (DAT-502).
+        Closing that window needs per-workspace import serialization at the
+        Temporal layer (deferred); narrow naming makes the window exist where
+        source-prefixed names made it structurally impossible.
+        """
+        if not target_names:
+            return None
+        rows = ctx.session.execute(
+            select(Table.table_name, Table.source_id, Source.name)
+            .join(Source, Source.source_id == Table.source_id)
+            .where(Table.layer == "raw", Table.table_name.in_(target_names))
+        ).all()
+        for table_name, owner_id, owner_name in rows:
+            if owner_id != source_id:
+                return (
+                    f"Workspace already has a raw table '{table_name}' from source "
+                    f"'{owner_name}'. A workspace holds exactly one '{table_name}' — "
+                    "retire that source first to replace it (re-importing identical "
+                    "content replays automatically; different content must be retired)."
+                )
+        return None
 
     @staticmethod
     def _resolve_file_uris(connection_config: dict[str, Any]) -> list[str]:
@@ -228,13 +281,13 @@ class ImportPhase(BasePhase):
         Each element of ``source_uris`` is an ``s3://<lake-bucket>/<key>`` URI
         (already validated by ``_run``) handed verbatim to the loader, which
         passes it to DuckDB's ``read_*_auto`` — the loader is selected per
-        element by its own suffix and names each raw table
-        ``<source_name>__<file_stem>``. The cockpit ``select`` tool persists
-        one-element lists (one content-keyed source per file, DAT-422), so the
-        loop runs once today; it stays list-generic because it is the load
-        mechanism. A per-element failure fails the whole import (no silent
-        swallow); the phase runner's rollback-on-FAILED keeps it all-or-nothing
-        (DAT-502).
+        element by its own suffix and names each raw table by its NARROW,
+        workspace-unique stem (``<file_stem>``, no source prefix — DAT-639).
+        The cockpit ``select`` tool persists one-element lists (one
+        content-keyed source per file, DAT-422), so the loop runs once today;
+        it stays list-generic because it is the load mechanism. A per-element
+        failure fails the whole import (no silent swallow); the phase runner's
+        rollback-on-FAILED keeps it all-or-nothing (DAT-502).
         """
         null_config = load_null_value_config()
         junk_columns = ctx.config.get("junk_columns", [])
@@ -244,9 +297,7 @@ class ImportPhase(BasePhase):
         warnings_acc: list[str] = []
 
         for source_uri in source_uris:
-            result = self._load_single_file_with_prefix(
-                ctx, source, source_name, source_uri, null_config, junk_columns
-            )
+            result = self._load_single_uri(ctx, source, source_uri, null_config, junk_columns)
             if result.status != PhaseStatus.COMPLETED:
                 # Multi-URI import is all-or-nothing — and that atomicity is owned
                 # by the phase runner, not this loop (DAT-502): ``run_phase`` /
@@ -273,21 +324,20 @@ class ImportPhase(BasePhase):
             summary=f"{len(table_ids)} tables, {records_processed:,} rows",
         )
 
-    def _load_single_file_with_prefix(
+    def _load_single_uri(
         self,
         ctx: PhaseContext,
         source: Source,
-        source_name: str,
         source_uri: str,
         null_config: Any,
         junk_columns: list[str],
     ) -> PhaseResult:
-        """Load a single file. Loaders write directly into ``lake.raw.<source>__<table>``.
+        """Load a single file. Loaders write directly into ``lake.raw.<table>``.
 
-        Post-DAT-341 the loader composes the source-prefixed identifier and
-        writes the DuckDB table into ``lake.raw.*`` via fully-qualified
-        ``CREATE OR REPLACE TABLE`` (DAT-378 — idempotent across retries). There
-        is no rename / cross-schema move step here.
+        Post-DAT-341 the loader writes the DuckDB table into ``lake.raw.*`` via
+        a fully-qualified ``CREATE OR REPLACE TABLE`` (DAT-378 — idempotent
+        across retries) under its NARROW, workspace-unique name (no source
+        prefix — DAT-639). There is no rename / cross-schema move step here.
 
         ``source_uri`` is an ``s3://<lake-bucket>/<key>`` URI; dispatch is on its
         suffix alone.
@@ -299,7 +349,6 @@ class ImportPhase(BasePhase):
             result = pq_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -308,7 +357,6 @@ class ImportPhase(BasePhase):
             result = json_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -317,7 +365,6 @@ class ImportPhase(BasePhase):
             result = csv_loader._load_single_file(
                 source_uri=source_uri,
                 source_id=source.source_id,
-                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 null_config=null_config,
@@ -371,6 +418,24 @@ class ImportPhase(BasePhase):
         from dataraum.pipeline.phases._source_teardown import teardown_source_tables
         from dataraum.sources.backends import extract_backend
         from dataraum.sources.db_recipe import RecipeTable
+
+        # Workspace-unique guard (DAT-639), BEFORE teardown: if this recipe targets
+        # a raw-table name ANOTHER source already owns, fail loud now — never tear
+        # down or overwrite across sources. A name owned by THIS source is the
+        # in-place replace handled just below. The recipe query names ARE the
+        # narrow physical table names (no prefix; ``raw_prefix=""``).
+        recipe_tables = connection_config.get("tables") or []
+        collision = self._first_name_collision(
+            ctx,
+            source.source_id,
+            [
+                q["name"]
+                for q in recipe_tables
+                if isinstance(q, dict) and isinstance(q.get("name"), str)
+            ],
+        )
+        if collision is not None:
+            return PhaseResult.failed(collision)
 
         # The recipe was re-pointed under the same source name (``should_skip``
         # declined on a hash mismatch / missing witness, DAT-430). Replace in
@@ -435,13 +500,14 @@ class ImportPhase(BasePhase):
                 "(via .env or the docker-compose environment)."
             )
 
-        prefix = f"{source_name}__"
+        # Narrow, workspace-unique table names (DAT-639) — no source prefix; the
+        # recipe's query name IS the table name in the workspace.
         result = extract_backend(
             backend=backend,
             url=credential.url,
             queries=queries,
             duckdb_conn=ctx.duckdb_conn,
-            raw_prefix=prefix,
+            raw_prefix="",
         )
         if not result.success or result.value is None:
             return PhaseResult.failed(

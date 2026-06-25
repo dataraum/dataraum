@@ -35,27 +35,22 @@ import { UPLOAD_PREFIX } from "../upload/policy";
 // engine's legacy `SourceManager` and its `_NAME_PATTERN`; `select` is the only
 // writer of source rows): lowercase, starts with a letter, 2–49 chars of
 // `[a-z0-9_]`. The engine consumes the persisted name verbatim — the credential
-// lookup `DATARAUM_<NAME>_URL` and the raw-table prefix `<name>__` both key off
-// it — and it is UNIQUE (`uq_sources_name`). Lives here in the pure-shape module
-// so both the db-source name validation (`tools/select.ts`) and the content-keyed
-// file-source name derivation below agree on one pattern.
+// lookup `DATARAUM_<NAME>_URL` keys off it — and it is UNIQUE (`uq_sources_name`).
+// (Post-DAT-639 there is no `<name>__` raw-table prefix; physical table names are
+// narrow.) Lives here in the pure-shape module so both the db-source name
+// validation (`tools/select.ts`) and the content-keyed file-source name
+// derivation below agree on one pattern.
 export const SOURCE_NAME_PATTERN = /^[a-z][a-z0-9_]{1,48}$/;
 
-// Reserved family prefixes (DAT-433). The display rules in lib/display-names.ts
-// are SOUND only because a user-chosen source name can never start with a
-// derived-table family prefix: `src_` (content-keyed upload sources →
-// `src_<digest>__<table>` physical names), `enriched_` (enriched views
-// `enriched_<source>__<table>`), `slice_` (slice tables
-// `slice_<source table>_<col>_<value>`). Without the reservation, a db source
-// named `enriched_data` would display differently per tool (callers without
-// sourceName context apply the family rule) AND collide with the real enriched
-// view of a source named `data`. Only the PREFIXED forms collide — the bare
-// words `src`/`enriched`/`slice` are fine as source names.
-export const RESERVED_SOURCE_NAME_PREFIXES = [
-	"src_",
-	"enriched_",
-	"slice_",
-] as const;
+// Reserved family prefixes (DAT-433). A user-chosen source name can never start
+// with a derived-name family prefix: `src_` (the content-keyed upload SOURCE name
+// itself is `src_<digest>`) or `enriched_` (enriched views are `enriched_<table>`
+// — engine `enriched_views_phase.py`). Without the reservation, a source named
+// `enriched_orders` would collide with the real enriched view of a table
+// `orders`. (Post-DAT-639 physical TABLE names are narrow — no `src_<digest>__` /
+// `<source>__` prefix — and slices were removed, so the `slice_` family is gone.)
+// Only the PREFIXED forms collide — the bare words `src`/`enriched` are fine.
+export const RESERVED_SOURCE_NAME_PREFIXES = ["src_", "enriched_"] as const;
 
 /**
  * The reserved family prefix a candidate source name starts with, or null when
@@ -129,6 +124,34 @@ export function contentKeyedSourceName(uri: string): string {
 		);
 	}
 	return name;
+}
+
+// --- narrow raw-table name a file upload loads into (DAT-639) ----------------
+
+/**
+ * The NARROW, workspace-unique raw table name a staged upload URI loads into —
+ * the cockpit mirror of the engine's `raw_table_name_for_uri`
+ * (sources/base.py, DAT-639).
+ *
+ * Post-DAT-639 raw table names are narrow (no `src_<digest>__` source prefix):
+ * the per-workspace DuckLake catalog is the namespace, and `(table_name, layer)`
+ * is workspace-unique (`uq_table_name_layer`). The engine names a file's raw
+ * table after the FILE STEM — the last path segment with its extension stripped,
+ * sanitized — NOT the content-keyed `src_<digest>` source name. So a CSV at
+ * `…/uploads/<digest>/Orders.CSV` loads into raw table `orders`.
+ *
+ * This is the cockpit "say no" pre-check input (DAT-639): the import-set guard
+ * derives each file's candidate name through here so it can reject a collision
+ * (with an existing workspace table, or another file in the same batch) BEFORE
+ * any write, in front of the engine's hard `uq_table_name_layer` backstop. Minor
+ * lead-digit edge divergence from the engine sanitizer is acceptable — the engine
+ * is the authoritative backstop; this stays simple and reuses `sanitizeRecipeName`.
+ */
+export function uploadTableName(fileUri: string): string {
+	const basename = fileUri.split("/").filter(Boolean).at(-1) ?? "";
+	const dot = basename.lastIndexOf(".");
+	const stem = dot > 0 ? basename.slice(0, dot) : basename;
+	return sanitizeRecipeName(stem);
 }
 
 // --- recipe synthesis (db_recipe `connection_config.tables`) -----------------

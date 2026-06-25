@@ -60,7 +60,6 @@ def _stage_csv(
     result = loader._load_single_file(
         source_uri=source_uri,
         source_id=source_id,
-        source_name="simple",
         duckdb_conn=duckdb_conn,
         session=session,
         null_config=load_null_value_config(),

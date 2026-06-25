@@ -223,7 +223,8 @@ class TestImportPhase:
 
         stmt = select(Table).where(Table.source_id == source_id, Table.layer == "raw")
         names = {t.table_name for t in session.execute(stmt).scalars().all()}
-        assert names == {"multi__customers", "multi__orders"}
+        # DAT-639: narrow, workspace-unique names — the file stems, no source prefix.
+        assert names == {"customers", "orders"}
 
     def test_import_missing_config(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Empty config: import phase reports the missing identity fields."""

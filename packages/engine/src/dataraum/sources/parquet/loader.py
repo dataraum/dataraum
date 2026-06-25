@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.core.uri import uri_basename, uri_stem
+from dataraum.core.uri import uri_basename
 from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable
 from dataraum.storage import Column, Table
@@ -98,7 +98,6 @@ class ParquetLoader(LoaderBase):
         self,
         source_uri: str,
         source_id: str,
-        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
     ) -> Result[StagedTable]:
@@ -114,16 +113,15 @@ class ParquetLoader(LoaderBase):
         Args:
             source_uri: URI of the Parquet file (passed straight to ``read_parquet``).
             source_id: ID of the parent source
-            source_name: Logical name of the parent source (used to compose
-                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
 
         Returns:
             Result containing StagedTable
         """
-        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.core.duckdb_naming import schema_for_layer
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
+        from dataraum.sources.base import raw_table_name_for_uri
 
         try:
             # Read schema using DuckDB DESCRIBE
@@ -143,11 +141,12 @@ class ParquetLoader(LoaderBase):
 
                 col_mapping.append((original, normalized, duckdb_type))
 
-            # Compose the source-prefixed name. The catalog alias is resolved
-            # here so the loader can write directly into ``lake.raw.*`` —
-            # avoids a cross-schema move in import_phase.
-            file_table_name = self._sanitize_table_name(uri_stem(source_uri))
-            bare = table_name_for_source(source_name, file_table_name)
+            # Compose the narrow, workspace-unique name (DAT-639 — no source
+            # prefix) via the single canonical derivation the import phase's
+            # collision guard also uses. The catalog alias is resolved here so
+            # the loader can write directly into ``lake.raw.*`` — avoids a
+            # cross-schema move in import_phase.
+            bare = raw_table_name_for_uri(source_uri)
             raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Build SELECT with aliasing for normalized names

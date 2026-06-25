@@ -9,7 +9,7 @@ from dataraum.core.duckdb_naming import (
     qualified_table,
     sanitize_identifier,
     schema_for_layer,
-    table_name_for_source,
+    workspace_table_name,
 )
 
 
@@ -47,30 +47,31 @@ class TestSchemaForLayer:
         assert schema_for_layer(layer) == "typed"
 
 
-class TestTableNameForSource:
-    def test_joins_sanitized_components(self):
-        assert table_name_for_source("CSV.Source", "Orders") == "csv_source__orders"
+class TestWorkspaceTableName:
+    def test_is_narrow_no_source_prefix(self):
+        # DAT-639: workspace-unique narrow name — no `{source}__` prefix.
+        assert workspace_table_name("Orders") == "orders"
 
-    def test_handles_collision_risk_consistently(self):
-        # Sanitization is deterministic — same input yields same output every call.
-        a = table_name_for_source("Sales.LT", "Customer")
-        b = table_name_for_source("Sales.LT", "Customer")
-        assert a == b == "sales_lt__customer"
+    def test_sanitizes(self):
+        assert workspace_table_name("Sales.LT Customer") == "sales_lt_customer"
+
+    def test_deterministic(self):
+        assert workspace_table_name("Customer") == workspace_table_name("Customer")
 
 
 class TestQualifiedTable:
-    def test_composes_schema_plus_table(self):
-        assert qualified_table("typed", "csv_src", "orders") == "typed.csv_src__orders"
+    def test_composes_schema_plus_narrow_table(self):
+        assert qualified_table("typed", "orders") == "typed.orders"
 
     def test_uses_raw_schema_for_raw_layer(self):
-        assert qualified_table("raw", "mssql", "Customer") == "raw.mssql__customer"
+        assert qualified_table("raw", "Customer") == "raw.customer"
 
     def test_quarantine_layer_routes_to_quarantine_schema(self):
-        assert qualified_table("quarantine", "csv", "orders") == "quarantine.csv__orders"
+        assert qualified_table("quarantine", "orders") == "quarantine.orders"
 
     def test_view_like_layer_falls_back_to_typed_schema(self):
         # Slice 1 keeps enriched/slicing_view artifacts under the typed schema.
-        assert qualified_table("enriched", "csv", "orders") == "typed.csv__orders"
+        assert qualified_table("enriched", "orders") == "typed.orders"
 
 
 class TestIsReservedSchema:

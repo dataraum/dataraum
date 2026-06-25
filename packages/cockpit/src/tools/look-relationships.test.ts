@@ -173,7 +173,7 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 		expect(out?.band).toBe("investigate");
 	});
 
-	it("strips the content-keyed `src_<digest>__` prefix from endpoint table names (DAT-431)", () => {
+	it("renders narrow endpoint table names as-is (DAT-639)", () => {
 		// This result goes back to the agent — never the hash form. The drill-down
 		// round-trip (why_relationship) keys on the column ids, which pass through raw.
 		const lookup: ColumnNameLookup = new Map([
@@ -181,14 +181,14 @@ describe("projectRelationshipReadiness (DAT-409)", () => {
 				FROM,
 				{
 					columnName: "invoice_id",
-					tableName: "src_204bc8e118543a6c35654c1f68c43539a2e226f2__payments",
+					tableName: "payments",
 				},
 			],
 			[
 				TO,
 				{
 					columnName: "invoice_id",
-					tableName: "src_3cb4f3325aa757324f32b2dbe30b4ca5a55a8b50__invoices",
+					tableName: "invoices",
 				},
 			],
 		]);

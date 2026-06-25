@@ -47,6 +47,40 @@ def normalize_column_name(header: str, position: int = 0) -> str:
     return name
 
 
+def _sanitize_table_stem(name: str) -> str:
+    """Sanitize a logical table stem before ``workspace_table_name`` (DAT-639).
+
+    The pre-pass a file's table name goes through: strip any extension, fold
+    ``- . space`` to ``_``, guard a non-letter lead with ``t_``, lowercase. The
+    result is then run through ``workspace_table_name`` for the final narrow,
+    workspace-unique identifier. Kept distinct from ``sanitize_identifier`` only
+    because the ``t_`` lead-guard predates it and its exact output is asserted by
+    callers' tests; composing the two is the single canonical derivation.
+    """
+    if "." in name:
+        name = name.rsplit(".", 1)[0]
+    name = name.replace("-", "_").replace(" ", "_").replace(".", "_")
+    if name and not (name[0].isalpha() or name[0] == "_"):
+        name = f"t_{name}"
+    return name.lower()
+
+
+def raw_table_name_for_uri(source_uri: str) -> str:
+    """The NARROW, workspace-unique raw table name a file URI loads into (DAT-639).
+
+    The SINGLE source of truth for a file source's physical raw-table name: the
+    URI stem, sanitized, run through ``workspace_table_name`` (no source prefix —
+    the per-workspace DuckLake catalog is the namespace). Both the loaders (which
+    CREATE the table) and the import phase's pre-flight collision guard derive the
+    name through this one function, so the guard can never disagree with the name
+    the loader will actually write.
+    """
+    from dataraum.core.duckdb_naming import workspace_table_name
+    from dataraum.core.uri import uri_stem
+
+    return workspace_table_name(_sanitize_table_stem(uri_stem(source_uri)))
+
+
 class TypeSystemStrength(StrEnum):
     """Classification of source type system strength."""
 
@@ -97,23 +131,5 @@ class LoaderBase(ABC):
         pass
 
     def _sanitize_table_name(self, name: str) -> str:
-        """Sanitize table name for use in SQL.
-
-        Args:
-            name: Original table name
-
-        Returns:
-            Sanitized table name
-        """
-        # Remove extension
-        if "." in name:
-            name = name.rsplit(".", 1)[0]
-
-        # Replace invalid characters
-        name = name.replace("-", "_").replace(" ", "_").replace(".", "_")
-
-        # Ensure it starts with a letter or underscore
-        if name and not (name[0].isalpha() or name[0] == "_"):
-            name = f"t_{name}"
-
-        return name.lower()
+        """Sanitize a logical table name for SQL — see :func:`_sanitize_table_stem`."""
+        return _sanitize_table_stem(name)

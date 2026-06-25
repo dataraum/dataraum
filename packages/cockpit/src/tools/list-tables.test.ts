@@ -28,7 +28,7 @@ function tableRow(
 ): InventoryTableRow {
 	return {
 		tableId: "t_orders",
-		tableName: `src_${DIGEST}__orders`,
+		tableName: `orders`,
 		layer: "typed",
 		rowCount: 1000,
 		sourceId: "s_sales",
@@ -47,10 +47,10 @@ describe("buildInventory (DAT-349)", () => {
 		const [out] = buildInventory([tableRow()], []);
 		expect(out).toMatchObject({
 			table_id: "t_orders",
-			// Prose name: digest prefix stripped; the raw DuckDB name rides in
-			// physical_name for the run_sql round-trip.
+			// Prose name + physical_name are both the narrow name now (DAT-639);
+			// physical_name stays the run_sql round-trip key.
 			table_name: "orders",
-			physical_name: `src_${DIGEST}__orders`,
+			physical_name: `orders`,
 			layer: "typed",
 			row_count: 1000,
 			source_id: "s_sales",
@@ -65,7 +65,7 @@ describe("buildInventory (DAT-349)", () => {
 		const [out] = buildInventory(
 			[
 				tableRow({
-					tableName: "finance__journal_lines",
+					tableName: "journal_lines",
 					sourceName: "finance",
 					sourceType: "db_recipe",
 					sourceBackend: "postgres",
@@ -76,7 +76,7 @@ describe("buildInventory (DAT-349)", () => {
 		);
 		expect(out.source_name).toBe("finance");
 		expect(out.table_name).toBe("journal_lines");
-		expect(out.physical_name).toBe("finance__journal_lines");
+		expect(out.physical_name).toBe("journal_lines");
 	});
 
 	it("degrades a malformed upload config to the neutral 'upload', never the digest", () => {
@@ -259,20 +259,20 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 		const views: EnrichedViewRow[] = [
 			{
 				factTableId: "t_orders",
-				viewName: `enriched_src_${DIGEST}__orders`,
+				viewName: `enriched_orders`,
 				isGrainVerified: true,
 				createdAt: new Date("2026-06-01T00:00:00Z"),
 			},
 			{
 				factTableId: "t_orders",
-				viewName: `enriched_src_${DIGEST}__orders_by_region`,
+				viewName: `enriched_orders_by_region`,
 				isGrainVerified: false,
 				createdAt: new Date("2026-06-01T00:00:00Z"),
 			},
 			// A different fact table's view must not leak onto t_orders.
 			{
 				factTableId: "t_items",
-				viewName: `enriched_src_${DIGEST}__items`,
+				viewName: `enriched_items`,
 				isGrainVerified: false,
 				createdAt: new Date("2026-06-01T00:00:00Z"),
 			},
@@ -317,7 +317,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 			},
 			{
 				factTableId: "t_orders",
-				viewName: `enriched_src_${DIGEST}__orders`,
+				viewName: `enriched_orders`,
 				isGrainVerified: false,
 				createdAt: new Date("2026-06-01T00:00:00Z"),
 			},
@@ -354,7 +354,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 		expect(out).toMatchObject({
 			table_id: "t_orders",
 			table_name: "orders",
-			physical_name: `src_${DIGEST}__orders`,
+			physical_name: `orders`,
 			row_count: 1000,
 			column_count: 2,
 			worst_band: "blocked",
@@ -423,7 +423,7 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 				// Older session: a single, unverified view.
 				{
 					factTableId: "t_orders",
-					viewName: `enriched_src_${DIGEST}__orders_old`,
+					viewName: `enriched_orders_old`,
 					isGrainVerified: false,
 					createdAt: t1,
 				},
@@ -431,13 +431,13 @@ describe("buildInventory entity + enriched_views (DAT-477)", () => {
 				// whole, with no carry-over from the older session.
 				{
 					factTableId: "t_orders",
-					viewName: `enriched_src_${DIGEST}__orders`,
+					viewName: `enriched_orders`,
 					isGrainVerified: true,
 					createdAt: t2,
 				},
 				{
 					factTableId: "t_orders",
-					viewName: `enriched_src_${DIGEST}__orders_by_region`,
+					viewName: `enriched_orders_by_region`,
 					isGrainVerified: false,
 					createdAt: t2,
 				},

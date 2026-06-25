@@ -271,25 +271,18 @@ class TestApplyUnitOverrides:
             select(TypeCandidate).where(TypeCandidate.column_id == col.column_id)
         ).scalar_one()
 
-    def test_qualified_key_patches_best_candidate(self, session: Session) -> None:
-        table, col = self._setup(session, "src_abc123__bank_transactions")
-        config = {"overrides": {"units": {"src_abc123__bank_transactions.amount": {"unit": "EUR"}}}}
+    def test_units_key_patches_best_candidate(self, session: Session) -> None:
+        # DAT-639: table names are narrow, so a teach keys directly on the bare
+        # ``<table>.<column>`` — there is no source-qualified form to also match.
+        table, col = self._setup(session, "bank_transactions")
+        config = {"overrides": {"units": {"bank_transactions.amount": {"unit": "EUR"}}}}
         _apply_unit_overrides(session, config, table)
         tc = self._candidate(session, col)
         assert tc.detected_unit == "EUR"
         assert tc.unit_confidence == 1.0
 
-    def test_raw_name_key_patches_despite_source_prefix(self, session: Session) -> None:
-        # A human teaches the bare table name; the stored raw table is source-qualified.
-        table, col = self._setup(session, "src_deadbeef__bank_transactions")
-        config = {"overrides": {"units": {"bank_transactions.amount": {"unit": "USD"}}}}
-        _apply_unit_overrides(session, config, table)
-        tc = self._candidate(session, col)
-        assert tc.detected_unit == "USD"
-        assert tc.unit_confidence == 1.0
-
     def test_no_matching_key_leaves_candidate_untouched(self, session: Session) -> None:
-        table, col = self._setup(session, "src_x__invoices")
+        table, col = self._setup(session, "invoices")
         config = {"overrides": {"units": {"other.col": {"unit": "EUR"}}}}
         _apply_unit_overrides(session, config, table)
         tc = self._candidate(session, col)
@@ -297,7 +290,7 @@ class TestApplyUnitOverrides:
         assert tc.unit_confidence is None
 
     def test_no_units_section_is_a_noop(self, session: Session) -> None:
-        table, col = self._setup(session, "src_y__payments")
+        table, col = self._setup(session, "payments")
         _apply_unit_overrides(session, {}, table)
         tc = self._candidate(session, col)
         assert tc.detected_unit is None
@@ -309,7 +302,7 @@ class TestApplyUnitOverrides:
         unscoped, the patch hit the prior run while the detect read the current run → None.
         """
         src = _make_source(session)
-        table = _make_table(session, src.source_id, "src_zzz__bank_transactions")
+        table = _make_table(session, src.source_id, "bank_transactions")
         col = Column(
             column_id=str(uuid4()),
             table_id=table.table_id,

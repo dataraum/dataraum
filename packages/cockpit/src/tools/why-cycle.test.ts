@@ -120,32 +120,32 @@ describe("projectWhyCycle (DAT-465)", () => {
 		expect(projected.completion_rate).toBeNull();
 	});
 
-	it("strips content-keyed digests from reason/name/description/status; sanitizes JSON blobs", () => {
+	it("renders narrow names in reason/name/description/status; stays digest-free (DAT-639)", () => {
 		const projected = projectWhyCycle(
 			"inventory_cycle",
 			{
 				state: "executed",
-				stateReason: `measured on src_${D1}__inventory`,
+				stateReason: `measured on inventory`,
 				strictness: null,
 				// `_`-prefixed engine plumbing keys are dropped by the sanitizer.
 				groundedAgainst: { _detect: `src_${D1}`, detect: "run-9" },
 			},
 			{
-				cycleName: `Flow over src_${D1}__inventory`,
+				cycleName: `Flow over inventory`,
 				isKnownType: false,
 				businessValue: "low",
 				confidence: 0.5,
-				description: `Cycle through src_${D1}__inventory`,
+				description: `Cycle through inventory`,
 				completionRate: 0.6,
 				completedCycles: 6,
 				totalRecords: 10,
-				statusTable: `src_${D1}__inventory`,
+				statusTable: `inventory`,
 				statusColumn: "state",
 				completionValue: "shipped",
-				stages: [{ table: `src_${D1}__inventory` }],
+				stages: [{ table: `inventory` }],
 				entityFlows: null,
-				tablesInvolved: [`src_${D1}__inventory`],
-				evidence: { table: `src_${D1}__inventory` },
+				tablesInvolved: [`inventory`],
+				evidence: { table: `inventory` },
 			},
 			0,
 		);

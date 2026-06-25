@@ -138,9 +138,9 @@ def quarantine_and_drop_columns(
 
     Args:
         conn: DuckDB connection with the ``lake`` catalog attached.
-        typed_table: Bare name of the typed table (e.g., ``"source__orders"``
-            — the ``<source>__<table>`` form stored on ``Table.duckdb_path``
-            post-DAT-341).
+        typed_table: Narrow name of the typed table (e.g., ``"orders"`` — the
+            workspace-unique form stored on ``Table.duckdb_path``, no source
+            prefix per DAT-639).
         columns_data: List of (Column, reason) tuples to drop.
         typed_recipe_ddl: The run's stored typed-layer materialization DDL
             (``CREATE OR REPLACE TABLE lake.typed.… AS SELECT …``), re-executed

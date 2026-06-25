@@ -263,34 +263,24 @@ class GraphAgent(LLMFeature):
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph)
         if not exec_result.success or not exec_result.value:
-            # Mark cached snippets as failed so they get skipped next time
-            if cached_snippets:
-                from dataraum.query.snippet_library import SnippetLibrary
-
-                failed_ids = [
-                    s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
-                ]
-                SnippetLibrary(session, workspace_id=workspace_id).record_failure(failed_ids)
+            # This node is ungroundable — the caller records it in the run's binding
+            # map. Do NOT record_failure the cached DEP snippets: they were
+            # decided-once and grounded by their OWN authoring, so blaming them for
+            # THIS node's failure poisons shared extracts (a broken formula would mark
+            # `revenue` failed → every metric using it can no longer find it, and
+            # honest metrics like dso silently break). DAT-636 (Bug B).
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value
 
-        # Verifier gate (DAT-616): execution-pass is NOT validation. A metric
-        # whose SQL ran cleanly is still inconclusive if an extract had no support
-        # (empty filter -> NULL), the composed value is degenerate (NULL), or a
-        # catalogue-declared condition is violated. Such a metric stays grounded
-        # with the reason — never executed-green — and its SQL is NOT cached (we
-        # return before _save_snippets). Reused cached snippets that produced the
-        # bad result are recorded failed so they self-heal on the next run.
+        # Verifier gate (DAT-616): execution-pass is NOT validation. A node whose SQL
+        # ran cleanly is still inconclusive if it had no support (empty filter -> NULL),
+        # the value is degenerate (NULL), or a catalogue-declared condition is violated.
+        # Such a node stays ungroundable with the reason — never executed-green — and its
+        # SQL is NOT cached (we return before _save_snippets). As above, the cached deps
+        # are NOT blamed for this node's verdict.
         verdict = verify_execution(graph, execution)
         if not verdict.success:
-            if cached_snippets:
-                from dataraum.query.snippet_library import SnippetLibrary
-
-                failed_ids = [
-                    s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
-                ]
-                SnippetLibrary(session, workspace_id=workspace_id).record_failure(failed_ids)
             return Result.fail(verdict.error or "metric verification failed")
 
         # Save snippets AFTER successful execution AND verification — includes
@@ -489,15 +479,21 @@ class GraphAgent(LLMFeature):
         # pass runs one single-output mini-graph at a time, so the output step IS the
         # node being authored. A FORMULA composes already-decided scalar steps and a
         # CONSTANT returns a parameter value — BOTH are grounding-free (no value-sets,
-        # no field mappings), so both take the lean composition prompt on the fast/Haiku
-        # tier. Only an EXTRACT needs the full fed grounding evidence (balanced/Sonnet).
+        # no field mappings), so both take the lean composition prompt. Only an EXTRACT
+        # needs the full fed grounding evidence.
+        #
+        # Tier = balanced/Sonnet for both. The P2 smoke showed the fast/Haiku tier
+        # leaking prompt placeholders (literal `<step_id>`) and using a dep's statement
+        # name as a table — invalid SQL. Every formula in the vertical is simple
+        # arithmetic over named scalars, so the eventual win is DETERMINISTIC composition
+        # (no LLM at all); Sonnet is the reliable interim.
         output_step = graph.get_output_step()
         if output_step is not None and output_step.step_type in (
             StepType.FORMULA,
             StepType.CONSTANT,
         ):
             prompt_name = "graph_formula_composition"
-            tier = "fast"
+            tier = "balanced"
             prompt_context = {
                 "graph_yaml": graph_yaml,
                 "parameters": json.dumps(parameters, indent=2),

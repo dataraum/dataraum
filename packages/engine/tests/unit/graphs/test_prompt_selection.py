@@ -2,9 +2,9 @@
 
 The authoring pass runs one single-output mini-graph per node, so the output
 step IS the node being authored. A FORMULA node gets the lean composition prompt
-(graph_formula_composition) on the fast/Haiku tier with NO grounding evidence; an
-EXTRACT/CONSTANT node gets the full grounding prompt (graph_sql_generation) on the
-balanced/Sonnet tier.
+(graph_formula_composition) on the balanced/Sonnet tier with NO grounding evidence
+(Sonnet for now — the P2 smoke showed Haiku leaked placeholders); an EXTRACT node gets
+the full grounding prompt (graph_sql_generation), also on balanced/Sonnet.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def _mocks() -> tuple[MagicMock, MagicMock]:
     return renderer, provider
 
 
-def test_formula_node_selects_lean_formula_prompt_on_fast_tier() -> None:
+def test_formula_node_selects_lean_formula_prompt_on_balanced_tier() -> None:
     gp = GraphStep(
         step_id="gross_profit",
         step_type=StepType.FORMULA,
@@ -80,7 +80,7 @@ def test_formula_node_selects_lean_formula_prompt_on_fast_tier() -> None:
 
     name, prompt_ctx = renderer.render_split.call_args.args
     assert name == "graph_formula_composition"
-    provider.get_model_for_tier.assert_called_with("fast")
+    provider.get_model_for_tier.assert_called_with("balanced")
     # Lean context: deps + graph, NONE of the grounding evidence.
     assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
     assert "rich_context" not in prompt_ctx and "field_mappings" not in prompt_ctx
@@ -88,7 +88,7 @@ def test_formula_node_selects_lean_formula_prompt_on_fast_tier() -> None:
 
 def test_constant_node_selects_lean_prompt_without_grounding_evidence() -> None:
     """A CONSTANT (e.g. days_in_period) is grounding-free like a formula — it takes
-    the lean prompt on the fast tier and must NOT require rich_context/field_mappings."""
+    the lean prompt and must NOT require rich_context/field_mappings."""
     cst = GraphStep(
         step_id="days_in_period",
         step_type=StepType.CONSTANT,
@@ -105,7 +105,7 @@ def test_constant_node_selects_lean_prompt_without_grounding_evidence() -> None:
 
     name, prompt_ctx = renderer.render_split.call_args.args
     assert name == "graph_formula_composition"
-    provider.get_model_for_tier.assert_called_with("fast")
+    provider.get_model_for_tier.assert_called_with("balanced")
     assert set(prompt_ctx) == {"graph_yaml", "parameters", "dependency_steps"}
 
 

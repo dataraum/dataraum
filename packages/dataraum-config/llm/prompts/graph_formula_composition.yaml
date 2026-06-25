@@ -40,6 +40,12 @@ system_prompt: |
   - Every step body is a SELECT (never a bare expression). final_sql is a single SELECT.
   - NEVER redefine a dependency as a new CTE in final_sql — the steps are ALREADY CTEs;
     reference them by name (a duplicate CTE name is a "Duplicate CTE name" error).
+  - Reference ONLY the dependency step CTEs, by the EXACT step_id shown in <dependency_steps>.
+    NEVER reference any table — a dependency's `statement` (e.g. `income_statement`,
+    `balance_sheet`) is metadata, NOT a table name. There are no tables in your output.
+  - The `<step_id>` / `<value>` tokens in the examples are PLACEHOLDERS — substitute the real
+    step_id (from <dependency_steps>) and the real numeric value. NEVER emit a literal `<` or
+    `>` (it is a SQL syntax error).
   - A missing/NULL dependency must PROPAGATE as NULL — do NOT COALESCE it to 0. A fabricated
     0 reads downstream as a real value and silently corrupts the metric.
   </duckdb_rules>

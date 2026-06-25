@@ -41,11 +41,13 @@ TELEMETRY exception — ``sql_snippets``/``snippet_usage`` are not run-stamped,
 so a redelivery can inflate usage telemetry; nothing gates on it (write-only
 since DAT-487/488).
 
-Per-metric LLM calls are independent — dispatched concurrently via a
-``ThreadPoolExecutor`` when the phase context exposes a ConnectionManager (each
-parallel call gets its own SQLAlchemy session + DuckDB cursor; ``max_workers``
-is the concurrency cap). Falls back to a serial loop in unit tests where the
-manager isn't wired.
+Authoring vs assembly (DAT-636): the LLM is called ONLY in the up-front
+authoring pass (``_warm_shared_nodes``), which decides every unique node once and
+returns the run-scoped binding map. The per-metric fan-out is then pure ASSEMBLY
+(``agent.assemble``) — no LLM — dispatched concurrently via a ``ThreadPoolExecutor``
+when the phase context exposes a ConnectionManager (each parallel call gets its
+own SQLAlchemy session + DuckDB cursor; ``max_workers`` is the concurrency cap).
+Falls back to a serial loop in unit tests where the manager isn't wired.
 """
 
 from __future__ import annotations
@@ -97,7 +99,7 @@ if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey, WarmNode
     from dataraum.lifecycle import LifecycleArtifact
 
-    MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
+    MetricPrep = tuple[str, TransformationGraph, str | None]
     MetricResult = tuple[str, Result[GraphExecution], str | None]
 
 
@@ -245,26 +247,15 @@ class MetricsPhase(BasePhase):
                 grounded_against=grounded_against,
             )
 
-            hint_sql: str | None = None
-            inspiration_id = graph.metadata.inspiration_snippet_id
-            if inspiration_id:
-                hint_snippet = snippet_library.find_by_id(inspiration_id)
-                if hint_snippet:
-                    hint_sql = hint_snippet.sql
-            prep.append((graph_id, graph, hint_sql, inspiration_id))
+            prep.append((graph_id, graph, graph.metadata.inspiration_snippet_id))
 
-        # warm (DAT-629): before the per-metric fan-out, author each UNIQUE
-        # cache-keyed node once, in dependency order. metrics_phase executes
-        # metrics in parallel; a sub-node shared by several metrics (e.g. the
-        # cost_of_goods_sold extract) is cold for all of them at once, so each
-        # independently LLM-authors it — they diverge and some ground to an empty
-        # filter (born-loud "no support"). Warming the shared node-set first lets
-        # the execute below assemble those nodes from the now-warm snippet cache —
-        # consistent, no within-run race. Best-effort: a node that fails to warm
-        # just falls back to per-metric authoring (the pre-DAT-629 behavior).
-        # Authoring pass (DAT-636): decide every unique node ONCE; the binding
-        # map drives the per-metric assembly below (1c). Built here in 1a; the
-        # assembly that consumes it lands in a later sub-phase.
+        # Authoring pass (DAT-636): before the per-metric fan-out, decide every
+        # UNIQUE cache-keyed node ONCE, in dependency order. A sub-node shared by
+        # several metrics (e.g. the cost_of_goods_sold extract) is decided a single
+        # time; the per-metric assembly below reads the returned binding map and
+        # NEVER re-authors, so the same concept can no longer ground different ways
+        # across siblings (the within-run divergence DAT-629 only half-fixed —
+        # it cached successes but the per-metric path re-authored every miss).
         bindings = _warm_shared_nodes(
             graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
         )
@@ -609,7 +600,7 @@ def _execute_metrics_serial(
     bindings — no LLM. Used in unit tests where PhaseContext.manager is None.
     """
     out: list[MetricResult] = []
-    for graph_id, graph, _hint_sql, inspiration_id in prep:
+    for graph_id, graph, inspiration_id in prep:
         result = agent.assemble(session, graph, exec_ctx, bindings, workspace_id=workspace_id)
         out.append((graph_id, result, inspiration_id))
     return out
@@ -651,7 +642,7 @@ def _execute_metrics_parallel(
                 bindings,
                 om_run_id,
             ): (graph_id, inspiration_id)
-            for graph_id, graph, _hint_sql, inspiration_id in prep
+            for graph_id, graph, inspiration_id in prep
         }
         for future in as_completed(futures):
             graph_id, inspiration_id = futures[future]

@@ -75,6 +75,22 @@ def test_assemble_honest_fails_on_ungroundable_dep_without_llm() -> None:
     provider.converse.assert_not_called()
 
 
+def test_assemble_honest_fails_on_empty_binding_map() -> None:
+    """An empty binding map (cyclic/empty authoring pass) → every keyable dep is
+    'not authored' → honest-fail born-loud at the dependency loop, no LLM."""
+    rev = _extract("revenue", "revenue")
+    graph = _graph("revenue_only", {"revenue": rev})
+    provider = MagicMock()
+    ctx = ExecutionContext(duckdb_conn=MagicMock(), schema_mapping_id="ws")
+
+    result = _bare_agent(provider).assemble(MagicMock(), graph, ctx, {}, workspace_id="ws")
+
+    assert result.success is False
+    assert "revenue" in (result.error or "")
+    assert "not authored" in (result.error or "")
+    provider.converse.assert_not_called()
+
+
 def test_assemble_fails_when_grounded_but_absent_from_cache() -> None:
     """A node grounded per the map but missing from the cache is an internal
     inconsistency — honest-fail, never silently re-authored."""

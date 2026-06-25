@@ -64,9 +64,9 @@ class TestExecuteMetricsSerial:
         session = MagicMock()
         exec_ctx = MagicMock()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("g1", _graph("g1"), "SELECT 1", "insp-1"),
-            ("g2", _graph("g2"), None, None),
+            ("g0", _graph("g0"), None),
+            ("g1", _graph("g1"), "insp-1"),
+            ("g2", _graph("g2"), None),
         ]
 
         out = gep._execute_metrics_serial(prep, session, exec_ctx, agent, _WORKSPACE_ID, {})
@@ -87,7 +87,7 @@ class TestExecuteMetricsSerial:
             Result.fail("nope"),
         ]
         out = gep._execute_metrics_serial(
-            [("g0", _graph("g0"), None, None), ("g1", _graph("g1"), None, None)],
+            [("g0", _graph("g0"), None), ("g1", _graph("g1"), None)],
             MagicMock(),
             MagicMock(),
             agent,
@@ -163,7 +163,7 @@ class TestExecuteMetricsParallel:
         )
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.01)
         manager = _stub_manager()
-        prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(7)]
+        prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(7)]
 
         out = gep._execute_metrics_parallel(
             prep,
@@ -178,7 +178,7 @@ class TestExecuteMetricsParallel:
 
         assert sorted(gid for gid, _, _ in out) == [f"g{i}" for i in range(7)]
         assert all(r.success for _, r, _ in out)
-        assert sorted(agent.calls) == sorted(g.graph_id for _, g, _, _ in prep)
+        assert sorted(agent.calls) == sorted(g.graph_id for _, g, _ in prep)
 
     def test_concurrency_capped_at_max(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -190,7 +190,7 @@ class TestExecuteMetricsParallel:
         # Sleep long enough that contention is observable
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.05)
         manager = _stub_manager()
-        prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(8)]
+        prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(8)]
 
         gep._execute_metrics_parallel(
             prep,
@@ -216,9 +216,9 @@ class TestExecuteMetricsParallel:
         agent = _ConcurrencyTrackingAgent(sleep_seconds=0.0)
         manager = _stub_manager()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("g1", _graph("g1"), "SELECT 1", "insp-1"),
-            ("g2", _graph("g2"), None, "insp-2"),
+            ("g0", _graph("g0"), None),
+            ("g1", _graph("g1"), "insp-1"),
+            ("g2", _graph("g2"), "insp-2"),
         ]
 
         out = gep._execute_metrics_parallel(
@@ -286,9 +286,9 @@ class TestExecuteMetricsParallel:
 
         manager = _stub_manager()
         prep = [
-            ("g0", _graph("g0"), None, None),
-            ("bad", _graph("bad"), None, "insp-bad"),
-            ("g2", _graph("g2"), None, None),
+            ("g0", _graph("g0"), None),
+            ("bad", _graph("bad"), "insp-bad"),
+            ("g2", _graph("g2"), None),
         ]
 
         out = gep._execute_metrics_parallel(
@@ -539,7 +539,7 @@ def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
     )
     agent = _ConcurrencyTrackingAgent(sleep_seconds=0.0)
     manager = _stub_manager()
-    prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
+    prep = [(f"g{i}", _graph(f"g{i}"), None) for i in range(3)]
 
     out = gep._execute_metrics_parallel(
         prep, manager, agent, "src", ["t"], _VERTICAL, {}, om_run_id="run-test"

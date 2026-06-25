@@ -1,31 +1,28 @@
-"""Topo-warm the shared-node metric DAG before the parallel fan-out (DAT-629).
+"""The cross-metric DAG of unique cache-keyed nodes (DAT-629/DAT-636).
 
-``metrics_phase`` authors every metric in parallel. Each metric's ``agent.execute``
-looks up cached snippets at its start, so a sub-node shared by several metrics
-(e.g. the ``cost_of_goods_sold`` extract) is **cold** for all of them at once —
-each metric independently LLM-authors it, they diverge, and some ground to an
-empty filter (born-loud ``no support``). Cross-run reuse works; *within*-run
-authoring is racy.
+The substrate for the single **authoring pass** that ``metrics_phase`` runs
+(DAT-636): dedup every step across all metric graphs to its global cache key,
+topologically order the result, and author each unique node EXACTLY once. The
+per-metric path then *assembles* from the resulting binding map and never
+re-authors — so a sub-node shared by several metrics (e.g. the
+``cost_of_goods_sold`` extract) is decided a single time and can no longer
+diverge across siblings. (DAT-629 first cached shared successes; DAT-636 closes
+the gap where a node that failed/abstained was uncached and re-authored per
+metric.)
 
-The fix is not to restructure the agent — the snippet cache already covers every
-step type and assembles a fully-cached graph with no LLM. The only defect is the
-cache is cold during the parallel burst. So we **warm the unique nodes in
-dependency order before the fan-out**: dedup every step across all metric graphs
-to its global cache key, topologically order them, and warm each once. The
-existing per-metric ``execute`` then assembles from the warm cache — unchanged,
-no race, consistent.
+This module is the **pure** layer — no execution, fully unit-testable:
 
-This module is two layers:
-
-* a **pure** DAG builder (:func:`build_warm_dag` / :func:`warming_generations`) —
-  no execution, fully unit-testable;
-* a **warmer** (:func:`warm_nodes`) that runs one mini-graph per unique node
-  through the graph agent so its concept-keyed snippet gets minted.
+* :func:`build_warm_dag` / :func:`warming_generations` — the dedup'd DAG and its
+  topological generations;
+* :func:`build_mini_graph` — the single-output graph the authoring pass runs per
+  node;
+* :class:`NodeDecision` — one node's run-scoped authoring outcome (the binding
+  map value); the pass itself lives in ``metrics_phase``.
 
 The node key mirrors the snippet cache key *exactly* (extract → standard_field /
 statement / aggregation; constant → parameter / value; formula → normalized
-expression), so warming mints precisely what the per-metric ``_lookup_snippets``
-will later find.
+expression), so authoring mints precisely what the per-metric assembly's
+``_lookup_snippets`` later finds.
 """
 
 from __future__ import annotations
@@ -81,7 +78,16 @@ class NodeDecision:
 
 
 def _resolve_constant_value(step: GraphStep, graph: TransformationGraph) -> str | None:
-    """Resolve a constant step's parameter default to its string cache value."""
+    """Resolve a constant step's parameter default to its string cache value.
+
+    INVARIANT (DAT-636): a constant's resolved value is part of its ``NodeKey``,
+    and the authoring pass keys off the *representative* graph while the per-metric
+    assembly keys off *its own* graph. So two graphs that share a parameter name
+    MUST agree on its default, or the same concept gets two keys and the assembly
+    lookup misses (→ honest-fail "not authored"). Vertical configs use globally
+    consistent defaults today; a divergent default is a config error, surfaced
+    born-loud rather than silently mis-grounded.
+    """
     if not step.parameter:
         return None
     for param in graph.parameters:

@@ -332,16 +332,21 @@ class GraphAgent(LLMFeature):
         resolved_params = self._resolve_parameters(graph, parameters or {})
         schema_mapping_id = context.schema_mapping_id or "default"
 
-        # Honest-fail on the first ungroundable dependency — born-loud, no LLM.
+        # Honest-fail on the first ungroundable dependency — born-loud, no LLM. A
+        # keyable step absent from the map is a contract violation (the authoring
+        # pass authors every keyable node), so fail loud here, not silently later.
         for step_id, step in graph.steps.items():
             key = node_key(step, graph)
             if key is None:
                 continue  # non-keyable step (rare) — caught by the cache check below
             decision = bindings.get(key)
-            if decision is not None and not decision.grounded:
-                return Result.fail(
-                    f"dependency '{step_id}' is ungroundable: {decision.reason or 'no grounding'}"
+            if decision is None or not decision.grounded:
+                reason = (
+                    decision.reason
+                    if decision is not None
+                    else "not authored (absent from binding map)"
                 )
+                return Result.fail(f"dependency '{step_id}' is ungroundable: {reason}")
 
         # Every dependency grounded → assemble from the snippets the pass minted.
         cached_snippets = self._lookup_snippets(session, graph, schema_mapping_id, resolved_params)

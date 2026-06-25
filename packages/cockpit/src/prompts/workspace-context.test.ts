@@ -8,6 +8,9 @@ import { describe, expect, it, vi } from "vitest";
 // Mock every DB seam the module imports so a bare import opens no connection
 // (the DB readers themselves are smoke-covered; only the formatter is unit-tested).
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
+// The briefing digest (DAT-634) pulls the cockpit_db client (bun:sql) via runs.ts;
+// mock it so a bare import opens no connection under node-vitest.
+vi.mock("#/db/cockpit/client", () => ({ cockpitDb: {} }));
 vi.mock("#/db/cockpit/registry", () => ({
 	resolveActiveWorkspaceRow: async () => ({
 		id: "ws-test",

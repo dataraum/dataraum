@@ -280,7 +280,9 @@ async function narrateCompletion(
 	const modelMessages = buildModelMessages(
 		await loadModelTranscript(conversationId),
 	);
-	const workspaceContext = await buildWorkspaceContext().catch(() => null);
+	const workspaceContext = await buildWorkspaceContext(conversation.kind).catch(
+		() => null,
+	);
 	const abortController = linkedAbortController(signal);
 	// Bind the conversationId (DAT-528): if this narration turn starts a follow-up
 	// run, it routes back to THIS chat — same contract as the send path (chat.ts).

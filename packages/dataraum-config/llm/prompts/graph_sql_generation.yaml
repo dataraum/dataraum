@@ -95,15 +95,24 @@ system_prompt: |
   </channel_precedence>
 
   <data_trust>
-  The Validation Results in <dataset_context> report whether the dataset's FOUNDATIONAL
-  identities hold. If a CRITICAL validation of a foundational identity FAILED (e.g.
-  double_entry_balance, trial_balance for accounting data — whatever the vertical's
-  bedrock invariants are), the underlying measures DO NOT RECONCILE: a clean SQL over
-  non-balancing data still yields a wrong number. You may still ground the concept, but
-  record a LOW-confidence "inferred" assumption that names the failed validation — so the
-  metric is never presented as confidently correct on data whose own integrity checks
-  failed. (This is orthogonal to per-concept grounding: the SQL can be perfectly grounded
-  and the number still untrustworthy because the source data does not balance.)
+  The Validation Results in <dataset_context> report whether the dataset satisfies its own
+  declared FOUNDATIONAL integrity constraints. If a validation marked CRITICAL is FAILED, the
+  data violates an invariant the measures depend on — so a value computed from it is unreliable
+  however cleanly it is grounded (a correct SQL over corrupt data still returns a wrong number).
+  You may still ground the concept, but you MUST record an "inferred" assumption that names the
+  failed validation(s) — using the names exactly as they appear in the Validation Results — AND
+  set its `confidence` LOW (≤ 0.3).
+
+  CRITICAL — read `confidence` correctly here: it expresses TRUST IN THE RESULTING METRIC VALUE,
+  which is low because the data failed its own integrity checks. It is NOT your certainty that
+  the validation failed (you may be 100% certain it failed — that is irrelevant). A LOW value is
+  the signal that propagates this condition downstream so the metric is flagged low-trust, never
+  rendered as confidently correct. Recording it at HIGH confidence defeats the purpose — it reads
+  downstream as "trustworthy".
+
+  (Orthogonal to per-concept grounding: the SQL can be perfectly grounded and the value still
+  untrustworthy because the source data failed a foundational validation. Do not assume which
+  constraints exist — read them from the Validation Results.)
   </data_trust>
 
   <aggregation_types>

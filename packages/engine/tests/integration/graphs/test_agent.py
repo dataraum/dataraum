@@ -430,101 +430,139 @@ def _formula_with_deps(expression: str, depends_on: list[str]) -> Transformation
     )
 
 
-class TestFormulaShadowCompare:
-    """The deterministic composer shadow-runs beside the LLM path and logs agreement."""
+def _constant_graph() -> TransformationGraph:
+    """A single CONSTANT output step over a `days_in_period` parameter."""
+    from dataraum.graphs.models import ParameterDef
+
+    return TransformationGraph(
+        graph_id="dip",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="DIP", description="", category="test", source=GraphSource.SYSTEM, tags=[]
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="dip"),
+        parameters=[ParameterDef(name="days_in_period", param_type="integer", default=30)],
+        steps={
+            "out": GraphStep(
+                step_id="out",
+                step_type=StepType.CONSTANT,
+                parameter="days_in_period",
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+class TestAuthorGroundingFree:
+    """Deterministic authoring (DAT-636 step 3) — formula + constant, no LLM."""
 
     @staticmethod
-    def _gen(steps: list[dict[str, str]]) -> GeneratedCode:
-        return GeneratedCode(
-            code_id="c",
-            graph_id="margin",
-            summary="",
-            steps=steps,
-            final_sql="SELECT 1 AS value",  # the LLM's composition is not used by the shadow
-            column_mappings={},
-            llm_model="x",
-            prompt_hash="y",
-            generated_at=datetime.now(UTC),
-        )
+    def _agent() -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
 
-    def test_shadow_agrees_when_deterministic_matches_llm(self, duckdb_with_data, monkeypatch):
-        import dataraum.graphs.agent as agent_module
-
-        agent = _agent_with_sql(steps=[], final_sql="")
+    def test_formula_composed_from_cached_deps(self) -> None:
         graph = _formula_with_deps(
             "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
         )
-        gen = self._gen(
-            [
-                {"step_id": "revenue", "sql": "SELECT 1000 AS value", "description": ""},
-                {"step_id": "cost_of_goods_sold", "sql": "SELECT 600 AS value", "description": ""},
-            ]
+        cached = {
+            "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
+            "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
+        }
+        code = self._agent()._author_grounding_free(graph, cached, {})
+        assert code is not None
+        assert code.llm_model == "deterministic"
+        assert code.final_sql == (
+            "SELECT ((SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold)) AS value"
         )
-        context = _make_execution_context(duckdb_with_data)
-        log = MagicMock()
-        monkeypatch.setattr(agent_module, "logger", log)
+        assert {s["step_id"] for s in code.steps} == {"revenue", "cost_of_goods_sold"}
 
-        agent._shadow_compare_formula(graph, gen, context, llm_value=400.0)
-
-        log.info.assert_called_once()
-        kwargs = log.info.call_args.kwargs
-        assert kwargs["agree"] is True
-        assert kwargs["deterministic_value"] == 400.0
-
-    def test_shadow_flags_divergence(self, duckdb_with_data, monkeypatch):
-        import dataraum.graphs.agent as agent_module
-
-        agent = _agent_with_sql(steps=[], final_sql="")
+    def test_formula_with_missing_dep_falls_back_to_llm(self) -> None:
         graph = _formula_with_deps(
             "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
         )
-        gen = self._gen(
-            [
-                {"step_id": "revenue", "sql": "SELECT 1000 AS value", "description": ""},
-                {"step_id": "cost_of_goods_sold", "sql": "SELECT 600 AS value", "description": ""},
-            ]
-        )
-        context = _make_execution_context(duckdb_with_data)
-        log = MagicMock()
-        monkeypatch.setattr(agent_module, "logger", log)
+        # cost_of_goods_sold not cached → deterministic authoring declines (None).
+        cached = {"revenue": {"sql": "SELECT 1000 AS value", "description": ""}}
+        assert self._agent()._author_grounding_free(graph, cached, {}) is None
 
-        # LLM claims 999 but deterministic computes 400 → divergence.
-        agent._shadow_compare_formula(graph, gen, context, llm_value=999.0)
+    def test_constant_composed_from_resolved_param(self) -> None:
+        code = self._agent()._author_grounding_free(_constant_graph(), {}, {"days_in_period": 30})
+        assert code is not None
+        assert code.llm_model == "deterministic"
+        assert code.final_sql == "SELECT 30 AS value"
+        assert code.steps == []
 
-        assert log.info.call_args.kwargs["agree"] is False
+    def test_extract_returns_none(self, sample_graph) -> None:
+        # sample_graph's output is an EXTRACT — genuinely needs LLM grounding.
+        assert self._agent()._author_grounding_free(sample_graph, {}, {}) is None
 
 
-class TestFormulaSnippetRoundTrip:
-    """A formula's composed SQL must persist even when the model omits it from `steps`.
+class TestDeterministicAuthoringEndToEnd:
+    """execute() authors formula/constant deterministically and runs the LLM as a shadow."""
 
-    The generate_sql tool makes `steps` OPTIONAL (default []) and `final_sql`
-    REQUIRED — the composition reliably lands in final_sql, not steps. Persisting
-    the formula from the optional `steps` left the node grounded-in-binding-map but
-    absent-from-cache, so the per-metric assembly could never find it (DAT-636).
-    """
-
-    def test_formula_output_saved_from_final_sql_when_steps_empty(
-        self, session: Session, duckdb_with_data
-    ):
+    @staticmethod
+    def _formula_snippets(session: Session) -> list:
         from sqlalchemy import select
 
         from dataraum.query.snippet_models import SQLSnippetRecord
 
-        # The bug condition: model returns ONLY final_sql, no entry in `steps`.
+        return [
+            s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "formula"
+        ]
+
+    def test_formula_authored_deterministically_not_from_llm(
+        self, session: Session, duckdb_with_data
+    ):
+        # The LLM mock would emit "SELECT 42 AS value"; the DETERMINISTIC path wins and
+        # composes the expression itself → "SELECT 42.0 AS value", llm_model=deterministic.
         agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
         context = _make_execution_context(duckdb_with_data)
 
         result = agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
 
         assert result.success
-        formulas = [
-            s
-            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
-            if s.snippet_type == "formula"
+        formulas = self._formula_snippets(session)
+        assert len(formulas) == 1
+        assert formulas[0].llm_model == "deterministic"
+        assert formulas[0].sql == "SELECT 42.0 AS value"
+        assert formulas[0].normalized_expression
+
+    def test_shadow_logs_agreement_with_llm(self, session: Session, duckdb_with_data, monkeypatch):
+        import dataraum.graphs.agent as agent_module
+
+        # LLM shadow returns 42, matching the deterministic 42.0 → agree.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        shadow = [
+            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
         ]
-        assert len(formulas) == 1, "formula snippet must persist from final_sql"
-        assert formulas[0].sql == "SELECT 42 AS value"
-        assert formulas[0].normalized_expression  # keyed by the normalized expression
+        assert len(shadow) == 1
+        assert shadow[0].kwargs["agree"] is True
+        assert shadow[0].kwargs["deterministic_value"] == 42.0
+
+    def test_shadow_flags_divergence(self, session: Session, duckdb_with_data, monkeypatch):
+        import dataraum.graphs.agent as agent_module
+
+        # LLM shadow returns 999, deterministic computes 42 → divergence flagged.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 999 AS value")
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        shadow = [
+            c for c in log.info.call_args_list if c.args and c.args[0] == "formula_shadow_compare"
+        ]
+        assert len(shadow) == 1
+        assert shadow[0].kwargs["agree"] is False
 
 
 class TestGraphAgentSnippets:

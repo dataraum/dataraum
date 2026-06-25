@@ -21,6 +21,7 @@ catalogue formula and is raised, not guessed.
 from __future__ import annotations
 
 import ast
+from typing import Any
 
 _BINOP_SQL: dict[type[ast.operator], str] = {
     ast.Add: "+",
@@ -28,6 +29,26 @@ _BINOP_SQL: dict[type[ast.operator], str] = {
     ast.Mult: "*",
     ast.Div: "/",
 }
+
+
+def compose_constant_sql(value: Any) -> str:
+    """SQL for a CONSTANT node — emit the resolved parameter value as a scalar.
+
+    A constant carries no judgment: its value is already resolved deterministically
+    from the graph's parameter defaults, so the LLM adds nothing. An integer value
+    stays integer (``days_in_period=30`` → ``SELECT 30 AS value``, matching the
+    snippet the LLM path used) — a constant is never a division denominator, so
+    integer typing is safe.
+
+    Raises:
+        ValueError: The value is not numeric (metric constants are numeric periods).
+    """
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"constant value {value!r} is not numeric") from exc
+    literal = repr(int(numeric)) if numeric.is_integer() else repr(numeric)
+    return f"SELECT {literal} AS value"
 
 
 def compose_formula_sql(expression: str, dep_step_ids: set[str]) -> str:

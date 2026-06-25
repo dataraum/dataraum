@@ -11,7 +11,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from dataraum.graphs.formula_composer import compose_formula_sql
+from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
 
 # Every distinct formula expression in packages/dataraum-config/verticals/finance,
 # paired with its declared dependency step ids.
@@ -43,6 +43,22 @@ _FINANCE_FORMULAS: list[tuple[str, set[str]]] = [
         {"accounts_payable", "cost_of_goods_sold", "days_in_period"},
     ),
 ]
+
+
+class TestComposeConstantSql:
+    def test_integer_constant_stays_integer(self) -> None:
+        # days_in_period=30 → matches the snippet the LLM path produced.
+        assert compose_constant_sql(30) == "SELECT 30 AS value"
+
+    def test_integer_valued_float_stays_integer(self) -> None:
+        assert compose_constant_sql(365.0) == "SELECT 365 AS value"
+
+    def test_fractional_constant_is_float(self) -> None:
+        assert compose_constant_sql(1.5) == "SELECT 1.5 AS value"
+
+    def test_non_numeric_fails_loud(self) -> None:
+        with pytest.raises(ValueError, match="not numeric"):
+            compose_constant_sql("not-a-number")
 
 
 class TestComposeFormulaSql:

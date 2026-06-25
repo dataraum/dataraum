@@ -233,9 +233,22 @@ class GraphAgent(LLMFeature):
                 "snippet_id": None,
             }
 
-        # If ALL steps have cached snippets, assemble without LLM
         generated_code: GeneratedCode | None
-        if cached_snippets and len(cached_snippets) == len(graph.steps):
+        # DAT-636 step 3: FORMULA + CONSTANT are authored DETERMINISTICALLY (no LLM) —
+        # EXTRACT is the sole LLM authoring surface. The LLM still runs afterwards as a
+        # shadow (both paths at the same time) for continued comparison.
+        deterministic = self._author_grounding_free(graph, cached_snippets, resolved_params)
+        if deterministic is not None:
+            generated_code = deterministic
+            self._track_snippet_usage(
+                session=session,
+                execution_id=generated_code.code_id,
+                cached_snippets=cached_snippets or {},
+                generated_steps=generated_code.steps,
+                workspace_id=workspace_id,
+            )
+        # Otherwise, if ALL steps have cached snippets, assemble without LLM
+        elif cached_snippets and len(cached_snippets) == len(graph.steps):
             generated_code = self._assemble_from_snippets(
                 graph, context, cached_snippets, resolved_params
             )
@@ -292,10 +305,13 @@ class GraphAgent(LLMFeature):
 
         execution = exec_result.value
 
-        # DAT-636: shadow-run the deterministic composer beside the LLM formula path
-        # and log any value divergence — building the evidence to retire the fragile
-        # LLM formula path. Pure side-effect (logging); never alters the authoring result.
-        self._shadow_compare_formula(graph, generated_code, context, execution.output_value)
+        # DAT-636 step 3: a deterministically-authored formula/constant runs the LLM as
+        # a SHADOW and logs agreement/divergence vs the deterministic value (both paths
+        # at the same time). Pure side-effect; never alters the authored result.
+        if generated_code.llm_model == "deterministic":
+            self._shadow_compare_llm(
+                session, graph, context, resolved_params, cached_snippets, execution.output_value
+            )
 
         # Verifier gate (DAT-616): execution-pass is NOT validation. A node whose SQL
         # ran cleanly is still inconclusive if it had no support (empty filter -> NULL),
@@ -1072,66 +1088,125 @@ class GraphAgent(LLMFeature):
                         step_id=step_id,
                     )
 
-    def _shadow_compare_formula(
+    def _author_grounding_free(
         self,
         graph: TransformationGraph,
-        generated_code: GeneratedCode,
-        context: ExecutionContext,
-        llm_value: Any,
-    ) -> None:
-        """Shadow-run the deterministic composer beside the LLM formula path (DAT-636).
+        cached_snippets: dict[str, dict[str, Any]],
+        resolved_params: dict[str, Any],
+    ) -> GeneratedCode | None:
+        """Deterministically author a grounding-free node — FORMULA or CONSTANT, no LLM.
 
-        For a formula node, compose the final SQL deterministically from the SAME
-        dependency step CTEs the LLM reproduced, execute it, and log any value
-        divergence from the LLM result. The LLM stays the source of truth during
-        this shadow phase; this only measures whether the deterministic composer is
-        ready to take over (after which the fragile LLM formula path — round-trip,
-        fabrication, cross-run drift — retires). Never raises: a shadow failure is
-        logged, not propagated into the authoring result.
+        DAT-636 step 3: a formula is pure arithmetic over already-decided dep steps
+        and a constant is a known parameter value — neither carries judgment, so the
+        composer authors them and the LLM is no longer the source of truth (it keeps
+        running as a shadow). Returns ``None`` for an EXTRACT (genuinely needs LLM
+        grounding) or a FORMULA whose deps are not all cached (the legacy full-graph
+        ``execute`` path → fall back to the LLM), so callers degrade gracefully.
         """
-        from dataraum.graphs.formula_composer import compose_formula_sql
+        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+
+        output_step = graph.get_output_step()
+        if output_step is None:
+            return None
+
+        steps: list[dict[str, str]]
+        try:
+            if output_step.step_type == StepType.CONSTANT:
+                value = (
+                    resolved_params.get(output_step.parameter) if output_step.parameter else None
+                )
+                if value is None:
+                    return None
+                final_sql = compose_constant_sql(value)
+                steps = []
+                summary = f"Constant {output_step.parameter} = {value}"
+            elif output_step.step_type == StepType.FORMULA and output_step.expression:
+                deps = output_step.depends_on
+                if not all(d in cached_snippets for d in deps):
+                    return None  # legacy full-graph path: deps not warmed yet → LLM
+                steps = [
+                    {
+                        "step_id": d,
+                        "sql": cached_snippets[d]["sql"],
+                        "description": cached_snippets[d].get("description", ""),
+                    }
+                    for d in deps
+                ]
+                final_sql = compose_formula_sql(output_step.expression, set(deps))
+                summary = f"Composed {graph.graph_id}: {output_step.expression}"
+            else:
+                return None
+        except ValueError:
+            # Malformed expression/constant — let the LLM path try instead of failing here.
+            return None
+
+        return GeneratedCode(
+            code_id=str(uuid4()),
+            graph_id=graph.graph_id,
+            summary=summary,
+            steps=steps,
+            final_sql=final_sql,
+            column_mappings={},
+            llm_model="deterministic",
+            prompt_hash="deterministic",
+            generated_at=datetime.now(UTC),
+        )
+
+    def _shadow_compare_llm(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        resolved_params: dict[str, Any],
+        cached_snippets: dict[str, dict[str, Any]] | None,
+        primary_value: Any,
+    ) -> None:
+        """Run the LLM composition as a SHADOW beside the deterministic primary (DAT-636).
+
+        With formula/constant authoring now deterministic, the LLM keeps running for
+        continued comparison — both paths at the same time. Author via the LLM,
+        execute it, and log agreement/divergence vs the deterministic ``primary_value``
+        (``formula_shadow_compare``). Pure side-effect: never raises, never alters the
+        authored result. A real divergence is the signal that the LLM, not the
+        composer, was wrong — exactly the evidence that retiring the LLM path is safe.
+        """
         from dataraum.query.execution import SQLStep, execute_sql_steps
 
         output_step = graph.get_output_step()
-        if (
-            output_step is None
-            or output_step.step_type != StepType.FORMULA
-            or not output_step.expression
-        ):
+        if output_step is None:
             return
-
         try:
-            det_sql = compose_formula_sql(output_step.expression, set(output_step.depends_on))
+            gen = self._generate_sql(
+                session, graph, context, resolved_params, cached_snippets=cached_snippets or None
+            )
+            if not gen.success or not gen.value:
+                logger.info("formula_shadow_compare", graph_id=graph.graph_id, llm_authored=False)
+                return
             steps = [
                 SQLStep(step_id=s.get("step_id", ""), sql=s.get("sql", ""), description="")
-                for s in generated_code.steps
+                for s in gen.value.steps
             ]
-            det_result = execute_sql_steps(
+            llm_result = execute_sql_steps(
                 steps=steps,
-                final_sql=det_sql,
+                final_sql=gen.value.final_sql,
                 duckdb_conn=context.duckdb_conn,
                 max_repair_attempts=0,
                 return_table=False,
             )
-        except Exception as exc:  # deterministic compose/exec must never break authoring
-            logger.warning(
-                "formula_shadow_error",
-                graph_id=graph.graph_id,
-                expression=output_step.expression,
-                error=str(exc),
-            )
+        except Exception as exc:  # the shadow must never break authoring
+            logger.warning("formula_shadow_error", graph_id=graph.graph_id, error=str(exc))
             return
 
-        det_value = (
-            det_result.value.final_value if det_result.success and det_result.value else None
+        llm_value = (
+            llm_result.value.final_value if llm_result.success and llm_result.value else None
         )
         logger.info(
             "formula_shadow_compare",
             graph_id=graph.graph_id,
             expression=output_step.expression,
+            deterministic_value=_as_float(primary_value),
             llm_value=_as_float(llm_value),
-            deterministic_value=_as_float(det_value),
-            agree=_values_agree(llm_value, det_value),
+            agree=_values_agree(primary_value, llm_value),
         )
 
     def _save_snippets(
@@ -1212,23 +1287,26 @@ class GraphAgent(LLMFeature):
         for step_id, graph_step in graph.steps.items():
             gen_step = generated_steps.get(step_id)
 
-            # The authored node's COMPOSED SQL lives in final_sql, not in `steps`.
-            # The tool schema makes `steps` OPTIONAL (default []) — it carries the
-            # reproduced dependency steps — while `final_sql` is REQUIRED and holds
-            # the composition. So a FORMULA output step must be persisted from
-            # final_sql even when the model omitted it from `steps`; reading it from
-            # the optional `steps` left the node "grounded in the binding map but
-            # absent from the cache", un-assemblable per-metric (DAT-636).
-            is_formula_output = graph_step.step_type == StepType.FORMULA and graph_step.output_step
-            if not gen_step and not is_formula_output:
+            # The authored grounding-free output's SQL lives in final_sql, not in
+            # `steps`: deterministic authoring (DAT-636 step 3) emits no entry for the
+            # output step, and the LLM tool schema makes `steps` OPTIONAL while
+            # final_sql is REQUIRED. So a FORMULA or CONSTANT output step is persisted
+            # from final_sql even when absent from `steps` — reading it from the
+            # optional `steps` left the node "grounded in the binding map but absent
+            # from the cache", un-assemblable per-metric (DAT-636).
+            is_composed_output = graph_step.output_step and graph_step.step_type in (
+                StepType.FORMULA,
+                StepType.CONSTANT,
+            )
+            if not gen_step and not is_composed_output:
                 continue
 
-            # The formula output's SQL is ALWAYS final_sql — repair tracks per-step
+            # The composed output's SQL is ALWAYS final_sql — repair tracks per-step
             # CTE bodies (by step_id), which are not the composed final statement, so
             # a repaired formula step must not override the composition. Otherwise:
             # repaired step SQL if available, else the step's own LLM SQL.
             repaired = repair_by_step.get(step_id)
-            if is_formula_output:
+            if is_composed_output:
                 sql = generated_code.final_sql
             elif repaired and repaired.source_query:
                 sql = repaired.source_query

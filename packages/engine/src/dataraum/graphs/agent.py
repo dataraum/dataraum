@@ -1129,7 +1129,14 @@ class GraphAgent(LLMFeature):
             description = gen_step.get("description", "")
 
             if graph_step.step_type == StepType.EXTRACT and graph_step.source:
-                # Extract snippet: keyed by standard_field + statement + aggregation
+                # Extract snippet: keyed by standard_field + statement + aggregation.
+                # column_mappings is now PER-CONCEPT (DAT-495 closed): post-DAT-636-P1
+                # _save_snippets is only ever reached via the authoring pass on a
+                # single-output mini-graph, so generated_code.column_mappings describes
+                # this one concept — never the sibling-leaking whole-metric dict the old
+                # whole-graph authoring produced. It is a secondary, graph-level HINT for
+                # the cockpit query agent (NOT a source of truth — the authoritative
+                # per-concept grounding is provenance.column_mappings_basis).
                 library.save_snippet(
                     snippet_type="extract",
                     sql=sql,

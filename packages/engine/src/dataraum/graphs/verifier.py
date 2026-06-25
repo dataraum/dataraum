@@ -92,10 +92,12 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
         for check in step.validations:
             try:
                 holds = _condition_holds(check.condition, bound.value)
-            except ValueError as exc:
+            except (ValueError, SyntaxError) as exc:
                 # A malformed catalogue condition fails loud HERE as a clean
                 # Result.fail (routed through the caller's snippet-failure path),
-                # not as a ValueError escaping to the blanket worker handler.
+                # not escaping to the blanket worker handler. ValueError = parseable
+                # but unsupported (e.g. a bad operator); SyntaxError = unparseable
+                # (e.g. SQL `AND` instead of Python `and`/a chained comparison).
                 return Result.fail(
                     f"catalogue validation condition for '{step_id}' is malformed "
                     f"({check.condition!r}): {exc}"

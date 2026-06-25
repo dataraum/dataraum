@@ -61,7 +61,7 @@ dependencies:
     - days_in_period
     output_step: true
     validation:
-    - condition: value >= 0 AND value <= 365
+    - condition: 0 <= value <= 365
       severity: warning
       message: DPO outside typical range
 interpretation:

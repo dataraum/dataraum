@@ -374,6 +374,66 @@ class TestGraphAgentVerifier:
         assert result.value.output_value == 0
 
 
+def _formula_graph() -> TransformationGraph:
+    """A single-output FORMULA graph (its composed SQL lives in final_sql)."""
+    return TransformationGraph(
+        graph_id="gross_profit",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="Gross Profit",
+            description="",
+            category="test",
+            source=GraphSource.SYSTEM,
+            tags=[],
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="gp"),
+        parameters=[],
+        steps={
+            "gp": GraphStep(
+                step_id="gp",
+                step_type=StepType.FORMULA,
+                expression="revenue - cost_of_goods_sold",
+                depends_on=[],
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+class TestFormulaSnippetRoundTrip:
+    """A formula's composed SQL must persist even when the model omits it from `steps`.
+
+    The generate_sql tool makes `steps` OPTIONAL (default []) and `final_sql`
+    REQUIRED — the composition reliably lands in final_sql, not steps. Persisting
+    the formula from the optional `steps` left the node grounded-in-binding-map but
+    absent-from-cache, so the per-metric assembly could never find it (DAT-636).
+    """
+
+    def test_formula_output_saved_from_final_sql_when_steps_empty(
+        self, session: Session, duckdb_with_data
+    ):
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        # The bug condition: model returns ONLY final_sql, no entry in `steps`.
+        agent = _agent_with_sql(steps=[], final_sql="SELECT 42 AS value")
+        context = _make_execution_context(duckdb_with_data)
+
+        result = agent.execute(session, _formula_graph(), context, workspace_id=baseline_run_id())
+
+        assert result.success
+        formulas = [
+            s
+            for s in session.execute(select(SQLSnippetRecord)).scalars().all()
+            if s.snippet_type == "formula"
+        ]
+        assert len(formulas) == 1, "formula snippet must persist from final_sql"
+        assert formulas[0].sql == "SELECT 42 AS value"
+        assert formulas[0].normalized_expression  # keyed by the normalized expression
+
+
 class TestGraphAgentSnippets:
     """Tests for GraphAgent snippet lifecycle."""
 

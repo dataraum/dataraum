@@ -52,7 +52,7 @@ Falls back to a serial loop in unit tests where the manager isn't wired.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -475,26 +475,34 @@ def _warm_generations_parallel(
     grounded. Returns the run-scoped binding map; a node that raises is recorded
     ungroundable so its dependent metrics honest-fail born-loud at assembly.
     """
-    from dataraum.graphs.node_warming import NodeDecision
+    from dataraum.graphs.node_warming import NodeDecision, ungroundable_dep_reason
 
     bindings: dict[NodeKey, NodeDecision] = {}
     with ThreadPoolExecutor(
         max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
     ) as pool:
         for generation in generations:
-            futures = {
-                pool.submit(
-                    _warm_isolated,
-                    nodes[key],
-                    manager,
-                    agent,
-                    schema_mapping_id,
-                    table_ids,
-                    vertical,
-                    om_run_id,
-                ): key
-                for key in generation
-            }
+            # Gate before authoring: a node whose dependency did not ground is
+            # recorded ungroundable WITHOUT an LLM call — never let the composition
+            # prompt fabricate the missing dep and poison the snippet cache (DAT-636).
+            futures: dict[Future[NodeDecision], NodeKey] = {}
+            for key in generation:
+                reason = ungroundable_dep_reason(nodes[key], bindings)
+                if reason is not None:
+                    bindings[key] = NodeDecision(grounded=False, reason=reason)
+                    continue
+                futures[
+                    pool.submit(
+                        _warm_isolated,
+                        nodes[key],
+                        manager,
+                        agent,
+                        schema_mapping_id,
+                        table_ids,
+                        vertical,
+                        om_run_id,
+                    )
+                ] = key
             for future in as_completed(futures):
                 key = futures[future]
                 try:
@@ -552,7 +560,11 @@ def _warm_generations_serial(
 ) -> dict[NodeKey, NodeDecision]:
     """Serial fallback: shared session + cursor, sequential dependency order."""
     from dataraum.graphs.agent import ExecutionContext
-    from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
+    from dataraum.graphs.node_warming import (
+        NodeDecision,
+        build_mini_graph,
+        ungroundable_dep_reason,
+    )
 
     exec_ctx = ExecutionContext.with_rich_context(
         session=session,
@@ -565,6 +577,11 @@ def _warm_generations_serial(
     bindings: dict[NodeKey, NodeDecision] = {}
     for generation in generations:
         for key in generation:
+            # Gate before authoring — see _warm_generations (DAT-636 cache-poison guard).
+            reason = ungroundable_dep_reason(nodes[key], bindings)
+            if reason is not None:
+                bindings[key] = NodeDecision(grounded=False, reason=reason)
+                continue
             try:
                 result = agent.execute(
                     session, build_mini_graph(nodes[key]), exec_ctx, workspace_id=schema_mapping_id

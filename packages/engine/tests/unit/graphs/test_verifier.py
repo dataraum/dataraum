@@ -177,6 +177,24 @@ class TestDeclaredConditions:
         assert not result.success
         assert "malformed" in result.error
 
+    def test_unparseable_condition_fails_loud_not_crashes_worker(self) -> None:
+        """A condition that isn't valid Python (e.g. SQL `AND` instead of a chained
+        comparison) raises SyntaxError in ast.parse — it must be caught HERE as a
+        clean Result.fail, not escape to the blanket worker handler as an opaque
+        "Unexpected error ... invalid syntax" (the dso/dpo regression)."""
+        graph = _graph(
+            {
+                "revenue": _extract(
+                    "revenue", validations=[StepValidation(condition="value >= 0 AND value <= 365")]
+                )
+            }
+        )
+        execution = _execution({"revenue": 30.0}, output_value=30.0)
+
+        result = verify_execution(graph, execution)
+        assert not result.success
+        assert "malformed" in result.error
+
     def test_decimal_value_is_comparable(self) -> None:
         """Currency sums arrive as Decimal in production — conditions still hold."""
         graph = _graph(
@@ -205,6 +223,10 @@ class TestConditionEvaluator:
             ("value == 42", 42, True),
             ("0 < value < 100", 50, True),
             ("0 < value < 100", 150, False),
+            # chained bound — the dso/dpo range condition shape (was SQL `AND`)
+            ("0 <= value <= 365", 30, True),
+            ("0 <= value <= 365", 400, False),
+            ("0 <= value <= 365", -1, False),
             ("value > -10", -5, True),
         ],
     )

@@ -1125,17 +1125,28 @@ class GraphAgent(LLMFeature):
         # Map graph steps to snippets
         for step_id, graph_step in graph.steps.items():
             gen_step = generated_steps.get(step_id)
-            if not gen_step:
+
+            # The authored node's COMPOSED SQL lives in final_sql, not in `steps`.
+            # The tool schema makes `steps` OPTIONAL (default []) — it carries the
+            # reproduced dependency steps — while `final_sql` is REQUIRED and holds
+            # the composition. So a FORMULA output step must be persisted from
+            # final_sql even when the model omitted it from `steps`; reading it from
+            # the optional `steps` left the node "grounded in the binding map but
+            # absent from the cache", un-assemblable per-metric (DAT-636).
+            is_formula_output = graph_step.step_type == StepType.FORMULA and graph_step.output_step
+            if not gen_step and not is_formula_output:
                 continue
 
-            # Use repaired SQL if available, otherwise original LLM SQL
+            # Use repaired SQL if available; the formula output's SQL is final_sql;
+            # otherwise the step's own LLM SQL.
             repaired = repair_by_step.get(step_id)
-            sql = (
-                repaired.source_query
-                if repaired and repaired.source_query
-                else gen_step.get("sql", "")
-            )
-            description = gen_step.get("description", "")
+            if repaired and repaired.source_query:
+                sql = repaired.source_query
+            elif is_formula_output:
+                sql = generated_code.final_sql
+            else:
+                sql = gen_step.get("sql", "") if gen_step else ""
+            description = gen_step.get("description", "") if gen_step else generated_code.summary
 
             if graph_step.step_type == StepType.EXTRACT and graph_step.source:
                 # Extract snippet: keyed by standard_field + statement + aggregation.

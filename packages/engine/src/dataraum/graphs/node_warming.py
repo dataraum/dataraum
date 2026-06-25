@@ -181,6 +181,36 @@ def warming_generations(dag: nx.DiGraph) -> list[list[NodeKey]]:
     return [list(generation) for generation in nx.topological_generations(dag)]
 
 
+def ungroundable_dep_reason(node: WarmNode, bindings: dict[NodeKey, NodeDecision]) -> str | None:
+    """First dependency of ``node`` that did not ground, or ``None`` if all did.
+
+    Gates formula/composite authoring (DAT-636): a node whose dependency is
+    ungroundable must NOT reach the LLM. The composition prompt is told to
+    reproduce each dependency step EXACTLY — given an ABSENT dependency it
+    fabricates one instead (e.g. a `dio` formula over an ungroundable
+    `cost_of_goods_sold` emitted ``SELECT 30 AS value``, copying the
+    days_in_period constant), and the save path then persists that fabrication
+    as a healthy extract snippet: a cross-run precision landmine. Honest-fail
+    the node here instead — symmetric to the per-metric assembly's guard.
+
+    The barrier between warming generations guarantees every dependency is
+    already decided in ``bindings`` by the time its dependent node is gated.
+    """
+    graph = node.graph
+    for dep_id in node.step.depends_on:
+        dep_step = graph.steps.get(dep_id)
+        if dep_step is None:
+            continue
+        dep_key = node_key(dep_step, graph)
+        if dep_key is None:
+            continue
+        decision = bindings.get(dep_key)
+        if decision is None or not decision.grounded:
+            reason = decision.reason if decision and decision.reason else "not authored"
+            return f"dependency '{dep_id}' is ungroundable: {reason}"
+    return None
+
+
 def build_mini_graph(node: WarmNode) -> TransformationGraph:
     """Minimal single-output graph for warming one node.
 

@@ -21,9 +21,11 @@ from dataraum.graphs.models import (
     TransformationGraph,
 )
 from dataraum.graphs.node_warming import (
+    NodeDecision,
     build_mini_graph,
     build_warm_dag,
     node_key,
+    ungroundable_dep_reason,
     warming_generations,
 )
 
@@ -238,3 +240,99 @@ class TestBuildMiniGraph:
         assert mini.steps["rev"].output_step is True
         assert rev.output_step is False  # original untouched
         assert g.steps["rev"].output_step is False
+
+
+class TestUngroundableDepReason:
+    """The cache-poison guard (DAT-636): a formula whose dependency did not
+    ground must be honest-failed BEFORE authoring, so the composition prompt is
+    never handed an absent dep to fabricate (e.g. ``SELECT 30 AS value``)."""
+
+    def test_formula_with_ungroundable_dep_is_gated(self) -> None:
+        g = _graph(
+            "gross_margin",
+            {
+                "rev": _extract("rev", "revenue"),
+                "cogs": _extract("cogs", "cost_of_goods_sold"),
+                "gp": _formula("gp", "rev - cogs", ["rev", "cogs"]),
+            },
+        )
+        _, nodes = build_warm_dag({"gross_margin": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+        rev_key = node_key(g.steps["rev"], g)
+        cogs_key = node_key(g.steps["cogs"], g)
+        # rev grounded, cogs ungroundable (BookSQL genuinely lacks COGS).
+        bindings = {
+            rev_key: NodeDecision(grounded=True),
+            cogs_key: NodeDecision(grounded=False, reason="no support"),
+        }
+
+        reason = ungroundable_dep_reason(nodes[formula_key], bindings)
+
+        assert reason is not None
+        assert "cogs" in reason and "no support" in reason
+
+    def test_formula_with_all_deps_grounded_authors(self) -> None:
+        g = _graph(
+            "gross_margin",
+            {
+                "rev": _extract("rev", "revenue"),
+                "cogs": _extract("cogs", "cost_of_goods_sold"),
+                "gp": _formula("gp", "rev - cogs", ["rev", "cogs"]),
+            },
+        )
+        _, nodes = build_warm_dag({"gross_margin": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+        bindings = {
+            node_key(g.steps["rev"], g): NodeDecision(grounded=True),
+            node_key(g.steps["cogs"], g): NodeDecision(grounded=True),
+        }
+
+        assert ungroundable_dep_reason(nodes[formula_key], bindings) is None
+
+    def test_dep_absent_from_bindings_is_gated(self) -> None:
+        """A dep not yet in the map (should not happen given the barrier) is
+        treated as ungroundable rather than silently authored."""
+        g = _graph(
+            "gross_margin",
+            {
+                "rev": _extract("rev", "revenue"),
+                "cogs": _extract("cogs", "cost_of_goods_sold"),
+                "gp": _formula("gp", "rev - cogs", ["rev", "cogs"]),
+            },
+        )
+        _, nodes = build_warm_dag({"gross_margin": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        reason = ungroundable_dep_reason(nodes[formula_key], {})
+
+        assert reason is not None and "not authored" in reason
+
+    def test_leaf_extract_has_no_deps_to_gate(self) -> None:
+        g = _graph("gross_margin", {"rev": _extract("rev", "revenue")})
+        _, nodes = build_warm_dag({"gross_margin": g})
+        node = nodes[("extract", "revenue", "income_statement", "sum")]
+
+        assert ungroundable_dep_reason(node, {}) is None
+
+    def test_unkeyable_dep_is_gated(self) -> None:
+        """A formula dep with no cache key (e.g. an extract missing its source) is
+        gated, NOT silently passed through — else the LLM gets a dep it can only
+        fabricate (the guard's invariant must hold for un-keyable deps too)."""
+        bad = GraphStep(step_id="bad", step_type=StepType.EXTRACT, aggregation="sum")  # no source
+        g = _graph("m", {"bad": bad, "gp": _formula("gp", "bad - x", ["bad"])})
+        _, nodes = build_warm_dag({"m": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        reason = ungroundable_dep_reason(nodes[formula_key], {})
+
+        assert reason is not None and "no cache key" in reason
+
+    def test_dep_not_defined_in_graph_is_gated(self) -> None:
+        """A formula depending on a step id that is not defined is gated, not skipped."""
+        g = _graph("m", {"gp": _formula("gp", "ghost - x", ["ghost"])})
+        _, nodes = build_warm_dag({"m": g})
+        formula_key = next(k for k in nodes if k[0] == "formula")
+
+        reason = ungroundable_dep_reason(nodes[formula_key], {})
+
+        assert reason is not None and "not defined" in reason

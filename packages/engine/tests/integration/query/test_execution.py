@@ -78,7 +78,9 @@ class TestExecuteSqlSteps:
         temp-view model allowed it; formula steps with depends_on rely on it). The
         per-step scalar is probed inside the prior steps' CTE context."""
         steps = [
-            SQLStep(step_id="base", sql="SELECT SUM(value) AS value FROM test_data", description=""),
+            SQLStep(
+                step_id="base", sql="SELECT SUM(value) AS value FROM test_data", description=""
+            ),
             SQLStep(step_id="doubled", sql="SELECT value * 2 AS value FROM base", description=""),
         ]
 

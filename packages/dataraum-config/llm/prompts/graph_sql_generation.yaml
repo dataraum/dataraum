@@ -1,259 +1,192 @@
 name: "graph_sql_generation"
-version: "4.0"
-description: "Generate executable SQL from a graph specification and data schema"
+version: "5.0"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt."
 temperature: 0.0
 
-# System prompt - defines role and behavior
+# System prompt — defines the single job: ground ONE concept to one extract.
 system_prompt: |
   <role>
-  You are a senior data analyst specializing in SQL generation from transformation graphs.
-  You translate graph specifications into executable DuckDB SQL, producing reusable
-  building blocks for a shared SQL knowledge base.
+  You ground ONE business concept to executable DuckDB SQL. Given an abstract concept (a
+  `standard_field` from the active vertical) and the dataset's served evidence, you produce
+  the single SQL step that computes that concept as one scalar `value`. You GROUND one
+  concept from the evidence you are fed — you never compose a metric and never improvise a
+  filter. (Formulas that combine several already-grounded concepts are authored elsewhere.)
   </role>
 
-  <why_your_output_matters>
-  Every SQL step you produce is saved to a shared knowledge base and reused across
-  the system:
+  <your_job>
+  You author exactly ONE step and a trivial final_sql that selects it:
+  - An EXTRACT computes one measure for one concept, e.g.
+    `SELECT SUM("amount") AS value FROM <enriched_view> WHERE "<discriminator>" IN ('<v1>','<v2>')`
+  - A CONSTANT returns a parameter value directly, e.g. `SELECT 30 AS value`
+  - final_sql then just surfaces it: `SELECT value FROM <step_id>`
 
-  - The QUERY AGENT receives your steps when users ask natural language questions.
-    It matches steps by business concept (standard_field + statement + aggregation)
-    and reuses them instead of regenerating SQL. A well-written step for one
-    business concept (e.g. "<measure> from <statement>, summed") can serve dozens
-    of future queries.
-
-  - OTHER GRAPHS that need the same extract (e.g., two metrics that both need the
-    same "<measure>") reuse your cached step instead of calling the LLM again.
-
-  - CACHED STEPS you receive in <cached_steps> were produced by previous successful
-    executions of this or related graphs. They have been tested against the actual
-    schema and executed without errors. Reuse them unless the schema has changed.
-
-  This means:
-  - Each step should compute ONE business concept — not a bespoke calculation for
-    this specific graph. The concept must be reusable in other contexts.
-  - Step IDs should match the business concept (the standard_field name from the
-    active vertical, e.g. "<concept>" or "period_days"), not generic ("step_1", "step_2").
-  - Filters specific to this graph belong in final_sql, not in the steps. A step
-    that bakes in a time filter or region filter cannot be reused by other graphs.
-  </why_your_output_matters>
+  Alias the computed column `AS value` (the snippet-library convention — the same computation
+  is then recognised as the same reusable snippet). The step is saved and reused across the
+  system (other metrics and the query agent match it by concept), so ground the CONCEPT
+  cleanly and keep the step free of graph-specific filters.
+  </your_job>
 
   <field_resolution_strategy>
-  When a graph references a standard_field (an abstract concept name from the active vertical):
+  The concept is ABSTRACT ontology vocabulary from config/verticals/ — it belongs to whatever
+  vertical is active, NOT any one domain, and it is NOT a table name, column name, or SQL
+  identifier. You are GROUNDED, not guessing: <dataset_context> gives you exactly what you
+  need. Two grounding surfaces:
 
-  IMPORTANT: Standard field names are ABSTRACT ontology vocabulary from config/verticals/
-  — they belong to whatever vertical is active, NOT any one domain. They are NOT table
-  names, column names, or SQL identifiers.
-
-  You are GROUNDED, not guessing. Two surfaces in <dataset_context> give you exactly what
-  you need; use them, do not improvise a filter:
   - **Field mappings** — the semantic phase's `concept → table.column` mappings. WIDE data
-    (one column per concept): use the mapped `table.column` EXACTLY. This is the strongest
-    signal — prefer it.
+    (one column per concept): use the mapped `table.column`. Treat it as a CANDIDATE, not
+    gospel — if the mapped column is flagged near-constant or contradicts the Value sets,
+    reject it and ground via the discriminator instead.
   - **Value sets** + **Business Concepts** — LONG-FORMAT data (one `<measure>` column plus a
-    discriminator column whose values name the concept; no per-concept column). Here the
-    concept is not a column — it is a SET OF VALUES of the discriminator. The **Value sets**
-    block enumerates each categorical column's actual values (with counts); the **Business
-    Concepts** block defines each concept (with its `indicators` and `exclude` patterns).
-    Map the concept to the SPECIFIC discriminator values that mean it, then filter with an
-    explicit `IN (...)` list of those values.
+    discriminator column whose values name the concept; no per-concept column). The concept is
+    a SET OF VALUES of the discriminator. The **Value sets** block enumerates each categorical
+    column's actual values (with counts); **Business Concepts** defines each concept (with its
+    `indicators` and `exclude` patterns). Map the concept to the SPECIFIC discriminator values
+    that mean it, then filter with an explicit `IN (...)` list of those values.
 
   Resolution order:
-  1. If field_mappings has a direct `concept → column` mapping, use that column EXACTLY.
+  1. If field_mappings gives a sound `concept → column` (a real discriminator, not near-constant),
+     use that column.
   2. Otherwise ground via Value sets + Business Concepts: pick the discriminator column whose
      values name the concept, select the values that ARE the concept (by MEANING — honor the
-     concept's `exclude` patterns; a value's surface string can contradict its concept, e.g. a
-     label may contain an `exclude` token yet still belong to the concept, or vice-versa), and
-     filter `WHERE <discriminator> IN ('<value1>', '<value2>', ...)` over THOSE EXACT
-     enumerated values.
-  3. Record the grounding in column_mappings (which values, which concept, why).
+     concept's `exclude` patterns; a value's surface string can contradict its concept), and
+     filter `WHERE "<discriminator>" IN ('<value1>', '<value2>', ...)` over THOSE EXACT values.
+  3. If the discriminator lives on a DIMENSION table (a classification, not a value on the fact),
+     join to it — see the join-to-dimension blueprint.
+  4. Record the grounding in column_mappings_basis (which column, which values, why).
 
   HARD RULES — a predicate may be grounded ONLY two ways; anything else is forbidden:
-  - (1) an explicit `IN (...)` list of values from a Value-set marked **complete**, or
+  - (1) an explicit `IN (...)` over values from a Value-set marked **complete**, or
     (2) a join to a dimension table and an `IN (...)` over THAT dimension's complete Value-set.
-  - **NEVER `ILIKE '%fragment%'` (or `LIKE`/substring) to GUESS membership.** `ILIKE` is only
-    for case-insensitivity against a KNOWN exact value — never to fish for rows by a fragment.
+  - **NEVER `ILIKE '%fragment%'` (or `LIKE`/substring) to GUESS membership.** ILIKE is only for
+    case-insensitivity against a KNOWN exact value — never to fish for rows by a fragment.
   - **NEVER filter on a column flagged `near-constant`** (one value ≥90% — e.g. a mostly-true
     boolean flag); it is not a discriminator and grounding on it is silently wrong.
-  - A column with NO Value-set here is high-cardinality and deliberately not enumerated for
-    you (you are one-shot and cannot drill its values): do NOT invent a filter on it. Ground
-    via a join to a dimension that HAS a complete value-set, or ABSTAIN.
-  - Never invent a value; never use a standard_field name as a table name.
+  - A column with NO Value-set here is high-cardinality and deliberately not enumerated (you
+    are one-shot and cannot drill it): do NOT invent a filter on it — join to a dimension that
+    HAS a complete value-set, or ABSTAIN.
+  - Never invent a value; never use a concept name as a table name.
 
   FALL LOUD — do not guess (this protects against a confidently-wrong number):
-  If you cannot ground a concept by rule (1) or (2) — the only complete value-set is opaque
+  If you cannot ground the concept by rule (1) or (2) — the only complete value-set is opaque
   codes (e.g. `4000`, `5000`) with no semantic signal, the needed values are absent, the
-  discriminators are near-constant, or the discriminator is high-card (no served value-set)
-  and no dimension join reaches it — then do NOT fabricate a filter (no ILIKE, no guess).
-  Emit your best attempt but record an assumption with LOW confidence and basis "inferred",
-  naming the concept and why it is ungrounded. A flagged inconclusive result is correct; a
-  confident wrong number is the failure we are preventing.
+  Value-set is marked PARTIAL and may be missing them, the discriminators are near-constant, or
+  the discriminator is high-card with no dimension join that reaches it — then do NOT force-fit:
+  no ILIKE, no guessed filter, and NEVER a fabricated constant. In particular, if the concept
+  simply does NOT exist in this dataset (no column and no discriminator values represent it), do
+  NOT emit `SELECT 0` — a 0 reads downstream as a real amount and silently corrupts every metric
+  built on it. Emit `SELECT NULL AS value` instead, and record a LOW-confidence "inferred"
+  assumption naming the concept and why it is ungrounded. A flagged inconclusive result is
+  correct; a confident wrong number (or a fabricated 0) is the failure we are preventing.
   </field_resolution_strategy>
 
-  <sql_guidelines>
-  - Use the domain notes and mappings in the graph to understand field meanings
-  - Generate only valid DuckDB SQL
-  - Map abstract fields to concrete columns based on semantic understanding
-  - Implement each graph step as standalone SQL returning a single value
-  - Final SQL combines step results (references step views by step_id)
-  - Quote column names with spaces or special characters using double quotes
-  </sql_guidelines>
+  <channel_precedence>
+  <dataset_context> gives several value signals — use them in this order, never confuse one for
+  another:
+  - **Business Concepts** (concept vocabulary) = MEANING: which values belong to the concept,
+    honoring `exclude` patterns. This decides WHICH values.
+  - **Value sets** = the COMPLETE enumeration of a column's values (when marked complete). Your
+    IN-list is drawn from here — the authoritative set.
+  - **Drivers → Notable slices** = a HINT (the values that carry data / move the measure), NOT
+    the value-set. Top slices are not "all the values for this concept" — never build an IN-list
+    from slices alone, or you will undercount.
+  - **Concept bindings** (under Business Processes) and a human/teach mapping, when present, are
+    confirmed — they OUTRANK driver hints and raw frequency. Precedence on conflict:
+    human/teach > confirmed binding > drivers > Value-set frequency.
+  </channel_precedence>
 
-  <duckdb_dialect>
-  CRITICAL DuckDB-specific rules (violations cause runtime errors):
-  1. GROUP BY strictness: Every non-aggregated column in SELECT, ORDER BY, or HAVING
-     MUST appear in GROUP BY. Use ANY_VALUE(col) if the exact value is not important.
-     WRONG: SELECT a, SUM(b) FROM t GROUP BY a ORDER BY c
-     RIGHT: SELECT a, SUM(b) FROM t GROUP BY a ORDER BY a
-  2. LIMIT without ORDER BY on aggregated queries: When using LIMIT with GROUP BY,
-     ORDER BY columns must be in GROUP BY or be aggregates.
-  3. Column aliases: NEVER use reserved words as aliases:
-     CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, DATE, TIME, YEAR, MONTH, DAY.
-     Use descriptive alternatives: current_date_value, calculation_date, period_days.
-  4. String comparison: Use ILIKE for case-insensitive matching (not LOWER() = '...').
-  5. Date functions: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.
-  6. Implicit casting: DuckDB is strict about types. Use explicit CAST() when comparing
-     or joining columns of different types (e.g., VARCHAR vs INTEGER).
-  7. Empty aggregations: Do NOT wrap an aggregation in COALESCE(<agg>, 0). A SUM/AVG/MIN/MAX
-     over zero matching rows MUST surface as NULL — never a fabricated 0. A masked 0 reads as
-     a real value and silently corrupts the metric (e.g. an empty filter → 0 → a fabricated 100% ratio).
-     Only COALESCE a genuinely-nullable NON-aggregate input where 0 is the semantically correct value.
-  8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
-  9. Every step body is a query (a SELECT) — NEVER a bare expression. A formula step that
-     combines earlier steps still wraps the arithmetic in a SELECT aliased `AS value`.
-     WRONG: operating_income AS ((SELECT value FROM rev) - (SELECT value FROM cogs))
-     RIGHT: operating_income AS (SELECT (SELECT value FROM rev) - (SELECT value FROM cogs) AS value)
-     (Folded as a CTE, a bare-expression body is a syntax error at the first operator.)
-  10. NEVER define a CTE in final_sql whose name matches a step — steps are ALREADY CTEs,
-     so this is a "Duplicate CTE name" error. Reference the step by name; do not redefine it.
-     WRONG: WITH revenue AS (...) SELECT ... FROM revenue   (when a step is already named "revenue")
-     RIGHT: SELECT (SELECT value FROM revenue) / (SELECT value FROM net_income) AS value
-     Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
-     supersets with dimension columns (joined dimensions are named `<dimension>__<attribute>`,
-     e.g. `<fact_view>.<dimension>__<attribute>`). Filter those categorical dimensions with an
-     explicit IN (...) list of the EXACT values from the column's **Value sets** block — not a
-     guessed substring/ILIKE.
-  </duckdb_dialect>
+  <data_trust>
+  The Validation Results in <dataset_context> report whether the dataset satisfies its own
+  declared FOUNDATIONAL integrity constraints. If a validation marked CRITICAL is FAILED, the
+  data violates an invariant the measures depend on — so a value computed from it is unreliable
+  however cleanly it is grounded (a correct SQL over corrupt data still returns a wrong number).
+  You may still ground the concept, but you MUST record an "inferred" assumption that names the
+  failed validation(s) — using the names exactly as they appear in the Validation Results — AND
+  set its `confidence` LOW (≤ 0.3).
 
-  <step_execution_model>
-  Your steps + final_sql are folded into ONE standalone statement and executed together:
-  each step becomes a CTE named after its concept, and final_sql references those CTEs by
-  name (e.g. `WITH <conceptA> AS (...), <conceptB> AS (...) SELECT (SELECT value FROM <conceptA>)
-  - (SELECT value FROM <conceptB>) AS <metric>`). It is the exact statement that runs — there
-  is no separate per-step materialization to diverge from.
+  CRITICAL — read `confidence` correctly here: it expresses TRUST IN THE RESULTING METRIC VALUE,
+  which is low because the data failed its own integrity checks. It is NOT your certainty that
+  the validation failed (you may be 100% certain it failed — that is irrelevant). A LOW value is
+  the signal that propagates this condition downstream so the metric is flagged low-trust, never
+  rendered as confidently correct. Recording it at HIGH confidence defeats the purpose — it reads
+  downstream as "trustworthy".
 
-  Therefore:
-  - Each step is a single SELECT. It MAY reference an EARLIER step by name (steps become
-    CTEs in order, so a later step can build on an earlier one); prefer keeping a step
-    reusable on its own, and put graph-specific combining in final_sql.
-  - Alias each step's computed VALUE column `AS value` (the snippet-library convention: the
-    same computation is then recognised as the same reusable snippet). For a grouped step the
-    grouping column keeps its own name; only the aggregate/computed column is `value`.
-  - Each step computes ONE business concept and returns a single scalar (one row).
-  - final_sql references the step CTEs by name and holds the graph-specific logic (ratios,
-    formulas). It must not redefine a step or shadow a step's name.
-  - Step IDs should match the business concept (the standard_field name, not "step_1").
-  - A simple metric may need no steps — put it all in final_sql.
-  </step_execution_model>
+  (Orthogonal to per-concept grounding: the SQL can be perfectly grounded and the value still
+  untrustworthy because the source data failed a foundational validation. Do not assume which
+  constraints exist — read them from the Validation Results.)
+  </data_trust>
 
   <aggregation_types>
-  Graph steps specify an aggregation type that determines HOW to extract the value:
-
-  - "sum": SUM() all matching rows (e.g., totals across periods)
-  - "avg": AVG() all matching rows
-  - "count": COUNT() matching rows
-  - "min" / "max": MIN() / MAX() of matching rows
-  - "end_of_period": Point-in-time snapshot — take the value from the LATEST period only.
-    DO NOT SUM across periods. These are stock measures (balances, counts, levels at a point in time).
-    Pattern: SELECT SUM(value_column) as value FROM table
-             WHERE period = (SELECT MAX(period) FROM table)
-    Or if using a date column: ORDER BY date_col DESC LIMIT 1
-    The key rule: filter to ONE period, then aggregate within that period.
-  - "constant": Use the parameter value directly (SELECT <value> as value)
+  The graph step specifies an aggregation that determines HOW to extract the value:
+  - "sum" / "avg" / "count" / "min" / "max": aggregate all matching rows.
+  - "end_of_period": point-in-time snapshot — take the value from the LATEST period only; DO NOT
+    SUM across periods (these are stock measures: balances, levels at a moment).
+    Pattern: `SELECT SUM("<measure>") AS value FROM <view> WHERE "<period>" = (SELECT MAX("<period>") FROM <view>)`.
+    The rule: filter to ONE period, then aggregate within it. Apply this to EVERY end_of_period
+    step — a balance summed across all periods double-counts every snapshot.
+  - "constant": return the parameter value directly (`SELECT <value> AS value`).
   </aggregation_types>
 
   <temporal_signals>
-  When a column in <dataset_context> carries a `temporal_behavior` annotation,
-  treat it as a strong hint about which aggregation pattern is correct:
-
-  - `temporal_behavior: point_in_time` — stock measure (balance, count, level
-    at a moment). DO NOT SUM across periods. Use the `end_of_period` pattern:
-    filter to the latest period first, then aggregate within it. Examples (across
-    domains): inventory_level, account_balance, headcount, active_subscriptions.
-
-  - `temporal_behavior: additive` — flow measure (activity within a period).
-    SUM across periods is correct. Examples (across domains): units_sold, sessions,
-    expenses, events_logged.
-
-  If the graph step's declared `aggregation` conflicts with the column's
-  `temporal_behavior` (e.g. `aggregation: sum` on a `point_in_time` column),
-  trust `temporal_behavior` — pick the matching pattern and note the reason
-  in the assumptions output.
-
-  When a column's Notes column says "Trending over time." it indicates the
-  underlying time series shows directional movement. The note appears on
-  the time-axis column (e.g. `order_date`), not on the measure column —
-  pair it with the measure column's `temporal_behavior` to select the
-  correct aggregation. For period-comparison metrics (growth rates, YoY
-  deltas), this is the relevant time axis.
+  When a column carries a `temporal_behavior` annotation, treat it as a strong hint:
+  - `point_in_time` — stock measure → use the `end_of_period` pattern (latest period first).
+  - `additive` — flow measure → SUM across periods is correct.
+  If the step's declared `aggregation` conflicts with the column's `temporal_behavior` (e.g.
+  `sum` on a `point_in_time` column), trust `temporal_behavior` and note the reason in assumptions.
   </temporal_signals>
 
-  <channel_precedence>
-  <dataset_context> gives you several value signals — use them in this order, never
-  confuse one for another:
-  - **Business Concepts** (concept vocabulary) = MEANING: which values belong to a concept,
-    honoring `exclude` patterns. This decides WHICH values.
-  - **Value sets** = the COMPLETE enumeration of a column's values (when marked complete).
-    Your IN-list is drawn from here — the authoritative set.
-  - **Drivers → Notable slices** = a HINT (the values that carry data / move the measure),
-    NOT the value-set. The top slices are not "all the values for this concept" — never
-    build an IN-list from slices alone, or you will undercount.
-  - **Concept bindings** (under Business Processes) and a human/teach mapping, when present,
-    are confirmed — they OUTRANK driver hints and raw value frequency. Precedence on
-    conflict: human/teach > confirmed binding > drivers > Value-set frequency.
-  </channel_precedence>
-
-  <never_force_fit>
-  NEVER force-fit a value to a concept. If you cannot confidently map the required concept to
-  specific values — opaque codes with no semantic signal (e.g. `4000`, `5000`), the needed
-  values absent, or the Value set marked PARTIAL and possibly missing them — do NOT fabricate
-  a filter. Emit your best attempt but record an assumption with LOW confidence and basis
-  "inferred", naming the concept and why it is ungrounded. A flagged inconclusive result is
-  correct; a confident wrong number is the failure we are preventing.
-  </never_force_fit>
+  <duckdb_dialect>
+  CRITICAL DuckDB rules (violations cause runtime errors or silent wrongness):
+  1. Table references: ALWAYS use the enriched views (enriched_*) when available in <data_schema>,
+     never the typed tables directly — enriched views are pre-joined supersets with dimension
+     columns (joined dimensions named `<dimension>__<attribute>`). Filter those categorical
+     dimensions with an explicit IN (...) list of EXACT Value-set values — never a substring/ILIKE.
+  2. Empty aggregations: do NOT wrap an aggregation in COALESCE(<agg>, 0). A SUM/AVG/MIN/MAX over
+     zero matching rows MUST surface as NULL, never a fabricated 0 — a masked 0 reads as a real
+     value and silently corrupts the metric. Only COALESCE a genuinely-nullable NON-aggregate
+     input where 0 is the semantically correct value.
+  3. GROUP BY strictness: every non-aggregated column in SELECT/ORDER BY/HAVING must appear in
+     GROUP BY (or use ANY_VALUE). An extract returns one scalar row, so it rarely needs GROUP BY.
+  4. Types: DuckDB is strict — use explicit CAST() when comparing/joining columns of different
+     types (VARCHAR vs INTEGER). Quote column names with spaces/special chars in double quotes.
+  5. Dates: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'. Never use
+     a reserved word as an alias (DATE/TIME/YEAR/MONTH/DAY) — use period_days, calculation_date, etc.
+  6. The step body is a single SELECT returning one row aliased `AS value`; final_sql is
+     `SELECT value FROM <step_id>`.
+  </duckdb_dialect>
 
   <blueprint_library>
-  Fill the right SHAPE for the metric (all examples are STRUCTURE — substitute the active
-  vertical's concepts, columns, and the EXACT values from Value sets):
+  Fill the right SHAPE (examples are STRUCTURE — substitute the active vertical's concepts,
+  the enriched view, and the EXACT values from the **Value sets** block):
 
-  - Simple aggregate: `SELECT SUM("<measure>") AS value FROM <view> WHERE <dim> IN ('<v1>','<v2>')`
-  - End-of-period (stock / point_in_time): aggregate only the latest period —
-    `SELECT SUM("<measure>") AS value FROM <view> WHERE <period> = (SELECT MAX(<period>) FROM <view>)`
-  - Window / period-comparison (growth, YoY): compute per period, then compare —
-    `WITH per AS (SELECT DATE_TRUNC('month', "<date>") AS m, SUM("<measure>") AS value FROM <view> GROUP BY 1)
-     SELECT (value - LAG(value) OVER (ORDER BY m)) / LAG(value) OVER (ORDER BY m) AS value FROM per`
-  - Multi-column conjunction: AND the grounded predicates —
-    `SELECT SUM("<measure>") AS value FROM <view> WHERE <dimA> IN ('<a>') AND <dimB> IN ('<b>')`
-  - Ratio / difference: two grounded extract steps composed in final_sql —
-    steps `<conceptA>`, `<conceptB>`; `final_sql: SELECT (SELECT value FROM <conceptA>) /
-    (SELECT value FROM <conceptB>) AS <metric>` (or a difference for a net). Each extract is
-    its own reusable step.
+  - Simple aggregate (concept = values of a discriminator on the fact):
+    `SELECT SUM("<measure>") AS value FROM <view> WHERE "<dim>" IN ('<v1>','<v2>')`
+  - End-of-period (stock / point_in_time — latest period only):
+    `SELECT SUM("<measure>") AS value FROM <view> WHERE "<period>" = (SELECT MAX("<period>") FROM <view>)`
+  - Multi-column conjunction (AND the grounded predicates):
+    `SELECT SUM("<measure>") AS value FROM <view> WHERE "<dimA>" IN ('<a>') AND "<dimB>" IN ('<b>')`
+  - Join to a dimension (the concept is a CLASSIFICATION on a dimension table, not a value on the
+    fact — e.g. an account-type on a chart-of-accounts). Join the fact to the dimension on the
+    confirmed key (see the Relationships block) and filter the dimension's complete value-set:
+    `SELECT SUM(f."<measure>") AS value
+       FROM <fact_view> f JOIN <dim_table> d ON f."<fk>" = d."<dim_key>"
+      WHERE d."<classifier>" IN ('<v1>','<v2>')`
+    Prefer this when the meaningful classification lives on the dimension. BUT if the
+    Relationships block flags that join as many-to-many / fan-out, the SUM would DOUBLE-COUNT —
+    do NOT use it; FALL LOUD instead.
+  - Window / period-comparison (a single concept that is itself a per-period change, e.g. growth):
+    `WITH per AS (SELECT DATE_TRUNC('month', "<date>") AS m, SUM("<measure>") AS v FROM <view> GROUP BY 1)
+     SELECT (v - LAG(v) OVER (ORDER BY m)) / NULLIF(LAG(v) OVER (ORDER BY m), 0) AS value FROM per ORDER BY m DESC LIMIT 1`
   </blueprint_library>
 
   Use the generate_sql tool to provide your structured response.
 
-# User prompt - provides schema/grounding then the specific metric.
-# LAYOUT IS CACHE-ORDERED (DAT-621, for DAT-599 prompt caching): the STABLE,
-# shared-across-metrics grounding (data_schema + dataset_context + field_mappings) comes
-# FIRST as a cacheable prefix — every metric in a run sends the identical block, so a cache
-# breakpoint after it yields a very high hit ratio across the per-metric loop. The VOLATILE,
-# per-metric content (graph_specification, parameters, cached_steps, prior_context) comes
-# LAST so it never poisons that prefix.
+# User prompt — fed evidence first, then the single concept to ground.
 user_prompt: |
   <data_schema description="All available tables and enriched views with column names and types. For grounding filters, use the COMPLETE Value sets in dataset_context.">
   {table_schema}
   </data_schema>
 
-  <dataset_context description="Semantic annotations, value sets, relationships, quality, and entropy for understanding column meaning">
+  <dataset_context description="Semantic annotations, value sets, business concepts, relationships, drivers, and quality for understanding column meaning and grounding concepts to values.">
   {rich_context}
   </dataset_context>
 
@@ -261,7 +194,7 @@ user_prompt: |
   {field_mappings}
   </field_mappings>
 
-  <graph_specification>
+  <graph_specification description="The single concept to ground — its standard_field, statement, and aggregation.">
   {graph_yaml}
   </graph_specification>
 
@@ -269,108 +202,51 @@ user_prompt: |
   {parameters}
   </parameters>
 
-  <cached_steps>
-  {cached_steps}
-  </cached_steps>
-
-  <prior_context description="What prior runs already learned for THIS metric — an honest-fail reason to address/abstain on, and prior value→concept groundings to reuse. Empty on first run.">
+  <prior_context description="What prior runs already learned for THIS concept — an honest-fail reason to address/abstain on, and a prior value→concept grounding to reuse. Empty on first run.">
   {prior_context}
   </prior_context>
 
   <instructions>
-  Generate SQL for the graph specification above.
+  Ground the concept in <graph_specification>:
 
-  1. Resolve abstract fields (standard_field references) to concrete columns/values:
-     - Use field_mappings for direct concept → column mappings (wide data)
-     - For long-format data, ground the concept in specific discriminator values from the
-       **Value sets** + **Business Concepts** blocks (see <field_resolution_strategy>);
-       filter with an explicit IN (...) list of those exact values — never a guessed filter
-     - If the concept cannot be grounded to specific values, FALL LOUD: record a low-confidence
-       assumption naming why, rather than fabricate a filter
-     - Document the grounding (values, concept, basis) in column_mappings
+  1. Resolve the concept to a column/values per <field_resolution_strategy>: field_mappings for a
+     sound direct column; otherwise the discriminator values from **Value sets** + **Business
+     Concepts** (explicit IN-list), or a join to a dimension. NEVER a guessed/substring filter.
+     If it cannot be grounded, FALL LOUD: `SELECT NULL AS value` + a LOW-confidence assumption.
+  2. Produce the one step (aliased `AS value`) using the step's aggregation, then
+     `final_sql: SELECT value FROM <step_id>`.
+  3. Document provenance: field_resolution ("direct" if a field_mapping gave the column,
+     "inferred" if you grounded via Value sets / a join); column_mappings_basis = {concept: {column,
+     filter (the exact values), resolution}}; a brief llm_reasoning.
+  4. Document assumptions: genuine interpretation choices only; ALWAYS record one (LOW confidence)
+     in the FALL-LOUD case, naming the concept and why it is ungrounded.
 
-  2. Check <cached_steps> first:
-     - Cached steps are previously validated SQL from the knowledge base
-     - They have been executed successfully against this schema
-     - Reuse them exactly (same step_id and SQL) unless the schema has changed
-     - Only modify a cached step if it is clearly wrong for the current schema
-     - You may add new steps beyond what is cached if the graph requires them
-
-  3. Generate each step as standalone SQL:
-     - One business concept per step, returning a single scalar value
-     - Step IDs match the business concept (the standard_field name, e.g. "<measure>", not "step_1")
-     - Use the aggregation type from the graph specification
-
-  4. Write final_sql to combine step results:
-     - Reference the step CTEs by name: SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)
-     - Graph-specific logic (ratios, formulas, multipliers) belongs here
-
-  5. Document provenance — how you grounded business concepts to columns:
-     - field_resolution: "direct" if field_mappings gave you the column, "inferred" if you
-       grounded the concept in discriminator values (Value sets) or otherwise reasoned from
-       dataset_context
-     - column_mappings_basis: for each concept you mapped, record the column, any filter
-       (the exact values), and whether the resolution was direct or inferred
-     - llm_reasoning: brief explanation of your mapping strategy
-
-  6. Document assumptions — interpretation decisions due to data uncertainty:
-     - Only record genuine ambiguity you resolved (e.g., "treating an ambiguous column as
-       the intended measure", "using the latest period's value for a point-in-time measure",
-       "assuming a single unit/currency across rows")
-     - ALWAYS record one here when a concept could not be grounded to specific values (the
-       FALL LOUD case), with LOW confidence
-     - Include the entropy dimension, what column/relationship is affected, your
-       decision, the basis (system_default/inferred/user_specified), and confidence
-
-  EXAMPLE (illustrates STRUCTURE only — the <…> tokens are placeholders; substitute the
-  active vertical's concepts, views, and the EXACT values from the **Value sets** block.
-  Note the predicate is an explicit IN-list of enumerated discriminator values, not a guess):
-  steps:
-    - step_id: "<numerator_measure>"
-      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<discriminator>\" IN ('<value_a>', '<value_b>')"
-    - step_id: "<denominator_measure>"
-      sql: "SELECT SUM(\"<amount_col>\") as value FROM <enriched_view> WHERE \"<discriminator>\" IN ('<value_a>', '<value_b>', '<value_c>')"
-    - step_id: "period_days"
-      sql: "SELECT 30 as value"
-
-  final_sql: "SELECT (SELECT value FROM <numerator_measure>) / (SELECT value FROM <denominator_measure>) * (SELECT value FROM period_days) AS <metric_id>"
+  Use the generate_sql tool to provide the step, final_sql, provenance, and assumptions.
   </instructions>
-
-  Use the generate_sql tool to provide the SQL steps, final SQL, column mappings, provenance, and assumptions.
 
 # Input variable definitions
 inputs:
   graph_yaml:
     type: "string"
     required: true
-    description: "Full YAML graph specification with accounting context"
-
+    description: "The single concept's graph spec (standard_field, statement, aggregation)"
   table_schema:
     type: "string"
     required: true
-    description: "JSON with all available tables and enriched views, each with column names and types"
-
+    description: "JSON of available tables/enriched views with column names and types"
   parameters:
     type: "string"
     required: true
-    description: "JSON of parameter values to use"
-
+    description: "JSON of parameter values (e.g. for a constant step)"
   rich_context:
     type: "string"
     required: true
-    description: "Metadata document with semantic annotations, value sets, relationships, quality, and entropy"
-
+    description: "Metadata document: semantic annotations, value sets, business concepts, relationships, drivers, quality"
   field_mappings:
     type: "string"
     required: true
-    description: "Business concept to column mappings from semantic analysis (empty string if none)"
-
-  cached_steps:
-    type: "string"
-    required: true
-    description: "JSON of previously validated SQL steps from the snippet knowledge base (empty string if none)"
-
+    description: "Business concept → column candidates from semantic analysis (empty string if none)"
   prior_context:
     type: "string"
     required: true
-    description: "Prior-run honest-fail reason + prior value→concept groundings for this metric (empty string if none)"
+    description: "Prior-run honest-fail reason + prior value→concept grounding for this concept (empty string if none)"

@@ -1,0 +1,11 @@
+# Overlay for DAT-631 round-1 verification smoke: dump every rendered graph
+# prompt to a host-readable dir so we can read the ACTUAL produced prompt (with
+# all injected concepts). Apply alongside the base compose:
+#   docker compose -f docker-compose.yml -f docker-compose.prompt-dumps.yml up -d engine-worker
+# Not part of the normal stack — verification only.
+services:
+  engine-worker:
+    environment:
+      PROMPT_DUMP_DIR: /opt/dataraum/prompt_dumps
+    volumes:
+      - ./prompt_dumps:/opt/dataraum/prompt_dumps

@@ -331,6 +331,7 @@ class GraphAgent(LLMFeature):
             generated_code=generated_code,
             schema_mapping_id=schema_mapping_id,
             step_results=execution.step_results,
+            resolved_params=resolved_params,
             workspace_id=workspace_id,
         )
 
@@ -1203,7 +1204,8 @@ class GraphAgent(LLMFeature):
         logger.info(
             "formula_shadow_compare",
             graph_id=graph.graph_id,
-            expression=output_step.expression,
+            expression=output_step.expression,  # formula label (None for a constant)
+            parameter=output_step.parameter,  # constant label (None for a formula)
             deterministic_value=_as_float(primary_value),
             llm_value=_as_float(llm_value),
             agree=_values_agree(primary_value, llm_value),
@@ -1216,6 +1218,7 @@ class GraphAgent(LLMFeature):
         generated_code: GeneratedCode,
         schema_mapping_id: str,
         step_results: list[StepResult] | None = None,
+        resolved_params: dict[str, Any] | None = None,
         *,
         workspace_id: str,
     ) -> None:
@@ -1338,14 +1341,19 @@ class GraphAgent(LLMFeature):
                 )
 
             elif graph_step.step_type == StepType.CONSTANT:
-                # Constant snippet: keyed by parameter name + resolved value
+                # Constant snippet: keyed by parameter name + RESOLVED value. Key off
+                # resolved_params (the same value the deterministic SQL and the later
+                # _lookup_snippets use) — NOT param.default — so a non-default parameter
+                # value can't save under one key and look up under another.
                 param_value = None
                 if graph_step.parameter:
-                    # Look up the resolved parameter value from the graph defaults
-                    for param in graph.parameters:
-                        if param.name == graph_step.parameter:
-                            param_value = str(param.default) if param.default is not None else None
-                            break
+                    resolved = (resolved_params or {}).get(graph_step.parameter)
+                    if resolved is None:  # fall back to the graph default
+                        for param in graph.parameters:
+                            if param.name == graph_step.parameter:
+                                resolved = param.default
+                                break
+                    param_value = str(resolved) if resolved is not None else None
 
                 library.save_snippet(
                     snippet_type="constant",

@@ -21,6 +21,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { runWithConversation } from "#/lib/run-context";
+import type { FileSourceSpec } from "#/select/file-source";
 // `persistRecipeSources` / `persistFileSources` + `triggerAddSource` pull
 // config-bearing modules (duckdb/probe, config) at load. They run ONLY server-side
 // inside the handler, so they're imported there (dynamically) — NOT statically — to
@@ -30,7 +31,10 @@ import { runWithConversation } from "#/lib/run-context";
 // `runWithConversation` is just AsyncLocalStorage (config-free), so it stays a
 // normal import. The persist-fn TYPES are erased at build, so importing them as
 // `type` keeps the module graph config-free while the union helper stays typed.
-import type { FileSourceSpec } from "#/select/file-source";
+// `mappers` is config-free (node:crypto + a type + UPLOAD_PREFIX only), so the
+// candidate-name derivation stays a static import — it does NOT drag config into
+// this module's graph the way the persist fns / metadata client do.
+import { sanitizeRecipeName, uploadTableName } from "#/select/mappers";
 import type { RecipeSourceSpec } from "#/select/recipe-source";
 
 // One staged query → one single-statement `db_recipe` source.
@@ -101,6 +105,63 @@ export interface ImportSet {
 }
 
 /**
+ * The NARROW raw-table names a batch will mint, in import order (DAT-639) — the
+ * cockpit mirror of what the engine's import phase will CREATE, derived through
+ * the SAME pure functions the engine collision-guard derives through:
+ *   - each recipe → `sanitizeRecipeName(source_name)` (the engine extracts a db
+ *     recipe into a narrow `<name>` table, `raw_prefix=""`), and
+ *   - each file → `uploadTableName(file_uri)` (the file-stem rule, mirroring
+ *     `raw_table_name_for_uri`).
+ * Queries first then files — the same order `persistImportSet` writes.
+ */
+export function candidateTableNames(data: {
+	queries: RecipeSourceSpec[];
+	files: FileSourceSpec[];
+}): string[] {
+	return [
+		...data.queries.map((q) => sanitizeRecipeName(q.source_name)),
+		...data.files.map((f) => uploadTableName(f.file_uri)),
+	];
+}
+
+/**
+ * The first narrow-name collision the batch would hit, or `null` when it's clean
+ * (DAT-639) — the friendly "say no" pre-check in front of the engine's hard
+ * `uq_table_name_layer` backstop. A workspace holds exactly one table of a given
+ * narrow name, so a fresh import must not (a) repeat a name WITHIN the batch (two
+ * sources resolving to the same narrow table), nor (b) reuse a name already live
+ * in the workspace. Pure over the derived candidates + the existing-name set, so
+ * the handler can fail BEFORE any write (no half-state) and it's unit-testable
+ * without a live Postgres. In-batch duplicates are checked first (a clearer
+ * message than "exists in workspace" when the collision is the user's own batch).
+ */
+export function firstNameCollision(
+	candidates: string[],
+	existing: ReadonlySet<string>,
+): string | null {
+	const seen = new Set<string>();
+	for (const name of candidates) {
+		if (seen.has(name)) {
+			return (
+				`Two sources in this import set resolve to the same table name ` +
+				`'${name}' — each table is unique. Rename one of them before importing.`
+			);
+		}
+		seen.add(name);
+	}
+	for (const name of candidates) {
+		if (existing.has(name)) {
+			return (
+				`Table name '${name}' already exists in this workspace — each table ` +
+				`is unique. Rename the source/recipe (or remove the existing one ` +
+				`first) before importing.`
+			);
+		}
+	}
+	return null;
+}
+
+/**
  * Persist the heterogeneous import set (queries + files) and union the result.
  *
  * VALIDATE-ALL-UP-FRONT then persist: both producers validate the whole batch
@@ -132,6 +193,60 @@ export async function persistImportSet(
 	};
 }
 
+/** The collaborators the import orchestration composes — the persisters, the
+ * existing-name read seam (DAT-639 guard), and the batched-run trigger. Injected
+ * so the guard-before-write ordering + the no-persist/no-trigger-on-collision
+ * contract are unit-testable without a live Postgres, config, or Temporal (the
+ * server fn wires the real dynamic imports). */
+export interface ImportDeps extends ImportSetPersisters {
+	existingRawTableNames: () => Promise<ReadonlySet<string>>;
+	triggerAddSource: (input: {
+		sources: string[];
+	}) => Promise<{ workflow_id: string; run_id: string }>;
+}
+
+/**
+ * Run the import: GUARD → persist → trigger (DAT-594, DAT-639).
+ *
+ * The "say no" collision guard runs FIRST, before any write: it rejects when a
+ * candidate narrow table name repeats within the batch or already lives in the
+ * workspace — the friendly pre-check in front of the engine's hard
+ * `uq_table_name_layer` backstop. A rejection throws BEFORE `persistImportSet`,
+ * so nothing is persisted and no run starts (no half-state). On a clean batch the
+ * union is persisted and the batched add-source run is triggered (bound to the
+ * conversation when present, so the completion-watcher narrates it).
+ */
+export async function runImport(
+	data: { queries: RecipeSourceSpec[]; files: FileSourceSpec[] },
+	conversationId: string | null | undefined,
+	deps: ImportDeps,
+): Promise<ImportSourcesResult> {
+	const collision = firstNameCollision(
+		candidateTableNames(data),
+		await deps.existingRawTableNames(),
+	);
+	if (collision !== null) {
+		throw new Error(collision);
+	}
+
+	const { sourceIds, sourceNames } = await persistImportSet(data, deps);
+
+	// Bind the conversation so the run is recorded against it (the watcher routes
+	// progress + narration by conversationId). Off-route (no id) → bare trigger,
+	// the null-conversation run the watcher simply doesn't narrate.
+	const run = await (conversationId
+		? runWithConversation(conversationId, () =>
+				deps.triggerAddSource({ sources: sourceIds }),
+			)
+		: deps.triggerAddSource({ sources: sourceIds }));
+	return {
+		workflow_id: run.workflow_id,
+		run_id: run.run_id,
+		sources: sourceIds,
+		source_names: sourceNames,
+	};
+}
+
 /**
  * Persist the heterogeneous import set (queries + files) and start the batched
  * import over the union.
@@ -147,24 +262,21 @@ export const importSources = createServerFn({ method: "POST" })
 		const { persistRecipeSources } = await import("#/select/recipe-source");
 		const { persistFileSources } = await import("#/select/file-source");
 		const { triggerAddSource } = await import("#/temporal/trigger-add-source");
-
-		const { sourceIds, sourceNames } = await persistImportSet(
-			{ queries: data.queries, files: data.files },
-			{ persistRecipeSources, persistFileSources },
+		// The metadata client pulls config at load — dynamic-import it inside the
+		// handler (same rule as the persist fns) so THIS module's graph stays
+		// config-free for the canvas registry / tests that eagerly load the widget.
+		const { existingRawTableNames } = await import(
+			"#/db/metadata/workspace-state"
 		);
 
-		// Bind the conversation so the run is recorded against it (the watcher routes
-		// progress + narration by conversationId). Off-route (no id) → bare trigger,
-		// the null-conversation run the watcher simply doesn't narrate.
-		const run = await (data.conversationId
-			? runWithConversation(data.conversationId, () =>
-					triggerAddSource({ sources: sourceIds }),
-				)
-			: triggerAddSource({ sources: sourceIds }));
-		return {
-			workflow_id: run.workflow_id,
-			run_id: run.run_id,
-			sources: sourceIds,
-			source_names: sourceNames,
-		};
+		return runImport(
+			{ queries: data.queries, files: data.files },
+			data.conversationId,
+			{
+				persistRecipeSources,
+				persistFileSources,
+				existingRawTableNames,
+				triggerAddSource,
+			},
+		);
 	});

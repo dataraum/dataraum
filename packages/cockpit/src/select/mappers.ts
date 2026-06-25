@@ -131,6 +131,34 @@ export function contentKeyedSourceName(uri: string): string {
 	return name;
 }
 
+// --- narrow raw-table name a file upload loads into (DAT-639) ----------------
+
+/**
+ * The NARROW, workspace-unique raw table name a staged upload URI loads into —
+ * the cockpit mirror of the engine's `raw_table_name_for_uri`
+ * (sources/base.py, DAT-639).
+ *
+ * Post-DAT-639 raw table names are narrow (no `src_<digest>__` source prefix):
+ * the per-workspace DuckLake catalog is the namespace, and `(table_name, layer)`
+ * is workspace-unique (`uq_table_name_layer`). The engine names a file's raw
+ * table after the FILE STEM — the last path segment with its extension stripped,
+ * sanitized — NOT the content-keyed `src_<digest>` source name. So a CSV at
+ * `…/uploads/<digest>/Orders.CSV` loads into raw table `orders`.
+ *
+ * This is the cockpit "say no" pre-check input (DAT-639): the import-set guard
+ * derives each file's candidate name through here so it can reject a collision
+ * (with an existing workspace table, or another file in the same batch) BEFORE
+ * any write, in front of the engine's hard `uq_table_name_layer` backstop. Minor
+ * lead-digit edge divergence from the engine sanitizer is acceptable — the engine
+ * is the authoritative backstop; this stays simple and reuses `sanitizeRecipeName`.
+ */
+export function uploadTableName(fileUri: string): string {
+	const basename = fileUri.split("/").filter(Boolean).at(-1) ?? "";
+	const dot = basename.lastIndexOf(".");
+	const stem = dot > 0 ? basename.slice(0, dot) : basename;
+	return sanitizeRecipeName(stem);
+}
+
 // --- recipe synthesis (db_recipe `connection_config.tables`) -----------------
 
 /** One synthesized recipe query the engine materializes into `raw_<name>`. */

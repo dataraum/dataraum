@@ -94,6 +94,18 @@ system_prompt: |
     human/teach > confirmed binding > drivers > Value-set frequency.
   </channel_precedence>
 
+  <data_trust>
+  The Validation Results in <dataset_context> report whether the dataset's FOUNDATIONAL
+  identities hold. If a CRITICAL validation of a foundational identity FAILED (e.g.
+  double_entry_balance, trial_balance for accounting data — whatever the vertical's
+  bedrock invariants are), the underlying measures DO NOT RECONCILE: a clean SQL over
+  non-balancing data still yields a wrong number. You may still ground the concept, but
+  record a LOW-confidence "inferred" assumption that names the failed validation — so the
+  metric is never presented as confidently correct on data whose own integrity checks
+  failed. (This is orthogonal to per-concept grounding: the SQL can be perfectly grounded
+  and the number still untrustworthy because the source data does not balance.)
+  </data_trust>
+
   <aggregation_types>
   The graph step specifies an aggregation that determines HOW to extract the value:
   - "sum" / "avg" / "count" / "min" / "max": aggregate all matching rows.

@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
     from dataraum.graphs.agent import GraphAgent
     from dataraum.graphs.models import GraphExecution, TransformationGraph
-    from dataraum.graphs.node_warming import WarmNode
+    from dataraum.graphs.node_warming import NodeDecision, NodeKey, WarmNode
     from dataraum.lifecycle import LifecycleArtifact
 
     MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
@@ -262,8 +262,16 @@ class MetricsPhase(BasePhase):
         # the execute below assemble those nodes from the now-warm snippet cache —
         # consistent, no within-run race. Best-effort: a node that fails to warm
         # just falls back to per-metric authoring (the pre-DAT-629 behavior).
-        _warm_shared_nodes(
+        # Authoring pass (DAT-636): decide every unique node ONCE; the binding
+        # map drives the per-metric assembly below (1c). Built here in 1a; the
+        # assembly that consumes it lands in a later sub-phase.
+        bindings = _warm_shared_nodes(
             graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
+        )
+        _log.info(
+            "metrics_authored",
+            grounded=sum(1 for d in bindings.values() if d.grounded),
+            ungroundable=sum(1 for d in bindings.values() if not d.grounded),
         )
 
         # execute: run each composed metric. Parallel when the manager is wired,
@@ -397,18 +405,18 @@ def _warm_shared_nodes(
     vertical: str,
     *,
     om_run_id: str,
-) -> None:
-    """Topo-warm the unique cache-keyed nodes before the per-metric fan-out.
+) -> dict[NodeKey, NodeDecision]:
+    """The authoring pass: decide every unique cache-keyed node ONCE (DAT-636).
 
-    Builds the cross-metric DAG, then warms each unique node once in dependency
+    Builds the cross-metric DAG, then authors each unique node once in dependency
     order: a generation runs concurrently (independent nodes), with a barrier
-    between generations so a formula node sees its dep extracts already cached.
-    The per-metric ``execute`` that follows assembles the warmed nodes from the
-    snippet cache with no LLM call — consistent and race-free.
-
-    This is purely an optimization of the cache-warming order. A cyclic metric
-    set or a node that fails to warm is non-fatal: warming is skipped/best-effort
-    and the per-metric execute surfaces any real failure born-loud as before.
+    between generations so a formula node sees its dep extracts already grounded.
+    Returns the run-scoped, in-memory **binding map** ``{NodeKey: NodeDecision}`` —
+    every node's decision (grounded → its concept-keyed snippet is minted;
+    ungroundable → the born-loud reason). The per-metric ASSEMBLY that follows
+    reads this map and never re-authors: a metric with an ungroundable dependency
+    honest-fails immediately, no LLM. A cyclic metric set yields an empty map
+    (every metric then honest-fails born-loud at assembly).
     """
     from dataraum.graphs.node_warming import build_warm_dag, warming_generations
 
@@ -416,11 +424,11 @@ def _warm_shared_nodes(
         dag, nodes = build_warm_dag(graphs)
     except ValueError as e:
         _log.warning("metric_warm_dag_failed", error=str(e))
-        return
+        return {}
 
     generations = warming_generations(dag)
     if not generations:
-        return
+        return {}
 
     _log.info(
         "metrics_warming_start",
@@ -429,7 +437,7 @@ def _warm_shared_nodes(
     )
 
     if ctx.manager is not None:
-        _warm_generations_parallel(
+        return _warm_generations_parallel(
             generations,
             nodes,
             ctx.manager,
@@ -439,18 +447,17 @@ def _warm_shared_nodes(
             vertical,
             om_run_id,
         )
-    else:
-        _warm_generations_serial(
-            generations,
-            nodes,
-            ctx.session,
-            ctx.duckdb_conn,
-            agent,
-            schema_mapping_id,
-            table_ids,
-            vertical,
-            om_run_id,
-        )
+    return _warm_generations_serial(
+        generations,
+        nodes,
+        ctx.session,
+        ctx.duckdb_conn,
+        agent,
+        schema_mapping_id,
+        table_ids,
+        vertical,
+        om_run_id,
+    )
 
 
 def _warm_generations_parallel(
@@ -462,18 +469,20 @@ def _warm_generations_parallel(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
-) -> None:
-    """Warm generations concurrently within each wave, barrier between waves.
+) -> dict[NodeKey, NodeDecision]:
+    """Author generations concurrently within each wave, barrier between waves.
 
     One ``ThreadPoolExecutor`` (``max_workers`` IS the concurrency cap — no
     separate semaphore), the engine's standard fan-out primitive for blocking
     SQLAlchemy/DuckDB/LLM work on the sync activity worker. Draining each
     generation's futures before submitting the next is the load-bearing barrier:
     generation N+1's formula nodes must see generation N's extracts already
-    committed to the cache so they assemble from the warm cache rather than
-    re-authoring. A node that raises is logged and skipped — warming is an
-    optimization, never fatal; the per-metric execute authors any un-warmed node.
+    grounded. Returns the run-scoped binding map; a node that raises is recorded
+    ungroundable so its dependent metrics honest-fail born-loud at assembly.
     """
+    from dataraum.graphs.node_warming import NodeDecision
+
+    bindings: dict[NodeKey, NodeDecision] = {}
     with ThreadPoolExecutor(
         max_workers=_MAX_CONCURRENT_METRICS, thread_name_prefix="metric-warm"
     ) as pool:
@@ -492,12 +501,15 @@ def _warm_generations_parallel(
                 for key in generation
             }
             for future in as_completed(futures):
+                key = futures[future]
                 try:
-                    future.result()
+                    bindings[key] = future.result()
                 except Exception as exc:
-                    _log.warning(
-                        "metric_node_warm_error", node=str(futures[future]), error=str(exc)
-                    )
+                    # A node that crashes warming is recorded ungroundable — the
+                    # dependent metrics then honest-fail born-loud at assembly.
+                    _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                    bindings[key] = NodeDecision(grounded=False, reason=f"warm error: {exc}")
+    return bindings
 
 
 def _warm_isolated(
@@ -508,10 +520,10 @@ def _warm_isolated(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
-) -> None:
-    """Warm one node with an isolated session + cursor (mirrors _execute_isolated)."""
+) -> NodeDecision:
+    """Author one node with an isolated session + cursor; return its decision."""
     from dataraum.graphs.agent import ExecutionContext
-    from dataraum.graphs.node_warming import build_mini_graph
+    from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
     mini = build_mini_graph(node)
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
@@ -524,10 +536,12 @@ def _warm_isolated(
             vertical=vertical,
         )
         result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
-    if not result.success:
-        # Inconclusive warm (e.g. an extract with genuinely no support): not an
-        # error — the metric using it will surface it born-loud at execute.
-        _log.info("metric_node_warm_inconclusive", node=str(node.key), reason=result.error)
+    if result.success:
+        return NodeDecision(grounded=True)
+    # Ungroundable (e.g. an extract with genuinely no support): recorded, not an
+    # error — the metric using it honest-fails born-loud at assembly.
+    _log.info("metric_node_ungroundable", node=str(node.key), reason=result.error)
+    return NodeDecision(grounded=False, reason=result.error)
 
 
 def _warm_generations_serial(
@@ -540,10 +554,10 @@ def _warm_generations_serial(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
-) -> None:
+) -> dict[NodeKey, NodeDecision]:
     """Serial fallback: shared session + cursor, sequential dependency order."""
     from dataraum.graphs.agent import ExecutionContext
-    from dataraum.graphs.node_warming import build_mini_graph
+    from dataraum.graphs.node_warming import NodeDecision, build_mini_graph
 
     exec_ctx = ExecutionContext.with_rich_context(
         session=session,
@@ -553,6 +567,7 @@ def _warm_generations_serial(
         om_run_id=om_run_id,
         vertical=vertical,
     )
+    bindings: dict[NodeKey, NodeDecision] = {}
     for generation in generations:
         for key in generation:
             try:
@@ -561,9 +576,14 @@ def _warm_generations_serial(
                 )
             except Exception as exc:
                 _log.warning("metric_node_warm_error", node=str(key), error=str(exc))
+                bindings[key] = NodeDecision(grounded=False, reason=f"warm error: {exc}")
                 continue
-            if not result.success:
-                _log.info("metric_node_warm_inconclusive", node=str(key), reason=result.error)
+            if result.success:
+                bindings[key] = NodeDecision(grounded=True)
+            else:
+                _log.info("metric_node_ungroundable", node=str(key), reason=result.error)
+                bindings[key] = NodeDecision(grounded=False, reason=result.error)
+    return bindings
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,23 @@ class WarmNode:
     step: GraphStep
 
 
+@dataclass(frozen=True)
+class NodeDecision:
+    """The authoring pass's decision for one node (DAT-636).
+
+    Run-scoped and in-memory: each unique node is authored EXACTLY once per run
+    and its outcome recorded here. ``grounded`` means the node's concept-keyed
+    snippet was minted (its SQL lives in the cross-run cache); a not-grounded
+    decision carries the born-loud ``reason``. The per-metric assembly reads this
+    map and NEVER re-authors — a metric whose dependency is not grounded
+    honest-fails immediately, with no LLM call. Negatives stay in this map only
+    (not persisted), so a later run with different context can re-decide.
+    """
+
+    grounded: bool
+    reason: str | None = None
+
+
 def _resolve_constant_value(step: GraphStep, graph: TransformationGraph) -> str | None:
     """Resolve a constant step's parameter default to its string cache value."""
     if not step.parameter:

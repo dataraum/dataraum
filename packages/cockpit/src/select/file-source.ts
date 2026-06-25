@@ -14,7 +14,8 @@
 // `triggerAddSource` over the union so a heterogeneous import set (files + queries)
 // imports as one coherent run.
 
-import { contentKeyedSourceName, sourceTypeForUri } from "./mappers";
+import { sourceTypeForUri } from "./mappers";
+import { contentKeyedSourceName } from "./source-content-hash";
 import { upsertSource } from "./source-write";
 
 /** One staged upload the user chose to import — its `s3://` URI. */

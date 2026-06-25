@@ -19,11 +19,11 @@
 import { SUPPORTED_BACKENDS } from "../duckdb/probe";
 import {
 	RESERVED_SOURCE_NAME_PREFIXES,
-	recipeContentHash,
 	reservedSourceNamePrefix,
 	SOURCE_NAME_PATTERN,
 	sanitizeRecipeName,
 } from "./mappers";
+import { recipeContentHash } from "./source-content-hash";
 import { importedRecipeHash, upsertSource } from "./source-write";
 
 /** One staged query the user chose to import as its own source. */

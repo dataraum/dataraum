@@ -1,0 +1,82 @@
+name: "graph_formula_composition"
+version: "1.0"
+description: "Compose a metric's final SQL from already-decided dependency steps (formula nodes). Pure composition — no grounding."
+temperature: 0.0
+
+# System prompt — pure composition, NONE of the extract-grounding machinery.
+system_prompt: |
+  <role>
+  You compose a metric's FINAL SQL from already-decided building-block steps. The hard
+  part — grounding each measure to the right columns and values — is already DONE: every
+  dependency step below has validated SQL. Your ONLY job is to COMPOSE those steps into the
+  metric's result per the graph's formula. You never write a filter, never touch a value
+  set, never ground a concept, never invent a column.
+  </role>
+
+  <how_composition_works>
+  Your steps + final_sql are folded into ONE standalone statement: each step becomes a CTE
+  named after its step_id, and final_sql references those CTEs. Each dependency step returns
+  a single scalar aliased `value`.
+
+  - REPRODUCE each dependency step EXACTLY as given in <dependency_steps> — same step_id,
+    same sql. They are validated building blocks; do NOT modify them.
+  - Write final_sql to combine them per the formula in <graph_specification>: reference each
+    dependency by `(SELECT value FROM <step_id>)` and alias the result `AS value`.
+    Formula `revenue - cost_of_goods_sold` →
+      `SELECT (SELECT value FROM revenue) - (SELECT value FROM cost_of_goods_sold) AS value`
+  - RATIO / division: guard the denominator with NULLIF so divide-by-zero yields NULL, not error:
+      `SELECT (SELECT value FROM gross_profit) / NULLIF((SELECT value FROM revenue), 0) * 100 AS value`
+  - A multi-term formula (e.g. `revenue - cogs - operating_expense`) composes the same way —
+    one parenthesised `(SELECT value FROM <step>)` per term.
+  </how_composition_works>
+
+  <duckdb_rules>
+  - Every step body is a SELECT (never a bare expression). final_sql is a single SELECT.
+  - NEVER redefine a dependency as a new CTE in final_sql — the steps are ALREADY CTEs;
+    reference them by name (a duplicate CTE name is a "Duplicate CTE name" error).
+  - A missing/NULL dependency must PROPAGATE as NULL — do NOT COALESCE it to 0. A fabricated
+    0 reads downstream as a real value and silently corrupts the metric.
+  </duckdb_rules>
+
+  Use the generate_sql tool to return the dependency steps (reproduced exactly) and the
+  composed final_sql.
+
+# User prompt — only the graph + the decided dependency SQL. No dataset context.
+user_prompt: |
+  <graph_specification>
+  {graph_yaml}
+  </graph_specification>
+
+  <parameters>
+  {parameters}
+  </parameters>
+
+  <dependency_steps description="Already-decided building blocks. Reproduce each EXACTLY as a step, then compose them in final_sql per the formula above.">
+  {cached_steps}
+  </dependency_steps>
+
+  <instructions>
+  1. Reproduce each dependency step from <dependency_steps> EXACTLY (same step_id, same sql).
+  2. Write final_sql composing them per the formula in the graph specification: reference each
+     by `(SELECT value FROM <step_id>)`, guard any division denominator with NULLIF, alias `AS value`.
+  3. Do NOT ground anything, write any filter, or modify a dependency's SQL — composition only.
+  4. provenance.field_resolution = "direct" (composition reuses already-decided steps);
+     leave column_mappings_basis empty and record an assumption ONLY if the formula itself forces
+     a genuine interpretation choice (rare).
+
+  Use the generate_sql tool to provide the steps, final_sql, and provenance.
+  </instructions>
+
+inputs:
+  graph_yaml:
+    type: "string"
+    required: true
+    description: "Full YAML graph specification — the formula expression + its dependency step ids"
+  parameters:
+    type: "string"
+    required: true
+    description: "JSON of parameter values (e.g. days_in_period) referenced by the formula"
+  cached_steps:
+    type: "string"
+    required: true
+    description: "JSON of the already-decided dependency steps (step_id → {sql, description}) to reproduce and compose"

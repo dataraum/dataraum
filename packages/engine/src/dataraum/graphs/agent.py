@@ -468,91 +468,87 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
         )
 
-        # Build multi-table schema from rich context
-        schema_info = self._build_schema_info(context)
-
-        # Serialize graph to YAML for LLM context
+        # Serialize graph to YAML for LLM context.
         graph_yaml = self._graph_to_yaml(graph)
 
-        # Build prompt context
-        prompt_context = {
-            "graph_yaml": graph_yaml,
-            "table_schema": json.dumps(schema_info, indent=2),
-            "parameters": json.dumps(parameters, indent=2),
-        }
-
-        # Inject cached snippets into prompt context
-        if cached_snippets:
-            prompt_context["cached_steps"] = json.dumps(
+        # Cached dep SQL — common to both prompt paths (the already-decided steps a
+        # node builds on).
+        cached_steps_json = (
+            json.dumps(
                 {
                     step_id: {"sql": info["sql"], "description": info["description"]}
                     for step_id, info in cached_snippets.items()
                 },
                 indent=2,
             )
-        else:
-            prompt_context["cached_steps"] = ""
-
-        # Rich context is required — the LLM needs metadata to generate correct SQL
-        if context.rich_context is None:
-            return Result.fail(
-                "Cannot generate SQL without dataset context. "
-                "Use ExecutionContext.with_rich_context() to build context."
-            )
-
-        from dataraum.graphs.context import format_metadata_document
-
-        prompt_context["rich_context"] = format_metadata_document(context.rich_context)
-
-        # Field mappings are required — the LLM needs them to resolve business concepts
-        if (
-            not context.rich_context.field_mappings
-            or not context.rich_context.field_mappings.mappings
-        ):
-            return Result.fail(
-                "Cannot generate SQL without field mappings. "
-                "Run the semantic phase to map business concepts to columns."
-            )
-
-        from dataraum.graphs.field_mapping import format_mappings_for_prompt
-
-        prompt_context["field_mappings"] = format_mappings_for_prompt(
-            context.rich_context.field_mappings
+            if cached_snippets
+            else ""
         )
 
-        # DAT-616 feedback loops: feed back what prior runs already learned for this metric
-        # — the honest-fail reason (so the next attempt isn't blind) and the prior
-        # value→concept FILTER decisions (column_mappings_basis), so grounding isn't
-        # re-invented every run.
-        prompt_context["prior_context"] = self._build_prior_context(session, graph, cached_snippets)
+        # Select the prompt by the AUTHORED node's type (DAT-636 P2). The authoring
+        # pass runs one single-output mini-graph at a time, so the output step IS the
+        # node being authored: a FORMULA is pure composition of already-decided scalar
+        # steps (fast/Haiku tier, a tiny prompt — NO grounding evidence); an
+        # EXTRACT/CONSTANT needs the full fed grounding evidence (balanced/Sonnet).
+        output_step = graph.get_output_step()
+        if output_step is not None and output_step.step_type == StepType.FORMULA:
+            prompt_name = "graph_formula_composition"
+            tier = "fast"
+            prompt_context = {
+                "graph_yaml": graph_yaml,
+                "parameters": json.dumps(parameters, indent=2),
+                "cached_steps": cached_steps_json,
+            }
+        else:
+            prompt_name = "graph_sql_generation"
+            tier = "balanced"
+            # Grounding requires the dataset context + field mappings — fail loud if
+            # the semantic phase did not produce them.
+            if context.rich_context is None:
+                return Result.fail(
+                    "Cannot generate SQL without dataset context. "
+                    "Use ExecutionContext.with_rich_context() to build context."
+                )
+            if (
+                not context.rich_context.field_mappings
+                or not context.rich_context.field_mappings.mappings
+            ):
+                return Result.fail(
+                    "Cannot generate SQL without field mappings. "
+                    "Run the semantic phase to map business concepts to columns."
+                )
+            from dataraum.graphs.context import format_metadata_document
+            from dataraum.graphs.field_mapping import format_mappings_for_prompt
 
-        # Render prompt with system/user split
+            prompt_context = {
+                "graph_yaml": graph_yaml,
+                "table_schema": json.dumps(self._build_schema_info(context), indent=2),
+                "parameters": json.dumps(parameters, indent=2),
+                "cached_steps": cached_steps_json,
+                "rich_context": format_metadata_document(context.rich_context),
+                "field_mappings": format_mappings_for_prompt(context.rich_context.field_mappings),
+                # DAT-616: feed back what prior runs learned for this metric — the
+                # honest-fail reason + prior value→concept filter decisions.
+                "prior_context": self._build_prior_context(session, graph, cached_snippets),
+            }
+
+        # Render prompt with system/user split.
         try:
             system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "graph_sql_generation", prompt_context
+                prompt_name, prompt_context
             )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Compute prompt hash for reproducibility
         prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()[:16]
-
-        # Dump the rendered prompt (system + user, with every injected concept)
-        # for offline analysis — no-op unless prompt_dump_dir is set. This is the
-        # only way to read the ACTUAL produced prompt, not the template.
-        from dataraum.llm.prompt_log import dump_prompt
-
-        # Tier by the authored node (DAT-636): a FORMULA is simple composition over
-        # already-decided scalar steps → the fast/Haiku tier; an extract needs the
-        # grounding-capable balanced/Sonnet tier. After the authoring/assembly split
-        # _generate_sql is only ever called by the authoring pass on a single-node
-        # mini-graph, so the output step IS the node being authored.
-        output_step = graph.get_output_step()
-        tier = "fast" if output_step and output_step.step_type == StepType.FORMULA else "balanced"
         model = self.provider.get_model_for_tier(tier)
 
+        # Dump the rendered prompt (system + user) for offline analysis — no-op unless
+        # prompt_dump_dir is set. The label distinguishes formula vs grounding prompts.
+        from dataraum.llm.prompt_log import dump_prompt
+
         dump_prompt(
-            label="graph_sql_generation",
+            label=prompt_name,
             key=graph.graph_id,
             prompt_hash=prompt_hash,
             system=system_prompt,
@@ -573,7 +569,7 @@ class GraphAgent(LLMFeature):
             system=system_prompt,
             tools=[tool],
             tool_choice={"type": "tool", "name": "generate_sql"},
-            label="graph_sql_generation",
+            label=prompt_name,
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,

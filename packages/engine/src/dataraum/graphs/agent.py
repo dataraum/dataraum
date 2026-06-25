@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -47,6 +48,24 @@ if TYPE_CHECKING:
     from dataraum.graphs.node_warming import NodeDecision, NodeKey
 
 logger = get_logger(__name__)
+
+
+def _as_float(value: Any) -> float | None:
+    """Coerce a metric scalar (Decimal / int / float / None) to float for comparison."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
+
+
+def _values_agree(a: Any, b: Any) -> bool:
+    """Two metric scalars agree if both are NULL, or both numeric and close."""
+    fa, fb = _as_float(a), _as_float(b)
+    if fa is None or fb is None:
+        return fa is None and fb is None
+    return math.isclose(fa, fb, rel_tol=1e-9, abs_tol=1e-9)
 
 
 @dataclass
@@ -272,6 +291,11 @@ class GraphAgent(LLMFeature):
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value
+
+        # DAT-636: shadow-run the deterministic composer beside the LLM formula path
+        # and log any value divergence — building the evidence to retire the fragile
+        # LLM formula path. Pure side-effect (logging); never alters the authoring result.
+        self._shadow_compare_formula(graph, generated_code, context, execution.output_value)
 
         # Verifier gate (DAT-616): execution-pass is NOT validation. A node whose SQL
         # ran cleanly is still inconclusive if it had no support (empty filter -> NULL),
@@ -1047,6 +1071,68 @@ class GraphAgent(LLMFeature):
                         snippet_id=snippet_id,
                         step_id=step_id,
                     )
+
+    def _shadow_compare_formula(
+        self,
+        graph: TransformationGraph,
+        generated_code: GeneratedCode,
+        context: ExecutionContext,
+        llm_value: Any,
+    ) -> None:
+        """Shadow-run the deterministic composer beside the LLM formula path (DAT-636).
+
+        For a formula node, compose the final SQL deterministically from the SAME
+        dependency step CTEs the LLM reproduced, execute it, and log any value
+        divergence from the LLM result. The LLM stays the source of truth during
+        this shadow phase; this only measures whether the deterministic composer is
+        ready to take over (after which the fragile LLM formula path — round-trip,
+        fabrication, cross-run drift — retires). Never raises: a shadow failure is
+        logged, not propagated into the authoring result.
+        """
+        from dataraum.graphs.formula_composer import compose_formula_sql
+        from dataraum.query.execution import SQLStep, execute_sql_steps
+
+        output_step = graph.get_output_step()
+        if (
+            output_step is None
+            or output_step.step_type != StepType.FORMULA
+            or not output_step.expression
+        ):
+            return
+
+        try:
+            det_sql = compose_formula_sql(output_step.expression, set(output_step.depends_on))
+            steps = [
+                SQLStep(step_id=s.get("step_id", ""), sql=s.get("sql", ""), description="")
+                for s in generated_code.steps
+            ]
+            det_result = execute_sql_steps(
+                steps=steps,
+                final_sql=det_sql,
+                duckdb_conn=context.duckdb_conn,
+                max_repair_attempts=0,
+                return_table=False,
+            )
+        except Exception as exc:  # deterministic compose/exec must never break authoring
+            logger.warning(
+                "formula_shadow_error",
+                graph_id=graph.graph_id,
+                expression=output_step.expression,
+                error=str(exc),
+            )
+            return
+
+        det_value = (
+            det_result.value.final_value if det_result.success and det_result.value else None
+        )
+        logger.info(
+            "formula_shadow_compare",
+            graph_id=graph.graph_id,
+            expression=output_step.expression,
+            llm_value=_as_float(llm_value),
+            deterministic_value=_as_float(det_value),
+            agree=_values_agree(llm_value, det_value),
+        )
 
     def _save_snippets(
         self,

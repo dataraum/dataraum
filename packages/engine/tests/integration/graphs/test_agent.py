@@ -401,6 +401,93 @@ def _formula_graph() -> TransformationGraph:
     )
 
 
+def _formula_with_deps(expression: str, depends_on: list[str]) -> TransformationGraph:
+    """A single formula output step (deps supplied via generated_code, not graph steps)."""
+    return TransformationGraph(
+        graph_id="margin",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="Margin", description="", category="test", source=GraphSource.SYSTEM, tags=[]
+        ),
+        output=OutputDef(output_type=OutputType.SCALAR, metric_id="m"),
+        parameters=[],
+        steps={
+            "out": GraphStep(
+                step_id="out",
+                step_type=StepType.FORMULA,
+                expression=expression,
+                depends_on=depends_on,
+                output_step=True,
+            ),
+        },
+        interpretation=None,
+    )
+
+
+class TestFormulaShadowCompare:
+    """The deterministic composer shadow-runs beside the LLM path and logs agreement."""
+
+    @staticmethod
+    def _gen(steps: list[dict[str, str]]) -> GeneratedCode:
+        return GeneratedCode(
+            code_id="c",
+            graph_id="margin",
+            summary="",
+            steps=steps,
+            final_sql="SELECT 1 AS value",  # the LLM's composition is not used by the shadow
+            column_mappings={},
+            llm_model="x",
+            prompt_hash="y",
+            generated_at=datetime.now(UTC),
+        )
+
+    def test_shadow_agrees_when_deterministic_matches_llm(self, duckdb_with_data, monkeypatch):
+        import dataraum.graphs.agent as agent_module
+
+        agent = _agent_with_sql(steps=[], final_sql="")
+        graph = _formula_with_deps(
+            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+        )
+        gen = self._gen(
+            [
+                {"step_id": "revenue", "sql": "SELECT 1000 AS value", "description": ""},
+                {"step_id": "cost_of_goods_sold", "sql": "SELECT 600 AS value", "description": ""},
+            ]
+        )
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        agent._shadow_compare_formula(graph, gen, context, llm_value=400.0)
+
+        log.info.assert_called_once()
+        kwargs = log.info.call_args.kwargs
+        assert kwargs["agree"] is True
+        assert kwargs["deterministic_value"] == 400.0
+
+    def test_shadow_flags_divergence(self, duckdb_with_data, monkeypatch):
+        import dataraum.graphs.agent as agent_module
+
+        agent = _agent_with_sql(steps=[], final_sql="")
+        graph = _formula_with_deps(
+            "revenue - cost_of_goods_sold", ["revenue", "cost_of_goods_sold"]
+        )
+        gen = self._gen(
+            [
+                {"step_id": "revenue", "sql": "SELECT 1000 AS value", "description": ""},
+                {"step_id": "cost_of_goods_sold", "sql": "SELECT 600 AS value", "description": ""},
+            ]
+        )
+        context = _make_execution_context(duckdb_with_data)
+        log = MagicMock()
+        monkeypatch.setattr(agent_module, "logger", log)
+
+        # LLM claims 999 but deterministic computes 400 → divergence.
+        agent._shadow_compare_formula(graph, gen, context, llm_value=999.0)
+
+        assert log.info.call_args.kwargs["agree"] is False
+
+
 class TestFormulaSnippetRoundTrip:
     """A formula's composed SQL must persist even when the model omits it from `steps`.
 

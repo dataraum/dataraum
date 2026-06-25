@@ -16,7 +16,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
@@ -42,6 +42,9 @@ from .models import (
     TransformationGraph,
 )
 from .verifier import verify_execution
+
+if TYPE_CHECKING:
+    from dataraum.graphs.node_warming import NodeDecision, NodeKey
 
 logger = get_logger(__name__)
 
@@ -301,6 +304,73 @@ class GraphAgent(LLMFeature):
             workspace_id=workspace_id,
         )
 
+        return Result.ok(execution)
+
+    def assemble(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        bindings: dict[NodeKey, NodeDecision],
+        parameters: dict[str, Any] | None = None,
+        *,
+        workspace_id: str,
+    ) -> Result[GraphExecution]:
+        """Assemble a metric from already-decided node bindings — NO LLM (DAT-636).
+
+        The authoring pass (``metrics_phase._warm_shared_nodes``) decided every
+        unique node ONCE and recorded it in ``bindings``. This composes the metric
+        from those decisions: if any of the metric's nodes is ungroundable, the
+        metric honest-fails immediately with the failing dependency named — it is
+        NEVER re-authored. Otherwise it assembles ``final_sql`` from the snippets
+        the pass minted, then executes and verifies. The per-metric path is a dumb
+        assembler; the LLM is only ever called in the authoring pass — so the same
+        concept can no longer ground three different ways across dependent metrics.
+        """
+        from dataraum.graphs.node_warming import node_key
+
+        resolved_params = self._resolve_parameters(graph, parameters or {})
+        schema_mapping_id = context.schema_mapping_id or "default"
+
+        # Honest-fail on the first ungroundable dependency — born-loud, no LLM.
+        for step_id, step in graph.steps.items():
+            key = node_key(step, graph)
+            if key is None:
+                continue  # non-keyable step (rare) — caught by the cache check below
+            decision = bindings.get(key)
+            if decision is not None and not decision.grounded:
+                return Result.fail(
+                    f"dependency '{step_id}' is ungroundable: {decision.reason or 'no grounding'}"
+                )
+
+        # Every dependency grounded → assemble from the snippets the pass minted.
+        cached_snippets = self._lookup_snippets(session, graph, schema_mapping_id, resolved_params)
+        if not cached_snippets or len(cached_snippets) != len(graph.steps):
+            missing = len(graph.steps) - len(cached_snippets or {})
+            return Result.fail(
+                f"metric '{graph.graph_id}': {missing} step(s) grounded per the binding "
+                "map but absent from the snippet cache"
+            )
+        generated_code = self._assemble_from_snippets(
+            graph, context, cached_snippets, resolved_params
+        )
+        if generated_code is None:
+            return Result.fail(f"metric '{graph.graph_id}': failed to assemble cached snippets")
+        self._track_snippet_usage(
+            session=session,
+            execution_id=generated_code.code_id,
+            cached_snippets=cached_snippets,
+            generated_steps=generated_code.steps,
+            workspace_id=workspace_id,
+        )
+
+        exec_result = self._execute_sql(generated_code, context, graph)
+        if not exec_result.success or not exec_result.value:
+            return Result.fail(exec_result.error or "metric assembly execution failed")
+        execution = exec_result.value
+        verdict = verify_execution(graph, execution)
+        if not verdict.success:
+            return Result.fail(verdict.error or "metric verification failed")
         return Result.ok(execution)
 
     def _assemble_from_snippets(

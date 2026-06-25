@@ -274,7 +274,8 @@ class MetricsPhase(BasePhase):
             ungroundable=sum(1 for d in bindings.values() if not d.grounded),
         )
 
-        # execute: run each composed metric. Parallel when the manager is wired,
+        # assemble: compose each metric from the bindings (no LLM — the authoring
+        # pass already decided every node). Parallel when the manager is wired,
         # serial fallback otherwise.
         if ctx.manager is not None:
             results = _execute_metrics_parallel(
@@ -284,6 +285,7 @@ class MetricsPhase(BasePhase):
                 schema_mapping_id,
                 table_ids,
                 vertical,
+                bindings,
                 om_run_id=run_id,
             )
         else:
@@ -295,7 +297,9 @@ class MetricsPhase(BasePhase):
                 om_run_id=run_id,
                 vertical=vertical,
             )
-            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, schema_mapping_id)
+            results = _execute_metrics_serial(
+                prep, ctx.session, exec_ctx, agent, schema_mapping_id, bindings
+            )
 
         # A composed metric that ran cleanly AND verified reaches executed; one
         # whose SQL failed OR whose result was inconclusive (no support / a
@@ -597,16 +601,16 @@ def _execute_metrics_serial(
     exec_ctx: _ExecutionContext,
     agent: GraphAgent,
     workspace_id: str,
+    bindings: dict[NodeKey, NodeDecision],
 ) -> list[MetricResult]:
     """Fallback path: shared session + cursor, sequential dispatch.
 
-    Used in unit tests where PhaseContext.manager is None.
+    Pure ASSEMBLY (DAT-636): composes each metric from the authoring pass's
+    bindings — no LLM. Used in unit tests where PhaseContext.manager is None.
     """
     out: list[MetricResult] = []
-    for graph_id, graph, hint_sql, inspiration_id in prep:
-        result = agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=workspace_id
-        )
+    for graph_id, graph, _hint_sql, inspiration_id in prep:
+        result = agent.assemble(session, graph, exec_ctx, bindings, workspace_id=workspace_id)
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -618,18 +622,18 @@ def _execute_metrics_parallel(
     schema_mapping_id: str,
     table_ids: list[str],
     vertical: str,
+    bindings: dict[NodeKey, NodeDecision],
     *,
     om_run_id: str,
 ) -> list[MetricResult]:
     """Concurrent path: per-call session + cursor via a ThreadPoolExecutor.
 
-    Each metric runs `agent.execute` on a pool thread with its own SQLAlchemy
-    session (auto-commit via session_scope) and its own DuckDB cursor.
-    ``max_workers`` caps in-flight LLM calls to _MAX_CONCURRENT_METRICS — the
-    engine's standard fan-out primitive (no asyncio event loop on the sync
-    activity worker). ``om_run_id`` is this operating_model run — the graph
-    context reads its cycles/validation evidence at this run, not the
-    (not-yet-promoted) head.
+    Pure ASSEMBLY (DAT-636): each metric composes from the authoring pass's
+    bindings on a pool thread with its own SQLAlchemy session (auto-commit via
+    session_scope) and its own DuckDB cursor — NO LLM in this path. ``max_workers``
+    caps concurrency to _MAX_CONCURRENT_METRICS. ``om_run_id`` is this
+    operating_model run — the graph context reads its cycles/validation evidence
+    at this run, not the (not-yet-promoted) head.
     """
     out: list[MetricResult] = []
     with ThreadPoolExecutor(
@@ -639,15 +643,15 @@ def _execute_metrics_parallel(
             pool.submit(
                 _execute_isolated,
                 graph,
-                hint_sql,
                 manager,
                 agent,
                 schema_mapping_id,
                 table_ids,
                 vertical,
+                bindings,
                 om_run_id,
             ): (graph_id, inspiration_id)
-            for graph_id, graph, hint_sql, inspiration_id in prep
+            for graph_id, graph, _hint_sql, inspiration_id in prep
         }
         for future in as_completed(futures):
             graph_id, inspiration_id = futures[future]
@@ -663,15 +667,15 @@ def _execute_metrics_parallel(
 
 def _execute_isolated(
     graph: TransformationGraph,
-    hint_sql: str | None,
     manager: ConnectionManager,
     agent: GraphAgent,
     schema_mapping_id: str,
     table_ids: list[str],
     vertical: str,
+    bindings: dict[NodeKey, NodeDecision],
     om_run_id: str,
 ) -> Result[GraphExecution]:
-    """Run one metric with an isolated session + cursor pair.
+    """Assemble one metric from the bindings with an isolated session + cursor.
 
     Wraps the call in manager.session_scope() so writes commit on success
     and roll back on exception. The DuckDB cursor is independent — the
@@ -694,6 +698,4 @@ def _execute_isolated(
             om_run_id=om_run_id,
             vertical=vertical,
         )
-        return agent.execute(
-            session, graph, exec_ctx, inspiration_sql=hint_sql, workspace_id=schema_mapping_id
-        )
+        return agent.assemble(session, graph, exec_ctx, bindings, workspace_id=schema_mapping_id)

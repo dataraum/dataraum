@@ -60,7 +60,7 @@ def _graph(gid: str, inspiration: str | None = None) -> _StubGraph:
 class TestExecuteMetricsSerial:
     def test_dispatches_each_graph_in_order(self) -> None:
         agent = MagicMock()
-        agent.execute.side_effect = [Result.ok(f"r{i}") for i in range(3)]
+        agent.assemble.side_effect = [Result.ok(f"r{i}") for i in range(3)]
         session = MagicMock()
         exec_ctx = MagicMock()
         prep = [
@@ -69,22 +69,20 @@ class TestExecuteMetricsSerial:
             ("g2", _graph("g2"), None, None),
         ]
 
-        out = gep._execute_metrics_serial(
-            prep, session, exec_ctx, agent, workspace_id=_WORKSPACE_ID
-        )
+        out = gep._execute_metrics_serial(prep, session, exec_ctx, agent, _WORKSPACE_ID, {})
 
         assert [graph_id for graph_id, _, _ in out] == ["g0", "g1", "g2"]
         assert [r.value for _, r, _ in out] == ["r0", "r1", "r2"]
         assert [iid for _, _, iid in out] == [None, "insp-1", None]
-        assert agent.execute.call_count == 3
+        assert agent.assemble.call_count == 3
         # All calls share the same session + exec_ctx (the fallback contract)
-        for call in agent.execute.call_args_list:
+        for call in agent.assemble.call_args_list:
             assert call.args[0] is session
             assert call.args[2] is exec_ctx
 
     def test_propagates_failure_per_graph(self) -> None:
         agent = MagicMock()
-        agent.execute.side_effect = [
+        agent.assemble.side_effect = [
             Result.ok("ok"),
             Result.fail("nope"),
         ]
@@ -93,7 +91,8 @@ class TestExecuteMetricsSerial:
             MagicMock(),
             MagicMock(),
             agent,
-            workspace_id=_WORKSPACE_ID,
+            _WORKSPACE_ID,
+            {},
         )
         assert out[0][1].success is True
         assert out[1][1].success is False
@@ -115,12 +114,13 @@ class _ConcurrencyTrackingAgent:
         self.peak_in_flight = 0
         self.calls: list[str] = []
 
-    def execute(
+    def assemble(
         self,
         session: Any,
         graph: _StubGraph,
         context: Any,
-        inspiration_sql: str | None = None,
+        bindings: Any,
+        parameters: Any = None,
         *,
         workspace_id: str = "",
     ) -> Result[str]:
@@ -172,6 +172,7 @@ class TestExecuteMetricsParallel:
             "src-1",
             ["t1"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -198,6 +199,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -226,6 +228,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -246,6 +249,7 @@ class TestExecuteMetricsParallel:
             "src",
             [],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
         assert out == []
@@ -266,12 +270,13 @@ class TestExecuteMetricsParallel:
 
         # Agent that raises on graph_id="bad", succeeds otherwise
         class _FlakyAgent:
-            def execute(
+            def assemble(
                 self,
                 session: Any,
                 graph: _StubGraph,
                 context: Any,
-                inspiration_sql: str | None = None,
+                bindings: Any,
+                parameters: Any = None,
                 *,
                 workspace_id: str = "",
             ) -> Result[str]:
@@ -293,6 +298,7 @@ class TestExecuteMetricsParallel:
             "src",
             ["t"],
             _VERTICAL,
+            {},
             om_run_id="run-test",
         )
 
@@ -341,15 +347,11 @@ class TestExecuteIsolated:
         manager.duckdb_cursor = duckdb_cursor
 
         agent = MagicMock()
-        agent.execute.return_value = Result.ok("done")
+        agent.assemble.return_value = Result.ok("done")
 
         # Each call should open a fresh pair
-        gep._execute_isolated(
-            _graph("g0"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
-        )
-        gep._execute_isolated(
-            _graph("g1"), None, manager, agent, "src", ["t"], _VERTICAL, "run-test"
-        )
+        gep._execute_isolated(_graph("g0"), manager, agent, "src", ["t"], _VERTICAL, {}, "run-test")
+        gep._execute_isolated(_graph("g1"), manager, agent, "src", ["t"], _VERTICAL, {}, "run-test")
 
         assert len(opened_sessions) == 2
         assert len(opened_cursors) == 2
@@ -505,7 +507,7 @@ class TestWarmSharedNodes:
         agent = _RecordingWarmAgent()
 
         # A cyclic set must not raise — warming is skipped, execute surfaces it.
-        gep._warm_shared_nodes(
+        bindings = gep._warm_shared_nodes(
             {"cyclic": cyclic},
             _StubCtx(),  # type: ignore[arg-type]
             agent,  # type: ignore[arg-type]
@@ -515,6 +517,7 @@ class TestWarmSharedNodes:
             om_run_id="run-test",
         )
         assert agent.warmed == []
+        assert bindings == {}
 
 
 def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
@@ -539,6 +542,6 @@ def test_parallel_dispatch_runs_on_a_threadpool_no_event_loop(
     prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
 
     out = gep._execute_metrics_parallel(
-        prep, manager, agent, "src", ["t"], _VERTICAL, om_run_id="run-test"
+        prep, manager, agent, "src", ["t"], _VERTICAL, {}, om_run_id="run-test"
     )
     assert len(out) == 3

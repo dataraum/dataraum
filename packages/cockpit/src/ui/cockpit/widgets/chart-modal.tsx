@@ -1,0 +1,387 @@
+// The chart authoring modal (DAT-626 / ADR-0015).
+//
+// Opens to an EMPTY state — no auto/default chart (a type-sniffing heuristic isn't
+// worth the code; ADR-0015). The user drives, two ways:
+//   - manual column→encoding mapping (deterministic; this phase), and
+//   - a typed instruction to the chart agent (Phase 3, wired into the same draft).
+// Either produces a draft → validated config → LIVE preview. Accept freezes the
+// config; the caller decides what "freeze" means (mint it with a report, etc.).
+//
+// The preview data is ONE capped page from the grid stream (`/api/run-sql`, max
+// GRID_MAX_PAGE rows): charts are for aggregated results, so the cap doubles as the
+// nudge — a `truncated` page shows the "charting the first N rows" warning. The
+// Vega renderer is client-only (vega measures the DOM), mounted under <ClientOnly>.
+//
+// Split shell/content: the shell owns the (cached) data fetch; the content owns the
+// authoring DRAFT and is remounted per open via a `key` (React rule 5), so each
+// open starts fresh from the existing config — never a stale draft.
+
+import {
+	Alert,
+	Button,
+	Center,
+	Group,
+	Loader,
+	Modal,
+	Select,
+	Stack,
+	Text,
+	TextInput,
+} from "@mantine/core";
+import { useQuery } from "@tanstack/react-query";
+import { ClientOnly } from "@tanstack/react-router";
+import { TriangleAlert } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+	AGGREGATES,
+	CHART_MARKS,
+	type ChartConfig,
+	FIELD_TYPES,
+} from "#/charts/chart-config";
+import { columnOptions, gridViewToRows } from "#/charts/chart-data";
+import {
+	type ChartDraft,
+	draftToConfig,
+	type EncodingDraft,
+	emptyDraft,
+} from "#/charts/manual-mapping";
+import { validateChartConfig } from "#/charts/validate";
+import { GRID_MAX_PAGE } from "#/duckdb/grid-query";
+import { type ColumnStore, readNdjsonIntoStore } from "#/duckdb/ndjson-stream";
+import { ChartView } from "#/ui/cockpit/widgets/chart-view";
+
+/** Extract a `{ error }` body from a failed grid stream, else the raw text. */
+function extractError(text: string): string {
+	try {
+		const parsed = JSON.parse(text) as { error?: unknown };
+		if (typeof parsed.error === "string") return parsed.error;
+	} catch {
+		// not JSON — fall through
+	}
+	return text;
+}
+
+export function ChartModal({
+	opened,
+	onClose,
+	sql,
+	params,
+	value,
+	onAccept,
+}: {
+	opened: boolean;
+	onClose: () => void;
+	sql: string;
+	params?: (string | number | boolean | null)[];
+	/** An existing frozen config when re-opening an already-charted surface. */
+	value?: ChartConfig | null;
+	/** Accept the authored config (or null to clear the chart) and close. */
+	onAccept: (config: ChartConfig | null) => void;
+}) {
+	// Fetch one capped page for the preview — server data via TanStack Query (React
+	// rule 3), only while the modal is open. The whole page folds into one store
+	// (bounded by GRID_MAX_PAGE), which the chart materializes into rows.
+	const {
+		data: store,
+		isLoading,
+		error,
+	} = useQuery<ColumnStore>({
+		queryKey: ["chart-data", sql, params ?? null],
+		enabled: opened,
+		staleTime: 30_000,
+		queryFn: async ({ signal }) => {
+			const res = await fetch("/api/run-sql", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ sql, params, limit: GRID_MAX_PAGE }),
+				signal,
+			});
+			if (!res.ok || !res.body) {
+				const detail = await res.text().catch(() => res.statusText);
+				throw new Error(
+					extractError(detail) || `request failed (${res.status})`,
+				);
+			}
+			const folded = await readNdjsonIntoStore(res.body);
+			if (folded.error) throw new Error(folded.error);
+			return folded;
+		},
+	});
+
+	return (
+		<Modal
+			opened={opened}
+			onClose={onClose}
+			title="Chart"
+			size="xl"
+			data-testid="chart-modal"
+		>
+			{isLoading ? (
+				<Center h={240}>
+					<Loader size="sm" />
+				</Center>
+			) : error ? (
+				<Alert color="red" data-testid="chart-modal-error">
+					Couldn’t load the result to chart: {String(error)}
+				</Alert>
+			) : !store || store.columns.length === 0 ? (
+				<Text c="dimmed" size="sm" data-testid="chart-modal-empty-result">
+					This result has no columns to chart.
+				</Text>
+			) : (
+				// Remount on each open so the draft re-seeds from `value` (React rule 5).
+				<ChartModalContent
+					key={String(opened)}
+					store={store}
+					value={value}
+					onAccept={onAccept}
+					onClose={onClose}
+				/>
+			)}
+		</Modal>
+	);
+}
+
+/** One encoding row (x / y / color): column, measurement type, aggregate. */
+function EncodingControls({
+	label,
+	optional,
+	draft,
+	columns,
+	suggestFor,
+	onChange,
+}: {
+	label: string;
+	optional?: boolean;
+	draft: EncodingDraft;
+	columns: { value: string; label: string }[];
+	/** Suggested measurement type for a column (applied when the column changes). */
+	suggestFor: (column: string) => EncodingDraft["type"];
+	onChange: (next: EncodingDraft) => void;
+}) {
+	const id = label.toLowerCase();
+	return (
+		<Group gap="xs" wrap="nowrap" align="flex-end">
+			<Select
+				label={label}
+				placeholder={optional ? "(none)" : "Pick a column"}
+				data={columns}
+				value={draft.field}
+				clearable={optional}
+				searchable
+				size="xs"
+				style={{ flex: 2 }}
+				data-testid={`chart-enc-${id}-field`}
+				onChange={(field) =>
+					onChange({
+						...draft,
+						field,
+						// Default the measurement type to the column's suggestion on pick.
+						type: field ? suggestFor(field) : draft.type,
+					})
+				}
+			/>
+			<Select
+				label="Type"
+				data={FIELD_TYPES.map((t) => ({ value: t, label: t }))}
+				value={draft.type}
+				size="xs"
+				allowDeselect={false}
+				style={{ flex: 1 }}
+				data-testid={`chart-enc-${id}-type`}
+				onChange={(type) =>
+					type && onChange({ ...draft, type: type as EncodingDraft["type"] })
+				}
+			/>
+			<Select
+				label="Aggregate"
+				placeholder="(none)"
+				data={AGGREGATES.map((a) => ({ value: a, label: a }))}
+				value={draft.aggregate ?? null}
+				clearable
+				size="xs"
+				style={{ flex: 1 }}
+				data-testid={`chart-enc-${id}-agg`}
+				onChange={(aggregate) =>
+					onChange({
+						...draft,
+						aggregate: (aggregate as EncodingDraft["aggregate"]) ?? null,
+					})
+				}
+			/>
+		</Group>
+	);
+}
+
+function ChartModalContent({
+	store,
+	value,
+	onAccept,
+	onClose,
+}: {
+	store: ColumnStore;
+	value: ChartConfig | null | undefined;
+	onAccept: (config: ChartConfig | null) => void;
+	onClose: () => void;
+}) {
+	const [draft, setDraft] = useState<ChartDraft>(() => fromConfig(value));
+
+	const options = useMemo(() => columnOptions(store), [store]);
+	const columnData = useMemo(
+		() => options.map((o) => ({ value: o.name, label: o.name })),
+		[options],
+	);
+	const suggestFor = useMemo(() => {
+		const byName = new Map(options.map((o) => [o.name, o.suggestedType]));
+		return (column: string) => byName.get(column) ?? "nominal";
+	}, [options]);
+
+	// Materialize rows once per store (not per keystroke) — the preview re-renders
+	// on config change, but the data is stable until a refetch.
+	const rows = useMemo(() => gridViewToRows(store), [store]);
+
+	// Draft → config → validate, every render: the preview shows only a config that
+	// passes the gate; the message explains an in-progress/invalid mapping.
+	const candidate = draftToConfig(draft);
+	const validation = candidate
+		? validateChartConfig(candidate, store.columns)
+		: null;
+	const validConfig = validation?.ok ? validation.config : null;
+
+	return (
+		<Stack gap="md">
+			{store.truncated && (
+				<Alert
+					color="yellow"
+					icon={<TriangleAlert size={16} />}
+					data-testid="chart-modal-truncated"
+				>
+					Charting the first {store.rowCount.toLocaleString()} rows — the result
+					has more. Aggregate the query (GROUP BY / summary) to chart the whole
+					result.
+				</Alert>
+			)}
+
+			<TextInput
+				label="Title"
+				placeholder="Optional chart title"
+				value={draft.title ?? ""}
+				size="xs"
+				data-testid="chart-title"
+				onChange={(e) =>
+					setDraft((d) => ({ ...d, title: e.currentTarget.value }))
+				}
+			/>
+
+			<Select
+				label="Mark"
+				data={CHART_MARKS.map((m) => ({ value: m, label: m }))}
+				value={draft.mark}
+				allowDeselect={false}
+				size="xs"
+				maw={200}
+				data-testid="chart-mark"
+				onChange={(mark) =>
+					mark && setDraft((d) => ({ ...d, mark: mark as ChartDraft["mark"] }))
+				}
+			/>
+
+			<EncodingControls
+				label="X"
+				draft={draft.x}
+				columns={columnData}
+				suggestFor={suggestFor}
+				onChange={(x) => setDraft((d) => ({ ...d, x }))}
+			/>
+			<EncodingControls
+				label="Y"
+				draft={draft.y}
+				columns={columnData}
+				suggestFor={suggestFor}
+				onChange={(y) => setDraft((d) => ({ ...d, y }))}
+			/>
+			<EncodingControls
+				label="Color"
+				optional
+				draft={draft.color}
+				columns={columnData}
+				suggestFor={suggestFor}
+				onChange={(color) => setDraft((d) => ({ ...d, color }))}
+			/>
+
+			{/* Live preview / empty state. A chart shows only once both axes resolve to
+			    a valid config; otherwise prompt the user. */}
+			{validConfig ? (
+				<ClientOnly
+					fallback={
+						<Center h={300}>
+							<Loader size="sm" />
+						</Center>
+					}
+				>
+					<ChartView config={validConfig} rows={rows} testId="chart-preview" />
+				</ClientOnly>
+			) : (
+				<Center h={200} data-testid="chart-modal-empty">
+					<Text c="dimmed" size="sm" ta="center" maw={420}>
+						{candidate
+							? validation && !validation.ok
+								? validation.error
+								: "Adjust the mapping to preview a chart."
+							: "Pick an X and Y column to preview a chart."}
+					</Text>
+				</Center>
+			)}
+
+			<Group justify="space-between">
+				<Button
+					variant="subtle"
+					color="gray"
+					size="compact-sm"
+					disabled={!value}
+					data-testid="chart-remove"
+					onClick={() => {
+						onAccept(null);
+						onClose();
+					}}
+				>
+					Remove chart
+				</Button>
+				<Group gap="xs">
+					<Button variant="default" size="compact-sm" onClick={onClose}>
+						Cancel
+					</Button>
+					<Button
+						size="compact-sm"
+						disabled={!validConfig}
+						data-testid="chart-accept"
+						onClick={() => {
+							if (validConfig) {
+								onAccept(validConfig);
+								onClose();
+							}
+						}}
+					>
+						Use chart
+					</Button>
+				</Group>
+			</Group>
+		</Stack>
+	);
+}
+
+/** Seed a draft from an existing config (re-open) or the empty state (fresh). */
+function fromConfig(config: ChartConfig | null | undefined): ChartDraft {
+	if (!config) return emptyDraft();
+	const enc = (e: ChartConfig["encoding"]["color"]): EncodingDraft =>
+		e
+			? { field: e.field, type: e.type, aggregate: e.aggregate ?? null }
+			: { field: null, type: "nominal" };
+	return {
+		mark: config.mark,
+		x: enc(config.encoding.x),
+		y: enc(config.encoding.y),
+		color: enc(config.encoding.color),
+		title: config.title,
+	};
+}

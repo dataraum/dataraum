@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
 )
@@ -84,6 +85,15 @@ class Relationship(Base):
     cardinality: Mapped[str | None] = mapped_column(
         String
     )  # 'one-to-one', 'one-to-many', 'many-to-one', 'many-to-many'
+
+    # Composite key (DAT-277): a multi-column FK is N rows sharing one
+    # ``relationship_group_id``, each carrying one component (from_column_id,
+    # to_column_id) pair at its ``key_position`` (0-based). All rows of a group
+    # share the COMPOSITE ``cardinality`` (the fan-out-resolved value). A plain
+    # single-column relationship leaves both NULL. Born from the composite-key
+    # rescue (a fan-trap edge whose true key is composite) and LLM-confirmed.
+    relationship_group_id: Mapped[str | None] = mapped_column(String, index=True)
+    key_position: Mapped[int | None] = mapped_column(Integer)
 
     # Confidence and evidence
     confidence: Mapped[float] = mapped_column(Float, nullable=False)

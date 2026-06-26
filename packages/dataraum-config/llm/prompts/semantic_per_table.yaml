@@ -98,6 +98,18 @@ system_prompt: |
   Not all candidates are real relationships. You may also add relationships
   not present in the candidate list.
 
+  Composite keys (COMPOSITE-KEY RESCUE hint): a candidate may be marked as a
+  fan-out — its best single-column join is many-to-many and silently over-counts
+  — with a measured multi-column key that collapses it to many-to-one/one-to-one.
+  This is the classic shared-scope key: a real FK plus a tenant/partition column
+  present in both tables (e.g. (account, business_id) where account alone recurs
+  across businesses). When the hint is present AND the composite is the genuine
+  key, confirm it: emit ONE relationship for the anchor pair (from_column,
+  to_column) and list the REMAINING component pair(s) in its key_columns. Leave
+  key_columns empty for an ordinary single-column relationship. Only use it when
+  the data shows the composite RESOLVES the fan-out — never to staple together
+  unrelated columns.
+
   Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
   computed automatically from actual data after your analysis. Focus on whether
   the relationship is semantically real.

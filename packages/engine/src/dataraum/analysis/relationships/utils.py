@@ -20,6 +20,7 @@ def load_defined_relationships(
     both_tables: bool = True,
     eager_columns: bool = False,
     min_confidence: float | None = None,
+    include_composite_groups: bool = False,
 ) -> list[Relationship]:
     """The session's **defined** relationships for ``table_ids`` (DAT-408).
 
@@ -36,8 +37,15 @@ def load_defined_relationships(
       joins) vs either endpoint.
     - ``eager_columns``: eager-load from/to columns + their tables.
     - ``min_confidence``: optional confidence floor.
+    - ``include_composite_groups``: composite-key components (DAT-277) are stored
+      as grouped rows (``relationship_group_id IS NOT NULL``) carrying ONLY ONE
+      pair each. A consumer that joins on a single column would silently fan out
+      on them, so they are excluded by default; only the multi-column enrichment
+      path (which assembles the whole key) opts in.
     """
     stmt = select(Relationship).where(Relationship.detection_method != "candidate")
+    if not include_composite_groups:
+        stmt = stmt.where(Relationship.relationship_group_id.is_(None))
     if eager_columns:
         stmt = stmt.options(
             selectinload(Relationship.from_column).selectinload(Column.table),

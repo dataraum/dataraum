@@ -506,6 +506,8 @@ CREATE TABLE relationships (
 	to_column_id VARCHAR NOT NULL, 
 	relationship_type VARCHAR NOT NULL, 
 	cardinality VARCHAR, 
+	relationship_group_id VARCHAR, 
+	key_position INTEGER, 
 	confidence FLOAT NOT NULL, 
 	detection_method VARCHAR, 
 	evidence JSON, 
@@ -532,6 +534,8 @@ CREATE INDEX idx_relationships_to ON relationships (to_table_id);
 CREATE INDEX idx_relationships_to_column ON relationships (to_column_id);
 
 CREATE INDEX idx_relationships_to_table_column ON relationships (to_table_id, to_column_id);
+
+CREATE INDEX ix_relationships_relationship_group_id ON relationships (relationship_group_id);
 
 CREATE INDEX ix_relationships_run_id ON relationships (run_id);
 

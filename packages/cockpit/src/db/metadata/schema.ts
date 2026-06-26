@@ -317,6 +317,8 @@ export const currentRelationships = metadataSchema
 		toColumnId: varchar("to_column_id"),
 		relationshipType: varchar("relationship_type"),
 		cardinality: varchar(),
+		relationshipGroupId: varchar("relationship_group_id"),
+		keyPosition: integer("key_position"),
 		confidence: doublePrecision(),
 		detectionMethod: varchar("detection_method"),
 		evidence: json(),
@@ -326,7 +328,7 @@ export const currentRelationships = metadataSchema
 		detectedAt: timestamp("detected_at"),
 	})
 	.as(
-		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, confidence, detection_method, evidence, is_confirmed, confirmed_at, confirmed_by, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT relationship_id, run_id, from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, cardinality, relationship_group_id, key_position, confidence, detection_method, evidence, is_confirmed, confirmed_at, confirmed_by, detected_at FROM ws_00000000_0000_0000_0000_000000000001.relationships r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSemanticAnnotations = metadataSchema

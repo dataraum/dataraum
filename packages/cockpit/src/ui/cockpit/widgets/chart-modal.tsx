@@ -20,6 +20,7 @@ import {
 	Alert,
 	Button,
 	Center,
+	Divider,
 	Group,
 	Loader,
 	Modal,
@@ -30,7 +31,7 @@ import {
 } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { ClientOnly } from "@tanstack/react-router";
-import { TriangleAlert } from "lucide-react";
+import { Sparkles, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
 	AGGREGATES,
@@ -225,6 +226,11 @@ function ChartModalContent({
 	onClose: () => void;
 }) {
 	const [draft, setDraft] = useState<ChartDraft>(() => fromConfig(value));
+	// Text-to-chart (the primary path): a typed instruction → the forced-tool author
+	// → a config that seeds the draft below (which the user can still tweak/finalize).
+	const [instruction, setInstruction] = useState("");
+	const [authoring, setAuthoring] = useState(false);
+	const [authorError, setAuthorError] = useState<string | null>(null);
 
 	const options = useMemo(() => columnOptions(store), [store]);
 	const columnData = useMemo(
@@ -239,6 +245,43 @@ function ChartModalContent({
 	// Materialize rows once per store (not per keystroke) — the preview re-renders
 	// on config change, but the data is stable until a refetch.
 	const rows = useMemo(() => gridViewToRows(store), [store]);
+
+	// Ask the agent for a chart from the typed instruction (React rule 4: a user-
+	// event mutation in a handler). On success the returned config seeds the draft;
+	// the circuit-breaker error (after ≤3 attempts) is surfaced inline.
+	const authorFromInstruction = async () => {
+		const text = instruction.trim();
+		if (!text) return;
+		setAuthoring(true);
+		setAuthorError(null);
+		try {
+			const res = await fetch("/api/charts/author", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					columns: options.map((o) => ({
+						name: o.name,
+						type: o.suggestedType,
+					})),
+					instruction: text,
+				}),
+			});
+			const data = (await res.json()) as {
+				config?: ChartConfig;
+				error?: string;
+			};
+			if (!res.ok || !data.config) {
+				setAuthorError(data.error ?? "Couldn’t author a chart — try again.");
+				return;
+			}
+			setDraft(fromConfig(data.config));
+		} catch (err) {
+			console.error("[charts] author failed:", err);
+			setAuthorError("Couldn’t reach the chart agent — try again.");
+		} finally {
+			setAuthoring(false);
+		}
+	};
 
 	// Draft → config → validate, every render: the preview shows only a config that
 	// passes the gate; the message explains an in-progress/invalid mapping.
@@ -261,6 +304,42 @@ function ChartModalContent({
 					result.
 				</Alert>
 			)}
+
+			{/* Primary path: describe the chart and let the agent author it. The
+			    result seeds the manual mapping below, which the user can fine-tune. */}
+			<Stack gap={6}>
+				<Group gap="xs" align="flex-end" wrap="nowrap">
+					<TextInput
+						label="Describe the chart"
+						placeholder="e.g. revenue by month as a line, colored by region"
+						value={instruction}
+						size="xs"
+						style={{ flex: 1 }}
+						data-testid="chart-instruction"
+						onChange={(e) => setInstruction(e.currentTarget.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter" && !authoring) authorFromInstruction();
+						}}
+					/>
+					<Button
+						size="compact-sm"
+						loading={authoring}
+						disabled={!instruction.trim()}
+						leftSection={<Sparkles size={14} />}
+						data-testid="chart-generate"
+						onClick={authorFromInstruction}
+					>
+						Generate
+					</Button>
+				</Group>
+				{authorError && (
+					<Text size="xs" c="red" data-testid="chart-author-error">
+						{authorError}
+					</Text>
+				)}
+			</Stack>
+
+			<Divider label="or map columns manually" labelPosition="center" />
 
 			<TextInput
 				label="Title"

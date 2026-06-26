@@ -1,0 +1,8 @@
+services:
+  cockpit:
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      OUTBOUND_PROXY: "http://10.2.1.198:8080"

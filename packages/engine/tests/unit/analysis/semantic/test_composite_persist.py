@@ -87,6 +87,48 @@ def test_composite_persists_as_one_group() -> None:
     assert all(r["evidence"]["composite_key_columns"] == 2 for r in rows)
 
 
+def test_anchor_echoed_in_key_columns_does_not_duplicate() -> None:
+    """The LLM echoing the anchor pair in key_columns must not produce a colliding row.
+
+    Two component rows sharing (run_id, from_column_id, to_column_id, 'llm') would
+    violate the upsert unique key. With only the anchor + an echo, the result is a
+    plain single-column relationship (None) — never a duplicate-component group.
+    """
+    rows = _build_composite_group_rows(
+        rel=_composite_rel([("account", "account_name")]),  # == the anchor pair
+        from_table_id="tt",
+        from_col_id="txn_account",
+        to_table_id="tc",
+        to_col_id="coa_name",
+        column_map=_column_map(),
+        evidence={},
+        run_id="run-A",
+        duckdb_conn=None,
+    )
+    assert rows is None
+
+
+def test_anchor_echo_plus_real_scope_keeps_only_the_scope() -> None:
+    """An echoed anchor alongside a genuine scope column yields a clean 2-row group."""
+    rows = _build_composite_group_rows(
+        rel=_composite_rel([("account", "account_name"), ("business_id", "business_id")]),
+        from_table_id="tt",
+        from_col_id="txn_account",
+        to_table_id="tc",
+        to_col_id="coa_name",
+        column_map=_column_map(),
+        evidence={},
+        run_id="run-A",
+        duckdb_conn=None,
+    )
+    assert rows is not None
+    assert len(rows) == 2
+    assert {(r["from_column_id"], r["to_column_id"]) for r in rows} == {
+        ("txn_account", "coa_name"),
+        ("txn_biz", "coa_biz"),
+    }
+
+
 def test_unresolvable_key_column_falls_back_to_single() -> None:
     """A composite component that doesn't map to a column id → None (persist anchor only)."""
     rows = _build_composite_group_rows(

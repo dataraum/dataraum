@@ -377,7 +377,10 @@ def _augment_candidates_with_composite_rescue(
                 JoinCandidate(
                     column1=jc.get("column1", ""),
                     column2=jc.get("column2", ""),
-                    join_confidence=jc.get("join_confidence", 0.0),
+                    # The DB candidate-dict wire format keys it ``confidence``
+                    # (load_relationship_candidates_for_semantic); tolerate both so
+                    # the anchor (highest-confidence pair) is picked correctly.
+                    join_confidence=jc.get("join_confidence", jc.get("confidence", 0.0)),
                     cardinality=jc.get("cardinality", "unknown"),
                 )
                 for jc in join_cols
@@ -425,6 +428,11 @@ def _build_composite_group_rows(
 
     components: list[tuple[str, str]] = [(from_col_id or "", to_col_id or "")]
     pairs: list[tuple[str, str]] = [(rel.from_column, rel.to_column)]
+    # Component column-id pairs already in the key — the upsert key is
+    # (run_id, from_column_id, to_column_id, detection_method), so a duplicate
+    # component (e.g. the LLM echoes the anchor pair in key_columns) would collide
+    # within this one INSERT batch. Skip dups defensively.
+    seen_component_ids: set[tuple[str, str]] = {components[0]}
     for from_name, to_name in rel.key_columns:
         comp_from = column_map.get((rel.from_table, from_name))
         comp_to = column_map.get((rel.to_table, to_name))
@@ -437,8 +445,14 @@ def _build_composite_group_rows(
                 to_column=to_name,
             )
             return None
+        if (comp_from, comp_to) in seen_component_ids:
+            continue  # LLM repeated the anchor or a prior component — already in the key
+        seen_component_ids.add((comp_from, comp_to))
         components.append((comp_from, comp_to))
         pairs.append((from_name, to_name))
+
+    if len(components) < 2:
+        return None  # only the anchor survived dedup — not actually composite
 
     composite_cardinality = rel.cardinality
     if duckdb_conn is not None:

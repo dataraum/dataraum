@@ -35,17 +35,17 @@ class ColumnSemanticOutput(BaseModel):
         description="Exact column name from the provided schema. Must match exactly."
     )
 
-    semantic_role: Literal[
-        "key", "foreign_key", "measure", "dimension", "timestamp", "attribute"
-    ] = Field(
+    semantic_role: Literal["key", "measure", "dimension", "timestamp", "attribute"] = Field(
         description=(
-            "Structural role of the column: "
+            "Structural role of the column, judged from THIS table alone: "
             "'key' = primary identifier (unique, non-null); "
-            "'foreign_key' = references another table's key column; "
             "'measure' = numeric value for aggregation (sum, avg, count); "
             "'dimension' = categorical attribute for grouping/filtering; "
             "'timestamp' = date or datetime for time-based analysis; "
-            "'attribute' = descriptive field not used for aggregation or grouping"
+            "'attribute' = descriptive field not used for aggregation or grouping. "
+            "Do NOT classify foreign keys — whether a column references another "
+            "table is decided later from the confirmed relationship catalogue, not "
+            "from one table."
         )
     )
 
@@ -65,16 +65,6 @@ class ColumnSemanticOutput(BaseModel):
         )
     )
 
-    business_concept: str | None = Field(
-        default=None,
-        description=(
-            "Standard domain concept from the provided ontology concept list. "
-            "Use the EXACT concept name from the list (e.g., 'revenue', 'accounts_receivable', "
-            "'fiscal_period'). Match based on semantic meaning, not just column name patterns. "
-            "Set to null ONLY if no concept in the list applies to this column."
-        ),
-    )
-
     description: str = Field(
         description=(
             "One sentence describing what this column contains and how it's used. "
@@ -91,20 +81,6 @@ class ColumnSemanticOutput(BaseModel):
             "names like 'vendor_id'. Moderate (0.6-0.8) for recognizable abbreviations "
             "like 'amt'. Low (0.2-0.4) for random or encoded names like 'xq_v7kl' — "
             "even if you can infer meaning from the data values."
-        ),
-    )
-
-    unit_source_column: str | None = Field(
-        default=None,
-        description=(
-            "Column that defines the unit for this measure. "
-            "For same-table references, use just the column name (e.g., 'currency_code'). "
-            "For cross-table references via a confirmed FK relationship, use "
-            "'table_name.column_name' (e.g., 'chart_of_accounts.currency'). "
-            "For measures that are inherently dimensionless (ratios, rates, indices, "
-            "percentages, scores), set to 'dimensionless'. "
-            "Only set a column reference when there is a concrete dimension column — "
-            "never guess a unit."
         ),
     )
 
@@ -132,33 +108,6 @@ class ColumnSemanticOutput(BaseModel):
             "unambiguous domain language (balance, payment, revenue, closing_position). "
             "Moderate (0.6–0.8) when the role implies it but the name is ambiguous. Low "
             "(0.2–0.4) for a weak signal. Set this low whenever you answer 'unsure'."
-        ),
-    )
-
-    derived_formula_hypothesis: str | None = Field(
-        default=None,
-        description=(
-            "If this column reads as COMPUTED from two other columns in the SAME table, "
-            "the arithmetic expression it should obey from the business meaning of the "
-            "names: exactly two column names from this table joined by one of + - * / "
-            "(e.g. 'subtotal + tax_amount', 'quantity * unit_price'). Use EXACT column "
-            "names from the schema; no constants, functions, or columns from other "
-            "tables. This is an INDEPENDENT expectation — state what the name says the "
-            "column SHOULD be, even without verifying it against the values. Set to null "
-            "when the column does not read as derived (keys, dimensions, raw measures) "
-            "or when no two plausible source columns exist in this table."
-        ),
-    )
-
-    derived_formula_confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Confidence (0.0–1.0) in derived_formula_hypothesis: how clearly the column "
-            "and source names communicate the formula. High (0.85–1.0) for explicit "
-            "naming ('total_amount' with 'net_amount' + 'tax_amount'). Low (0.2–0.4) "
-            "when guessing among several plausible formulas. Set 0.0 when the "
-            "hypothesis is null."
         ),
     )
 
@@ -287,13 +236,65 @@ class TableEntityOutput(BaseModel):
     )
 
 
-class TableSynthesisOutput(BaseModel):
-    """Per-table synthesis tool output: table entities + cross-table relationships.
+class ColumnConceptOutput(BaseModel):
+    """Catalogue-grain semantics the table agent authors for ONE column (DAT-637).
 
-    Replaces :class:`SemanticAnalysisOutput` for the post-split per-table phase.
-    Column annotations are produced and persisted by the per-column phase; they
-    are provided to this phase as read-only context and are NOT part of this
-    schema.
+    These need the composed catalogue — the cross-cutting ontology, the confirmed
+    relationships, the joined views — so they are decided here, never by the
+    object-grain per-column agent. Only emit a column that carries at least one of
+    these; columns with none are omitted.
+    """
+
+    table_name: str = Field(description="Exact table name from the provided schema.")
+    column_name: str = Field(description="Exact column name from the provided schema.")
+
+    business_concept: str | None = Field(
+        default=None,
+        description=(
+            "The EXACT ontology concept this column GROUNDS (e.g. 'revenue', "
+            "'accounts_receivable'), or null. Bind ONLY a genuine discriminator the "
+            "agent can filter or aggregate on. NEVER bind a concept to a near-constant "
+            "column (one value ≥90% — a status flag like a 99%-true boolean is not a "
+            "discriminator). When a concept has no genuine column in this catalogue "
+            "(e.g. revenue is SUM of an amount filtered by an account-class value, not "
+            "any single column), leave it null — it grounds via value-sets, honestly."
+        ),
+    )
+    unit_source_column: str | None = Field(
+        default=None,
+        description=(
+            "The column defining this measure's unit: a same-table column name, or "
+            "'table_name.column_name' reachable via a CONFIRMED relationship, or "
+            "'dimensionless' for ratios/rates/indices. Null when there is no concrete "
+            "unit column — never guess."
+        ),
+    )
+    derived_formula_hypothesis: str | None = Field(
+        default=None,
+        description=(
+            "If this column reads as COMPUTED, the arithmetic it should obey: exactly "
+            "two column names joined by one of + - * / . Operands may be in a JOINED "
+            "table reachable via a confirmed relationship (use 'table.column' for a "
+            "joined operand) — the derived-value check runs over the enriched view. "
+            "Null when the column does not read as derived."
+        ),
+    )
+    derived_formula_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence (0.0–1.0) in derived_formula_hypothesis; 0.0 when null.",
+    )
+
+
+class TableSynthesisOutput(BaseModel):
+    """Per-table synthesis tool output: entities, relationships, column concepts.
+
+    The per-table (catalogue-grain) tier. It classifies tables, confirms
+    relationships, AND authors the catalogue-grain per-column semantics
+    (``column_concepts``, DAT-637) that the object-grain per-column agent cannot
+    decide. The object-grain column annotations (role, term, stock/flow claim) are
+    produced by the per-column phase and provided here only as read-only context.
     """
 
     tables: list[TableEntityOutput] = Field(
@@ -306,6 +307,15 @@ class TableSynthesisOutput(BaseModel):
             "Relationships between tables. Evaluate the pre-computed candidates "
             "and include only confirmed relationships. Add any additional "
             "relationships you detect that weren't in the candidates."
+        ),
+    )
+
+    column_concepts: list[ColumnConceptOutput] = Field(
+        default_factory=list,
+        description=(
+            "Catalogue-grain per-column semantics (ontology concept, unit source, "
+            "derived-formula hypothesis). Emit only columns carrying at least one; "
+            "omit the rest."
         ),
     )
 
@@ -406,6 +416,9 @@ class SemanticEnrichmentResult(BaseModel):
     annotations: list[SemanticAnnotation] = Field(default_factory=list)
     entity_detections: list[EntityDetection] = Field(default_factory=list)
     relationships: list[Relationship] = Field(default_factory=list)
+    # Catalogue-grain per-column semantics authored by the table agent (DAT-637),
+    # persisted as ``ColumnConcept`` rows under the catalogue head.
+    column_concepts: list[ColumnConceptOutput] = Field(default_factory=list)
     source: str = "llm"  # 'llm', 'manual', 'override'
 
 
@@ -415,6 +428,7 @@ __all__ = [
     "RelationshipOutput",
     # Per-table synthesis output (DAT-362 Option B)
     "TableEntityOutput",
+    "ColumnConceptOutput",
     "TableSynthesisOutput",
     # Per-column annotation output
     "TableColumnAnnotation",

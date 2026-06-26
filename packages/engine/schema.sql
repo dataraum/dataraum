@@ -351,6 +351,25 @@ CREATE INDEX idx_claim_witness_table ON claim_witnesses (table_id);
 
 CREATE INDEX idx_claim_witness_target ON claim_witnesses (target);
 
+CREATE TABLE column_concepts (
+	concept_id VARCHAR NOT NULL, 
+	column_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	business_concept VARCHAR, 
+	temporal_behavior VARCHAR, 
+	temporal_behavior_contested BOOLEAN, 
+	unit_source_column VARCHAR, 
+	derived_formula_hypothesis VARCHAR, 
+	derived_formula_confidence FLOAT, 
+	annotation_source VARCHAR, 
+	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	annotated_by VARCHAR, 
+	confidence FLOAT, 
+	CONSTRAINT pk_column_concepts PRIMARY KEY (concept_id), 
+	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
+	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
+);
+
 CREATE TABLE derived_columns (
 	derived_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -524,14 +543,8 @@ CREATE TABLE semantic_annotations (
 	entity_type VARCHAR, 
 	business_name VARCHAR, 
 	business_description TEXT, 
-	business_concept VARCHAR, 
-	temporal_behavior VARCHAR, 
 	temporal_behavior_claim VARCHAR, 
 	temporal_behavior_claim_confidence FLOAT, 
-	temporal_behavior_contested BOOLEAN, 
-	derived_formula_hypothesis VARCHAR, 
-	derived_formula_confidence FLOAT, 
-	unit_source_column VARCHAR, 
 	null_tokens JSON, 
 	annotation_source VARCHAR, 
 	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 

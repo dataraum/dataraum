@@ -5,8 +5,35 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.storage import Column, Table
+
+
+def load_column_concepts(
+    session: Session,
+    table_ids: list[str],
+    catalogue_run_id: str,
+) -> dict[str, ColumnConcept]:
+    """Catalogue-grain per-column semantics for ``table_ids`` at the catalogue head run.
+
+    The ONLY reader of :class:`ColumnConcept` (DAT-637). ``catalogue_run_id`` is
+    **mandatory** — the catalogue-grain fields (business_concept, ontology
+    temporal_behavior, unit_source_column, derived_formula hypothesis) live only
+    under the begin_session catalogue head, so a caller MUST hold that run to read
+    them. Object-grain code (add_source ``detect``) has no catalogue run and so
+    cannot reach these by construction — the cross-grain read is unexpressible.
+
+    Returns ``{column_id: ColumnConcept}`` for the run; columns the table agent did
+    not bind are simply absent.
+    """
+    if not table_ids:
+        return {}
+    stmt = (
+        select(ColumnConcept)
+        .join(Column, ColumnConcept.column_id == Column.column_id)
+        .where(Column.table_id.in_(table_ids), ColumnConcept.run_id == catalogue_run_id)
+    )
+    return {cc.column_id: cc for cc in session.execute(stmt).scalars()}
 
 
 def load_table_mappings(
@@ -55,27 +82,29 @@ def load_persisted_annotations(
 ) -> list[dict[str, Any]]:
     """Load persisted per-column semantic annotations for the given tables.
 
-    The per-table synthesis phase (DAT-362) reads these as read-only context —
-    they are the post-teach column annotations produced + persisted by the
-    per-column phase. Returns one dict per annotated column with the fields the
-    per-table prompt needs to reason about table classification + relationships.
+    The per-table synthesis phase reads these as read-only context — the
+    OBJECT-grain column annotations the per-column agent produced (role, entity
+    label, term, the stock/flow claim). It does NOT include ``business_concept``:
+    that is catalogue-grain and AUTHORED by the table agent itself (DAT-637), so
+    feeding it back would be the dual-ownership we removed. Returns one dict per
+    annotated column, ordered by table then column.
 
     Args:
         session: Database session.
         table_ids: Table IDs whose columns' annotations to load.
 
     Returns:
-        List of ``{table_name, column_name, semantic_role, business_concept,
-        entity_type, confidence}`` dicts, ordered by table then column.
+        List of ``{table_name, column_name, semantic_role, entity_type,
+        confidence, temporal_behavior_claim}`` dicts, ordered by table then column.
     """
     stmt = (
         select(
             Table.table_name,
             Column.column_name,
             SemanticAnnotation.semantic_role,
-            SemanticAnnotation.business_concept,
             SemanticAnnotation.entity_type,
             SemanticAnnotation.confidence,
+            SemanticAnnotation.temporal_behavior_claim,
         )
         .join(Column, SemanticAnnotation.column_id == Column.column_id)
         .join(Table, Column.table_id == Table.table_id)
@@ -88,9 +117,9 @@ def load_persisted_annotations(
             "table_name": table_name,
             "column_name": column_name,
             "semantic_role": semantic_role,
-            "business_concept": business_concept,
             "entity_type": entity_type,
             "confidence": confidence,
+            "temporal_behavior_claim": temporal_behavior_claim,
         }
-        for table_name, column_name, semantic_role, business_concept, entity_type, confidence in rows
+        for table_name, column_name, semantic_role, entity_type, confidence, temporal_behavior_claim in rows
     ]

@@ -31,9 +31,9 @@ import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
+	currentColumnConcepts,
 	currentDimensionHierarchies,
 	currentRelationships,
-	currentSemanticAnnotations,
 	currentSliceDefinitions,
 	currentTableEntities,
 	sources,
@@ -271,15 +271,18 @@ export async function buildSchemaBlock(): Promise<string> {
 		.innerJoin(sources, eq(sources.sourceId, tables.sourceId))
 		.where(and(isNull(sources.archivedAt), eq(tables.layer, TYPED_LAYER)));
 
+	// Catalogue-grain concepts live on currentColumnConcepts (DAT-637), authored by
+	// the table agent and sealed under the catalogue head — no longer on the
+	// object-grain currentSemanticAnnotations.
 	const conceptRows = await metadataDb
 		.select({
-			columnId: currentSemanticAnnotations.columnId,
-			businessConcept: currentSemanticAnnotations.businessConcept,
-			temporalBehavior: currentSemanticAnnotations.temporalBehavior,
+			columnId: currentColumnConcepts.columnId,
+			businessConcept: currentColumnConcepts.businessConcept,
+			temporalBehavior: currentColumnConcepts.temporalBehavior,
 			temporalBehaviorContested:
-				currentSemanticAnnotations.temporalBehaviorContested,
+				currentColumnConcepts.temporalBehaviorContested,
 		})
-		.from(currentSemanticAnnotations);
+		.from(currentColumnConcepts);
 
 	return formatSchema(
 		typedTables,

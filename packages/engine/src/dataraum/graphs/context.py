@@ -357,6 +357,7 @@ def build_execution_context(
     slice_value: str | None = None,
     vertical: str | None = None,
     om_run_id: str | None = None,
+    catalogue_run_id: str | None = None,
 ) -> GraphExecutionContext:
     """Build execution context from all analysis modules.
 
@@ -378,6 +379,11 @@ def build_execution_context(
         om_run_id: Explicit operating_model run for the cycle/validation/health
             reads (the in-run metrics phase passes its current run). Omitted ⇒ the
             promoted operating_model catalog head.
+        catalogue_run_id: The begin_session catalogue head run (DAT-637) — scopes
+            the catalogue-grain ``ColumnConcept`` reads (business_concept, ontology
+            temporal_behavior, unit source). The metrics phase passes
+            ``base_runs.relationship_run_id``. None ⇒ no concepts (object-grain
+            column metadata still loads).
 
     Returns:
         GraphExecutionContext with all relevant metadata
@@ -458,13 +464,23 @@ def build_execution_context(
             if _is_current(metrics):
                 stat_quality[metrics.column_id] = metrics
 
-    # 5. Load semantic annotations
+    # 5. Load semantic annotations — OBJECT-grain (role, entity label, term),
+    # scoped to each table's add_source generation head.
     semantic: dict[str, SemanticAnnotation] = {}
     if column_ids:
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
         for ann in session.execute(sem_stmt).scalars():
             if _is_current(ann):
                 semantic[ann.column_id] = ann
+
+    # 5b. Load catalogue-grain concepts (DAT-637) from the begin_session catalogue
+    # head — a DIFFERENT run from the add_source column metadata above, so it is
+    # NOT scoped by ``_is_current`` (the generation head); it has its own run.
+    from dataraum.analysis.semantic.utils import load_column_concepts
+
+    concepts = (
+        load_column_concepts(session, table_ids, catalogue_run_id) if catalogue_run_id else {}
+    )
 
     # 6. Load temporal profiles
     temporal: dict[str, TemporalColumnProfile] = {}
@@ -772,8 +788,8 @@ def build_execution_context(
         except Exception as e:
             logger.warning("cycle_health_failed", error=str(e))
 
-    # 14. Load field mappings
-    field_mappings = load_semantic_mappings(session, table_ids)
+    # 14. Load field mappings (catalogue-grain concept → column, DAT-637)
+    field_mappings = load_semantic_mappings(session, table_ids, catalogue_run_id=catalogue_run_id)
 
     # 14b. Load the vertical's concept vocabulary (DAT-616). On long-format data the
     # discriminating measure (`amount`) carries no business_concept, so field_mappings
@@ -892,6 +908,7 @@ def build_execution_context(
             stat_prof = stat_profiles.get(col.column_id)
             quality = stat_quality.get(col.column_id)
             sem_ann = semantic.get(col.column_id)
+            concept = concepts.get(col.column_id)
             temp_profile = temporal.get(col.column_id)
             type_dec = type_decisions.get(col.column_id)
 
@@ -966,11 +983,11 @@ def build_execution_context(
                     data_type=type_dec.decided_type if type_dec else None,
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
-                    business_concept=sem_ann.business_concept if sem_ann else None,
-                    temporal_behavior=sem_ann.temporal_behavior if sem_ann else None,
+                    business_concept=concept.business_concept if concept else None,
+                    temporal_behavior=concept.temporal_behavior if concept else None,
                     business_name=sem_ann.business_name if sem_ann else None,
                     business_description=sem_ann.business_description if sem_ann else None,
-                    unit_source_column=sem_ann.unit_source_column if sem_ann else None,
+                    unit_source_column=concept.unit_source_column if concept else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,

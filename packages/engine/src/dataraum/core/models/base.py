@@ -68,7 +68,9 @@ class SemanticRole(StrEnum):
     MEASURE = "measure"  # Numeric value to aggregate
     DIMENSION = "dimension"  # Categorical grouping
     KEY = "key"  # Primary/business key
-    FOREIGN_KEY = "foreign_key"  # Reference to another table
+    # No FOREIGN_KEY (DAT-637): FK-ness needs the cross-table view the per-column
+    # agent lacks. It is owned by the confirmed ``Relationship`` catalogue, never a
+    # role the object-grain column agent guesses.
     ATTRIBUTE = "attribute"  # Descriptive non-key column
     TIMESTAMP = "timestamp"  # Time dimension
     UNKNOWN = "unknown"

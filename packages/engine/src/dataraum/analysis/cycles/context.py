@@ -30,6 +30,7 @@ from dataraum.analysis.relationships.graph_topology import (
 )
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
@@ -92,6 +93,13 @@ def build_cycle_detection_context(
             column_by_id[c.column_id] = c
 
     annotations = _load_pinned_annotations(session, tables, base_runs.semantic_runs)
+    # Catalogue-grain concepts (DAT-637) live under the catalogue head, scoped by
+    # the same pinned begin_session run the relationship reads use.
+    concepts = (
+        load_column_concepts(session, [t.table_id for t in tables], base_runs.relationship_run_id)
+        if base_runs.relationship_run_id
+        else {}
+    )
 
     # Row counts from DuckDB
     row_counts: dict[str, int | None] = {}
@@ -116,10 +124,12 @@ def build_cycle_detection_context(
             if ann is not None:
                 col_info["semantic_role"] = ann.semantic_role
                 col_info["entity_type"] = ann.entity_type
-                col_info["business_concept"] = ann.business_concept
-                col_info["temporal_behavior"] = ann.temporal_behavior
                 col_info["business_name"] = ann.business_name
                 col_info["business_description"] = ann.business_description
+            concept = concepts.get(c.column_id)
+            if concept is not None:
+                col_info["business_concept"] = concept.business_concept
+                col_info["temporal_behavior"] = concept.temporal_behavior
             columns.append(col_info)
 
         table_info.append(

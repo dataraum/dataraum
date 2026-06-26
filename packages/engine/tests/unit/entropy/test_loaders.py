@@ -149,6 +149,9 @@ class TestLoadSemantic:
         assert "unit_source_column" not in result
 
     def test_includes_unit_source_column(self):
+        # unit_source_column is catalogue-grain (DAT-637): read from ColumnConcept
+        # at the run, not SemanticAnnotation — the loader needs a run_id and a
+        # second (ColumnConcept) query result.
         session = MagicMock()
         sa = MagicMock()
         sa.semantic_role = "measure"
@@ -156,12 +159,22 @@ class TestLoadSemantic:
         sa.business_name = "Amount"
         sa.business_description = ""
         sa.confidence = 0.7
-        sa.business_concept = None
-        sa.unit_source_column = "currency"
+        sa.temporal_behavior_claim = None
+        sa.temporal_behavior_claim_confidence = None
+        cc = MagicMock()
+        cc.business_concept = None
+        cc.unit_source_column = "currency"
+        cc.temporal_behavior = None
+        cc.derived_formula_hypothesis = None
+        cc.derived_formula_confidence = None
 
-        session.execute.return_value.scalars.return_value.first.return_value = sa
+        sa_result = MagicMock()
+        sa_result.scalar_one_or_none.return_value = sa
+        cc_result = MagicMock()
+        cc_result.scalar_one_or_none.return_value = cc
+        session.execute.side_effect = [sa_result, cc_result]
 
-        result = load_semantic(session, "col1")
+        result = load_semantic(session, "col1", run_id="r1")
         assert result is not None
         assert result["unit_source_column"] == "currency"
 

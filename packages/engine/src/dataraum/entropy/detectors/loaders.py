@@ -318,7 +318,7 @@ def load_semantic(
     annotation, read the run the orchestrator pinned for the column's table at
     ``semantic_per_column``; no pin → ``None`` as before.
     """
-    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+    from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 
     sa_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id == column_id)
     if run_id is not None:
@@ -340,28 +340,46 @@ def load_semantic(
     if not sa:
         return None
 
+    # OBJECT-grain fields from the per-column annotation (DAT-637).
     semantic_dict: dict[str, Any] = {
         "semantic_role": sa.semantic_role,
         "entity_type": sa.entity_type,
         "business_name": sa.business_name,
         "business_description": sa.business_description,
         "confidence": sa.confidence,
-        "business_concept": sa.business_concept,
     }
-    if sa.unit_source_column:
-        semantic_dict["unit_source_column"] = sa.unit_source_column
-    if sa.temporal_behavior:
-        semantic_dict["temporal_behavior"] = sa.temporal_behavior
-    # The LLM stock/flow witness (DAT-445), read alongside the ontology prior.
+    # The LLM stock/flow witness (DAT-445), an object-grain single-column read.
     if sa.temporal_behavior_claim:
         semantic_dict["temporal_behavior_claim"] = sa.temporal_behavior_claim
     if sa.temporal_behavior_claim_confidence is not None:
         semantic_dict["temporal_behavior_claim_confidence"] = sa.temporal_behavior_claim_confidence
-    # The LLM formula-hypothesis witness (derived_value second witness, ADR-0009).
-    if sa.derived_formula_hypothesis:
-        semantic_dict["derived_formula_hypothesis"] = sa.derived_formula_hypothesis
-    if sa.derived_formula_confidence is not None:
-        semantic_dict["derived_formula_confidence"] = sa.derived_formula_confidence
+
+    # CATALOGUE-grain fields from ColumnConcept (DAT-637): authored by the table
+    # agent under the begin_session run. At session_detect ``run_id`` IS that run,
+    # so they are present; at add_source detect no ColumnConcept exists under the
+    # add_source run, so the catalogue fields are simply absent — the grain
+    # boundary the architecture enforces, not a lookup miss to paper over.
+    cc = None
+    if run_id is not None:
+        cc = session.execute(
+            select(ColumnConcept).where(
+                ColumnConcept.column_id == column_id,
+                ColumnConcept.run_id == run_id,
+            )
+        ).scalar_one_or_none()
+    if cc is not None:
+        semantic_dict["business_concept"] = cc.business_concept
+        if cc.unit_source_column:
+            semantic_dict["unit_source_column"] = cc.unit_source_column
+        if cc.temporal_behavior:
+            semantic_dict["temporal_behavior"] = cc.temporal_behavior
+        # The LLM formula-hypothesis witness (derived_value second witness, ADR-0009).
+        if cc.derived_formula_hypothesis:
+            semantic_dict["derived_formula_hypothesis"] = cc.derived_formula_hypothesis
+        if cc.derived_formula_confidence is not None:
+            semantic_dict["derived_formula_confidence"] = cc.derived_formula_confidence
+    else:
+        semantic_dict["business_concept"] = None
     return semantic_dict
 
 

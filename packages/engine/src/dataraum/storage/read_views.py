@@ -73,6 +73,11 @@ _TABLE_GRAIN: tuple[str, ...] = (
 _CATALOG_GRAIN: dict[str, str] = {
     "relationships": "catalog",
     "table_entities": "catalog",
+    # Catalogue-grain per-column semantics authored by the table agent (DAT-637):
+    # carries column_id, but sealed under the begin_session (catalog, "catalog")
+    # head like the other begin_session catalogue tables — NOT the per-table
+    # generation head the object-grain semantic_annotations resolve through.
+    "column_concepts": "catalog",
     "enriched_views": "catalog",
     "slice_definitions": "catalog",
     "dimension_hierarchies": "catalog",  # begin_session dimension_hierarchies (DAT-537)

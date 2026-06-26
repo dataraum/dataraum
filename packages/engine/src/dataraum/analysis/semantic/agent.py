@@ -283,6 +283,7 @@ class SemanticAgent(LLMFeature):
                 annotations=[],
                 entity_detections=entity_detections,
                 relationships=relationships,
+                column_concepts=synthesis.column_concepts,
                 source="llm",
             )
         )
@@ -599,6 +600,16 @@ class SemanticAgent(LLMFeature):
             # Add string stats if available
             if profile.string_stats:
                 col_data["avg_length"] = round(profile.string_stats.avg_length, 1)
+
+            # Near-constant flag (DAT-637): a column whose single most-frequent
+            # value covers ≥90% of rows is a status flag, NOT a discriminator — so
+            # the table agent must never bind a concept to it. Surfaced explicitly
+            # (the same 0.9 fraction the graph-context feed flags it at) rather than
+            # left for the agent to infer from samples.
+            if profile.top_values and profile.total_count:
+                dominant = max((tv.count for tv in profile.top_values), default=0)
+                if dominant / profile.total_count > 0.9:
+                    col_data["near_constant"] = True
 
             tables_data[table_name]["columns"].append(col_data)
 

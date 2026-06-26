@@ -24,6 +24,9 @@ from dataraum.analysis.relationships.evaluator import (
 )
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
+    ColumnConcept as ConceptModel,
+)
+from dataraum.analysis.semantic.db_models import (
     SemanticAnnotation as AnnotationModel,
 )
 from dataraum.analysis.semantic.db_models import (
@@ -31,6 +34,7 @@ from dataraum.analysis.semantic.db_models import (
 )
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
+    ColumnConceptOutput,
     SemanticEnrichmentResult,
 )
 from dataraum.analysis.semantic.models import (
@@ -149,29 +153,26 @@ def persist_column_annotations(
     table_ids: list[str],
     *,
     annotated_by: str,
-    ontology_def: Any = None,
     run_id: str | None = None,
 ) -> int:
-    """Persist per-column annotations as ``SemanticAnnotation`` rows (DAT-362).
+    """Persist the OBJECT-grain per-column annotations as ``SemanticAnnotation`` rows.
 
-    The per-column phase's authoritative output. Maps each annotated column to a
-    DB row, backfilling ``temporal_behavior`` from the ontology concept (same as
-    the legacy monolithic path did).
+    The per-column phase's authoritative output — single-table-knowable fields
+    only (role, entity label, term, the stock/flow claim). Catalogue-grain
+    semantics (business_concept, ontology temporal_behavior, unit source, derived
+    formula) are NOT written here: the table agent authors them onto
+    ``ColumnConcept`` under the catalogue head (DAT-637).
 
     Args:
         session: Database session.
         column_output: Per-column tool output (tables -> columns).
         table_ids: Tables the annotations belong to (for column-id resolution).
         annotated_by: Model identifier that produced the annotations.
-        ontology_def: Loaded ontology, for ``temporal_behavior`` backfill.
 
     Returns:
         Number of annotation rows persisted.
     """
     column_map = load_column_mappings(session, table_ids)
-    concept_temporal = (
-        {c.name: c.temporal_behavior for c in ontology_def.concepts} if ontology_def else {}
-    )
 
     rows: list[dict[str, Any]] = []
     for table in column_output.tables:
@@ -179,7 +180,12 @@ def persist_column_annotations(
             column_id = column_map.get((table.table_name, col.column_name))
             if not column_id:
                 continue
-            # PK omitted so the model's Python-side default applies.
+            # PK omitted so the model's Python-side default applies. OBJECT-grain
+            # only (DAT-637): business_concept, ontology temporal_behavior,
+            # unit_source_column, and the derived_formula hypothesis are
+            # catalogue-grain — authored by the table agent onto ``ColumnConcept``,
+            # never here. The stock/flow CLAIM stays (an independent single-column
+            # read).
             rows.append(
                 {
                     "column_id": column_id,
@@ -188,20 +194,8 @@ def persist_column_annotations(
                     "entity_type": col.entity_type,
                     "business_name": col.business_term,
                     "business_description": col.description,
-                    "business_concept": col.business_concept,
-                    "temporal_behavior": concept_temporal.get(col.business_concept)
-                    if col.business_concept
-                    else None,
-                    # Independent LLM stock/flow read (DAT-445) — the second witness,
-                    # stored ALONGSIDE the ontology temporal_behavior, never replacing it.
                     "temporal_behavior_claim": col.temporal_behavior_claim,
                     "temporal_behavior_claim_confidence": col.temporal_behavior_claim_confidence,
-                    # Independent LLM formula hypothesis (derived_value second witness,
-                    # ADR-0009) — graded against the data-discovered formula at detect.
-                    "derived_formula_hypothesis": (col.derived_formula_hypothesis or "").strip()
-                    or None,
-                    "derived_formula_confidence": col.derived_formula_confidence,
-                    "unit_source_column": col.unit_source_column,
                     "annotation_source": DecisionSource.LLM.value,
                     "annotated_by": annotated_by,
                     "confidence": col.confidence,
@@ -212,6 +206,57 @@ def persist_column_annotations(
     # (same run_id) updates the annotation in place instead of duplicating it —
     # which would make the head-resolved loaders' scalar_one_or_none() raise.
     upsert(session, AnnotationModel, rows, index_elements=["column_id", "run_id"])
+    return len(rows)
+
+
+def persist_column_concepts(
+    session: Session,
+    column_concepts: list[ColumnConceptOutput],
+    table_ids: list[str],
+    *,
+    annotated_by: str,
+    ontology_def: Any = None,
+    run_id: str,
+) -> int:
+    """Persist the table agent's catalogue-grain per-column semantics (DAT-637).
+
+    Writes ``ColumnConcept`` rows under the begin_session (catalogue head) run.
+    ``temporal_behavior`` is the ontology concept's stock/flow, derived from the
+    authored ``business_concept`` exactly as the legacy per-column path did — but
+    now at catalogue grain, where the concept is authoritative. Run-scoped upsert
+    on ``(column_id, run_id)``; a column the table agent did not bind this run has
+    no row (absent = no concept), and run-scoped reads never see a prior run's.
+
+    Returns:
+        Number of concept rows persisted.
+    """
+    column_map = load_column_mappings(session, table_ids)
+    concept_temporal = (
+        {c.name: c.temporal_behavior for c in ontology_def.concepts} if ontology_def else {}
+    )
+
+    rows: list[dict[str, Any]] = []
+    for cc in column_concepts:
+        column_id = column_map.get((cc.table_name, cc.column_name))
+        if not column_id:
+            continue
+        rows.append(
+            {
+                "column_id": column_id,
+                "run_id": run_id,
+                "business_concept": cc.business_concept,
+                "temporal_behavior": concept_temporal.get(cc.business_concept)
+                if cc.business_concept
+                else None,
+                "unit_source_column": cc.unit_source_column,
+                "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
+                "derived_formula_confidence": cc.derived_formula_confidence,
+                "annotation_source": DecisionSource.LLM.value,
+                "annotated_by": annotated_by,
+            }
+        )
+
+    upsert(session, ConceptModel, rows, index_elements=["column_id", "run_id"])
     return len(rows)
 
 
@@ -247,7 +292,6 @@ def ground_columns(
         ``Result.fail`` with the same messages the phase surfaced before.
     """
     from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
-    from dataraum.analysis.semantic.ontology import OntologyLoader
     from dataraum.graphs.config import get_metric_definitions
     from dataraum.graphs.loader import GraphLoader, GraphLoadError
 
@@ -285,7 +329,6 @@ def ground_columns(
     if not annotation_result.success or not annotation_result.value:
         return Result.fail(f"Column annotation failed: {annotation_result.error}")
 
-    ontology_def = OntologyLoader().load(ontology)
     model_name = provider.get_model_for_tier(col_config.model_tier)
 
     count = persist_column_annotations(
@@ -293,7 +336,6 @@ def ground_columns(
         annotation_result.value,
         table_ids,
         annotated_by=model_name,
-        ontology_def=ontology_def,
         run_id=run_id,
     )
     return Result.ok(count)
@@ -460,5 +502,22 @@ def synthesize_and_store_tables(
             "detection_method",
         ],
     )
+
+    # Catalogue-grain per-column semantics (DAT-637): the table agent is the sole
+    # author. Sealed under THIS (begin_session catalogue head) run. ``run_id`` is
+    # always stamped by the workflow before the phase; guard only for the
+    # type-checker / direct test callers.
+    if run_id is not None:
+        annotated_by = agent.provider.get_model_for_tier(
+            agent.config.features.semantic_analysis.model_tier
+        )
+        persist_column_concepts(
+            session,
+            enrichment.column_concepts,
+            table_ids,
+            annotated_by=annotated_by,
+            ontology_def=agent._ontology_loader.load(ontology),
+            run_id=run_id,
+        )
 
     return Result.ok(enrichment)

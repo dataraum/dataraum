@@ -32,15 +32,42 @@ system_prompt: |
     non-grain column, and the grain may be a surrogate row key that identifies
     nothing. Emit each with a one-sentence note.
   - Confirm which relationships between tables are real
+  - Author the CATALOGUE-GRAIN per-column semantics (column_concepts): which
+    columns ground an ontology concept, each measure's unit source, and any
+    cross-table derived-formula hypothesis. These need the whole composed
+    catalogue (the ontology, the confirmed relationships, the joined tables), so
+    only you can decide them — the per-column phase could not.
   </role>
 
-  <column_annotations_are_decided>
-  Per-column annotations (roles, business concepts, confidence) have ALREADY been
-  produced and persisted by an earlier phase, and may have been corrected by a
-  human via teach. They are provided to you as READ-ONLY context. Do NOT re-annotate
-  or second-guess individual columns — use them to reason about what each table is
-  and how tables relate. Your output contains tables and relationships only.
-  </column_annotations_are_decided>
+  <grain_split>
+  Per-column OBJECT-grain annotations (structural role, entity label, business
+  term, the stock/flow CLAIM, confidence) were decided by an earlier per-column
+  phase from each table alone, and may have been corrected by a human via teach.
+  They are READ-ONLY context — do NOT re-emit them. But the CATALOGUE-grain
+  semantics below are YOURS to author, because they are properties of the composed
+  catalogue, not of any single table:
+  </grain_split>
+
+  <column_concepts>
+  Emit a column_concepts entry ONLY for columns that carry at least one of these;
+  omit every other column.
+
+  - business_concept: the EXACT ontology concept a column GROUNDS (e.g. 'revenue',
+    'accounts_receivable'). Bind ONLY a genuine discriminator the analyst can
+    filter or aggregate on. NEVER bind a concept to a near-constant column —
+    flagged `near_constant` in the schema (its single most-frequent value covers
+    ≥90% of rows: a status flag like a 99%-true boolean is NOT a discriminator).
+    When a concept has no genuine column
+    in this catalogue (e.g. revenue is SUM of an amount filtered by an
+    account-class value, not any single column), leave business_concept null — it
+    grounds via value-sets, honestly. A wrong binding is worse than none.
+  - unit_source_column: the column defining a measure's unit — same-table name, or
+    'table.column' reachable via a CONFIRMED relationship, or 'dimensionless'.
+  - derived_formula_hypothesis: if a column reads as computed, the arithmetic it
+    should obey (two column names joined by + - * /). Operands MAY live in a JOINED
+    table reachable via a confirmed relationship (use 'table.column') — the
+    derived-value check runs over the enriched fact×dimension view.
+  </column_concepts>
 
   <relationship_evaluation>
   Evaluate the pre-computed relationship candidates and determine:
@@ -80,8 +107,10 @@ system_prompt: |
 
 user_prompt: |
   <task>
-  Classify each table below and confirm the relationships between them. Do not
-  annotate individual columns — those are already decided (shown for context).
+  Classify each table below, confirm the relationships between them, and author
+  the catalogue-grain column_concepts (ontology concept, unit source, derived
+  formula) for the columns that carry them. The OBJECT-grain per-column
+  annotations are shown for context only — do not re-emit them.
   </task>
 
   <schema>

@@ -79,7 +79,11 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
     are left untouched, preserving the ontology backfill. Idempotent on retry (same
     run_id → same UPDATE). Returns the number of annotations updated.
     """
-    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+    # temporal_behavior + contested are catalogue-grain (DAT-637): on ColumnConcept,
+    # authored by the table agent and resolved here at session_detect (the run that
+    # holds ColumnConcept). At add_source detect no ColumnConcept exists under the
+    # run, so the UPDATE matches nothing — a harmless no-op, the correct grain.
+    from dataraum.analysis.semantic.db_models import ColumnConcept
 
     records = session.execute(
         select(EntropyObjectRecord).where(
@@ -100,10 +104,10 @@ def resolve_temporal_behavior(session: Session, run_id: str | None) -> int:
         if resolved is None:
             continue  # total ignorance — leave the ontology backfill in place
         result: CursorResult[Any] = session.execute(  # type: ignore[assignment]
-            update(SemanticAnnotation)
+            update(ColumnConcept)
             .where(
-                SemanticAnnotation.column_id == record.column_id,
-                SemanticAnnotation.run_id == run_id,
+                ColumnConcept.column_id == record.column_id,
+                ColumnConcept.run_id == run_id,
             )
             .values(
                 temporal_behavior=resolved,

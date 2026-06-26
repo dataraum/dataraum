@@ -62,6 +62,26 @@ export const currentClaimWitnesses = metadataSchema
 		sql`SELECT claim_witness_id, table_id, column_id, run_id, target, claim_field, witness_id, distribution, reliability, detector_id, computed_at, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text AND h.target::text = ('table:'::text || r.table_id::text))) AS via_table_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_catalog_head, (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text AND h.target::text = 'catalog'::text)) AS via_operating_model_head FROM ws_00000000_0000_0000_0000_000000000001.claim_witnesses r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.run_id::text = r.run_id::text AND (h.stage::text = 'generation'::text AND h.target::text = ('table:'::text || r.table_id::text) OR h.stage::text = 'catalog'::text AND h.target::text = 'catalog'::text OR h.stage::text = 'operating_model'::text AND h.target::text = 'catalog'::text)))`,
 	);
 
+export const currentColumnConcepts = metadataSchema
+	.view("current_column_concepts", {
+		conceptId: varchar("concept_id"),
+		columnId: varchar("column_id"),
+		runId: varchar("run_id"),
+		businessConcept: varchar("business_concept"),
+		temporalBehavior: varchar("temporal_behavior"),
+		temporalBehaviorContested: boolean("temporal_behavior_contested"),
+		unitSourceColumn: varchar("unit_source_column"),
+		derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
+		derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
+		annotationSource: varchar("annotation_source"),
+		annotatedAt: timestamp("annotated_at"),
+		annotatedBy: varchar("annotated_by"),
+		confidence: doublePrecision(),
+	})
+	.as(
+		sql`SELECT concept_id, column_id, run_id, business_concept, temporal_behavior, temporal_behavior_contested, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.column_concepts r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	);
+
 export const currentColumnEligibility = metadataSchema
 	.view("current_column_eligibility", {
 		eligibilityId: varchar("eligibility_id", { length: 36 }),
@@ -318,16 +338,10 @@ export const currentSemanticAnnotations = metadataSchema
 		entityType: varchar("entity_type"),
 		businessName: varchar("business_name"),
 		businessDescription: text("business_description"),
-		businessConcept: varchar("business_concept"),
-		temporalBehavior: varchar("temporal_behavior"),
 		temporalBehaviorClaim: varchar("temporal_behavior_claim"),
 		temporalBehaviorClaimConfidence: doublePrecision(
 			"temporal_behavior_claim_confidence",
 		),
-		temporalBehaviorContested: boolean("temporal_behavior_contested"),
-		derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
-		derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
-		unitSourceColumn: varchar("unit_source_column"),
 		nullTokens: json("null_tokens"),
 		annotationSource: varchar("annotation_source"),
 		annotatedAt: timestamp("annotated_at"),
@@ -335,7 +349,7 @@ export const currentSemanticAnnotations = metadataSchema
 		confidence: doublePrecision(),
 	})
 	.as(
-		sql`SELECT annotation_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, business_concept, temporal_behavior, temporal_behavior_claim, temporal_behavior_claim_confidence, temporal_behavior_contested, derived_formula_hypothesis, derived_formula_confidence, unit_source_column, null_tokens, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
+		sql`SELECT annotation_id, column_id, run_id, semantic_role, entity_type, business_name, business_description, temporal_behavior_claim, temporal_behavior_claim_confidence, null_tokens, annotation_source, annotated_at, annotated_by, confidence FROM ws_00000000_0000_0000_0000_000000000001.semantic_annotations r WHERE (EXISTS ( SELECT 1 FROM ws_00000000_0000_0000_0000_000000000001.columns c JOIN ws_00000000_0000_0000_0000_000000000001.metadata_snapshot_head h ON h.target::text = ('table:'::text || c.table_id::text) WHERE c.column_id::text = r.column_id::text AND h.stage::text = 'generation'::text AND h.run_id::text = r.run_id::text))`,
 	);
 
 export const currentSliceDefinitions = metadataSchema

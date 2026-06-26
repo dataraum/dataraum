@@ -28,7 +28,7 @@ from dataraum.analysis.drivers.processor import (
     resolve_target_type,
 )
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
@@ -91,9 +91,7 @@ def _seed(
         )
     )
     session.add(
-        SemanticAnnotation(
-            column_id=col_id["measure"], run_id=RUN, temporal_behavior=temporal_behavior
-        )
+        ColumnConcept(column_id=col_id["measure"], run_id=RUN, temporal_behavior=temporal_behavior)
     )
     session.add(
         EnrichedView(

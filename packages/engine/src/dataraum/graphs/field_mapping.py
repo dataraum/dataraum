@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -71,71 +71,65 @@ def load_semantic_mappings(
     session: Session,
     table_ids: list[str],
     *,
-    semantic_runs: dict[str, str] | None = None,
+    catalogue_run_id: str | None = None,
 ) -> FieldMappings:
-    """Load business_concept → column mappings from semantic annotations.
+    """Load business_concept → column mappings from ``ColumnConcept`` (DAT-637).
 
-    Queries the semantic_annotations table for all columns in the specified
-    tables that have a business_concept set, and groups them by concept.
+    ``business_concept`` is catalogue-grain: authored by the table agent and
+    sealed under the begin_session catalogue head. ``catalogue_run_id`` scopes the
+    read to that single run (fail-closed: ``None`` ⇒ no mappings, never a cross-run
+    read). The object-grain role/entity_type garnish is outer-joined from
+    ``SemanticAnnotation`` — a descriptive hint on the candidate, not the
+    grounding decision (which is the concept binding itself).
 
     Args:
-        session: Database session
-        table_ids: Table IDs to load mappings for
-        semantic_runs: Optional ``table_id → begin_session run_id`` pin. When
-            given (the operating_model compose gate threads the run's pinned
-            base-run map), each table contributes ONLY annotations from its
-            pinned run — multi-run isolation, fail-closed: a table absent from
-            the pin contributes nothing, never an arbitrary run's annotations
-            (the ``SemanticAnnotation`` table is run-versioned with a
-            ``(column_id, run_id)`` UNIQUE, so N coexisting runs leave N rows
-            per column). When ``None``, all runs' annotations are read (the
-            legacy cross-run behavior, still used by the graph-context builder).
+        session: Database session.
+        table_ids: Table IDs to load mappings for.
+        catalogue_run_id: The begin_session catalogue head run the concepts live
+            under (``base_runs.relationship_run_id``).
 
     Returns:
-        FieldMappings with business_concept → column mappings
+        FieldMappings with business_concept → column mappings.
     """
-    if not table_ids:
-        return FieldMappings(table_ids=[])
+    if not table_ids or not catalogue_run_id:
+        return FieldMappings(table_ids=table_ids)
 
-    # Query semantic annotations with business_concept set
     stmt = (
-        select(SemanticAnnotation, Column, Table)
-        .join(Column, SemanticAnnotation.column_id == Column.column_id)
+        select(ColumnConcept, Column, Table, SemanticAnnotation)
+        .join(Column, ColumnConcept.column_id == Column.column_id)
         .join(Table, Column.table_id == Table.table_id)
+        .outerjoin(SemanticAnnotation, SemanticAnnotation.column_id == Column.column_id)
         .where(
             Table.table_id.in_(table_ids),
-            SemanticAnnotation.business_concept.isnot(None),
+            ColumnConcept.run_id == catalogue_run_id,
+            ColumnConcept.business_concept.isnot(None),
         )
+        # The SemanticAnnotation garnish (role/entity_type) can fan out across runs;
+        # order so the dedup below keeps a deterministic row, not a DB-arbitrary one.
+        .order_by(SemanticAnnotation.run_id.desc())
     )
 
-    result = session.execute(stmt)
-    rows = result.all()
-
     mappings: dict[str, list[ColumnCandidate]] = {}
+    seen: set[tuple[str, str]] = set()  # (concept, column_id) — outerjoin can fan out
 
-    for annotation, column, table in rows:
-        # Pin to the table's begin_session run when a pin is provided — drop any
-        # annotation from another run (fail-closed for an unpinned table).
-        if semantic_runs is not None and annotation.run_id != semantic_runs.get(table.table_id):
+    for concept_row, column, table, annotation in session.execute(stmt).all():
+        concept = concept_row.business_concept
+        if not concept or (concept, column.column_id) in seen:
             continue
-        concept = annotation.business_concept
-        if not concept:
-            continue
-
-        if concept not in mappings:
-            mappings[concept] = []
-
-        # Use full DuckDB table name with layer prefix
-        duckdb_table_name = f"{table.layer}_{table.table_name}"
-        candidate = ColumnCandidate(
-            column_id=column.column_id,
-            column_name=column.column_name,
-            table_name=duckdb_table_name,
-            confidence=annotation.confidence or 0.5,
-            semantic_role=annotation.semantic_role,
-            entity_type=annotation.entity_type,
+        seen.add((concept, column.column_id))
+        mappings.setdefault(concept, []).append(
+            ColumnCandidate(
+                column_id=column.column_id,
+                column_name=column.column_name,
+                table_name=f"{table.layer}_{table.table_name}",
+                # A concept binding is authoritative, not probabilistic — the table
+                # agent does not author a per-binding confidence, so this is the
+                # constant fallback by design (not a missing feature).
+                confidence=concept_row.confidence or 0.5,
+                semantic_role=annotation.semantic_role if annotation else None,
+                entity_type=annotation.entity_type if annotation else None,
+            )
         )
-        mappings[concept].append(candidate)
 
     return FieldMappings(mappings=mappings, table_ids=table_ids)
 

@@ -10,7 +10,7 @@ Binds the engine (:mod:`tree`) to the begin_session substrate:
   pulled ONCE into memory; the permutation null runs in numpy (the design's "GROUP
   BYs over aggregation views" is moot — ADR-0013 removed those, and 500 shuffles in
   SQL would be hundreds of scans).
-- **Target type** = the measure's ``SemanticAnnotation.temporal_behavior``
+- **Target type** = the measure's ``ColumnConcept.temporal_behavior`` (DAT-637)
   (``additive`` → flow, ``point_in_time`` → stock) via :func:`resolve_target_type`.
 
 On-demand and pure: returns a :class:`DriverRanking`, persists nothing (DAT-546).
@@ -46,7 +46,7 @@ from dataraum.analysis.drivers.tree import (
     discover_tree,
 )
 from dataraum.analysis.hierarchies.db_models import DimensionHierarchy
-from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -88,10 +88,12 @@ def resolve_target_type(session: Session, *, column_id: str, run_id: str) -> str
     ``temporal_behavior`` value: a ratio measure is constructed explicitly by the
     caller (computed metric), not resolved here.
     """
+    # temporal_behavior is catalogue-grain (DAT-637): on ColumnConcept, written by
+    # the table agent under THIS begin_session run earlier in the session spine.
     behavior = session.execute(
-        select(SemanticAnnotation.temporal_behavior).where(
-            SemanticAnnotation.column_id == column_id,
-            SemanticAnnotation.run_id == run_id,
+        select(ColumnConcept.temporal_behavior).where(
+            ColumnConcept.column_id == column_id,
+            ColumnConcept.run_id == run_id,
         )
     ).scalar_one_or_none()
     target = _TEMPORAL_TO_TARGET.get(behavior or "", "flow")

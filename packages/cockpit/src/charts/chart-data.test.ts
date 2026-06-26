@@ -58,15 +58,9 @@ describe("suggestFieldType", () => {
 
 describe("columnOptions", () => {
 	it("pairs each column with its suggested type, in result order", () => {
-		const view = fakeView(
-			["region", "revenue"],
-			[
-				["eu", "us"],
-				[1, 2],
-			],
-			[{ typeId: 17 }, { typeId: 11 }] as Json, // VARCHAR-ish, DOUBLE
-		);
-		expect(columnOptions(view)).toEqual([
+		const columns = ["region", "revenue"];
+		const types = [{ typeId: 17 }, { typeId: 11 }] as Json; // VARCHAR-ish, DOUBLE
+		expect(columnOptions(columns, types)).toEqual([
 			{ name: "region", suggestedType: "nominal" },
 			{ name: "revenue", suggestedType: "quantitative" },
 		]);

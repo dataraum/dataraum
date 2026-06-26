@@ -13,11 +13,10 @@
 
 import { Alert, Center, Loader, Paper } from "@mantine/core";
 import { ClientOnly } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
-import { gridViewToRows } from "#/charts/chart-data";
+import { useChartData } from "#/charts/use-chart-data";
 import { ChartView } from "#/ui/cockpit/widgets/chart-view";
-import { useChartStore } from "#/ui/cockpit/widgets/use-chart-store";
 
 /** The frozen chart over live data — the report-detail surface. */
 export function ReportChart({
@@ -31,8 +30,7 @@ export function ReportChart({
 	config: ChartConfig;
 	height?: number;
 }) {
-	const { data: store, isLoading, error } = useChartStore(sql, params);
-	const rows = useMemo(() => (store ? gridViewToRows(store) : []), [store]);
+	const { data, isLoading, error } = useChartData(sql, params);
 
 	if (isLoading) {
 		return (
@@ -48,14 +46,14 @@ export function ReportChart({
 			</Alert>
 		);
 	}
-	if (!store || store.columns.length === 0) return null;
+	if (!data || data.columns.length === 0) return null;
 
 	return (
 		<Paper withBorder p="sm" data-testid="report-chart">
 			<ClientOnly>
 				<ChartView
 					config={config}
-					rows={rows}
+					rows={data.rows}
 					height={height}
 					testId="report-chart-view"
 				/>
@@ -96,9 +94,8 @@ export function ReportChartThumbnail({
 	height?: number;
 }) {
 	const [ref, inView] = useInView();
-	const { data: store } = useChartStore(sql, undefined, inView);
-	const rows = useMemo(() => (store ? gridViewToRows(store) : []), [store]);
-	const ready = store && store.columns.length > 0;
+	const { data } = useChartData(sql, undefined, inView);
+	const ready = data && data.columns.length > 0;
 
 	return (
 		<div ref={ref} style={{ height }} data-testid="report-thumbnail">
@@ -106,7 +103,7 @@ export function ReportChartThumbnail({
 				<ClientOnly>
 					<ChartView
 						config={config}
-						rows={rows}
+						rows={data.rows}
 						height={height}
 						testId="report-thumbnail-view"
 					/>

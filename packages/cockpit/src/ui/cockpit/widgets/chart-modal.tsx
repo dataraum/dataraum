@@ -31,24 +31,25 @@ import {
 } from "@mantine/core";
 import { ClientOnly } from "@tanstack/react-router";
 import { Sparkles, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	AGGREGATES,
 	CHART_MARKS,
 	type ChartConfig,
+	ChartConfigSchema,
 	FIELD_TYPES,
+	type FieldEncoding,
 } from "#/charts/chart-config";
-import { columnOptions, gridViewToRows } from "#/charts/chart-data";
+import { columnOptions } from "#/charts/chart-data";
 import {
 	type ChartDraft,
 	draftToConfig,
 	type EncodingDraft,
 	emptyDraft,
 } from "#/charts/manual-mapping";
+import { type ChartData, useChartData } from "#/charts/use-chart-data";
 import { validateChartConfig } from "#/charts/validate";
-import type { ColumnStore } from "#/duckdb/ndjson-stream";
 import { ChartView } from "#/ui/cockpit/widgets/chart-view";
-import { useChartStore } from "#/ui/cockpit/widgets/use-chart-store";
 
 export function ChartModal({
 	opened,
@@ -68,9 +69,9 @@ export function ChartModal({
 	onAccept: (config: ChartConfig | null) => void;
 }) {
 	// Fetch one capped page for the preview — server data via the shared chart-data
-	// query (React rule 3), only while the modal is open. The page folds into one
-	// store (bounded by GRID_MAX_PAGE), which the chart materializes into rows.
-	const { data: store, isLoading, error } = useChartStore(sql, params, opened);
+	// query (React rule 3), only while the modal is open. Plain rows + columns/types,
+	// bounded by GRID_MAX_PAGE.
+	const { data, isLoading, error } = useChartData(sql, params, opened);
 
 	return (
 		<Modal
@@ -88,7 +89,7 @@ export function ChartModal({
 				<Alert color="red" data-testid="chart-modal-error">
 					Couldn’t load the result to chart: {String(error)}
 				</Alert>
-			) : !store || store.columns.length === 0 ? (
+			) : !data || data.columns.length === 0 ? (
 				<Text c="dimmed" size="sm" data-testid="chart-modal-empty-result">
 					This result has no columns to chart.
 				</Text>
@@ -96,7 +97,7 @@ export function ChartModal({
 				// Remount on each open so the draft re-seeds from `value` (React rule 5).
 				<ChartModalContent
 					key={String(opened)}
-					store={store}
+					data={data}
 					value={value}
 					onAccept={onAccept}
 					onClose={onClose}
@@ -178,12 +179,12 @@ function EncodingControls({
 }
 
 function ChartModalContent({
-	store,
+	data,
 	value,
 	onAccept,
 	onClose,
 }: {
-	store: ColumnStore;
+	data: ChartData;
 	value: ChartConfig | null | undefined;
 	onAccept: (config: ChartConfig | null) => void;
 	onClose: () => void;
@@ -194,8 +195,16 @@ function ChartModalContent({
 	const [instruction, setInstruction] = useState("");
 	const [authoring, setAuthoring] = useState(false);
 	const [authorError, setAuthorError] = useState<string | null>(null);
+	// Abort an in-flight author when the user cancels/closes or fires a new one —
+	// otherwise the server's forced-tool loop keeps billing Anthropic calls after the
+	// modal is gone (the fetch unmount doesn't close the connection).
+	const authorAbortRef = useRef<AbortController | null>(null);
+	useEffect(() => () => authorAbortRef.current?.abort(), []);
 
-	const options = useMemo(() => columnOptions(store), [store]);
+	const options = useMemo(
+		() => columnOptions(data.columns, data.types),
+		[data.columns, data.types],
+	);
 	const columnData = useMemo(
 		() => options.map((o) => ({ value: o.name, label: o.name })),
 		[options],
@@ -205,16 +214,15 @@ function ChartModalContent({
 		return (column: string) => byName.get(column) ?? "nominal";
 	}, [options]);
 
-	// Materialize rows once per store (not per keystroke) — the preview re-renders
-	// on config change, but the data is stable until a refetch.
-	const rows = useMemo(() => gridViewToRows(store), [store]);
-
 	// Ask the agent for a chart from the typed instruction (React rule 4: a user-
 	// event mutation in a handler). On success the returned config seeds the draft;
 	// the circuit-breaker error (after ≤3 attempts) is surfaced inline.
 	const authorFromInstruction = async () => {
 		const text = instruction.trim();
 		if (!text) return;
+		authorAbortRef.current?.abort();
+		const ac = new AbortController();
+		authorAbortRef.current = ac;
 		setAuthoring(true);
 		setAuthorError(null);
 		try {
@@ -228,17 +236,27 @@ function ChartModalContent({
 					})),
 					instruction: text,
 				}),
+				signal: ac.signal,
 			});
-			const data = (await res.json()) as {
-				config?: ChartConfig;
-				error?: string;
-			};
-			if (!res.ok || !data.config) {
-				setAuthorError(data.error ?? "Couldn’t author a chart — try again.");
+			// Tool/LLM output is `unknown` at the boundary — narrow the wire shape AND
+			// re-validate the config against the schema before trusting it (rule 11).
+			const body = (await res.json()) as { config?: unknown; error?: unknown };
+			if (!res.ok || body.config === undefined) {
+				setAuthorError(
+					typeof body.error === "string"
+						? body.error
+						: "Couldn’t author a chart — try again.",
+				);
 				return;
 			}
-			setDraft(fromConfig(data.config));
+			const parsed = ChartConfigSchema.safeParse(body.config);
+			if (!parsed.success) {
+				setAuthorError("Received an unexpected chart shape — try again.");
+				return;
+			}
+			setDraft(fromConfig(parsed.data));
 		} catch (err) {
+			if (ac.signal.aborted) return; // user cancelled — no error to show
 			console.error("[charts] author failed:", err);
 			setAuthorError("Couldn’t reach the chart agent — try again.");
 		} finally {
@@ -250,19 +268,19 @@ function ChartModalContent({
 	// passes the gate; the message explains an in-progress/invalid mapping.
 	const candidate = draftToConfig(draft);
 	const validation = candidate
-		? validateChartConfig(candidate, store.columns)
+		? validateChartConfig(candidate, data.columns)
 		: null;
 	const validConfig = validation?.ok ? validation.config : null;
 
 	return (
 		<Stack gap="md">
-			{store.truncated && (
+			{data.truncated && (
 				<Alert
 					color="yellow"
 					icon={<TriangleAlert size={16} />}
 					data-testid="chart-modal-truncated"
 				>
-					Charting the first {store.rowCount.toLocaleString()} rows — the result
+					Charting the first {data.rowCount.toLocaleString()} rows — the result
 					has more. Aggregate the query (GROUP BY / summary) to chart the whole
 					result.
 				</Alert>
@@ -355,7 +373,11 @@ function ChartModalContent({
 			    a valid config; otherwise prompt the user. */}
 			{validConfig ? (
 				<ClientOnly>
-					<ChartView config={validConfig} rows={rows} testId="chart-preview" />
+					<ChartView
+						config={validConfig}
+						rows={data.rows}
+						testId="chart-preview"
+					/>
 				</ClientOnly>
 			) : (
 				<Center h={200} data-testid="chart-modal-empty">
@@ -409,7 +431,8 @@ function ChartModalContent({
 /** Seed a draft from an existing config (re-open) or the empty state (fresh). */
 function fromConfig(config: ChartConfig | null | undefined): ChartDraft {
 	if (!config) return emptyDraft();
-	const enc = (e: ChartConfig["encoding"]["color"]): EncodingDraft =>
+	// Called for x/y (always present) and color (optional) — hence the `| undefined`.
+	const enc = (e: FieldEncoding | undefined): EncodingDraft =>
 		e
 			? { field: e.field, type: e.type, aggregate: e.aggregate ?? null }
 			: { field: null, type: "nominal" };

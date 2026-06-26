@@ -59,10 +59,10 @@ export interface ColumnOption {
 }
 
 /** Pair each result column with its suggested field type, in result order. */
-export function columnOptions(view: GridView): ColumnOption[] {
-	const types = Array.isArray(view.types) ? (view.types as Json[]) : [];
-	return view.columns.map((name, i) => ({
+export function columnOptions(columns: string[], types: Json): ColumnOption[] {
+	const typeList = Array.isArray(types) ? (types as Json[]) : [];
+	return columns.map((name, i) => ({
 		name,
-		suggestedType: suggestFieldType(types[i]),
+		suggestedType: suggestFieldType(typeList[i]),
 	}));
 }

@@ -15,10 +15,6 @@ import type { ChartConfig, FieldEncoding } from "./chart-config";
  * live rows to this name. One constant so the resolver and the renderer agree. */
 export const CHART_DATA_NAME = "table";
 
-/** Fixed plot height (px). Width is container-driven; a charted result is
- * aggregated, so a fixed, compact height reads better than a tall canvas. */
-export const CHART_HEIGHT = 280;
-
 /** Map one authorable field-encoding to its Vega-Lite encoding object, dropping
  * the optionals the author didn't set (no null spray into the spec). */
 function encodeField(enc: FieldEncoding): Record<string, unknown> {
@@ -50,8 +46,10 @@ export function resolveSpec(config: ChartConfig): TopLevelSpec {
 		// tooltip on so a practitioner can read exact values off the marks.
 		mark: { type: config.mark, tooltip: true },
 		encoding,
+		// Both axes container-driven so the chart fills its host box (modal preview,
+		// report card, gallery thumbnail) — the renderer sizes the container.
 		width: "container",
-		height: CHART_HEIGHT,
+		height: "container",
 		...(config.title ? { title: config.title } : {}),
 	} as TopLevelSpec;
 }

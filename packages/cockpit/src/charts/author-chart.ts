@@ -150,6 +150,9 @@ export async function authorChart(opts: {
 		try {
 			emitted = await emit([prompt], messages, opts.signal);
 		} catch (err) {
+			// A cancelled request (client closed the modal) — stop, don't burn the
+			// remaining attempts re-failing fast against an already-aborted signal.
+			if (opts.signal?.aborted) return { ok: false, error: "Cancelled." };
 			lastError = err instanceof Error ? err.message : String(err);
 			continue;
 		}

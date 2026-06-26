@@ -20,7 +20,9 @@ describe("resolveSpec", () => {
 		const spec = resolveSpec(valid) as unknown as Record<string, unknown>;
 		expect(spec.data).toEqual({ name: CHART_DATA_NAME });
 		expect(spec.mark).toEqual({ type: "bar", tooltip: true });
+		// Both axes container-driven so the renderer sizes the chart to its host box.
 		expect(spec.width).toBe("container");
+		expect(spec.height).toBe("container");
 		// Optionals are carried through only when set…
 		expect(spec.encoding).toMatchObject({
 			x: { field: "month", type: "temporal" },

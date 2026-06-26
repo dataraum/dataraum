@@ -143,6 +143,19 @@ export function isProgressDone(phase: string, status: string): boolean {
 }
 
 /**
+ * True when Temporal has NO execution for the polled `(workflow_id, run_id)` —
+ * `describe()` threw `WorkflowNotFoundError`, the one path that yields the
+ * `PENDING_PROGRESS` sentinel (status `"PENDING"`). Every other path reports a real
+ * describe() status. The reconcile (DAT-640) keys the `retired` decision off this:
+ * an absent execution is either a brand-new run Temporal visibility hasn't caught up
+ * to (the DAT-570 start race) or a closed run whose history aged out past retention —
+ * the caller disambiguates the two by the run's age.
+ */
+export function isWorkflowAbsent(progress: WorkflowProgress): boolean {
+	return progress.status === PENDING_PROGRESS.status;
+}
+
+/**
  * The snapshot returned while a triggered run isn't queryable yet (DAT-570). A
  * stage trigger returns the deterministic workflow id immediately, but the
  * orchestration workflow starts the engine child a beat later (DAT-530/562) — so an

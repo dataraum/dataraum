@@ -20,11 +20,15 @@ describe("run-row presentation (DAT-550)", () => {
 		expect(statusTone("failed")).toBe("red");
 		// The grounding loop's human-handoff state (DAT-551) — amber, not gray.
 		expect(statusTone("awaiting_input")).toBe("yellow");
+		// Aged-out-past-retention terminal (DAT-640) — neutral grey.
+		expect(statusTone("retired")).toBe("gray");
 		expect(statusTone("future_status")).toBe("gray");
 	});
 
-	it("labels awaiting_input as a call to action, others verbatim (DAT-551)", () => {
+	it("labels awaiting_input as a call to action, others verbatim (DAT-551, DAT-640)", () => {
 		expect(statusLabel("awaiting_input")).toBe("Needs input");
+		// retired stays verbatim, consistent with the other terminal states.
+		expect(statusLabel("retired")).toBe("retired");
 		expect(statusLabel("running")).toBe("running");
 		expect(statusLabel("completed")).toBe("completed");
 	});

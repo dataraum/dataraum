@@ -97,15 +97,23 @@ export async function recordRun(input: RecordRunInput): Promise<void> {
 }
 
 /**
- * Mark a recorded run terminal (completed | failed) — best-effort. Writers: the
- * completion-watcher's `result()` awaiter (DAT-615, the primary path), the
- * workflow-progress seed route (DAT-461), and the reload-recovery reconcile
- * (DAT-462). No-op if the run isn't recorded.
+ * Mark a recorded run terminal — best-effort. Writers: the completion-watcher's
+ * `result()` awaiter (DAT-615, the primary path), the workflow-progress seed route
+ * (DAT-461), and the reload-recovery reconcile (DAT-462). No-op if the run isn't
+ * recorded.
+ *
+ * `retired` (DAT-640) is a THIRD terminal state, distinct from completed/failed:
+ * the reconcile found NO execution in Temporal for the run's `(workflowId, runId)`.
+ * Temporal never drops a RUNNING workflow, and retention only GCs CLOSED ones, so
+ * an absent execution means the run closed and its history aged out past the
+ * namespace retention TTL — it is terminal (not in-flight) but its OUTCOME is
+ * unrecoverable. We assert neither success nor failure: `retired` is the honest
+ * "closed, outcome no longer knowable" state.
  */
 export async function markRunStatus(
 	workflowId: string,
 	runId: string,
-	status: "completed" | "failed",
+	status: "completed" | "failed" | "retired",
 ): Promise<void> {
 	try {
 		await cockpitDb
@@ -151,10 +159,13 @@ export async function markRunAwaitingInput(
 	}
 }
 
-/** One in-flight run to reconcile on reload. */
+/** One in-flight run to reconcile on reload. `startedAt` lets the sweep tell a
+ * brand-new run (Temporal visibility may briefly lag a just-recorded execution)
+ * from one whose history aged out — only the latter is `retired` (DAT-640). */
 export interface ActiveRun {
 	workflowId: string;
 	runId: string;
+	startedAt: Date;
 }
 
 /**
@@ -173,11 +184,41 @@ export async function listNonTerminalRuns(
 		.select({
 			workflowId: runs.workflowId,
 			runId: runs.runId,
+			startedAt: runs.startedAt,
 		})
 		.from(runs)
 		.where(
 			and(eq(runs.conversationId, conversationId), eq(runs.status, "running")),
 		)
+		.orderBy(desc(runs.startedAt))
+		.limit(limit);
+}
+
+/**
+ * The WORKSPACE's non-terminal (`running`) runs, newest first, BOUNDED — the
+ * workspace-scoped reconcile (DAT-640) sweeps these against Temporal regardless of
+ * `conversation_id`. The conversation-scoped `listNonTerminalRuns` above is a
+ * partial cover: an ONBOARDING import records with `conversation_id = NULL`
+ * (imports don't narrate, DAT-597), so no chat ever owns it → it is never swept by
+ * the chat-load reconcile and lingers `running` forever (the Runs monitor +
+ * `countRunningRuns` + the briefing's `progress.connect` then misreport in-flight
+ * work indefinitely). This query is the conversation-independent counterpart: every
+ * still-`running` run in the workspace, so the workspace sweep reaches the orphaned
+ * onboarding runs the chat sweep can't. Bounded identically so a stale backlog can't
+ * fan out unboundedly.
+ */
+export async function listNonTerminalRunsByWorkspace(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<ActiveRun>> {
+	return cockpitDb
+		.select({
+			workflowId: runs.workflowId,
+			runId: runs.runId,
+			startedAt: runs.startedAt,
+		})
+		.from(runs)
+		.where(and(eq(runs.workspaceId, workspaceId), eq(runs.status, "running")))
 		.orderBy(desc(runs.startedAt))
 		.limit(limit);
 }

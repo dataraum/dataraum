@@ -25,13 +25,19 @@ export function statusTone(status: string): RunStatusTone {
 		// The grounding-teach loop parked it for a human judgement teach (DAT-551).
 		case "awaiting_input":
 			return "yellow";
+		// Closed in Temporal but aged out past retention — terminal, outcome unknown
+		// (DAT-640). Neutral grey: not a success, not a failure.
+		case "retired":
+			return "gray";
 		default:
 			return "gray";
 	}
 }
 
-/** Human label for a run status — most are shown verbatim; awaiting_input reads as
- * a call to action ("Needs input") rather than the raw enum. */
+/** Human label for a run status — shown verbatim (running/completed/failed/retired)
+ * except awaiting_input, which reads as a call to action ("Needs input") rather than
+ * the raw enum. `retired` (DAT-640) stays verbatim, consistent with the other
+ * terminal states. */
 export function statusLabel(status: string): string {
 	return status === "awaiting_input" ? "Needs input" : status;
 }

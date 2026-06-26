@@ -5,6 +5,60 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-277 — composite-key rescue of many-to-many fan-out edges (LLM-confirmed)
+
+**Branch:** `refactor/dat-277-composite-key-rescue`.
+
+### What changed (detector + enriched-view shape)
+A fan-trap edge (best single-column join is **many-to-many** → over-counts in
+enriched views) can now be **rescued** by a composite key — the real FK plus a
+shared scoping column (e.g. a tenant `business_id` present on both tables). The
+rescue is a **greedy statistical pre-pass** (parallel to Jaccard) that SURFACES a
+composite candidate; **the LLM (semantic_per_table agent) is the sole judge** and
+confirms it via the new `RelationshipOutput.key_columns`. Nothing is auto-created
+from statistics.
+
+- **New relationship shape:** a confirmed composite is persisted as a **group** of
+  N `relationships` rows sharing `relationship_group_id`, the anchor at
+  `key_position` 0, all carrying the COMPOSITE cardinality (the collapsed value).
+  Two new columns: `relationships.relationship_group_id`, `key_position`. A plain
+  single-column relationship leaves both NULL.
+- **Consumer gate:** `load_defined_relationships` EXCLUDES grouped rows by default
+  (`include_composite_groups=False`) — single-column consumers never fan out on a
+  half-key. Only `enriched_views` opts in and assembles the multi-column join.
+- **Enriched views:** `DimensionJoin.key_pairs` + a multi-column ON clause; a
+  composite join scopes on the full key and stays grain-preserving. Grain
+  verification remains the backstop (a bad join is still dropped).
+- **Fix folded in:** the candidate-dict overlap score is keyed `confidence` (not
+  `join_confidence`); the per-table agent's candidate block previously rendered
+  `overlap=0.00` for every pair — now shows real scores. This changes the LLM
+  input to `semantic_per_table` (relationship confirmation may shift slightly).
+
+### Engine routes / phases affected
+- `analysis/relationships/{evaluator,composite,models,db_models,utils}.py`
+- `analysis/semantic/{processor,agent,models}.py` + `semantic_per_table` prompt
+- `analysis/views/builder.py`, `pipeline/phases/enriched_views_phase.py`
+
+### Calibration to run
+- **Relationship detection / FK confirmation** — verify recall didn't regress now
+  that the agent sees real overlap scores (was 0.00) and a composite hint. The
+  fan-trap cases (DAT-642: drivers empty because real discriminators sit behind an
+  m2m/composite fan-out) are the target win.
+- **Enriched-view grain + downstream metrics** — a previously-fan-trapped fact↔dim
+  pair (e.g. txn↔chart-of-accounts on `account` alone) should now enrich
+  grain-preserving via the composite key; metric grounding behind that dimension
+  should improve. Watch for any view newly built (and grain-verified) where none
+  existed before.
+
+### testdata hints
+The canonical shape: a fact table whose FK recurs across a tenant/scope partition
+(same `account` name under several `business_id`s) joined to a dimension keyed on
+`(account, business_id)`. Single-column join fans out; the composite holds grain.
+A genuine many-to-many (bridge/junction table) is the negative — it must abstain
+(no rescue, flagged fan-trap), never be forced into a composite.
+
+---
+
 ## DAT-641 — concurrent-typing DuckLake commit conflict is now Temporal-retryable
 
 **Branch:** `worktree-dat-641`.

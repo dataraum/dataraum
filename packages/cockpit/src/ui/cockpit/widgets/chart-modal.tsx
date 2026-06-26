@@ -354,13 +354,7 @@ function ChartModalContent({
 			{/* Live preview / empty state. A chart shows only once both axes resolve to
 			    a valid config; otherwise prompt the user. */}
 			{validConfig ? (
-				<ClientOnly
-					fallback={
-						<Center h={300}>
-							<Loader size="sm" />
-						</Center>
-					}
-				>
+				<ClientOnly>
 					<ChartView config={validConfig} rows={rows} testId="chart-preview" />
 				</ClientOnly>
 			) : (

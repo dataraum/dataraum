@@ -52,13 +52,7 @@ export function ReportChart({
 
 	return (
 		<Paper withBorder p="sm" data-testid="report-chart">
-			<ClientOnly
-				fallback={
-					<Center h={height}>
-						<Loader size="sm" />
-					</Center>
-				}
-			>
+			<ClientOnly>
 				<ChartView
 					config={config}
 					rows={rows}
@@ -109,7 +103,7 @@ export function ReportChartThumbnail({
 	return (
 		<div ref={ref} style={{ height }} data-testid="report-thumbnail">
 			{inView && ready ? (
-				<ClientOnly fallback={null}>
+				<ClientOnly>
 					<ChartView
 						config={config}
 						rows={rows}

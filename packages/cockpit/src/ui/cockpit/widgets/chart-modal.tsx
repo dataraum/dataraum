@@ -29,7 +29,6 @@ import {
 	Text,
 	TextInput,
 } from "@mantine/core";
-import { useQuery } from "@tanstack/react-query";
 import { ClientOnly } from "@tanstack/react-router";
 import { Sparkles, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -47,20 +46,9 @@ import {
 	emptyDraft,
 } from "#/charts/manual-mapping";
 import { validateChartConfig } from "#/charts/validate";
-import { GRID_MAX_PAGE } from "#/duckdb/grid-query";
-import { type ColumnStore, readNdjsonIntoStore } from "#/duckdb/ndjson-stream";
+import type { ColumnStore } from "#/duckdb/ndjson-stream";
 import { ChartView } from "#/ui/cockpit/widgets/chart-view";
-
-/** Extract a `{ error }` body from a failed grid stream, else the raw text. */
-function extractError(text: string): string {
-	try {
-		const parsed = JSON.parse(text) as { error?: unknown };
-		if (typeof parsed.error === "string") return parsed.error;
-	} catch {
-		// not JSON — fall through
-	}
-	return text;
-}
+import { useChartStore } from "#/ui/cockpit/widgets/use-chart-store";
 
 export function ChartModal({
 	opened,
@@ -79,35 +67,10 @@ export function ChartModal({
 	/** Accept the authored config (or null to clear the chart) and close. */
 	onAccept: (config: ChartConfig | null) => void;
 }) {
-	// Fetch one capped page for the preview — server data via TanStack Query (React
-	// rule 3), only while the modal is open. The whole page folds into one store
-	// (bounded by GRID_MAX_PAGE), which the chart materializes into rows.
-	const {
-		data: store,
-		isLoading,
-		error,
-	} = useQuery<ColumnStore>({
-		queryKey: ["chart-data", sql, params ?? null],
-		enabled: opened,
-		staleTime: 30_000,
-		queryFn: async ({ signal }) => {
-			const res = await fetch("/api/run-sql", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ sql, params, limit: GRID_MAX_PAGE }),
-				signal,
-			});
-			if (!res.ok || !res.body) {
-				const detail = await res.text().catch(() => res.statusText);
-				throw new Error(
-					extractError(detail) || `request failed (${res.status})`,
-				);
-			}
-			const folded = await readNdjsonIntoStore(res.body);
-			if (folded.error) throw new Error(folded.error);
-			return folded;
-		},
-	});
+	// Fetch one capped page for the preview — server data via the shared chart-data
+	// query (React rule 3), only while the modal is open. The page folds into one
+	// store (bounded by GRID_MAX_PAGE), which the chart materializes into rows.
+	const { data: store, isLoading, error } = useChartStore(sql, params, opened);
 
 	return (
 		<Modal

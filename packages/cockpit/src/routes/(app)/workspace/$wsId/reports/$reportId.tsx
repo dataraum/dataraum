@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { ConfidenceStrip } from "#/ui/cockpit/widgets/answer-result";
+import { ReportChart } from "#/ui/cockpit/widgets/report-chart";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 import {
 	deleteReportFn,
@@ -219,6 +220,11 @@ function ReportDetail() {
 				</Stack>
 			)}
 			<ConfidenceStrip confidence={report.confidence} />
+			{/* Frozen chart (DAT-626) over live re-run data — above the table it
+			    summarizes. Absent → table-only report (first-class). */}
+			{report.chartConfig && (
+				<ReportChart sql={report.sql} config={report.chartConfig} />
+			)}
 			<ResultGridWidget state={{ kind: "result-grid", sql: report.sql }} />
 		</Stack>
 	);

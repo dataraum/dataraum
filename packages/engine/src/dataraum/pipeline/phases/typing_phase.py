@@ -346,7 +346,19 @@ class TypingPhase(BasePhase):
                 )
 
         if not typed_tables:
-            return PhaseResult.failed("No tables were successfully typed")
+            # Surface the per-table failure detail (DAT-641). A DuckLake commit
+            # conflict from resolve_types lands in ``warnings``; the worker's
+            # ``_is_transient_commit_conflict`` keys off the PhaseRun.error STRING to
+            # make the concurrent-typing race Temporal-retryable. A bare "No tables
+            # were successfully typed" hides that signature, so a transient race
+            # failed the whole replay non-retryably. Fold the warnings in (as
+            # statistics/correlations_phase already do) so the classifier sees it.
+            detail = "; ".join(warnings)
+            return PhaseResult.failed(
+                f"No tables were successfully typed: {detail}"
+                if detail
+                else "No tables were successfully typed"
+            )
 
         # Link the run to the tables it just typed (DAT-407) so the run's source
         # is derivable without a stored ``source_id``. Written here — a side-effect

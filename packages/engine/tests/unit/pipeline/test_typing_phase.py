@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -336,3 +337,56 @@ class TestApplyUnitOverrides:
             ).scalars()
         }
         assert landed == {"run_current": "EUR", "run_prior": None}
+
+
+class TestCommitConflictIsRetryable:
+    """DAT-641: a DuckLake commit conflict during typing must surface in the phase
+    error STRING so the worker's ``_is_transient_commit_conflict`` classifies it as
+    the retryable ``TransientPhaseFailure`` — not the permanent ``PhaseFailed`` that
+    killed the whole concurrent replay. The classifier reads the error text, so the
+    bare "No tables were successfully typed" (which hid the signature) was the bug;
+    the fix folds the per-table failure detail back in. This is the typing→worker
+    seam the original classifier commit (975473fc) never exercised end-to-end.
+    """
+
+    def test_commit_conflict_failure_carries_the_retryable_signature(
+        self,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from dataraum.core.models.base import Result
+        from dataraum.pipeline.base import PhaseStatus
+        from dataraum.pipeline.phases import typing_phase as tp
+        from dataraum.worker.activities import _is_transient_commit_conflict
+
+        src = _make_source(session)
+        table = _make_table(session, src.source_id, "vendor_table")
+
+        # Inference succeeds (its payload is unused before resolution); resolution
+        # loses the commit race — the exact string resolve_types returns on a
+        # DuckLake optimistic-concurrency conflict (resolution.py).
+        monkeypatch.setattr(tp, "infer_type_candidates", lambda **_: Result.ok([]))
+        monkeypatch.setattr(
+            tp,
+            "resolve_types",
+            lambda **_: Result.fail(
+                "SQL execution failed: TransactionContext Error: "
+                "Failed to commit DuckLake transaction."
+            ),
+        )
+
+        result = tp.TypingPhase()._run(
+            PhaseContext(
+                session=session,
+                duckdb_conn=duckdb_conn,
+                table_ids=[table.table_id],
+                run_id="run-1",
+            )
+        )
+
+        assert result.status is PhaseStatus.FAILED
+        # The seam: typing must produce a string the worker recognises as a
+        # transient, retryable conflict — otherwise the run fails non-retryably.
+        assert result.error is not None
+        assert _is_transient_commit_conflict(result.error) is True

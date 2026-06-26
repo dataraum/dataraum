@@ -5,6 +5,34 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-641 — concurrent-typing DuckLake commit conflict is now Temporal-retryable
+
+**Branch:** `worktree-dat-641`.
+
+### What changed (run behavior, NOT a detector/response shape)
+The typing phase's "all tables failed" failure message now **folds in the per-table
+error detail** (`typing_phase.py`, mirroring statistics/correlations_phase) instead
+of the bare `"No tables were successfully typed"`. That surfaces a DuckLake
+optimistic-commit conflict signature into `PhaseRun.error`, where the worker's
+`_is_transient_commit_conflict` classifier (already present, DAT-641 part 1 +
+`ducklake_max_retry_count` bump) turns it into a **retryable** `TransientPhaseFailure`
+rather than a fatal `PhaseFailed`. Net effect: a wide concurrent replay (≥~20 tables
+fanned out) that lost a commit race used to fail the whole run; it now retries the
+losing table activity and completes.
+
+### Calibration to run
+**None — calibration-neutral.** No detector logic, threshold, or output shape
+changed; this only affects the FAILURE path (a previously-fatal transient race now
+retries to success). Recall/precision cannot move. If anything it removes spurious
+run failures from wide-replay eval scenarios.
+
+### testdata hints
+A wide multi-table replay (≥~20 tables typed concurrently) is the natural regression
+that used to trip the commit race — it should now complete without a fatal
+`PhaseFailed: No tables were successfully typed`.
+
+---
+
 ## DAT-639 — narrow, workspace-unique table names (no `src_<digest>__` prefix)
 
 **Branch:** `fix/dat-639-narrow-table-identity`.

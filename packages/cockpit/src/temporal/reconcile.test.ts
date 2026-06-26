@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/db/cockpit/runs", () => ({
 	listNonTerminalRuns: vi.fn(),
+	listNonTerminalRunsByWorkspace: vi.fn(),
 	markRunStatus: vi.fn(),
 }));
 vi.mock("#/temporal/progress", () => ({
@@ -18,16 +19,22 @@ vi.mock("#/temporal/progress", () => ({
 		p.status === "FAILED" ? "failed" : "completed",
 }));
 
-import { listNonTerminalRuns, markRunStatus } from "#/db/cockpit/runs";
+import {
+	listNonTerminalRuns,
+	listNonTerminalRunsByWorkspace,
+	markRunStatus,
+} from "#/db/cockpit/runs";
 import { getWorkflowProgress } from "#/temporal/progress";
-import { reconcileActiveRuns } from "./reconcile";
+import { reconcileActiveRuns, reconcileWorkspaceRuns } from "./reconcile";
 
 const list = vi.mocked(listNonTerminalRuns);
+const listByWs = vi.mocked(listNonTerminalRunsByWorkspace);
 const mark = vi.mocked(markRunStatus);
 const progress = vi.mocked(getWorkflowProgress);
 
 beforeEach(() => {
 	list.mockReset();
+	listByWs.mockReset();
 	mark.mockReset().mockResolvedValue(undefined);
 	progress.mockReset();
 });
@@ -79,6 +86,63 @@ describe("reconcileActiveRuns", () => {
 	it("swallows a listing failure (no marks, no throw)", async () => {
 		list.mockRejectedValue(new Error("db down"));
 		await expect(reconcileActiveRuns("conv-1")).resolves.toBeUndefined();
+		expect(mark).not.toHaveBeenCalled();
+		expect(progress).not.toHaveBeenCalled();
+	});
+});
+
+describe("reconcileWorkspaceRuns (DAT-640 — conversation-independent)", () => {
+	it("marks terminal an orphaned onboarding import (NULL conversation), leaving still-running ones", async () => {
+		// The bug case: an onboarding import (conversation_id = NULL) the chat sweep
+		// never owns. The workspace sweep lists it by workspace and reconciles it.
+		listByWs.mockResolvedValue([
+			{ workflowId: "addsource-ws", runId: "onboarding-r" },
+			{ workflowId: "wf-2", runId: "r-2" },
+		]);
+		progress.mockImplementation(async ({ run_id }) =>
+			run_id === "onboarding-r"
+				? prog(true, "COMPLETED")
+				: prog(false, "RUNNING"),
+		);
+
+		await reconcileWorkspaceRuns("ws-1");
+
+		expect(listByWs).toHaveBeenCalledWith("ws-1", expect.any(Number));
+		expect(mark).toHaveBeenCalledTimes(1);
+		expect(mark).toHaveBeenCalledWith(
+			"addsource-ws",
+			"onboarding-r",
+			"completed",
+		);
+	});
+
+	it("classifies a failed run as failed", async () => {
+		listByWs.mockResolvedValue([{ workflowId: "wf-9", runId: "r-9" }]);
+		progress.mockResolvedValue(prog(true, "FAILED"));
+
+		await reconcileWorkspaceRuns("ws-1");
+
+		expect(mark).toHaveBeenCalledWith("wf-9", "r-9", "failed");
+	});
+
+	it("swallows a per-run query error and still reconciles the others", async () => {
+		listByWs.mockResolvedValue([
+			{ workflowId: "wf-1", runId: "boom" },
+			{ workflowId: "wf-2", runId: "r-2" },
+		]);
+		progress.mockImplementation(async ({ run_id }) => {
+			if (run_id === "boom") throw new Error("run gone");
+			return prog(true, "COMPLETED");
+		});
+
+		await expect(reconcileWorkspaceRuns("ws-1")).resolves.toBeUndefined();
+		expect(mark).toHaveBeenCalledTimes(1);
+		expect(mark).toHaveBeenCalledWith("wf-2", "r-2", "completed");
+	});
+
+	it("swallows a listing failure (no marks, no throw)", async () => {
+		listByWs.mockRejectedValue(new Error("db down"));
+		await expect(reconcileWorkspaceRuns("ws-1")).resolves.toBeUndefined();
 		expect(mark).not.toHaveBeenCalled();
 		expect(progress).not.toHaveBeenCalled();
 	});

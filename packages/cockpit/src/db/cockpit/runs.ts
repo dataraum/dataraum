@@ -183,6 +183,34 @@ export async function listNonTerminalRuns(
 }
 
 /**
+ * The WORKSPACE's non-terminal (`running`) runs, newest first, BOUNDED — the
+ * workspace-scoped reconcile (DAT-640) sweeps these against Temporal regardless of
+ * `conversation_id`. The conversation-scoped `listNonTerminalRuns` above is a
+ * partial cover: an ONBOARDING import records with `conversation_id = NULL`
+ * (imports don't narrate, DAT-597), so no chat ever owns it → it is never swept by
+ * the chat-load reconcile and lingers `running` forever (the Runs monitor +
+ * `countRunningRuns` + the briefing's `progress.connect` then misreport in-flight
+ * work indefinitely). This query is the conversation-independent counterpart: every
+ * still-`running` run in the workspace, so the workspace sweep reaches the orphaned
+ * onboarding runs the chat sweep can't. Bounded identically so a stale backlog can't
+ * fan out unboundedly.
+ */
+export async function listNonTerminalRunsByWorkspace(
+	workspaceId: string,
+	limit: number,
+): Promise<Array<ActiveRun>> {
+	return cockpitDb
+		.select({
+			workflowId: runs.workflowId,
+			runId: runs.runId,
+		})
+		.from(runs)
+		.where(and(eq(runs.workspaceId, workspaceId), eq(runs.status, "running")))
+		.orderBy(desc(runs.startedAt))
+		.limit(limit);
+}
+
+/**
  * The DISTINCT stages of the conversation's still-`running` runs — the in-flight
  * set the completion narration must NOT claim finished (DAT-510). Scoped to the
  * conversation (DAT-528): "what ELSE is in flight in THIS chat". Cheap and

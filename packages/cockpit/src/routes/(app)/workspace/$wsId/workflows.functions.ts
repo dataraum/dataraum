@@ -14,6 +14,7 @@ import {
 } from "#/db/cockpit/runs";
 import { readStageStaleness } from "#/db/metadata/stage-staleness-read";
 import { currentTypedTableIds } from "#/db/metadata/workspace-state";
+import { reconcileWorkspaceRuns } from "#/temporal/reconcile";
 import { beginSession } from "#/tools/begin-session";
 import { operatingModel } from "#/tools/operating-model";
 import { replay } from "#/tools/replay";
@@ -29,6 +30,11 @@ const AWAITING_LIMIT = 50;
 
 export const loadRuns = createServerFn({ method: "GET" }).handler(async () => {
 	const workspaceId = await resolveActiveWorkspace();
+	// Reconcile the workspace's in-flight runs against Temporal BEFORE the read
+	// (DAT-640) so the monitor reflects terminal state on first paint — including
+	// onboarding imports (`conversation_id = NULL`) the chat-scoped reconcile never
+	// owns. Best-effort (never throws); awaited because the page renders this read.
+	await reconcileWorkspaceRuns(workspaceId);
 	const [runs, awaiting, staleness] = await Promise.all([
 		listRunsByWorkspace(workspaceId, RUN_LIMIT),
 		listAwaitingInput(workspaceId, AWAITING_LIMIT),

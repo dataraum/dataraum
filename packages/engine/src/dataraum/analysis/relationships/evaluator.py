@@ -115,40 +115,82 @@ def compute_actual_cardinality(
     col2: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> str | None:
-    """Compute actual join cardinality from data.
+    """Compute actual single-column join cardinality from data.
 
-    Checks join multiplicity in both directions:
-    - For each distinct col1 value in t1, how many t2 rows match?
-    - For each distinct col2 value in t2, how many t1 rows match?
+    Thin wrapper over :func:`compute_composite_cardinality` for the single-pair
+    case (``t1.col1 = t2.col2``).
 
     Returns:
         Cardinality string ("one-to-one", "one-to-many", "many-to-one",
         "many-to-many") or None if inconclusive.
     """
+    return compute_composite_cardinality(table1_path, table2_path, [(col1, col2)], duckdb_conn)
+
+
+def compute_composite_cardinality(
+    table1_path: str,
+    table2_path: str,
+    column_pairs: list[tuple[str, str]],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> str | None:
+    """Compute join cardinality for a (possibly multi-column) key, from data.
+
+    Generalizes :func:`compute_actual_cardinality` to a COMPOSITE key: the join
+    matches on every ``(t1_col, t2_col)`` pair (``t1.a = t2.b AND t1.c = t2.d``),
+    and the key on each side is the column TUPLE. This is the math that lets a
+    single-column many-to-many fan-out be *rescued* — adding a scoping column to
+    the key can collapse it to many-to-one (DAT-277).
+
+    Checks multiplicity in both directions:
+    - For each distinct t1 key-tuple, how many t2 rows match?
+    - For each distinct t2 key-tuple, how many t1 rows match?
+
+    Args:
+        table1_path: DuckDB path to the first table.
+        table2_path: DuckDB path to the second table.
+        column_pairs: ordered ``(table1_column, table2_column)`` key components.
+            A single pair reproduces ``compute_actual_cardinality``.
+        duckdb_conn: DuckDB connection.
+
+    Returns:
+        Cardinality string ("one-to-one", "one-to-many", "many-to-one",
+        "many-to-many") or None if inconclusive / empty key.
+    """
+    if not column_pairs:
+        return None
+
+    t1_cols = [a for a, _b in column_pairs]
+    t2_cols = [b for _a, b in column_pairs]
+    on_clause = " AND ".join(f't1."{a}" = t2."{b}"' for a, b in column_pairs)
+    t1_not_null = " AND ".join(f'"{a}" IS NOT NULL' for a in t1_cols)
+    t2_not_null = " AND ".join(f'"{b}" IS NOT NULL' for b in t2_cols)
+    t1_distinct = ", ".join(f'"{a}"' for a in t1_cols)
+    t2_distinct = ", ".join(f'"{b}"' for b in t2_cols)
+    t1_group = ", ".join(f't1."{a}"' for a in t1_cols)
+    t2_group = ", ".join(f't2."{b}"' for b in t2_cols)
+
     try:
-        # For each distinct col1 value in t1, how many t2 rows match?
-        # If max <= 1, each t1 value maps to at most one t2 row.
+        # For each distinct t1 key-tuple, how many t2 rows match? max <= 1 → unique.
         t1_to_t2_query = f"""
             SELECT MAX(match_count) <= 1
             FROM (
-                SELECT t1."{col1}", COUNT(*) as match_count
-                FROM (SELECT DISTINCT "{col1}" FROM {table1_path} WHERE "{col1}" IS NOT NULL) t1
-                INNER JOIN {table2_path} t2 ON t1."{col1}" = t2."{col2}"
-                GROUP BY t1."{col1}"
+                SELECT COUNT(*) as match_count
+                FROM (SELECT DISTINCT {t1_distinct} FROM {table1_path} WHERE {t1_not_null}) t1
+                INNER JOIN {table2_path} t2 ON {on_clause}
+                GROUP BY {t1_group}
             )
         """
         result1 = duckdb_conn.execute(t1_to_t2_query).fetchone()
         each_t1_has_one_t2 = bool(result1[0]) if result1 and result1[0] is not None else None
 
-        # For each distinct col2 value in t2, how many t1 rows match?
-        # If max <= 1, each t2 value maps to at most one t1 row.
+        # For each distinct t2 key-tuple, how many t1 rows match? max <= 1 → unique.
         t2_to_t1_query = f"""
             SELECT MAX(match_count) <= 1
             FROM (
-                SELECT t2."{col2}", COUNT(*) as match_count
-                FROM (SELECT DISTINCT "{col2}" FROM {table2_path} WHERE "{col2}" IS NOT NULL) t2
-                INNER JOIN {table1_path} t1 ON t2."{col2}" = t1."{col1}"
-                GROUP BY t2."{col2}"
+                SELECT COUNT(*) as match_count
+                FROM (SELECT DISTINCT {t2_distinct} FROM {table2_path} WHERE {t2_not_null}) t2
+                INNER JOIN {table1_path} t1 ON {on_clause}
+                GROUP BY {t2_group}
             )
         """
         result2 = duckdb_conn.execute(t2_to_t1_query).fetchone()
@@ -171,8 +213,7 @@ def compute_actual_cardinality(
     except Exception as e:
         logger.warning(
             "cardinality_computation_failed",
-            col1=col1,
-            col2=col2,
+            column_pairs=column_pairs,
             error=str(e),
         )
         return None

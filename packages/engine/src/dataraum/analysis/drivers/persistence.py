@@ -23,7 +23,7 @@ from sqlalchemy import select
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
 from dataraum.analysis.drivers.models import DriverRanking, Measure
 from dataraum.analysis.drivers.processor import discover_drivers
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column
 from dataraum.storage.upsert import upsert
@@ -75,29 +75,32 @@ def ranking_to_row(
 
 
 def _measure_columns(
-    session: Session, table_ids: list[str]
+    session: Session, table_ids: list[str], *, run_id: str
 ) -> list[tuple[str, str, str, str | None]]:
     """The session's measure-role columns: ``(column_id, table_id, name, behavior)``.
 
-    Read by ``column_id`` without a run filter (the ``slicing_phase`` convention):
-    ``semantic_role`` is stable from add_source generation. Deduped to one row per
-    column so a re-adjudicated annotation can never run discovery twice. UNLIKE
-    slicing (which only reads the stable role), the ``temporal_behavior`` picked here
-    drives ``discover_drivers``' target function — so when a column carries annotations
-    from multiple coexisting runs the pick MUST be deterministic, or a Temporal
-    redelivery could persist a different ranking than the promoted head. The
-    ``run_id`` desc tiebreak makes it stable (a deterministic pick, not a recency
-    claim — ``run_id`` isn't time-ordered; resolving the true per-table semantic head
-    is the value layer's shared gap with slicing, out of scope here).
+    ``semantic_role`` is object-grain (add_source generation) and read by ``column_id``
+    without a run filter (the ``slicing_phase`` convention) — stable across runs, deduped
+    to one row per column. ``temporal_behavior`` is catalogue-grain (``ColumnConcept``,
+    DAT-637) and drives ``discover_drivers``' target function, so it MUST be pinned to
+    THIS begin_session ``run_id``: a column carries one ``ColumnConcept`` per run, and an
+    unscoped join would let a Temporal redelivery pick an arbitrary run's behavior. The
+    outer join keeps a measure with no bound concept (behavior ``None`` → defaults
+    downstream); the ``SemanticAnnotation.run_id`` desc only orders the dedup of the
+    object-grain rows.
     """
     rows = session.execute(
         select(
             Column.column_id,
             Column.table_id,
             Column.column_name,
-            SemanticAnnotation.temporal_behavior,
+            ColumnConcept.temporal_behavior,
         )
         .join(SemanticAnnotation, SemanticAnnotation.column_id == Column.column_id)
+        .outerjoin(
+            ColumnConcept,
+            (ColumnConcept.column_id == Column.column_id) & (ColumnConcept.run_id == run_id),
+        )
         .where(
             Column.table_id.in_(table_ids),
             SemanticAnnotation.semantic_role == "measure",
@@ -130,7 +133,7 @@ def persist_driver_rankings(
     """
     if not table_ids:
         return 0
-    measures = _measure_columns(session, table_ids)
+    measures = _measure_columns(session, table_ids, run_id=run_id)
     if not measures:
         logger.info("driver_rankings_no_measures", table_ids=table_ids)
         return 0

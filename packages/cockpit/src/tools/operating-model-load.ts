@@ -15,9 +15,9 @@ import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns as columnsView,
+	currentColumnConcepts,
 	currentDriverRankings,
 	currentRelationships,
-	currentSemanticAnnotations,
 	currentValidationResults,
 	sqlSnippets,
 	tables as tablesView,
@@ -85,11 +85,11 @@ export async function loadOperatingModelGraph(): Promise<LoadOperatingModelResul
 			),
 		metadataDb
 			.select({
-				concept: currentSemanticAnnotations.businessConcept,
-				columnId: currentSemanticAnnotations.columnId,
+				concept: currentColumnConcepts.businessConcept,
+				columnId: currentColumnConcepts.columnId,
 			})
-			.from(currentSemanticAnnotations)
-			.where(isNotNull(currentSemanticAnnotations.businessConcept)),
+			.from(currentColumnConcepts)
+			.where(isNotNull(currentColumnConcepts.businessConcept)),
 		metadataDb
 			.select({
 				measureColumnId: currentDriverRankings.measureColumnId,

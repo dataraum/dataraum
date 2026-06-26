@@ -24,6 +24,7 @@ import { z } from "zod";
 import { metadataDb } from "../db/metadata/client";
 import {
 	columns,
+	currentColumnConcepts,
 	currentDerivedColumns,
 	currentSemanticAnnotations,
 	currentStatisticalProfiles,
@@ -594,14 +595,18 @@ export async function lookProfile(input: {
 async function loadSemantic(columnId: string): Promise<SemanticRow | null> {
 	const [row] = await metadataDb
 		.select({
-			businessConcept: currentSemanticAnnotations.businessConcept,
+			businessConcept: currentColumnConcepts.businessConcept,
 			semanticRole: currentSemanticAnnotations.semanticRole,
 			businessName: currentSemanticAnnotations.businessName,
 			entityType: currentSemanticAnnotations.entityType,
-			temporalBehavior: currentSemanticAnnotations.temporalBehavior,
-			unitSourceColumn: currentSemanticAnnotations.unitSourceColumn,
+			temporalBehavior: currentColumnConcepts.temporalBehavior,
+			unitSourceColumn: currentColumnConcepts.unitSourceColumn,
 		})
 		.from(currentSemanticAnnotations)
+		.leftJoin(
+			currentColumnConcepts,
+			eq(currentColumnConcepts.columnId, currentSemanticAnnotations.columnId),
+		)
 		.where(eq(currentSemanticAnnotations.columnId, columnId))
 		.limit(1);
 	return row ?? null;

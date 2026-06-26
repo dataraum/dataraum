@@ -33,6 +33,16 @@ WHERE EXISTS (
 )
 ;
 
+DROP VIEW IF EXISTS __READ__.current_column_concepts;
+CREATE VIEW __READ__.current_column_concepts AS
+SELECT r.* FROM __WS__.column_concepts r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'catalog'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_column_eligibility;
 CREATE VIEW __READ__.current_column_eligibility AS
 SELECT r.* FROM __WS__.column_eligibility r

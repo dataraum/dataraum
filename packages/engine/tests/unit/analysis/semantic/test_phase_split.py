@@ -12,10 +12,12 @@ from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
 from dataraum.analysis.semantic.agent import SemanticAgent
+from dataraum.analysis.semantic.db_models import ColumnConcept as ColumnConceptDB
 from dataraum.analysis.semantic.db_models import SemanticAnnotation as AnnotationDB
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
+    ColumnConceptOutput,
     ColumnSemanticOutput,
     EntityDetection,
     IdentityColumn,
@@ -26,6 +28,7 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.processor import (
     persist_column_annotations,
+    persist_column_concepts,
     synthesize_and_store_tables,
 )
 from dataraum.core.models.base import RelationshipType, Result
@@ -51,19 +54,17 @@ def _table_with_columns(session, name: str, columns: list[str]) -> Table:
 
 
 def _col(name: str, role: str, **kw) -> ColumnSemanticOutput:
+    # Object-grain only (DAT-637): business_concept / unit_source_column /
+    # derived_formula moved to the table agent's ColumnConceptOutput.
     return ColumnSemanticOutput(
         column_name=name,
         semantic_role=role,
         entity_type=kw.get("entity_type", f"{name}_entity"),
         business_term=kw.get("business_term", name.title()),
-        business_concept=kw.get("business_concept"),
         description=kw.get("description", f"{name} column"),
         confidence=kw.get("confidence", 0.9),
-        unit_source_column=kw.get("unit_source_column"),
         temporal_behavior_claim=kw.get("temporal_behavior_claim", "unsure"),
         temporal_behavior_claim_confidence=kw.get("temporal_behavior_claim_confidence", 0.0),
-        derived_formula_hypothesis=kw.get("derived_formula_hypothesis"),
-        derived_formula_confidence=kw.get("derived_formula_confidence", 0.0),
     )
 
 
@@ -80,8 +81,8 @@ class TestPersistColumnAnnotations:
                 TableColumnAnnotation(
                     table_name="customers",
                     columns=[
-                        _col("customer_id", "key", business_concept="customer"),
-                        _col("revenue", "measure", unit_source_column="currency_code"),
+                        _col("customer_id", "key"),
+                        _col("revenue", "measure"),
                     ],
                 )
             ]
@@ -100,8 +101,10 @@ class TestPersistColumnAnnotations:
         assert count == 2
         assert len(rows) == 2
         by_role = {r.semantic_role: r for r in rows}
-        assert by_role["key"].business_concept == "customer"
-        assert by_role["measure"].unit_source_column == "currency_code"
+        # Object-grain fields only — catalogue-grain (business_concept, unit
+        # source) is the table agent's ColumnConcept, not this writer (DAT-637).
+        assert by_role["key"].business_name == "Customer_Id"
+        assert by_role["measure"].entity_type == "revenue_entity"
         assert all(r.annotation_source == "llm" and r.annotated_by == "test-model" for r in rows)
 
     def test_skips_columns_not_in_the_table(self, session) -> None:
@@ -124,45 +127,86 @@ class TestPersistColumnAnnotations:
         )
         assert count == 1
 
-    def test_persists_derived_formula_hypothesis(self, session) -> None:
-        """The formula-hypothesis witness lands on the annotation row (ADR-0009).
+
+class TestPersistColumnConcepts:
+    """The catalogue-grain authoring the table agent owns (DAT-637)."""
+
+    def test_persists_concept_unit_and_normalizes_formula(self, session) -> None:
+        """business_concept / unit source / derived-formula land on ColumnConcept.
 
         Whitespace-only hypotheses normalize to None so the detector's
         truthiness read ("no hypothesis → witness abstains") holds.
         """
         table = _table_with_columns(session, "orders", ["total", "discount"])
-        output = ColumnAnnotationOutput(
-            tables=[
-                TableColumnAnnotation(
-                    table_name="orders",
-                    columns=[
-                        _col(
-                            "total",
-                            "measure",
-                            derived_formula_hypothesis="subtotal + tax",
-                            derived_formula_confidence=0.85,
-                        ),
-                        _col("discount", "measure", derived_formula_hypothesis="   "),
-                    ],
-                )
-            ]
-        )
+        concepts = [
+            ColumnConceptOutput(
+                table_name="orders",
+                column_name="total",
+                business_concept="revenue",
+                unit_source_column="currency_code",
+                derived_formula_hypothesis="subtotal + tax",
+                derived_formula_confidence=0.85,
+            ),
+            ColumnConceptOutput(
+                table_name="orders",
+                column_name="discount",
+                derived_formula_hypothesis="   ",
+            ),
+        ]
 
-        persist_column_annotations(
+        count = persist_column_concepts(
             session,
-            output,
+            concepts,
             [table.table_id],
             annotated_by="m",
             run_id=baseline_run_id(),
         )
         session.flush()
 
-        rows = {r.column_id: r for r in session.execute(select(AnnotationDB)).scalars()}
+        assert count == 2
+        rows = {r.column_id: r for r in session.execute(select(ColumnConceptDB)).scalars()}
         cols = {c.column_name: c.column_id for c in session.execute(select(Column)).scalars()}
         total = rows[cols["total"]]
+        assert total.business_concept == "revenue"
+        assert total.unit_source_column == "currency_code"
         assert total.derived_formula_hypothesis == "subtotal + tax"
         assert total.derived_formula_confidence == 0.85
         assert rows[cols["discount"]].derived_formula_hypothesis is None
+
+
+class TestNearConstantFeed:
+    """The per-table feed flags near-constant columns (DAT-637 quality fix) so the
+    table agent refuses to bind a concept to a status flag."""
+
+    @staticmethod
+    def _profile(name: str, top: list[tuple[object, int]]):
+        from datetime import UTC, datetime
+
+        from dataraum.analysis.statistics.models import ColumnProfile, ValueCount
+        from dataraum.core.models.base import ColumnRef
+
+        total = sum(c for _v, c in top)
+        return ColumnProfile(
+            column_id=name,
+            column_ref=ColumnRef(table_name="t", column_name=name),
+            profiled_at=datetime.now(UTC),
+            total_count=total,
+            null_count=0,
+            distinct_count=len(top),
+            null_ratio=0.0,
+            cardinality_ratio=len(top) / total,
+            top_values=[ValueCount(value=v, count=c, percentage=100 * c / total) for v, c in top],
+        )
+
+    def test_dominant_value_flagged_balanced_column_not(self) -> None:
+        agent = SemanticAgent.__new__(SemanticAgent)
+        profiles = [
+            self._profile("flag", [(True, 99), (False, 1)]),  # 99% → near-constant
+            self._profile("region", [("a", 40), ("b", 35), ("c", 25)]),  # balanced
+        ]
+        cols = {c["column_name"]: c for c in agent._build_tables_json(profiles, {})[0]["columns"]}
+        assert cols["flag"].get("near_constant") is True
+        assert "near_constant" not in cols["region"]
 
 
 # ---------------------------------------------------------------------------

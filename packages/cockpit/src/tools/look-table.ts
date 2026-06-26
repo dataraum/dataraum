@@ -28,6 +28,7 @@ import {
 import { tableTargetKey } from "../db/metadata/relationship-target";
 import {
 	columns,
+	currentColumnConcepts,
 	currentEntropyReadiness,
 	currentSemanticAnnotations,
 	currentTableEntities,
@@ -459,10 +460,12 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 			columnId: columns.columnId,
 			columnName: columns.columnName,
 			resolvedType: columns.resolvedType,
-			// Light per-column semantics (DAT-476) — begin_session's
-			// `semantic_per_column` annotation, head-resolved by the view. Left-join
-			// nullable: an unannotated column reads all three null → semantic: null.
-			businessConcept: currentSemanticAnnotations.businessConcept,
+			// Light per-column semantics, head-resolved by the views. Object-grain
+			// role/name from currentSemanticAnnotations (generation head);
+			// catalogue-grain business_concept from currentColumnConcepts (catalogue
+			// head, DAT-637). Both left-joins nullable → an unannotated/unbound
+			// column reads null.
+			businessConcept: currentColumnConcepts.businessConcept,
 			semanticRole: currentSemanticAnnotations.semanticRole,
 			businessName: currentSemanticAnnotations.businessName,
 		})
@@ -470,6 +473,10 @@ async function loadColumnGrid(tableId: string): Promise<ColumnReadiness[]> {
 		.leftJoin(
 			currentSemanticAnnotations,
 			eq(currentSemanticAnnotations.columnId, columns.columnId),
+		)
+		.leftJoin(
+			currentColumnConcepts,
+			eq(currentColumnConcepts.columnId, columns.columnId),
 		)
 		.where(eq(columns.tableId, tableId))
 		.orderBy(asc(columns.columnPosition));

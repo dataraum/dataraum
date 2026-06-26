@@ -167,7 +167,7 @@ def resolved_behaviour(result: PoolResult) -> tuple[str | None, bool]:
     when no witness took a position (total ignorance). ``contested`` is True when the
     pooled conflict is non-trivial: the resolved layer writes the label but flags it
     so a downstream SQL agent treats a contested stock with caution. Inverse of the
-    ontology vocabulary so the resolve write round-trips onto SemanticAnnotation.
+    ontology vocabulary so the resolve write round-trips onto ColumnConcept (DAT-637).
     """
     if not result.posterior:
         return None, False

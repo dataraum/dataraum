@@ -183,6 +183,9 @@ class DimensionalEntropyDetector(EntropyDetector):
         name = (col.column_name or "").lower()
         if name == "id" or name.endswith("_id"):
             return True
+        # "foreign_key" retained for pre-DAT-637 annotation rows; new annotations
+        # cannot carry this role (removed from the column agent's enum — FK-ness is
+        # the Relationship catalogue's job now).
         if semantic.get("semantic_role") in {"key", "foreign_key"}:
             return True
         cardinality = stats_row.get("cardinality_ratio")

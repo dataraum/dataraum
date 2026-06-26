@@ -118,6 +118,7 @@ class ExecutionContext:
         slice_value: str | None = None,
         vertical: str | None = None,
         om_run_id: str | None = None,
+        catalogue_run_id: str | None = None,
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -152,6 +153,7 @@ class ExecutionContext:
             slice_value=slice_value,
             vertical=vertical,
             om_run_id=om_run_id,
+            catalogue_run_id=catalogue_run_id,
         )
 
         return cls(

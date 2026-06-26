@@ -44,7 +44,7 @@ Registered teach types
   ``indicators`` so the next run's grounding LLM (which reads indicators via
   ``OntologyLoader.format_concepts_for_prompt``) pulls the column to that
   concept. Teach-as-witness, never an override: it steers the grounding
-  input; ``SemanticAnnotation.business_concept`` stays an LLM judgment.
+  input; ``ColumnConcept.business_concept`` (DAT-637) stays an LLM judgment.
   Applied after ``concept`` / ``concept_property`` so it patches the final
   concept state; last rebind per column wins (a later row MOVES the column).
 * ``validation`` — the logical collection ``verticals/<vertical>/validations``

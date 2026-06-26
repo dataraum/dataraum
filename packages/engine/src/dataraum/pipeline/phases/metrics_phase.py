@@ -256,8 +256,18 @@ class MetricsPhase(BasePhase):
         # NEVER re-authors, so the same concept can no longer ground different ways
         # across siblings (the within-run divergence DAT-629 only half-fixed —
         # it cached successes but the per-metric path re-authored every miss).
+        # The catalogue head run carries the table agent's ColumnConcept rows
+        # (DAT-637) — the graph context reads concepts/field-mappings from it.
+        catalogue_run_id = base_runs.relationship_run_id
         bindings = _warm_shared_nodes(
-            graphs, ctx, agent, schema_mapping_id, table_ids, vertical, om_run_id=run_id
+            graphs,
+            ctx,
+            agent,
+            schema_mapping_id,
+            table_ids,
+            vertical,
+            om_run_id=run_id,
+            catalogue_run_id=catalogue_run_id,
         )
         _log.info(
             "metrics_authored",
@@ -278,6 +288,7 @@ class MetricsPhase(BasePhase):
                 vertical,
                 bindings,
                 om_run_id=run_id,
+                catalogue_run_id=catalogue_run_id,
             )
         else:
             exec_ctx = ExecutionContext.with_rich_context(
@@ -286,6 +297,7 @@ class MetricsPhase(BasePhase):
                 table_ids=table_ids,
                 schema_mapping_id=schema_mapping_id,
                 om_run_id=run_id,
+                catalogue_run_id=catalogue_run_id,
                 vertical=vertical,
             )
             results = _execute_metrics_serial(
@@ -400,6 +412,7 @@ def _warm_shared_nodes(
     vertical: str,
     *,
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> dict[NodeKey, NodeDecision]:
     """The authoring pass: decide every unique cache-keyed node ONCE (DAT-636).
 
@@ -441,6 +454,7 @@ def _warm_shared_nodes(
             table_ids,
             vertical,
             om_run_id,
+            catalogue_run_id,
         )
     return _warm_generations_serial(
         generations,
@@ -452,6 +466,7 @@ def _warm_shared_nodes(
         table_ids,
         vertical,
         om_run_id,
+        catalogue_run_id,
     )
 
 
@@ -464,6 +479,7 @@ def _warm_generations_parallel(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> dict[NodeKey, NodeDecision]:
     """Author generations concurrently within each wave, barrier between waves.
 
@@ -501,6 +517,7 @@ def _warm_generations_parallel(
                         table_ids,
                         vertical,
                         om_run_id,
+                        catalogue_run_id,
                     )
                 ] = key
             for future in as_completed(futures):
@@ -523,6 +540,7 @@ def _warm_isolated(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> NodeDecision:
     """Author one node with an isolated session + cursor; return its decision."""
     from dataraum.graphs.agent import ExecutionContext
@@ -536,6 +554,7 @@ def _warm_isolated(
             table_ids=table_ids,
             schema_mapping_id=schema_mapping_id,
             om_run_id=om_run_id,
+            catalogue_run_id=catalogue_run_id,
             vertical=vertical,
         )
         result = agent.execute(session, mini, exec_ctx, workspace_id=schema_mapping_id)
@@ -557,6 +576,7 @@ def _warm_generations_serial(
     table_ids: list[str],
     vertical: str,
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> dict[NodeKey, NodeDecision]:
     """Serial fallback: shared session + cursor, sequential dependency order."""
     from dataraum.graphs.agent import ExecutionContext
@@ -572,6 +592,7 @@ def _warm_generations_serial(
         table_ids=table_ids,
         schema_mapping_id=schema_mapping_id,
         om_run_id=om_run_id,
+        catalogue_run_id=catalogue_run_id,
         vertical=vertical,
     )
     bindings: dict[NodeKey, NodeDecision] = {}
@@ -633,6 +654,7 @@ def _execute_metrics_parallel(
     bindings: dict[NodeKey, NodeDecision],
     *,
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> list[MetricResult]:
     """Concurrent path: per-call session + cursor via a ThreadPoolExecutor.
 
@@ -658,6 +680,7 @@ def _execute_metrics_parallel(
                 vertical,
                 bindings,
                 om_run_id,
+                catalogue_run_id,
             ): (graph_id, inspiration_id)
             for graph_id, graph, inspiration_id in prep
         }
@@ -682,6 +705,7 @@ def _execute_isolated(
     vertical: str,
     bindings: dict[NodeKey, NodeDecision],
     om_run_id: str,
+    catalogue_run_id: str | None = None,
 ) -> Result[GraphExecution]:
     """Assemble one metric from the bindings with an isolated session + cursor.
 
@@ -704,6 +728,7 @@ def _execute_isolated(
             table_ids=table_ids,
             schema_mapping_id=schema_mapping_id,
             om_run_id=om_run_id,
+            catalogue_run_id=catalogue_run_id,
             vertical=vertical,
         )
         return agent.assemble(session, graph, exec_ctx, bindings, workspace_id=schema_mapping_id)

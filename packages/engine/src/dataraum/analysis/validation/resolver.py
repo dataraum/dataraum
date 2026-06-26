@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.relationships.utils import load_defined_relationships
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.semantic.utils import load_column_concepts
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -84,6 +85,12 @@ def get_multi_table_schema_for_llm(
         logger.warning("validation_schema_tables_missing", missing_table_ids=missing)
 
     annotations = _load_pinned_annotations(session, tables, base_runs.semantic_runs)
+    # Catalogue-grain concepts (DAT-637), pinned to the same begin_session run.
+    concepts = (
+        load_column_concepts(session, table_ids, base_runs.relationship_run_id)
+        if base_runs.relationship_run_id
+        else {}
+    )
 
     # Build table schemas
     table_schemas = []
@@ -124,7 +131,7 @@ def get_multi_table_schema_for_llm(
                     duckdb_path=table.duckdb_path,
                 )
 
-        schema = _format_table_schema(table, annotations, row_count=row_count)
+        schema = _format_table_schema(table, annotations, concepts, row_count=row_count)
         table_schemas.append(schema)
         table_id_to_name[table.table_id] = table.table_name
 
@@ -275,6 +282,7 @@ def _load_pinned_annotations(
 def _format_table_schema(
     table: Table,
     annotations: dict[str, SemanticAnnotation],
+    concepts: dict[str, ColumnConcept],
     *,
     row_count: int | None = None,
 ) -> dict[str, Any]:
@@ -282,7 +290,8 @@ def _format_table_schema(
 
     Args:
         table: Table ORM object with columns loaded
-        annotations: run-pinned semantic annotations keyed by column_id
+        annotations: run-pinned object-grain semantic annotations keyed by column_id
+        concepts: run-pinned catalogue-grain column concepts keyed by column_id
         row_count: Optional row count from DuckDB
 
     Returns:
@@ -296,14 +305,15 @@ def _format_table_schema(
         }
 
         ann = annotations.get(col.column_id)
-        if ann is not None:
+        concept = concepts.get(col.column_id)
+        if ann is not None or concept is not None:
             col_info["semantic"] = {
-                "role": ann.semantic_role,
-                "entity_type": ann.entity_type,
-                "business_name": ann.business_name,
-                "business_concept": ann.business_concept,
-                "temporal_behavior": ann.temporal_behavior,
-                "business_description": ann.business_description,
+                "role": ann.semantic_role if ann else None,
+                "entity_type": ann.entity_type if ann else None,
+                "business_name": ann.business_name if ann else None,
+                "business_description": ann.business_description if ann else None,
+                "business_concept": concept.business_concept if concept else None,
+                "temporal_behavior": concept.temporal_behavior if concept else None,
             }
 
         columns.append(col_info)

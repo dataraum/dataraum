@@ -18,7 +18,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.semantic.db_models import ColumnConcept
 from dataraum.entropy.db_models import EntropyObjectRecord
 from dataraum.entropy.resolve import resolve_temporal_behavior
 from dataraum.storage import init_database
@@ -58,13 +58,11 @@ def _seed_annotation(
     *,
     ontology_behaviour: str = "point_in_time",
 ) -> None:
-    """The annotation semantic_per_column wrote, carrying the ONTOLOGY prior."""
+    """The ColumnConcept the table agent wrote, carrying the ONTOLOGY prior (DAT-637)."""
     session.add(
-        SemanticAnnotation(
-            annotation_id=str(uuid4()),
+        ColumnConcept(
             column_id=column_id,
             run_id=run_id,
-            semantic_role="measure",
             temporal_behavior=ontology_behaviour,
         )
     )
@@ -97,11 +95,11 @@ def _seed_object(
     session.flush()
 
 
-def _read(session: Session, column_id: str, run_id: str = _RUN) -> SemanticAnnotation:
+def _read(session: Session, column_id: str, run_id: str = _RUN) -> ColumnConcept:
     return session.execute(
-        select(SemanticAnnotation).where(
-            SemanticAnnotation.column_id == column_id,
-            SemanticAnnotation.run_id == run_id,
+        select(ColumnConcept).where(
+            ColumnConcept.column_id == column_id,
+            ColumnConcept.run_id == run_id,
         )
     ).scalar_one()
 

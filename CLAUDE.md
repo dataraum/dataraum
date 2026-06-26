@@ -52,6 +52,10 @@ External, stack-specific skills:
 
 Dev runs in a sandboxed (SBX) container — the sandbox handles permissions, so agents run **without per-command gating**. Don't add `permissionMode: bypassPermissions`, cd-must-be-relative rules, or `permissions.allow` allowlists to dodge prompts.
 
+**Git hygiene for concurrent agents (this repo runs several at once):**
+- **ALWAYS WORK IN A WORKTREE.** Never edit on a shared checkout's branch — another agent can switch or commit under you, and your work ends up stranded on someone else's branch (or their commits land in your PR). Spawn with `isolation: "worktree"`, or `git worktree add .claude/worktrees/<task> -b <branch>`; commit there.
+- **ALWAYS REBASE/MERGE onto `origin/main` BEFORE PUSHING.** Fetch + rebase first — main moves under long runs. Pushing a stale-base branch forces a non-fast-forward fixup later (or clobbers a teammate's force-push). Rebase clean, re-verify, then push.
+
 ## Dev loop
 
 ```bash

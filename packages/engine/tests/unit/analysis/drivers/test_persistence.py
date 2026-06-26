@@ -17,8 +17,12 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.drivers.db_models import DriverRankingArtifact
 from dataraum.analysis.drivers.models import DriverRanking, DriverSlice, SecondaryDriver
-from dataraum.analysis.drivers.persistence import persist_driver_rankings, ranking_to_row
-from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.drivers.persistence import (
+    _measure_columns,
+    persist_driver_rankings,
+    ranking_to_row,
+)
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
@@ -84,13 +88,17 @@ def _seed(
             )
         else:  # the measure column
             measure_col_id = col.column_id
+            # Object-grain role on SemanticAnnotation; catalogue-grain
+            # temporal_behavior on ColumnConcept (DAT-637).
             session.add(
                 SemanticAnnotation(
                     column_id=col.column_id,
                     run_id=RUN,
                     semantic_role=measure_role,
-                    temporal_behavior=behavior,
                 )
+            )
+            session.add(
+                ColumnConcept(column_id=col.column_id, run_id=RUN, temporal_behavior=behavior)
             )
     session.add(
         EnrichedView(
@@ -258,3 +266,25 @@ def test_only_session_tables_are_enumerated(
     rows = real_session.execute(select(DriverRankingArtifact)).scalars().all()
     assert len(rows) == 1
     assert rows[0].measure_column_id == in_col
+
+
+def test_temporal_behavior_pinned_to_run_under_coexisting_concepts(
+    real_session: Session,
+) -> None:
+    """A stale ColumnConcept from another run MUST NOT bleed into this run's pick.
+
+    DAT-637 regression guard: ``temporal_behavior`` is catalogue-grain (ColumnConcept,
+    one row per run). A Temporal redelivery after a completed semantic_per_table leaves
+    >1 concept row per column; ``_measure_columns`` must pin to ``run_id`` or it picks an
+    arbitrary run's behaviour and persists a different ranking than the promoted head.
+    """
+    tid, measure_col = _seed(real_session, dims=CL_DIMS, behavior="additive")
+    # A coexisting concept from a DIFFERENT run, the OPPOSITE behaviour.
+    real_session.add(
+        ColumnConcept(column_id=measure_col, run_id="stale-run", temporal_behavior="point_in_time")
+    )
+    real_session.flush()
+
+    measures = _measure_columns(real_session, [tid], run_id=RUN)
+    behaviours = {col_id: beh for col_id, _tid, _name, beh in measures}
+    assert behaviours[measure_col] == "additive"  # THIS run's, not the stale row's

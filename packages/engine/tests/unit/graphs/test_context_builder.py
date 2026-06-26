@@ -85,10 +85,12 @@ class TestBuilderExtractsSemanticFields:
     """Verify builder reads business_name, business_description, unit_source_column."""
 
     def test_business_name_from_semantic_annotation(self, session: Session) -> None:
-        from dataraum.analysis.semantic.db_models import SemanticAnnotation
+        from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 
         source_id, table_id, column_id = _insert_source_table_column(session)
 
+        # Object-grain (business_name/description) on SemanticAnnotation; the
+        # catalogue-grain unit source on ColumnConcept at the catalogue run (DAT-637).
         session.add(
             SemanticAnnotation(
                 annotation_id=_id(),
@@ -96,13 +98,15 @@ class TestBuilderExtractsSemanticFields:
                 semantic_role="measure",
                 business_name="Invoice Amount",
                 business_description="Total value before tax in local currency",
-                unit_source_column="currency_code",
                 confidence=0.9,
             )
         )
+        session.add(
+            ColumnConcept(column_id=column_id, run_id="cat-run", unit_source_column="currency_code")
+        )
         session.flush()
 
-        ctx = build_execution_context(session, [table_id])
+        ctx = build_execution_context(session, [table_id], catalogue_run_id="cat-run")
 
         col = ctx.tables[0].columns[0]
         assert col.business_name == "Invoice Amount"

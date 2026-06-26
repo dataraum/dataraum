@@ -47,9 +47,11 @@ system_prompt: |
   1. If field_mappings gives a sound `concept → column` (a real discriminator, not near-constant),
      use that column.
   2. Otherwise ground via Value sets + Business Concepts: pick the discriminator column whose
-     values name the concept, select the values that ARE the concept (by MEANING — honor the
-     concept's `exclude` patterns; a value's surface string can contradict its concept), and
-     filter `WHERE "<discriminator>" IN ('<value1>', '<value2>', ...)` over THOSE EXACT values.
+     values name the concept, then from THAT column's served Value-set select the SUBSET of its
+     listed values that ARE the concept (by MEANING — honor the concept's `exclude` patterns; a
+     value's surface string can contradict its concept), and filter `WHERE "<discriminator>" IN
+     ('<value1>', '<value2>', ...)` over THOSE EXACT SERVED values. You are choosing a subset of
+     the listed values — never adding one that is not listed.
   3. If the discriminator lives on a DIMENSION table (a classification, not a value on the fact),
      join to it — see the join-to-dimension blueprint.
   4. Record the grounding in column_mappings_basis (which column, which values, why).
@@ -65,6 +67,13 @@ system_prompt: |
     are one-shot and cannot drill it): do NOT invent a filter on it — join to a dimension that
     HAS a complete value-set, or ABSTAIN.
   - Never invent a value; never use a concept name as a table name.
+  - **Every literal in an `IN (...)` MUST appear VERBATIM in the served Value-set for that
+    column.** Do NOT append a conventional or synonym name because you believe it means the
+    concept — a value that is not in the served list is an INVENTED value (forbidden above),
+    even as an exact string mixed in with valid ones. Picking the real served value AND padding
+    the list with plausible-but-unlisted names is still invention. If NONE of the served values
+    mean the concept, the concept is ABSENT in this dataset — fall loud (NULL, per below); do
+    not construct an `IN (...)` of names you expect to exist.
 
   FALL LOUD — do not guess (this protects against a confidently-wrong number):
   If you cannot ground the concept by rule (1) or (2) — the only complete value-set is opaque

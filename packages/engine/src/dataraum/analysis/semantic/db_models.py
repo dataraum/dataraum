@@ -62,36 +62,14 @@ class SemanticAnnotation(Base):
     business_name: Mapped[str | None] = mapped_column(String)
     business_description: Mapped[str | None] = mapped_column(Text)
 
-    # Business concept mapping - maps to standard domain concepts
-    # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
-    business_concept: Mapped[str | None] = mapped_column(String)
-
-    # Temporal behavior from ontology: 'additive' or 'point_in_time'
-    temporal_behavior: Mapped[str | None] = mapped_column(String)
-
-    # Independent LLM stock/flow read (ADR-0009 / DAT-445), pooled against the
-    # ontology prior above in the temporal_behavior adjudication. The claim
-    # ('stock'/'flow'/'unsure') + its confidence are the LLM witness, written by
-    # semantic_per_column. ``temporal_behavior_contested`` is written back by the
-    # resolved-layer pass (dataraum.entropy.resolve) when the pooled conflict is
-    # non-trivial — it flags the resolved temporal_behavior so a downstream SQL
-    # agent treats a contested stock with caution. None = no claim / not resolved.
+    # Object-grain stock/flow witness (ADR-0009 / DAT-445): the column agent's
+    # INDEPENDENT per-column read ('stock'/'flow'/'unsure') + its confidence,
+    # decidable from one column's name + values, written by semantic_per_column.
+    # The ontology-derived ``temporal_behavior`` it is pooled against is
+    # catalogue-grain and now lives on ``ColumnConcept`` (DAT-637) — owned by the
+    # table agent, never duplicated here.
     temporal_behavior_claim: Mapped[str | None] = mapped_column(String)
     temporal_behavior_claim_confidence: Mapped[float | None] = mapped_column(Float)
-    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
-
-    # Independent LLM formula hypothesis (ADR-0009, derived_value second witness):
-    # the within-table arithmetic expression this column SHOULD obey from its
-    # name + concept context (e.g. 'subtotal + tax_amount'), with the LLM's
-    # confidence. Written by semantic_per_column alongside the stock/flow claim;
-    # pooled against the data-discovered formula (correlation phase) in the
-    # derived_value adjudication. None = no hypothesis (the witness abstains).
-    derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
-    derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
-
-    # Cross-column unit inference: column name that defines the unit for this measure
-    # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
-    unit_source_column: Mapped[str | None] = mapped_column(String)
 
     # Resolved null-marker tokens (ADR-0009 / DAT-457): the rejected tokens the
     # null_semantics adjudication resolved to is-null (pooled posterior past
@@ -112,6 +90,66 @@ class SemanticAnnotation(Base):
 
     # Relationships
     column: Mapped[Column] = relationship(back_populates="semantic_annotation")
+
+
+class ColumnConcept(Base):
+    """Catalogue-grain per-column semantics, owned by the table agent (DAT-637).
+
+    The home for column attributes that CANNOT be decided from a single table —
+    they need the composed catalogue (cross-cutting ontology concepts, the
+    confirmed relationship catalogue, the enriched fact×dimension views). They are
+    authored ONLY by ``semantic_per_table`` (begin_session) and sealed under the
+    workspace **catalogue head**, never by the object-grain per-column agent.
+
+    Single ownership, no copy-forward: these fields were physically removed from
+    ``SemanticAnnotation`` (object-grain, add_source generation head). A reader
+    resolves them through :func:`load_column_concepts`, which DEMANDS the catalogue
+    run — there is no unscoped read, so object-grain code (add_source ``detect``)
+    cannot reach catalogue-grain semantics by construction.
+
+    Fields:
+        business_concept: the standard ontology concept this column grounds
+            (revenue, accounts_receivable). Cross-cutting — a property of the
+            composed catalogue, not one table. None when the column is not a
+            genuine discriminator for any concept (grounds via value-sets).
+        temporal_behavior: the ontology concept's stock/flow ('additive' /
+            'point_in_time'), a function of ``business_concept``.
+        temporal_behavior_contested: set by the resolved-layer pass when the
+            object-grain ``temporal_behavior_claim`` and this ontology behavior
+            pool to a non-trivial conflict.
+        unit_source_column: the column (possibly ``table.column`` via a confirmed
+            FK) that defines this measure's unit.
+        derived_formula_hypothesis / _confidence: the arithmetic this column
+            should obey — operands may span a JOINED table (the derived_value
+            session detector grades it over enriched_views), so it is reasoned
+            from the relationship catalogue, not one table.
+    """
+
+    __tablename__ = "column_concepts"
+    # One row per column PER catalogue run (DAT-637): mirrors SemanticAnnotation's
+    # run-versioned grain so coexisting begin_session runs don't collide; the
+    # catalogue head names the current run.
+    __table_args__ = (UniqueConstraint("column_id", "run_id", name="uq_column_concept"),)
+
+    concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    # Snapshot version axis: the begin_session (catalogue head) run that wrote this row.
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+
+    business_concept: Mapped[str | None] = mapped_column(String)
+    temporal_behavior: Mapped[str | None] = mapped_column(String)
+    temporal_behavior_contested: Mapped[bool | None] = mapped_column(Boolean)
+    unit_source_column: Mapped[str | None] = mapped_column(String)
+    derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
+    derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
+
+    # Provenance
+    annotation_source: Mapped[str | None] = mapped_column(String)
+    annotated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    annotated_by: Mapped[str | None] = mapped_column(String)
+    confidence: Mapped[float | None] = mapped_column(Float)
 
 
 class TableEntity(Base):

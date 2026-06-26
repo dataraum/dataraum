@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.drivers.models import Measure
 from dataraum.analysis.drivers.processor import discover_drivers
-from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.storage import Column, Table
@@ -78,10 +78,13 @@ def _seed_catalog(session: Session, dims: list[str] = CL_DIMS) -> str:
                 )
             )
         if name == "measure":
+            # Object-grain role on SemanticAnnotation; catalogue-grain
+            # temporal_behavior on ColumnConcept (DAT-637).
             session.add(
-                SemanticAnnotation(
-                    column_id=col.column_id, run_id=RUN, temporal_behavior="additive"
-                )
+                SemanticAnnotation(column_id=col.column_id, run_id=RUN, semantic_role="measure")
+            )
+            session.add(
+                ColumnConcept(column_id=col.column_id, run_id=RUN, temporal_behavior="additive")
             )
     session.add(
         EnrichedView(

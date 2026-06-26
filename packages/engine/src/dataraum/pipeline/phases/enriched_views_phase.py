@@ -155,13 +155,23 @@ class EnrichedViewsPhase(BasePhase):
             )
 
         # The session's defined relationships (not candidate) touching these tables.
+        # Include composite-key groups (DAT-277): their component rows are folded
+        # into ONE multi-column join keyed on the anchor (key_position 0); the
+        # scope rows (key_position > 0) are NOT standalone joins.
         all_relationships = load_defined_relationships(
             ctx.session,
             table_ids,
             run_id=ctx.run_id,
             both_tables=False,
             min_confidence=_MIN_CONFIDENCE,
+            include_composite_groups=True,
         )
+        # Composite components grouped by relationship_group_id, so an anchor row
+        # can recover its full key. Plain rows (group_id None) are not grouped.
+        composite_groups: dict[str, list[Relationship]] = {}
+        for r in all_relationships:
+            if r.relationship_group_id is not None:
+                composite_groups.setdefault(r.relationship_group_id, []).append(r)
 
         # Build column lookups
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))
@@ -185,11 +195,20 @@ class EnrichedViewsPhase(BasePhase):
         col_id_by_name: dict[tuple[str, str], str] = {
             (c.table_id, c.column_name): c.column_id for c in all_columns
         }
+        name_by_col_id: dict[str, str] = {c.column_id: c.column_name for c in all_columns}
+        table_by_col_id: dict[str, str] = {c.column_id: c.table_id for c in all_columns}
         # Per fact: the relationships touching it, keyed by directional column pair (the
-        # cross-run-stable identity; relationship_id is a per-run uuid4).
+        # cross-run-stable identity; relationship_id is a per-run uuid4). A composite
+        # group contributes ONLY its anchor (key_position 0) here — the scope rows are
+        # folded into the anchor's multi-column key, never standalone single-col joins.
+        anchor_group_by_pair: dict[tuple[str, str], list[Relationship]] = {}
         rels_touching: dict[str, dict[tuple[str, str], Relationship]] = {}
         for r in all_relationships:
+            if r.relationship_group_id is not None and r.key_position != 0:
+                continue  # scope row — represented by its anchor
             pair = (r.from_column_id, r.to_column_id)
+            if r.relationship_group_id is not None:
+                anchor_group_by_pair[pair] = composite_groups[r.relationship_group_id]
             for tid in (r.from_table_id, r.to_table_id):
                 if tid in tables_by_id:
                     rels_touching.setdefault(tid, {})[pair] = r
@@ -276,6 +295,9 @@ class EnrichedViewsPhase(BasePhase):
                             dim_pk_column=spec["dim_pk_column"],
                             include_columns=list(spec["include_columns"]),
                             relationship_id=cand_by_pair[pair].relationship_id,
+                            # Composite key (DAT-277): inherited verbatim from the sticky
+                            # shape, not re-derived (DAT-516).
+                            key_pairs=[(a, b) for a, b in spec.get("key_pairs", [])],
                         ),
                         pair,
                     )
@@ -296,11 +318,27 @@ class EnrichedViewsPhase(BasePhase):
                         if new_pair in inherited_pairs:
                             continue  # already inherited — never double-add a pair
                         inherited_pairs.add(new_pair)
+                        new_join = replace(
+                            join, relationship_id=cand_by_pair[new_pair].relationship_id
+                        )
+                        # Composite key (DAT-277): expand the anchor join to its full
+                        # multi-column key so the ON clause scopes correctly and the
+                        # join stays grain-preserving.
+                        group = anchor_group_by_pair.get(new_pair)
+                        if group is not None:
+                            kp = self._composite_key_pairs(
+                                group, fact_id, name_by_col_id, table_by_col_id
+                            )
+                            if kp:
+                                new_join = replace(
+                                    new_join,
+                                    key_pairs=kp,
+                                    fact_fk_column=kp[0][0],
+                                    dim_pk_column=kp[0][1],
+                                )
                         joins_with_ids.append(
                             (
-                                replace(
-                                    join, relationship_id=cand_by_pair[new_pair].relationship_id
-                                ),
+                                new_join,
                                 new_pair,
                             )
                         )
@@ -464,6 +502,9 @@ class EnrichedViewsPhase(BasePhase):
                     "dim_pk_column": j.dim_pk_column,
                     "dim_table_name": j.dim_table_name,
                     "include_columns": list(j.include_columns),
+                    # Composite key (DAT-277): the full multi-column key, persisted so
+                    # the sticky shape inherits it verbatim next run. [] = single-column.
+                    "key_pairs": [[a, b] for a, b in j.key_pairs],
                 }
                 for j, pair in joins_with_ids
             ]
@@ -525,6 +566,37 @@ class EnrichedViewsPhase(BasePhase):
             if cand in cand_by_pair:
                 return cand
         return None
+
+    @staticmethod
+    def _composite_key_pairs(
+        group_rows: list[Relationship],
+        fact_id: str,
+        name_by_col_id: dict[str, str],
+        table_by_col_id: dict[str, str],
+    ) -> list[tuple[str, str]]:
+        """Fact→dim ``(column_name, column_name)`` pairs for a composite key (DAT-277).
+
+        Anchor (``key_position`` 0) first. Each component relationship is between the
+        fact and a dimension; the fact-side column is whichever endpoint sits on
+        ``fact_id``. Returns ``[]`` if any component can't be oriented onto the fact or
+        a name is missing — the caller then degrades to the single anchor pair rather
+        than emit a malformed ON clause.
+        """
+        ordered = sorted(group_rows, key=lambda r: r.key_position or 0)
+        pairs: list[tuple[str, str]] = []
+        for r in ordered:
+            if table_by_col_id.get(r.from_column_id) == fact_id:
+                fact_col_id, dim_col_id = r.from_column_id, r.to_column_id
+            elif table_by_col_id.get(r.to_column_id) == fact_id:
+                fact_col_id, dim_col_id = r.to_column_id, r.from_column_id
+            else:
+                return []
+            fact_name = name_by_col_id.get(fact_col_id)
+            dim_name = name_by_col_id.get(dim_col_id)
+            if not fact_name or not dim_name:
+                return []
+            pairs.append((fact_name, dim_name))
+        return pairs
 
     def _register_and_profile_dim_columns(
         self,

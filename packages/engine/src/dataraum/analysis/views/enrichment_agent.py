@@ -177,15 +177,32 @@ class EnrichmentAgent(LLMFeature):
             to_col = rel.get("to_column", "?")
             cardinality = rel.get("cardinality", "unknown")
             confidence = rel.get("confidence", 0.0)
+            key_pairs = rel.get("key_pairs") or []
 
-            # Only show grain-safe cardinalities prominently
+            # Only show grain-safe cardinalities prominently. For a composite (DAT-277)
+            # the cardinality is the COMPOSITE one (the full key), so a grain-safe
+            # composite is one whose multi-column join preserves grain.
             grain_safe = cardinality in ("many-to-one", "one-to-one")
             grain_marker = " [GRAIN-SAFE]" if grain_safe else " [AVOID - may duplicate rows]"
 
-            lines.append(
-                f"- {from_table}.{from_col} -> {to_table}.{to_col} "
-                f"({cardinality}, confidence={confidence:.2f}){grain_marker}"
-            )
+            if key_pairs:
+                # Composite (DAT-277): present the dimension and its FULL key. No single
+                # pair is headlined — the join requires every pair, and the LLM copies
+                # the extras into additional_join_columns.
+                cols = ", ".join(
+                    f"{from_table}.{p['from_column']} = {to_table}.{p['to_column']}"
+                    for p in key_pairs
+                )
+                lines.append(
+                    f"- {from_table} -> {to_table} (COMPOSITE, {cardinality}, "
+                    f"confidence={confidence:.2f}){grain_marker}"
+                )
+                lines.append(f"    Join key (use ALL pairs or rows duplicate): {cols}")
+            else:
+                lines.append(
+                    f"- {from_table}.{from_col} -> {to_table}.{to_col} "
+                    f"({cardinality}, confidence={confidence:.2f}){grain_marker}"
+                )
 
         return "\n".join(lines)
 
@@ -290,7 +307,17 @@ class EnrichmentAgent(LLMFeature):
                     )
                     continue
 
-                # Create DimensionJoin
+                # Create DimensionJoin. A composite join (DAT-277) carries the FULL
+                # key the LLM decided on — the primary pair plus every additional
+                # pair — so the builder ANDs them and the join preserves grain. The
+                # phase ASSEMBLES this verbatim; it does not re-derive the key.
+                key_pairs: list[tuple[str, str]] = [
+                    (enrichment.join_fact_column, enrichment.join_dimension_column)
+                ]
+                key_pairs.extend(
+                    (p.join_fact_column, p.join_dimension_column)
+                    for p in enrichment.additional_join_columns
+                )
                 dimension_join = DimensionJoin(
                     dim_table_name=dim_table_name,
                     dim_duckdb_path=dim_duckdb_path,
@@ -298,6 +325,9 @@ class EnrichmentAgent(LLMFeature):
                     dim_pk_column=enrichment.join_dimension_column,
                     include_columns=include_columns,
                     relationship_id="",  # Will be filled by caller if needed
+                    # Single-column join → leave key_pairs empty (the builder uses the
+                    # primary pair); composite → the full LLM-decided key.
+                    key_pairs=key_pairs if enrichment.additional_join_columns else [],
                 )
 
                 # Create recommendation

@@ -83,6 +83,59 @@ class TestBuildEnrichedViewSql:
         assert "product_id__category" in dim_cols
         assert len(dim_cols) == 3
 
+    def test_colliding_column_names_are_made_unique(self):
+        """Two joins sharing a fact-column prefix + a same-named dim column must not
+        collide — the builder disambiguates by construction (uq_table_column safety)."""
+        joins = [
+            DimensionJoin(
+                dim_table_name="customers",
+                dim_duckdb_path='lake.typed."csv__customers"',
+                fact_fk_column="org",  # same prefix on purpose
+                dim_pk_column="org",
+                include_columns=["city"],
+            ),
+            DimensionJoin(
+                dim_table_name="vendors",
+                dim_duckdb_path='lake.typed."csv__vendors"',
+                fact_fk_column="org",  # same prefix on purpose
+                dim_pk_column="org",
+                include_columns=["city"],
+            ),
+        ]
+        _sql, dim_cols = build_enriched_view_sql(
+            view_fqn='lake.typed."enriched_csv__txn"',
+            fact_fqn='lake.typed."csv__txn"',
+            dimension_joins=joins,
+        )
+        assert len(dim_cols) == len(set(dim_cols))  # no duplicates
+        assert dim_cols == ["org__city", "org__city_2"]
+
+    def test_composite_key_join_ands_every_pair(self):
+        """A composite key (DAT-277) ANDs all component pairs in the ON clause."""
+        joins = [
+            DimensionJoin(
+                dim_table_name="coa",
+                dim_duckdb_path='lake.typed."csv__coa"',
+                fact_fk_column="account",
+                dim_pk_column="account_name",
+                include_columns=["account_type"],
+                relationship_id="rel-1",
+                key_pairs=[("account", "account_name"), ("business_id", "business_id")],
+            )
+        ]
+
+        sql, dim_cols = build_enriched_view_sql(
+            view_fqn='lake.typed."enriched_csv__txn"',
+            fact_fqn='lake.typed."csv__txn"',
+            dimension_joins=joins,
+        )
+
+        assert 'f."account" = ' in sql
+        assert ' AND ' in sql
+        assert 'f."business_id" = ' in sql
+        # the column prefix still uses the anchor fact column
+        assert dim_cols == ["account__account_type"]
+
     def test_same_dim_table_joined_twice_produces_unique_column_names(self):
         """Same dimension table joined via two different FK columns gets distinct column names."""
         joins = [

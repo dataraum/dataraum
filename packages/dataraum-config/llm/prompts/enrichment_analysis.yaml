@@ -32,6 +32,15 @@ system_prompt: |
   - Relationships marked [AVOID] would duplicate rows - do NOT use these
   </grain_preservation>
 
+  <composite_keys>
+  A relationship marked COMPOSITE lists more than one column pair under "Join key".
+  Its join is correct ONLY when you join on ALL of those pairs together; joining on a
+  subset duplicates rows. To expose such a dimension, put one pair in join_fact_column
+  / join_dimension_column and EVERY remaining pair in additional_join_columns, copied
+  exactly as shown. For an ordinary single-pair relationship, leave
+  additional_join_columns empty.
+  </composite_keys>
+
   <dimension_types>
   Categorize each recommended dimension by type:
   - geographic: Country, region, city, location hierarchies, addresses

@@ -77,6 +77,64 @@ class TestEnrichedViewsIntegration:
         assert result[0][5] == "US"  # customers__country
         assert result[1][4] == "Bob"  # customers__name
 
+    def test_composite_key_join_collapses_fanout(self, duckdb_conn):
+        """The BookSQL shape (DAT-277): account alone fans out; (account, business_id) holds grain.
+
+        Joining the txn fact to the chart-of-accounts on ``account`` alone multiplies
+        rows (the same account name recurs across businesses → many-to-many). The
+        composite key scopes the join to the right tenant, so the enriched view keeps
+        the fact's row count exactly.
+        """
+        duckdb_conn.execute(
+            "CREATE TABLE typed_txn (txn_id INTEGER, account VARCHAR, business_id VARCHAR, amount DOUBLE)"
+        )
+        duckdb_conn.execute(
+            "INSERT INTO typed_txn VALUES "
+            "(1,'Sales','B1',10),(2,'Sales','B1',20),(3,'COGS','B1',5),"
+            "(4,'Sales','B2',30),(5,'COGS','B2',7)"
+        )
+        duckdb_conn.execute(
+            "CREATE TABLE typed_coa (account_name VARCHAR, business_id VARCHAR, account_type VARCHAR)"
+        )
+        duckdb_conn.execute(
+            "INSERT INTO typed_coa VALUES "
+            "('Sales','B1','revenue'),('COGS','B1','expense'),"
+            "('Sales','B2','revenue'),('COGS','B2','expense')"
+        )
+
+        # Single-column join fans out: 'Sales' matches both B1 and B2 rows in coa.
+        single = [
+            DimensionJoin(
+                dim_table_name="coa",
+                dim_duckdb_path="typed_coa",
+                fact_fk_column="account",
+                dim_pk_column="account_name",
+                include_columns=["account_type"],
+            )
+        ]
+        sql, _ = build_enriched_view_sql('"enriched_single"', "typed_txn", single)
+        duckdb_conn.execute(sql)
+        assert duckdb_conn.execute('SELECT COUNT(*) FROM "enriched_single"').fetchone()[0] > 5
+
+        # Composite (account, business_id) join preserves grain (5 fact rows).
+        composite = [
+            DimensionJoin(
+                dim_table_name="coa",
+                dim_duckdb_path="typed_coa",
+                fact_fk_column="account",
+                dim_pk_column="account_name",
+                include_columns=["account_type"],
+                key_pairs=[("account", "account_name"), ("business_id", "business_id")],
+            )
+        ]
+        sql, _ = build_enriched_view_sql('"enriched_composite"', "typed_txn", composite)
+        duckdb_conn.execute(sql)
+        rows = duckdb_conn.execute(
+            'SELECT account__account_type FROM "enriched_composite" ORDER BY txn_id'
+        ).fetchall()
+        assert len(rows) == 5  # grain preserved
+        assert [r[0] for r in rows] == ["revenue", "revenue", "expense", "revenue", "expense"]
+
     def test_view_with_no_match_uses_null(self, duckdb_conn):
         """Test that LEFT JOIN produces NULLs for unmatched rows."""
         duckdb_conn.execute("""

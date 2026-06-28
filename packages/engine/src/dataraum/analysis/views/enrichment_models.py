@@ -31,12 +31,29 @@ class EnrichmentColumnOutput(BaseModel):
     reasoning: str = Field(description="Why this column adds value to the main dataset")
 
 
+class JoinColumnPair(BaseModel):
+    """One ADDITIONAL (fact_column, dimension_column) pair of a composite join key."""
+
+    join_fact_column: str = Field(description="Column in the main (fact) table.")
+    join_dimension_column: str = Field(description="Matching column in the dimension table.")
+
+
 class DimensionEnrichmentOutput(BaseModel):
     """A recommended dimension table join."""
 
     dimension_table: str = Field(description="Name of the dimension/lookup table to join")
     join_fact_column: str = Field(description="Column in the main table used for joining")
     join_dimension_column: str = Field(description="Column in the dimension table used for joining")
+    additional_join_columns: list[JoinColumnPair] = Field(
+        default_factory=list,
+        description=(
+            "ADDITIONAL join column pairs beyond the primary "
+            "(join_fact_column, join_dimension_column). Leave EMPTY for an ordinary "
+            "single-pair join. Set these ONLY for a relationship shown as COMPOSITE — "
+            "one whose key spans several column pairs that must all be joined together "
+            "or rows duplicate. Copy the remaining key pairs exactly as shown."
+        ),
+    )
     dimension_type: Literal["geographic", "category", "reference", "temporal", "other"] = Field(
         description=(
             "Type of dimension being added: "

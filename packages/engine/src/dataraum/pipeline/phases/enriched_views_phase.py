@@ -155,12 +155,17 @@ class EnrichedViewsPhase(BasePhase):
             )
 
         # The session's defined relationships (not candidate) touching these tables.
+        # Include composite-key groups (DAT-277): the enrichment LLM is shown each
+        # group as ONE relationship carrying its full multi-column key, and DECIDES
+        # whether to expose it as a composite join — the phase only assembles the
+        # join the LLM emits, it never derives the key itself.
         all_relationships = load_defined_relationships(
             ctx.session,
             table_ids,
             run_id=ctx.run_id,
             both_tables=False,
             min_confidence=_MIN_CONFIDENCE,
+            include_composite_groups=True,
         )
 
         # Build column lookups
@@ -185,8 +190,11 @@ class EnrichedViewsPhase(BasePhase):
         col_id_by_name: dict[tuple[str, str], str] = {
             (c.table_id, c.column_name): c.column_id for c in all_columns
         }
-        # Per fact: the relationships touching it, keyed by directional column pair (the
-        # cross-run-stable identity; relationship_id is a per-run uuid4).
+        # Per fact: every confirmed relationship pair touching it, keyed by directional
+        # column pair (the cross-run-stable identity; relationship_id is a per-run
+        # uuid4). A composite group contributes ALL its component pairs here, so the
+        # LLM's chosen join column — whichever component it names — resolves to a
+        # confirmed relationship for provenance + the candidacy/suppression checks.
         rels_touching: dict[str, dict[tuple[str, str], Relationship]] = {}
         for r in all_relationships:
             pair = (r.from_column_id, r.to_column_id)
@@ -276,6 +284,9 @@ class EnrichedViewsPhase(BasePhase):
                             dim_pk_column=spec["dim_pk_column"],
                             include_columns=list(spec["include_columns"]),
                             relationship_id=cand_by_pair[pair].relationship_id,
+                            # Composite key (DAT-277): inherited verbatim from the sticky
+                            # shape, not re-derived (DAT-516).
+                            key_pairs=[(a, b) for a, b in spec.get("key_pairs", [])],
                         ),
                         pair,
                     )
@@ -288,6 +299,10 @@ class EnrichedViewsPhase(BasePhase):
                     if rec.fact_table_id != fact_id:
                         continue
                     for join in rec.dimension_joins:
+                        # Resolve the LLM's PRIMARY join column to a confirmed
+                        # relationship — provenance + the candidacy/suppression gate.
+                        # The join's KEY (single or composite ``key_pairs``) is the
+                        # LLM's decision, assembled verbatim; the phase never derives it.
                         new_pair = self._join_pair(
                             join, fact_id, tables_by_name, col_id_by_name, cand_by_pair
                         )
@@ -464,6 +479,9 @@ class EnrichedViewsPhase(BasePhase):
                     "dim_pk_column": j.dim_pk_column,
                     "dim_table_name": j.dim_table_name,
                     "include_columns": list(j.include_columns),
+                    # Composite key (DAT-277): the full multi-column key, persisted so
+                    # the sticky shape inherits it verbatim next run. [] = single-column.
+                    "key_pairs": [[a, b] for a, b in j.key_pairs],
                 }
                 for j, pair in joins_with_ids
             ]
@@ -830,36 +848,51 @@ class EnrichedViewsPhase(BasePhase):
                 }
             )
 
-        # Build confirmed relationships
+        # Build confirmed relationships for the LLM. A composite group (DAT-277) is
+        # presented as ONE relationship carrying its full multi-column key (all
+        # component pairs), so the LLM can DECIDE to expose it as a composite join and
+        # copy the extra key columns into ``additional_join_columns``. Plain
+        # single-column relationships carry a one-pair key.
+        name_by_col_id = {c.column_id: c.column_name for cols in columns_by_table.values() for c in cols}
+
+        def _rel_dict(rep: Relationship, members: list[Relationship]) -> dict[str, Any] | None:
+            from_table = tables_by_id.get(rep.from_table_id)
+            to_table = tables_by_id.get(rep.to_table_id)
+            if not from_table or not to_table:
+                return None
+            key_pairs = [
+                {
+                    "from_column": name_by_col_id.get(m.from_column_id, ""),
+                    "to_column": name_by_col_id.get(m.to_column_id, ""),
+                }
+                for m in sorted(members, key=lambda m: m.key_position or 0)
+            ]
+            return {
+                "from_table": from_table.table_name,
+                "from_column": name_by_col_id.get(rep.from_column_id, ""),
+                "to_table": to_table.table_name,
+                "to_column": name_by_col_id.get(rep.to_column_id, ""),
+                "cardinality": rep.cardinality,
+                "confidence": rep.confidence,
+                # Empty for a plain join; >1 pair = composite (the LLM must use the
+                # full key or the join fans out).
+                "key_pairs": key_pairs if len(key_pairs) > 1 else [],
+            }
+
+        groups: dict[str, list[Relationship]] = {}
         relationships_data = []
         for rel in all_relationships:
-            from_table = tables_by_id.get(rel.from_table_id)
-            to_table = tables_by_id.get(rel.to_table_id)
-
-            # Get column names
-            from_col_name = ""
-            for col in columns_by_table.get(rel.from_table_id, []):
-                if col.column_id == rel.from_column_id:
-                    from_col_name = col.column_name
-                    break
-
-            to_col_name = ""
-            for col in columns_by_table.get(rel.to_table_id, []):
-                if col.column_id == rel.to_column_id:
-                    to_col_name = col.column_name
-                    break
-
-            if from_table and to_table:
-                relationships_data.append(
-                    {
-                        "from_table": from_table.table_name,
-                        "from_column": from_col_name,
-                        "to_table": to_table.table_name,
-                        "to_column": to_col_name,
-                        "cardinality": rel.cardinality,
-                        "confidence": rel.confidence,
-                    }
-                )
+            if rel.relationship_group_id is not None:
+                groups.setdefault(rel.relationship_group_id, []).append(rel)
+                continue
+            d = _rel_dict(rel, [rel])
+            if d is not None:
+                relationships_data.append(d)
+        for members in groups.values():
+            rep = min(members, key=lambda m: m.key_position or 0)  # anchor = position 0
+            d = _rel_dict(rep, members)
+            if d is not None:
+                relationships_data.append(d)
 
         # Get existing enriched views
         existing_views_data = []

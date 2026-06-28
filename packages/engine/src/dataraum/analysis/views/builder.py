@@ -12,7 +12,15 @@ from dataclasses import dataclass, field
 
 @dataclass
 class DimensionJoin:
-    """Specification for a single dimension table join."""
+    """Specification for a single dimension table join.
+
+    ``fact_fk_column`` / ``dim_pk_column`` are the anchor pair — the join's
+    identity and the column-name prefix. For a composite key (DAT-277),
+    ``key_pairs`` holds the FULL ``(fact_column, dim_column)`` set (anchor first);
+    when present the ON clause ANDs every pair so the join scopes correctly and
+    does not fan out. Empty ``key_pairs`` = a plain single-column join on the
+    anchor pair.
+    """
 
     dim_table_name: str
     dim_duckdb_path: str
@@ -20,6 +28,11 @@ class DimensionJoin:
     dim_pk_column: str
     include_columns: list[str] = field(default_factory=list)
     relationship_id: str = ""
+    key_pairs: list[tuple[str, str]] = field(default_factory=list)
+
+    def _on_pairs(self) -> list[tuple[str, str]]:
+        """The (fact_column, dim_column) pairs the ON clause joins on."""
+        return self.key_pairs if self.key_pairs else [(self.fact_fk_column, self.dim_pk_column)]
 
 
 def build_enriched_view_sql(
@@ -76,24 +89,39 @@ def build_enriched_view_sql(
     # Pre-compute aliases for all joins
     join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
 
+    # Output column names must be unique by construction — the ``{fact_fk}__{col}``
+    # prefix does NOT guarantee it (two joins can share a fact column, e.g. when a
+    # composite key's primary is a scope column shared across dimensions), and a
+    # duplicate would violate the enriched-layer ``uq_table_column`` on registration.
+    # Disambiguate with a numeric suffix, mirroring ``get_unique_alias``.
+    used_column_names: dict[str, int] = {}
+
+    def get_unique_column_name(base: str) -> str:
+        if base not in used_column_names:
+            used_column_names[base] = 1
+            return base
+        used_column_names[base] += 1
+        return f"{base}_{used_column_names[base]}"
+
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
         # Use fact FK column as prefix so repeated joins of the same dim table are distinct:
         # e.g. kontonummer_des_gegenkontos__beschriftung vs kontonummer_des_kontos__beschriftung
         col_prefix = join.fact_fk_column
         for col in join.include_columns:
-            qualified_name = f"{col_prefix}__{col}"
+            qualified_name = get_unique_column_name(f"{col_prefix}__{col}")
             select_parts.append(f'{alias}."{col}" AS "{qualified_name}"')
             dimension_column_names.append(qualified_name)
 
     select_clause = ",\n    ".join(select_parts)
 
-    # Build FROM + JOIN clauses
+    # Build FROM + JOIN clauses. A composite key (DAT-277) ANDs every component
+    # pair so the join scopes on the full key and stays grain-preserving.
     join_clauses = []
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
-        join_clauses.append(
-            f"LEFT JOIN {join.dim_duckdb_path} AS {alias} "
-            f'ON f."{join.fact_fk_column}" = {alias}."{join.dim_pk_column}"'
+        on_clause = " AND ".join(
+            f'f."{fact_col}" = {alias}."{dim_col}"' for fact_col, dim_col in join._on_pairs()
         )
+        join_clauses.append(f"LEFT JOIN {join.dim_duckdb_path} AS {alias} ON {on_clause}")
 
     joins_sql = "\n".join(join_clauses)
 

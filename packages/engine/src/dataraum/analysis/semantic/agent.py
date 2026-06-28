@@ -484,12 +484,15 @@ class SemanticAgent(LLMFeature):
             if not join_cols:
                 lines.append("  (none detected)")
             else:
-                # Sort by confidence descending, take top N
-                sorted_cols = sorted(
-                    join_cols,
-                    key=lambda jc: jc.get("join_confidence", 0.0),
-                    reverse=True,
-                )
+                # Sort by overlap descending, take top N. The DB candidate-dict wire
+                # format (load_relationship_candidates_for_semantic) keys the overlap
+                # score `confidence`, NOT `join_confidence` — reading only the latter
+                # showed the LLM overlap=0.00 for every candidate and truncated the
+                # top-N arbitrarily. Read both so the strongest pairs surface.
+                def _overlap(jc: dict[str, Any]) -> float:
+                    return float(jc.get("join_confidence", jc.get("confidence", 0.0)))
+
+                sorted_cols = sorted(join_cols, key=_overlap, reverse=True)
                 total_cols = len(sorted_cols)
                 display_cols = sorted_cols[:_MAX_JOIN_COLS]
 
@@ -499,7 +502,7 @@ class SemanticAgent(LLMFeature):
                 for jc in display_cols:
                     col1 = jc.get("column1", "?")
                     col2 = jc.get("column2", "?")
-                    join_conf = jc.get("join_confidence", 0.0)
+                    join_conf = _overlap(jc)
                     card = jc.get("cardinality", "unknown")
 
                     # Basic info with value overlap score

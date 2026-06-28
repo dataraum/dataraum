@@ -256,6 +256,14 @@ def persist_column_concepts(
             }
         )
 
+    # Dedup on the upsert key (column_id, run_id): the table agent can emit the same
+    # column twice in column_concepts, and Postgres ON CONFLICT cannot touch a row
+    # twice in one batch (CardinalityViolation). Last mention wins.
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        deduped[(row["column_id"], row["run_id"])] = row
+    rows = list(deduped.values())
+
     upsert(session, ConceptModel, rows, index_elements=["column_id", "run_id"])
     return len(rows)
 

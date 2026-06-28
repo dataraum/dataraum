@@ -173,6 +173,33 @@ class TestPersistColumnConcepts:
         assert total.derived_formula_confidence == 0.85
         assert rows[cols["discount"]].derived_formula_hypothesis is None
 
+    def test_duplicate_column_concepts_collapse_to_one_row(self, session) -> None:
+        """The table agent can list the same column twice; the upsert batch must dedup.
+
+        Two ColumnConceptOutput for the same (table, column) share the (column_id,
+        run_id) upsert key — without dedup Postgres raises CardinalityViolation
+        ("ON CONFLICT cannot affect a row twice"). Last mention wins.
+        """
+        table = _table_with_columns(session, "orders", ["total"])
+        concepts = [
+            ColumnConceptOutput(
+                table_name="orders", column_name="total", business_concept="revenue"
+            ),
+            ColumnConceptOutput(
+                table_name="orders", column_name="total", business_concept="net_revenue"
+            ),
+        ]
+
+        count = persist_column_concepts(
+            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
+        )
+        session.flush()
+
+        assert count == 1  # collapsed
+        rows = list(session.execute(select(ColumnConceptDB)).scalars())
+        assert len(rows) == 1
+        assert rows[0].business_concept == "net_revenue"  # last mention wins
+
 
 class TestNearConstantFeed:
     """The per-table feed flags near-constant columns (DAT-637 quality fix) so the

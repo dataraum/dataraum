@@ -5,8 +5,8 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy import delete
@@ -427,14 +427,17 @@ def _build_composite_group_rows(
     Returns ``None`` when ``rel`` is single-column (no ``key_columns``) or any
     component column is unresolvable — the caller then persists the single-column
     anchor as usual. Otherwise returns the anchor (position 0) plus one row per
-    additional pair, all sharing a fresh ``relationship_group_id`` and the
-    COMPOSITE cardinality (computed from data over the full key; the rescue already
-    proved it collapses the fan-out).
+    additional pair, all sharing a ``relationship_group_id`` and the COMPOSITE
+    cardinality (computed from data over the full key; the rescue already proved it
+    collapses the fan-out). The group id is DETERMINISTIC in
+    ``(run_id, component column ids)`` so a Temporal at-least-once retry re-derives
+    the same id and the upsert is idempotent — it never orphans a prior attempt's
+    component rows under a stale uuid.
     """
-    if not rel.key_columns:
+    if not rel.key_columns or not from_col_id or not to_col_id:
         return None
 
-    components: list[tuple[str, str]] = [(from_col_id or "", to_col_id or "")]
+    components: list[tuple[str, str]] = [(from_col_id, to_col_id)]
     pairs: list[tuple[str, str]] = [(rel.from_column, rel.to_column)]
     # Component column-id pairs already in the key — the upsert key is
     # (run_id, from_column_id, to_column_id, detection_method), so a duplicate
@@ -476,7 +479,11 @@ def _build_composite_group_rows(
                 error=str(e),
             )
 
-    group_id = str(uuid4())
+    # Deterministic group id (DAT-277): stable for this run + this exact set of
+    # component column ids, so a retry re-derives it and the upsert refreshes the
+    # group in place instead of minting a new id and orphaning the prior rows.
+    group_key = "|".join([str(run_id), *sorted(f"{a}>{b}" for a, b in components)])
+    group_id = hashlib.sha1(group_key.encode()).hexdigest()  # noqa: S324 (id, not security)
     group_evidence = {**evidence, "composite_key_columns": len(components)}
     return [
         {
@@ -507,15 +514,40 @@ def _dedup_relationship_rows(rel_rows: list[dict[str, Any]]) -> list[dict[str, A
     (``CardinalityViolation``). Prefer the composite-component row — it carries the
     group + multi-column key, the richer truth — over a plain duplicate; otherwise
     first-wins (also folds an LLM that lists the same plain relationship twice).
+
+    When the SAME directed pair is a component of two DIFFERENT composite groups, the
+    relationship grain (one row per pair per method) cannot represent both — keeping
+    either would silently corrupt the other into a partial group. Abstain: drop BOTH
+    groups whole rather than persist a half key (worst case is a missed composite,
+    never a malformed one).
     """
-    deduped: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
-    for row in rel_rows:
-        key = (
+
+    def conflict_key(row: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+        return (
             row["run_id"],
             row["from_column_id"],
             row["to_column_id"],
             row["detection_method"],
         )
+
+    # Pass 1: a pair claimed by >1 distinct group poisons every group involved.
+    by_key: dict[tuple[Any, Any, Any, Any], list[dict[str, Any]]] = {}
+    for row in rel_rows:
+        by_key.setdefault(conflict_key(row), []).append(row)
+    poisoned: set[str] = set()
+    for rows in by_key.values():
+        gids = {r["relationship_group_id"] for r in rows if r.get("relationship_group_id")}
+        if len(gids) > 1:
+            poisoned |= gids
+    if poisoned:
+        logger.warning("composite_group_pair_collision_abstain", groups=sorted(poisoned))
+        rel_rows = [r for r in rel_rows if r.get("relationship_group_id") not in poisoned]
+
+    # Pass 2: collapse the remaining conflict-key collisions (plain vs group / plain
+    # vs plain), preferring the composite-component row.
+    deduped: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
+    for row in rel_rows:
+        key = conflict_key(row)
         existing = deduped.get(key)
         if existing is None or (
             existing.get("relationship_group_id") is None

@@ -101,8 +101,12 @@ def _join_multiplication(
 
     The largest number of matches a single key-tuple draws, taken over both join
     directions. Lower means closer to a clean one-to-one — the ranking signal for
-    "which scoping column disambiguates most". Returns ``inf`` on error so a
-    failing candidate is never preferred.
+    "which scoping column disambiguates most". Returns ``inf`` on error.
+
+    A result of 0 means the composite matches NOTHING (a coincidental/junk overlap
+    column). That is NOT a good disambiguator — joining on it empties the result and
+    poisons the greedy set — so it ranks as ``inf`` (worst), never preferred by the
+    ``min`` selection, even though numerically 0 < every real multiplicity.
     """
     on_clause = " AND ".join(f't1."{a}" = t2."{b}"' for a, b in column_pairs)
     t1_cols = [a for a, _b in column_pairs]
@@ -130,7 +134,8 @@ def _join_multiplication(
             )
         """
         result = duckdb_conn.execute(q).fetchone()
-        return float(result[0]) if result and result[0] is not None else float("inf")
+        # 0 = no matches at all (a junk/coincidental column) → rank worst, not best.
+        return float(result[0]) if result and result[0] else float("inf")
     except Exception as e:
         logger.warning("join_multiplication_failed", column_pairs=column_pairs, error=str(e))
         return float("inf")

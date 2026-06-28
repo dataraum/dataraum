@@ -126,6 +126,29 @@ def test_spurious_m2m_needs_two_scoping_cols(con) -> None:
     assert key.cardinality == "many-to-one"
 
 
+def test_junk_overlap_column_does_not_poison_the_rescue(con) -> None:
+    """A coincidental column that matches NOTHING in-context must not be preferred
+    over the real scope column (B1). Real candidate lists carry such decoys; without
+    ranking zero-match keys as worst, the greedy fuses the junk, drives the composite
+    to zero matches, and silently abandons a valid rescue."""
+    con.execute("CREATE TABLE f (a VARCHAR, b VARCHAR, c VARCHAR, v INT)")
+    con.execute(
+        "INSERT INTO f VALUES ('X','1','K',1),('X','1','K',2),('X','2','K',3),('Y','1','K',4)"
+    )
+    con.execute("CREATE TABLE d (a VARCHAR, b VARCHAR, c VARCHAR)")
+    con.execute("INSERT INTO d VALUES ('X','1','Z'),('X','2','Z'),('Y','1','Z')")
+
+    # account `a` alone fans out; `(a,b)` rescues; `c` never co-occurs (K vs Z).
+    assert compute_composite_cardinality("f", "d", [("a", "a")], con) == "many-to-many"
+    # The decoy is even listed at higher confidence than the real scope.
+    cand = _candidate("f", "d", [("a", "a", 0.9), ("c", "c", 0.8), ("b", "b", 0.5)])
+    key = rescue_fanout_to_composite(cand, "f", "d", con)
+    assert key is not None
+    assert ("b", "b") in key.column_pairs  # real scope fused
+    assert ("c", "c") not in key.column_pairs  # junk never fused
+    assert key.cardinality == "many-to-one"
+
+
 def test_genuine_m2m_is_not_rescued(con) -> None:
     """A real many-to-many: no composite of the shared columns collapses it → abstain (None)."""
     con.execute("CREATE TABLE a (tag VARCHAR, color VARCHAR, x INT)")

@@ -7,7 +7,23 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ## DAT-277 — composite-key rescue of many-to-many fan-out edges (LLM-confirmed)
 
-**Branch:** `refactor/dat-277-composite-key-rescue`.
+**Branch:** `refactor/dat-277-composite-key-rescue` — **PARKED, not for merge.** Composite
+foreign keys to a dimension are a messy-natural-key/multi-tenant artifact, not a clean
+star (which uses single-column surrogate FKs); the proper cure is a conform/star-prep
+recipe at import (generate surrogate keys), making this downstream rescue unnecessary.
+Held pending synthetic ground-truth testdata + `dataraum-eval` calibration to decide if
+the pattern is prevalent enough to justify the complexity. Reviewer fixes applied (B1
+zero-match ranking, B2 abstain-on-shared-scope-collision, B3 deterministic group id).
+
+**Known limitations to resolve before any un-parking (no calibration yet):**
+- **NULL-bias in the greedy ranking** — `_join_multiplication`'s `IS NOT NULL` filter can
+  make a mostly-NULL scope column look like a good disambiguator; grain still holds but
+  the enrichment is sparse. Needs a coverage-aware ranking + a calibrated fixture.
+- **S1: composite extras aren't gated** — the enrichment phase validates only the primary
+  join pair against the confirmed relationship + suppression overlay; the LLM's
+  `additional_join_columns` are assembled verbatim. A suppressed/unconfirmed scope pair
+  would still be ANDed in (grain verification is the only backstop, and it's skipped when
+  `row_count is None`).
 
 ### What changed (detector + enriched-view shape)
 A fan-trap edge (best single-column join is **many-to-many** → over-counts in

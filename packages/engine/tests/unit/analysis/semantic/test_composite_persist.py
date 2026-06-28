@@ -190,6 +190,43 @@ def test_dedup_keeps_distinct_pairs() -> None:
     assert _dedup_relationship_rows(rows) == rows
 
 
+def test_two_groups_sharing_a_component_pair_both_abstain() -> None:
+    """The SAME directed pair claimed by two composite groups can't be represented at
+    the relationship grain — abstain on BOTH rather than corrupt one into a partial
+    group (B2). Only the shared pair collides; the whole of g1 and g2 must drop."""
+    rows = [
+        _row("fa1", "da1", group_id="g1"),
+        _row("scope", "scope", group_id="g1"),  # shared
+        _row("fa2", "da2", group_id="g2"),
+        _row("scope", "scope", group_id="g2"),  # shared — same pair as g1's
+    ]
+    assert _dedup_relationship_rows(rows) == []
+
+
+def test_group_id_is_deterministic_for_idempotent_retry() -> None:
+    """Same run + same component set → same group id (B3), so a Temporal retry
+    refreshes the group in place instead of orphaning the prior attempt's rows."""
+    kw = dict(
+        rel=_composite_rel([("business_id", "business_id")]),
+        from_table_id="tt",
+        from_col_id="txn_account",
+        to_table_id="tc",
+        to_col_id="coa_name",
+        column_map=_column_map(),
+        evidence={},
+        run_id="run-A",
+        duckdb_conn=None,
+    )
+    a = _build_composite_group_rows(**kw)
+    b = _build_composite_group_rows(**kw)
+    assert a is not None and b is not None
+    assert {r["relationship_group_id"] for r in a} == {r["relationship_group_id"] for r in b}
+    # A different run yields a different id (run-scoped).
+    c = _build_composite_group_rows(**{**kw, "run_id": "run-B"})
+    assert c is not None
+    assert a[0]["relationship_group_id"] != c[0]["relationship_group_id"]
+
+
 def _seed(session: Session) -> None:
     session.add(Source(source_id="s1", name="s1", source_type="csv"))
     session.add(Table(table_id="t1", source_id="s1", table_name="txn", layer="typed"))

@@ -270,6 +270,9 @@ class SemanticAgent(LLMFeature):
                     from_column=rel.from_column,
                     to_table=rel.to_table,
                     to_column=rel.to_column,
+                    # LLM-confirmed composite (DAT-277): additional key columns
+                    # beyond the anchor pair. Empty for a normal single-column join.
+                    key_columns=[(kc.from_column, kc.to_column) for kc in rel.key_columns],
                     relationship_type=rel_type,
                     cardinality=None,  # Set by processor from actual data
                     confidence=rel.confidence,
@@ -478,18 +481,34 @@ class SemanticAgent(LLMFeature):
             if introduces_dups is not None:
                 lines.append(f"Introduces duplicates (fan trap): {introduces_dups}")
 
+            # Composite-key rescue hint (DAT-277): the single-column join fans out
+            # (many-to-many) but a multi-column key collapses it. Surfaced for the
+            # LLM to judge and, if valid, confirm via ``key_columns``.
+            composite = rel.get("composite_key")
+            if composite:
+                pair_strs = [f"{a} <-> {b}" for a, b in composite.get("column_pairs", [])]
+                lines.append(
+                    "COMPOSITE-KEY RESCUE: the best single-column join is many-to-many "
+                    "(fan-out / over-counts). Joining on the full key "
+                    f"[{', '.join(pair_strs)}] is {composite.get('cardinality', '?')}. "
+                    "If this composite is the real key, confirm it: emit ONE relationship "
+                    "for the anchor pair and put the remaining pair(s) in key_columns."
+                )
+
             lines.append("Column pairs with value overlap:")
 
             join_cols = rel.get("join_columns", [])
             if not join_cols:
                 lines.append("  (none detected)")
             else:
-                # Sort by confidence descending, take top N
-                sorted_cols = sorted(
-                    join_cols,
-                    key=lambda jc: jc.get("join_confidence", 0.0),
-                    reverse=True,
-                )
+                # Sort by confidence descending, take top N. The DB candidate-dict
+                # wire format keys the overlap score ``confidence`` (not
+                # ``join_confidence``); read both so the LLM sees real scores and the
+                # top-N truncation keeps the strongest pairs (previously all 0.00).
+                def _overlap(jc: dict[str, Any]) -> float:
+                    return float(jc.get("join_confidence", jc.get("confidence", 0.0)))
+
+                sorted_cols = sorted(join_cols, key=_overlap, reverse=True)
                 total_cols = len(sorted_cols)
                 display_cols = sorted_cols[:_MAX_JOIN_COLS]
 
@@ -499,7 +518,7 @@ class SemanticAgent(LLMFeature):
                 for jc in display_cols:
                     col1 = jc.get("column1", "?")
                     col2 = jc.get("column2", "?")
-                    join_conf = jc.get("join_confidence", 0.0)
+                    join_conf = _overlap(jc)
                     card = jc.get("cardinality", "unknown")
 
                     # Basic info with value overlap score

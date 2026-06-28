@@ -6,6 +6,7 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import delete
@@ -16,12 +17,15 @@ if TYPE_CHECKING:
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
 
+from dataraum.analysis.relationships.composite import rescue_fanout_to_composite
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
 from dataraum.analysis.relationships.evaluator import (
     compute_actual_cardinality,
+    compute_composite_cardinality,
     compute_introduces_duplicates,
     compute_ri_metrics,
 )
+from dataraum.analysis.relationships.models import JoinCandidate, RelationshipCandidate
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     ColumnConcept as ConceptModel,
@@ -256,6 +260,14 @@ def persist_column_concepts(
             }
         )
 
+    # Dedup on the upsert key (column_id, run_id): the table agent can emit the same
+    # column twice in column_concepts, and ON CONFLICT cannot touch a row twice in
+    # one batch (CardinalityViolation). Last mention wins.
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        deduped[(row["column_id"], row["run_id"])] = row
+    rows = list(deduped.values())
+
     upsert(session, ConceptModel, rows, index_elements=["column_id", "run_id"])
     return len(rows)
 
@@ -341,6 +353,178 @@ def ground_columns(
     return Result.ok(count)
 
 
+def _lake_path(table_name: str) -> str:
+    """Collision-safe DuckLake FQN for a typed table (matches the RI/cardinality paths)."""
+    return f'lake.typed."{table_name}"'
+
+
+def _augment_candidates_with_composite_rescue(
+    relationship_candidates: list[dict[str, Any]],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Surface composite-key rescues to the LLM judge (DAT-277), in place.
+
+    The structural detector emits each value-overlapping column pair separately;
+    when the best pair joins many-to-many it silently over-counts. For each such
+    candidate this runs the greedy rescue — does fusing co-present columns collapse
+    the fan-out? — and, when it does, attaches a ``composite_key`` hint to the
+    candidate dict. The LLM (the only judge, never bypassed) sees the hint and may
+    confirm it via ``RelationshipOutput.key_columns``. A miss attaches nothing.
+    """
+    for cand in relationship_candidates:
+        table1 = cand.get("table1")
+        table2 = cand.get("table2")
+        join_cols = cand.get("join_columns") or []
+        if not table1 or not table2 or len(join_cols) < 2:
+            continue
+
+        candidate = RelationshipCandidate(
+            table1=table1,
+            table2=table2,
+            join_candidates=[
+                JoinCandidate(
+                    column1=jc.get("column1", ""),
+                    column2=jc.get("column2", ""),
+                    # The DB candidate-dict wire format keys it ``confidence``
+                    # (load_relationship_candidates_for_semantic); tolerate both so
+                    # the anchor (highest-confidence pair) is picked correctly.
+                    join_confidence=jc.get("join_confidence", jc.get("confidence", 0.0)),
+                    cardinality=jc.get("cardinality", "unknown"),
+                )
+                for jc in join_cols
+                if jc.get("column1") and jc.get("column2")
+            ],
+        )
+        try:
+            key = rescue_fanout_to_composite(
+                candidate, _lake_path(table1), _lake_path(table2), duckdb_conn
+            )
+        except Exception as e:  # never let a rescue probe break synthesis
+            logger.warning("composite_rescue_failed", table1=table1, table2=table2, error=str(e))
+            continue
+
+        if key is not None:
+            cand["composite_key"] = {
+                "column_pairs": [list(pair) for pair in key.column_pairs],
+                "cardinality": key.cardinality,
+            }
+
+
+def _build_composite_group_rows(
+    *,
+    rel: SemanticRelationship,
+    from_table_id: str | None,
+    from_col_id: str | None,
+    to_table_id: str | None,
+    to_col_id: str | None,
+    column_map: dict[tuple[str, str], str],
+    evidence: dict[str, Any],
+    run_id: str | None,
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> list[dict[str, Any]] | None:
+    """The N component rows of an LLM-confirmed composite key, or None (DAT-277).
+
+    Returns ``None`` when ``rel`` is single-column (no ``key_columns``) or any
+    component column is unresolvable — the caller then persists the single-column
+    anchor as usual. Otherwise returns the anchor (position 0) plus one row per
+    additional pair, all sharing a fresh ``relationship_group_id`` and the
+    COMPOSITE cardinality (computed from data over the full key; the rescue already
+    proved it collapses the fan-out).
+    """
+    if not rel.key_columns:
+        return None
+
+    components: list[tuple[str, str]] = [(from_col_id or "", to_col_id or "")]
+    pairs: list[tuple[str, str]] = [(rel.from_column, rel.to_column)]
+    # Component column-id pairs already in the key — the upsert key is
+    # (run_id, from_column_id, to_column_id, detection_method), so a duplicate
+    # component (e.g. the LLM echoes the anchor pair in key_columns) would collide
+    # within this one INSERT batch. Skip dups defensively.
+    seen_component_ids: set[tuple[str, str]] = {components[0]}
+    for from_name, to_name in rel.key_columns:
+        comp_from = column_map.get((rel.from_table, from_name))
+        comp_to = column_map.get((rel.to_table, to_name))
+        if not comp_from or not comp_to:
+            logger.warning(
+                "composite_key_column_unresolved",
+                from_table=rel.from_table,
+                to_table=rel.to_table,
+                from_column=from_name,
+                to_column=to_name,
+            )
+            return None
+        if (comp_from, comp_to) in seen_component_ids:
+            continue  # LLM repeated the anchor or a prior component — already in the key
+        seen_component_ids.add((comp_from, comp_to))
+        components.append((comp_from, comp_to))
+        pairs.append((from_name, to_name))
+
+    if len(components) < 2:
+        return None  # only the anchor survived dedup — not actually composite
+
+    composite_cardinality = rel.cardinality
+    if duckdb_conn is not None:
+        try:
+            composite_cardinality = compute_composite_cardinality(
+                _lake_path(rel.from_table), _lake_path(rel.to_table), pairs, duckdb_conn
+            )
+        except Exception as e:
+            logger.warning(
+                "composite_cardinality_failed",
+                from_table=rel.from_table,
+                to_table=rel.to_table,
+                error=str(e),
+            )
+
+    group_id = str(uuid4())
+    group_evidence = {**evidence, "composite_key_columns": len(components)}
+    return [
+        {
+            "run_id": run_id,
+            "from_table_id": from_table_id,
+            "from_column_id": comp_from,
+            "to_table_id": to_table_id,
+            "to_column_id": comp_to,
+            "relationship_type": rel.relationship_type.value,
+            "cardinality": composite_cardinality,
+            "confidence": rel.confidence,
+            "detection_method": "llm",
+            "evidence": group_evidence,
+            "relationship_group_id": group_id,
+            "key_position": position,
+        }
+        for position, (comp_from, comp_to) in enumerate(components)
+    ]
+
+
+def _dedup_relationship_rows(rel_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse rows colliding on the upsert conflict key (DAT-277).
+
+    The conflict key is ``(run_id, from_column_id, to_column_id, detection_method)``.
+    The LLM can emit one column pair BOTH as a standalone relationship AND as a
+    composite component (a shared scope column), and Postgres'
+    ON CONFLICT DO UPDATE cannot touch the same row twice in one statement
+    (``CardinalityViolation``). Prefer the composite-component row — it carries the
+    group + multi-column key, the richer truth — over a plain duplicate; otherwise
+    first-wins (also folds an LLM that lists the same plain relationship twice).
+    """
+    deduped: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
+    for row in rel_rows:
+        key = (
+            row["run_id"],
+            row["from_column_id"],
+            row["to_column_id"],
+            row["detection_method"],
+        )
+        existing = deduped.get(key)
+        if existing is None or (
+            existing.get("relationship_group_id") is None
+            and row.get("relationship_group_id") is not None
+        ):
+            deduped[key] = row
+    return list(deduped.values())
+
+
 def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
@@ -362,6 +546,11 @@ def synthesize_and_store_tables(
     Returns:
         Result with the ``SemanticEnrichmentResult`` (entities + relationships).
     """
+    # Composite-key rescue (DAT-277): probe each fan-out candidate for a composite
+    # that collapses it and surface the hint to the LLM judge before it decides.
+    if relationship_candidates and duckdb_conn is not None:
+        _augment_candidates_with_composite_rescue(relationship_candidates, duckdb_conn)
+
     llm_result = agent.synthesize_tables(
         session=session,
         table_ids=table_ids,
@@ -470,6 +659,28 @@ def synthesize_and_store_tables(
                     error=str(e),
                 )
 
+        # Composite key (DAT-277): the LLM confirmed ADDITIONAL key columns that
+        # collapse the single-column fan-out. Persist the whole key as ONE group —
+        # N component rows sharing a ``relationship_group_id`` and the COMPOSITE
+        # cardinality, the anchor at position 0. Resolve every component's column
+        # ids; if any is unresolvable we cannot honour the composite, so fall back
+        # to the single-column anchor (m2m, marked avoid) rather than persist a
+        # half key.
+        composite_rows = _build_composite_group_rows(
+            rel=rel,
+            from_table_id=from_table_id,
+            from_col_id=from_col_id,
+            to_table_id=to_table_id,
+            to_col_id=to_col_id,
+            column_map=column_map,
+            evidence=evidence,
+            run_id=run_id,
+            duckdb_conn=duckdb_conn,
+        )
+        if composite_rows is not None:
+            rel_rows.extend(composite_rows)
+            continue
+
         rel_rows.append(
             {
                 "run_id": run_id,
@@ -482,8 +693,12 @@ def synthesize_and_store_tables(
                 "confidence": rel.confidence,
                 "detection_method": "llm",
                 "evidence": evidence,
+                "relationship_group_id": None,
+                "key_position": None,
             }
         )
+
+    rel_rows = _dedup_relationship_rows(rel_rows)
 
     # Run-versioned + idempotent (DAT-408): this run's llm relationships are stamped
     # with ``run_id`` and coexist with prior runs; the upsert keys on the run-grain

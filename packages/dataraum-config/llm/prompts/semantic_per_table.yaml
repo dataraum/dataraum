@@ -98,6 +98,16 @@ system_prompt: |
   Not all candidates are real relationships. You may also add relationships
   not present in the candidate list.
 
+  Composite keys (COMPOSITE-KEY RESCUE hint): a candidate may carry a measured
+  multi-column key — its best single-column join is many-to-many and silently
+  over-counts, but joining on the full set of columns together collapses it to
+  many-to-one/one-to-one. When the hint is present AND that composite is the
+  genuine key, confirm it: emit ONE relationship for the anchor pair (from_column,
+  to_column) and list the REMAINING component pair(s) in its key_columns. Leave
+  key_columns empty for an ordinary single-column relationship. Only confirm a
+  composite when the data shows it RESOLVES the fan-out — never staple together
+  unrelated columns.
+
   Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
   computed automatically from actual data after your analysis. Focus on whether
   the relationship is semantically real.

@@ -13,7 +13,7 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { metadataDb } from "#/db/metadata/client";
 import { columns, sources, tables } from "#/db/metadata/schema";
-import { getLakeConnection, LAKE_ALIAS } from "../duckdb/lake";
+import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
 
 // Enriched views live in the `typed` DuckDB schema (mirror the engine's schema_for_layer);
@@ -101,53 +101,54 @@ async function lookValues(input: {
 	column_ids: string[];
 }): Promise<LookValuesResult> {
 	const resolved = await resolveColumns(input.column_ids);
-	const conn = await getLakeConnection();
-	const out: z.infer<typeof ColumnValues>[] = [];
+	return withLakeConnection(async (conn) => {
+		const out: z.infer<typeof ColumnValues>[] = [];
 
-	for (const columnId of input.column_ids) {
-		const col = resolved.get(columnId);
-		if (!col) {
-			out.push({
-				column_id: columnId,
-				table_name: null,
-				column_name: null,
-				values: [],
-				complete: false,
-				error: "column id did not resolve to a live table",
-			});
-			continue;
+		for (const columnId of input.column_ids) {
+			const col = resolved.get(columnId);
+			if (!col) {
+				out.push({
+					column_id: columnId,
+					table_name: null,
+					column_name: null,
+					values: [],
+					complete: false,
+					error: "column id did not resolve to a live table",
+				});
+				continue;
+			}
+			const address = `${LAKE_ALIAS}.${schemaForLayer(col.layer)}."${col.tableName}"`;
+			try {
+				const reader = await conn.runAndReadAll(
+					`SELECT "${col.columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
+						`WHERE "${col.columnName}" IS NOT NULL ` +
+						`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`,
+				);
+				const { values, complete } = projectValueRows(
+					readerToResult(reader).rows,
+					LOOK_VALUES_LIMIT,
+				);
+				out.push({
+					column_id: columnId,
+					table_name: col.tableName,
+					column_name: col.columnName,
+					values,
+					complete,
+					error: null,
+				});
+			} catch (err) {
+				out.push({
+					column_id: columnId,
+					table_name: col.tableName,
+					column_name: col.columnName,
+					values: [],
+					complete: false,
+					error: `lake read failed: ${err}`,
+				});
+			}
 		}
-		const address = `${LAKE_ALIAS}.${schemaForLayer(col.layer)}."${col.tableName}"`;
-		try {
-			const reader = await conn.runAndReadAll(
-				`SELECT "${col.columnName}" AS value, COUNT(*) AS count FROM ${address} ` +
-					`WHERE "${col.columnName}" IS NOT NULL ` +
-					`GROUP BY 1 ORDER BY count DESC, value LIMIT ${LOOK_VALUES_LIMIT + 1}`,
-			);
-			const { values, complete } = projectValueRows(
-				readerToResult(reader).rows,
-				LOOK_VALUES_LIMIT,
-			);
-			out.push({
-				column_id: columnId,
-				table_name: col.tableName,
-				column_name: col.columnName,
-				values,
-				complete,
-				error: null,
-			});
-		} catch (err) {
-			out.push({
-				column_id: columnId,
-				table_name: col.tableName,
-				column_name: col.columnName,
-				values: [],
-				complete: false,
-				error: `lake read failed: ${err}`,
-			});
-		}
-	}
-	return { columns: out };
+		return { columns: out };
+	});
 }
 
 export const lookValuesTool = toolDefinition({

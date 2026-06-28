@@ -4,7 +4,7 @@
 // determinism rules stay unit-testable without booting config/the lake; this file
 // is exercised by the container smoke (it needs an attached lake).
 
-import { getLakeConnection } from "./lake";
+import { withLakeConnection } from "./lake";
 import { type QueryResult, readerToResult } from "./query-result";
 import { FINGERPRINT_ROW_LIMIT, fingerprintRows } from "./report-fingerprint";
 
@@ -24,8 +24,9 @@ import { FINGERPRINT_ROW_LIMIT, fingerprintRows } from "./report-fingerprint";
 export async function computeReportFingerprint(
 	sql: string,
 ): Promise<{ fingerprint: string; result: QueryResult }> {
-	const conn = await getLakeConnection();
 	const wrapped = `SELECT * FROM (${sql}) AS _report ORDER BY ALL LIMIT ${FINGERPRINT_ROW_LIMIT}`;
-	const result = readerToResult(await conn.runAndReadAll(wrapped));
+	const result = await withLakeConnection(async (conn) =>
+		readerToResult(await conn.runAndReadAll(wrapped)),
+	);
 	return { fingerprint: fingerprintRows(result.rows), result };
 }

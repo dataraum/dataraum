@@ -13,12 +13,16 @@
 // via the grid handle (DAT-490); this path caps what re-enters the model.
 //
 // It is a VALIDATOR, not the executor:
-//   - opens its OWN throwaway in-memory DuckDB instance + READ_ONLY lake ATTACH
-//     (mirror probe.ts/connect.ts; the shared lake reader is memoized and can't
-//     be closed mid-call). A dedicated connection means it CAN honor abort —
-//     aborting the chat run `interrupt()`s it, which cancels the in-flight
-//     statement and rejects the pending promise (closeSync does NOT interrupt an
-//     in-flight query — it would leave it hung and leaked).
+//   - takes its OWN fresh CONNECTION off the shared lake instance
+//     (`getLakeConnection`). A per-validation connection is what lets it honor
+//     abort: aborting the chat run `interrupt()`s that one connection, cancelling
+//     its in-flight statement and rejecting the pending promise (closeSync does
+//     NOT interrupt an in-flight query — it would leave it hung and leaked). It is
+//     a CONNECTION, not its own instance: the lake ATTACH/extensions/secret are
+//     instance-level, so the shared instance already carries them — no re-ATTACH
+//     (which would re-read the Postgres ducklake catalog) per validation, and no
+//     second instance attaching the same lake in-process. interrupt + close are
+//     per-connection, so a cancelled validation never touches sibling readers.
 //   - runs the composed statement wrapped in `SELECT * FROM (<sql>) … LIMIT n` so
 //     a broad final can't materialize unbounded AND an injected `;` is a parser
 //     error (the composed CTE bodies are already parenthesized by
@@ -27,14 +31,10 @@
 //     or `{ error }` (an agent-fixable SQL/bind failure the model repairs
 //     in-loop) — NEVER the full result set.
 
-import {
-	type DuckDBConnection,
-	DuckDBInstance,
-	type Json,
-} from "@duckdb/node-api";
+import type { DuckDBConnection, Json } from "@duckdb/node-api";
 
 import { boundSampleBytes } from "./agent-sample";
-import { attachLakeReadOnly } from "./lake";
+import { getLakeConnection } from "./lake";
 import { readerToResult } from "./query-result";
 
 /** A single decomposed step: a name (becomes a CTE) + standalone SQL. */
@@ -136,12 +136,13 @@ export function composeStandalone(steps: RunStep[], finalSql: string): string {
  * Validate a single composed statement against the lake and return a bounded
  * headline peek (never the full result).
  *
- * Opens a throwaway in-memory DuckDB instance, ATTACHes the lake READ_ONLY, runs
- * the statement wrapped in `SELECT * FROM (<sql>) … LIMIT n`, and returns the
- * bounded sample. Any SQL/bind/parse failure becomes `{ error }` (agent-fixable).
- * The dedicated connection is interrupted on abort and closed in `finally`, so a
- * cancelled chat run cancels the in-flight statement and never leaks the
- * connection.
+ * Takes a fresh connection off the shared lake instance (already ATTACHed
+ * READ_ONLY), runs the statement wrapped in `SELECT * FROM (<sql>) … LIMIT n`, and
+ * returns the bounded sample. Any SQL/bind/parse failure becomes `{ error }`
+ * (agent-fixable). The connection is interrupted on abort and closed in `finally`,
+ * so a cancelled chat run cancels the in-flight statement and never leaks the
+ * connection (interrupt + close are per-connection — sibling readers on the same
+ * instance are untouched).
  *
  * `signal` is the tool-context abort (DAT-449): forwarded from the run_steps
  * tool's `ctx?.abortSignal`.
@@ -157,11 +158,10 @@ export async function runSteps(
 
 	if (signal?.aborted) return { error: "run_steps aborted before execution." };
 
-	// Acquired inside the try below; held as nullable refs so `close()` is
-	// idempotent by NULLING the refs (not a boolean) — that makes the abort-during-
-	// acquisition race leak-free: if `onAbort` runs before the refs are set, the
-	// later assignment + the finally still close the real handles.
-	let instance: DuckDBInstance | null = null;
+	// Acquired inside the try below; held as a nullable ref so `close()` is
+	// idempotent by NULLING the ref (not a boolean) — that makes the abort-during-
+	// acquisition race leak-free: if `onAbort` runs before the ref is set, the
+	// later assignment + the finally still close the real handle.
 	let conn: DuckDBConnection | null = null;
 
 	const close = () => {
@@ -172,14 +172,6 @@ export async function runSteps(
 				// already closed / never fully opened
 			}
 			conn = null;
-		}
-		if (instance) {
-			try {
-				instance.closeSync();
-			} catch {
-				// same
-			}
-			instance = null;
 		}
 	};
 	// On abort, `interrupt()` cancels the in-flight statement — it rejects the
@@ -197,12 +189,11 @@ export async function runSteps(
 	signal?.addEventListener("abort", onAbort, { once: true });
 
 	try {
-		instance = await DuckDBInstance.create(":memory:");
 		// `cx` is the non-null handle for the DB ops; `conn` (the nullable let the
-		// closures read for interrupt/close) is pointed at it.
-		const cx = await instance.connect();
+		// closures read for interrupt/close) is pointed at it. The connection comes
+		// off the shared lake instance, so the lake is already ATTACHed.
+		const cx = await getLakeConnection();
 		conn = cx;
-		await attachLakeReadOnly(cx);
 
 		if (signal?.aborted) return { error: "run_steps aborted." };
 

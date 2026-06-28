@@ -9,7 +9,7 @@
 // Tables are addressed by their fully-qualified lake name, e.g.
 // `lake.typed.orders` (the `lake` alias matches the engine's catalog alias).
 
-import type { Json } from "@duckdb/node-api";
+import type { DuckDBConnection, Json } from "@duckdb/node-api";
 
 import { AGENT_SAMPLE_ROWS, boundSampleBytes } from "./agent-sample";
 import { getLakeConnection } from "./lake";
@@ -74,21 +74,50 @@ export interface AgentQueryResult extends QueryResult {
  *
  * The lake connection is ATTACHed READ_ONLY, so writes fail at the engine
  * level — this is a read verb by construction, not by convention.
+ *
+ * `signal` aborts the read: a `LIMIT`-wrapped query can still sit behind a heavy
+ * scan/join before its first rows, so a cancelled chat turn interrupts the
+ * in-flight statement (via {@link withLakeConnection}) rather than letting it run
+ * to completion server-side.
  */
-export async function runSql(input: RunSqlInput): Promise<AgentQueryResult> {
-	const conn = await getLakeConnection();
+export async function runSql(
+	input: RunSqlInput,
+	signal?: AbortSignal,
+): Promise<AgentQueryResult> {
 	// The agent sample never needs more than AGENT_SAMPLE_ROWS regardless of the
 	// requested `limit`; fetch one extra row to distinguish a capped result from
 	// an exact-fit one (cheap — the read stops at the LIMIT).
 	const requested = clampRowLimit(input.limit);
 	const effective = Math.min(requested, AGENT_SAMPLE_ROWS);
 	const wrapped = `SELECT * FROM (${input.sql}) AS _run_sql LIMIT ${effective + 1}`;
-	const reader = input.params
-		? await conn.runAndReadAll(wrapped, input.params)
-		: await conn.runAndReadAll(wrapped);
-	const base = readerToResult(reader);
 
-	return boundAgentSample(base, effective);
+	// Abort wiring (mirrors run-steps.ts): on abort, `interrupt()` cancels the
+	// in-flight statement so `runAndReadAll` rejects and we unwind to the finally
+	// → close(). `closeSync()` does NOT cancel a running query (it would leave the
+	// promise unsettled → a hung, leaked worker-thread query). The interrupt hits
+	// ONLY this per-call connection, never a sibling reader. `conn` is a nullable
+	// ref so an abort landing mid-acquire is a no-op interrupt and the finally
+	// still closes whatever was opened.
+	let conn: DuckDBConnection | null = null;
+	const onAbort = () => {
+		try {
+			conn?.interrupt();
+		} catch {
+			// Not yet open / already closed — the finally's close() handles cleanup.
+		}
+	};
+	signal?.addEventListener("abort", onAbort, { once: true });
+	try {
+		conn = await getLakeConnection();
+		signal?.throwIfAborted();
+		const reader = input.params
+			? await conn.runAndReadAll(wrapped, input.params)
+			: await conn.runAndReadAll(wrapped);
+		return boundAgentSample(readerToResult(reader), effective);
+	} finally {
+		signal?.removeEventListener("abort", onAbort);
+		conn?.closeSync();
+	}
 }
 
 /**

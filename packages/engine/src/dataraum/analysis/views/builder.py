@@ -76,12 +76,25 @@ def build_enriched_view_sql(
     # Pre-compute aliases for all joins
     join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
 
+    # Output column names must be unique by construction — the ``{fact_fk}__{col}``
+    # prefix does NOT guarantee it (two joins can share a fact column), and a
+    # duplicate would violate the enriched-layer ``uq_table_column`` on registration.
+    # Disambiguate with a numeric suffix, mirroring ``get_unique_alias``.
+    used_column_names: dict[str, int] = {}
+
+    def get_unique_column_name(base: str) -> str:
+        if base not in used_column_names:
+            used_column_names[base] = 1
+            return base
+        used_column_names[base] += 1
+        return f"{base}_{used_column_names[base]}"
+
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
         # Use fact FK column as prefix so repeated joins of the same dim table are distinct:
         # e.g. kontonummer_des_gegenkontos__beschriftung vs kontonummer_des_kontos__beschriftung
         col_prefix = join.fact_fk_column
         for col in join.include_columns:
-            qualified_name = f"{col_prefix}__{col}"
+            qualified_name = get_unique_column_name(f"{col_prefix}__{col}")
             select_parts.append(f'{alias}."{col}" AS "{qualified_name}"')
             dimension_column_names.append(qualified_name)
 

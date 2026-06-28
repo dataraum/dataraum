@@ -24,10 +24,16 @@ let dir: string;
 let readerConn: DuckDBConnection;
 let readerInstance: DuckDBInstance;
 
-// Mock the lake module so `runSql` resolves to our temp-lake reader connection
-// instead of the config-driven Postgres-catalog one.
+// Mock the lake module so `runSql` runs against our temp-lake reader instance
+// instead of the config-driven Postgres-catalog one. `runSql` imports
+// `getLakeConnection` across the module boundary and owns its own acquire + abort
+// + close, so swapping just that export here puts the REAL runSql logic (abort
+// wiring included) under test. Each call hands out a fresh connection off the
+// shared reader instance (the ATTACH is instance-level, so every connection sees
+// `lake.*`); `readerConn` stays as the bootstrap connection that ran the ATTACH
+// and keeps the instance catalog warm for the test's lifetime.
 vi.mock("./lake", () => ({
-	getLakeConnection: () => Promise.resolve(readerConn),
+	getLakeConnection: () => readerInstance.connect(),
 }));
 
 beforeAll(async () => {
@@ -146,4 +152,29 @@ describe("runSql over a real DuckLake lake (DAT-367)", () => {
 		expect(exact.rowCount).toBe(AGENT_SAMPLE_ROWS);
 		expect(exact.truncated).toBe(false);
 	});
+
+	it("rejects an already-aborted signal before running", async () => {
+		const { runSql } = await import("./run-sql");
+		await expect(
+			runSql({ sql: "SELECT 1 AS n" }, AbortSignal.abort()),
+		).rejects.toThrow();
+	});
+
+	it("interrupts an IN-FLIGHT statement on abort (does not hang)", async () => {
+		const { runSql } = await import("./run-sql");
+		const controller = new AbortController();
+		// A heavy, non-shortcuttable scan BEHIND the LIMIT wrap — the LIMIT can't
+		// cap it until the sum materializes, so it is genuinely in-flight when we
+		// abort. closeSync() would NOT cancel it (the promise would hang past the
+		// timeout); interrupt() rejects it in ~hundreds of ms. Proves the per-call
+		// connection makes run_sql abortable (DAT-641).
+		const promise = runSql(
+			{
+				sql: "SELECT sum(t.i + u.j) AS s FROM range(100000000) t(i), range(100) u(j)",
+			},
+			controller.signal,
+		);
+		setTimeout(() => controller.abort(), 150);
+		await expect(promise).rejects.toThrow();
+	}, 15000);
 });

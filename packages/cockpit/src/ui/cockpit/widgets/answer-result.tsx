@@ -15,8 +15,10 @@ import { Link, useParams } from "@tanstack/react-router";
 import { Library } from "lucide-react";
 import { useState } from "react";
 
+import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence, CanvasState } from "#/ui/cockpit/canvas-state";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
+import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { defaultReportTitle } from "#/ui/cockpit/widgets/report-title";
 import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
 
@@ -151,6 +153,9 @@ export function AnswerResultWidget({
 	const [saving, setSaving] = useState(false);
 	const [mintedId, setMintedId] = useState<string | null>(null);
 	const [mintFailed, setMintFailed] = useState(false);
+	// A chart the user authored over this result (DAT-626) — frozen into the report
+	// at mint. Null = table-only report (first-class), the default.
+	const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
 
 	// POST to the mint endpoint over fetch (not an imported server fn) so this
 	// canvas-registered widget never drags the cockpit_db client / config into the
@@ -168,6 +173,7 @@ export function AnswerResultWidget({
 					title: defaultReportTitle(state.summary),
 					conversationId: params.conversationId ?? null,
 					confidence: state.confidence,
+					chartConfig,
 				}),
 			});
 			if (!res.ok) throw new Error(`mint failed: ${res.status}`);
@@ -180,6 +186,16 @@ export function AnswerResultWidget({
 			setSaving(false);
 		}
 	};
+
+	// The chart affordance sits LEFT of the Report action (DAT-626); its modal lets
+	// the user author a chart over this result, frozen into the report on mint.
+	const chartAction = (
+		<ChartToolbarButton
+			sql={state.sql}
+			value={chartConfig}
+			onChange={setChartConfig}
+		/>
+	);
 
 	// The mint action rides in the grid's own toolbar (left of "View SQL") rather
 	// than floating above the grid — it's a peer of the result-surface actions.
@@ -225,7 +241,12 @@ export function AnswerResultWidget({
 			)}
 			<ResultGridWidget
 				state={{ kind: "result-grid", sql: state.sql }}
-				toolbarActions={reportAction}
+				toolbarActions={
+					<>
+						{chartAction}
+						{reportAction}
+					</>
+				}
 			/>
 		</div>
 	);

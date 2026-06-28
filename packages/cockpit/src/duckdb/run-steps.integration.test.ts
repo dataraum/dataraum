@@ -1,14 +1,16 @@
 // Real in-process DuckDB integration for run_steps (DAT-485).
 //
-// Exercises the actual `runSteps` validator — its OWN throwaway instance, the
-// `SELECT * FROM (<composed>) LIMIT` wrap, the truncation probe, and abort —
-// against a REAL DuckLake lake ATTACHed READ_ONLY. CTE-based execution (DAT-485
-// review): the validator runs the SAME single composed statement the browser grid
-// streams, so there is no temp-view-vs-grid divergence. Mirrors
-// run-sql.integration.test.ts: a writer (engine stand-in) creates + commits
-// `lake.typed.orders` into a LOCAL DuckLake catalog file (hermetic — no compose
-// stack), and we mock `attachLakeReadOnly` so run_steps attaches THAT catalog
-// READ_ONLY on its throwaway connection. Everything else in run_steps is real.
+// Exercises the actual `runSteps` validator — its per-validation CONNECTION off
+// the shared lake instance, the `SELECT * FROM (<composed>) LIMIT` wrap, the
+// truncation probe, and abort — against a REAL DuckLake lake ATTACHed READ_ONLY.
+// CTE-based execution (DAT-485 review): the validator runs the SAME single
+// composed statement the browser grid streams, so there is no temp-view-vs-grid
+// divergence. Mirrors run-sql.integration.test.ts: a writer (engine stand-in)
+// creates + commits `lake.typed.orders` into a LOCAL DuckLake catalog file
+// (hermetic — no compose stack); we mock `getLakeConnection` to hand out a FRESH
+// connection off a reader instance that ATTACHed THAT catalog READ_ONLY (the
+// production shape — one instance, a connection per call, the validator closes
+// it). Everything else in run_steps is real.
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,33 +21,22 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Set by beforeAll; read at call-time inside the mock's closure (not at mock-
 // hoist time), the same shape run-sql.integration.test.ts uses.
-let catalog: string;
-let dataPath: string;
+let readerInstance: DuckDBInstance;
 
-// Mock the lake module so run_steps attaches OUR local catalog READ_ONLY on its
-// own throwaway connection — the only thing swapped is WHICH lake.
+// Mock the lake module so run_steps runs against OUR local catalog — the only
+// thing swapped is WHICH lake. Each call hands out a fresh connection off the
+// shared reader instance (the ATTACH is instance-level, so every connection sees
+// `lake.*`); run_steps closes the one it gets.
 vi.mock("./lake", () => ({
-	attachLakeReadOnly: async (conn: {
-		run: (sql: string) => Promise<unknown>;
-	}) => {
-		try {
-			await conn.run("INSTALL ducklake");
-		} catch {
-			// already present
-		}
-		await conn.run("LOAD ducklake");
-		await conn.run(
-			`ATTACH 'ducklake:${catalog}' AS lake (DATA_PATH '${dataPath}', READ_ONLY)`,
-		);
-	},
+	getLakeConnection: () => readerInstance.connect(),
 }));
 
 let dir: string;
 
 beforeAll(async () => {
 	dir = mkdtempSync(join(tmpdir(), "runsteps-it-"));
-	dataPath = join(dir, "data");
-	catalog = join(dir, "catalog.ducklake");
+	const dataPath = join(dir, "data");
+	const catalog = join(dir, "catalog.ducklake");
 
 	// Writer (engine stand-in): create, populate, commit, close.
 	const writerInstance = await DuckDBInstance.create(":memory:");
@@ -68,9 +59,21 @@ beforeAll(async () => {
 	);
 	writer.closeSync();
 	writerInstance.closeSync();
+
+	// Reader (the shared lake instance): ATTACH the catalog READ_ONLY on a
+	// bootstrap connection, then drop it — the ATTACH is instance-level, so the
+	// fresh per-call connections the mock hands out still see `lake.*`.
+	readerInstance = await DuckDBInstance.create(":memory:");
+	const bootstrap = await readerInstance.connect();
+	await bootstrap.run("LOAD ducklake");
+	await bootstrap.run(
+		`ATTACH 'ducklake:${catalog}' AS lake (DATA_PATH '${dataPath}', READ_ONLY)`,
+	);
+	bootstrap.closeSync();
 });
 
 afterAll(() => {
+	readerInstance?.closeSync();
 	if (dir) rmSync(dir, { recursive: true, force: true });
 });
 

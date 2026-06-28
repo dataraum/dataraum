@@ -39,7 +39,7 @@ import {
 	sources,
 	tables,
 } from "../db/metadata/schema";
-import { getLakeConnection, LAKE_ALIAS } from "../duckdb/lake";
+import { LAKE_ALIAS, withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
 import { type DriverRanking, lookDrivers } from "./look-drivers";
 import { projectTableEntity, type TableEntity } from "./look-table";
@@ -86,26 +86,27 @@ async function describeEnrichedViews(
 	views: SchemaTableRow[],
 ): Promise<SchemaColumnRow[] | null> {
 	try {
-		const conn = await getLakeConnection();
-		const out: SchemaColumnRow[] = [];
-		for (const v of views) {
-			const address = `${LAKE_ALIAS}.${schemaForLayer(v.layer)}."${v.physicalName}"`;
-			const reader = await conn.runAndReadAll(`DESCRIBE ${address}`);
-			for (const r of readerToResult(reader).rows) {
-				const name = r.column_name;
-				if (typeof name !== "string") continue;
-				out.push({
-					tableId: v.tableId,
-					// Synthetic id — enriched columns carry no semantic annotation, so it
-					// is never used for a concept lookup (concepts are [] for this path).
-					columnId: `${v.tableId}:${name}`,
-					name,
-					resolvedType:
-						typeof r.column_type === "string" ? r.column_type : null,
-				});
+		return await withLakeConnection(async (conn) => {
+			const out: SchemaColumnRow[] = [];
+			for (const v of views) {
+				const address = `${LAKE_ALIAS}.${schemaForLayer(v.layer)}."${v.physicalName}"`;
+				const reader = await conn.runAndReadAll(`DESCRIBE ${address}`);
+				for (const r of readerToResult(reader).rows) {
+					const name = r.column_name;
+					if (typeof name !== "string") continue;
+					out.push({
+						tableId: v.tableId,
+						// Synthetic id — enriched columns carry no semantic annotation, so it
+						// is never used for a concept lookup (concepts are [] for this path).
+						columnId: `${v.tableId}:${name}`,
+						name,
+						resolvedType:
+							typeof r.column_type === "string" ? r.column_type : null,
+					});
+				}
 			}
-		}
-		return out;
+			return out;
+		});
 	} catch (err) {
 		console.warn(
 			`[cockpit] enriched DESCRIBE failed — falling back to typed tables: ${err}`,

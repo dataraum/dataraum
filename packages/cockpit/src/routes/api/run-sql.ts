@@ -11,6 +11,7 @@
 // `ReadableStream`. All the protocol/cap/framing logic lives in the pure,
 // unit-tested `duckdb/stream-sql.ts`.
 
+import type { DuckDBConnection } from "@duckdb/node-api";
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	buildFilterClause,
@@ -120,10 +121,14 @@ export const Route = createFileRoute("/api/run-sql")({
 				);
 				const params = [...userParams, ...filterParams];
 
-				// Reuse the shared READ_ONLY lake reader — writes fail at the engine
-				// level (READ_ONLY ATTACH, defense in depth). `stream()` is lazy: it
-				// does NOT materialize the whole result, so peak memory ≈ one chunk.
-				// Same positional-bind rule as the agent tool.
+				// A FRESH connection off the shared lake instance — a DuckDB
+				// connection runs statements serially, so concurrent grid fetches (a
+				// report page streams several charts at once) each need their own or
+				// they corrupt each other. We OWN this connection for the stream's
+				// lifetime and close it in the stream's `finally`. `stream()` is lazy:
+				// it does NOT materialize the whole result, so peak memory ≈ one chunk.
+				// Writes still fail at the engine level (READ_ONLY ATTACH, defense in
+				// depth). Same positional-bind rule as the agent tool.
 				//
 				// Prepare time is BEFORE the first byte: a connection failure or a
 				// SQL parse/bind error that surfaces here can still become a 400
@@ -135,16 +140,21 @@ export const Route = createFileRoute("/api/run-sql")({
 					{ limit, offset },
 					where,
 				);
+				let conn: DuckDBConnection | null = null;
 				let result: StreamableResult;
 				try {
-					const conn = await getLakeConnection();
+					conn = await getLakeConnection();
 					result = (await (params.length
 						? conn.stream(wrapped, params)
 						: conn.stream(wrapped))) as unknown as StreamableResult;
 				} catch (err) {
 					console.error("run-sql prepare failed", err);
+					conn?.closeSync();
 					return badRequest("Invalid SQL or parameters.");
 				}
+				// `conn` is non-null past the prepare (the catch returns); capture it as
+				// a const so the stream closures hold a non-nullable handle to close.
+				const streamConn = conn;
 
 				const enc = new TextEncoder();
 				// Flipped by cancel() (grid closed / navigated away). streamNdjson
@@ -184,9 +194,17 @@ export const Route = createFileRoute("/api/run-sql")({
 							}
 						} finally {
 							controller.close();
+							// The per-request connection is ours; release it once the
+							// stream is done (clean finish, mid-stream error, or — after
+							// cancel() flips `aborted` and the loop breaks — an aborted
+							// read). We only reach here between chunk boundaries, so there
+							// is no in-flight fetchChunk to strand.
+							streamConn.closeSync();
 						}
 					},
 					cancel() {
+						// Client went away. Flip the flag so streamNdjson breaks at the
+						// next chunk boundary; start()'s finally then closes the conn.
 						aborted.aborted = true;
 					},
 				});

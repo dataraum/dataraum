@@ -74,10 +74,10 @@ export const runSqlTool = toolDefinition({
 	// reads it and rewrites the SQL in-loop instead of the turn dying on an
 	// opaque "Error executing tool: …" string (consistency pass 2).
 	outputSchema: withAgentError(QueryResultSchema),
-	// ctx.abortSignal deliberately NOT forwarded (DAT-449): duckdb-neo has no
-	// per-query cancellation — its only primitive is connection-level
-	// `interrupt()`, and the lake connection is process-wide memoized
-	// (duckdb/lake.ts), so interrupting would kill CONCURRENT queries (the
-	// grid's /api/run-sql, other tool calls), not just this one. Revisit only
-	// with a per-query connection or a driver-level signal API.
-}).server((input) => asAgentError(() => runSql(input)));
+	// ctx.abortSignal IS forwarded: duckdb-neo's only cancel primitive is
+	// connection-level `interrupt()`, and each read now owns a fresh per-call
+	// connection (duckdb/lake.ts `withLakeConnection`), so interrupting this query
+	// on a cancelled chat turn hits ONLY this connection — never the grid's
+	// /api/run-sql stream or a concurrent tool call. (Pre-DAT-641 the lake
+	// connection was process-wide shared, so forwarding was unsafe; that's gone.)
+}).server((input, ctx) => asAgentError(() => runSql(input, ctx?.abortSignal)));

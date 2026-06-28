@@ -18,10 +18,18 @@
 // reasons over. (2) Opening READ_ONLY means the cockpit never contends for the
 // catalog's write path. See the DAT-367 PR body for the full caveat.
 //
-// Lifecycle: one lazily-opened instance + connection per process (the simplest
-// correct model — DuckDB connections are not thread-affine here and Node is
-// single-threaded for our purposes). `getLakeConnection()` opens on first call
-// and memoizes; `closeLake()` tears it down (tests, graceful shutdown).
+// Lifecycle: ONE lazily-opened, bootstrapped instance per process; a FRESH
+// connection PER request. A DuckDB connection runs statements serially — it is
+// NOT safe to drive concurrently. A web server fans out concurrent reads (e.g. a
+// report page renders several charts at once, each its own `/api/run-sql`), so a
+// single shared connection serializes/corrupts them. The node_neo model is one
+// instance, many connections: ATTACHed databases, loaded extensions, and the S3
+// secret are all instance-level — shared across every connection from the
+// instance — so the per-request connection inherits the bootstrap for free and
+// only the query is per-connection. `getLakeConnection()` hands out a fresh
+// connection the CALLER must close (or use `withLakeConnection`); `closeLake()`
+// tears the instance down (tests, graceful shutdown).
+// See https://duckdb.org/docs/current/clients/node_neo/overview.
 
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
@@ -35,20 +43,17 @@ import { buildDucklakeAttachSql, escapeSqlLiteral } from "./sql-escape";
 export const LAKE_ALIAS = "lake";
 
 let instancePromise: Promise<DuckDBInstance> | null = null;
-let connectionPromise: Promise<DuckDBConnection> | null = null;
 
 /**
  * ATTACH the DuckLake lake READ_ONLY on an already-open connection, under
  * {@link LAKE_ALIAS}. The full bootstrap dance — extension directory, INSTALL/
- * LOAD ducklake, the S3 secret, and the catalog ATTACH — in one place, so both
- * the memoized lake reader (`openConnection`) and a throwaway validator
- * connection (`run-steps.ts`, DAT-485) attach the lake identically. The caller
- * owns the connection's lifecycle (open + close); this only runs the ATTACH
- * sequence on it.
+ * LOAD ducklake, the S3 secret, and the catalog ATTACH — in one place. Run ONCE
+ * per instance by {@link openInstance}: the ATTACH/extensions/secret are
+ * instance-level, so every connection off the instance (run_sql, run_steps, …)
+ * inherits them. Module-private — callers take a connection via
+ * {@link getLakeConnection}/{@link withLakeConnection}, never re-attach.
  */
-export async function attachLakeReadOnly(
-	conn: DuckDBConnection,
-): Promise<void> {
+async function attachLakeReadOnly(conn: DuckDBConnection): Promise<void> {
 	const attachSql = buildDucklakeAttachSql(
 		LAKE_ALIAS,
 		config.ducklakeCatalogUrl,
@@ -83,30 +88,37 @@ export async function attachLakeReadOnly(
 	await conn.run(attachSql);
 }
 
-async function openConnection(): Promise<DuckDBConnection> {
-	if (!instancePromise) {
-		// A fresh in-memory instance owns the ATTACH. Using a per-cockpit-process
-		// instance (not `fromCache`) is fine: the cockpit ATTACHes the lake
-		// exactly once, so there is no same-process double-ATTACH to guard.
-		instancePromise = DuckDBInstance.create(":memory:");
+async function openInstance(): Promise<DuckDBInstance> {
+	// A fresh in-memory instance owns the ATTACH. Using a per-cockpit-process
+	// instance (not `fromCache`) is fine: the cockpit ATTACHes the lake exactly
+	// once, so there is no same-process double-ATTACH to guard.
+	const instance = await DuckDBInstance.create(":memory:");
+	// Bootstrap ONCE on a throwaway connection: load ducklake/httpfs, register
+	// the S3 secret, ATTACH the lake READ_ONLY. All three are instance-level in
+	// DuckDB (shared across every connection from this instance — node_neo docs),
+	// so per-request connections inherit them without re-running the bootstrap,
+	// and closing this bootstrap connection does NOT detach the lake (ATTACH is
+	// catalog/instance state, not connection state). The instance itself is held
+	// by `instancePromise`, keeping that catalog alive for the process.
+	const bootstrap = await instance.connect();
+	try {
+		await attachLakeReadOnly(bootstrap);
+	} finally {
+		bootstrap.closeSync();
 	}
-	const instance = await instancePromise;
-	const conn = await instance.connect();
-	await attachLakeReadOnly(conn);
-	return conn;
+	return instance;
 }
 
 /**
- * Return the process-wide DuckLake reader connection, opening it on first call.
- *
- * The connection is memoized — every caller shares one connection for the life
- * of the process. Reusable by any read verb (`run_sql`) or the future
- * schema-sniff tool. Fails loud if the catalog is unreachable or the ATTACH
- * fails (the rejected promise is cleared so a later call can retry).
+ * Return the process-wide, bootstrapped DuckLake reader instance, opening it on
+ * first call. Memoized — every caller shares ONE instance (and thus the single
+ * ATTACH), but each gets its own connection off it. Fails loud if the catalog is
+ * unreachable or the ATTACH fails (the rejected promise is cleared so a later
+ * call can retry).
  */
-export function getLakeConnection(): Promise<DuckDBConnection> {
-	if (!connectionPromise) {
-		connectionPromise = openConnection().catch((err) => {
+export function getLakeInstance(): Promise<DuckDBInstance> {
+	if (!instancePromise) {
+		instancePromise = openInstance().catch((err) => {
 			// Surface WHY the lake is unreachable (catalog down, S3 creds, bad
 			// DATA_PATH) — otherwise it only ever reaches the agent as an opaque
 			// run_steps { error } string with no server trace.
@@ -115,34 +127,65 @@ export function getLakeConnection(): Promise<DuckDBConnection> {
 			);
 			// Clear the memo so a transient failure (catalog briefly unreachable)
 			// doesn't wedge the process into a permanently-rejected state.
-			connectionPromise = null;
+			instancePromise = null;
 			throw err;
 		});
 	}
-	return connectionPromise;
+	return instancePromise;
 }
 
 /**
- * Close the lake connection + instance and reset the memo. Idempotent.
- * For graceful shutdown and test teardown.
+ * Open a FRESH connection on the shared lake instance. A DuckDB connection runs
+ * statements serially and is not safe to drive concurrently, so every concurrent
+ * reader needs its own — the caller OWNS this connection's lifecycle and MUST
+ * `closeSync()` it when done (prefer {@link withLakeConnection}, which closes for
+ * you). The connection inherits the instance's ATTACH/extensions/secret, so it is
+ * ready to query immediately.
+ */
+export async function getLakeConnection(): Promise<DuckDBConnection> {
+	const instance = await getLakeInstance();
+	return instance.connect();
+}
+
+/**
+ * Run `fn` with a fresh lake connection and close it afterwards — the scoped form
+ * of {@link getLakeConnection} for the common read-then-return case. NOT for the
+ * streaming route, whose connection must outlive the handler (it is consumed by
+ * the `ReadableStream` after the function returns); that path acquires + closes
+ * around the stream lifecycle itself.
+ *
+ * No abort handling: this helper is for short, non-cancellable reads. A read that
+ * must honor abort (cancel an in-flight statement on a stopped chat turn) takes a
+ * raw {@link getLakeConnection} and wires `signal` → `conn.interrupt()` itself —
+ * see `run-sql.ts` / `run-steps.ts`. (That stays in the consumer so it imports
+ * only `getLakeConnection` across the module boundary and is mockable/testable;
+ * folding it in here would make it intra-module and untestable without the real
+ * Postgres catalog.)
+ */
+export async function withLakeConnection<T>(
+	fn: (conn: DuckDBConnection) => Promise<T>,
+): Promise<T> {
+	const conn = await getLakeConnection();
+	try {
+		return await fn(conn);
+	} finally {
+		conn.closeSync();
+	}
+}
+
+/**
+ * Close the lake instance and reset the memo. Idempotent. For graceful shutdown
+ * and test teardown. Per-request connections are owned + closed by their callers;
+ * this tears down the shared instance (which drops any still-open connections).
  */
 export async function closeLake(): Promise<void> {
-	const conn = connectionPromise;
 	const inst = instancePromise;
-	connectionPromise = null;
 	instancePromise = null;
-	if (conn) {
-		try {
-			(await conn).closeSync();
-		} catch {
-			// Already closed / never opened cleanly — nothing to do.
-		}
-	}
 	if (inst) {
 		try {
 			(await inst).closeSync();
 		} catch {
-			// Same.
+			// Already closed / never opened cleanly — nothing to do.
 		}
 	}
 }

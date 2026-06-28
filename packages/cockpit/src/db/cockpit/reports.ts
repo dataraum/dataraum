@@ -12,6 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
+import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import { cockpitDb } from "./client";
 import { reports } from "./schema";
@@ -32,6 +33,8 @@ export interface CreateReportInput {
 	summary: string;
 	sql: string;
 	confidence: AnswerConfidence;
+	/** Frozen chart config (DAT-626) — null/omitted = table-only report. */
+	chartConfig?: ChartConfig | null;
 	/** Headline result fingerprint at mint (DAT-625). Drives drift detection on open;
 	 * null only if fingerprinting failed (best-effort), then lazy-backfilled later. */
 	summaryFingerprint?: string | null;
@@ -49,6 +52,8 @@ export interface ReportRow {
 	summaryFingerprint: string | null;
 	sql: string;
 	confidence: AnswerConfidence;
+	/** Frozen chart config (DAT-626) — null = table-only report. */
+	chartConfig: ChartConfig | null;
 	createdAt: Date;
 }
 
@@ -70,6 +75,7 @@ export async function createReport(input: CreateReportInput): Promise<string> {
 		summaryFingerprint: input.summaryFingerprint ?? null,
 		sql: input.sql,
 		confidence: input.confidence,
+		chartConfig: input.chartConfig ?? null,
 	});
 	return id;
 }
@@ -92,6 +98,7 @@ export async function listReports(
 			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
 			confidence: reports.confidence,
+			chartConfig: reports.chartConfig,
 			createdAt: reports.createdAt,
 		})
 		.from(reports)
@@ -115,6 +122,7 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
 			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
 			confidence: reports.confidence,
+			chartConfig: reports.chartConfig,
 			createdAt: reports.createdAt,
 		})
 		.from(reports)

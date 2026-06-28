@@ -34,9 +34,14 @@ HTTP round-trip to the engine for them. `run_sql` / `probe` are thin LLM-facing
 wrappers in `tools/`; the connection lifecycle + query logic live in
 `src/duckdb/` (neo driver `@duckdb/node-api`):
 
-- `src/duckdb/lake.ts` — lazily-opened, process-wide DuckDB connection that
-  ATTACHes the engine's DuckLake catalog **READ_ONLY**. `getLakeConnection()`
-  is reusable by any read verb and by the future `connect` schema-sniff (DAT-381).
+- `src/duckdb/lake.ts` — one lazily-opened, process-wide DuckDB **instance** that
+  ATTACHes the engine's DuckLake catalog **READ_ONLY** once (ATTACH/extensions/
+  secret are instance-level, shared across connections). Each read takes a FRESH
+  connection off it — a DuckDB connection runs statements serially, so concurrent
+  reads (a report page streams several charts at once) each need their own. Use
+  `withLakeConnection(fn)` (opens + closes for you) for read-then-return calls, or
+  `getLakeConnection()` when you must own the lifecycle yourself (the streaming
+  grid route). Reusable by any read verb and the `connect` schema-sniff (DAT-381).
 - `src/duckdb/run-sql.ts` — `runSql` over the lake (`lake.typed.*`, etc.).
 - `src/duckdb/probe.ts` — `probe` against an external DB source via a throwaway
   READ_ONLY ATTACH; credentials resolved by source name in

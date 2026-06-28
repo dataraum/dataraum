@@ -2,6 +2,7 @@ import { Card, Group, SimpleGrid, Stack, Text, Title } from "@mantine/core";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Library } from "lucide-react";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
+import { ReportChartThumbnail } from "#/ui/cockpit/widgets/report-chart";
 import { loadReports } from "./index.functions";
 
 // The reports gallery (DAT-624) — a workspace's library of minted widgets. Each
@@ -55,6 +56,11 @@ function ReportsGallery() {
 									</Text>
 									<BandBadge band={r.confidence.band} />
 								</Group>
+								{/* Frozen chart over live data (DAT-626) — lazy per card so a big
+								    gallery doesn't fire a query + canvas for every report. */}
+								{r.chartConfig && (
+									<ReportChartThumbnail sql={r.sql} config={r.chartConfig} />
+								)}
 								<Text size="sm" c="dimmed" lineClamp={3}>
 									{r.summary}
 								</Text>

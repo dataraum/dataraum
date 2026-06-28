@@ -22,6 +22,7 @@ import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as ApiAwaitingInputRouteImport } from './routes/api/awaiting-input'
 import { Route as appSettingsRouteImport } from './routes/(app)/settings'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
+import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
 import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
 import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
 import { Route as appWorkspaceWsIdOperatingModelRouteImport } from './routes/(app)/workspace/$wsId/operating-model'
@@ -96,6 +97,11 @@ const appSettingsRoute = appSettingsRouteImport.update({
 const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   id: '/api/reports/mint',
   path: '/api/reports/mint',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChartsAuthorRoute = ApiChartsAuthorRouteImport.update({
+  id: '/api/charts/author',
+  path: '/api/charts/author',
   getParentRoute: () => rootRouteImport,
 } as any)
 const appWorkspaceWsIdRouteRoute = appWorkspaceWsIdRouteRouteImport.update({
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -201,6 +208,7 @@ export interface FileRoutesByTo {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
   '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
@@ -227,6 +235,7 @@ export interface FileRoutesById {
   '/api/upload': typeof ApiUploadRoute
   '/api/workflow-progress': typeof ApiWorkflowProgressRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRouteRouteWithChildren
   '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
@@ -254,6 +263,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/charts/author'
     | '/api/reports/mint'
     | '/workspace/$wsId/cockpit'
     | '/workspace/$wsId/governance'
@@ -279,6 +289,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/workspace/$wsId'
+    | '/api/charts/author'
     | '/api/reports/mint'
     | '/workspace/$wsId/governance'
     | '/workspace/$wsId/library'
@@ -304,6 +315,7 @@ export interface FileRouteTypes {
     | '/api/upload'
     | '/api/workflow-progress'
     | '/(app)/workspace/$wsId'
+    | '/api/charts/author'
     | '/api/reports/mint'
     | '/(app)/workspace/$wsId/cockpit'
     | '/(app)/workspace/$wsId/governance'
@@ -329,6 +341,7 @@ export interface RootRouteChildren {
   ApiShippedMetricDagRoute: typeof ApiShippedMetricDagRoute
   ApiUploadRoute: typeof ApiUploadRoute
   ApiWorkflowProgressRoute: typeof ApiWorkflowProgressRoute
+  ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiReportsMintRoute: typeof ApiReportsMintRoute
 }
 
@@ -423,6 +436,13 @@ declare module '@tanstack/react-router' {
       path: '/api/reports/mint'
       fullPath: '/api/reports/mint'
       preLoaderRoute: typeof ApiReportsMintRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/charts/author': {
+      id: '/api/charts/author'
+      path: '/api/charts/author'
+      fullPath: '/api/charts/author'
+      preLoaderRoute: typeof ApiChartsAuthorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/(app)/workspace/$wsId': {
@@ -576,6 +596,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiShippedMetricDagRoute: ApiShippedMetricDagRoute,
   ApiUploadRoute: ApiUploadRoute,
   ApiWorkflowProgressRoute: ApiWorkflowProgressRoute,
+  ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiReportsMintRoute: ApiReportsMintRoute,
 }
 export const routeTree = rootRouteImport

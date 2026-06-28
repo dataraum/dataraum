@@ -22,7 +22,7 @@ import { eq } from "drizzle-orm";
 
 import { metadataDb } from "../db/metadata/client";
 import { columns, currentStatisticalProfiles } from "../db/metadata/schema";
-import { getLakeConnection } from "../duckdb/lake";
+import { withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
 
 // cardinality_ratio = distinct_count / row_count. At/above this a column is treated
@@ -130,12 +130,12 @@ export async function computeGrainNote(
 ): Promise<string | null> {
 	if (nearUniqueColumns.size === 0) return null;
 	try {
-		const conn = await getLakeConnection();
 		// $1::VARCHAR — json_serialize_sql requires a VARCHAR arg and rejects an
 		// untyped bind parameter ("first argument must be a VARCHAR").
-		const reader = await conn.runAndReadAll(
-			"SELECT json_serialize_sql($1::VARCHAR) AS tree",
-			[composedSql],
+		const reader = await withLakeConnection((conn) =>
+			conn.runAndReadAll("SELECT json_serialize_sql($1::VARCHAR) AS tree", [
+				composedSql,
+			]),
 		);
 		const raw = readerToResult(reader).rows[0]?.tree;
 		if (typeof raw !== "string") return null;

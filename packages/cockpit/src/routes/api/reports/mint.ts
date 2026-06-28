@@ -7,6 +7,7 @@
 // (same pattern as /api/run-sql, /api/upload).
 
 import { createFileRoute } from "@tanstack/react-router";
+import { type ChartConfig, ChartConfigSchema } from "#/charts/chart-config";
 import { resolveActiveWorkspace } from "#/db/cockpit/registry";
 import { createReport } from "#/db/cockpit/reports";
 import { computeReportFingerprint } from "#/duckdb/report-fingerprint-read";
@@ -18,6 +19,8 @@ interface MintBody {
 	title: string;
 	conversationId?: string | null;
 	confidence: AnswerConfidence;
+	/** Optional frozen chart config (DAT-626) — null/absent = table-only report. */
+	chartConfig?: ChartConfig | null;
 }
 
 export const Route = createFileRoute("/api/reports/mint")({
@@ -26,6 +29,20 @@ export const Route = createFileRoute("/api/reports/mint")({
 			POST: async ({ request }) => {
 				const body = (await request.json()) as MintBody;
 				const workspaceId = await resolveActiveWorkspace();
+				// Shape-guard the client-sent chart config before freezing it (the
+				// column-existence + compile checks already ran client-side at accept; a
+				// malformed body shouldn't land in jsonb). Invalid → table-only, never a
+				// failed mint.
+				let chartConfig: ChartConfig | null = null;
+				if (body.chartConfig != null) {
+					const parsed = ChartConfigSchema.safeParse(body.chartConfig);
+					if (parsed.success) chartConfig = parsed.data;
+					else
+						console.error(
+							"[reports] mint dropped a malformed chart config:",
+							parsed.error.message,
+						);
+				}
 				// Fingerprint the result at mint so the summary can be flagged outdated
 				// when the live data drifts (DAT-625). Best-effort: a fingerprint failure
 				// must not block minting — null is lazy-backfilled on first open.
@@ -47,6 +64,7 @@ export const Route = createFileRoute("/api/reports/mint")({
 					summary: body.summary,
 					sql: body.sql,
 					confidence: body.confidence,
+					chartConfig,
 					summaryFingerprint,
 				});
 				return Response.json({ id });

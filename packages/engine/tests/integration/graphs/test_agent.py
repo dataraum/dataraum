@@ -513,6 +513,77 @@ class TestComposeGroundingFree:
         with pytest.raises(ValueError, match="no expression"):
             self._agent()._compose_grounding_free(graph.get_output_step(), graph, {}, {})
 
+    def test_nested_formula_materializes_transitive_extract_ctes(self) -> None:
+        """A formula-over-formula must materialize the INNER formula's extract deps as
+        CTEs too (DAT-645). operating_income = gross_profit - operating_expense, where
+        gross_profit = revenue - cost_of_goods_sold: gross_profit's snippet references
+        revenue/cogs, so those must be earlier CTEs or execution fails 'Table revenue
+        does not exist'. Direct deps alone are not enough."""
+
+        def _ext(sid: str) -> GraphStep:
+            return GraphStep(
+                step_id=sid,
+                step_type=StepType.EXTRACT,
+                source=StepSource(standard_field=sid, statement="income_statement"),
+                aggregation="sum",
+            )
+
+        graph = TransformationGraph(
+            graph_id="operating_income",
+            version="1.0",
+            metadata=GraphMetadata(
+                name="oi", description="", category="profitability", source=GraphSource.SYSTEM
+            ),
+            output=OutputDef(output_type=OutputType.SCALAR),
+            steps={
+                "revenue": _ext("revenue"),
+                "cost_of_goods_sold": _ext("cost_of_goods_sold"),
+                "operating_expense": _ext("operating_expense"),
+                "gross_profit": GraphStep(
+                    step_id="gross_profit",
+                    step_type=StepType.FORMULA,
+                    expression="revenue - cost_of_goods_sold",
+                    depends_on=["revenue", "cost_of_goods_sold"],
+                ),
+                "operating_income": GraphStep(
+                    step_id="operating_income",
+                    step_type=StepType.FORMULA,
+                    expression="gross_profit - operating_expense",
+                    depends_on=["gross_profit", "operating_expense"],
+                    output_step=True,
+                ),
+            },
+        )
+        cached = {
+            "revenue": {"sql": "SELECT 1000 AS value", "description": ""},
+            "cost_of_goods_sold": {"sql": "SELECT 600 AS value", "description": ""},
+            "operating_expense": {"sql": "SELECT 100 AS value", "description": ""},
+            "gross_profit": {
+                "sql": "SELECT ((SELECT value FROM revenue) - "
+                "(SELECT value FROM cost_of_goods_sold)) AS value",
+                "description": "",
+            },
+        }
+
+        code = self._agent()._compose_grounding_free(graph.get_output_step(), graph, cached, {})
+
+        step_ids = [s["step_id"] for s in code.steps]
+        # The full transitive closure is materialized — not just the direct deps.
+        assert set(step_ids) == {
+            "revenue",
+            "cost_of_goods_sold",
+            "operating_expense",
+            "gross_profit",
+        }
+        # The inner formula CTE is defined AFTER its extract deps (valid order).
+        assert step_ids.index("gross_profit") > step_ids.index("revenue")
+        assert step_ids.index("gross_profit") > step_ids.index("cost_of_goods_sold")
+        # final_sql composes the OUTPUT's direct deps (each a materialized CTE).
+        assert code.final_sql == (
+            "SELECT ((SELECT value FROM gross_profit) - "
+            "(SELECT value FROM operating_expense)) AS value"
+        )
+
 
 class TestDeterministicAuthoringEndToEnd:
     """execute() authors a formula/constant deterministically — the LLM is never called

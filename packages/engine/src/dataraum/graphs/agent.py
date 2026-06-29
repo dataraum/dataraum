@@ -52,6 +52,34 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _ordered_dep_steps(graph: TransformationGraph, output_step: GraphStep) -> list[str]:
+    """Transitive dependency step ids of ``output_step``, deps-before-dependents.
+
+    Depth-first post-order over ``depends_on`` (DAT-645): a step is appended only
+    after all its own deps, so the resulting list is a valid CTE materialization
+    order for a NESTED formula (an inner formula's snippet references its own
+    extract deps, which must be defined as earlier CTEs). A dep that is not a step
+    in ``graph`` (a leaf snippet supplied only via the cache, e.g. in a unit
+    fixture) is treated as a leaf with no further deps. Excludes ``output_step``.
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def visit(step_id: str) -> None:
+        if step_id in seen:
+            return
+        seen.add(step_id)
+        step = graph.steps.get(step_id)
+        if step is not None:
+            for dep in step.depends_on:
+                visit(dep)
+        order.append(step_id)
+
+    for dep in output_step.depends_on:
+        visit(dep)
+    return order
+
+
 @dataclass
 class GeneratedCode:
     """LLM-generated SQL for a specific graph + schema combination."""
@@ -1088,8 +1116,14 @@ class GraphAgent(LLMFeature):
         else:  # FORMULA
             if not output_step.expression:
                 raise ValueError(f"formula '{graph.graph_id}' has no expression — cannot compose")
-            deps = output_step.depends_on
-            missing = [d for d in deps if d not in cached_snippets]
+            # Materialize the FULL transitive dependency closure as CTE steps, ordered
+            # deps-before-dependents (DAT-645). A formula may depend on another formula
+            # (e.g. operating_income = gross_profit - operating_expense): the inner
+            # formula's snippet is `(SELECT value FROM revenue) - ...`, so its own
+            # extract deps must also be materialized as CTEs or execution fails with
+            # "Table revenue does not exist". Direct deps alone are not enough.
+            ordered = _ordered_dep_steps(graph, output_step)
+            missing = [d for d in ordered if d not in cached_snippets]
             if missing:
                 raise ValueError(
                     f"formula '{graph.graph_id}' dependency/ies {missing} not grounded — "
@@ -1102,9 +1136,10 @@ class GraphAgent(LLMFeature):
                     "sql": cached_snippets[d]["sql"],
                     "description": cached_snippets[d].get("description", ""),
                 }
-                for d in deps
+                for d in ordered
             ]
-            final_sql = compose_formula_sql(output_step.expression, set(deps))
+            # final_sql references the OUTPUT's direct deps (each a CTE in `steps`).
+            final_sql = compose_formula_sql(output_step.expression, set(output_step.depends_on))
             summary = f"Composed {graph.graph_id}: {output_step.expression}"
 
         return GeneratedCode(

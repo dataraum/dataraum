@@ -2,29 +2,30 @@
 
 [![License](https://img.shields.io/github/license/dataraum/dataraum)](LICENSE)
 
-A rich metadata context engine for AI-driven data analytics.
+The understanding layer that grounds an organization's operating model in its own data.
 
-Traditional semantic layers tell BI tools "what things are called." DataRaum tells AI "what the data means, how it behaves, how it relates, and what you can compute from it."
+A semantic layer tells BI tools what columns are *called*. DataRaum learns what they *mean* — the concepts, relationships, rules, and measures of the organization — and grounds each one in the actual data, with a measured confidence behind it. See the [docs](docs/index.md) for the full picture.
 
 ## Monorepo layout
 
 ```
 packages/
-├── engine/     # Python — pipeline, detectors, Starlette kernel shell
-├── cockpit/    # TypeScript — TanStack Start web UI
-└── infra/      # docker-compose orchestration
+├── engine/          # Python — pipeline, detectors, Temporal activity worker
+├── cockpit/         # TypeScript — TanStack Start web UI
+├── dataraum-config/ # YAML data — entropy config, LLM prompts, verticals (bind-mounted, never imported)
+└── infra/           # docker-compose orchestration
 ```
 
 Each package has its own README. Start there if you're working in a specific package.
 
-## Status — transitioning to v1
+## Status
 
-DataRaum is mid-pivot. v0.2.x exposed a 12-tool MCP server over HTTP. **That transport is gone.** v1 is a 3-verb kernel + cockpit:
+DataRaum runs as a multi-container platform, isolated per **workspace**:
 
-- **engine** — Python pipeline + Starlette kernel shell exposing three verbs over HTTP: `/measure` (SSE), `/query` (Arrow), `/probe` (read-only SQL), plus `/health`.
-- **cockpit** — TanStack Start app that hosts the chat surface, renders the agentic widgets, and reads the engine's metadata schema directly via Drizzle (introspected per workspace).
+- **engine** (Python) — a **Temporal activity worker**, no HTTP. Does the durable analysis (`add_source`, `begin_session`, `operating_model`) and writes metadata to the workspace's Postgres schema.
+- **cockpit** (TanStack Start) — the web app you use. Hosts the chat agent, renders the results, and orchestrates the journey by triggering engine workflows via Temporal.
 
-Today the substrate boots and you can poke `/health`. The 3 kernel verbs are 501 stubs and get filled in phase-by-phase per the DAT-339 pivot. **No end-user surface yet** — if you need v0.2.x MCP behavior, pin `dataraum==0.2.2`.
+They share one substrate: **Postgres** (metadata + cockpit state + catalogs), an **S3 object store** (the DuckLake data lake + uploads), and **Temporal** (durable orchestration). No HTTP seam between engine and cockpit — the integration surface is Postgres + Temporal. See the [platform architecture](docs/platform/architecture.md).
 
 ## Quick start
 
@@ -33,11 +34,13 @@ Today the substrate boots and you can poke `/health`. The 3 kernel verbs are 501
 cp packages/infra/.env.example packages/infra/.env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> packages/infra/.env
 
-# Bring up Postgres + control plane + cockpit
+# Bring up the full stack (Postgres, object store, Temporal, engine worker, cockpit)
 docker compose -f packages/infra/docker-compose.yml up -d --wait
 
-# Verify the substrate
-curl -fsS http://localhost:8000/health
+# Engine health = the Temporal worker heartbeat (no HTTP endpoint):
+docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
+  --entrypoint temporal temporal-admin-tools \
+  worker list --namespace default --address temporal:7233   # → Status: Running
 
 # Open the cockpit
 open http://localhost:3000

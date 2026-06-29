@@ -1242,8 +1242,16 @@ class GraphAgent(LLMFeature):
         Only the FORMULA OUTPUT step is persisted, and its ``sql`` is the WHOLE metric
         as one standalone statement (extract CTEs + the formula) — the cockpit answer
         agent reproduces ``snippet.sql`` independently (DAT-494), so a bare CTE body
-        referencing sibling CTEs would not be reusable. CONSTANT steps are persisted
-        standalone, keyed by (parameter, value) — a genuinely shared value, not aliased.
+        referencing sibling CTEs would not be reusable. Intermediate (non-output)
+        FORMULA steps are intentionally NOT persisted: each is captured as a CTE inside
+        the output formula's standalone SQL, so a separate fragment row would be both
+        redundant and un-reproducible. CONSTANT steps are persisted standalone, keyed by
+        (parameter, value) — a genuinely shared value, not aliased.
+
+        A pure-EXTRACT-output metric (output step IS an extract) saves nothing here —
+        its sole snippet is the concept-keyed EXTRACT minted by the warm pass, sourced
+        to the representative metric and discoverable by concept. There is no formula to
+        compose, so a per-metric row would just duplicate that shared extract.
         """
         from dataraum.query.execution import SQLStep, compose_standalone
         from dataraum.query.snippet_library import SnippetLibrary
@@ -1252,7 +1260,7 @@ class GraphAgent(LLMFeature):
         library = SnippetLibrary(session, workspace_id=workspace_id)
         source = f"graph:{graph.graph_id}"
         provenance_dict = self._build_snippet_provenance(generated_code, repaired=False)
-        steps_by_id = {s.get("step_id", ""): s for s in generated_code.steps}
+        steps_by_id = {s["step_id"]: s for s in generated_code.steps if s.get("step_id")}
 
         for step_id, graph_step in graph.steps.items():
             gen_step = steps_by_id.get(step_id)
@@ -1260,6 +1268,9 @@ class GraphAgent(LLMFeature):
                 continue
 
             if graph_step.step_type == StepType.CONSTANT:
+                # resolved_params is always populated by _resolve_parameters before
+                # compose, and compose itself fails (returns None) on a missing value —
+                # so a successful compose guarantees the value is present here.
                 param_value = None
                 if graph_step.parameter:
                     resolved = resolved_params.get(graph_step.parameter)

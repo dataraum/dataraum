@@ -160,33 +160,18 @@ def warming_generations(dag: nx.DiGraph) -> list[list[NodeKey]]:
 
 
 def build_mini_graph(node: WarmNode) -> TransformationGraph:
-    """Minimal single-output graph for warming one node.
+    """Minimal single-output graph for warming one EXTRACT leaf.
 
-    The representative step plus its transitive dependency steps (taken from the
-    representative graph, original local step ids preserved so ``depends_on``
-    resolves), with **only** the warmed node marked as the output step. The
-    deps are already warm by the time a later-generation node is warmed, so the
-    agent assembles them from cache and only authors this node.
+    Post-DAT-646 the warm DAG holds ONLY edge-less EXTRACT leaves — formulas and
+    constants are composed per-metric and never warmed — so a node has no dependency
+    steps to carry: the mini-graph is exactly the one extract, marked as the output.
+    The representative ``graph_id`` is preserved so the minted snippet is sourced to
+    that metric (``graph:{graph_id}``); a concept shared across metrics is decided once
+    under whichever metric warmed it first.
 
-    Steps are **copied** (:func:`dataclasses.replace`) — the originals belong to
-    the real metric graphs that execute later in the phase; warming must never
-    mutate their ``output_step`` flag.
+    The step is **copied** (:func:`dataclasses.replace`) — the original belongs to the
+    real metric graph that executes later in the phase; warming must never mutate its
+    ``output_step`` flag.
     """
-    graph = node.graph
-    needed: dict[str, GraphStep] = {}
-    stack = [node.step.step_id]
-    while stack:
-        step_id = stack.pop()
-        if step_id in needed:
-            continue
-        step = graph.steps.get(step_id)
-        if step is None:
-            continue
-        needed[step_id] = step
-        stack.extend(step.depends_on)
-
-    mini_steps = {
-        step_id: dataclasses.replace(step, output_step=(step_id == node.step.step_id))
-        for step_id, step in needed.items()
-    }
-    return dataclasses.replace(graph, steps=mini_steps)
+    mini_step = dataclasses.replace(node.step, output_step=True)
+    return dataclasses.replace(node.graph, steps={node.step.step_id: mini_step})

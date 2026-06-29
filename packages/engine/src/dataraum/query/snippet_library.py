@@ -279,7 +279,15 @@ class SnippetLibrary:
                 SQLSnippetRecord.source == source,
                 SQLSnippetRecord.normalized_expression == normalized_expression,
             )
-            existing = self.session.execute(stmt).scalar_one_or_none()
+            # ``.first()``, NOT ``scalar_one_or_none()``: formula rows have all-NULL
+            # semantic-key columns, so ``uq_snippet_semantic_key`` (which backstops
+            # extract/constant dedup) never fires for them — Postgres treats NULLs as
+            # distinct. Under at-least-once activity redelivery two concurrent sessions
+            # could each miss-then-insert the SAME (source, expression), leaving two
+            # rows; ``scalar_one_or_none`` would then raise ``MultipleResultsFound`` on
+            # the next save. These snippets are cockpit-KB-only (the engine never reads
+            # them back), so taking any existing row is correct and crash-free.
+            existing = self.session.execute(stmt).scalars().first()
 
         if existing and existing.failure_count > 0:
             # Replace failed snippet with fresh generation

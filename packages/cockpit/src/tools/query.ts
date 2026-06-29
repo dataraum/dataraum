@@ -589,7 +589,8 @@ export async function querySubAgent(
 	// agents use, now reaching the third SQL author. Empty (section omitted) when
 	// the vertical declares none or none target `qa`. Reused snippets are already
 	// sign-correct from extraction; this steers NEW SQL composed for a concept that
-	// has no snippet yet.
+	// has no snippet yet. Sequenced after the Promise.all: it needs workspace.vertical
+	// from that batch (cheap local file read, not worth threading into the parallel set).
 	const conventionsBlock = await buildConventionsBlock(workspace.vertical);
 
 	const userMessage = `<question>\n${question}\n</question>\n\n${schemaBlock}\n\n${entitiesBlock}\n\n${catalogBlock}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${

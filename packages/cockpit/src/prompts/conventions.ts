@@ -73,7 +73,9 @@ export async function buildConventionsBlock(
 	vertical: string | null,
 	target = "qa",
 ): Promise<string> {
-	if (!vertical) return "";
+	// `_adhoc` (and any framed `_…` vertical) ships no conventions — skip the read
+	// entirely, mirroring list-verticals.ts's `startsWith("_")` guard.
+	if (!vertical || vertical.startsWith("_")) return "";
 	try {
 		const text = await readFile(
 			join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),

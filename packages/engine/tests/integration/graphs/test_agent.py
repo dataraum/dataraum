@@ -476,14 +476,22 @@ class TestComposeMetricFromDag:
     def test_constant_without_value_returns_none(self) -> None:
         graph = self._metric(
             "dip",
-            {"out": GraphStep(step_id="out", step_type=StepType.CONSTANT, parameter="d", output_step=True)},
+            {
+                "out": GraphStep(
+                    step_id="out", step_type=StepType.CONSTANT, parameter="d", output_step=True
+                )
+            },
         )
         assert self._agent()._compose_metric_from_dag(graph, {}, {}) is None
 
     def test_formula_without_expression_returns_none(self) -> None:
         graph = self._metric(
             "bad",
-            {"out": GraphStep(step_id="out", step_type=StepType.FORMULA, expression="", output_step=True)},
+            {
+                "out": GraphStep(
+                    step_id="out", step_type=StepType.FORMULA, expression="", output_step=True
+                )
+            },
         )
         assert self._agent()._compose_metric_from_dag(graph, {}, {}) is None
 
@@ -569,6 +577,62 @@ class TestComposeMetricFromDag:
         # Each references its OWN numerator — no aliasing to the other metric's operand.
         assert "ebitda" in a_sql and "net_income" not in a_sql
         assert "net_income" in b_sql and "ebitda" not in b_sql
+
+    def test_composed_metric_executes_through_duckdb(self, duckdb_with_data) -> None:
+        """End-to-end: a composed extract+formula metric runs through DuckDB to the right
+        number — the multi-CTE composition is valid SQL, not just a well-formed string.
+
+        Two same-shape margins (numerator / revenue) compose AND execute distinctly: each
+        yields its own value, proving the DAT-646 no-alias fix survives real execution, not
+        only string assembly."""
+
+        def _margin(graph_id: str, numerator: str) -> TransformationGraph:
+            return self._metric(
+                graph_id,
+                {
+                    numerator: self._ext(numerator),
+                    "revenue": self._ext("revenue"),
+                    "m": GraphStep(
+                        step_id="m",
+                        step_type=StepType.FORMULA,
+                        expression=f"{numerator} / revenue",
+                        depends_on=[numerator, "revenue"],
+                        output_step=True,
+                    ),
+                },
+            )
+
+        agent = self._agent()
+        context = _make_execution_context(duckdb_with_data)
+        # test_data amounts: id1=100, id2=200, id3=300 (total 600).
+        revenue = {"sql": "SELECT SUM(amount) AS value FROM test_data", "description": ""}  # 600
+
+        # margin_a = id1 / total = 100/600; margin_b = (id1+id2) / total = 300/600.
+        graph_a = _margin("margin_a", "part_a")
+        code_a = agent._compose_metric_from_dag(
+            graph_a,
+            {
+                "part_a": {"sql": "SELECT SUM(amount) AS value FROM test_data WHERE id = 1"},
+                "revenue": revenue,
+            },
+            {},
+        )
+        graph_b = _margin("margin_b", "part_b")
+        code_b = agent._compose_metric_from_dag(
+            graph_b,
+            {
+                "part_b": {"sql": "SELECT SUM(amount) AS value FROM test_data WHERE id <= 2"},
+                "revenue": revenue,
+            },
+            {},
+        )
+        assert code_a is not None and code_b is not None
+
+        res_a = agent._execute_sql(code_a, context, graph_a)
+        res_b = agent._execute_sql(code_b, context, graph_b)
+        assert res_a.success and res_b.success
+        assert res_a.value.output_value == pytest.approx(100 / 600)
+        assert res_b.value.output_value == pytest.approx(300 / 600)
 
 
 class TestGraphAgentSnippets:

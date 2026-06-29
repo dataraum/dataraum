@@ -492,21 +492,24 @@ class TestWarmSharedNodes:
         # Exactly the three distinct extract concepts, nothing else.
         assert len(agent.warmed) == 3
 
-    def test_cyclic_metric_set_is_best_effort_no_raise(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_formula_only_metric_warms_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A metric with no EXTRACT leaves contributes no warm nodes (DAT-646).
+
+        Formulas are not keyed and never enter the warm DAG, so a degenerate
+        formula-only set — including a formula cycle that earlier exercised the
+        warm-DAG cycle guard — now simply warms nothing rather than being tolerated.
+        (The real dep-cycle guard moved to ``_ordered_dep_steps`` at compose time.)"""
         monkeypatch.setattr(
             "dataraum.graphs.agent.ExecutionContext.with_rich_context",
             classmethod(lambda cls, **kw: MagicMock()),
         )
         a = _real_formula("a", "x_one - y_two", ["b"])
         b = _real_formula("b", "y_two - x_one", ["a"])
-        cyclic = _real_graph("cyclic", {"a": a, "b": b})
+        formula_only = _real_graph("formula_only", {"a": a, "b": b})
         agent = _RecordingWarmAgent()
 
-        # A cyclic set must not raise — warming is skipped, execute surfaces it.
         bindings = gep._warm_shared_nodes(
-            {"cyclic": cyclic},
+            {"formula_only": formula_only},
             _StubCtx(),  # type: ignore[arg-type]
             agent,  # type: ignore[arg-type]
             _WORKSPACE_ID,

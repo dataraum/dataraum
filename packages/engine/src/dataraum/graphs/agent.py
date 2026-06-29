@@ -266,10 +266,19 @@ class GraphAgent(LLMFeature):
         # warmed, NOT cross-metric shared). So ``execute`` only ever authors a single
         # extract: a cache-assemble when it was already minted on a prior run, else the
         # one LLM grounding call (the sole LLM surface in the pipeline).
-        if cached_snippets and len(cached_snippets) == len(graph.steps):
-            generated_code = self._compose_metric_from_dag(
-                graph, cached_snippets, resolved_params
-            )
+        #
+        # Gate on the EXTRACT leaves specifically — not ``len(cached) == len(steps)``.
+        # FORMULA/CONSTANT steps are recomposed (never cached), and a non-step hint key
+        # (``_inspiration``) inflates the dict count; either makes a raw length compare
+        # mis-route. "Every EXTRACT leaf is cached" is the precise compose precondition.
+        extract_ids = [
+            step_id for step_id, step in graph.steps.items() if step.step_type == StepType.EXTRACT
+        ]
+        all_extracts_cached = bool(extract_ids) and all(
+            step_id in cached_snippets for step_id in extract_ids
+        )
+        if all_extracts_cached:
+            generated_code = self._compose_metric_from_dag(graph, cached_snippets, resolved_params)
             if generated_code:
                 logger.debug(
                     "assembled_from_cache",
@@ -528,7 +537,7 @@ class GraphAgent(LLMFeature):
         """Ground a single leaf EXTRACT to SQL via the LLM (tool-based output).
 
         EXTRACT is the SOLE LLM authoring surface (DAT-643): a FORMULA/CONSTANT is
-        composed deterministically in ``_compose_grounding_free`` and never reaches
+        composed deterministically in ``_compose_metric_from_dag`` and never reaches
         here, so this path only ever grounds one leaf extract against the dataset
         context + field mappings. ``cached_snippets`` feeds the DAT-616 prior context
         (a cached extract is ASSEMBLED upstream, never re-authored), so an extract is a

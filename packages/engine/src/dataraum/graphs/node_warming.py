@@ -19,10 +19,12 @@ This module is the **pure** layer — no execution, fully unit-testable:
 * :class:`NodeDecision` — one node's run-scoped authoring outcome (the binding
   map value); the pass itself lives in ``metrics_phase``.
 
-The node key mirrors the snippet cache key *exactly* (extract → standard_field /
-statement / aggregation; constant → parameter / value; formula → normalized
-expression), so authoring mints precisely what the per-metric assembly's
-``_lookup_snippets`` later finds.
+Only **EXTRACT** steps carry a node key (DAT-646: extract → standard_field /
+statement / aggregation) — they are the sole LLM authoring surface and the only
+nodes worth deduping across metrics. FORMULA and CONSTANT steps key to ``None``
+and never enter this DAG: they are deterministic and metric-specific, so the
+per-metric ``assemble`` composes each one fresh from its own dep list rather than
+sharing it by shape (which is exactly the cross-metric aliasing DAT-646 removed).
 """
 
 from __future__ import annotations
@@ -47,11 +49,12 @@ NodeKey = tuple[str | None, ...]
 class WarmNode:
     """A unique cache-keyed node in the cross-metric DAG.
 
-    ``key`` is the global dedup identity (mirrors the snippet cache key, so
-    warming this node mints exactly what a later per-metric lookup finds).
-    ``graph`` / ``step`` are the *representative* occurrence — the first one
-    seen — used to build the warming mini-graph. The snippet is concept-keyed,
-    so which representative we pick does not affect later lookups.
+    ``key`` is the global dedup identity of an EXTRACT leaf (its standard_field /
+    statement / aggregation — DAT-646), so warming this node mints exactly what a
+    later per-metric lookup finds. ``graph`` / ``step`` are the *representative*
+    occurrence — the first one seen — used to build the warming mini-graph. The
+    snippet is concept-keyed, so which representative we pick does not affect later
+    lookups.
     """
 
     key: NodeKey

@@ -53,13 +53,17 @@ For UI iteration, run the cockpit dev server outside docker for hot reload — s
 
 ## Documentation
 
-User-facing docs live in `packages/engine/docs/` and are published via Zensical.
+Platform docs live in `docs/` (workspace root) and are published via Zensical. Start at
+[`docs/index.md`](docs/index.md), or serve the site locally:
 
-- [Architecture](packages/engine/docs/architecture.md)
-- [Pipeline](packages/engine/docs/pipeline.md)
-- [Entropy](packages/engine/docs/entropy.md)
-- [Data Model](packages/engine/docs/data-model.md)
-- [Configuration](packages/engine/docs/configuration.md)
+```bash
+uv run --project packages/engine zensical serve   # run from the repo root
+```
+
+- [Overview](docs/getting-started/overview.md) — what DataRaum does, at a glance
+- [The approach](docs/concepts/approach.md) · [the journey](docs/concepts/the-journey.md) · [pipeline & phases](docs/concepts/pipeline.md) · [learnable surface](docs/concepts/learnable-surface.md) · [measurement & detectors](docs/concepts/measurement.md)
+- [Platform architecture](docs/platform/architecture.md) — under the hood
+- [Decision records](docs/adr/README.md) — the *why* behind the architecture
 
 ## License
 

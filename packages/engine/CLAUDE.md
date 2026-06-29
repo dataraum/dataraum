@@ -116,5 +116,5 @@ uv run python -m dataraum.worker.main
 
 ## Docs & tracking
 
-- User docs: `docs/*.md`, published via Zensical (`uv run zensical serve`). Update when user-facing behavior changes; internal detail goes in docstrings.
+- Platform docs live at the **workspace root** in `docs/` (not in this package), published via Zensical (`uv run --project packages/engine zensical serve`, run from the repo root). Update when user-facing behavior changes; internal detail goes in docstrings.
 - Design docs → **Confluence** (space DD). Active work → **Jira** (DAT-*; MCP available). Not local files.

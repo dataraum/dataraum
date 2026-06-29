@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import ValidationResultRecord
@@ -178,8 +179,6 @@ class ValidationPhase(BasePhase):
         # verbatim into every spec's SQL generation. Same source of truth the graph
         # agent uses for extraction, so validation and extraction can no longer
         # disagree about (e.g.) account sign. Empty when the vertical declares none.
-        from dataraum.analysis.semantic.ontology import OntologyLoader
-
         conventions = ""
         if vertical:
             loader = OntologyLoader()

@@ -23,6 +23,7 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
+    OntologyConvention,
     OntologyDefinition,
     OntologyLoader,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "OntologyLoader",
     "OntologyDefinition",
     "OntologyConcept",
+    "OntologyConvention",
     # Models
     "SemanticAnnotation",
     "EntityDetection",

@@ -272,3 +272,8 @@ inputs:
     type: "string"
     required: true
     description: "Prior-run honest-fail reason + prior value→concept grounding for this concept (empty string if none)"
+  vertical_conventions:
+    type: "string"
+    required: false
+    default: ""
+    description: "Vertical conventions to apply (verbatim); empty when the vertical declares none"

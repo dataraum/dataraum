@@ -5,6 +5,45 @@ change that affects a detector, pipeline phase, or a response shape eval consume
 
 ---
 
+## DAT-646 — formula SQL is composed + persisted PER-METRIC (kills cross-metric aliasing)
+
+**Branch:** `refactor/dat-646-formula-identity`.
+
+### What changed (metric SQL composition + snippet persistence — NOT a new response shape)
+The metrics phase warms only leaf EXTRACTs now; a metric's FORMULA/CONSTANT SQL is
+composed **per-metric** from the DAG (`graphs/agent.py` `_compose_metric_from_dag`),
+never warmed or shared by expression shape. The bug this fixes: formula snippets were
+deduped by `normalize_expression`, so same-shape metrics collided — `ebitda/revenue`,
+`net_income/revenue`, `operating_income/revenue` all normalize to `{A}/{B}` and aliased
+to ONE snippet, attributed to whichever metric authored first. The losers either reused
+the wrong numerator's SQL or were left un-composable.
+- Composition is now deterministic per-metric: each step is a CTE in topo order
+  (`compose_formula_sql`/`compose_constant_sql`), so `net_margin` references `net_income`
+  and `ebitda_margin` references `ebitda` — provably distinct.
+- Persistence: formula/constant snippets are saved per-metric in `assemble`
+  (`_save_composed_snippets`), sourced to `graph:{graph_id}` and keyed per-source, not by
+  shape. `find_by_expression` (the shape lookup) is deleted.
+
+### Why eval cares (calibration to run)
+- **The margin family should now EXECUTE with CORRECT, DISTINCT values.** Before, same-
+  shape margins aliased → a margin could compute another margin's numerator over revenue,
+  or fail. Re-run finance metric grounding/execution calibration; focus on
+  `gross_margin` / `ebitda_margin` / `net_margin` / `operating_margin` — expect each to
+  reach `executed` with its OWN value, and aliasing-induced wrong/crashing margins to
+  disappear. Net: more correct margins, fewer ungroundable/wrong ones.
+- **No threshold or response-field change.** The metric output shape (value, assumptions,
+  state/reason) is unchanged; only the composed `final_sql` and the snippet KB rows
+  differ. A metric's numeric value may CHANGE where it was previously aliased to the wrong
+  SQL — that is the fix, not a regression; update any fixed-SQL/value snapshots for the
+  margin metrics.
+
+### Snippet KB shape (if eval inspects `sql_snippets`)
+Formula snippets are now **one row per metric** (sourced `graph:{graph_id}`, sql = the
+whole standalone composition), not one shape-shared row. Extract/constant snippets are
+unchanged (concept- / param-keyed, shared). No schema/column change.
+
+---
+
 ## DAT-645 — vertical sign conventions wired into grounding + validation
 
 **Branch:** `feat/dat-645-vertical-conventions`.

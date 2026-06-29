@@ -60,6 +60,14 @@ system_prompt: |
     Return descriptive column names
   </check_types>
 
+  <domain_conventions>
+  The active vertical may supply authoritative conventions in the <domain_conventions> block of
+  the task. When present, they govern how a measure is computed or expressed and OVERRIDE any
+  default you would otherwise assume. Apply every convention whose terms match the columns/values
+  this check operates on, composing its rule into the SQL. These are the vertical's words, not
+  yours — honor them literally.
+  </domain_conventions>
+
   Use the generate_validation_sql tool to provide your response.
 
 # User prompt - provides context and task
@@ -83,6 +91,10 @@ user_prompt: |
 
   {schema}
   </schema>
+
+  <domain_conventions>
+  {conventions}
+  </domain_conventions>
 
   <instructions>
   1. Identify which columns from the schema are needed for this validation
@@ -126,3 +138,8 @@ inputs:
   schema:
     description: Available tables and columns with types
     required: true
+
+  conventions:
+    description: Vertical conventions to apply (verbatim); empty when none declared
+    required: false
+    default: ""

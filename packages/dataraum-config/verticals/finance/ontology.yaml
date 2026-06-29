@@ -289,11 +289,14 @@ conventions:
     targets: [extraction, validation]   # generic consumer labels (qa = fast-follow)
     statement: >
       Express every monetary measure in its natural-balance direction so a healthy
-      value reads POSITIVE: a credit-normal concept is SUM(credit) - SUM(debit); a
-      debit-normal concept is SUM(debit) - SUM(credit). Exclude contra accounts
-      (names containing accumulated, allowance, contra, reserve) — they legitimately
-      carry the opposite sign. A concept not listed below has no fixed normal balance
-      (raw ledger columns such as debit, credit, transaction_amount, or period
+      value reads POSITIVE. By account family: asset and expense accounts are
+      DEBIT-normal (natural balance = SUM(debit) - SUM(credit)); liability, equity,
+      revenue, and income accounts are CREDIT-normal (natural balance = SUM(credit) -
+      SUM(debit)). Sign a measure by the normal balance of the accounts it is drawn
+      from; the concept groups below list which measures are credit- vs debit-normal.
+      Exclude contra accounts (names containing accumulated, allowance, contra,
+      reserve) — they legitimately invert. A measure not listed has no fixed normal
+      balance (raw ledger columns such as debit, credit, transaction_amount, or period
       balances) — sign it from its account context, not from this rule.
     concept_groups:
       credit_normal:

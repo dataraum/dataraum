@@ -1,13 +1,18 @@
 # Sign Convention Validation
-# Checks if account balances follow expected sign conventions
+# Checks that account balances follow the vertical's natural-balance convention.
+# DAT-645: the credit-/debit-normal account families are NOT declared here — they
+# come from the single source of truth, the `sign_natural_balance` convention in
+# ontology.yaml (piped into <domain_conventions>). Extraction and validation read the
+# SAME rule, so they can no longer disagree about sign.
 
 validation_id: sign_conventions
 name: Sign Convention Compliance
 description: >
-  Validates that account balances follow standard accounting sign conventions.
-  Assets and Expenses normally have debit (positive) balances.
-  Liabilities, Equity, and Revenue normally have credit (negative or positive) balances.
-  Violations may indicate data entry errors or contra accounts.
+  Validates that each account's NATURAL balance is positive, per the vertical's sign
+  convention: debit-normal accounts (assets, expenses) should have SUM(debit) >=
+  SUM(credit); credit-normal accounts (liabilities, equity, revenue, income) should
+  have SUM(credit) >= SUM(debit). A negative natural balance signals a data-entry
+  error or an unflagged contra account.
 
 category: financial
 severity: warning
@@ -23,34 +28,30 @@ relevant_cycles:
 
 check_type: constraint
 
-parameters:
-  # Expected signs for each account type (debit = positive typically)
-  debit_normal_types: ["asset", "assets", "expense", "expenses"]
-  credit_normal_types: ["liability", "liabilities", "equity", "revenue", "income"]
-
 sql_hints: >
-  IMPORTANT: Check sign conventions on AGGREGATED account balances, not
-  individual transaction lines. Individual journal lines naturally have
-  both debits and credits — that is correct double-entry bookkeeping.
+  Apply the account sign convention from <domain_conventions> — that block is the
+  single source of truth for which account families are credit- vs debit-normal; do
+  not hardcode your own lists.
+
+  IMPORTANT: check on AGGREGATED account balances, not individual transaction lines.
+  Individual journal lines naturally carry both a debit and a credit — that is correct
+  double-entry bookkeeping, not a violation.
 
   Steps:
-  1. Join journal lines with chart of accounts on account_id
-  2. GROUP BY account_id, account_type
-  3. Compute net_balance = SUM(debit) - SUM(credit) per account
-  4. Check the NET BALANCE sign against the expected convention:
-     - Asset/Expense accounts: net_balance should be >= 0 (debit normal)
-     - Liability/Equity/Revenue accounts: net_balance should be <= 0 (credit normal)
-  5. Exclude contra accounts: accounts with names containing 'accumulated',
-     'allowance', 'contra', or 'reserve' — these legitimately have the
-     opposite sign of their account type.
+  1. Join journal lines to chart of accounts on account_id; GROUP BY account_id,
+     account_type.
+  2. Classify each account_type as credit-normal or debit-normal using the convention.
+  3. Compute the NATURAL balance per account: SUM(credit) - SUM(debit) for credit-normal
+     accounts, SUM(debit) - SUM(credit) for debit-normal accounts.
+  4. Flag accounts whose natural balance is NEGATIVE — that is a sign violation.
+  5. Exclude contra accounts (names containing 'accumulated', 'allowance', 'contra',
+     or 'reserve') — they legitimately invert.
 
   Return violating accounts with: account_id, account_name, account_type,
-  net_balance, expected_sign.
-
-  Also return a total_rows column with the total number of accounts checked
-  (for proportional scoring).
+  natural_balance. Also return a total_rows column with the total number of accounts
+  checked (for proportional scoring).
 
 expected_outcome: >
-  Most accounts should follow sign conventions. A small number of
-  violations (1-3) may be acceptable for contra accounts not caught
-  by the name filter. Zero violations on well-structured data.
+  Most accounts should have a positive natural balance. A small number of violations
+  (1-3) may be acceptable for contra accounts not caught by the name filter. Zero
+  violations on well-structured data.

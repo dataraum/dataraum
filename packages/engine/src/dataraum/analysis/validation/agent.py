@@ -136,6 +136,7 @@ class ValidationAgent(LLMFeature):
         table_ids: list[str],
         spec: ValidationSpec,
         schema: dict[str, Any],
+        conventions: str = "",
     ) -> tuple[GeneratedSQL | None, ValidationResult | None]:
         """``validation.bind`` — ground a declared spec against the workspace.
 
@@ -153,7 +154,7 @@ class ValidationAgent(LLMFeature):
         combined_table_name = ", ".join(table_names)
 
         # Generate SQL via LLM
-        sql_result = self._generate_sql(spec, schema)
+        sql_result = self._generate_sql(spec, schema, conventions=conventions)
 
         if not sql_result.success or not sql_result.value:
             return None, ValidationResult(
@@ -288,6 +289,7 @@ class ValidationAgent(LLMFeature):
         self,
         spec: ValidationSpec,
         schema: dict[str, Any],
+        conventions: str = "",
     ) -> Result[GeneratedSQL]:
         """Generate SQL via LLM using tool-based structured output.
 
@@ -324,6 +326,9 @@ class ValidationAgent(LLMFeature):
             "sql_hints": sql_hints,
             "expected_outcome": expected,
             "schema": schema_text,
+            # DAT-645: the vertical's conventions, piped verbatim (engine never
+            # interprets them) — the same source of truth extraction uses.
+            "conventions": conventions,
         }
 
         # Render prompt using template

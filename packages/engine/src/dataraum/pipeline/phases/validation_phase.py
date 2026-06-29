@@ -174,13 +174,24 @@ class ValidationPhase(BasePhase):
             )
         table_names = ", ".join(t["table_name"] for t in schema.get("tables", []))
 
+        # DAT-645: the vertical's conventions for the VALIDATION consumer, piped
+        # verbatim into every spec's SQL generation. Same source of truth the graph
+        # agent uses for extraction, so validation and extraction can no longer
+        # disagree about (e.g.) account sign. Empty when the vertical declares none.
+        from dataraum.analysis.semantic.ontology import OntologyLoader
+
+        conventions = ""
+        if vertical:
+            loader = OntologyLoader()
+            conventions = loader.format_conventions_for_prompt(loader.load(vertical), "validation")
+
         # bind → execute per artifact
         results: list[ValidationResult] = []
         for validation_id, spec in specs.items():
             artifact = artifacts[validation_id]
 
             generated, bind_failure = agent.bind_validation(
-                ctx.duckdb_conn, table_ids, spec, schema
+                ctx.duckdb_conn, table_ids, spec, schema, conventions=conventions
             )
             if bind_failure is not None:
                 # Ungroundable: stays declared, reason on the row.

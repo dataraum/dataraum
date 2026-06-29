@@ -635,6 +635,173 @@ class TestComposeMetricFromDag:
         assert res_b.value.output_value == pytest.approx(300 / 600)
 
 
+class TestSaveComposedSnippets:
+    """Per-metric FORMULA/CONSTANT persistence for the cockpit reuse KB (DAT-646 P2).
+
+    The warm pass saves only shared EXTRACT leaves; a metric's composed formula/constants
+    are persisted here, sourced to ``graph:{graph_id}`` so the cockpit groups them under
+    THIS metric — and formulas are keyed per-source so two same-shape margins never alias."""
+
+    @staticmethod
+    def _agent() -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+    @staticmethod
+    def _ext(sid: str) -> GraphStep:
+        return GraphStep(
+            step_id=sid,
+            step_type=StepType.EXTRACT,
+            source=StepSource(standard_field=sid, statement="income_statement"),
+            aggregation="sum",
+        )
+
+    def _metric(self, graph_id: str, steps: dict[str, GraphStep]) -> TransformationGraph:
+        return TransformationGraph(
+            graph_id=graph_id,
+            version="1.0",
+            metadata=GraphMetadata(
+                name=graph_id, description="", category="profitability", source=GraphSource.SYSTEM
+            ),
+            output=OutputDef(output_type=OutputType.SCALAR),
+            steps=steps,
+        )
+
+    def _margin(self, graph_id: str, numerator: str) -> TransformationGraph:
+        return self._metric(
+            graph_id,
+            {
+                numerator: self._ext(numerator),
+                "revenue": self._ext("revenue"),
+                "m": GraphStep(
+                    step_id="m",
+                    step_type=StepType.FORMULA,
+                    expression=f"{numerator} / revenue",
+                    depends_on=[numerator, "revenue"],
+                    output_step=True,
+                ),
+            },
+        )
+
+    def _compose_and_save(self, agent, session, graph, cached, resolved_params=None) -> None:
+        code = agent._compose_metric_from_dag(graph, cached, resolved_params or {})
+        assert code is not None
+        agent._save_composed_snippets(
+            session=session,
+            graph=graph,
+            generated_code=code,
+            schema_mapping_id="schema_abc",
+            resolved_params=resolved_params or {},
+            workspace_id=baseline_run_id(),
+        )
+        session.flush()
+
+    def test_same_shape_metrics_persist_distinct_sourced_snippets(self, session: Session):
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        agent = self._agent()
+        self._compose_and_save(
+            agent,
+            session,
+            self._margin("ebitda_margin", "ebitda"),
+            {
+                "ebitda": {"sql": "SELECT SUM(amount) AS value FROM t WHERE k='ebitda'"},
+                "revenue": {"sql": "SELECT SUM(amount) AS value FROM t"},
+            },
+        )
+        self._compose_and_save(
+            agent,
+            session,
+            self._margin("net_margin", "net_income"),
+            {
+                "net_income": {"sql": "SELECT SUM(amount) AS value FROM t WHERE k='net_income'"},
+                "revenue": {"sql": "SELECT SUM(amount) AS value FROM t"},
+            },
+        )
+
+        formulas = list(
+            session.execute(
+                select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "formula")
+            ).scalars()
+        )
+        assert len(formulas) == 2
+        by_source = {f.source: f for f in formulas}
+        assert set(by_source) == {"graph:ebitda_margin", "graph:net_margin"}
+        # Each metric's snippet sql is its OWN standalone computation (extract CTEs + the
+        # formula), with no operand from the sibling metric — the no-alias guarantee.
+        assert "ebitda" in by_source["graph:ebitda_margin"].sql
+        assert "net_income" not in by_source["graph:ebitda_margin"].sql
+        assert "net_income" in by_source["graph:net_margin"].sql
+        assert "ebitda" not in by_source["graph:net_margin"].sql
+        # The formula snippet is the WHOLE metric as one statement (a WITH composition).
+        assert by_source["graph:ebitda_margin"].sql.startswith("WITH")
+
+    def test_resave_is_idempotent(self, session: Session):
+        from sqlalchemy import func, select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        agent = self._agent()
+        graph = self._margin("net_margin", "net_income")
+        cached = {
+            "net_income": {"sql": "SELECT 1 AS value"},
+            "revenue": {"sql": "SELECT 2 AS value"},
+        }
+        self._compose_and_save(agent, session, graph, cached)
+        self._compose_and_save(agent, session, graph, cached)  # re-run = no-op
+
+        total = session.scalar(
+            select(func.count())
+            .select_from(SQLSnippetRecord)
+            .where(SQLSnippetRecord.snippet_type == "formula")
+        )
+        assert total == 1
+
+    def test_constant_step_persisted_keyed_by_param_value(self, session: Session):
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        agent = self._agent()
+        graph = self._metric(
+            "dso",
+            {
+                "ar": self._ext("accounts_receivable"),
+                "revenue": self._ext("revenue"),
+                "dip": GraphStep(
+                    step_id="dip",
+                    step_type=StepType.CONSTANT,
+                    parameter="days_in_period",
+                ),
+                "m": GraphStep(
+                    step_id="m",
+                    step_type=StepType.FORMULA,
+                    expression="ar / revenue * dip",
+                    depends_on=["ar", "revenue", "dip"],
+                    output_step=True,
+                ),
+            },
+        )
+        self._compose_and_save(
+            agent,
+            session,
+            graph,
+            {
+                "ar": {"sql": "SELECT 100 AS value"},
+                "revenue": {"sql": "SELECT 1000 AS value"},
+            },
+            resolved_params={"days_in_period": 30},
+        )
+
+        const = session.execute(
+            select(SQLSnippetRecord).where(SQLSnippetRecord.snippet_type == "constant")
+        ).scalar_one()
+        assert const.standard_field == "days_in_period"
+        assert const.parameter_value == "30"
+        assert const.source == "graph:dso"
+
+
 class TestGraphAgentSnippets:
     """Tests for GraphAgent snippet lifecycle."""
 
@@ -847,7 +1014,7 @@ class TestGraphAgentSnippets:
         )
 
         # Access internal _lookup_snippets to verify column_mappings are returned
-        cached = agent._lookup_snippets(session, sample_graph, "test-mapping", {})
+        cached = agent._lookup_snippets(session, sample_graph, "test-mapping")
 
         assert "value" in cached
         assert cached["value"]["column_mappings"] == {"test_field": "amount"}

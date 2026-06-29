@@ -304,60 +304,67 @@ class TestSnippetLibrarySave:
         assert fetched.column_mappings == {"revenue": "Betrag", "type": "Kontoart"}
 
 
-class TestSnippetLibraryFindByExpression:
-    """Tests for formula pattern matching."""
+class TestSnippetLibraryFormulaPerMetric:
+    """Formula snippets are identified PER-METRIC by source, not by shape (DAT-646)."""
 
-    def test_find_formula(self, session):
-        """Find a formula by normalized expression."""
-        from dataraum.query.snippet_utils import normalize_expression
+    _COMMON = {
+        "snippet_type": "formula",
+        "description": "margin",
+        "schema_mapping_id": "schema_abc",
+        "normalized_expression": "{A} / {B}",
+        "input_fields": ["a", "b"],
+    }
+
+    def test_same_shape_different_source_are_distinct_rows(self, session):
+        """Two metrics sharing an arithmetic shape each get their OWN formula row — no
+        cross-metric aliasing (was: net_margin reused ebitda_margin's formula snippet)."""
+        from sqlalchemy import func, select
 
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
-        # Normalize the expression the same way find_by_expression will
-        expr = "(accounts_receivable / revenue) * days_in_period"
-        normalized, sorted_fields, bindings = normalize_expression(expr)
-
-        library.save_snippet(
-            snippet_type="formula",
-            sql="SELECT (SELECT value FROM ar) / (SELECT value FROM rev) * 30",
-            description="DSO formula",
-            schema_mapping_id="schema_abc",
-            source="graph:dso",
-            normalized_expression=normalized,
-            input_fields=sorted_fields,
+        a = library.save_snippet(
+            sql="WITH ebitda AS (SELECT 1) SELECT 1 AS value",
+            source="graph:ebitda_margin",
+            **self._COMMON,
+        )
+        b = library.save_snippet(
+            sql="WITH net_income AS (SELECT 1) SELECT 1 AS value",
+            source="graph:net_margin",
+            **self._COMMON,
         )
         session.flush()
 
-        match = library.find_by_expression(
-            expression=expr,
-            schema_mapping_id="schema_abc",
+        assert a.snippet_id != b.snippet_id
+        total = session.scalar(
+            select(func.count())
+            .select_from(SQLSnippetRecord)
+            .where(SQLSnippetRecord.snippet_type == "formula")
         )
+        assert total == 2
 
-        assert match is not None
-        assert match.match_confidence == 0.9
-        assert match.match_strategy == "expression_pattern"
+    def test_same_source_same_expression_is_idempotent(self, session):
+        """Re-saving a metric's own formula is a no-op (insert-if-not-exists, first wins)."""
+        from sqlalchemy import func, select
 
-    def test_find_formula_no_match(self, session):
-        """No formula for a different expression."""
         library = SnippetLibrary(session, workspace_id=WORKSPACE_ID)
 
-        library.save_snippet(
-            snippet_type="formula",
-            sql="SELECT 1",
-            description="test",
-            schema_mapping_id="schema_abc",
-            source="graph:test",
-            normalized_expression="({A} / {B}) * {C}",
-            input_fields=["a", "b", "c"],
+        first = library.save_snippet(
+            sql="SELECT 1 AS value", source="graph:net_margin", **self._COMMON
+        )
+        session.flush()
+        again = library.save_snippet(
+            sql="SELECT 2 AS value", source="graph:net_margin", **self._COMMON
         )
         session.flush()
 
-        # Different expression
-        match = library.find_by_expression(
-            expression="x + y",
-            schema_mapping_id="schema_abc",
+        assert again.snippet_id == first.snippet_id
+        assert again.sql == "SELECT 1 AS value"  # first writer won
+        total = session.scalar(
+            select(func.count())
+            .select_from(SQLSnippetRecord)
+            .where(SQLSnippetRecord.snippet_type == "formula")
         )
-        assert match is None
+        assert total == 1
 
 
 class TestSnippetLibraryRecordUsage:
